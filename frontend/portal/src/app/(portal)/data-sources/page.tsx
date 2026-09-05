@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo } from "react";
 import { Chip, FEED_LABEL, FEED_TONE, Freshness, StatusChip, StreamControls } from "@/components/data/Bits";
 import { Panel, PanelBody, PanelHead, TableWell } from "@/components/data/Panel";
@@ -11,6 +12,7 @@ import { formatAgo, formatCount, formatDecimal, formatDurationMs } from "@/lib/f
 import { connections, useConnections } from "@/lib/hooks/connections";
 import { useEventStream } from "@/lib/hooks/useEventStream";
 import { useNow } from "@/lib/hooks/useNow";
+import { useRegistrations, type RegistrationSource } from "@/lib/hooks/useRegistrations";
 import { useResource } from "@/lib/hooks/useResource";
 
 /**
@@ -22,6 +24,15 @@ import { useResource } from "@/lib/hooks/useResource";
  * what the mesh has absorbed, and the observed latency of each live stream this
  * browser holds open — which is a real provenance record for the only sources
  * this console actually reads.
+ *
+ * One catalogue the platform does serve: `GET /registrations`, the registration
+ * standing of every catalogued source. It is shown here as a badge per source —
+ * keyless, registered by a named person, or pending and naming who must
+ * register — because a feed catalogue that showed only freshness would let a
+ * source read as merely quiet when in fact the platform refuses it until
+ * somebody registers. Nothing on this page changes a standing: the badge links
+ * to `/data-sources/registrations`, where the one approval an operator records
+ * lives, and that approval needs the person.
  */
 export default function DataSources() {
   const registry = useResource<unknown>(platform.dataSources, {
@@ -39,6 +50,7 @@ export default function DataSources() {
     label: "GET /mesh",
     intervalMs: 15_000,
   });
+  const venues = useRegistrations();
   const health = useEventStream({ channel: "health", label: "SSE /stream/health", maxEvents: 60 });
 
   const feeds = useConnections();
@@ -73,6 +85,83 @@ export default function DataSources() {
                 </pre>
               </EmptyBlock>
             )}
+          </ResourceView>
+        </PanelBody>
+      </Panel>
+
+      <Panel data-testid="data-sources-registrations">
+        <PanelHead
+          title="Registration standing per catalogued source"
+          meta={<Freshness resource={venues} name="venue registrations" />}
+          actions={
+            <>
+              {venues.data === null ? null : (
+                <Chip
+                  tone={venues.data.posture === "PAPER TRADING" ? "ok" : "bad"}
+                  title="GET /registrations: posture"
+                >
+                  <span data-testid="data-sources-registrations-posture">{venues.data.posture}</span>
+                </Chip>
+              )}
+              <Chip>GET /api/v1/registrations</Chip>
+              <Link className="btn" data-variant="ghost" href={REGISTRATIONS_HREF}>
+                Venue registrations
+              </Link>
+            </>
+          }
+        />
+        <PanelBody flush>
+          <p className="border-b border-[color:var(--color-line)] px-3 py-2 text-[11px] leading-relaxed text-[color:var(--color-ink-faint)]">
+            The registry&rsquo;s own answer, read-only here — the same registry the feed&rsquo;s
+            admission gate consults, so this page and the gate cannot disagree about who registered.
+            A source shown pending is one the platform refuses to read until a named operator records
+            the registration on{" "}
+            <Link href={REGISTRATIONS_HREF} className="underline">
+              venue registrations
+            </Link>
+            .
+          </p>
+          <ResourceView resource={venues} loadingRows={3}>
+            {(data) =>
+              data.sources.length === 0 ? (
+                <EmptyBlock headline="The platform catalogues no source's registration requirement.">
+                  <p>
+                    <code className="num">GET /api/v1/registrations</code> answered with an empty
+                    catalogue. Nothing is listed because the platform listed nothing; an absent
+                    requirement is a question nobody asked, not a source that needs no account.
+                  </p>
+                </EmptyBlock>
+              ) : (
+                <TableWell maxHeight="34vh" label="Catalogued sources and their registration standing">
+                  <table className="dt">
+                    <thead>
+                      <tr>
+                        <th scope="col">Source</th>
+                        <th scope="col">Venue requires</th>
+                        <th scope="col">Registration</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.sources.map((source) => (
+                        <tr
+                          key={source.source_id}
+                          data-standing={source.standing.standing}
+                          data-alert={source.standing.standing === "pending" ? "true" : undefined}
+                        >
+                          <td className="num">{source.source_id}</td>
+                          <td className="num text-[color:var(--color-ink-dim)]">
+                            {source.requirement ?? "not declared"}
+                          </td>
+                          <td>
+                            <RegistrationBadge source={source} />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </TableWell>
+              )
+            }
           </ResourceView>
         </PanelBody>
       </Panel>
@@ -265,6 +354,50 @@ export default function DataSources() {
         </Panel>
       </div>
     </div>
+  );
+}
+
+/** The page that holds the registration record and the one approval that writes it. */
+const REGISTRATIONS_HREF = "/data-sources/registrations";
+
+/**
+ * One source's standing, as the platform tagged it, and a way to the page that
+ * explains it.
+ *
+ * A link and never a control: this console records no registration from a
+ * catalogue row, and a badge that could be clicked into an approval would be a
+ * second write for a fact only a person can make true. The pending badge names
+ * the deployment's configured owner rather than saying "pending" alone, because
+ * "who has to do something" is the question a refused feed raises.
+ */
+function RegistrationBadge({ source }: { source: RegistrationSource }) {
+  const { standing } = source;
+  const kind = standing.standing;
+  const tone = kind === "registered" ? "ok" : kind === "keyless" ? "neutral" : "warn";
+  const label =
+    kind === "keyless"
+      ? "keyless"
+      : kind === "registered"
+        ? `registered by ${standing.operator}`
+        : `pending — ${standing.who_must_register} must register`;
+  const title =
+    kind === "keyless"
+      ? "A public endpoint: the platform reads it with no account and no credential."
+      : kind === "registered"
+        ? `Registered by ${standing.operator}; the credential is read from ${standing.secret}, never carried here.`
+        : standing.reason;
+
+  return (
+    <Link
+      href={REGISTRATIONS_HREF}
+      className="chip"
+      data-tone={tone === "neutral" ? undefined : tone}
+      data-standing={kind}
+      data-testid={`data-sources-standing-${source.source_id}`}
+      title={title}
+    >
+      {label}
+    </Link>
   );
 }
 

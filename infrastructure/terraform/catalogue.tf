@@ -56,6 +56,60 @@ locals {
   # catalogue reads the same file at the same place.
   universe_catalogue = file("${path.module}/../../data/datasets/universe.json")
 
+  # The committed files an environment may mount *beside* the universe, keyed
+  # by the workload that reads them, and the one rule that governs them: a file
+  # exists here only where a root variable names a path in this repository, and
+  # a null variable renders no entry at all — so the process sees no variable
+  # and takes the absent behaviour it documents, rather than opening a file
+  # somebody left empty to make a mount work.
+  #
+  # Read with `file()` like the universe, for the same reason: the bytes a
+  # revision mounts are the bytes in the reviewed commit, and `modules/cloudrun`
+  # names the object by their hash, so a plan says which document a revision
+  # was given.
+  #
+  # Declared out here rather than inside the entry because the entry's
+  # `config_files` block is a parity contract: every `env_file_variable` in it
+  # is one every `RunService` under `gitops/envs/<env>/` must carry, and these
+  # are carried by none of them while every tfvars leaves both variables null.
+  # The entry merges this map in, so what the module receives is still one map;
+  # what a rendered manifest omits is exactly what that environment did not ask
+  # for.
+  optional_config_files = {
+    api = merge(
+      # The venue registrations the API's registry ships with (ADR 0034,
+      # ADR 0040). Unset, the shipped table records nobody and every source
+      # that needs an account stays refused — the honest state of a deployment
+      # where nobody has registered. Setting it is the last step of
+      # docs/operations/registering-a-venue.md and not a substitute for the
+      # steps before it.
+      var.venue_registrations_file == null ? {} : {
+        venue-registrations = {
+          content           = file("${path.module}/../../${var.venue_registrations_file}")
+          file_name         = "venue-registrations.json"
+          content_type      = "application/json"
+          env_file_variable = "QIP_VENUE_REGISTRATIONS_PATH"
+        }
+      },
+      # The custodian's wallet statement the LEARN stage reconciles against.
+      # Unset, the API's banner says there is no feed and /wallet answers
+      # `assembled: false`. Set, it is a dated document: the kernel holds a
+      # statement fresh for one day and the root refuses a stale one at
+      # start-up, so committing one is a same-day act by a person who has a
+      # custodian to quote. Every environment trades on the in-process
+      # simulated venue (ADR 0003), which issues no statement, so every
+      # environment leaves this null and says so in its tfvars.
+      var.wallet_statement_file == null ? {} : {
+        wallet-statement = {
+          content           = file("${path.module}/../../${var.wallet_statement_file}")
+          file_name         = "wallet-statement.json"
+          content_type      = "application/json"
+          env_file_variable = "QIP_WALLET_STATEMENT_PATH"
+        }
+      },
+    )
+  }
+
   cloud_run_catalogue = {
     # The API and the operator interface. Customer traffic, reached only by
     # the console's identity, in the application-and-identity zone (§46.1):
@@ -101,13 +155,24 @@ locals {
         # change to one reviewed value that appears in a diff.
         QIP_AUTONOMY_CEILING = var.autonomy_ceiling
       }
+      # The universe every root reads, and whatever optional files the tfvars
+      # named for this workload. A comprehension rather than a bare `merge`
+      # so the block still opens with `config_files = {`: three acceptance
+      # walks read the universe's mount out of the lines under that opening,
+      # and a `merge(` on this line would make each of them read nothing and
+      # stop checking rather than fail.
       config_files = {
-        universe = {
-          content           = local.universe_catalogue
-          file_name         = "universe.json"
-          content_type      = "application/json"
-          env_file_variable = "QIP_UNIVERSE_PATH"
-        }
+        for name, document in merge(
+          {
+            universe = {
+              content           = local.universe_catalogue
+              file_name         = "universe.json"
+              content_type      = "application/json"
+              env_file_variable = "QIP_UNIVERSE_PATH"
+            }
+          },
+          local.optional_config_files.api,
+        ) : name => document
       }
       secret_mounts = {
         token-operator = {
@@ -142,6 +207,36 @@ locals {
           secret_id         = module.secrets.secret_ids["qip-capital-envelope-key"]
           file_name         = "capital-envelope-key"
           env_file_variable = "QIP_CAPITAL_ENVELOPE_KEY_FILE"
+        }
+        # The two halves of the Alpaca market-data credential, as files. The
+        # shipped manifest names `QIP_ALPACA_API_SECRET_KEY` and its companion
+        # `QIP_ALPACA_API_KEY_ID`, `qip_core::secret` resolves the `_FILE`
+        # variant of each, and `GET /registrations` prints the one command that
+        # fills the slot — `gcloud secrets versions add qip-alpaca-api-secret-key
+        # --data-file=-`. That command has to name a container that exists, and
+        # the process has to be able to read what a person puts in it; those are
+        # the two halves, and `main.tf` holds the first.
+        #
+        # No value is created here, ever: Terraform creates the container and a
+        # person writes the version out of band (ADR 0040,
+        # docs/operations/registering-a-venue.md). Two consequences, said out
+        # loud rather than discovered. A mount is not a registration — the
+        # source stays refused by the licensing gate and by the registration
+        # gate until the terms are read and a record is committed. And a Cloud
+        # Run revision cannot start on a secret with no enabled version, so the
+        # slot must be filled before the manifest beside this reconciles; that
+        # is the same order the runbook already gives (fill the slot, then
+        # deploy), and it is why the slots exist rather than appearing on the
+        # day somebody registers.
+        alpaca-api-key-id = {
+          secret_id         = module.secrets.secret_ids["qip-alpaca-api-key-id"]
+          file_name         = "alpaca-api-key-id"
+          env_file_variable = "QIP_ALPACA_API_KEY_ID_FILE"
+        }
+        alpaca-api-secret-key = {
+          secret_id         = module.secrets.secret_ids["qip-alpaca-api-secret-key"]
+          file_name         = "alpaca-api-secret-key"
+          env_file_variable = "QIP_ALPACA_API_SECRET_KEY_FILE"
         }
       }
     }
@@ -222,6 +317,24 @@ locals {
           file_name         = "capital-envelope-key"
           env_file_variable = "QIP_CAPITAL_ENVELOPE_KEY_FILE"
         }
+        # No venue credential here, and the omission is the decision rather
+        # than an oversight. This is the workload `var.market_data_connector`
+        # names, so mounting the Alpaca key looks right until you read the
+        # line above: `egress_proxy = false`, deliberately, because port 9102
+        # on this sidecar is a route to a language model API and nothing on
+        # the hot path may consult one (ADR 0008, and the `precondition` on
+        # `local.cloud_run_catalogue.fastbrain` that refuses the proxy by
+        # name). Without the proxy this process has no outbound HTTPS path at
+        # all, so a credential mounted here is one it could never spend — a
+        # secret readable in a container that cannot reach the vendor it
+        # authenticates to, which widens the blast radius and buys nothing.
+        # `the_fast_brain_cannot_reach_anything_that_could_serve_a_language_model`
+        # in the infrastructure suite pins this to the envelope key alone; it
+        # caught exactly this mount being added, so the guard is not
+        # hypothetical. Reaching a live vendor from the fast brain is a
+        # topology question — which workload runs the connector, and what it
+        # is allowed to dial — and it is answered in an ADR before it is
+        # answered in a secret mount.
       }
     }
 

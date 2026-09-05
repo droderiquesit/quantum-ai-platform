@@ -72,7 +72,11 @@ async function forward(request: NextRequest, context: RouteContext): Promise<Res
     const { path: segments } = await context.params;
     path = resolveUpstreamPath(segments);
     // Asked before `upstream()`, so a write this console does not declare does
-    // not even cause the credential to be read off disk.
+    // not even cause the credential to be read off disk. The allowlist is the
+    // `REST` table in `@/lib/api/endpoints`; its four writes are POST /cycle,
+    // POST /kill-switch, DELETE /kill-switch and — the one with a path
+    // parameter — POST /registrations/{source_id}/approve, which matches
+    // exactly one source segment (`tests/registrations-gateway.spec.ts`).
     const undeclared =
       request.method !== "GET" &&
       request.method !== "HEAD" &&
@@ -82,8 +86,9 @@ async function forward(request: NextRequest, context: RouteContext): Promise<Res
         {
           error:
             `this console declares no ${request.method} on ${path}. ` +
-            "Its writes are POST /cycle, POST /kill-switch and DELETE /kill-switch; " +
-            "adding a fourth is an edit to the route table, not to a page.",
+            "Its writes are POST /cycle, POST /kill-switch, DELETE /kill-switch and " +
+            "POST /registrations/{source_id}/approve; adding a fifth is an edit to the " +
+            "route table, not to a page.",
           gateway: "refused",
         },
         {

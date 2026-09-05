@@ -22,8 +22,21 @@
 //!   `QIP_CONNECTOR_BASE_URL`), the real path ADR 0034 decides: a worked
 //!   connector from the ingestion SDK, opened through the TLS-terminating
 //!   egress proxy, after — never before — the data finder's licensing
-//!   catalogue has admitted it. [`ApiFeed::connector`] is shaped so there is
-//!   no route to a connector around the gate.
+//!   catalogue has admitted it and its registration registry has named who
+//!   registered. [`ApiFeed::connector`] is shaped so there is no route to a
+//!   connector around either gate, and the registry the gate consults is
+//!   the one the platform is then assembled with
+//!   (`PlatformConfig::registration_registry`), so the feed cannot admit a
+//!   source on a record the platform does not hold.
+//!
+//! The connector arm's gate no longer runs only once. [`ApiFeed::readmit`]
+//! runs it again on the platform's own registry when an operator approves a
+//! registration for the source this process senses, so an approval taken at
+//! runtime reaches the feed rather than waiting for a restart nobody was
+//! told to make. It re-runs *both* gates against the shipped catalogue, so a
+//! registration can never admit a source whose licensing posture still
+//! refuses it, and it replaces the open connector only after the new one is
+//! built — a refusal leaves the process sensing exactly what it was.
 //!
 //! A tape and a connector at once is a contradiction rather than a
 //! precedence question: whichever this code preferred, the operator meant the
@@ -33,6 +46,7 @@
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, ManualClock, Timestamp};
 use qip_data_finder::admission::{self, CatalogueEntry, LicensingDecision};
+use qip_data_finder::registration::RegistrationRegistry;
 use qip_kernel::Platform;
 use qip_market_ingestion::adapter::{DataAdapter, SensedRecord, SourceDescriptor};
 use qip_market_ingestion::connector_feed::{ConnectorFeed, shipped_class};
@@ -148,6 +162,45 @@ fn text(vars: &BTreeMap<String, String>, name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// Whether this process can actually read the credential the deployment
+/// variable `slot` names — without the value ever being bound to a name here.
+///
+/// `direct` and `path` are the two sources [`qip_core::secret`] resolves
+/// between: `slot` itself and `slot_FILE`, the projection the Secret Manager
+/// CSI driver writes. They are passed in rather than read here because the
+/// caller decides where they come from, and because the process environment
+/// cannot be written from a test in this workspace — `std::env::set_var` is
+/// unsafe in the 2024 edition and `unsafe` is forbidden at the workspace
+/// root, which is the same reason [`FeedSettings::parse`] takes a map.
+///
+/// The rule itself is not restated: `resolve_from` is the one implementation
+/// of the `_FILE` indirection, and a second one here would be a second place
+/// for the two sources to disagree. The resolved credential is consumed by
+/// `is_some()` on the line it arrives, so no value reaches a log, a response
+/// or a stack frame that outlives this call. A refusal names the slot and
+/// its `_FILE` variant and nothing else.
+///
+/// The failure this prevents: re-opening a connector on a registration
+/// record whose credential the deployment never mounted. The transport would
+/// then fail at the vendor with an authentication error that names neither
+/// the variable nor the record, and the operator who had just approved the
+/// registration would read it as the venue rejecting them.
+pub fn credential_is_readable(
+    slot: &str,
+    direct: Option<String>,
+    path: Option<String>,
+) -> Result<()> {
+    if qip_core::secret::resolve_from(slot, direct, path)?.is_some() {
+        return Ok(());
+    }
+    Err(Error::invalid(format!(
+        "{slot} names no credential this process can read: neither {slot} nor {slot}{suffix} is \
+         set here. The registration stands and is in the log; mount the secret under {slot}{suffix} \
+         and the connector is admitted at the next approval or the next start",
+        suffix = qip_core::secret::FILE_SUFFIX
+    )))
+}
+
 /// What one `POST /cycle` sensed before the loop ran.
 #[derive(Debug)]
 pub struct Sensed {
@@ -178,20 +231,43 @@ pub enum ApiFeed {
     /// A catalogued connector, and the licensing decision that admitted it.
     Connector {
         feed: Box<ConnectorFeed>,
-        decision: LicensingDecision,
+        decision: Box<LicensingDecision>,
+        /// What it would take to open this source again: the selection the
+        /// composition root resolved and the seed its runtime was built on.
+        ///
+        /// Kept beside the open connector because a *re*-admission has to be
+        /// the same admission. [`ConnectorFeed`] exposes a descriptor and
+        /// nothing else, so without this the only way to re-open a source
+        /// after a runtime approval would be to read the environment a
+        /// second time — and a second read is a second answer the day the
+        /// two disagree, which is exactly the class of bug the feed's
+        /// single selection at start-up exists to prevent.
+        settings: ConnectorSettings,
+        seed: u64,
     },
 }
 
 impl ApiFeed {
     /// Open whichever source the settings name, or none.
     ///
-    /// `at` is the instant a connector is admitted and connected at; a tape
-    /// starts on its own first knowable instant and ignores it.
-    pub fn open(settings: &FeedSettings, seed: u64, at: Timestamp) -> Result<Option<Self>> {
+    /// `registrations` is the registry a connector is admitted against —
+    /// the composition root passes the one its configuration stands for, so
+    /// a source admitted here is one the platform, assembled afterwards on
+    /// the same configuration, also holds a record for. `at` is the instant
+    /// a connector is admitted and connected at; a tape starts on its own
+    /// first knowable instant and ignores both.
+    pub fn open(
+        settings: &FeedSettings,
+        registrations: &RegistrationRegistry,
+        seed: u64,
+        at: Timestamp,
+    ) -> Result<Option<Self>> {
         match settings {
             FeedSettings::None => Ok(None),
             FeedSettings::Tape(path) => Self::tape(path).map(Some),
-            FeedSettings::Connector(connector) => Self::connector(connector, seed, at).map(Some),
+            FeedSettings::Connector(connector) => {
+                Self::connector_registered(connector, registrations, seed, at).map(Some)
+            }
         }
     }
 
@@ -204,32 +280,126 @@ impl ApiFeed {
     }
 
     /// Open a catalogued connector through the egress proxy, after the
-    /// licensing gate has admitted it.
+    /// licensing gate has admitted it, against the shipped registration
+    /// registry — which records nobody, so this door opens the keyless
+    /// sources and nothing that needs an account. The composition root goes
+    /// through [`Self::open`], which carries the owner's records.
     pub fn connector(settings: &ConnectorSettings, seed: u64, at: Timestamp) -> Result<Self> {
-        Self::connector_admitted_by(&admission::catalogue()?, settings, seed, at)
+        Self::connector_registered(settings, &RegistrationRegistry::shipped(), seed, at)
     }
 
-    /// The same opening against a caller-supplied licensing catalogue.
+    /// Open a catalogued connector with the owner's registration records.
+    pub fn connector_registered(
+        settings: &ConnectorSettings,
+        registrations: &RegistrationRegistry,
+        seed: u64,
+        at: Timestamp,
+    ) -> Result<Self> {
+        Self::connector_admitted_by_registered(
+            &admission::catalogue()?,
+            registrations,
+            settings,
+            seed,
+            at,
+        )
+    }
+
+    /// The same opening against a caller-supplied licensing catalogue and
+    /// the shipped registration registry.
     ///
-    /// The gate runs here, before anything is constructed and before any
-    /// socket is touched: the rule is evaluation *then* use, and putting the
-    /// call inside the constructor makes the ordering a property of the code
-    /// path rather than of the caller's memory. Split from [`Self::connector`]
-    /// so a test can hold the gate against an entry the real catalogue must
-    /// never contain and prove that no socket opens.
+    /// Split from [`Self::connector`] so a test can hold the gate against an
+    /// entry the real catalogue must never contain and prove that no socket
+    /// opens.
     pub fn connector_admitted_by(
         entries: &[CatalogueEntry],
         settings: &ConnectorSettings,
         seed: u64,
         at: Timestamp,
     ) -> Result<Self> {
+        Self::connector_admitted_by_registered(
+            entries,
+            &RegistrationRegistry::shipped(),
+            settings,
+            seed,
+            at,
+        )
+    }
+
+    /// The full gate against a caller-supplied catalogue and registry.
+    ///
+    /// Both gates run here, before anything is constructed and before any
+    /// socket is touched: the rule is evaluation *then* use, and putting the
+    /// call inside the constructor makes the ordering a property of the code
+    /// path rather than of the caller's memory. The licensing question is
+    /// asked first and the registration question second, inside
+    /// `admit_from_registered`, so a source whose terms are unread is
+    /// refused for that and only a source whose terms admit it is asked who
+    /// holds its account.
+    pub fn connector_admitted_by_registered(
+        entries: &[CatalogueEntry],
+        registrations: &RegistrationRegistry,
+        settings: &ConnectorSettings,
+        seed: u64,
+        at: Timestamp,
+    ) -> Result<Self> {
         let class = shipped_class(&settings.source_id)?;
-        let decision = admission::admit_from(entries, &settings.source_id, class, at)?;
+        let decision = admission::admit_from_registered(
+            entries,
+            registrations,
+            &settings.source_id,
+            class,
+            at,
+        )?;
         let feed = ConnectorFeed::open(&settings.source_id, &settings.base_url, seed, at)?;
         Ok(Self::Connector {
             feed: Box::new(feed),
-            decision,
+            decision: Box::new(decision),
+            settings: settings.clone(),
+            seed,
         })
+    }
+
+    /// The source this feed's connector opens, or `None` for a tape.
+    ///
+    /// Read by the approval route to decide whether a registration just
+    /// recorded is about the source this process actually senses. A source
+    /// that is not the configured one has no connector here to re-open, and
+    /// saying so is not the same as saying the re-admission failed.
+    pub fn connector_source(&self) -> Option<&str> {
+        match self {
+            Self::Tape(_) => None,
+            Self::Connector { settings, .. } => Some(&settings.source_id),
+        }
+    }
+
+    /// Re-run the admission gate against `registrations` and replace this
+    /// connector with the one it admits.
+    ///
+    /// The failure this closes: the gate ran once, at start-up, against the
+    /// registry the deployment's configuration stood for. An operator who
+    /// approved a registration afterwards moved the registry and the event
+    /// log and nothing else — the process went on refusing the source it had
+    /// refused at boot, and the only cure was a restart nobody was told to
+    /// make.
+    ///
+    /// Both gates are re-run, not just the registration one: the licensing
+    /// catalogue is read again and the source is re-opened through it, so a
+    /// registration can never be the thing that admits a source whose terms
+    /// still refuse it. `self` is left exactly as it was on any refusal — the
+    /// replacement is the last step and a feed that failed to re-open keeps
+    /// serving the cycle it was already serving.
+    pub fn readmit(&mut self, registrations: &RegistrationRegistry, at: Timestamp) -> Result<()> {
+        let (settings, seed) = match self {
+            Self::Tape(_) => {
+                return Err(Error::invalid(
+                    "this process senses a tape, not a connector, so there is no source to \
+                     re-admit; a tape carries its own records and no registration gates it",
+                ));
+            }
+            Self::Connector { settings, seed, .. } => (settings.clone(), *seed),
+        };
+        *self = Self::connector_registered(&settings, registrations, seed, at)?;
+        Ok(())
     }
 
     fn adapter_mut(&mut self) -> &mut dyn DataAdapter {
@@ -264,7 +434,7 @@ impl ApiFeed {
     pub fn licensing_decision(&self) -> Option<&LicensingDecision> {
         match self {
             Self::Tape(_) => None,
-            Self::Connector { decision, .. } => Some(decision),
+            Self::Connector { decision, .. } => Some(decision.as_ref()),
         }
     }
 
@@ -336,7 +506,7 @@ impl ApiFeed {
                     tape.periods()
                 )
             }
-            Self::Connector { feed, decision } => format!(
+            Self::Connector { feed, decision, .. } => format!(
                 "connector {} ({}), {}; licensing: {}",
                 feed.descriptor().name,
                 feed.descriptor().provider,

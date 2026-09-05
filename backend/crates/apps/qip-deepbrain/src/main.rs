@@ -184,7 +184,9 @@ fn run() -> Result<()> {
     // refusal and not an empty universe.
     let catalogue = load_universe(&config.storage, started)?;
     // The language model the organisation narrates through (ADR 0037): the
-    // hosted adapter first when the configuration names one, and the
+    // hosted adapter first when the configuration names one *and* the
+    // preconditions in `language.rs` are met — a provider pinned, its terms
+    // attested by a named operator, a credential resolved — and the
     // deterministic model in every case. Assembled here, in the one root
     // permitted to, and handed to the kernel rather than reached for inside
     // it, so the kernel's own constructor stays the deterministic one every
@@ -259,6 +261,8 @@ fn run() -> Result<()> {
     );
     // Which model is active, by name, and never the credential: the adapter's
     // token redacts in Debug and `describe` prints only what was configured.
+    // When a provider was named and withheld, this line is where an operator
+    // learns which precondition is missing and which variable supplies it.
     println!("  language model:   {}", language_model.describe());
     println!(
         "  universe:         {}; sector and country buckets are fed from it. Note ADR 0027: under the \

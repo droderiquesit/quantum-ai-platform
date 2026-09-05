@@ -52,6 +52,20 @@ still answers the JSON health body. The series and what each is keyed on:
   computed.
 - `qip_edge_policy_sequence` — the payload the cell has *applied*, for
   correlation against what the centre believes it published.
+- `qip_edge_region_share_bound` and `qip_edge_region_share_applied_total{outcome}`
+  — the ADR 0039 share as the cell's ledger actually took it, recorded at the
+  seam where a share is applied or re-derived (`qip-edge/src/cell.rs`,
+  `apply_region_share` and `rederive_region_share`). The gauge carries the
+  bound the ledger returned, not the share that was offered, because the
+  operator's ceiling may have capped it. `outcome` is
+  `qip_edge::telemetry::RegionShareOutcome`: `applied`, `rederived`,
+  `refused_lower_sequence`, `withheld`. Four rather than one because a bound
+  that did not move reads identically whether the centre narrowed the cell,
+  refused a replay, or has stopped saying anything about capital — and the
+  last of those is an outage wearing a plan's clothes. `withheld` is recorded
+  only by a cell that holds a table; a refusal the cell cannot attribute to
+  the sequence is journaled under the `region_share` gate and deliberately
+  left off the series rather than filed under a cause nobody established.
 - `qip_edge_work_passes_total`, `qip_edge_fills_confirmed_total{venue}` (a
   fill the venue reported, and nothing else — `cb79b46`),
   `qip_edge_orders_expired_total{venue}` (a rested order withdrawn when its

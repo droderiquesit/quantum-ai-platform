@@ -8,7 +8,7 @@ use qip_financial::intelligence::{
 };
 use qip_financial::quality::{DataQuality, Provenance};
 use qip_market::bar::{Bar, Interval};
-use qip_world_model::causal::{CausalEdge, CausalGraph, Mechanism};
+use qip_world_model::causal::{CausalEdge, CausalGraph, Mechanism, SupportingClaim};
 use qip_world_model::features::{Feature, FeatureStore, FeatureValue};
 use qip_world_model::graph::{Fact, KnowledgeGraph, Node, NodeKind};
 use qip_world_model::relationship::{Relationship, RelationshipKind};
@@ -439,12 +439,13 @@ fn a_causal_claim_recorded_later_is_invisible_earlier() {
 }
 
 #[test]
-fn absorbing_a_claim_moves_the_causal_graphs_last_update_and_nothing_else_does() {
+fn absorbing_a_claim_moves_the_causal_graphs_last_update_and_no_query_does() {
     // The failure this prevents: §6.2 row 2 read "fresh by construction" at
     // the centre because nothing recorded when the graph last absorbed a
     // claim, so a graph nobody had re-estimated in a year sized like one
-    // re-estimated this morning. The fact is now written at the seam —
-    // `add` — from the edge's own `recorded_at`, and only there.
+    // re-estimated this morning. The fact is now written at the seams where
+    // evidence lands — `add`, from the edge's own `recorded_at`, and
+    // `reestimate`, only when it used a claim — and at no other.
     let mut causal = CausalGraph::new();
     // Premise: a graph that has absorbed nothing reports nothing, and no
     // query against it invents an instant.
@@ -500,6 +501,410 @@ fn absorbing_a_claim_moves_the_causal_graphs_last_update_and_nothing_else_does()
         Some(days_ago(1)),
         "a query moved the graph's last update"
     );
+}
+
+// --- re-estimating the causal graph ------------------------------------------
+
+/// The horizon the centre judges the causal-graph row on, restated here so the
+/// tests below drive `reestimate` with the same window `absorb_causal_support`
+/// uses in production.
+fn causal_horizon() -> Duration {
+    qip_contracts::degradation::CAUSAL_GRAPH_HORIZON
+}
+
+#[test]
+fn a_re_estimation_from_claims_inside_the_horizon_moves_the_last_update_and_the_strength() {
+    // The failure this prevents: the graph carried whichever strength arrived
+    // first, for ever, because nothing re-estimated it from what the model
+    // kept absorbing — so the centre either propagated a year-old number or
+    // narrowed on row 2 with no path back to full size.
+    let mut causal = CausalGraph::new();
+    causal.add(
+        CausalEdge::new(
+            "kestrel",
+            "northwind",
+            Mechanism::InputCost,
+            0.30,
+            Duration::from_days(7),
+            days_ago(200),
+        )
+        .with_evidence(vec!["filing:northwind-10k".into()]),
+    );
+    // Premise: the graph is exactly as old as its only claim, and that claim
+    // is past the horizon — so any freshness observed below was produced by
+    // the re-estimation and not carried in by the fixture.
+    assert_eq!(causal.last_updated(), Some(days_ago(200)));
+    assert!(now().since(days_ago(200)) > causal_horizon());
+
+    let report = causal
+        .reestimate(
+            vec![
+                SupportingClaim::new(
+                    "kestrel",
+                    "northwind",
+                    Mechanism::InputCost,
+                    0.50,
+                    days_ago(10),
+                )
+                .with_evidence(vec!["filing:northwind-10q".into()]),
+                SupportingClaim::new(
+                    "kestrel",
+                    "northwind",
+                    Mechanism::InputCost,
+                    0.40,
+                    days_ago(3),
+                )
+                .with_evidence(vec!["research:input-cost-note".into()]),
+            ],
+            causal_horizon(),
+            now(),
+        )
+        .expect("two in-horizon claims re-estimate");
+
+    assert!(report.refreshed);
+    assert_eq!(report.claims_considered, 2);
+    assert_eq!(report.claims_used, 2);
+    assert_eq!(
+        causal.last_updated(),
+        Some(now()),
+        "a re-estimation that used two claims left the freshness fact where it was"
+    );
+    assert_eq!(report.updated.len(), 1);
+    assert!(approx_eq(report.updated[0].previous, 0.30, 1e-12));
+    assert!(
+        approx_eq(report.updated[0].updated, 0.45, 1e-12),
+        "the strength is the mean of the in-horizon claims, not the last one \
+         or the prior: {}",
+        report.updated[0].updated
+    );
+    assert_eq!(report.updated[0].claims, 2);
+    assert_eq!(report.updated[0].newest_claim, days_ago(3));
+    assert!(report.decayed.is_empty());
+    assert!(report.unmatched.is_empty());
+
+    let edge = &causal.edges()[0];
+    assert!(approx_eq(edge.strength, 0.45, 1e-12));
+    assert!(!edge.is_decayed());
+    // The evidence that moved the number travels with it, so a strength the
+    // platform sizes against names what re-measured it.
+    let evidence: Vec<&str> = edge.evidence.iter().map(String::as_str).collect();
+    assert_eq!(
+        evidence,
+        [
+            "filing:northwind-10k",
+            "filing:northwind-10q",
+            "research:input-cost-note"
+        ]
+    );
+    // And the re-estimated edge is not readable before the evidence that
+    // produced it. Leaving `recorded_at` at the original instant would make
+    // the new strength visible to a point-in-time query three days before the
+    // claim existed — leakage no backtest can see, because the record itself
+    // would claim to have been available.
+    assert!(
+        causal.outgoing("kestrel", days_ago(4)).is_empty(),
+        "the re-estimated strength was readable before its newest claim"
+    );
+    assert_eq!(causal.outgoing("kestrel", days_ago(3)).len(), 1);
+}
+
+#[test]
+fn a_re_estimation_with_only_claims_outside_the_horizon_leaves_the_fact_and_marks_decay() {
+    // The failure this prevents: a re-estimation that used nothing refreshing
+    // the graph anyway. Row 2 would then read fresh because somebody asked a
+    // question, and the centre would size at full budget against relationships
+    // no evidence inside the quarter supports.
+    let mut causal = CausalGraph::new();
+    causal.add(CausalEdge::new(
+        "kestrel",
+        "northwind",
+        Mechanism::InputCost,
+        0.30,
+        Duration::from_days(7),
+        days_ago(200),
+    ));
+    // Premise: there *is* a claim, and it names the link the graph holds — it
+    // is simply older than the horizon. A test offering no claim at all would
+    // pass against an implementation that refreshed on any claim it was given.
+    let claims = vec![SupportingClaim::new(
+        "kestrel",
+        "northwind",
+        Mechanism::InputCost,
+        0.90,
+        days_ago(120),
+    )];
+    assert!(now().since(days_ago(120)) > causal_horizon());
+
+    let report = causal
+        .reestimate(claims.clone(), causal_horizon(), now())
+        .expect("an out-of-horizon claim is not a refusal");
+
+    assert!(!report.refreshed);
+    assert_eq!(report.claims_considered, 1);
+    assert_eq!(report.claims_used, 0);
+    assert_eq!(
+        causal.last_updated(),
+        Some(days_ago(200)),
+        "a re-estimation that used nothing refreshed the freshness fact"
+    );
+    assert!(report.updated.is_empty());
+    assert!(
+        approx_eq(causal.edges()[0].strength, 0.30, 1e-12),
+        "a claim outside the horizon moved the strength"
+    );
+
+    // Marked and reported — and still in the graph, still propagating. A link
+    // nobody has re-evidenced has not been disproved.
+    assert_eq!(report.decayed.len(), 1);
+    assert_eq!(report.decayed[0].cause, "kestrel");
+    assert_eq!(report.decayed[0].effect, "northwind");
+    assert_eq!(report.decayed[0].recorded_at, days_ago(200));
+    assert_eq!(report.decayed[0].previously_marked, None);
+    assert!(causal.edges()[0].is_decayed());
+    assert_eq!(causal.edges()[0].decayed_at, Some(now()));
+    assert_eq!(causal.len(), 1, "a decayed edge was dropped from the graph");
+    assert_eq!(causal.outgoing("kestrel", now()).len(), 1);
+
+    // Repeating it reports the mark as already made, so a caller journalling
+    // the transition journals it once rather than on every pass.
+    let again = causal
+        .reestimate(claims, causal_horizon(), now())
+        .expect("re-estimating twice is not a refusal");
+    assert_eq!(again.decayed[0].previously_marked, Some(now()));
+}
+
+#[test]
+fn a_claim_naming_a_link_the_graph_does_not_hold_is_reported_and_invents_no_edge() {
+    // A causal edge is a claim with a mechanism, a lag, a confidence and
+    // evidence behind it, asserted deliberately through `add`. Manufacturing
+    // one from a strength reading is how a correlation becomes a thesis.
+    let mut causal = CausalGraph::new();
+    causal.add(CausalEdge::new(
+        "kestrel",
+        "northwind",
+        Mechanism::InputCost,
+        0.30,
+        Duration::from_days(7),
+        days_ago(10),
+    ));
+    // Premise: the graph holds exactly one link, and the claim below is
+    // in-horizon — so nothing but the missing edge stops it being used.
+    assert_eq!(causal.len(), 1);
+
+    let report = causal
+        .reestimate(
+            vec![SupportingClaim::new(
+                "zephyr",
+                "atlas",
+                Mechanism::DiscountRate,
+                0.50,
+                days_ago(1),
+            )],
+            causal_horizon(),
+            now(),
+        )
+        .expect("an unmatched claim is not a refusal");
+
+    assert_eq!(causal.len(), 1, "a supporting claim invented an edge");
+    assert_eq!(report.unmatched.len(), 1);
+    assert_eq!(report.unmatched[0].cause, "zephyr");
+    assert_eq!(report.claims_used, 0);
+    assert!(!report.refreshed);
+    assert_eq!(
+        causal.last_updated(),
+        Some(days_ago(10)),
+        "a claim matching nothing refreshed the graph"
+    );
+    // The link the graph does hold had no claim of its own, so it decayed.
+    assert_eq!(report.decayed.len(), 1);
+    assert_eq!(report.decayed[0].effect, "northwind");
+}
+
+#[test]
+fn a_claim_from_the_future_or_outside_zero_to_one_is_refused_and_changes_nothing() {
+    // Refuse rather than guess: a strength clamped into range, or a claim
+    // stamped after the clock, is a producer's bug that would survive as a
+    // number the platform sizes against. And the refusal is taken before any
+    // edge is touched, so a rejected batch leaves the graph exactly as it was.
+    let build = || {
+        let mut causal = CausalGraph::new();
+        causal.add(CausalEdge::new(
+            "kestrel",
+            "northwind",
+            Mechanism::InputCost,
+            0.30,
+            Duration::from_days(7),
+            days_ago(200),
+        ));
+        causal
+    };
+    let good = || {
+        SupportingClaim::new(
+            "kestrel",
+            "northwind",
+            Mechanism::InputCost,
+            0.50,
+            days_ago(5),
+        )
+    };
+    // Premise: the same graph and the same first claim are accepted when the
+    // second one is sound, so the refusals below are about the second claim.
+    let mut accepted = build();
+    let report = accepted
+        .reestimate(vec![good(), good()], causal_horizon(), now())
+        .expect("two sound claims re-estimate");
+    assert_eq!(report.claims_used, 2);
+
+    for bad in [
+        SupportingClaim::new(
+            "kestrel",
+            "northwind",
+            Mechanism::InputCost,
+            1.5,
+            days_ago(5),
+        ),
+        SupportingClaim::new(
+            "kestrel",
+            "northwind",
+            Mechanism::InputCost,
+            f64::NAN,
+            days_ago(5),
+        ),
+        SupportingClaim::new(
+            "kestrel",
+            "northwind",
+            Mechanism::InputCost,
+            0.50,
+            now().saturating_add(Duration::from_days(1)),
+        ),
+    ] {
+        let mut causal = build();
+        assert!(
+            causal
+                .reestimate(vec![good(), bad], causal_horizon(), now())
+                .is_err(),
+            "an unusable claim was absorbed rather than refused"
+        );
+        assert_eq!(
+            causal.last_updated(),
+            Some(days_ago(200)),
+            "a refused re-estimation moved the freshness fact"
+        );
+        assert!(
+            approx_eq(causal.edges()[0].strength, 0.30, 1e-12),
+            "a refused re-estimation applied the claim that preceded the bad one"
+        );
+        assert!(!causal.edges()[0].is_decayed());
+    }
+
+    // A horizon nothing can be inside is refused too, rather than silently
+    // marking every link in the graph decayed.
+    let mut causal = build();
+    assert!(
+        causal
+            .reestimate(vec![good()], Duration::ZERO, now())
+            .is_err()
+    );
+    assert!(!causal.edges()[0].is_decayed());
+}
+
+#[test]
+fn two_re_estimations_over_the_same_claims_produce_the_same_report() {
+    // A replay that reorders is not a replay. The report reaches an operator
+    // and the strengths reach a size, so both must depend on the claims and
+    // not on the order they arrived in or on any hash seed.
+    let build = || {
+        let mut causal = CausalGraph::new();
+        // Absorbed in an order that is deliberately not the links' own order,
+        // so a report that came out in absorption order would differ from one
+        // in key order below. Do not tidy this into alphabetical order.
+        for (cause, effect, mechanism, strength) in [
+            ("northwind", "vantage", Mechanism::SupplyChain, 0.45),
+            ("kestrel", "northwind", Mechanism::InputCost, 0.30),
+            (
+                "northwind",
+                "meridian",
+                Mechanism::CompetitiveSubstitution,
+                0.15,
+            ),
+        ] {
+            causal.add(CausalEdge::new(
+                cause,
+                effect,
+                mechanism,
+                strength,
+                Duration::from_days(3),
+                days_ago(150),
+            ));
+        }
+        causal
+    };
+    // Deliberately in neither key order nor edge order, so a report that
+    // merely echoed its input would come out differently below.
+    let claims = vec![
+        SupportingClaim::new(
+            "northwind",
+            "vantage",
+            Mechanism::SupplyChain,
+            0.60,
+            days_ago(5),
+        )
+        .with_evidence(vec!["e-b".into()]),
+        SupportingClaim::new(
+            "zephyr",
+            "atlas",
+            Mechanism::DiscountRate,
+            0.50,
+            days_ago(4),
+        )
+        .with_evidence(vec!["e-x".into()]),
+        SupportingClaim::new(
+            "kestrel",
+            "northwind",
+            Mechanism::InputCost,
+            0.20,
+            days_ago(30),
+        )
+        .with_evidence(vec!["e-a".into()]),
+        SupportingClaim::new(
+            "northwind",
+            "vantage",
+            Mechanism::SupplyChain,
+            0.50,
+            days_ago(20),
+        )
+        .with_evidence(vec!["e-c".into()]),
+    ];
+
+    let mut first = build();
+    let mut second = build();
+    let one = first
+        .reestimate(claims.clone(), causal_horizon(), now())
+        .expect("the first run re-estimates");
+    let two = second
+        .reestimate(claims.clone(), causal_horizon(), now())
+        .expect("the second run re-estimates");
+
+    // Premise: the report exercises all three outcomes, so equality below is
+    // not the equality of two empty reports.
+    assert_eq!(one.updated.len(), 2);
+    assert_eq!(one.decayed.len(), 1);
+    assert_eq!(one.unmatched.len(), 1);
+    assert_eq!(one, two);
+    assert_eq!(first.edges(), second.edges());
+
+    // And the order is the link's, not the arrival's: the vantage claim
+    // arrived first and reports second.
+    let updated: Vec<(&str, &str)> = one
+        .updated
+        .iter()
+        .map(|u| (u.cause.as_str(), u.effect.as_str()))
+        .collect();
+    assert_eq!(
+        updated,
+        [("kestrel", "northwind"), ("northwind", "vantage")]
+    );
+    assert!(approx_eq(one.updated[1].updated, 0.55, 1e-12));
 }
 
 #[test]
@@ -709,6 +1114,110 @@ fn a_shock_at_the_supplier_reaches_the_customers_customer() {
     assert_eq!(
         strongest.target, "ent-northwind",
         "the direct effect is the largest"
+    );
+}
+
+#[test]
+fn the_demo_seed_reads_stale_until_fresh_support_is_absorbed_and_then_reads_fresh() {
+    // The failure this closes: the demo seed backdates every claim by a year,
+    // so the centre's §6.2 row 2 read stale on it — correctly, and with no way
+    // back. Nothing re-estimated the graph from what the model kept absorbing,
+    // so the row could only ever narrow. Judged here by the contract's own
+    // assessment rather than by a rule restated in this test, because two
+    // claims about the same fact disagree and the louder one wins.
+    use qip_contracts::degradation::{CAUSAL_GRAPH_HORIZON, CausalGraphFreshness, Freshness};
+
+    let (mut model, _) = seeded_model();
+    // Premise: the seed absorbed claims, all of them older than the horizon,
+    // and the row reads stale before anything below runs.
+    let seeded_at = model
+        .causal()
+        .last_updated()
+        .expect("the demo seed absorbed a claim");
+    assert!(now().since(seeded_at) > CAUSAL_GRAPH_HORIZON);
+    assert_eq!(model.causal().len(), 4);
+    assert_eq!(
+        model.causal_support().len(),
+        4,
+        "the seed's claims were not retained as their own supporting evidence"
+    );
+    assert_eq!(
+        CausalGraphFreshness::assess(model.causal().last_updated(), CAUSAL_GRAPH_HORIZON, now())
+            .expect("the row reads")
+            .freshness(),
+        Freshness::Stale
+    );
+
+    // A new filing re-measures one link. It is support, not a second edge:
+    // two edges for one link would leave `propagate` picking the stronger
+    // rather than the newer.
+    let report = model
+        .absorb_causal_support(
+            SupportingClaim::new(
+                "ent-kestrel",
+                "ent-northwind",
+                Mechanism::InputCost,
+                0.42,
+                days_ago(2),
+            )
+            .with_evidence(vec!["filing:northwind-10q-input-costs".into()]),
+            now(),
+        )
+        .expect("the support is absorbed");
+
+    assert!(report.refreshed);
+    assert_eq!(
+        report.claims_considered, 5,
+        "the four seeded claims and the new one were all considered"
+    );
+    assert_eq!(
+        report.claims_used, 1,
+        "only the claim inside the horizon may be used"
+    );
+    assert_eq!(model.causal().len(), 4, "re-estimation added an edge");
+    assert_eq!(
+        report.decayed.len(),
+        3,
+        "the three links nothing re-evidenced are reported, not dropped"
+    );
+
+    assert_eq!(
+        CausalGraphFreshness::assess(model.causal().last_updated(), CAUSAL_GRAPH_HORIZON, now())
+            .expect("the row reads")
+            .freshness(),
+        Freshness::Fresh,
+        "a link re-estimated from evidence two days old still read stale"
+    );
+    assert_eq!(
+        CausalGraphFreshness::assess(model.causal().last_updated(), CAUSAL_GRAPH_HORIZON, now())
+            .expect("the row reads"),
+        CausalGraphFreshness::Fresh {
+            last_updated: now()
+        }
+    );
+
+    // The graph propagates the re-estimated number, and the journal says so,
+    // so the discovery stage sees the strength move.
+    let edge = model
+        .causal()
+        .outgoing("ent-kestrel", now())
+        .into_iter()
+        .find(|e| e.effect == "ent-northwind")
+        .expect("the seeded link survives its re-estimation")
+        .clone();
+    assert!(
+        approx_eq(edge.strength, 0.42, 1e-12),
+        "the graph still propagates the seed's year-old strength"
+    );
+    let revised: Vec<&str> = model
+        .changes()
+        .iter()
+        .filter(|c| c.kind == ChangeKind::BeliefRevised)
+        .map(|c| c.subject.as_str())
+        .collect();
+    assert!(
+        revised.contains(&"ent-kestrel->ent-northwind"),
+        "the re-estimated strength was not journalled: {revised:?}"
     );
 }
 

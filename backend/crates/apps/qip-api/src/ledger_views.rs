@@ -1,5 +1,16 @@
-//! The JSON shapes of the treasury read surface: `/ledger/users`, `/wallet`,
-//! `/corridors` and `/transfer-gate`.
+//! The JSON shapes of the treasury surface: the four read routes
+//! `/ledger/users`, `/wallet`, `/corridors` and `/transfer-gate`, and the one
+//! operator route beside them, `POST /ledger/users/{user}/eligibility`.
+//!
+//! The operator route is not an exception to what the rest of this file says
+//! about the layer's authority. It decides nothing itself: it screens a body,
+//! resolves the user against the mandate registry, and hands
+//! `Platform::decide_eligibility` an identity built from the authenticated
+//! session — the same intent-raising shape the kill switch and the venue
+//! approval take. It answers the user's `/ledger/users` row, so what an
+//! operator reads back is the ledger's own answer and not the route's claim
+//! about it. Nothing here can move capital: an eligibility record is a
+//! precondition the ledger checks before a funding, never a transfer.
 //!
 //! The contract these serialise to is written out in `ROUTES-LEDGER.md`
 //! beside the crate manifest, and a page is built against that file rather
@@ -221,10 +232,39 @@ pub fn ledger_users(platform: &Platform, now: Timestamp) -> Result<LedgerUsersVi
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
+    Ok(LedgerUsersView {
+        posture: POSTURE,
+        served_at: now.to_rfc3339(),
+        evaluated_as_role: EVALUATED_AS_ROLE,
+        products,
+        fills_journalled: ledger.fills_journalled(),
+        users: user_rows(platform, now, None)?,
+    })
+}
+
+/// The rows `/ledger/users` lists, or the one row for `only`.
+///
+/// One builder for both callers so a row an operator route answers with and
+/// the same row in the list cannot come to differ — which is the whole point
+/// of answering the row rather than a bespoke acknowledgement. Every capital
+/// type stays inside this body: the application layer holds no edge to
+/// `qip-capital` (`api_boundary.rs` pins it), so nothing here may appear in a
+/// signature, and `only` is therefore the user id as text rather than the
+/// ledger's own key type.
+fn user_rows(
+    platform: &Platform,
+    now: Timestamp,
+    only: Option<&str>,
+) -> Result<Vec<UserView>, String> {
+    let ledger = platform.user_ledger();
     let entitlements = platform.viewer_entitlements(now);
 
     let mut users = Vec::with_capacity(ledger.mandates().len());
-    for (user, mandate) in ledger.mandates() {
+    for (user, mandate) in ledger
+        .mandates()
+        .iter()
+        .filter(|(user, _)| only.is_none_or(|wanted| user.as_str() == wanted))
+    {
         let permitted = serde_json::to_value(mandate.permitted_families())
             .map_err(|error| error.to_string())?;
         let permitted_families = PermittedFamiliesView {
@@ -315,13 +355,225 @@ pub fn ledger_users(platform: &Platform, now: Timestamp) -> Result<LedgerUsersVi
             entitlements_note,
         });
     }
-    Ok(LedgerUsersView {
+    Ok(users)
+}
+
+// --- POST /ledger/users/{user}/eligibility ----------------------------------
+
+/// The sentence every unknown key on the eligibility body is refused with.
+///
+/// It names the fields and then answers the mistake the shape invites: the
+/// blueprint lists `can_withdraw` beside `can_invest`, and a caller who sends
+/// it is a caller who believes this platform has a withdrawal path. A key
+/// silently ignored would let them keep believing it, which is the failure
+/// that matters here — not the malformed request.
+pub const NO_WITHDRAWAL_FIELD: &str = "an eligibility decision reads `decision` and `reason`, \
+    with `verified_at`, `can_invest`, `jurisdiction` and `expires_at` on a grant, and nothing \
+    else. There is no withdrawal field on an eligibility record and there is no route that \
+    could read one: ADR 0021 refuses the path by which capital leaves the platform";
+
+/// What `POST /ledger/users/{user}/eligibility` accepts.
+///
+/// Parsed by hand from a JSON object rather than derived, for the reason the
+/// registration approval's body is: a derived refusal quotes the offending
+/// value and names a Rust type, and a refusal here has to name the *field* a
+/// person has to fix. Unknown keys are refused rather than ignored — see
+/// [`NO_WITHDRAWAL_FIELD`].
+///
+/// The decision is carried as the JSON the kernel's own decision type
+/// deserialises from, rebuilt here from validated pieces rather than passed
+/// through from the caller's object, so no key this route does not read can
+/// reach the ledger even by accident.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EligibilityRequest {
+    decision: serde_json::Value,
+    reason: String,
+}
+
+impl EligibilityRequest {
+    /// The keys a grant may carry, and the only ones.
+    const GRANTED_FIELDS: [&'static str; 6] = [
+        "decision",
+        "verified_at",
+        "can_invest",
+        "jurisdiction",
+        "expires_at",
+        "reason",
+    ];
+    /// The keys a revocation may carry. A revocation states no terms: it
+    /// withdraws the ones on record, and a body restating them would be a
+    /// second claim about what was verified.
+    const REVOKED_FIELDS: [&'static str; 2] = ["decision", "reason"];
+
+    pub fn parse(body: &str) -> Result<Self, String> {
+        let value: serde_json::Value = serde_json::from_str(body).map_err(|_| {
+            "the body is not JSON; send {\"decision\": \"granted\", \"verified_at\": <RFC 3339>, \
+             \"can_invest\": <bool>, \"jurisdiction\": \"GB\", \"expires_at\": <RFC 3339>, \
+             \"reason\": \"<why>\"} or {\"decision\": \"revoked\", \"reason\": \"<why>\"}"
+                .to_string()
+        })?;
+        let Some(object) = value.as_object() else {
+            return Err(
+                "the body must be a JSON object carrying `decision` and `reason`".to_string(),
+            );
+        };
+        let decision = Self::text(object, "decision")?;
+        let permitted: &[&str] = match decision.as_str() {
+            "granted" => &Self::GRANTED_FIELDS,
+            "revoked" => &Self::REVOKED_FIELDS,
+            _ => {
+                return Err(
+                    "`decision` must be `granted` or `revoked`; an operator either verified \
+                     this user or withdrew a verification, and there is no third thing to record"
+                        .to_string(),
+                );
+            }
+        };
+        if let Some(position) = object
+            .keys()
+            .position(|key| !permitted.contains(&key.as_str()))
+        {
+            // Named by position, never quoted, for the reason the venue
+            // approval's refusal is: a refusal that echoed what a caller sent
+            // publishes it, to the response, to stderr and to whichever
+            // ticket the line is copied into.
+            return Err(format!(
+                "the body's key at position {} is not one this route reads; {NO_WITHDRAWAL_FIELD}",
+                position + 1
+            ));
+        }
+        let reason = Self::text(object, "reason")?;
+        // Built from pieces this function validated, never from `object`.
+        let decision = if decision == "revoked" {
+            serde_json::json!({ "decision": "revoked", "reason": reason })
+        } else {
+            serde_json::json!({
+                "decision": "granted",
+                "eligibility": {
+                    "verified_at": Self::instant(object, "verified_at")?,
+                    "can_invest": Self::flag(object, "can_invest")?,
+                    "jurisdiction": Self::text(object, "jurisdiction")?,
+                    "expires_at": Self::instant(object, "expires_at")?,
+                }
+            })
+        };
+        Ok(Self { decision, reason })
+    }
+
+    /// The decision as the kernel's own type.
+    ///
+    /// Generic so that the type is inferred from
+    /// `Platform::decide_eligibility`'s own signature and this crate never
+    /// names it: the application layer ships no edge to `qip-capital`
+    /// (`api_boundary.rs`), and every rule the type keeps — a two-letter ISO
+    /// 3166 jurisdiction, an expiry after the verification — is enforced by
+    /// the type itself rather than restated here, where a second copy would
+    /// be free to drift.
+    pub fn decision<D: serde::de::DeserializeOwned>(&self) -> Result<D, String> {
+        serde_json::from_value(self.decision.clone())
+            .map_err(|error| format!("the eligibility terms were refused: {error}"))
+    }
+
+    /// What the audit trail records about why this decision was taken. The
+    /// kernel holds it to a length of its own; this only refuses a blank.
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    /// A non-blank string field, or a refusal naming the field.
+    fn text(
+        object: &serde_json::Map<String, serde_json::Value>,
+        field: &str,
+    ) -> Result<String, String> {
+        let Some(value) = object.get(field) else {
+            return Err(format!("the body has no `{field}`; it is required"));
+        };
+        let Some(text) = value.as_str() else {
+            return Err(format!("`{field}` must be a JSON string"));
+        };
+        if text.trim().is_empty() {
+            return Err(format!(
+                "`{field}` is blank; an eligibility decision nobody can read back is a decision \
+                 nobody can be asked about"
+            ));
+        }
+        Ok(text.to_string())
+    }
+
+    /// A boolean field, refused rather than coerced: `"true"` and `1` are a
+    /// caller who has not decided, and clamping either to a verdict about
+    /// whether a person may have capital put to work is not this route's to
+    /// do.
+    fn flag(
+        object: &serde_json::Map<String, serde_json::Value>,
+        field: &str,
+    ) -> Result<bool, String> {
+        match object.get(field) {
+            None => Err(format!(
+                "the body has no `{field}`; it is required on a grant"
+            )),
+            Some(serde_json::Value::Bool(flag)) => Ok(*flag),
+            Some(_) => Err(format!(
+                "`{field}` must be a JSON boolean, `true` or `false`, and not a string or a number"
+            )),
+        }
+    }
+
+    /// An RFC 3339 instant, re-rendered from the parsed value so that what
+    /// reaches the ledger is the instant this route understood and not the
+    /// text it was sent.
+    fn instant(
+        object: &serde_json::Map<String, serde_json::Value>,
+        field: &str,
+    ) -> Result<String, String> {
+        let text = Self::text(object, field)?;
+        match Timestamp::parse_rfc3339(&text) {
+            Some(at) => Ok(at.to_rfc3339()),
+            None => Err(format!(
+                "`{field}` is not an RFC 3339 instant in UTC, such as \
+                 \"2025-10-09T08:53:20.000Z\""
+            )),
+        }
+    }
+}
+
+/// What the eligibility route answers: the user's row, exactly as
+/// `/ledger/users` renders it, after the registry adopted the decision.
+///
+/// The row rather than an acknowledgement, because an acknowledgement is the
+/// route's claim about what it did and the row is the ledger's. The two would
+/// disagree the day a decision was journalled and the registry refused it,
+/// and it is the ledger's answer an operator needs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct EligibilityDecisionView {
+    pub posture: &'static str,
+    pub served_at: String,
+    pub user: UserView,
+}
+
+/// Build the answer to an eligibility decision: the one `/ledger/users` row
+/// for `user`, read back from the platform after the decision was applied.
+pub fn decided_eligibility(
+    platform: &Platform,
+    user: &str,
+    now: Timestamp,
+) -> Result<EligibilityDecisionView, String> {
+    let mut rows = user_rows(platform, now, Some(user))?;
+    if rows.len() != 1 {
+        // Unreachable through the route, which resolves the user against the
+        // mandate registry before it decides anything. Answered rather than
+        // indexed: a panic here would poison the lock every other route waits
+        // on.
+        return Err(format!(
+            "the ledger holds {} rows for `{user}` after the decision was applied; it must hold \
+             exactly one",
+            rows.len()
+        ));
+    }
+    Ok(EligibilityDecisionView {
         posture: POSTURE,
         served_at: now.to_rfc3339(),
-        evaluated_as_role: EVALUATED_AS_ROLE,
-        products,
-        fills_journalled: ledger.fills_journalled(),
-        users,
+        user: rows.remove(0),
     })
 }
 

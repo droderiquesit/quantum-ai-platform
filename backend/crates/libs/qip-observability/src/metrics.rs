@@ -850,6 +850,34 @@ pub mod names {
     /// A fill is booked only from a delta's `fills`; a sent order books
     /// nothing, whatever contributors it names.
     pub const CENTRAL_FILLS_ATTRIBUTED: &str = "qip_central_fills_attributed_total";
+    /// What the platform decided about who may have capital put to work, by
+    /// `decision`: `granted` and `revoked` are the two arms of the
+    /// eligibility registry's own decision enum, recorded where the registry
+    /// adopts one; `refused_funding` is a funding a gate turned away before
+    /// any book moved, recorded where that refusal is journalled.
+    ///
+    /// The user is deliberately not a label. A compliance decision is about a
+    /// person, and a series labelled by person is a person's identity in
+    /// every scrape, every retention window and every dashboard — the audit
+    /// trail for that is the hash-chained event log, which is access
+    /// controlled, and not a metric anything may read. The three values are
+    /// fixed here and at the call sites, so the series is bounded whatever
+    /// the deployment enrols.
+    pub const CENTRAL_ELIGIBILITY_DECISIONS: &str = "qip_central_eligibility_decisions_total";
+    /// Venue registrations the platform adopted, by `source`: `configuration`
+    /// for one the deployment committed and `operator` for one an
+    /// authenticated person approved at runtime — the two arms of the
+    /// kernel's `RegistrationSource`, and there is no third.
+    ///
+    /// The failure this makes visible: the two paths differ in who is
+    /// accountable, and both ended in the same registry with nothing to tell
+    /// them apart afterwards. A registration that appeared at runtime under
+    /// nobody's review is the one an operator needs to see; a series in which
+    /// it is indistinguishable from the committed set cannot show it. Neither
+    /// the source id nor the operator is a label, for the reason
+    /// [`CENTRAL_ELIGIBILITY_DECISIONS`] gives about people, and because the
+    /// source list is a fleet a deployment can grow.
+    pub const CENTRAL_REGISTRATIONS: &str = "qip_central_registrations_total";
     /// Internal crosses settled to both contributors' books at the mid.
     pub const CENTRAL_CROSSES_SETTLED: &str = "qip_central_crosses_settled_total";
     /// Orders and crosses the centre refused to settle, by `kind`. A cross naming

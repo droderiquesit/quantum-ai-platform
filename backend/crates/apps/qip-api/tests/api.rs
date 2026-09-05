@@ -1224,6 +1224,22 @@ fn the_openapi_document_is_unauthenticated_valid_json_and_declares_its_version()
     Ok(())
 }
 
+/// A route-table pattern in the document's syntax: `:name` becomes
+/// `{name}`, which is how OpenAPI spells a path parameter and how the
+/// generator renders one. Spelled here independently of the generator so
+/// the two comparisons below read the document the way a client would
+/// rather than through the code that wrote it.
+fn openapi_pattern(pattern: &str) -> String {
+    pattern
+        .split('/')
+        .map(|segment| match segment.strip_prefix(':') {
+            Some(name) => format!("{{{name}}}"),
+            None => segment.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 #[test]
 fn the_openapi_document_describes_every_route_and_the_authority_it_requires() {
     // The document is generated from the route table, so this is really a
@@ -1233,7 +1249,7 @@ fn the_openapi_document_describes_every_route_and_the_authority_it_requires() {
         serde_json::from_str(&qip_api::document()).expect("valid JSON");
     let paths = &document["paths"];
     for route in ROUTES {
-        let path = format!("/api/v1{}", route.pattern);
+        let path = format!("/api/v1{}", openapi_pattern(route.pattern));
         let method = route.method.as_str().to_ascii_lowercase();
         let operation = &paths[&path][&method];
         assert!(
@@ -1287,7 +1303,8 @@ fn the_openapi_document_declares_nothing_the_router_does_not_serve() {
             }
             assert!(
                 ROUTES.iter().any(|route| {
-                    route.pattern == suffix && route.method.as_str().to_ascii_lowercase() == *method
+                    openapi_pattern(route.pattern) == suffix
+                        && route.method.as_str().to_ascii_lowercase() == *method
                 }),
                 "the document declares {method} {path}, which is not a route"
             );

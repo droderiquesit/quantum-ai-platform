@@ -20,16 +20,26 @@ about what kind of number each is.
 
 * **Machine.** A shared Linux container with 4 cores, one test thread, no
   affinity, no isolation from the other agents and builds sharing the box.
-  The profile is **release** (`cargo test --release`); the same tests build
-  under `debug` several times slower, and a figure quoted without its profile
-  is not a figure.
+  The profile is **release** (`cargo test --release`) for every row except the
+  halt wire, whose two figures were **taken on the debug profile**: when that
+  row was added the container had 5.3 GB of free disk against an 18 GB debug
+  target directory shared with twenty other agents, and a release build of the
+  workspace would have taken the disk out from under all of them. The same
+  tests build under `debug` several times slower, so the halt-wire figures
+  overstate the cost of both wires by an unmeasured factor and are a
+  regression guard rather than a performance figure. A figure quoted without
+  its profile is not a figure.
 * **What it is.** The cost of one in-process seam, on this machine, with the
   fixture built before the clock starts. Each test asserts its premise — that
   the workload ran the number of items it claims, and produced the outcome
   the capability exists to produce — before it reads a clock.
 * **What it is not.** **An in-process number on a shared container is not a
   deployment measurement.** There is no network here, no venue, no execution
-  node, no colocation, and no I/O on any timed path. **Nothing is deployed:**
+  node, and no colocation. One timed path has I/O on it and only one: the
+  polled halt flag's `write` and `read`, which are in the halt-wire figure
+  because the operator's action *is* the write. They are two syscalls against
+  this container's page cache, not a Secret Manager mount.
+  **Nothing is deployed:**
   `execution_nodes = {}` in every environment, and no Cloud Run workload runs
   `Cell::work`. None of these rows says anything about latency to a venue,
   and none should be quoted as if it did.
@@ -41,10 +51,12 @@ about what kind of number each is.
 
 ## The figures
 
-Per-operation, release profile, 4 cores, single-threaded, 2026-09-05.
+Per-operation, 4 cores, single-threaded, 2026-09-05. Every row is the release
+profile except the halt wire, which names its own profile in its figure cell
+and is the reason the column heading no longer names one for all of them.
 The test column is the function name in `performance.rs`.
 
-| Capability | Workload | Observed (release) | Bound | Date | Test | What the number does and does not prove |
+| Capability | Workload | Observed | Bound | Date | Test | What the number does and does not prove |
 |---|---|---|---|---|---|---|
 | Central OMS submission (`qip-execution-engine` `oms.rs`) | 20,000 market orders through `OrderManager::submit`: validate, kill switch, autonomy level, five pre-trade limits, state machine, frictionless simulated fill | 3.41 µs/op (293,156 ops/s) | 500 µs/op | 2026-09-05 | `central_order_submission_costs_what_the_execution_measurements_say` | Proves the central submission path is a few microseconds of pure computation against a constant risk state. Does not include the kernel's per-cycle risk state, the event log, or any venue; the "venue" is the in-process simulator and every fill is marked simulated. Not a deployment measurement. |
 | Central instrument feasibility (`with_instrument_feasibility`) | 20,000 orders, alternately on-lot and off-lot, against a lot-1/tick-0.01 grid installed for the instrument | 3.58 µs/op (279,108 ops/s) | 500 µs/op | 2026-09-05 | `central_instrument_feasibility_costs_what_the_execution_measurements_say` | Proves the grid is judged ahead of the safety controls at negligible cost and refuses exactly the off-lot half under `feasibility_lot`. Does not prove anything about a real listing's grid, which nothing here reads. Not a deployment measurement. |
@@ -60,6 +72,7 @@ The test column is the function name in `performance.rs`.
 | Policy payload verification and application (`VerifiedPolicy::verify`, `Cell::apply_policy`) | 2,000 unproduced payloads in strictly increasing sequence, each verified and applied, each sealing a chain entry | 23.26 µs/op (42,990 ops/s) | 2,000 µs/op | 2026-09-05 | `verifying_and_applying_a_policy_payload_costs_what_the_execution_measurements_say` | Proves the anti-replay sequence, the halt barrier and the journal entry cost tens of microseconds per payload. Does not measure a payload with produced slots, whose narrowing is a function of `now`, nor the mesh that carries it. Not a deployment measurement. |
 | Journal chain (`Journal::record`, `verify`, `ship`) | 50,000 refusals recorded, the chain re-verified, the tail shipped to an in-memory mirror in one batch | record 2.62 µs/entry; verify 1.90 µs/entry; ship 0.27 µs/entry | 200, 200 and 50 µs/entry | 2026-09-05 | `the_journal_chain_costs_what_the_execution_measurements_say` | Proves the hash chain costs a JSON serialisation and a SHA-256 per entry on the pass and again on replay, and that a shipped batch chains onto genesis. Does not measure a `FileMirror`, which is the one call that blocks. Not a deployment measurement. |
 | Multi-leg group (`LegGroup`) | 20,000 two-leg groups assembled, both legs filled, assessed and settled complete | 1.75 µs/op (572,617 ops/s) | 200 µs/op | 2026-09-05 | `a_two_leg_group_completing_costs_what_the_execution_measurements_say` | Proves the lifecycle's happy path is microseconds and that a fully filled group is judged complete rather than unwound. Does not measure an unwind, a deadline, or the placement of the reversing orders. Not a deployment measurement. |
+| Halt wire, both §46.2 paths (`VerifiedPolicy::verify` and `Cell::apply_policy` with `halted`; `PolledHalt::from_content` and `Cell::apply_polled_halt`; the refusal in `Cell::work`) | 500 halts per wire. Each iteration places an order on one pass — the premise — then halts and times the next pass to its refusal. Wire one verifies and applies a signed halted `PolicyPayload`; wire two writes the flag file, reads it back and applies the reading. Each release is outside the clock: a newer payload issued past the halt barrier, or deleting the flag | central payload 388.36 µs/halt (2,575 halts/s); polled flag 87.09 µs/halt (11,483 halts/s) — both **taken on the debug profile**, see "How to read a figure". Across five runs the central figure ranged 254–593 µs/halt and the polled 78–115 µs/halt; the high end is a whole-file run whose other tests share the same four cores | 5,000 µs per halt, each wire | 2026-09-05 | `each_halt_wire_stopping_the_next_pass_costs_what_the_execution_measurements_say` | Proves each wire stops a cell that was placing on the very next pass, and that the pass refuses under the gate naming the wire that fired and not the other one — `policy_halt` against `polled_halt`, two tokens differing by two characters and leading to two different release procedures. Proves the polled halt came from the flag's own content rather than from the fail-closed unreadable path, which halts identically. The central figure is dominated by the payload's HMAC over twelve slot digests rather than by the halt. Does not measure the poll interval: `qip-edge-node` has no scheduler and reads the flag once per liveness probe, so in any deployment the wait for the next read dominates this figure entirely. Does not measure the mesh that carries the payload, `qip-edge-node`'s own `HaltFlag::read` (an application crate this suite cannot link, so the present-file arm is reproduced), or a Secret Manager mount. Not a deployment measurement. |
 
 ## What could not be measured in-process, and why
 
@@ -80,14 +93,22 @@ The test column is the function name in `performance.rs`.
   and a signed report; the kernel-cycle test in the same file bounds the cycle
   as a whole and does not separate this seam.
 * **Anything with a wire on it.** Mesh delivery, the venue adapter, the drop
-  copy's transport, the halt flag's file poll. Every timed path here is in
-  memory, by construction and by the workspace's rules.
+  copy's transport. Every timed path here is in memory, by construction and by
+  the workspace's rules, with the single exception named above: the polled
+  halt flag's `write` and `read`, which are in the halt-wire figure. The
+  *interval* between polls is still not measured and cannot be here — it is
+  set by how often the node's liveness probe arrives, and no node is deployed.
 
 ## Running it
 
 ```
 cd backend && cargo test -p qip-acceptance --test performance --release -- --nocapture
 ```
+
+Drop `--release` to reproduce the halt-wire row, which is the one row taken
+that way. The release target directory is not free: this container had 5.3 GB
+of disk left when the row was written, so check `df -h` before asking for a
+release build of the workspace.
 
 Re-run before quoting a number: the container's other tenants move the
 figures by tens of percent from run to run. A figure that trips a bound is a

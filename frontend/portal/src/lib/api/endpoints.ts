@@ -47,9 +47,22 @@ export const REST: Record<string, EndpointSpec> = {
   correlation: { method: "GET", path: "/correlation", role: "viewer", summary: "pearson correlation of returns over the tape, or why not" },
   backtests: { method: "GET", path: "/backtests", role: "viewer", summary: "holdout evidence, gate findings and bands from the ledger" },
   regimes: { method: "GET", path: "/regimes", role: "viewer", summary: "why no regime view is served, and the declared stream topic" },
+  registrations: { method: "GET", path: "/registrations", role: "viewer", summary: "what each venue demands before it is read, and who has registered" },
   cycle: { method: "POST", path: "/cycle", role: "analyst", summary: "run one cycle of the intelligence loop" },
   killSwitchTrip: { method: "POST", path: "/kill-switch", role: "operator", summary: "halt the platform" },
   killSwitchClear: { method: "DELETE", path: "/kill-switch", role: "operator", summary: "clear a halt" },
+  /**
+   * The fourth write, and the only one with a path parameter. It records
+   * that a named operator registered with a venue under terms they read; it
+   * names no instrument, side or quantity, and the platform behind it creates
+   * no account — a registration nobody made cannot be approved into existence.
+   */
+  registrationApprove: {
+    method: "POST",
+    path: "/registrations/{source_id}/approve",
+    role: "operator",
+    summary: "record that the operator registered with a venue under terms they read",
+  },
 } as const;
 
 /** Server-sent event channels under `/api/v1/stream`. */
@@ -118,7 +131,13 @@ export const NOT_YET_SERVED: Record<string, MissingEndpoint> = {
  * platform's credential.
  *
  * The match is on the whole path, not a prefix: `/kill-switch/all` is a
- * different route from `/kill-switch` and is not declared.
+ * different route from `/kill-switch` and is not declared. A `{parameter}`
+ * segment in a declared path matches exactly one non-empty segment, so
+ * `/registrations/alpaca-daily-bars/approve` is declared and
+ * `/registrations/approve`, `/registrations/a/b/approve` and
+ * `/registrations/a/approve/now` are not — a template that matched a prefix
+ * would declare every route under it, including ones the platform grows
+ * later without this console being asked.
  *
  * GET is not asked about. A read cannot submit an order, and a gateway that
  * refused an unlisted read would make this console lie about a route the
@@ -126,6 +145,17 @@ export const NOT_YET_SERVED: Record<string, MissingEndpoint> = {
  */
 export function declaresWrite(method: string, path: string): boolean {
   return Object.values(REST).some(
-    (spec) => spec.method !== "GET" && spec.method === method && spec.path === path,
+    (spec) => spec.method !== "GET" && spec.method === method && pathMatches(spec.path, path),
   );
+}
+
+function pathMatches(template: string, path: string): boolean {
+  const wanted = template.split("/");
+  const given = path.split("/");
+  if (wanted.length !== given.length) return false;
+  return wanted.every((segment, index) => {
+    const actual = given[index] ?? "";
+    if (segment.startsWith("{") && segment.endsWith("}")) return actual.length > 0;
+    return segment === actual;
+  });
 }

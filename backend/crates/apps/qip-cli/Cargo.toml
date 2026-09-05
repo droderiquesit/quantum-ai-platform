@@ -64,5 +64,23 @@ qip-transport.workspace = true
 qip-feature-dag.workspace = true
 qip-strategy.workspace = true
 
+# --- what `qip replay` needs ------------------------------------------------
+#
+# Two more seams, each one the command cannot do without and neither reachable
+# through a crate already listed.
+#
+# The fabric's own replay: it re-executes every recorded command and checks the
+# recorded outcome against the recomputed one, which is the third of the three
+# registries `qip replay` compares. The kernel resumes its journal through this
+# function but exposes no way to ask the question again, and a fabric line the
+# command printed without computing would be the worst kind of green.
+qip-capital-fabric.workspace = true
+# The stream envelope the kernel wraps a registration or an eligibility record
+# in before it reaches the log. Reading it back is how `qip replay` names the
+# *position* of a divergence rather than only its existence; the alternative —
+# matching the kernel's private producer string — would silently match nothing
+# the day it changed.
+qip-streaming.workspace = true
+
 [lints]
 workspace = true

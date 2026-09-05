@@ -5756,3 +5756,274 @@ fn the_control_plane_nodes_may_reach_their_endpoint_and_the_cluster_waits_for_th
 }
 
 // --- the safety property that outranks all of this --------------------------
+
+// --- OpenObserve's access posture (ADR 0033) --------------------------------
+
+const OPENOBSERVE_VARIABLES: &str = "infrastructure/terraform/modules/openobserve/variables.tf";
+const OPENOBSERVE_MODULE: &str = "infrastructure/terraform/modules/openobserve/main.tf";
+
+/// One `variable "<name>" {` block of the OpenObserve module, comments gone.
+///
+/// Comments are stripped before the block is found, so a refusal that has been
+/// commented out reads here as a refusal that is absent — which is what it is.
+fn openobserve_variable(name: &str) -> String {
+    let text = without_comments(&read(OPENOBSERVE_VARIABLES));
+    let block = block_under(&text, &format!("variable \"{name}\" {{"));
+    assert!(
+        !block.trim().is_empty(),
+        "{OPENOBSERVE_VARIABLES} declares no `{name}` variable, so every assertion about it \
+         below would pass by reading nothing"
+    );
+    block
+}
+
+/// The `condition` and `error_message` of the one validation block in
+/// `variable` whose condition names every token in `names`.
+///
+/// Exactly one, because two validations refusing the same combination in
+/// different words is the shape where one of them is eventually edited and the
+/// other is not.
+fn openobserve_validation(variable: &str, names: &[&str]) -> (String, String) {
+    let block = openobserve_variable(variable);
+    let matched: Vec<(String, String)> = block
+        .split("validation {")
+        .skip(1)
+        .filter_map(|body| {
+            let body = body.split("\n  }").next().unwrap_or(body);
+            let condition = body
+                .lines()
+                .map(collapsed)
+                .find_map(|line| line.strip_prefix("condition = ").map(str::to_string))?;
+            let message = body
+                .lines()
+                .map(collapsed)
+                .find_map(|line| line.strip_prefix("error_message = ").map(str::to_string))?;
+            names
+                .iter()
+                .all(|name| condition.contains(name))
+                .then_some((condition, message))
+        })
+        .collect();
+    assert_eq!(
+        matched.len(),
+        1,
+        "{OPENOBSERVE_VARIABLES}'s `{variable}` has {} validation blocks whose condition names \
+         {names:?}; expected exactly one. The block is:\n{block}",
+        matched.len()
+    );
+    matched.into_iter().next().unwrap_or_default()
+}
+
+/// The one string literal on the right of `<reference> == ` in an expression.
+fn compared_literal(expression: &str, reference: &str) -> String {
+    let rest = expression
+        .split_once(&format!("{reference} == "))
+        .map(|(_, rest)| rest)
+        .unwrap_or_else(|| {
+            panic!("`{expression}` does not compare {reference} to anything this test can read")
+        });
+    rest.trim_start()
+        .strip_prefix('"')
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_else(|| panic!("`{expression}` compares {reference} to something unquoted"))
+        .to_string()
+}
+
+/// Whether the module's prod refusal admits an environment and a posture.
+///
+/// The condition is read out of the file and **evaluated**, not matched as
+/// text. A text match certifies whatever is written there, including an
+/// inverted predicate: the venue-credential check in this file pinned its
+/// source line for as long as the predicate was backwards, passed the whole
+/// time, and would have failed on the fix.
+///
+/// Deliberately a small evaluator over the one form the refusal is written in.
+/// An unrecognised form panics naming itself, so a rewrite makes this test
+/// fail loudly rather than quietly stop checking.
+fn prod_refusal_admits(condition: &str, environment: &str, posture: &str) -> bool {
+    let conjunction = condition
+        .strip_prefix("!(")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .unwrap_or_else(|| {
+            panic!(
+                "the prod refusal is no longer a negated conjunction and this evaluator cannot \
+                 read it: {condition}"
+            )
+        });
+    let (left, right) = conjunction.split_once(" && ").unwrap_or_else(|| {
+        panic!("the prod refusal names only one condition: {conjunction}");
+    });
+    let refused_environment = compared_literal(left, "var.environment");
+    let refused_posture = compared_literal(right, "var.access_posture");
+    !(environment == refused_environment && posture == refused_posture)
+}
+
+#[test]
+fn the_openobserve_access_posture_defaults_to_the_authenticated_one() {
+    // ADR 0033: OpenObserve is authenticated before it holds telemetry. The
+    // module makes that the value a caller falls into, so ADR 0030's anonymous
+    // posture — argued once, for an empty service, in one environment — has to
+    // be asked for by name. A default of `anonymous`, or no default at all,
+    // puts the decision on whoever writes the next tfvars.
+    let block = openobserve_variable("access_posture");
+    assert!(
+        block
+            .lines()
+            .map(collapsed)
+            .any(|line| line == "default = \"authenticated\""),
+        "modules/openobserve does not default `access_posture` to \"authenticated\"; a caller \
+         that has not decided gets the posture ADR 0033 exists to end:\n{block}"
+    );
+    // Null is the default, not a null. Terraform hands a module input the
+    // caller passed as null straight to the validations, and a `contains` on
+    // null fails naming the function rather than the missing decision — the
+    // failure this tree has already had once, on a validation dereferencing a
+    // variable at its own default of null.
+    assert!(
+        block
+            .lines()
+            .map(collapsed)
+            .any(|line| line == "nullable = false"),
+        "`access_posture` is nullable, so a caller passing null gets null rather than the \
+         authenticated default:\n{block}"
+    );
+    // A default is only a default if the other value can still be chosen, and
+    // only these two exist: a third spelling must fail rather than be mapped
+    // onto one of them.
+    let (condition, _) = openobserve_validation("access_posture", &["contains("]);
+    assert_eq!(
+        condition, "contains([\"authenticated\", \"anonymous\"], var.access_posture)",
+        "the set of postures the module admits is not exactly authenticated and anonymous"
+    );
+}
+
+#[test]
+fn the_anonymous_openobserve_posture_is_refused_for_prod_at_plan_time() {
+    // The gate ADR 0033 asks for, evaluated rather than read. No plan runs in
+    // this suite, so what is checked here is the predicate itself: it must
+    // refuse the one combination and admit the other three. A gate that
+    // refuses everything is not a gate — it is an outage with a message — and
+    // the half that proves it is a gate is that dev keeps the posture ADR 0030
+    // argued for it.
+    let (condition, message) =
+        openobserve_validation("access_posture", &["var.environment", "var.access_posture"]);
+    assert!(
+        !prod_refusal_admits(&condition, "prod", "anonymous"),
+        "`{condition}` admits an anonymous OpenObserve in prod, where a store holding cycle \
+         counts, refusals by gate, limit breaches and fills would answer the internet with no \
+         credential — and take writes from it"
+    );
+    for (environment, posture) in [
+        ("prod", "authenticated"),
+        ("dev", "anonymous"),
+        ("dev", "authenticated"),
+        ("stage", "authenticated"),
+    ] {
+        assert!(
+            prod_refusal_admits(&condition, environment, posture),
+            "`{condition}` refuses {posture} in {environment} as well, so it is not the prod \
+             refusal ADR 0033 asks for; ADR 0030's posture stays selectable outside prod until \
+             that record is amended"
+        );
+    }
+    // And the refusal says what to do. An error naming only the value it
+    // rejected leaves the reader to guess whether the fix is the tfvars, the
+    // module, or a new record.
+    for named in ["prod", "ADR 0033", "access_posture", "authenticated"] {
+        assert!(
+            message.contains(named),
+            "the prod refusal's message does not name `{named}`, so a reader who hits it cannot \
+             tell what to change: {message}"
+        );
+    }
+}
+
+#[test]
+fn the_default_openobserve_posture_names_no_anonymous_invoker() {
+    // The property ADR 0033 is for: `allUsers` on `roles/run.invoker` ends.
+    // The premise first — the default is the authenticated posture — because
+    // the arm asserted below is the one that default selects, and a test that
+    // read the other arm would pass while the invoker was anonymous.
+    let posture = openobserve_variable("access_posture");
+    assert!(
+        posture
+            .lines()
+            .map(collapsed)
+            .any(|line| line == "default = \"authenticated\""),
+        "the module no longer defaults to the authenticated posture, so the invoker arm this \
+         test reads is not the one a caller gets"
+    );
+    let module = without_comments(&read(OPENOBSERVE_MODULE));
+    assert!(
+        module.lines().map(collapsed).any(
+            |line| line == "invoker_members = local.authenticated ? var.access_principals : []"
+        ),
+        "modules/openobserve no longer derives its invoker members as the caller's named \
+         principals under the authenticated arm and nothing under the other; a literal member \
+         in either arm is a principal this module grants without the caller naming it:\n{module}"
+    );
+    // And that named list cannot be widened into an anonymous one. Both
+    // refusals are read: the structural one, which no bare token passes, and
+    // the one that names the two members so the error tells a caller which
+    // mistake they made.
+    let (structural, _) = openobserve_validation("access_principals", &["can(regex("]);
+    assert!(
+        structural.contains("^(user|group|serviceAccount|domain|principal|principalSet):"),
+        "the structural refusal no longer requires an IAM member prefix, and the two members \
+         that name everybody carry none: {structural}"
+    );
+    let (by_name, _) = openobserve_validation("access_principals", &["allUsers"]);
+    assert!(
+        by_name.contains("member == \"allUsers\"")
+            && by_name.contains("member == \"allAuthenticatedUsers\"")
+            && by_name.ends_with("]) == 0"),
+        "the named refusal no longer refuses both anonymous members outright: {by_name}"
+    );
+
+    // Nowhere in the module is either member named outside a validation block.
+    // A `validation` is the one construct that can name a principal in order
+    // to refuse it; everything else that names one grants it, and this is the
+    // module whose whole subject is that grant.
+    let mut scanned = 0usize;
+    let mut refusals = 0usize;
+    for path in files_with_extension("infrastructure/terraform/modules/openobserve", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        let mut validation_depth: usize = 0;
+        for line in content.lines() {
+            let opened = line.matches('{').count();
+            let closed = line.matches('}').count();
+            let entering =
+                validation_depth == 0 && line.trim_start().starts_with("validation") && opened > 0;
+            if entering || validation_depth > 0 {
+                validation_depth += opened;
+                validation_depth -= closed.min(validation_depth);
+                if line.contains("allUsers") || line.contains("allAuthenticatedUsers") {
+                    refusals += 1;
+                }
+                continue;
+            }
+            scanned += 1;
+            for anonymous in ["allUsers", "allAuthenticatedUsers"] {
+                assert!(
+                    !line.contains(anonymous),
+                    "{} names {anonymous} outside a validation block, so this module can produce \
+                     the binding ADR 0033 exists to close:\n{line}",
+                    path.display()
+                );
+            }
+        }
+    }
+    // Both premises: the walk read the module, and it read the refusals rather
+    // than skipping every line as though each were inside a validation.
+    assert!(
+        scanned > 60,
+        "only {scanned} lines outside a validation block were read from \
+         modules/openobserve, so the assertions above proved nothing about the ones they \
+         did not reach"
+    );
+    assert!(
+        refusals >= 2,
+        "only {refusals} line(s) inside a validation block name an anonymous member; the \
+         condition and its message are two, so the refusal this test relies on is gone"
+    );
+}

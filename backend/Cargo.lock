@@ -192,6 +192,7 @@ dependencies = [
  "qip-api",
  "qip-brokers",
  "qip-capital",
+ "qip-capital-fabric",
  "qip-contracts",
  "qip-core",
  "qip-edge",
@@ -207,6 +208,7 @@ dependencies = [
  "qip-risk-engine",
  "qip-storage",
  "qip-strategy",
+ "qip-streaming",
  "qip-transport",
  "serde_json",
 ]

@@ -417,6 +417,71 @@ variable "market_data_connector" {
   }
 }
 
+variable "venue_registrations_file" {
+  description = <<-EOT
+    A committed JSON file of `RegistrationRecord`s the API mounts and reads as
+    `QIP_VENUE_REGISTRATIONS_PATH`, or null for a deployment where nobody has
+    registered with a venue.
+
+    A path in this repository, read with `file()` at plan time exactly as the
+    instrument universe is, so the records a revision carries are the records
+    a reviewer read and the plan names them by hash. Null renders no
+    configuration file and therefore no variable at all, and an unset variable
+    is what makes the API's shipped registry hold nobody: every source whose
+    requirement is an account stays refused, which is the honest state of a
+    deployment where nobody registered.
+
+    Setting this does not register anybody. `docs/operations/registering-a-venue.md`
+    is the order: a named person reads the venue's terms, registers under
+    their own identity, writes the credential into its Secret Manager slot
+    with `gcloud secrets versions add`, and only then commits the record —
+    whose `secret` field names the deployment variable the credential is read
+    under and never the value. `RegistrationRecord`'s only constructor refuses
+    a blank operator and its deserialiser goes through that constructor, so a
+    file this names cannot say "registered" and name nobody: the API refuses
+    to start on it, naming the field.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.venue_registrations_file == null ? true : can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.venue_registrations_file))
+    error_message = "The venue registrations file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read."
+  }
+}
+
+variable "wallet_statement_file" {
+  description = <<-EOT
+    A committed JSON wallet statement the API mounts and reads as
+    `QIP_WALLET_STATEMENT_PATH`, or null where no custodian has reported.
+
+    Same convention as the universe and the registrations above: a path in
+    this repository, read with `file()`, null renders no variable and the API
+    then says in its banner that there is no feed and answers `/wallet` with
+    `assembled: false` — the truthful answer for a process nothing has
+    reported to.
+
+    What a person setting this must know, because the platform will not soften
+    it: a statement is a dated document from a counterparty, the kernel holds
+    one fresh for a day, and the API refuses to start on a statement it
+    considers stale or dated in the future. So a committed statement is a
+    same-day act — commit the day's file, apply, and expect the refusal the
+    day after — and no environment leaves it set. Every environment trades on
+    the in-process simulated venue (ADR 0003), which issues no statement, so
+    every tfvars leaves this null for a reason recorded there rather than
+    because nobody thought about it.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.wallet_statement_file == null ? true : can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.wallet_statement_file))
+    error_message = "The wallet statement file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read."
+  }
+}
+
 variable "notification_channels" {
   description = "Where alerts are sent. An alert with nowhere to go is not an alert."
   type        = list(string)

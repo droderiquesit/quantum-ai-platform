@@ -18,7 +18,7 @@
 
 use qip_capital::ledger::{
     DecidedBy, Eligibility, EligibilityDecision, EligibilityTerms, Jurisdiction, Mandate,
-    MandateId, MandateTerms, PermittedFamilies, UserId, UserShare,
+    MandateId, MandateTerms, PermittedFamilies, ProductEligibility, UserId, UserShare,
 };
 use qip_capital_fabric::corridor::{CorridorCaps, CorridorId, PermittedHours};
 use qip_capital_fabric::custody::{CorridorKind, CustodyClass};
@@ -33,24 +33,37 @@ use qip_contracts::wire::{FillRecord, FillShare};
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Currency, Decimal, ObjectId, dec};
+use qip_data_finder::registration::RegistrationRecord;
 use qip_events::{EventFilter, Topic};
 use qip_financial::asset_class::{InstrumentType, Sector};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
 use qip_financial::universe::Universe;
-use qip_kernel::central::CellReport;
+use qip_kernel::central::{CellReport, StrategyCandidate};
 use qip_kernel::config::{PlatformConfig, UserEligibility, UserMandate};
 use qip_kernel::cycle::Stage;
 use qip_kernel::platform::{
     BookingBasis, EligibilityEntry, EligibilitySource, LedgerEntry, Platform,
 };
+use qip_lifecycle::trials::StrategyFamily;
+use qip_market_ingestion::connector::manifest::SecretRef;
 use qip_mesh::delta::DeltaOrder;
 use qip_observability::Telemetry;
+use qip_observability::metrics::labels;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use qip_risk_engine::autonomy::OperatorIdentity;
+use qip_strategy::catalogue::FeatureCatalogue;
+use qip_strategy::compile::StrategyCompiler;
+use qip_strategy::ir::{Expr, Rule, StrategySpec, Type};
+use std::collections::BTreeSet;
 
 const CELL: &str = "cell-lon-1";
 const INSTRUMENT: &str = "obj-AAA";
+/// A source the shipped requirement table says needs an account, so a
+/// registration for it is one the platform actually adopts.
+const ACCOUNT_SOURCE: &str = "alpaca-daily-bars";
+const TERMS: &str = "https://alpaca.markets/terms-and-conditions";
+const SLOT: &str = "QIP_ALPACA_API_SECRET_KEY";
 
 fn start() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
@@ -912,6 +925,463 @@ fn an_eligibility_cannot_be_granted_from_a_config_value_alone_without_an_operato
             .fund_user(&alice, &alpha, dec!("100"), start())
             .is_err(),
         "and alice is still not fundable"
+    );
+    Ok(())
+}
+
+// --- the product gate -------------------------------------------------------------
+
+/// A user mandate that permits exactly one family, otherwise the suite's
+/// terms: a thousand under management, no floor, GB, the desk's currency.
+fn mandate_only(capital: Decimal, family: &str) -> Result<Mandate> {
+    Mandate::new(MandateTerms {
+        capital,
+        currency: Currency::USD,
+        risk_tolerance: Decimal::ONE,
+        permitted_families: PermittedFamilies::Only(BTreeSet::from([family.to_string()])),
+        liquidity_floor: Decimal::ZERO,
+        exploration_share: Decimal::ZERO,
+        jurisdiction: Jurisdiction::new("GB")?,
+    })
+}
+
+fn enrolment_only(user: &str, capital: Decimal, family: &str) -> Result<UserMandate> {
+    Ok(UserMandate {
+        user: UserId::new(user)?,
+        id: MandateId::new(format!("mandate-{user}"))?,
+        mandate: mandate_only(capital, family)?,
+    })
+}
+
+/// A compiled strategy the factory accepts, so the strategy has a family and
+/// the product gate has something to look an offering up by. An unregistered
+/// strategy has no family at all, which is a different case with its own
+/// test below.
+fn register_family(platform: &mut Platform, strategy: &str, family: &str) -> Result<()> {
+    let subject = ObjectId::from_string(INSTRUMENT);
+    let pressure =
+        qip_contracts::feature::FeatureKey::new("book_pressure", subject.clone()).with("levels", 5);
+    let mut catalogue = FeatureCatalogue::new();
+    catalogue.declare(pressure.clone(), Type::Statistic)?;
+    let spec = StrategySpec::new(
+        StrategyId::new(strategy),
+        subject,
+        Duration::from_millis(250),
+    )
+    .with_rule(Rule::new(
+        "enter",
+        qip_contracts::signal::SignalKind::Enter,
+        Expr::feature(pressure).greater_than(Expr::Statistic(0.4)),
+        Expr::Exact(Decimal::from_int(100)),
+        Expr::Statistic(0.62),
+        500,
+    ));
+    let mut compiler = StrategyCompiler::new(catalogue);
+    let compiled = compiler.compile(&spec)?;
+    let candidate = StrategyCandidate::new(
+        compiled,
+        compiler.into_program(),
+        StrategyFamily::new(family)?,
+        CELL,
+        VenueId::new("XNYS"),
+        start(),
+    )?;
+    platform.central_mut().factory_mut().register(candidate)
+}
+
+/// The operator who takes this suite's product determinations, authenticated
+/// at the instant the tests reason about.
+fn compliance_officer() -> OperatorIdentity {
+    OperatorIdentity::verified("ops-erin", "hardware-token", start())
+}
+
+#[test]
+fn a_user_whose_entitlement_refuses_the_strategys_family_cannot_be_funded_and_the_refusal_names_the_family_and_jurisdiction()
+-> Result<()> {
+    // The failure this closes: funding asked the eligibility registry
+    // whether an operator had verified *this user*, and nothing asked
+    // whether the *family* their capital was going into may be offered
+    // where they are. `Entitlement::evaluate` has always wanted a product
+    // to evaluate against and the kernel had none to give, so it evaluated
+    // no entitlement at all and a user verified in GB could be funded into
+    // a family compliance had cleared nowhere.
+    //
+    // Premise, four parts, because each of them is a gate that could
+    // produce this refusal instead: alice is eligible, her mandate permits
+    // the family, the strategy has a family registered to look up, and the
+    // catalogue holds no determination about that family.
+    let alice = UserId::new("alice")?;
+    let alpha = StrategyId::new("alpha");
+    let mut platform = platform(
+        PlatformConfig::default()
+            .with_user_mandates(vec![enrolment_only("alice", dec!("1000"), "carry")?])
+            .with_user_eligibilities(vec![cleared_for_a_year("alice")?]),
+    )?;
+    register_family(&mut platform, "alpha", "carry")?;
+    assert!(
+        platform
+            .user_ledger()
+            .eligibility_of(&alice, start())
+            .is_ok(),
+        "the premise: an operator verified alice and cleared her to invest"
+    );
+    assert!(
+        platform
+            .user_ledger()
+            .mandate(&alice)
+            .expect("alice is enrolled")
+            .permitted_families()
+            .permits("carry"),
+        "the premise: her mandate permits the family"
+    );
+    assert_eq!(
+        platform
+            .central()
+            .factory()
+            .candidate(&alpha)
+            .map(|candidate| candidate.family().to_string()),
+        Some("carry".to_string()),
+        "the premise: the strategy has a family the gate can look up"
+    );
+    assert!(
+        platform.products().cleared("carry").is_none(),
+        "the premise: nobody has cleared the family anywhere"
+    );
+
+    let refused = platform
+        .fund_user(&alice, &alpha, dec!("100"), start())
+        .expect_err("a family cleared in no jurisdiction cannot be funded");
+    let message = refused.message();
+    // The delimited tokens, not a substring: "carry" is a substring of
+    // "carrying" and "GB" of "GBP", and a refusal that named neither would
+    // still contain both by accident in a long enough sentence.
+    assert!(
+        message.split_whitespace().any(|word| word == "carry"),
+        "the refusal names the family: {message}"
+    );
+    assert!(
+        message
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| word == "GB"),
+        "the refusal names the jurisdiction it was refused in: {message}"
+    );
+    assert!(
+        message.contains("does not grant investing"),
+        "the refusal says what the entitlement withheld: {message}"
+    );
+
+    assert!(
+        platform.user_ledger().book(&alice, &alpha).is_none(),
+        "a refused funding opened a book"
+    );
+    assert_eq!(
+        funding_refusals(&platform)?,
+        vec![(alice, "entitlement".to_string())],
+        "the refusal is journalled under the gate that refused it"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_user_whose_entitlement_grants_the_strategys_family_in_their_jurisdiction_can_be_funded()
+-> Result<()> {
+    // The other half, and the half that tells a working gate from one that
+    // refuses everything: the same user, the same strategy, the same
+    // mandate, funded once compliance has cleared the family where she is.
+    // Premise: the funding is refused before the determination, so what
+    // follows is the determination's doing.
+    let alice = UserId::new("alice")?;
+    let alpha = StrategyId::new("alpha");
+    let gb = Jurisdiction::new("GB")?;
+    let mut platform = platform(
+        PlatformConfig::default()
+            .with_user_mandates(vec![enrolment_only("alice", dec!("1000"), "carry")?])
+            .with_user_eligibilities(vec![cleared_for_a_year("alice")?]),
+    )?;
+    register_family(&mut platform, "alpha", "carry")?;
+    assert!(
+        platform
+            .fund_user(&alice, &alpha, dec!("100"), start())
+            .is_err(),
+        "the premise: the family is cleared nowhere and the funding is refused"
+    );
+    assert_eq!(settled(&platform, &alice, &alpha), None);
+
+    platform.offer_product(
+        ProductEligibility::new("carry").eligible_in(gb),
+        &compliance_officer(),
+        "cleared for retail distribution in GB by the compliance committee",
+        start(),
+    )?;
+    assert!(
+        platform.products().clears("carry", gb),
+        "the determination stands"
+    );
+
+    platform.fund_user(&alice, &alpha, dec!("100"), start())?;
+    assert_eq!(
+        settled(&platform, &alice, &alpha),
+        Some(dec!("100")),
+        "a cleared family in the user's own jurisdiction funds"
+    );
+
+    // A jurisdiction the determination does not name is still refused, so
+    // the clearance admits what it names and nothing wider.
+    let elsewhere = UserId::new("bob")?;
+    let mut abroad = platform;
+    abroad.offer_product(
+        ProductEligibility::new("momentum").eligible_in(Jurisdiction::new("US")?),
+        &compliance_officer(),
+        "cleared for distribution in the United States only",
+        start(),
+    )?;
+    assert!(
+        !abroad.products().clears("momentum", gb),
+        "a family cleared in the US is not cleared in GB"
+    );
+    assert!(abroad.user_ledger().mandate(&elsewhere).is_none());
+
+    // And the log alone rebuilds the catalogue the platform funded on: a
+    // clearance held only in memory would be a second source of truth for
+    // what a user's capital was allowed into.
+    let replayed = abroad.replay_products()?;
+    assert_eq!(&replayed, abroad.products());
+    assert_eq!(replayed.len(), 2, "both determinations replay");
+    Ok(())
+}
+
+#[test]
+fn a_mandate_that_permits_only_some_families_is_refused_a_strategy_no_family_is_registered_for()
+-> Result<()> {
+    // The fail-closed half. With no family registered for the strategy
+    // there is no offering to look up, so the product arm cannot be
+    // evaluated at all; a mandate that permits only some families cannot be
+    // shown that this strategy is one of them, and the restrictive answer
+    // is the one taken. The gap this leaves is stated on
+    // `Platform::product_refusal`: `PermittedFamilies::Any` — the desk's
+    // arm — has consented to every family and so has no family gate left to
+    // fail, which is why bob funds below.
+    //
+    // Premise: bob, under an `Any` mandate, funds the very same
+    // unregistered strategy, so alice's refusal is her mandate's and not
+    // the strategy's.
+    let alice = UserId::new("alice")?;
+    let bob = UserId::new("bob")?;
+    let beta = StrategyId::new("beta");
+    let mut platform = platform(
+        PlatformConfig::default()
+            .with_user_mandates(vec![
+                enrolment_only("alice", dec!("1000"), "carry")?,
+                enrolment("bob", dec!("1000"))?,
+            ])
+            .with_user_eligibilities(vec![
+                cleared_for_a_year("alice")?,
+                cleared_for_a_year("bob")?,
+            ]),
+    )?;
+    assert!(
+        platform.central().factory().candidate(&beta).is_none(),
+        "the premise: no family is registered for the strategy"
+    );
+    platform.fund_user(&bob, &beta, dec!("100"), start())?;
+    assert_eq!(
+        settled(&platform, &bob, &beta),
+        Some(dec!("100")),
+        "the premise: a mandate permitting every family funds it"
+    );
+
+    let refused = platform
+        .fund_user(&alice, &beta, dec!("100"), start())
+        .expect_err("a restricted mandate is refused a strategy with no family");
+    assert!(
+        refused.message().contains("registered no family"),
+        "the refusal names what is missing: {}",
+        refused.message()
+    );
+    assert_eq!(settled(&platform, &alice, &beta), None);
+    assert_eq!(
+        funding_refusals(&platform)?,
+        vec![(alice, "unregistered_family".to_string())],
+        "journalled under its own gate, not the entitlement's"
+    );
+    Ok(())
+}
+
+// --- what the two decision series say ---------------------------------------------
+
+/// The wire names, as a dashboard query spells them. Literals rather than
+/// the `names` constants, so renaming a constant without renaming the series
+/// fails here rather than silently retiring a chart.
+const ELIGIBILITY_SERIES: &str = "qip_central_eligibility_decisions_total";
+const REGISTRATION_SERIES: &str = "qip_central_registrations_total";
+
+fn counter(platform: &Platform, name: &str, label: (&str, &str)) -> Option<u64> {
+    platform
+        .telemetry()
+        .metrics
+        .snapshot()
+        .get(name, &labels([label]))
+        .and_then(|value| match value {
+            qip_observability::metrics::MetricValue::Counter(count) => Some(*count),
+            _ => None,
+        })
+}
+
+#[test]
+fn every_eligibility_decision_and_every_refused_funding_moves_the_decision_series() -> Result<()> {
+    // The failure this closes: who the platform admitted to having capital
+    // put to work, and whom it turned away, reached the event log and no
+    // series at all — so the one question an operator asks of a compliance
+    // control ("is it refusing anybody, and how often") could only be
+    // answered by replaying the log. Premise: none of the three series
+    // exists before the platform is driven, so each assertion below is
+    // about something that moved rather than something that was already
+    // there.
+    let alice = UserId::new("alice")?;
+    let bob = UserId::new("bob")?;
+    let alpha = StrategyId::new("alpha");
+    let mut platform = platform(PlatformConfig::default().with_user_mandates(vec![
+        enrolment("alice", dec!("1000"))?,
+        enrolment("bob", dec!("1000"))?,
+    ]))?;
+    for decision in ["granted", "revoked", "refused_funding"] {
+        assert_eq!(
+            counter(&platform, ELIGIBILITY_SERIES, ("decision", decision)),
+            None,
+            "the premise: nothing has been recorded under {decision}"
+        );
+    }
+
+    let operator = OperatorIdentity::verified("ops-dana", "hardware-token", start());
+    platform.decide_eligibility(
+        &alice,
+        EligibilityDecision::Granted {
+            eligibility: cleared_for_a_year("alice")?.eligibility,
+        },
+        &operator,
+        "identity verified against the passport on file",
+        start(),
+    )?;
+    assert_eq!(
+        counter(&platform, ELIGIBILITY_SERIES, ("decision", "granted")),
+        Some(1),
+        "a grant the registry took is counted"
+    );
+
+    // A funding a gate refused before any book moved. Bob holds a mandate
+    // and nobody has decided anything about him.
+    assert!(
+        platform.user_ledger().eligibility().record(&bob).is_none(),
+        "the premise: nobody has decided anything about bob"
+    );
+    platform
+        .fund_user(&bob, &alpha, dec!("100"), start())
+        .expect_err("an unverified user is refused");
+    assert_eq!(
+        counter(
+            &platform,
+            ELIGIBILITY_SERIES,
+            ("decision", "refused_funding")
+        ),
+        Some(1),
+        "a refused funding is counted where the refusal is journalled"
+    );
+
+    let later = start().saturating_add(Duration::from_secs(60));
+    platform.decide_eligibility(
+        &alice,
+        EligibilityDecision::Revoked {
+            reason: "verification withdrawn on review".to_string(),
+        },
+        &OperatorIdentity::verified("ops-dana", "hardware-token", later),
+        "the review found the document lapsed",
+        later,
+    )?;
+    assert_eq!(
+        counter(&platform, ELIGIBILITY_SERIES, ("decision", "revoked")),
+        Some(1),
+        "a revocation is a decision too, and a different one"
+    );
+
+    // Three events, three series, no fourth: a label outside the enum would
+    // show up here as a total that does not match.
+    assert_eq!(
+        platform
+            .telemetry()
+            .metrics
+            .snapshot()
+            .counter_total(ELIGIBILITY_SERIES),
+        3,
+        "the label set is the three the enum and the refusal path name"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_venue_registration_is_counted_under_the_source_that_brought_it() -> Result<()> {
+    // The failure this closes: a registration committed by the deployment
+    // and one approved at runtime differ in who is accountable, and both
+    // ended in the same registry with nothing afterwards to tell them
+    // apart. Premise: a platform that has adopted no registration has no
+    // series at all, so what is asserted below is what the adoption wrote.
+    let mut runtime = platform(PlatformConfig::default())?;
+    assert_eq!(
+        runtime
+            .telemetry()
+            .metrics
+            .snapshot()
+            .counter_total(REGISTRATION_SERIES),
+        0,
+        "the premise: nothing has been registered"
+    );
+
+    let later = start().saturating_add(Duration::from_secs(60));
+    runtime.approve_registration(
+        ACCOUNT_SOURCE,
+        &OperatorIdentity::verified("ops-dana", "hardware-token", later),
+        TERMS,
+        SecretRef::new(SLOT)?,
+        later,
+    )?;
+    assert_eq!(
+        counter(&runtime, REGISTRATION_SERIES, ("source", "operator")),
+        Some(1),
+        "an operator's approval is counted as the operator's"
+    );
+    assert_eq!(
+        counter(&runtime, REGISTRATION_SERIES, ("source", "configuration")),
+        None,
+        "and not as the configuration's"
+    );
+
+    // The other source, on a platform that committed the same record: the
+    // two labels are the two arms of `RegistrationSource` and there is no
+    // third.
+    let committed = RegistrationRecord::new(
+        ACCOUNT_SOURCE,
+        "desk-owner",
+        start(),
+        TERMS,
+        SecretRef::new(SLOT)?,
+    )?;
+    let assembled = platform(PlatformConfig::default().with_venue_registrations(vec![committed]))?;
+    assert_eq!(
+        counter(&assembled, REGISTRATION_SERIES, ("source", "configuration")),
+        Some(1),
+        "a committed registration is counted at assembly"
+    );
+    assert_eq!(
+        counter(&assembled, REGISTRATION_SERIES, ("source", "operator")),
+        None,
+        "and not as an operator's"
+    );
+    assert_eq!(
+        assembled
+            .telemetry()
+            .metrics
+            .snapshot()
+            .counter_total(REGISTRATION_SERIES),
+        1
     );
     Ok(())
 }

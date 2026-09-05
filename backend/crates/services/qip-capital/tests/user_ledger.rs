@@ -17,8 +17,8 @@ use qip_capital::ledger::{
     AttributedFill, Capability, DESK_MANDATE_ID, DecidedBy, Eligibility, EligibilityDecision,
     EligibilityRecord, EligibilityRegistry, EligibilityTerms, Entitlement, Ineligible,
     InvestmentOutcome, InvestmentRequest, Jurisdiction, MAX_USER_ID_LENGTH, Mandate, MandateId,
-    MandateRegistry, MandateTerms, PermittedFamilies, ProductEligibility, RefusedLimit, Role,
-    UserId, UserLedger, UserShare, WithdrawalEntitlement,
+    MandateRegistry, MandateTerms, PermittedFamilies, ProductCatalogue, ProductEligibility,
+    RefusedLimit, Role, UserId, UserLedger, UserShare, WithdrawalEntitlement,
 };
 use qip_contracts::signal::StrategyId;
 use qip_core::error::Result;
@@ -1604,5 +1604,171 @@ fn an_eligibility_record_carries_no_withdrawal_field() {
             .expect("serialises")
             .contains("withdraw"),
         "nothing on the record names a withdrawal"
+    );
+}
+
+#[test]
+fn a_family_no_offering_names_is_cleared_in_no_jurisdiction_and_the_entitlement_refuses_by_name()
+-> Result<()> {
+    // The failure this closes: `Entitlement::evaluate` has always asked for
+    // a `ProductEligibility` and nothing in the tree held one, so a caller
+    // with a family and a user had to either refuse everybody or invent a
+    // clearance to get past the gate. The catalogue answers for a family
+    // nobody has cleared rather than returning `None`, so the caller cannot
+    // forget the case.
+    //
+    // Premise: the catalogue is empty, and it says so.
+    let catalogue = ProductCatalogue::new();
+    assert!(catalogue.is_empty(), "the premise: nothing is cleared");
+    assert_eq!(catalogue.cleared("momentum"), None);
+
+    let gb = Jurisdiction::new("GB")?;
+    let offering = catalogue.offering("momentum");
+    assert_eq!(offering.family, "momentum");
+    assert!(
+        offering.eligible_in.is_empty(),
+        "a family nobody has cleared is eligible nowhere"
+    );
+    assert!(!catalogue.clears("momentum", gb));
+
+    let mut books = ledger();
+    enrol(&mut books, "alice", "1000")?;
+    let alice = user("alice");
+    let mandate = books
+        .mandate(&alice)
+        .expect("the premise: alice is enrolled");
+    let entitlement = Entitlement::evaluate(&alice, mandate, Role::Investor, &offering, now());
+    let Capability::Refused { reason } = entitlement.can_invest() else {
+        panic!("a family cleared nowhere cannot be invested in: {entitlement:?}");
+    };
+    assert!(
+        reason.contains("momentum") && reason.contains("GB"),
+        "the refusal names the family and the jurisdiction it was refused in: {reason}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cleared_family_admits_the_jurisdictions_it_names_and_no_others() -> Result<()> {
+    // Premise: before the offering, the catalogue clears the family
+    // nowhere; the assertion below would pass on an empty catalogue if it
+    // only checked the jurisdiction that is absent.
+    let gb = Jurisdiction::new("GB")?;
+    let us = Jurisdiction::new("US")?;
+    let mut catalogue = ProductCatalogue::new();
+    assert!(!catalogue.clears("momentum", gb));
+
+    catalogue.offer(ProductEligibility::new("momentum").eligible_in(gb))?;
+    assert_eq!(catalogue.len(), 1);
+    assert!(catalogue.clears("momentum", gb), "GB was cleared");
+    assert!(!catalogue.clears("momentum", us), "US was not");
+    assert!(
+        !catalogue.clears("carry", gb),
+        "another family is not cleared"
+    );
+
+    // Superseding: compliance widens the same family rather than adding a
+    // second record for it.
+    catalogue.offer(
+        ProductEligibility::new("momentum")
+            .eligible_in(gb)
+            .eligible_in(us),
+    )?;
+    assert_eq!(catalogue.len(), 1, "the offering stands once per family");
+    assert!(catalogue.clears("momentum", us));
+    Ok(())
+}
+
+#[test]
+fn an_offering_cleared_in_no_jurisdiction_is_refused_rather_than_stored() -> Result<()> {
+    // The failure this prevents: a stored record cleared nowhere refuses
+    // exactly as absence does, so the catalogue would hold two states a
+    // reader cannot tell apart — "nobody decided" and "somebody decided,
+    // and cleared it nowhere" — and the first would be indistinguishable
+    // from a determination that had been taken and lost.
+    let mut catalogue = ProductCatalogue::new();
+    let refused = catalogue
+        .offer(ProductEligibility::new("momentum"))
+        .expect_err("an offering cleared nowhere is refused");
+    assert!(
+        refused.message().contains("no jurisdiction"),
+        "{}",
+        refused.message()
+    );
+    assert!(catalogue.is_empty(), "nothing was stored");
+
+    let blank = catalogue
+        .offer(ProductEligibility::new("  ").eligible_in(Jurisdiction::new("GB")?))
+        .expect_err("an offering naming no family is refused");
+    assert!(
+        blank.message().contains("names no family"),
+        "{}",
+        blank.message()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_stored_catalogue_that_names_a_family_twice_is_refused_on_the_way_back_in() -> Result<()> {
+    // Premise: the honest form round-trips, so the refusal below is about
+    // the duplicate and not about the shape.
+    let gb = Jurisdiction::new("GB")?;
+    let mut catalogue = ProductCatalogue::new();
+    catalogue.offer(ProductEligibility::new("momentum").eligible_in(gb))?;
+    let stored = serde_json::to_string(&catalogue).expect("a catalogue serialises");
+    let read: ProductCatalogue = serde_json::from_str(&stored).expect("it reads back");
+    assert_eq!(read, catalogue);
+
+    let doubled = serde_json::json!([
+        { "family": "momentum", "eligible_in": ["GB"] },
+        { "family": "momentum", "eligible_in": ["US"] },
+    ]);
+    let refused = serde_json::from_value::<ProductCatalogue>(doubled)
+        .expect_err("a catalogue naming a family twice is refused");
+    assert!(
+        refused.to_string().contains("twice"),
+        "{}",
+        refused.to_string()
+    );
+
+    let nowhere = serde_json::json!([{ "family": "momentum", "eligible_in": [] }]);
+    serde_json::from_value::<ProductCatalogue>(nowhere)
+        .expect_err("a stored offering cleared nowhere is refused like a live one");
+    Ok(())
+}
+
+#[test]
+fn a_product_offering_carries_no_withdrawal_field() {
+    // ADR 0021 held by the shape of the record, as
+    // `an_eligibility_record_carries_no_withdrawal_field` holds it for the
+    // other half: the catalogue clears a family for investment, and there
+    // is no field on it through which anything could clear a withdrawal.
+    let gb = Jurisdiction::new("GB").expect("a fixture jurisdiction is valid");
+    let mut catalogue = ProductCatalogue::new();
+    catalogue
+        .offer(ProductEligibility::new("momentum").eligible_in(gb))
+        .expect("the fixture offering is valid");
+    let value = serde_json::to_value(&catalogue).expect("a catalogue serialises");
+    let entry = value
+        .as_array()
+        .expect("a catalogue is a list of offerings")
+        .first()
+        .expect("the premise: one offering was made");
+    let keys: Vec<&str> = entry
+        .as_object()
+        .expect("an offering is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        ["eligible_in", "family"],
+        "an offering is the family and where it is cleared, and nothing else"
+    );
+    assert!(
+        !serde_json::to_string(&value)
+            .expect("serialises")
+            .contains("withdraw"),
+        "nothing in the catalogue names a withdrawal"
     );
 }

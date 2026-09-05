@@ -41,6 +41,19 @@ use std::sync::{Arc, Mutex};
 // --- fixtures ---------------------------------------------------------------
 
 const ANALYST_TOKEN: &str = "analyst-token";
+/// An operator, for the one route on this surface that can change what the
+/// process senses: approving a venue registration.
+const OPERATOR_TOKEN: &str = "operator-token";
+
+/// The catalogued source these tests open. The finder's catalogue evaluates
+/// its terms and admits every usage, and the shipped registration table
+/// declares it keyless — so the gate a re-admission re-runs is the real one
+/// and passes, which is what makes a *failure* below mean something.
+const CONNECTOR_SOURCE: &str = "frankfurter-ecb-reference-rates";
+/// The deployment variable an approval of that source names. Any name the
+/// manifest's shape screen accepts will do: what is under test is whether
+/// the process can resolve it, not what the connector does with it.
+const CREDENTIAL_SLOT: &str = "QIP_FRANKFURTER_TOKEN";
 
 /// The wall clock the API, its credentials and a connector run on. After the
 /// shipped Frankfurter fixture's reference date plus the ECB's sixteen-hour
@@ -109,6 +122,17 @@ struct Rig {
 /// An API whose platform is assembled the way the composition root
 /// assembles it — on the feed's own clock when the feed owns one.
 fn rig(feed: Option<ApiFeed>) -> Result<Rig> {
+    rig_with_variables(feed, BTreeMap::new())
+}
+
+/// The same rig, with the variables a credential slot is resolved against.
+///
+/// Supplied rather than read from the process environment because a test
+/// cannot write the environment it runs in: `std::env::set_var` is unsafe in
+/// the 2024 edition and this workspace forbids `unsafe`. Every other test in
+/// this file passes an empty map, which is the honest state of a process with
+/// nothing mounted.
+fn rig_with_variables(feed: Option<ApiFeed>, variables: BTreeMap<String, String>) -> Result<Rig> {
     let config = PlatformConfig::default();
     let platform_clock = match feed.as_ref().and_then(ApiFeed::owned_clock) {
         Some(tape_clock) => tape_clock,
@@ -125,20 +149,30 @@ fn rig(feed: Option<ApiFeed>) -> Result<Rig> {
     let platform = Arc::new(Mutex::new(platform));
     // Credentials, like the root's, live on the wall clock: a token issued
     // today must still open a tape from last year.
-    let authenticator = Arc::new(Authenticator::new(vec![Credential::from_token(
-        "analyst@example.com",
-        Role::Analyst,
-        ANALYST_TOKEN.to_string(),
-        wall(),
-        wall().saturating_add(Duration::from_days(30)),
-    )]));
+    let authenticator = Arc::new(Authenticator::new(vec![
+        Credential::from_token(
+            "analyst@example.com",
+            Role::Analyst,
+            ANALYST_TOKEN.to_string(),
+            wall(),
+            wall().saturating_add(Duration::from_days(30)),
+        ),
+        Credential::from_token(
+            "operator@example.com",
+            Role::Operator,
+            OPERATOR_TOKEN.to_string(),
+            wall(),
+            wall().saturating_add(Duration::from_days(30)),
+        ),
+    ]));
     let rate_limiter = Arc::new(RateLimiter::new(Duration::from_secs(60), 1000));
     let mut api = Api::new(
         platform.clone(),
         authenticator,
         rate_limiter,
         Arc::new(ManualClock::new(wall())),
-    );
+    )
+    .with_credential_variables(variables);
     if let Some(feed) = feed {
         api = api.with_feed(Arc::new(Mutex::new(feed)));
     }
@@ -170,6 +204,23 @@ impl Rig {
             query: BTreeMap::new(),
             headers,
             body: Vec::new(),
+            peer: "127.0.0.1:1".to_string(),
+        })
+    }
+
+    /// `POST /registrations/{source}/approve`, as an operator.
+    fn approve(&self, source_id: &str, body: &str) -> Response {
+        let mut headers = BTreeMap::new();
+        headers.insert(
+            "authorization".to_string(),
+            format!("Bearer {OPERATOR_TOKEN}"),
+        );
+        self.api.handle(&Request {
+            method: Method::Post,
+            path: format!("/api/v1/registrations/{source_id}/approve"),
+            query: BTreeMap::new(),
+            headers,
+            body: body.as_bytes().to_vec(),
             peer: "127.0.0.1:1".to_string(),
         })
     }
@@ -577,5 +628,194 @@ fn a_connector_whose_licensing_posture_is_not_evaluated_is_refused_before_any_so
         refused.message()
     );
     assert_eq!(server.served(), after_admitted);
+    Ok(())
+}
+
+// --- a runtime approval and the gate ------------------------------------------
+
+/// A file holding something a credential could be, under a directory of its
+/// own, and its path. Deliberately not key-shaped: what is under test is
+/// whether the `_FILE` indirection resolves, and a high-entropy literal in a
+/// committed test is a line the secret scanner has to argue with.
+fn credential_file(name: &str) -> (std::path::PathBuf, String) {
+    let directory =
+        std::env::temp_dir().join(format!("qip-api-credential-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("the directory is created");
+    let path = directory.join("projected");
+    std::fs::write(&path, "not-a-key-this-file-only-has-to-be-non-empty\n")
+        .expect("the credential file is written");
+    (directory, path.display().to_string())
+}
+
+fn approval_body() -> String {
+    serde_json::json!({
+        "terms": "https://www.frankfurter.app/docs",
+        "secret": CREDENTIAL_SLOT,
+    })
+    .to_string()
+}
+
+fn json_of(response: &Response) -> serde_json::Value {
+    let text = body(response);
+    serde_json::from_str(&text).unwrap_or_else(|error| panic!("{error}: {text}"))
+}
+
+#[test]
+fn an_approval_whose_credential_slot_resolves_reopens_the_connector_on_the_record_just_written()
+-> Result<()> {
+    // The failure this guards: the feed's admission gate ran once, at
+    // start-up, against the registry the deployment's configuration stood
+    // for. An operator who approved a registration through the API moved the
+    // registry and the event log and nothing else — the answer said the
+    // source stood registered, which was true, and was read as "and is now
+    // being read", which was not. Nothing anywhere said a restart was
+    // needed.
+    let server = RateServer::serving(RATE_TABLE);
+    let settings = ConnectorSettings {
+        source_id: CONNECTOR_SOURCE.to_string(),
+        base_url: server.url.clone(),
+    };
+    let (directory, path) = credential_file("resolves");
+    let feed = ApiFeed::connector(&settings, 7, wall())?;
+
+    // Premise: this process senses that connector, the source really is the
+    // one the approval below names, and the server was reached opening it —
+    // so a later connection is a *re*-opening and not the first one.
+    assert_eq!(
+        feed.connector_source(),
+        Some(CONNECTOR_SOURCE),
+        "the rig is not sensing the source the approval names"
+    );
+    let opened = server.served();
+    assert!(opened >= 1, "the admitted source opened no socket");
+
+    let slot_file = format!("{CREDENTIAL_SLOT}{}", qip_core::secret::FILE_SUFFIX);
+    let rig = rig_with_variables(Some(feed), vars(&[(&slot_file, &path)]))?;
+    // Premise: nobody has registered this source in this process, so the
+    // record the approval writes is the one the gate is re-run against.
+    assert!(
+        rig.with_platform(|platform| platform.registrations().record(CONNECTOR_SOURCE).is_none())?,
+        "a registration record existed before the approval"
+    );
+
+    let response = rig.approve(CONNECTOR_SOURCE, &approval_body());
+    assert_eq!(response.status, 200, "{}", body(&response));
+    let approved = json_of(&response);
+    assert_eq!(
+        approved["connector"]["admitted"],
+        serde_json::json!(true),
+        "the approval did not re-admit the connector: {}",
+        body(&response)
+    );
+    // The reason is the feed's own banner for the connector it now holds, so
+    // it carries the licensing decision the gate made a second time rather
+    // than a sentence this route composed about it.
+    assert!(
+        approved["connector"]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("ecb-reference-rates-via-frankfurter")),
+        "the reason does not carry the licensing decision the gate made: {}",
+        body(&response)
+    );
+    // The witness that the connector was really re-opened rather than
+    // reported as re-opened: a socket the process did not have before.
+    assert!(
+        server.served() > opened,
+        "the re-admission opened no socket, so nothing was re-opened: {} then {}",
+        opened,
+        server.served()
+    );
+    // The record stands, and the credential is nowhere in the answer.
+    assert!(rig.with_platform(|platform| {
+        platform
+            .registrations()
+            .record(CONNECTOR_SOURCE)
+            .is_some_and(|record| record.secret().variable() == CREDENTIAL_SLOT)
+    })?);
+    assert!(
+        !body(&response).contains("not-a-key-this-file"),
+        "the answer echoed what the credential file holds: {}",
+        body(&response)
+    );
+
+    // And the replaced feed is the one the cycle senses through: a cycle
+    // after the re-admission observes the rate table, which a feed left
+    // half-open would not.
+    let cycled = rig.cycle();
+    assert_eq!(cycled.status, 202, "{}", body(&cycled));
+    assert!(
+        body(&cycled).contains(r#""released":3,"observed":3,"rejected":0"#),
+        "the re-opened connector sensed nothing: {}",
+        body(&cycled)
+    );
+
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
+#[test]
+fn an_approval_whose_credential_slot_is_absent_names_the_slot_and_leaves_the_connector_alone()
+-> Result<()> {
+    // The other half, and the one that decides whether the gate above is a
+    // gate: a process that cannot read the credential the record names must
+    // not re-open the connector, because the transport would then fail at
+    // the vendor with an error naming neither the variable nor the record —
+    // and the operator who had just approved would read it as the venue
+    // refusing them.
+    let server = RateServer::serving(RATE_TABLE);
+    let settings = ConnectorSettings {
+        source_id: CONNECTOR_SOURCE.to_string(),
+        base_url: server.url.clone(),
+    };
+    let feed = ApiFeed::connector(&settings, 7, wall())?;
+    assert_eq!(feed.connector_source(), Some(CONNECTOR_SOURCE));
+
+    // Nothing mounted: the map is the whole of what this process can resolve
+    // a slot against, and it is empty.
+    let rig = rig_with_variables(Some(feed), BTreeMap::new())?;
+    let opened = server.served();
+    assert!(opened >= 1, "the admitted source opened no socket");
+
+    let response = rig.approve(CONNECTOR_SOURCE, &approval_body());
+    // Premise: the approval itself succeeded and the record stands. Without
+    // this the refusal below could be the approval's rather than the
+    // connector's.
+    assert_eq!(response.status, 200, "{}", body(&response));
+    let approved = json_of(&response);
+    assert_eq!(
+        approved["source_id"],
+        serde_json::json!(CONNECTOR_SOURCE),
+        "{}",
+        body(&response)
+    );
+    assert!(
+        rig.with_platform(|platform| platform.registrations().record(CONNECTOR_SOURCE).is_some())?
+    );
+
+    assert_eq!(
+        approved["connector"]["admitted"],
+        serde_json::json!(false),
+        "a connector was re-opened on a credential this process cannot read: {}",
+        body(&response)
+    );
+    let reason = approved["connector"]["reason"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    // Both names, because an operator has to know which of the two to set.
+    assert!(
+        names_token(&reason, CREDENTIAL_SLOT)
+            && reason.contains(&format!(
+                "{CREDENTIAL_SLOT}{}",
+                qip_core::secret::FILE_SUFFIX
+            )),
+        "the refusal does not name the slot and its file variant: {reason}"
+    );
+    // Nothing was opened: the feed is the one the process started with.
+    assert_eq!(
+        server.served(),
+        opened,
+        "a refused re-admission still opened a socket, so the credential check ran after it"
+    );
     Ok(())
 }

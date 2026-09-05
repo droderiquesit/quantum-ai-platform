@@ -156,6 +156,33 @@ github_repository = "droderiquesit/quantum-ai-platform"
 # same sha256, so the tag had not moved under the reviewed line.
 vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9e105491d58d29ac2739560b3b"
 
+# --- The two optional files the API is given, and why neither is named here ---
+#
+# `venue_registrations_file` and `wallet_statement_file` stay at their default
+# of null, so `catalogue.tf` renders no configuration file for either and the
+# API sees neither QIP_VENUE_REGISTRATIONS_PATH nor QIP_WALLET_STATEMENT_PATH.
+# Absent is a state each variable documents, not an omission:
+#
+# venue_registrations_file = "data/registrations/venue-registrations.json"
+#   would mount the records the API's registry ships with. Nobody has
+#   registered with a venue from this environment, and a record is a named
+#   person's act — they read the terms, registered under their own identity
+#   and wrote the credential into its Secret Manager slot before the file
+#   could honestly exist (docs/operations/registering-a-venue.md). Unset, the
+#   shipped registry holds nobody and every source needing an account is
+#   refused, which is what a deployment where nobody registered should do.
+#
+# wallet_statement_file = "data/statements/<the day's statement>.json"
+#   would mount a custodian's dated statement for LEARN to reconcile the
+#   wallet against. This environment trades on the in-process simulated venue
+#   (ADR 0003), which issues no statement, and no custodian relationship
+#   exists for the paper book — so there is nothing to mount. It is also a
+#   same-day act: the kernel holds a statement fresh for one day and the API
+#   refuses a stale one at start-up, so a file committed today is a refused
+#   start tomorrow. Unset, the banner says there is no feed and /wallet
+#   answers `assembled: false`, which is the truthful answer for a process
+#   nothing has reported to.
+
 # --- Customer identity ------------------------------------------------------
 # Identity Platform for customer sign-in, activated once real hostnames
 # existed to authorize. The domains are the Cloud Run URLs a deploy actually

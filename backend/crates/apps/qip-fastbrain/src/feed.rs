@@ -13,10 +13,31 @@
 //! Every record is validated before the platform sees it. A record that fails
 //! is counted and reported rather than dropped: bad data must never silently
 //! become an investment input, and a rejection nobody counts is a silent one.
+//!
+//! # Two gates before a connector opens
+//!
+//! A catalogued connector passes the data finder's licensing evaluation and
+//! then its registration registry, in that order, before anything is
+//! constructed. The registry is the one the node's own configuration stands
+//! for — [`qip_kernel::PlatformConfig::registration_registry`] — so a source
+//! whose venue demands an account opens here only when the owner recorded the
+//! registration they made, and is refused **by name** when they did not. The
+//! node used to ask [`qip_data_finder::admission::admit`], which consults the
+//! shipped table and holds nobody's record: that door could never admit an
+//! account-gated source however the deployment was configured, and it was the
+//! wrong answer for the right reason.
+//!
+//! Both gates are table reads. **Nothing here consults a language model, and
+//! nothing may** — ADR 0008 puts no model on the fast path at all, and a
+//! licence and a registration are facts somebody wrote down and reviewed, not
+//! judgements to be inferred at start-up. A model asked whether a source may
+//! be traded on would answer, plausibly, without having read anything.
 
 use crate::config::{ConnectorFeedSettings, LiveFeedSettings};
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, ManualClock, ObjectId, Timestamp};
+use qip_data_finder::admission::{self, CatalogueEntry};
+use qip_data_finder::registration::RegistrationRegistry;
 use qip_financial::quality::LicensingClass;
 use qip_market::bar::Interval;
 use qip_market_ingestion::adapter::{DataAdapter, SensedRecord, SourceDescriptor};
@@ -68,10 +89,12 @@ pub enum Feed {
     /// decisions this code deliberately does not make.
     Live(Box<RestMarketDataAdapter>),
     /// A worked connector from the ingestion SDK, opened through the egress
-    /// proxy after the licensing catalogue admitted it. See
-    /// [`qip_data_finder::admission::admit`] — the gate runs before
-    /// construction, and [`Self::open`] is shaped so there is no path to this
-    /// arm around it.
+    /// proxy after the licensing catalogue admitted it and the registration
+    /// registry named who registered. See
+    /// [`qip_data_finder::admission::admit_registered`] — both gates run
+    /// before construction, and the only constructors that reach this arm are
+    /// [`Self::connector`] and [`Self::connector_admitted_by`], each of which
+    /// runs them.
     Connector(Box<ConnectorFeed>),
 }
 
@@ -155,17 +178,57 @@ impl Feed {
 
     /// Open a catalogued connector source through the egress proxy.
     ///
-    /// The licensing gate runs here, before anything is constructed and
-    /// before any socket is touched: the rule is evaluation *then* use, and
-    /// putting the call inside the constructor makes the ordering a property
-    /// of the code path rather than of the caller's memory. The catalogue is
-    /// the data finder's, shared with `qip-api`: this root once carried its
-    /// own copy of the same entries, and two catalogues that must say the
-    /// same thing about one licence are one catalogue plus a drift nobody
-    /// has found yet.
-    pub fn connector(settings: &ConnectorFeedSettings, at: Timestamp) -> Result<Self> {
+    /// Both gates run here, before anything is constructed and before any
+    /// socket is touched: the rule is evaluation *then* use, and putting the
+    /// call inside the constructor makes the ordering a property of the code
+    /// path rather than of the caller's memory. The catalogue is the data
+    /// finder's, shared with `qip-api`: this root once carried its own copy
+    /// of the same entries, and two catalogues that must say the same thing
+    /// about one licence are one catalogue plus a drift nobody has found yet.
+    ///
+    /// `registrations` is the registry the node's configuration stands for,
+    /// so a source is admitted here only on a record the platform — assembled
+    /// afterwards from the same configuration — also holds. Passed in rather
+    /// than reached for: a constructor that built its own registry would
+    /// answer from a table nothing else in the process shares.
+    ///
+    /// Both questions are answered by reading a table. Nothing on this path
+    /// asks a model anything (ADR 0008); see the module documentation for why
+    /// that is a rule and not an omission.
+    pub fn connector(
+        settings: &ConnectorFeedSettings,
+        registrations: &RegistrationRegistry,
+        at: Timestamp,
+    ) -> Result<Self> {
         let class = qip_market_ingestion::connector_feed::shipped_class(&settings.source_id)?;
-        qip_data_finder::admission::admit(&settings.source_id, class, at)?;
+        admission::admit_registered(registrations, &settings.source_id, class, at)?;
+        Self::admitted_connector(settings, at)
+    }
+
+    /// The same opening against a caller-supplied licensing catalogue.
+    ///
+    /// Split from [`Self::connector`] so a test can hold the registration
+    /// question against an entry the real catalogue must never contain —
+    /// today every account-gated source is refused on its unread terms first,
+    /// so without this the registration gate could only be proven by the
+    /// refusal it does not produce.
+    pub fn connector_admitted_by(
+        entries: &[CatalogueEntry],
+        registrations: &RegistrationRegistry,
+        settings: &ConnectorFeedSettings,
+        at: Timestamp,
+    ) -> Result<Self> {
+        let class = qip_market_ingestion::connector_feed::shipped_class(&settings.source_id)?;
+        admission::admit_from_registered(entries, registrations, &settings.source_id, class, at)?;
+        Self::admitted_connector(settings, at)
+    }
+
+    /// Construct the connector arm, once something has admitted it.
+    ///
+    /// Private, and the two callers above are the whole set: a public
+    /// constructor here would be a door into the arm that skips both gates,
+    /// which is the thing the ordering exists to prevent.
+    fn admitted_connector(settings: &ConnectorFeedSettings, at: Timestamp) -> Result<Self> {
         Ok(Self::Connector(Box::new(ConnectorFeed::open(
             &settings.source_id,
             &settings.base_url,
@@ -181,11 +244,17 @@ impl Feed {
     /// the synthetic exchange anyway would be the worst outcome available
     /// here, because nothing downstream can tell the two tapes apart once the
     /// records look the same.
+    ///
+    /// `registrations` reaches only the connector arm, and it is a parameter
+    /// rather than a default so the one registry the process holds is the one
+    /// the gate reads. Every other arm needs no account: a tape, a replay and
+    /// the synthetic exchange are this repository's own files.
     pub fn open(
         live: Option<&LiveFeedSettings>,
         connector: Option<&ConnectorFeedSettings>,
         replay_path: Option<&str>,
         tape_path: Option<&str>,
+        registrations: &RegistrationRegistry,
         seed: u64,
         step: Duration,
         start: Timestamp,
@@ -203,7 +272,7 @@ impl Feed {
                 let venue = settings.venue.clone();
                 Self::live(settings, &venue)
             }
-            (None, Some(settings), _, _) => Self::connector(settings, start),
+            (None, Some(settings), _, _) => Self::connector(settings, registrations, start),
             // The same contradiction one rung down: two recordings, and the
             // two run on different clocks, so there is no answer that is
             // right for both.
@@ -368,6 +437,43 @@ impl Feed {
         }
         Ok(batch)
     }
+}
+
+/// Where every catalogued source stands, one banner line each.
+///
+/// Read off the registry the process holds, so the line describes the table
+/// the gate above reads rather than a second one assembled for display. Every
+/// catalogued source is named, not only the admitted ones: a banner listing
+/// what opened would read as a node with nothing to register, and the source
+/// an operator needs to see is the one that is refused.
+///
+/// A refusal is reported as its requirement rather than as the registry's
+/// whole sentence — the sentence names the runbook, the credential and the
+/// venue, and four of them would bury the banner. The full refusal is what a
+/// configured-but-unregistered source stops the process with, which is where
+/// an operator meets it.
+///
+/// This is a table read and nothing else. No model is asked what a source's
+/// standing is, here or anywhere on this node (ADR 0008).
+pub fn source_standings(registrations: &RegistrationRegistry) -> Result<Vec<String>> {
+    let mut lines = Vec::new();
+    for entry in admission::catalogue()? {
+        let standing = match registrations.standing(entry.source_id) {
+            Ok(standing) => standing.describe(),
+            Err(_) => match registrations.requirement(entry.source_id) {
+                Some(requirement) => format!(
+                    "not registered, so refused: it needs {}",
+                    requirement.describe()
+                ),
+                None => "refused: no registration requirement is declared for it".to_string(),
+            },
+        };
+        lines.push(format!(
+            "  registration:     {}: {standing}",
+            entry.source_id
+        ));
+    }
+    Ok(lines)
 }
 
 /// The finest bar a step of this size can close.
@@ -658,6 +764,9 @@ mod tape_tests {
             None,
             Some(&path.display().to_string()),
             Some(&path.display().to_string()),
+            // No arm reached here needs an account; the registry is the
+            // shipped table because a tape is this repository's own file.
+            &RegistrationRegistry::shipped(),
             7,
             Duration::from_secs(1),
             Timestamp::from_secs(1_760_000_000),
@@ -676,6 +785,7 @@ mod tape_tests {
             None,
             None,
             Some(&path.display().to_string()),
+            &RegistrationRegistry::shipped(),
             7,
             Duration::from_secs(1),
             Timestamp::from_secs(1_760_000_000),
@@ -727,6 +837,7 @@ mod source_choice_tests {
             None,
             Some("/tmp/some-recorded-session.jsonl"),
             None,
+            &RegistrationRegistry::shipped(),
             7,
             Duration::from_secs(1),
             start(),
@@ -761,8 +872,17 @@ mod source_choice_tests {
         // source were production-grade, that test would pass without checking
         // anything — and the synthetic exchange must never be mistaken for a
         // tape, which is the whole reason the descriptor carries the class.
-        let feed = Feed::open(None, None, None, None, 7, Duration::from_secs(1), start())
-            .expect("the synthetic exchange opens");
+        let feed = Feed::open(
+            None,
+            None,
+            None,
+            None,
+            &RegistrationRegistry::shipped(),
+            7,
+            Duration::from_secs(1),
+            start(),
+        )
+        .expect("the synthetic exchange opens");
         assert!(matches!(feed, Feed::Synthetic(_)));
         assert!(
             !feed.is_production_grade(),
@@ -813,6 +933,7 @@ mod connector_feed_tests {
             Some(&connector_settings()),
             None,
             None,
+            &RegistrationRegistry::shipped(),
             7,
             Duration::from_secs(1),
             start(),
@@ -837,6 +958,7 @@ mod connector_feed_tests {
             Some(&settings),
             None,
             None,
+            &RegistrationRegistry::shipped(),
             7,
             Duration::from_secs(1),
             start(),

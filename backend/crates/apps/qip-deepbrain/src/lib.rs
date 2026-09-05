@@ -35,7 +35,21 @@
 //! The rule this node exists to enforce — that nothing it hosts can reach a
 //! venue — is in [`roster`], and it is checked before anything in [`node`] is
 //! allowed to run.
+//!
+//! # The one hosted model, and what stands in front of it
+//!
+//! This is also the only binary that may construct a hosted language model
+//! (ADR 0037, decision 4), and the three preconditions it constructs one
+//! behind are in [`attestation`] and [`language`] rather than in `main`: a
+//! credential
+//! resolved through the `_FILE` indirection, a committed attestation that a
+//! named operator read the provider's terms, and that attestation naming the
+//! provider the chosen model pins. A missing precondition withholds the
+//! adapter, names itself and its variable on the banner, and leaves the
+//! deterministic templates narrating — which is what every deployment does
+//! today.
 
+pub mod attestation;
 pub mod config;
 pub mod evolution;
 pub mod health;

@@ -43,7 +43,9 @@ use qip_core::ids::{FillId, ObjectId, OrderId};
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Decimal, dec};
-use qip_edge::cell::{Cell, CellConfig, ExecutionReport, Placer, PricingPolicy};
+use qip_edge::cell::{
+    Cell, CellConfig, ExecutionReport, Placer, PolledHalt, PricingPolicy, WorkReport,
+};
 use qip_edge::dropcopy::DropCopyFill;
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::feasibility::{self as edge_feasibility, Granularity, VenueModel};
@@ -1913,8 +1915,12 @@ fn the_execution_measurements_document_names_only_tests_this_file_holds_and_says
         .filter_map(|rest| rest.split('(').next())
         .filter(|name| name.ends_with(SUFFIX))
         .collect();
+    // Fifteen as of 2026-09-05, one per execution capability the traceability
+    // document names. Raised from ten when the halt wire was measured: a
+    // floor left below the count it was written from stops being a guard
+    // against the section being cut down, which is the only thing it is for.
     assert!(
-        measuring.len() >= 10,
+        measuring.len() >= 15,
         "this file holds only {} execution measurements; the section was cut down",
         measuring.len()
     );
@@ -1938,11 +1944,17 @@ fn the_execution_measurements_document_names_only_tests_this_file_holds_and_says
 
     // And the caveats a reader has to meet before any number: the shape of
     // the machine, the profile, and the two sentences that stop an in-process
-    // figure being read as a deployment figure.
+    // figure being read as a deployment figure. `taken on the debug profile`
+    // is pinned because one row is not release and a table whose heading no
+    // longer names a profile has to say so somewhere a reader will reach: a
+    // debug figure read as a release one overstates the cost of stopping a
+    // cell by an unmeasured factor, in the safe direction, which is exactly
+    // the kind of error nobody goes looking for.
     let lowered = document.to_lowercase();
     for required in [
         "4 cores",
         "release",
+        "taken on the debug profile",
         "not a deployment measurement",
         "nothing is deployed",
         "2026-09-05",
@@ -1958,4 +1970,267 @@ fn the_execution_measurements_document_names_only_tests_this_file_holds_and_says
             "docs/ops/execution-measurements.md claims \"{overclaim}\""
         );
     }
+}
+
+// --- the fifteenth capability: the halt wire ---------------------------------
+//
+// Fourteen of the fifteen execution capabilities had a number above; this is
+// the fifteenth, and it is the one whose absence mattered most. Every row up
+// to here says what the platform costs while it is working. This one says how
+// long it keeps working after somebody has told it to stop, which is the only
+// figure on the page a risk desk is entitled to ask for by name.
+//
+// §46.2 asks for two halt paths that share no failure — "Spanner flag polled
+// and Pub/Sub broadcast. Either halts trading" — and both are measured, for
+// the same reason both exist: a wire measured on the day the other one worked
+// is not a kill switch. In this workspace they are the centre's trip carried
+// in the signed policy payload, and a flag file on the node's own filesystem.
+
+/// What an operator writes into the polled halt flag to engage it.
+///
+/// The reason is echoed into the cell's halt state, and the tests below assert
+/// the *whole* reason rather than a fragment of it: an unreadable flag halts
+/// too, fail-closed, so a measurement that only checked "the cell is halted"
+/// would be satisfied by a write that never landed.
+const HALT_FLAG_CONTENT: &[u8] = b"engaged: a measurement drill\n";
+
+/// The halt state that content produces, in full.
+const HALT_FLAG_REASON: &str = "polled halt: is engaged: a measurement drill";
+
+/// One pass that must place an order, its fill settled through the drop copy.
+///
+/// This is the premise of both halt measurements. "The wire stopped a cell
+/// that was placing" is a fact about the wire only if the cell was placing,
+/// and a halt timed against a cell that had quietly stopped trading for some
+/// unrelated reason is a stopwatch on nothing. Settling each fill keeps the
+/// loop honest for a second reason: unsettled orders accumulate against
+/// `MAX_OPEN_ORDERS`, and a capacity refusal partway through would end the
+/// placing the premise asserts.
+fn placing_pass(cell: &mut Cell, gateway: &mut PaperVenue, now: Timestamp) -> Result<usize> {
+    let report = cell.work(now, gateway)?;
+    assert!(
+        !report.halted,
+        "the premise is a running cell, and this one was already halted before the wire under \
+         measurement engaged it"
+    );
+    for fill in &report.fills {
+        cell.observe_drop_copy(DropCopyFill {
+            order_id: fill.order_id.clone(),
+            venue: fill.venue.clone(),
+            quantity: fill.quantity,
+            price: fill.price,
+            at: now,
+        });
+    }
+    let breaks = cell.reconcile(now);
+    assert!(
+        breaks.is_empty(),
+        "the drop copy disagreed with the order-entry channel: {breaks:?}"
+    );
+    Ok(report.orders.len())
+}
+
+/// What a halted pass has to look like, and which wire it has to name.
+///
+/// The gate is compared as a whole token and never as a substring. The two
+/// gates are `policy_halt` and `polled_halt`; they differ by two characters,
+/// both contain `halt`, and an operator who reads the wrong one knocks on the
+/// wrong door — the broadcast halt is released by a newer signed payload from
+/// the centre, the polled halt by deleting a file on the node. So the pass is
+/// asserted to name the wire that fired *and* not to name the other one.
+fn assert_the_pass_was_refused_by(report: &WorkReport, gate: &str, other: &str) {
+    assert!(
+        report.halted,
+        "the pass after the halt reports a running cell"
+    );
+    assert!(
+        report.orders.is_empty(),
+        "a halted cell sent {} orders",
+        report.orders.len()
+    );
+    let gates: Vec<&str> = report
+        .refusals
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert!(
+        gates.contains(&gate),
+        "the halted pass does not refuse under `{gate}`, so nothing tells an operator which wire \
+         stopped the cell: {gates:?}"
+    );
+    assert!(
+        !gates.contains(&other),
+        "the halted pass refuses under `{other}`, which is the other wire entirely: {gates:?}"
+    );
+}
+
+#[test]
+fn each_halt_wire_stopping_the_next_pass_costs_what_the_execution_measurements_say() -> Result<()> {
+    // Timed, for each wire: from the instant the halt exists — the signed
+    // payload handed to the cell, or the flag written on the node — to the
+    // instant the next pass refuses to trade. One always-firing strategy over
+    // a fixed two-level book, so the workload either side of the halt is the
+    // same deterministic pass every iteration.
+    //
+    // Two things this number is not. It is not a deployed latency: nothing is
+    // deployed, and `qip-edge-node` has no scheduler, so it reads the flag
+    // once per liveness probe and the wait for the next read dominates the
+    // whole figure in any real deployment. And the polled half is the only
+    // timed path in this file with a syscall on it — one `write` and one
+    // `read` against the container's page cache, which is not a Secret
+    // Manager mount.
+    const HALTS: usize = 500;
+    let base = start().saturating_add(Duration::from_secs(2));
+    // Three instants per iteration: place, halt, release. Milliseconds apart,
+    // the same regime as the work-pass measurement above, so the book never
+    // ages out from under the strategy and the envelope never expires.
+    let at = |millis: usize| base.saturating_add(Duration::from_millis(millis as i64));
+
+    // --- wire one: the centre's trip, carried in the policy payload ---------
+    let mut cell = edge_cell(&[("alpha", SignalKind::Enter, "100", PricingPolicy::Marketable)])?;
+    let mut gateway = PaperVenue {
+        fills: true,
+        ..PaperVenue::default()
+    };
+    // Signed before the clock starts. What a cell pays is the verification and
+    // the application; the signing happened at the centre, on another machine
+    // in any deployment that exists. Each halt is followed by a release with a
+    // newer sequence issued after the barrier the halt raised, because that is
+    // the only thing that can release it.
+    let mut commands: Vec<(PolicyPayload, PolicyPayload)> = Vec::with_capacity(HALTS);
+    for index in 0..HALTS {
+        let mut halt =
+            PolicyPayload::unproduced(2 * index as u64 + 1, EDGE_CELL, at(3 * index + 1));
+        halt.halted = true;
+        let release = PolicyPayload::unproduced(2 * index as u64 + 2, EDGE_CELL, at(3 * index + 2));
+        commands.push((
+            halt.signed(EDGE_POLICY_KEY)?,
+            release.signed(EDGE_POLICY_KEY)?,
+        ));
+    }
+
+    let mut placed = 0usize;
+    let mut stopped = 0usize;
+    let mut central = WallDuration::ZERO;
+    for (index, (halt, release)) in commands.into_iter().enumerate() {
+        placed += placing_pass(&mut cell, &mut gateway, at(3 * index))?;
+
+        let halt_at = at(3 * index + 1);
+        let began = Instant::now();
+        let verified = VerifiedPolicy::verify(halt, EDGE_POLICY_KEY, EDGE_CELL, halt_at)?;
+        cell.apply_policy(verified, halt_at)?;
+        let report = cell.work(halt_at, &mut gateway)?;
+        central += began.elapsed();
+
+        assert_the_pass_was_refused_by(&report, "policy_halt", "polled_halt");
+        stopped += 1;
+
+        let release_at = at(3 * index + 2);
+        let verified = VerifiedPolicy::verify(release, EDGE_POLICY_KEY, EDGE_CELL, release_at)?;
+        cell.apply_policy(verified, release_at)?;
+        assert!(
+            !cell.is_halted(),
+            "the release did not restore the cell, so every iteration after this one would time a \
+             halt on a cell that was already stopped"
+        );
+    }
+    assert_eq!(
+        placed, HALTS,
+        "the cell did not place an order on every pass before a halt"
+    );
+    assert_eq!(
+        gateway.accepted, HALTS,
+        "the venue did not receive an order for every pass before a halt"
+    );
+    assert_eq!(stopped, HALTS, "not every halt stopped the next pass");
+    report(
+        "edge halt wire, central policy payload (verify, apply, refuse next pass)",
+        HALTS,
+        central,
+        5_000.0,
+    );
+
+    // --- wire two: the flag polled off the node's own filesystem ------------
+    // Its own directory, because what a *missing* flag means depends on
+    // whether the directory carrying it is still there: an absent file is the
+    // off state, a gone mount is a wire whose state is unknown and halts.
+    let directory =
+        std::env::temp_dir().join(format!("qip-halt-wire-{}-{}", std::process::id(), line!()));
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| Error::io(format!("cannot create {}: {error}", directory.display())))?;
+    let flag = directory.join("halt");
+
+    let mut cell = edge_cell(&[("alpha", SignalKind::Enter, "100", PricingPolicy::Marketable)])?;
+    let mut gateway = PaperVenue {
+        fills: true,
+        ..PaperVenue::default()
+    };
+    let mut placed = 0usize;
+    let mut stopped = 0usize;
+    let mut polled = WallDuration::ZERO;
+    for index in 0..HALTS {
+        placed += placing_pass(&mut cell, &mut gateway, at(3 * index))?;
+
+        let halt_at = at(3 * index + 1);
+        let began = Instant::now();
+        std::fs::write(&flag, HALT_FLAG_CONTENT)
+            .map_err(|error| Error::io(format!("cannot write {}: {error}", flag.display())))?;
+        // What `qip_edge_node::halt::HaltFlag::read` does with a flag that is
+        // there. The node is an application crate this suite cannot link — the
+        // dependency direction forbids it — so the read is reproduced here
+        // rather than called, and only its present-file arm is inside the
+        // number.
+        let reading = match std::fs::read(&flag) {
+            Ok(bytes) => PolledHalt::from_content(&bytes),
+            Err(error) => PolledHalt::Unreadable(format!("cannot read the flag: {error}")),
+        };
+        cell.apply_polled_halt(reading, halt_at);
+        let report = cell.work(halt_at, &mut gateway)?;
+        polled += began.elapsed();
+
+        assert_the_pass_was_refused_by(&report, "polled_halt", "policy_halt");
+        // The whole reason, not a fragment of it: an unreadable flag halts as
+        // well, so a measurement that asked only whether the cell was stopped
+        // would be satisfied by a write that never landed and a read that
+        // failed — the fail-closed path, timing the wrong thing and passing.
+        assert_eq!(
+            cell.polled_halt(),
+            Some(HALT_FLAG_REASON),
+            "the cell is halted by something other than the flag that was written"
+        );
+        stopped += 1;
+
+        // Released outside the clock by removing the flag, which is the shape
+        // the deployment uses: create to halt, delete to release.
+        std::fs::remove_file(&flag)
+            .map_err(|error| Error::io(format!("cannot remove {}: {error}", flag.display())))?;
+        let reading = match std::fs::read(&flag) {
+            Ok(bytes) => PolledHalt::from_content(&bytes),
+            Err(_) => PolledHalt::Absent,
+        };
+        cell.apply_polled_halt(reading, at(3 * index + 2));
+        assert!(
+            !cell.is_halted(),
+            "deleting the flag did not release the cell, so every iteration after this one would \
+             time a halt on a cell that was already stopped"
+        );
+    }
+    assert_eq!(
+        placed, HALTS,
+        "the cell did not place an order on every pass before a halt"
+    );
+    assert_eq!(
+        gateway.accepted, HALTS,
+        "the venue did not receive an order for every pass before a halt"
+    );
+    assert_eq!(stopped, HALTS, "not every flag stopped the next pass");
+    report(
+        "edge halt wire, polled flag (write, read, apply, refuse next pass)",
+        HALTS,
+        polled,
+        5_000.0,
+    );
+
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
 }

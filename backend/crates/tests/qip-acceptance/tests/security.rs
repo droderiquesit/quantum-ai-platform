@@ -1087,3 +1087,770 @@ fn no_signing_or_withdrawal_path_exists_for_capital_to_leave_the_platform() {
          {offenders:?}"
     );
 }
+
+// --- reading the API's shipped source -----------------------------------------
+//
+// The three tests below read `qip-api`'s own source rather than driving the
+// handler, because what they assert is about code that does not exist yet:
+// that the *next* operator route also takes its identity from the session, and
+// that the *next* refusal body also declines to repeat what the caller sent.
+// A behavioural test can only exercise the routes there are today. Both halves
+// are here — the scans, and a live parse of the approval body they are about —
+// because a scan with no behaviour behind it guards a spelling.
+
+/// Whether `c` may appear in a Rust identifier.
+///
+/// The scans below tokenise rather than calling `contains`, for the reason
+/// `.claude/rules/architecture/01-testing-strategy.md` gives and this
+/// repository has already been bitten by: `key` is a substring of `monkey`,
+/// `token` of `tokenise`, and `secret` of `secretary`. A substring scan for
+/// those would refuse innocent code until somebody loosened it, and a scan
+/// that has been loosened once is a scan nobody trusts the second time.
+fn is_identifier_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// The index just past a `"…"` literal starting at `index`.
+fn skip_string(bytes: &[u8], index: usize) -> usize {
+    let mut cursor = index + 1;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'\\' => cursor += 2,
+            b'"' => return cursor + 1,
+            _ => cursor += 1,
+        }
+    }
+    bytes.len()
+}
+
+/// The index just past an `r"…"` / `r#"…"#` literal starting at `index`.
+fn skip_raw_string(bytes: &[u8], index: usize) -> usize {
+    let mut hashes = 0usize;
+    let mut cursor = index + 1;
+    while cursor < bytes.len() && bytes[cursor] == b'#' {
+        hashes += 1;
+        cursor += 1;
+    }
+    if bytes.get(cursor) != Some(&b'"') {
+        return index + 1;
+    }
+    cursor += 1;
+    while cursor < bytes.len() {
+        if bytes[cursor] == b'"' {
+            let closed = (0..hashes).all(|offset| bytes.get(cursor + 1 + offset) == Some(&b'#'));
+            if closed {
+                return cursor + 1 + hashes;
+            }
+        }
+        cursor += 1;
+    }
+    bytes.len()
+}
+
+/// The index just past whatever lexical unit starts at `index`, counting a
+/// string, a raw string, a byte string, a character literal and a comment as
+/// one unit each.
+///
+/// The bracket walks below need this. Every JSON body in `qip-api` is a raw
+/// string, several refusal messages contain parentheses, and every third
+/// comment contains an apostrophe — so a naive walk would close a call at a
+/// bracket inside a sentence and read the wrong argument list, which is the
+/// way a scan silently starts guarding nothing.
+fn next_lexical_unit(bytes: &[u8], index: usize) -> usize {
+    match bytes[index] {
+        b'/' if bytes.get(index + 1) == Some(&b'/') => {
+            let mut cursor = index + 2;
+            while cursor < bytes.len() && bytes[cursor] != b'\n' {
+                cursor += 1;
+            }
+            cursor
+        }
+        b'/' if bytes.get(index + 1) == Some(&b'*') => {
+            let mut cursor = index + 2;
+            while cursor + 1 < bytes.len() && !(bytes[cursor] == b'*' && bytes[cursor + 1] == b'/')
+            {
+                cursor += 1;
+            }
+            (cursor + 2).min(bytes.len())
+        }
+        b'"' => skip_string(bytes, index),
+        b'r' if matches!(bytes.get(index + 1), Some(b'"' | b'#'))
+            && (index == 0 || !is_identifier_char(bytes[index - 1] as char)) =>
+        {
+            skip_raw_string(bytes, index)
+        }
+        b'b' if bytes.get(index + 1) == Some(&b'"')
+            && (index == 0 || !is_identifier_char(bytes[index - 1] as char)) =>
+        {
+            skip_string(bytes, index + 1)
+        }
+        // A character literal, or a lifetime. Only the literal is skipped: a
+        // lifetime is a single quote followed by a name and opens nothing.
+        b'\'' if bytes.get(index + 1) == Some(&b'\\') => {
+            let mut cursor = index + 2;
+            while cursor < bytes.len() && bytes[cursor] != b'\'' {
+                cursor += 1;
+            }
+            (cursor + 1).min(bytes.len())
+        }
+        b'\'' if bytes.get(index + 2) == Some(&b'\'') => index + 3,
+        _ => index + 1,
+    }
+}
+
+/// The text between the bracket at `open` and the one that closes it.
+fn bracketed(text: &str, open: usize, opener: u8, closer: u8) -> Option<&str> {
+    let bytes = text.as_bytes();
+    if bytes.get(open) != Some(&opener) {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut index = open;
+    while index < bytes.len() {
+        if bytes[index] == opener {
+            depth += 1;
+            index += 1;
+        } else if bytes[index] == closer {
+            depth -= 1;
+            if depth == 0 {
+                return Some(&text[open + 1..index]);
+            }
+            index += 1;
+        } else {
+            index = next_lexical_unit(bytes, index).max(index + 1);
+        }
+    }
+    None
+}
+
+/// Split an argument list at the commas that are not inside a nested bracket
+/// or a literal.
+fn arguments(list: &str) -> Vec<&str> {
+    let bytes = list.as_bytes();
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'(' | b'[' | b'{' => {
+                depth += 1;
+                index += 1;
+            }
+            b')' | b']' | b'}' => {
+                depth = depth.saturating_sub(1);
+                index += 1;
+            }
+            b',' if depth == 0 => {
+                parts.push(list[start..index].trim());
+                start = index + 1;
+                index += 1;
+            }
+            _ => index = next_lexical_unit(bytes, index).max(index + 1),
+        }
+    }
+    parts.push(list[start..].trim());
+    parts.into_iter().filter(|part| !part.is_empty()).collect()
+}
+
+/// The identifier tokens of an expression, in order: `body.secret.variable()`
+/// is `["body", "secret", "variable"]`.
+fn segments(expression: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    let bytes = expression.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if is_identifier_char(bytes[index] as char) {
+            let start = index;
+            while index < bytes.len() && is_identifier_char(bytes[index] as char) {
+                index += 1;
+            }
+            found.push(&expression[start..index]);
+        } else {
+            index += 1;
+        }
+    }
+    found
+}
+
+/// One crate's shipped Rust source, with each file's tail test module cut off.
+///
+/// A scan that read the in-file tests would be scanning the fixtures written
+/// to prove these very refusals — a test body that constructs a hostile
+/// request is the point of it, not a violation.
+fn shipped_rust(crate_src: &str) -> Vec<(PathBuf, String)> {
+    let files = files_with_extension(crate_src, "rs");
+    assert!(
+        !files.is_empty(),
+        "no sources under {crate_src}; the scan has nothing to read"
+    );
+    files
+        .into_iter()
+        .map(|path| {
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+            assert!(
+                text.matches("#[cfg(test)]").count() <= 1,
+                "{} has more than one `#[cfg(test)]`; the shipped-code cut assumes one \
+                 test module at the tail",
+                path.display()
+            );
+            let shipped = match text.find("#[cfg(test)]") {
+                Some(cut) => text[..cut].to_string(),
+                None => text,
+            };
+            (path, shipped)
+        })
+        .collect()
+}
+
+/// `Method::Post` as it is spelled in a match arm, from the method as the
+/// route table holds it.
+fn method_variant(method: Method) -> &'static str {
+    match method {
+        Method::Get => "Get",
+        Method::Post => "Post",
+        Method::Put => "Put",
+        Method::Delete => "Delete",
+        Method::Head => "Head",
+        Method::Options => "Options",
+    }
+}
+
+/// Whether a local name was bound from the authenticated principal's subject.
+///
+/// Deliberately narrow: it looks for a `let` of that exact name whose
+/// right-hand side, up to the statement's semicolon, reads
+/// `principal.subject`. A binding assembled some other way is reported as an
+/// offender rather than assumed innocent, because the reviewer's question
+/// here — where did this name come from — is the whole point of the test.
+fn bound_from_the_principals_subject(name: &str, file: &str) -> bool {
+    for keyword in [
+        format!("let {name} ="),
+        format!("let {name}:"),
+        format!("let mut {name} ="),
+        format!("let mut {name}:"),
+    ] {
+        for (index, _) in file.match_indices(keyword.as_str()) {
+            let rest = &file[index..];
+            let end = rest.find(';').unwrap_or(rest.len());
+            if rest[..end].contains("principal.subject") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether an argument names the authenticated principal's subject.
+fn names_the_principals_subject(argument: &str, file: &str) -> bool {
+    let mut expression = argument.trim();
+    loop {
+        let before = expression;
+        expression = expression.trim_start_matches('&').trim();
+        for suffix in [".clone()", ".to_string()", ".to_owned()", ".as_str()"] {
+            if let Some(shorter) = expression.strip_suffix(suffix) {
+                expression = shorter.trim_end();
+            }
+        }
+        if expression == before {
+            break;
+        }
+    }
+    if expression == "principal.subject" {
+        return true;
+    }
+    !expression.is_empty()
+        && expression.chars().all(is_identifier_char)
+        && bound_from_the_principals_subject(expression, file)
+}
+
+#[test]
+fn every_operator_identity_the_api_builds_names_the_session_and_never_the_request_body() {
+    // The failure this prevents, stated as a diff somebody would write: the
+    // approval route already parses a JSON body, so adding `"operator"` to
+    // that body and passing it to `OperatorIdentity::verified` is a two-line
+    // change that makes the route more flexible and destroys the only thing
+    // an approval record is for. `RegistrationRecord` and every autonomy
+    // change name the person accountable; a caller who can choose that name
+    // can attribute their own approval to somebody else, and the audit trail
+    // that was the control becomes the alibi.
+    //
+    // Nothing in the type system stops it — `verified` takes
+    // `impl Into<String>` — so the guarantee is held here.
+    let routes = read("backend/crates/apps/qip-api/src/routes.rs");
+    let shipped = match routes.find("#[cfg(test)]") {
+        Some(cut) => &routes[..cut],
+        None => &routes[..],
+    };
+
+    // Premise one, from the table rather than from a list kept here: there
+    // really are operator-authority routes that change state. A version of
+    // this test that walked an empty set would pass for ever.
+    let operator_routes: Vec<&qip_api::routes::Route> = ROUTES
+        .iter()
+        .filter(|route| route.method.is_mutating() && route.required_role == Role::Operator)
+        .collect();
+    assert!(
+        operator_routes.len() >= 3,
+        "only {} operator-authority mutating route(s) are in the table; the walk has \
+         nothing to check",
+        operator_routes.len()
+    );
+
+    // Each one's handler must be able to see who is calling. Asserted per
+    // route so a new operator route that took its actor from anywhere else
+    // fails here rather than passing because its two neighbours are correct.
+    for route in &operator_routes {
+        let marker = format!(
+            "(Method::{}, \"{}\") => {{",
+            method_variant(route.method),
+            route.pattern
+        );
+        let start = shipped.find(&marker).unwrap_or_else(|| {
+            panic!(
+                "no handler arm for {} {} in routes.rs; the arm has been renamed and this \
+                 test can no longer see it",
+                route.method.as_str(),
+                route.pattern
+            )
+        });
+        let brace = start + marker.len() - 1;
+        let arm = bracketed(shipped, brace, b'{', b'}')
+            .unwrap_or_else(|| panic!("the arm for {} does not close", route.pattern));
+        assert!(
+            arm.contains("principal.subject"),
+            "{} {} changes state at the operator role and never reads the authenticated \
+             subject, so whatever it records about who acted came from somewhere else",
+            route.method.as_str(),
+            route.pattern
+        );
+    }
+
+    // Premise two: there are identities being built at all. Three today —
+    // clearing the kill switch, approving a venue registration, and deciding
+    // a user's eligibility. `POST /kill-switch` is the fourth operator route
+    // and records its actor as `api:{subject}` rather than through an
+    // `OperatorIdentity`, which is why the floor is three and not four.
+    //
+    // A floor rather than an equality on purpose: it fails when a call site
+    // is deleted and does not fail when one is added, and an added one is
+    // covered by the walk below rather than by this count.
+    let calls: Vec<usize> = shipped
+        .match_indices("OperatorIdentity::verified(")
+        .map(|(index, matched)| index + matched.len() - 1)
+        .collect();
+    assert!(
+        calls.len() >= 3,
+        "only {} OperatorIdentity::verified call(s) in routes.rs; the operator identity \
+         is no longer built where this test looks for it",
+        calls.len()
+    );
+
+    // Premise three, on the check itself: it accepts the session and refuses
+    // the body. Without this the assertion below could be a function that
+    // returns true, and the whole test would be a walk that proves nothing.
+    assert!(names_the_principals_subject(
+        "principal.subject.clone()",
+        shipped
+    ));
+    assert!(names_the_principals_subject("&principal.subject", shipped));
+    assert!(!names_the_principals_subject(
+        "body.operator.clone()",
+        shipped
+    ));
+    assert!(!names_the_principals_subject("body.terms.clone()", shipped));
+
+    let mut offenders = Vec::new();
+    for open in calls {
+        let list = bracketed(shipped, open, b'(', b')')
+            .expect("an OperatorIdentity::verified call closes its parentheses");
+        let subject = *arguments(list)
+            .first()
+            .expect("OperatorIdentity::verified takes a subject");
+        if !names_the_principals_subject(subject, shipped) {
+            offenders.push(format!(
+                "line {}: OperatorIdentity::verified({subject}, …)",
+                shipped[..open].matches('\n').count() + 1
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "an operator identity is built from something other than the authenticated \
+         principal's subject. The record it goes on to write is what an audit reads to \
+         find out who approved something, and a caller who can name that person can \
+         name somebody else: {offenders:?}"
+    );
+
+    // And the approval route specifically, because it is the one route on the
+    // API that parses a caller-supplied JSON object *and* writes an operator
+    // onto a durable record.
+    let approve = "(Method::Post, \"/registrations/:source/approve\") => {";
+    let start = shipped
+        .find(approve)
+        .expect("the approval route's handler arm");
+    let arm =
+        bracketed(shipped, start + approve.len() - 1, b'{', b'}').expect("the approval arm closes");
+    assert!(
+        arm.contains("OperatorIdentity::verified("),
+        "the approval route no longer builds an operator identity of its own; whatever \
+         reaches the registration record as the approver is now decided elsewhere"
+    );
+    for from_the_body in [
+        "body.operator",
+        "body.subject",
+        "body.approver",
+        "body.principal",
+        "body.actor",
+    ] {
+        assert!(
+            !arm.contains(from_the_body),
+            "the approval route reads {from_the_body}; the approver is the authenticated \
+             session and nothing the caller sends"
+        );
+    }
+}
+
+// --- what a response body may repeat ------------------------------------------
+
+/// The bindings a caller's own bytes arrive under in `qip-api`.
+const REQUEST_ROOTS: &[&str] = &[
+    "body", "request", "req", "approval", "payload", "form", "input",
+];
+
+/// Field names whose value is a credential rather than a description of one.
+const SECRET_SHAPED_FIELDS: &[&str] = &[
+    "secret",
+    "secrets",
+    "token",
+    "tokens",
+    "key",
+    "keys",
+    "password",
+    "passwd",
+    "passphrase",
+    "credential",
+    "credentials",
+    "api_key",
+    "apikey",
+];
+
+/// Whether an interpolated expression reads a secret-shaped field off
+/// something the caller sent.
+///
+/// Both halves are required — a request root *and* a secret-shaped field
+/// after it. `record.spend.tokens` is a count of language-model tokens and is
+/// rendered into `/system/governance` on purpose; `body.terms` is a caller's
+/// field and is meant to be echoed, because an approval record cites the
+/// document the operator read. Only the intersection is a leak.
+fn echoes_a_secret_the_caller_sent(expression: &str) -> bool {
+    let parts = segments(expression);
+    let Some(root) = parts
+        .iter()
+        .position(|part| REQUEST_ROOTS.contains(&part.to_ascii_lowercase().as_str()))
+    else {
+        return false;
+    };
+    parts[root + 1..]
+        .iter()
+        .any(|part| SECRET_SHAPED_FIELDS.contains(&part.to_ascii_lowercase().as_str()))
+}
+
+/// The literal at the head of `text`, and the index just past it.
+fn leading_literal(text: &str) -> Option<(String, usize)> {
+    let start = text.len() - text.trim_start().len();
+    let bytes = text.as_bytes();
+    match bytes.get(start)? {
+        b'"' => {
+            let end = skip_string(bytes, start);
+            Some((text[start + 1..end - 1].to_string(), end))
+        }
+        b'r' => {
+            let mut hashes = 0usize;
+            let mut quote = start + 1;
+            while bytes.get(quote) == Some(&b'#') {
+                hashes += 1;
+                quote += 1;
+            }
+            if bytes.get(quote) != Some(&b'"') {
+                return None;
+            }
+            let end = skip_raw_string(bytes, start);
+            Some((text[quote + 1..end - hashes - 1].to_string(), end))
+        }
+        _ => None,
+    }
+}
+
+/// The named captures in a format string: `{source}` but not `{}`, and not
+/// the `{{` that stands for a literal brace — which every JSON body here is
+/// full of.
+fn inline_captures(literal: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let bytes = literal.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'{' if bytes.get(index + 1) == Some(&b'{') => index += 2,
+            b'}' if bytes.get(index + 1) == Some(&b'}') => index += 2,
+            b'{' => {
+                let mut end = index + 1;
+                while end < bytes.len() && bytes[end] != b'}' {
+                    end += 1;
+                }
+                let name: String = literal[index + 1..end.min(literal.len())]
+                    .chars()
+                    .take_while(|c| is_identifier_char(*c))
+                    .collect();
+                if !name.is_empty() {
+                    found.push(name);
+                }
+                index = end + 1;
+            }
+            _ => index += 1,
+        }
+    }
+    found
+}
+
+/// Every expression `qip-api` interpolates into a JSON response body: the
+/// argument of each `json::string(…)`, and the arguments and named captures
+/// of each `format!` whose template is a JSON object.
+fn json_body_interpolations(sources: &[(PathBuf, String)]) -> Vec<(PathBuf, usize, String)> {
+    let mut found = Vec::new();
+    for (path, shipped) in sources {
+        let line_of = |offset: usize| shipped[..offset].matches('\n').count() + 1;
+        for (index, matched) in shipped.match_indices("json::string(") {
+            let open = index + matched.len() - 1;
+            if let Some(argument) = bracketed(shipped, open, b'(', b')') {
+                found.push((path.clone(), line_of(index), argument.trim().to_string()));
+            }
+        }
+        for (index, matched) in shipped.match_indices("format!(") {
+            let open = index + matched.len() - 1;
+            let Some(list) = bracketed(shipped, open, b'(', b')') else {
+                continue;
+            };
+            let Some((template, end)) = leading_literal(list) else {
+                continue;
+            };
+            // A JSON object template. `format!("{a}/{b}")` builds a path and
+            // is not a response body; the bodies in this crate all open with
+            // an escaped brace and a quoted key.
+            if !template.contains("{{\"") {
+                continue;
+            }
+            for capture in inline_captures(&template) {
+                found.push((path.clone(), line_of(index), capture));
+            }
+            for argument in arguments(list[end..].trim_start().trim_start_matches(',')) {
+                found.push((path.clone(), line_of(index), argument.to_string()));
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn no_json_body_the_api_builds_repeats_a_secret_the_caller_put_in_the_request() {
+    // The premise, established by driving the parser rather than by asserting
+    // about it: `POST /registrations/:source/approve` really does read a
+    // `secret` field off a caller-supplied body. Without that this test would
+    // be guarding a field that never arrives, which is the cheapest kind of
+    // green.
+    use qip_api::registration_views::{ApprovalRequest, refusal};
+
+    let good = ApprovalRequest::parse(
+        r#"{"terms":"https://example.test/venue-terms","secret":"QIP_VENUE_CREDENTIAL"}"#,
+    )
+    .expect("a well-formed approval body is accepted");
+    assert_eq!(good.secret.variable(), "QIP_VENUE_CREDENTIAL");
+    assert_eq!(good.terms, "https://example.test/venue-terms");
+
+    // And the one thing the field exists to refuse: a value pasted where a
+    // variable name belongs. The refusal must not repeat it — an error that
+    // quoted the value would write it to stderr, to the health detail, and to
+    // whichever ticket the failure line is pasted into, which are the places
+    // the rule exists to keep it out of.
+    const PASTED: &str = "zq7-pasted-where-a-variable-name-belongs";
+    let refused = ApprovalRequest::parse(&format!(
+        r#"{{"terms":"https://example.test/venue-terms","secret":"{PASTED}"}}"#
+    ))
+    .expect_err("a pasted value must be refused where a variable name belongs");
+    assert!(
+        !refused.contains(PASTED) && !refused.contains("zq7"),
+        "the refusal repeated what it refused: {refused}"
+    );
+    // The refusal as it reaches the wire, since that is the artefact that
+    // travels. A message that were safe and a body that were not would be the
+    // same leak.
+    let body = refusal(&refused);
+    assert!(body.starts_with(r#"{"error":"#), "{body}");
+    assert!(!body.contains("zq7"), "{body}");
+
+    // The scan. Premise first: the extraction finds the bodies, and the
+    // classifier fires on a leak and holds on the two shapes that look like
+    // one. `record.spend.tokens` is a language-model token count rendered on
+    // purpose; `body.terms` is a caller's field an approval record is
+    // supposed to cite.
+    assert!(echoes_a_secret_the_caller_sent("body.secret.variable()"));
+    assert!(echoes_a_secret_the_caller_sent(
+        "json::string(&request.token)"
+    ));
+    assert!(echoes_a_secret_the_caller_sent("payload.api_key"));
+    assert!(!echoes_a_secret_the_caller_sent("record.spend.tokens"));
+    assert!(!echoes_a_secret_the_caller_sent("body.terms"));
+    assert!(!echoes_a_secret_the_caller_sent("route.summary"));
+
+    let sources = shipped_rust("backend/crates/apps/qip-api/src");
+    let interpolations = json_body_interpolations(&sources);
+    assert!(
+        interpolations.len() > 180,
+        "only {} interpolated expressions were found across qip-api's JSON bodies; the \
+         extraction is not reaching them and this test proves nothing",
+        interpolations.len()
+    );
+
+    let offenders: Vec<String> = interpolations
+        .iter()
+        .filter(|(_, _, expression)| echoes_a_secret_the_caller_sent(expression))
+        .map(|(path, line, expression)| format!("{}:{line} {expression}", path.display()))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "a JSON response body interpolates a secret-shaped field the caller sent. The \
+         approval route exists to keep a pasted credential out of the process, and a body \
+         that hands it back puts it in every proxy log between here and the browser: \
+         {offenders:?}"
+    );
+}
+
+// --- the refusal, outside the workspace ---------------------------------------
+
+/// The half of `REFUSED_CAPITAL_MOVEMENT` that names signing or withdrawal
+/// specifically, for the trees outside the Rust workspace.
+///
+/// `mpc_`, `sign_transaction` and `broadcast_transaction` are left to the
+/// workspace scan: they are Rust-shaped names, and a two-character prefix
+/// like `mpc_` in a hundred thousand lines of TypeScript is a false-positive
+/// generator rather than a control.
+const REFUSED_OUTSIDE_THE_WORKSPACE: &[&str] = &[
+    "sign_withdrawal",
+    "withdrawal_adapter",
+    "custody_signer",
+    "private_key_share",
+    "threshold_signature",
+    "signing_share",
+];
+
+/// Every file of the two trees outside `backend/` that could grow a capital
+/// path: the venue signup tooling and the portal's source.
+fn trees_outside_the_workspace() -> Vec<(&'static str, Vec<PathBuf>)> {
+    let mut trees = Vec::new();
+    for (tree, extensions) in [
+        (
+            "scripts/venue-signup",
+            ["mjs", "js", "cjs", "ts", "json", "sh"].as_slice(),
+        ),
+        (
+            "frontend/portal/src",
+            ["ts", "tsx", "js", "jsx", "mjs", "css"].as_slice(),
+        ),
+    ] {
+        let mut files = Vec::new();
+        for extension in extensions {
+            files.extend(files_with_extension(tree, extension));
+        }
+        files.sort();
+        files.dedup();
+        trees.push((tree, files));
+    }
+    trees
+}
+
+#[test]
+fn no_signing_or_withdrawal_path_appears_in_the_venue_tooling_or_the_portal() {
+    // The gap this closes. `no_signing_or_withdrawal_path_exists_for_capital_\
+    // to_leave_the_platform` walks `backend/crates` and nothing else, so the
+    // refusal ADR 0021 makes was enforced only where the language happened to
+    // be Rust. Both trees added since are exactly where the forbidden half
+    // would arrive first, and by a defensible-looking step each time:
+    //
+    // * `scripts/venue-signup` already drives a browser under the company's
+    //   identity and already writes to Secret Manager. A withdrawal form is
+    //   another form; a signing key is another secret. Nothing in it is
+    //   structurally different from what it does today.
+    // * `frontend/portal/src` renders the treasury read surface. A "withdraw"
+    //   control there would need no backend at all to be built, reviewed and
+    //   merged — and the frontend rules already forbid a control that implies
+    //   an order path, without anything executable saying so about capital.
+    //
+    // Absence, so the vacuity guards below carry the test.
+    let trees = trees_outside_the_workspace();
+    let mut offenders = Vec::new();
+    let mut control = 0usize;
+    let mut bytes_read = 0usize;
+
+    for (tree, files) in &trees {
+        let floor = if *tree == "frontend/portal/src" {
+            60
+        } else {
+            3
+        };
+        assert!(
+            files.len() >= floor,
+            "only {} file(s) under {tree}; the walk is not reaching the tree and this test \
+             proves nothing about it",
+            files.len()
+        );
+        let mut found_control_here = false;
+        for file in files {
+            let Ok(content) = std::fs::read_to_string(file) else {
+                continue;
+            };
+            bytes_read += content.len();
+            let lowered = content.to_lowercase();
+            // The positive control: the same read, the same lowercasing and
+            // the same `contains` used for the refusal, looking for something
+            // that must be there. A walk that returned empty strings would
+            // satisfy every absence assertion below and fail this one.
+            if lowered.contains("export") {
+                found_control_here = true;
+                control += 1;
+            }
+            for token in REFUSED_OUTSIDE_THE_WORKSPACE {
+                // Both spellings. The workspace is snake_case and these trees
+                // are camelCase, so `signWithdrawal` lowercases to
+                // `signwithdrawal` and would walk straight past a scan that
+                // only knew `sign_withdrawal`.
+                let camel = token.replace('_', "");
+                if lowered.contains(token) || lowered.contains(&camel) {
+                    offenders.push(format!("{}: {token}", file.display()));
+                }
+            }
+        }
+        assert!(
+            found_control_here,
+            "no file under {tree} contains the control token; the files are being opened \
+             and read as empty, so every absence asserted here is vacuous"
+        );
+    }
+
+    assert!(
+        control > 50,
+        "the control token was found in only {control} file(s) across both trees; the walk \
+         is reading far less than it should be"
+    );
+    assert!(
+        bytes_read > 100_000,
+        "only {bytes_read} bytes were read across both trees"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a signing or withdrawal path for capital leaving the platform has appeared \
+         outside the Rust workspace. ADR 0021 refuses it wherever it is written, and a \
+         withdrawal control in the portal or a signing step in the venue tooling is the \
+         same refusal broken in a language the workspace scan does not read: {offenders:?}"
+    );
+}

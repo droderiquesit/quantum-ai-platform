@@ -114,6 +114,7 @@ export const ITEM_ICON: Record<string, IconName> = {
   "/execution/venues": "plug",
   "/execution/arbitrage": "waypoints",
   "/data-sources": "plug",
+  "/data-sources/registrations": "user-cog",
   "/operations/mesh": "waypoints",
   "/operations/telemetry": "activity",
   "/agents": "user-cog",

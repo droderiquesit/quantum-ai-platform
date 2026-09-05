@@ -339,6 +339,17 @@ export const NAV: readonly NavGroup[] = [
         reads: ["/data-sources", "/regions", "/mesh"],
       },
       {
+        // The one page in this section with a write on it, and the write
+        // records a registration a person made rather than making one: the
+        // platform creates no venue account, and a source that needs one stays
+        // refused until a named operator says they read the terms.
+        href: "/data-sources/registrations",
+        label: "Venue registrations",
+        mark: "VR",
+        description: "What each venue demands before it is read, who registered, and the one approval an operator records",
+        reads: ["/registrations"],
+      },
+      {
         href: "/operations/mesh",
         label: "Data mesh",
         mark: "DM",

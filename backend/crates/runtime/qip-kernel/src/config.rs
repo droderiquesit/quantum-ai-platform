@@ -11,6 +11,7 @@ use qip_capital::ledger::{DecidedBy, Eligibility, Mandate as LedgerMandate, Mand
 use qip_core::Decimal;
 use qip_core::error::Result;
 use qip_core::time::Duration;
+use qip_data_finder::registration::{RegistrationRecord, RegistrationRegistry};
 use qip_events::log::{Durability, EventLog};
 use qip_optimization_engine::router::RoutingPolicy;
 use qip_portfolio_engine::construction::Mandate;
@@ -277,6 +278,24 @@ pub struct PlatformConfig {
     #[serde(default)]
     pub user_eligibilities: Vec<UserEligibility>,
 
+    /// The venue registrations the deployment commits, each a
+    /// [`RegistrationRecord`] naming the operator who registered, the terms
+    /// they read and the deployment variable the credential is read under.
+    ///
+    /// Attributed by construction: the record's only constructor refuses a
+    /// blank operator and its deserialiser goes through that constructor, so
+    /// a configuration cannot say "registered" and name nobody. Applied at
+    /// assembly onto [`RegistrationRegistry::shipped`] through the same
+    /// journaled path an operator's runtime approval takes, so the log says
+    /// who registered whichever way it happened. Empty by default, and empty
+    /// means what it says: every source that needs an account stays refused,
+    /// which is the honest state of a deployment where nobody registered.
+    /// `#[serde(default)]` so a configuration stored before venue
+    /// registrations existed keeps deserialising, to a platform that admits
+    /// the keyless sources and nothing else.
+    #[serde(default)]
+    pub venue_registrations: Vec<RegistrationRecord>,
+
     /// How deep a chain observation has to be buried before the platform will
     /// read state derived from it.
     ///
@@ -373,6 +392,7 @@ impl Default for PlatformConfig {
             initial_equity: default_initial_equity(),
             user_mandates: Vec::new(),
             user_eligibilities: Vec::new(),
+            venue_registrations: Vec::new(),
             chain_confirmations: default_chain_confirmations(),
             reasoning_confidence_bar: default_reasoning_confidence_bar(),
         }
@@ -467,6 +487,35 @@ impl PlatformConfig {
     pub fn with_user_eligibilities(mut self, eligibilities: Vec<UserEligibility>) -> Self {
         self.user_eligibilities = eligibilities;
         self
+    }
+
+    /// Commit venue registrations to be applied at assembly.
+    ///
+    /// Each is applied onto the shipped requirement table through the
+    /// platform's journaled registration path, and a record for a source
+    /// whose requirement is not declared stops assembly with the source
+    /// named.
+    pub fn with_venue_registrations(mut self, registrations: Vec<RegistrationRecord>) -> Self {
+        self.venue_registrations = registrations;
+        self
+    }
+
+    /// The registration registry this configuration stands for: the shipped
+    /// requirement table with every committed record applied.
+    ///
+    /// Built here as well as inside the platform because a composition root
+    /// admits its connector *before* the platform exists — a tape owns the
+    /// clock the platform is assembled on — and the registry the feed's
+    /// admission gate consults must be the one the platform then holds.
+    /// One function, called from both places, is what keeps the two from
+    /// disagreeing about who registered. Refused, naming the source, when a
+    /// record has no declared requirement to satisfy.
+    pub fn registration_registry(&self) -> Result<RegistrationRegistry> {
+        self.venue_registrations
+            .iter()
+            .try_fold(RegistrationRegistry::shipped(), |registry, record| {
+                registry.with_record(record.clone())
+            })
     }
 
     /// State the most confidence the REASON stage may demand of an answer.

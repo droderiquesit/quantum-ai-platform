@@ -99,3 +99,55 @@ shared secret in front of a write path on the public internet, and it is
 exactly what this record judges insufficient once the store holds evidence.
 An argument that OpenObserve's own login suffices is an argument this
 document has already considered and rejected.
+
+## Applied
+
+**Not applied. What exists on 2026-09-05 is code with no caller and no
+plan behind it**, and the status line above stays as it is. This section
+records what is in the tree and what is not, so that a reader who finds the
+module does not read it as the decision having landed.
+
+In the tree: `infrastructure/terraform/modules/openobserve/`, which carries
+the posture as one variable. `access_posture` defaults to `authenticated`
+and is `nullable = false`, so a caller who passes nothing — or a null —
+gets the posture this record requires; `anonymous` stays selectable, by
+name, and is refused for `prod` by a `validation` block that reads both the
+posture and the environment. `access_principals` refuses a member without an
+IAM prefix and refuses the two anonymous members outright, so the invoker
+list this module derives cannot be widened into ADR 0030's binding. The
+module emits the ingress and the invoker members the manifests must carry
+and creates nothing itself. Three tests in
+`backend/crates/tests/qip-acceptance/tests/infrastructure.rs` hold the
+default, evaluate the prod refusal at four environment/posture pairs, and
+refuse an anonymous member anywhere in the module outside a `validation`
+block. The gate was exercised by a real `terraform plan` against a harness
+root in a scratch directory that sources these files and declares no
+provider: it refuses `prod` + `anonymous` with the message above and admits
+`prod` at the default, `dev` + `anonymous`, and a named group.
+
+Not in the tree, and each of these is the difference between this record and
+its application:
+
+  * **No Identity-Aware Proxy.** No load balancer, no serverless NEG, no
+    backend service, no IAP setting. Choosing `authenticated` today declares
+    the posture and narrows the invoker set; it configures no IAP, and this
+    record's own "what it costs" — IAP is another moving part — is unpaid.
+  * **No caller.** Nothing in `infrastructure/terraform` instantiates the
+    module, so no plan evaluates the refusal and no environment's posture is
+    decided by it yet. The root wiring is a separate change.
+  * **The service is unchanged.** `infrastructure/gitops/envs/dev/` still
+    carries `ingress: INGRESS_TRAFFIC_ALL` and the anonymous `IAMPolicyMember`
+    under ADR 0030, and the running service is still reachable without a
+    credential.
+
+**The apply waits on the dev cluster path.** Since ADR 0036 decision 4 the
+RunService and its invoker are manifests, and a manifest reaches Cloud Run
+only through Config Connector on the control-plane cluster. That cluster does
+not exist in `dev`: run 38's `plan` found the previous one tainted and
+proposed replacing it, and under ADR 0040 decision 1 no `up` was dispatched
+on a plan that destroys a cluster
+(`docs/ops/missing-infrastructure-register.md`, "Observed, not predicted —
+run 38"). So the posture cannot be moved by an apply from here — it moves
+when the cluster is rebuilt by a person and the manifests are edited beside
+the root wiring. Nothing in this change brings that forward, and nothing in
+it should be read as having.

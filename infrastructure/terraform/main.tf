@@ -259,6 +259,25 @@ module "secrets" {
     # here either: the adapter reads it from the environment at start-up and
     # redacts it from every Debug rendering.
     "qip-market-data-key",
+    # The two halves of the Alpaca market-data credential, named by the shipped
+    # connector manifest as `QIP_ALPACA_API_SECRET_KEY` and its companion
+    # `QIP_ALPACA_API_KEY_ID`, and mounted as files on the API and the fast
+    # brain by `catalogue.tf`. Created empty in every environment for the same
+    # reason the venue credential is — a uniform deployment — and empty is the
+    # state they are in today: nobody has registered with Alpaca, the source's
+    # terms are unread, and both admission gates refuse it.
+    #
+    # They exist so that `GET /registrations` can print a command a person can
+    # actually run. That route renders `gcloud secrets versions add
+    # qip-alpaca-api-secret-key --data-file=-`, and a runbook step naming a
+    # container that does not exist is a step that fails at the moment somebody
+    # finally follows it — after they have read the terms and created the key,
+    # which is the worst moment to discover the infrastructure was never
+    # declared. Terraform creates the container; the value is written out of
+    # band by the person who registered, from stdin, and appears in no file,
+    # no plan and no state.
+    "qip-alpaca-api-key-id",
+    "qip-alpaca-api-secret-key",
     # OpenObserve's own root login (ADR 0028), not a cloud credential: the
     # email and password `catalogue.tf` projects into the OpenObserve
     # workload's environment under ADR 0031, because that image carries no

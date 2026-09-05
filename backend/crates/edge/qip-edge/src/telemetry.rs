@@ -26,11 +26,11 @@
 //! **Cardinality is bounded by construction.** `cell` and `region` are fixed
 //! for the life of the process. `venue` is bounded by the cell's configured
 //! venue set. `gate` is bounded by the string literals `Cell::refuse` is
-//! called with. `source` and `kind` are enums, and `capability` is the three
-//! policy-fed variants of one. Nothing here is labelled by instrument,
-//! strategy or order id, and that is deliberate: a series per order id is a
-//! memory leak wearing a dashboard. Each `with(...)` call below says what
-//! bounds its own label.
+//! called with. `source`, `kind` and `outcome` are enums, and `capability` is
+//! the three policy-fed variants of one. Nothing here is labelled by
+//! instrument, strategy or order id, and that is deliberate: a series per
+//! order id is a memory leak wearing a dashboard. Each `with(...)` call below
+//! says what bounds its own label.
 
 use qip_contracts::degradation::{Capability, DegradationState, Freshness};
 use qip_contracts::signal::SignalKind;
@@ -64,6 +64,71 @@ pub const EDGE_REGION_ALLOCATION_CONFIGURED: &str = "qip_edge_region_allocation_
 /// What the region allocation has left, published only by a cell that holds
 /// one. Named here for the same reason as [`EDGE_FILLS_CONFIRMED`].
 pub const EDGE_REGION_ALLOCATION_FREE: &str = "qip_edge_region_allocation_free";
+
+/// The bound the region table holds after a share moved it: the centre's
+/// number, capped by the operator's ceiling (ADR 0039). Named here for the
+/// same reason as [`EDGE_FILLS_CONFIRMED`].
+///
+/// Distinct from [`EDGE_REGION_ALLOCATION_FREE`], which is what is left of
+/// it once every hold and commitment is counted. The two answer different
+/// questions and a cell that has spent its share to the last unit reports a
+/// free of zero under a bound that has not moved — which is exactly the case
+/// where one number alone cannot say whether the centre narrowed the cell or
+/// the cell simply traded.
+pub const EDGE_REGION_SHARE_BOUND: &str = "qip_edge_region_share_bound";
+
+/// What became of each attempt to move the cell's region share, by outcome.
+/// Named here for the same reason as [`EDGE_FILLS_CONFIRMED`].
+pub const EDGE_REGION_SHARE_APPLIED: &str = "qip_edge_region_share_applied_total";
+
+/// What an attempt to move the cell's region share came to (ADR 0039).
+///
+/// The `outcome` label's whole range, as a type rather than as four string
+/// literals at four call sites. The bound is what the cell may commit in
+/// total, and it moves for reasons an operator cannot otherwise separate: the
+/// centre narrowed the cell, or a grant landed and the same manifest summed
+/// higher, or a replayed payload was turned down, or the centre shipped a
+/// payload that said nothing about capital at all. Charted as one gauge those
+/// four are indistinguishable — a bound that did not move looks the same
+/// whether nothing was offered or something was refused — and "the share did
+/// not change" is the reading under which a cell starved by a stuck downlink
+/// and a cell the centre deliberately narrowed are the same picture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegionShareOutcome {
+    /// A signed payload's grant manifest was summed and the ledger re-based
+    /// to it — the centre's number, newly applied.
+    Applied,
+    /// The manifest already applied was summed again under its own sequence,
+    /// because the grants this cell holds had changed. Read beside `applied`:
+    /// re-derivations without a re-base in between are the cell catching up
+    /// with a plan that deployed after the payload naming it.
+    Rederived,
+    /// The ledger turned the share down under a sequence no newer than the
+    /// one it already holds. The replay ADR 0008 exists to make harmless, and
+    /// the one refusal an operator must be able to see without reading a
+    /// journal: it means something is re-sending old payloads.
+    RefusedLowerSequence,
+    /// A payload arrived and its `capital_grants` slot was unproduced, so the
+    /// table was left exactly as it was. Not a refusal and not an error — the
+    /// centre said nothing about capital — but the difference between "the
+    /// centre narrowed us to nothing" and "the centre has stopped telling us
+    /// anything" is the difference between a plan and an outage.
+    Withheld,
+}
+
+impl RegionShareOutcome {
+    /// The label value. A method rather than a `Display` so that the series
+    /// identity is a `&'static str` chosen here and nothing can format a
+    /// fifth one into it.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Applied => "applied",
+            Self::Rederived => "rederived",
+            Self::RefusedLowerSequence => "refused_lower_sequence",
+            Self::Withheld => "withheld",
+        }
+    }
+}
 
 /// Buckets for the netting ratio.
 ///
@@ -171,6 +236,16 @@ impl CellMetrics {
         m.describe(
             EDGE_REGION_ALLOCATION_FREE,
             "capital the cell's region allocation has left, no hold standing on it",
+        );
+        m.describe(
+            EDGE_REGION_SHARE_BOUND,
+            "the bound the cell's region table holds: its share of the region's grant, capped by \
+             the operator's ceiling",
+        );
+        m.describe(
+            EDGE_REGION_SHARE_APPLIED,
+            "attempts to move the cell's region share, by outcome: applied, rederived, \
+             refused_lower_sequence, withheld",
         );
         m.describe(
             names::EDGE_INTENTS_CANCELLED,
@@ -341,6 +416,34 @@ impl CellMetrics {
                 free.to_f64(),
             );
         }
+    }
+
+    /// The bound the region table holds, at the instant a share moved it.
+    ///
+    /// Recorded at the seam where the ledger accepted a share and nowhere
+    /// else, so the series says what the centre's arithmetic came to rather
+    /// than what the cell would report if asked. A refusal leaves the previous
+    /// value standing, which is the truth: a refused share changes no bound.
+    pub fn region_share_bound(&self, bound: Decimal) {
+        // The bound is `Decimal` because it is money the cell may commit, and
+        // it stays `Decimal` everywhere it is compared against a hold. This is
+        // the crossing point to `f64` and it is a reporting one: the number
+        // leaves here for a chart and never returns to the ledger.
+        self.metrics
+            .gauge(EDGE_REGION_SHARE_BOUND, self.base.clone(), bound.to_f64());
+    }
+
+    /// What one attempt to move the region share came to.
+    ///
+    /// `outcome` is [`RegionShareOutcome`], so the series count is four per
+    /// cell whatever the centre publishes. The sequence, the share and the
+    /// refusal's reason are journaled; none of them is a label, because a
+    /// sequence rises without bound and a reason is formatted.
+    pub fn region_share(&self, outcome: RegionShareOutcome) {
+        self.metrics.count(
+            EDGE_REGION_SHARE_APPLIED,
+            self.with("outcome", outcome.as_str()),
+        );
     }
 
     /// The sequence of the policy payload the cell has applied.

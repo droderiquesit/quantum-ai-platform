@@ -67,6 +67,14 @@ const CATALOGUE: &str = "infrastructure/terraform/catalogue.tf";
 const NODE_STARTUP: &str =
     "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl";
 const ROOT_VARIABLES: &str = "infrastructure/terraform/variables.tf";
+/// The root module, for the one list that says which Secret Manager
+/// containers exist. A mount names a secret; this is where it is created.
+const ROOT_MAIN: &str = "infrastructure/terraform/main.tf";
+/// The committed connector manifests. Each names the deployment variable its
+/// credential is read from — never a credential — and that name is the only
+/// place the pairing between a slot and a source is written down.
+const CONNECTOR_MANIFESTS: &str =
+    "backend/crates/services/qip-market-ingestion/src/connectors/manifests";
 /// The Config Connector manifests ADR 0036 deploys the catalogue through:
 /// one `RunService` per workload per environment under `envs/<env>/`. Each
 /// is the catalogue entry rendered for that environment, and each is walked
@@ -174,6 +182,43 @@ fn catalogue_field(body: &str, field: &str) -> String {
         .unwrap_or_else(|| panic!("the catalogue entry has no `{field}` field:\n{body}"))
 }
 
+/// The binaries whose catalogue entry carries the egress proxy.
+///
+/// A Cloud Run workload in this repository reaches the internet only through
+/// the sidecar rendered from `infrastructure/egress/envoy.yaml`; the HTTP
+/// client speaks plaintext HTTP/1.1 by design and needs the proxy in front of
+/// it. So `egress_proxy = false` is not a tuning knob, it is the statement
+/// that this workload has no outbound path to any vendor at all, and a
+/// credential mounted on it is one it could never spend.
+///
+/// Both halves are asserted, because a rule that silently matched everything
+/// or nothing would make its caller vacuous in opposite directions: at least
+/// one workload must carry the proxy, and at least one must not.
+fn binaries_with_an_egress_path() -> BTreeSet<String> {
+    let mut with = BTreeSet::new();
+    let mut without = 0usize;
+    for (_, body) in catalogue_workloads() {
+        let binary = catalogue_field(&body, "binary");
+        if catalogue_field(&body, "egress_proxy") == "true" {
+            with.insert(binary);
+        } else {
+            without += 1;
+        }
+    }
+    assert!(
+        !with.is_empty(),
+        "no catalogue workload carries the egress proxy; the `egress_proxy` field is not being \
+         read and every check built on it would skip everything"
+    );
+    assert!(
+        without > 0,
+        "every catalogue workload carries the egress proxy; the fast brain is supposed to be \
+         the one that does not (ADR 0008), so either the catalogue changed or the field is not \
+         being read"
+    );
+    with
+}
+
 /// The `QIP_` variables a catalogue entry sets: every `env` key, wherever it
 /// sits in the entry — the fast brain's `env` is a `merge` of two maps — and
 /// the `_FILE` variable of every mounted secret.
@@ -202,6 +247,79 @@ fn variables_an_entry_sets(body: &str) -> BTreeSet<String> {
         }
     }
     set
+}
+
+/// The files a workload mounts only where a root variable names one, as
+/// `workload => the QIP_…_PATH variables they carry`.
+///
+/// These live in `local.optional_config_files` rather than inside the entry's
+/// own `config_files` block, and the position is load-bearing in both
+/// directions. An entry's `config_files` block is a parity contract — every
+/// `env_file_variable` in it is one every `RunService` must carry — so a
+/// conditional file written there would demand a value from four manifests
+/// rendered for environments that asked for none. Out here it is still the
+/// catalogue setting the variable, which is why it is read back in as part of
+/// what the catalogue entry sets: the file *is* mounted, on the environment
+/// that names one, and pretending otherwise would let the API read a variable
+/// no deployment could ever supply.
+///
+/// Every file here must sit inside a `var.x == null ? {} : {` arm. An
+/// unconditional one would be a file every environment mounts and no manifest
+/// carries, which is the drift this suite exists to catch, so it fails here
+/// rather than in the manifest that omits it.
+fn catalogue_optional_config_files() -> BTreeMap<String, BTreeSet<String>> {
+    let text = without_comments(&read(CATALOGUE));
+    let mut lines = text.lines();
+    lines
+        .find(|line| line.trim() == "optional_config_files = {")
+        .expect(
+            "catalogue.tf declares local.optional_config_files: the workload-keyed map of \
+             committed files an environment mounts only where a root variable names one",
+        );
+    let mut found: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut workload: Option<String> = None;
+    let mut conditional = false;
+    for line in lines {
+        let indent = line.len() - line.trim_start().len();
+        if !line.trim().is_empty() && indent <= 2 {
+            break;
+        }
+        if indent == 4 {
+            if let Some((key, _)) = line.split_once('=') {
+                workload = Some(key.trim().to_string());
+                conditional = false;
+            }
+        }
+        if line.contains("== null ? {} : {") {
+            conditional = true;
+        }
+        if line.trim() == "}," {
+            conditional = false;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "env_file_variable" {
+            continue;
+        }
+        let variable = value.trim().trim_matches('"').to_string();
+        assert!(
+            conditional,
+            "local.optional_config_files mounts {variable} outside a `var.x == null ? {{}} : {{` \
+             arm, so every environment mounts it and no rendered manifest carries it"
+        );
+        let named = workload
+            .clone()
+            .unwrap_or_else(|| panic!("{variable} is declared under no workload key"));
+        found.entry(named).or_default().insert(variable);
+    }
+    assert!(
+        found.values().any(|names| !names.is_empty()),
+        "local.optional_config_files names no file at all; either the block has been reshaped \
+         and this walk reads nothing, or the two optional files have gone — and every check \
+         built on it would now pass vacuously"
+    );
+    found
 }
 
 /// The variables the node's startup script writes into `node.env`.
@@ -251,6 +369,7 @@ fn node_binary() -> String {
 /// Every deployed thing, as (where it is configured, the binary, the
 /// variables it is given).
 fn deployments() -> Vec<(String, String, BTreeSet<String>)> {
+    let optional = catalogue_optional_config_files();
     let mut found: Vec<(String, String, BTreeSet<String>)> = catalogue_workloads()
         .into_iter()
         .map(|(name, body)| {
@@ -261,11 +380,13 @@ fn deployments() -> Vec<(String, String, BTreeSet<String>)> {
                     .exists(),
                 "the catalogue's {name} runs {binary}, which is not a crate under crates/apps"
             );
-            (
-                format!("catalogue.tf:{name}"),
-                binary,
-                variables_an_entry_sets(&body),
-            )
+            // The entry's own lines, plus the optional files the catalogue
+            // mounts on this workload where a root variable names one. Both
+            // are the catalogue setting the variable; only the second is
+            // absent from an environment that named no file.
+            let mut sets = variables_an_entry_sets(&body);
+            sets.extend(optional.get(&name).into_iter().flatten().cloned());
+            (format!("catalogue.tf:{name}"), binary, sets)
         })
         .collect();
     let node = node_binary();
@@ -382,6 +503,7 @@ fn run_service_deployments() -> Vec<(String, String, BTreeSet<String>)> {
 /// that absence is the tfvars' reviewed decision, not a variable nothing
 /// sets, and it is admitted for a RunService alone.
 fn catalogue_conditional_variables() -> BTreeMap<String, BTreeSet<String>> {
+    let optional = catalogue_optional_config_files();
     let mut by_workload = BTreeMap::new();
     for (name, body) in catalogue_workloads() {
         let mut names = BTreeSet::new();
@@ -403,6 +525,10 @@ fn catalogue_conditional_variables() -> BTreeMap<String, BTreeSet<String>> {
                 }
             }
         }
+        // And the optional configuration files, which are conditional in the
+        // same way and for the same reason: the arm they sit in renders
+        // nothing where the tfvars leave the root variable null.
+        names.extend(optional.get(&name).into_iter().flatten().cloned());
         by_workload.insert(name, names);
     }
     by_workload
@@ -510,11 +636,45 @@ fn types_read_from_the_environment(text: &str) -> BTreeSet<String> {
     found
 }
 
+/// The credential variables the committed connector manifests name.
+///
+/// A connector's credential is named by its manifest — `auth.secret.variable`
+/// and its companion's — and resolved through `qip_core::secret`, which reads
+/// that variable or its `_FILE` variant out of the process environment when
+/// the connector is opened. No composition root writes either name as a
+/// literal: the root opens a source by id and the manifest supplies the rest,
+/// which is the whole point of the manifest.
+///
+/// Read here so a mounted connector credential is not mistaken for a
+/// deployment setting a variable nothing reads. The alternative was an
+/// allowlist entry saying so, and it would have been false.
+fn variables_named_by_connector_manifests() -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    for path in files_with_extension(CONNECTOR_MANIFESTS, "json") {
+        let content = std::fs::read_to_string(&path).expect("a connector manifest is readable");
+        found.extend(variable_literals(&content));
+    }
+    assert!(
+        !found.is_empty(),
+        "no credential variable was read out of the connector manifests under \
+         {CONNECTOR_MANIFESTS}; either the manifests have moved or none names a credential, and \
+         a mounted connector secret would now read as a variable nothing consumes"
+    );
+    found
+}
+
 /// Every `QIP_` variable one binary can read, and by which rule.
 struct VariablesRead {
     literal: BTreeSet<String>,
     by_constant: BTreeSet<String>,
     by_delegation: BTreeSet<String>,
+    /// Named by a connector manifest this binary can open. Deliberately kept
+    /// out of the narrow set the other direction uses: a binary that *can*
+    /// open four connectors is not a binary every deployment must hand four
+    /// credentials to, and the bias this file states — a rule may only add
+    /// names to what a deployment is allowed to set — is what keeps that from
+    /// becoming a demand.
+    by_connector: BTreeSet<String>,
 }
 
 impl VariablesRead {
@@ -522,6 +682,7 @@ impl VariablesRead {
         self.literal
             .union(&self.by_constant)
             .chain(self.by_delegation.iter())
+            .chain(self.by_connector.iter())
             .cloned()
             .collect()
     }
@@ -541,9 +702,15 @@ fn variables_read_by(
     let mut literal = BTreeSet::new();
     let mut by_constant = BTreeSet::new();
     let mut by_delegation = BTreeSet::new();
+    let mut by_connector = BTreeSet::new();
     let mut delegates = BTreeSet::new();
 
     for source in &sources {
+        // A binary that opens a shipped connector reads whatever credential
+        // that connector's manifest names, and names none of them itself.
+        if mentions_identifier(source, "ConnectorFeed") {
+            by_connector.extend(variables_named_by_connector_manifests());
+        }
         literal.extend(variable_literals(source));
         for (identifier, variables) in constants {
             if mentions_identifier(source, identifier) {
@@ -593,6 +760,7 @@ fn variables_read_by(
         literal,
         by_constant,
         by_delegation,
+        by_connector,
     }
 }
 
@@ -659,6 +827,7 @@ fn every_variable_a_deployment_sets_is_one_the_binary_it_runs_actually_reads() {
     let mut satisfied_by_the_file_variant = 0usize;
     let mut resolved_by_constant = 0usize;
     let mut resolved_by_delegation = 0usize;
+    let mut resolved_by_connector_manifest = 0usize;
 
     for (place, binary, set) in deployments() {
         let read = variables_read_by(&binary, &constants);
@@ -702,6 +871,17 @@ fn every_variable_a_deployment_sets_is_one_the_binary_it_runs_actually_reads() {
             {
                 resolved_by_delegation += 1;
             }
+            // A mounted credential arrives as `<NAME>_FILE`, so the base name
+            // is what the manifest rule has to have supplied.
+            if let Some(base) = variable.strip_suffix("_FILE") {
+                if !literal.contains(base)
+                    && !read.by_constant.contains(base)
+                    && !read.by_delegation.contains(base)
+                    && read.by_connector.contains(base)
+                {
+                    resolved_by_connector_manifest += 1;
+                }
+            }
             checked += 1;
         }
     }
@@ -731,6 +911,15 @@ fn every_variable_a_deployment_sets_is_one_the_binary_it_runs_actually_reads() {
         "no variable was resolved by following a `Type::from_env` call; \
          `qip-api` reads QIP_STORAGE_TARGET only through \
          `StorageSettings::from_env` and nothing else would find it"
+    );
+    assert!(
+        resolved_by_connector_manifest >= 1,
+        "no mounted credential was resolved through a connector manifest; the \
+         API and the fast brain mount QIP_ALPACA_API_SECRET_KEY_FILE and its \
+         companion, and the name they satisfy is written in \
+         `connectors/manifests/alpaca-daily-bars.json` rather than in either \
+         crate — if that rule stops resolving, the next mounted connector \
+         credential reads as a variable nothing consumes"
     );
 }
 
@@ -1021,30 +1210,37 @@ const NO_ENVIRONMENT_NAMES_A_MODEL_UNTIL_ITS_TERMS_ARE_READ: &str = "ADR 0037 \
      `only_the_deep_brain_reads_the_language_model_variables` refuses them \
      there.";
 
-/// The wallet statement, which no custodian has issued to any environment.
-const NO_CUSTODIAN_HAS_ISSUED_A_STATEMENT: &str = "The API reads a JSON \
-     statement of what the desk's broker or custodian reported, observes it \
-     into the kernel at start and again before each admitted POST /cycle when \
-     the file changes, and LEARN reconciles the wallet against it; unset, the \
-     banner says there is no feed and /wallet answers `assembled: false`, \
-     which is the truthful answer for a process nothing has reported to. No \
-     environment can mount one honestly today. The catalogue's config_files \
-     convention mounts committed bytes, and a statement is a dated document \
-     from a counterparty: the kernel holds a statement fresh for one day, so a \
-     committed file would be a refused assembly on every cycle after the day \
-     it was written, charted as a wallet the desk never observed. Every \
-     environment trades on the in-process simulated venue (ADR 0003), which \
-     issues no statement, and no custodian relationship exists for the \
-     paper book. The entry ends when a custodian reports to an environment \
-     and a person mounts that day's statement as a Secret Manager file from a \
-     root variable, so an absent value still means no feed.";
+const NO_TERMS_HAVE_BEEN_READ_SO_THERE_IS_NOTHING_TO_ATTEST: &str = "The deep \
+     brain reads a provider-terms attestation -- a file naming, per provider, \
+     when that provider's terms were read and by whom -- and refuses to run a \
+     hosted provider it holds no record for. No environment names a provider \
+     at all, for the reason the four model variables above give, so the set of \
+     providers needing an attestation is empty and a mounted file would be an \
+     empty one. That is the narrow half of the argument. The load-bearing half \
+     is that this file is evidence about a human act: ADR 0040 names the \
+     reading of a vendor's terms as one of the things no agent's record can \
+     move, and a deployment that mounted an attestation would be the \
+     deployment asserting terms were read rather than the person who read \
+     them. An operator sets this when they have read a provider's terms, in \
+     the same order the model variables are set, and not before -- so leaving \
+     it unset is not a capability withheld from an operator but the absence of \
+     a claim nobody is yet entitled to make.";
 
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     (
-        "qip-api",
-        "QIP_WALLET_STATEMENT_PATH",
-        NO_CUSTODIAN_HAS_ISSUED_A_STATEMENT,
+        "qip-deepbrain",
+        "QIP_MODEL_PROVIDER_ATTESTATION_PATH",
+        NO_TERMS_HAVE_BEEN_READ_SO_THERE_IS_NOTHING_TO_ATTEST,
     ),
+    // QIP_WALLET_STATEMENT_PATH was argued here — "no environment can mount
+    // one honestly today" — and the argument was about the environments, not
+    // about the deployment's ability to offer the value. The catalogue now
+    // mounts a statement from `var.wallet_statement_file` where an
+    // environment names one, every tfvars leaves it null with the reason
+    // written beside it, and
+    // `the_wallet_statement_is_mountable_from_a_root_variable_and_no_environment_names_one`
+    // holds both halves. An entry here would now excuse a capability an
+    // operator does have.
     (
         "qip-deepbrain",
         "QIP_LANGUAGE_MODEL_PROVIDER",
@@ -1598,6 +1794,411 @@ fn the_catalogue_lets_an_operator_select_the_live_market_connector_without_editi
         "the connector's base URL may point somewhere other than the egress \
          proxy on loopback; `qip_transport::http` refuses https by name and an \
          address off the instance is a route that does not exist"
+    );
+}
+
+/// One root variable's declaration, from `variables.tf`.
+fn root_variable_block(name: &str) -> String {
+    let variables = read(ROOT_VARIABLES);
+    variables
+        .split(&format!("variable \"{name}\" {{"))
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .unwrap_or_else(|| panic!("the root declares no variable named {name}"))
+        .to_string()
+}
+
+/// What an environment's tfvars assigns to a root variable, comments removed
+/// so a commented example is read as the absence it is.
+fn tfvars_assignment(environment: &str, key: &str) -> Option<String> {
+    let text = without_comments(&read(&format!(
+        "infrastructure/environments/{environment}/terraform.tfvars"
+    )));
+    text.lines().find_map(|line| {
+        let rest = line.trim_start().strip_prefix(key)?;
+        let rest = rest.trim_start().strip_prefix('=')?;
+        Some(rest.trim().to_string())
+    })
+}
+
+/// The Secret Manager containers the root creates, from `secret_names`.
+fn secrets_the_root_creates() -> BTreeSet<String> {
+    let root = without_comments(&read(ROOT_MAIN));
+    let block = root
+        .split("secret_names = [")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .expect("main.tf passes secret_names to modules/secrets");
+    let names: BTreeSet<String> = block
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix('"'))
+        .filter_map(|rest| rest.split('"').next())
+        .map(str::to_string)
+        .collect();
+    assert!(
+        names.len() >= 8,
+        "only {names:?} were read out of secret_names; the list has been reshaped and every \
+         check that a mounted secret exists would now pass vacuously"
+    );
+    names
+}
+
+/// The Secret Manager container a deployment variable's value is written to,
+/// by the rule `qip_api::registration_views::secret_manager_name` applies:
+/// the variable in lower case with `_` as `-`. Restated here rather than
+/// imported, because a test that computed the name with the same function the
+/// route uses would agree with the route about a name Terraform never
+/// creates — which is the disagreement this pins.
+fn secret_manager_name(variable: &str) -> String {
+    variable.to_ascii_lowercase().replace('_', "-")
+}
+
+#[test]
+fn the_api_is_given_the_committed_registrations_where_a_root_variable_names_a_file() {
+    // The gap this closes, and it is the silent kind. `qip-api` assembles its
+    // registration registry from `PlatformConfig::venue_registrations`; with
+    // no root reading a file, that vector was empty in every deployment, so
+    // every source needing an account was refused for ever and the only way
+    // to change it was a runtime approval that no restart survives. A
+    // deployment could not commit a registration at all, and nothing said so.
+    let constants = variables_by_constant();
+
+    // Premise: the API reads the variable in its own source. Without this the
+    // assertions below are about a mount nothing consumes.
+    let read_by_api = variables_read_by("qip-api", &constants);
+    assert!(
+        read_by_api.literal.contains("QIP_VENUE_REGISTRATIONS_PATH"),
+        "qip-api no longer reads QIP_VENUE_REGISTRATIONS_PATH in its own crate; either the read \
+         was removed or it moved somewhere this walk cannot see, and the catalogue below would \
+         be mounting a file for nobody"
+    );
+
+    // The catalogue mounts it on the API, and only where a root variable
+    // names a file: `catalogue_optional_config_files` refuses an entry that
+    // is not inside a `== null ? {} : {` arm.
+    let optional = catalogue_optional_config_files();
+    let on_the_api = optional
+        .get("api")
+        .expect("local.optional_config_files declares the api workload");
+    assert!(
+        on_the_api.contains("QIP_VENUE_REGISTRATIONS_PATH"),
+        "the catalogue mounts no venue registrations file on the API; it mounts {on_the_api:?}"
+    );
+    for (workload, names) in &optional {
+        assert!(
+            workload == "api" || !names.contains("QIP_VENUE_REGISTRATIONS_PATH"),
+            "{workload} is also given the registrations file; only the API assembles the \
+             registry, and a second reader is a second answer to who registered"
+        );
+    }
+
+    // The bytes are the reviewed commit's, read with file() from a repository
+    // path — the same rule the universe is held to. A path fetched at apply
+    // would be a set of registrations no reviewer saw, each of which names a
+    // person as having read a venue's terms.
+    let catalogue = without_comments(&read(CATALOGUE));
+    assert!(
+        catalogue.contains(
+            "content           = file(\"${path.module}/../../${var.venue_registrations_file}\")"
+        ),
+        "the registrations file is not read with file() from the repository path the root \
+         variable names; a plan cannot then prove the records a revision carries are the ones \
+         that were reviewed"
+    );
+
+    // The root variable: null by default, so an environment that names
+    // nothing mounts nothing, and refused unless it points inside the data
+    // domain of this repository.
+    let block = root_variable_block("venue_registrations_file");
+    assert!(
+        block.contains("default = null"),
+        "venue_registrations_file has a non-null default, so an environment would mount \
+         registrations it never asked for"
+    );
+    assert!(
+        block.contains("^data/[A-Za-z0-9._/-]+\\\\.json$"),
+        "venue_registrations_file no longer refuses a path outside data/; a plan could then \
+         read bytes from anywhere on the machine that runs it"
+    );
+
+    // And no environment names one today, so no rendered manifest carries the
+    // variable — which is what makes the API's refusal of every
+    // account-bearing source the honest state rather than a broken mount.
+    for environment in ENVIRONMENTS {
+        assert_eq!(
+            tfvars_assignment(environment, "venue_registrations_file"),
+            None,
+            "{environment} names a venue registrations file; if a person has committed one, the \
+             RunService manifests under {GITOPS_ENVS}/{environment} must carry \
+             QIP_VENUE_REGISTRATIONS_PATH and this premise is the line to revisit"
+        );
+    }
+    let mut manifests = 0usize;
+    for (place, _, set) in deployments() {
+        if !place.starts_with("envs/") || !place.ends_with(":api") {
+            continue;
+        }
+        manifests += 1;
+        assert!(
+            !set.contains("QIP_VENUE_REGISTRATIONS_PATH"),
+            "{place} sets QIP_VENUE_REGISTRATIONS_PATH while its tfvars name no file, so the \
+             API would start on a path with nothing mounted at it and refuse to boot"
+        );
+    }
+    assert_eq!(
+        manifests,
+        ENVIRONMENTS.len(),
+        "only {manifests} api manifests were seen; the walk is not reaching them"
+    );
+}
+
+#[test]
+fn the_wallet_statement_is_mountable_from_a_root_variable_and_no_environment_names_one() {
+    // This variable spent its life in READ_BUT_NOT_SET, on the argument that
+    // no environment could mount a statement honestly. That was true of the
+    // environments and false as a statement about the deployment: an operator
+    // whose custodian had reported had no way to give the file to the process
+    // at all, and the allowlist entry read as though the platform had decided
+    // they never should. The catalogue now offers it and every environment
+    // declines it, which is a different fact and a reviewable one.
+    let constants = variables_by_constant();
+    let read_by_api = variables_read_by("qip-api", &constants);
+    assert!(
+        read_by_api
+            .by_delegation
+            .contains("QIP_WALLET_STATEMENT_PATH"),
+        "qip-api no longer reads QIP_WALLET_STATEMENT_PATH through `StatementFeed::from_env`; \
+         the mount below would then feed nothing"
+    );
+
+    let on_the_api = catalogue_optional_config_files();
+    let on_the_api = on_the_api
+        .get("api")
+        .expect("local.optional_config_files declares the api workload");
+    assert!(
+        on_the_api.contains("QIP_WALLET_STATEMENT_PATH"),
+        "the catalogue mounts no wallet statement on the API; it mounts {on_the_api:?}"
+    );
+
+    let block = root_variable_block("wallet_statement_file");
+    assert!(
+        block.contains("default = null"),
+        "wallet_statement_file has a non-null default; a statement is a dated document and a \
+         default one would be stale by definition"
+    );
+
+    // No environment names one, and each says why in its own file rather than
+    // leaving the next reader to wonder — the argument that used to live in
+    // the allowlist entry this test replaces.
+    for environment in ENVIRONMENTS {
+        assert_eq!(
+            tfvars_assignment(environment, "wallet_statement_file"),
+            None,
+            "{environment} names a wallet statement; the kernel holds one fresh for a day, so a \
+             committed file is a same-day act and this premise is the line to revisit"
+        );
+        let tfvars = read(&format!(
+            "infrastructure/environments/{environment}/terraform.tfvars"
+        ));
+        assert!(
+            tfvars.contains("wallet_statement_file"),
+            "{environment} does not mention wallet_statement_file at all. Unset is a decision \
+             here — this environment trades on the simulated venue, which issues no statement — \
+             and a decision nobody wrote down is one the next reader will make again from \
+             scratch"
+        );
+    }
+
+    // The allowlist no longer excuses it: an entry saying the variable cannot
+    // be set would now be false, and an obsolete exception excuses the next
+    // mistake with the same name.
+    assert!(
+        !READ_BUT_NOT_SET
+            .iter()
+            .any(|(binary, variable, _)| *binary == "qip-api"
+                && *variable == "QIP_WALLET_STATEMENT_PATH"),
+        "QIP_WALLET_STATEMENT_PATH is argued unset in READ_BUT_NOT_SET and the catalogue sets \
+         it from var.wallet_statement_file; one of the two is wrong about the deployment"
+    );
+}
+
+#[test]
+fn a_workloads_rendered_manifest_mounts_exactly_the_secrets_its_catalogue_entry_declares() {
+    // `infrastructure/CLAUDE.md` calls the catalogue "the source of truth for
+    // both the identity Terraform creates and the manifest Argo CD applies".
+    // It was one source of truth and two copies, and nothing compared them.
+    //
+    // The gap is not hypothetical. A secret mount was removed from the fast
+    // brain's catalogue entry and the four rendered manifests kept it: every
+    // infrastructure and wiring suite stayed green while the workload Argo
+    // actually applies still received a venue credential the catalogue no
+    // longer granted it. Argo applies the manifest, so the catalogue was the
+    // copy that did not matter, and the fix that only touched it would have
+    // been cosmetic.
+    //
+    // `_FILE` is the secret-mount convention here: a config file mounted from
+    // a root variable ends `_PATH` and is legitimately per-environment, while
+    // a secret mount is declared unconditionally in the entry and must appear
+    // in every environment's manifest. So the comparison is exact — equality,
+    // not containment, because a manifest mounting *more* than the catalogue
+    // grants is the direction this test was written for.
+    let mut catalogue: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut rendered: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+    for (place, _, set) in deployments() {
+        let secrets: BTreeSet<String> = set
+            .iter()
+            .filter(|variable| variable.ends_with("_FILE"))
+            .cloned()
+            .collect();
+        if let Some(name) = place.strip_prefix("catalogue.tf:") {
+            catalogue.insert(name.to_string(), secrets);
+        } else if let Some((env, name)) = place
+            .strip_prefix("envs/")
+            .and_then(|rest| rest.split_once(':'))
+        {
+            rendered.insert((name.to_string(), env.to_string()), secrets);
+        }
+    }
+    // Premise, both halves: the catalogue was read, the manifests were read,
+    // and at least one workload actually mounts a secret. Without the last of
+    // these every comparison below would be `{} == {}`.
+    assert!(
+        !catalogue.is_empty() && !rendered.is_empty(),
+        "the walk found {} catalogue entries and {} rendered manifests; it is not reading one \
+         of the two sides and the comparison would be vacuous",
+        catalogue.len(),
+        rendered.len()
+    );
+    assert!(
+        catalogue.values().any(|secrets| !secrets.is_empty()),
+        "no catalogue workload mounts a secret at all; the `_FILE` filter is matching nothing \
+         and every comparison below is between two empty sets"
+    );
+    let mut compared = 0usize;
+    for ((name, env), manifest_secrets) in &rendered {
+        let Some(entry_secrets) = catalogue.get(name) else {
+            panic!(
+                "envs/{env} renders a manifest for `{name}`, which is not a workload the \
+                 catalogue declares; the manifest is the copy Argo applies, so this is a \
+                 deployment the source of truth does not describe"
+            );
+        };
+        assert_eq!(
+            manifest_secrets, entry_secrets,
+            "envs/{env}/{name}.yaml and the catalogue disagree about which secrets `{name}` is \
+             mounted. Argo applies the manifest, so the manifest is what the workload actually \
+             receives and the catalogue is the copy that lost. Re-render the manifest from the \
+             catalogue rather than editing either one to match the other"
+        );
+        compared += 1;
+    }
+    assert!(
+        compared >= ENVIRONMENTS.len(),
+        "only {compared} rendered manifests were compared against the catalogue; there are \
+         {} environments and the pairing is matching fewer than one each",
+        ENVIRONMENTS.len()
+    );
+}
+
+#[test]
+fn every_connector_credential_slot_the_registrations_route_names_exists_and_reaches_the_binary_as_a_file()
+ {
+    // `GET /registrations` prints `gcloud secrets versions add
+    // qip-alpaca-api-secret-key --data-file=-` to an operator who has just
+    // read a venue's terms and created a key. The name in that command is
+    // derived from the connector manifest's variable, and nothing connected
+    // it to the list of secrets Terraform creates: the command named a
+    // container that did not exist, so the runbook failed at the one moment
+    // somebody followed it through — after the account was open and the key
+    // was in their clipboard.
+    let credentials = variables_named_by_connector_manifests();
+    // Premise: the manifests name credentials at all, and the pair this
+    // deployment mounts is among them.
+    for variable in ["QIP_ALPACA_API_KEY_ID", "QIP_ALPACA_API_SECRET_KEY"] {
+        assert!(
+            credentials.contains(variable),
+            "no connector manifest names {variable}; the manifests name {credentials:?}, and a \
+             slot for a credential no manifest reads is a container nobody fills"
+        );
+    }
+
+    let created = secrets_the_root_creates();
+    for variable in &credentials {
+        let slot = secret_manager_name(variable);
+        assert!(
+            created.contains(&slot),
+            "a connector manifest reads {variable}, so the registrations route prints `gcloud \
+             secrets versions add {slot} --data-file=-`, and secret_names in main.tf creates no \
+             such container. The operator following the runbook is told to fill a slot that \
+             does not exist. It creates {created:?}"
+        );
+    }
+
+    // And the credential reaches the process as a file, on every deployment
+    // of both binaries that could open a connector. Never as a value: a
+    // credential in the environment is a credential in /proc/<pid>/environ,
+    // in every child process and in every crash dump.
+    //
+    // "Could open a connector" means could actually reach the vendor. A
+    // workload with no egress proxy has no outbound path at all, so requiring
+    // it to mount a venue credential would require a secret for a call it
+    // cannot make — and `the_fast_brain_cannot_reach_anything_that_could_serve_a_language_model`
+    // in the infrastructure suite refuses that mount from the other side.
+    // This is not a hypothetical reconciliation of two rules: the fast brain
+    // was given the Alpaca pair, both suites were run, and they disagreed.
+    //
+    // The disagreement exposed something worth stating rather than hiding
+    // behind the skip. The fast brain is the workload `var.market_data_connector`
+    // sets `QIP_CONNECTOR_SOURCE` and `QIP_CONNECTOR_BASE_URL` on, and it is
+    // the workload that cannot reach a vendor. So selecting a live source
+    // today configures a fetch that can never happen, on the one binary that
+    // is wired to attempt it. Which workload runs a live connector, and what
+    // it is permitted to dial, is a topology question ADR 0008 constrains and
+    // no record yet answers; until one does, this test holds the narrower
+    // property it can honestly hold.
+    let reachable = binaries_with_an_egress_path();
+    let mut skipped_for_no_egress = 0usize;
+    let mut checked = 0usize;
+    for (place, binary, set) in deployments() {
+        if binary != "qip-api" && binary != "qip-fastbrain" {
+            continue;
+        }
+        if !reachable.contains(&binary) {
+            skipped_for_no_egress += 1;
+            continue;
+        }
+        for variable in ["QIP_ALPACA_API_KEY_ID", "QIP_ALPACA_API_SECRET_KEY"] {
+            assert!(
+                set.contains(&format!("{variable}_FILE")),
+                "{place} runs {binary}, which can open the Alpaca connector, and does not mount \
+                 {variable}_FILE. The connector then refuses to open on a credential it cannot \
+                 read, on a deployment whose operator filled the slot the route named. It sets \
+                 {set:?}"
+            );
+            assert!(
+                !set.contains(variable),
+                "{place} sets {variable} as an environment value; the credential reaches this \
+                 process as a mounted file and `qip_core::secret` reads the _FILE variant"
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= 2 * (1 + ENVIRONMENTS.len()),
+        "only {checked} credential mounts were checked; the catalogue entry and the four \
+         rendered manifests of the one binary that can reach a vendor are five deployments, \
+         each carrying two credentials, and the walk is reaching fewer"
+    );
+    // The skip is a claim about the deployment, so it is asserted rather than
+    // assumed. If the fast brain ever gains an egress path this fires, and
+    // the mount it then needs stops being excused by a branch nobody re-read.
+    let fast_brain_deployments = 1 + ENVIRONMENTS.len();
+    assert!(
+        skipped_for_no_egress >= fast_brain_deployments,
+        "only {skipped_for_no_egress} deployments were skipped for having no egress path; the \
+         fast brain's catalogue entry and its four rendered manifests are five, so either it \
+         has gained the proxy — in which case it now needs the credential mounted, and this \
+         test should check it rather than skip it — or the skip is not matching what it thinks"
     );
 }
 

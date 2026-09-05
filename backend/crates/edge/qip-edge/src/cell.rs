@@ -19,7 +19,7 @@ use crate::mesh::{CellStateDelta, DeltaOrder, DeltaRefusal, StrategyUtilisation}
 use crate::policy::{VerifiedHalt, VerifiedPolicy};
 use crate::reservation::RegionTable;
 use crate::seam::CellLiquidity;
-use crate::telemetry::CellMetrics;
+use crate::telemetry::{CellMetrics, RegionShareOutcome};
 use qip_arbitrage::scan::{Opportunity, RejectionStage};
 use qip_contracts::capital::{CapitalGrant, Utilisation};
 use qip_contracts::degradation::{DegradationState, StrategyClass};
@@ -1155,10 +1155,34 @@ impl Cell {
     /// nothing, exactly as it holds nothing on a pass.
     fn apply_region_share(&mut self, sequence: u64, now: Timestamp) {
         let Some((table, share, grants)) = self.derive_region_share(now) else {
+            // Charted only for a cell that holds a table. A cell with no table
+            // has no share for the centre to withhold, and counting one for it
+            // would put every unfunded cell in the tree on a series meant to
+            // say that a downlink has gone quiet about capital.
+            if self.region_allocation.is_some() {
+                self.metrics.region_share(RegionShareOutcome::Withheld);
+            }
             return;
         };
+        // Read before the ledger is asked, because a refusal changes nothing
+        // and this is the only fact that classifies one. The label names the
+        // condition the cell verified here — a share offered under a sequence
+        // no newer than the one the ledger already holds — and not a parse of
+        // the refusal's message. A refusal the cell cannot classify this way
+        // is journaled below and left off the series rather than filed under
+        // a cause nobody established.
+        let replayed = table
+            .share_sequence()
+            .is_some_and(|applied| sequence <= applied);
         let outcome = table.rebase(&self.config.cell_id, share, sequence);
-        self.record_region_share(outcome, sequence, grants, now);
+        self.record_region_share(
+            outcome,
+            RegionShareOutcome::Applied,
+            replayed.then_some(RegionShareOutcome::RefusedLowerSequence),
+            sequence,
+            grants,
+            now,
+        );
     }
 
     /// Sum the applied manifest again under its own sequence, because the
@@ -1187,7 +1211,19 @@ impl Cell {
             return;
         };
         let outcome = table.rederive(&self.config.cell_id, share, sequence);
-        self.record_region_share(outcome, sequence, grants, now);
+        // No refusal outcome: a re-derivation is *defined* at the sequence
+        // already applied, so "no newer than the applied" is its normal state
+        // and cannot classify anything here. The refusals this call can
+        // return are about whose share the table holds, which the journal
+        // names and the `outcome` label deliberately does not guess at.
+        self.record_region_share(
+            outcome,
+            RegionShareOutcome::Rederived,
+            None,
+            sequence,
+            grants,
+            now,
+        );
     }
 
     /// The share the applied manifest names for this cell: the gross of the
@@ -1238,10 +1274,20 @@ impl Cell {
         Some((table, share, grants))
     }
 
-    /// Journal what a re-base or a re-derivation did, and chart the balance.
+    /// Journal what a re-base or a re-derivation did, and chart the balance,
+    /// the bound and which of the two it was.
+    ///
+    /// `accepted` is what the caller's own call was — a re-base or a
+    /// re-derivation — and `refused` is the outcome to chart if the ledger
+    /// turned it down, or `None` where the caller cannot say why a refusal
+    /// happened. A refusal nobody can attribute is journaled and left off the
+    /// series: an `outcome` label naming a cause the cell did not establish
+    /// would read on a chart as a finding.
     fn record_region_share(
         &mut self,
         outcome: Result<crate::reservation::Rebase>,
+        accepted: RegionShareOutcome,
+        refused: Option<RegionShareOutcome>,
         sequence: u64,
         grants: usize,
         now: Timestamp,
@@ -1260,6 +1306,12 @@ impl Cell {
                     now,
                 );
                 self.metrics.region_allocation(Some(rebase.free));
+                // The bound the ledger now enforces, from the ledger's own
+                // answer rather than from the share that was offered: the
+                // ceiling may have capped it, and charting the offer would
+                // report a number this cell will never be allowed to commit.
+                self.metrics.region_share_bound(rebase.bound);
+                self.metrics.region_share(accepted);
             }
             Err(error) => {
                 // The payload's own sequence check ran above, so this fires
@@ -1273,6 +1325,9 @@ impl Cell {
                     },
                     now,
                 );
+                if let Some(refused) = refused {
+                    self.metrics.region_share(refused);
+                }
             }
         }
     }

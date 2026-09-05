@@ -210,6 +210,28 @@ impl HuggingFaceConfig {
         &self.model
     }
 
+    /// The provider the router will serve this model from, when the model
+    /// identifier pins one.
+    ///
+    /// The router accepts `<org>/<model>:<provider>` and, without the suffix,
+    /// picks a provider itself at call time. That pick is invisible to this
+    /// process and may differ between two identical calls, so ADR 0037's
+    /// "a provider on the router's list whose terms permit training on inputs"
+    /// would arrive without anybody choosing it. The deep brain therefore
+    /// refuses to construct this adapter unless the identifier pins a provider
+    /// and a committed attestation names that provider — see
+    /// `qip-deepbrain/src/attestation.rs`.
+    ///
+    /// Read off the same string [`HuggingFaceModel::request_body`] sends as
+    /// `model`, so what was attested and what is asked for cannot become two
+    /// claims about one fact.
+    pub fn routed_provider(&self) -> Option<&str> {
+        self.model
+            .rsplit_once(':')
+            .map(|(_, provider)| provider.trim())
+            .filter(|provider| !provider.is_empty())
+    }
+
     pub fn base_url(&self) -> &Url {
         &self.base_url
     }

@@ -59,6 +59,10 @@ spec:
         cpuIdle: true
         startupCpuBoost: true
       env:
+      - name: QIP_ALPACA_API_KEY_ID_FILE
+        value: /var/run/secrets/qip/alpaca-api-key-id/alpaca-api-key-id
+      - name: QIP_ALPACA_API_SECRET_KEY_FILE
+        value: /var/run/secrets/qip/alpaca-api-secret-key/alpaca-api-secret-key
       - name: QIP_API_ADDRESS
         value: 0.0.0.0:8080
       - name: QIP_AUTONOMY_CEILING
@@ -80,6 +84,10 @@ spec:
       - name: QIP_UNIVERSE_PATH
         value: /etc/qip/7ec25303c3f3ecac/universe.json
       volumeMounts:
+      - name: alpaca-api-key-id
+        mountPath: /var/run/secrets/qip/alpaca-api-key-id
+      - name: alpaca-api-secret-key
+        mountPath: /var/run/secrets/qip/alpaca-api-secret-key
       - name: capital-envelope-key
         mountPath: /var/run/secrets/qip/capital-envelope-key
       - name: token-analyst
@@ -134,6 +142,26 @@ spec:
           path: /healthz
           port: 9900
     volumes:
+    - name: alpaca-api-key-id
+      secret:
+        secretRef:
+          external: qip-alpaca-api-key-id-prod
+        defaultMode: 256
+        items:
+        - path: alpaca-api-key-id
+          mode: 256
+          versionRef:
+            external: latest
+    - name: alpaca-api-secret-key
+      secret:
+        secretRef:
+          external: qip-alpaca-api-secret-key-prod
+        defaultMode: 256
+        items:
+        - path: alpaca-api-secret-key
+          mode: 256
+          versionRef:
+            external: latest
     - name: capital-envelope-key
       secret:
         secretRef:

@@ -12,10 +12,12 @@ use qip_financial::intelligence::{
 };
 use qip_market::bar::Bar;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
-use crate::causal::{CausalEdge, CausalGraph, Mechanism, PropagationResult};
+use crate::causal::{
+    CausalEdge, CausalGraph, Mechanism, PropagationResult, Reestimation, SupportingClaim,
+};
 use crate::features::{Feature, FeatureStore, FeatureValue};
 use crate::graph::{Fact, KnowledgeGraph, Node, NodeKind};
 use crate::relationship::{Relationship, RelationshipKind};
@@ -37,6 +39,15 @@ impl qip_events::EventBody for WorldModelUpdated {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// How many supporting causal claims the model keeps for re-estimation.
+///
+/// A bounded working set, like every other buffer here: the event log is the
+/// record, and a re-estimation window that grew without limit would make the
+/// cost of absorbing evidence depend on how long the process had been up.
+/// The oldest claim leaves first, so what survives is exactly the newest
+/// evidence — the subset a re-estimation inside any horizon would prefer.
+pub const CAUSAL_SUPPORT_RETAINED: usize = 512;
+
 /// The platform's model of the world.
 #[derive(Debug)]
 pub struct WorldModel {
@@ -47,6 +58,9 @@ pub struct WorldModel {
     index: SearchIndex,
     /// Changes recorded in absorption order, for diffing.
     journal: Vec<Change>,
+    /// The causal evidence absorbed so far, newest last, capped at
+    /// [`CAUSAL_SUPPORT_RETAINED`]. What [`CausalGraph::reestimate`] reads.
+    causal_support: VecDeque<SupportingClaim>,
 }
 
 impl Default for WorldModel {
@@ -65,6 +79,7 @@ impl WorldModel {
             resolver: Resolver::default(),
             index: SearchIndex::new().with_embedder(embedder),
             journal: Vec::new(),
+            causal_support: VecDeque::new(),
         };
         model.define_standard_features();
         model
@@ -223,6 +238,14 @@ impl WorldModel {
     }
 
     /// Record a causal claim.
+    ///
+    /// The claim is also retained as its own supporting evidence, so a later
+    /// [`Self::absorb_causal_support`] re-estimates against what the graph
+    /// already believes rather than against whatever happens to arrive next.
+    /// It does not re-estimate here: the edge was written a line ago with the
+    /// strength its evidence measured, and re-estimating it against itself
+    /// would compute the number it already holds while marking every *other*
+    /// link decayed on the strength of one unrelated claim.
     pub fn claim_causal(&mut self, edge: CausalEdge) {
         let description = format!(
             "{} affects {} via {}",
@@ -233,6 +256,16 @@ impl WorldModel {
         let at = edge.recorded_at;
         let subject = format!("{}->{}", edge.cause, edge.effect);
         let materiality = edge.transmission().clamp(0.0, 1.0);
+        self.retain_causal_support(
+            SupportingClaim::new(
+                edge.cause.clone(),
+                edge.effect.clone(),
+                edge.mechanism,
+                edge.strength,
+                edge.recorded_at,
+            )
+            .with_evidence(edge.evidence.clone()),
+        );
         self.causal.add(edge);
         self.journal.push(Change::new(
             ChangeKind::CausalClaimAdded,
@@ -241,6 +274,96 @@ impl WorldModel {
             materiality,
             at,
         ));
+    }
+
+    /// Absorb evidence about a causal link, and re-estimate the causal graph
+    /// from every claim still inside the freshness horizon.
+    ///
+    /// # The trigger, and why it is this one
+    ///
+    /// This seam, and deliberately no other. The causal graph is re-estimated
+    /// exactly when causal evidence arrives, because that is the only moment
+    /// anything about a transmission has changed. The other absorb seams —
+    /// [`Self::absorb_bar`], [`Self::absorb_news`], [`Self::absorb_fundamental`],
+    /// [`Self::absorb_macro`], [`Self::absorb_alternative_data`] — carry no
+    /// reading of a transmission at all, and triggering on them would be
+    /// actively wrong twice over: a pass over every edge per bar, arriving at
+    /// the numbers already held, and every link marked decayed on a feed tick
+    /// that said nothing about any of them. A price moving is not evidence
+    /// that a mechanism changed; treating it as such is how a correlation
+    /// becomes a thesis.
+    ///
+    /// # The horizon is the contract's
+    ///
+    /// [`CAUSAL_GRAPH_HORIZON`](qip_contracts::degradation::CAUSAL_GRAPH_HORIZON),
+    /// not a second number chosen here. Re-estimating over a wider window
+    /// would refresh the very fact `CausalGraphFreshness::assess` then judges
+    /// against the narrower one — the graph would read fresh at the centre on
+    /// evidence the centre's own rule calls too old, and two claims about the
+    /// same fact disagree with the louder one winning.
+    ///
+    /// Records what the re-estimation did in the journal, once per strength
+    /// that moved and once per link the *first* time it is found unsupported,
+    /// so the discovery stage sees a link losing its evidence and a repeated
+    /// re-estimation does not repeat the entry. Returns the full report:
+    /// decayed links are the caller's to act on, not a log line.
+    pub fn absorb_causal_support(
+        &mut self,
+        claim: SupportingClaim,
+        now: Timestamp,
+    ) -> Result<Reestimation> {
+        self.retain_causal_support(claim);
+        let report = self.causal.reestimate(
+            self.causal_support.iter().cloned(),
+            qip_contracts::degradation::CAUSAL_GRAPH_HORIZON,
+            now,
+        )?;
+        for update in &report.updated {
+            self.journal.push(Change::new(
+                ChangeKind::BeliefRevised,
+                format!("{}->{}", update.cause, update.effect),
+                format!(
+                    "{} strength re-estimated from {} claim(s): {:.3} to {:.3}",
+                    update.mechanism.as_str(),
+                    update.claims,
+                    update.previous,
+                    update.updated
+                ),
+                (update.updated - update.previous).abs(),
+                now,
+            ));
+        }
+        for edge in &report.decayed {
+            if edge.previously_marked.is_some() {
+                continue;
+            }
+            self.journal.push(Change::new(
+                ChangeKind::BeliefRevised,
+                format!("{}->{}", edge.cause, edge.effect),
+                format!(
+                    "no claim inside the horizon supports this {} link; its newest evidence is \
+                     from {}",
+                    edge.mechanism.as_str(),
+                    edge.recorded_at.to_rfc3339()
+                ),
+                edge.transmission,
+                now,
+            ));
+        }
+        Ok(report)
+    }
+
+    /// The causal evidence retained for re-estimation, oldest first.
+    pub fn causal_support(&self) -> &VecDeque<SupportingClaim> {
+        &self.causal_support
+    }
+
+    /// Retain a supporting claim, evicting the oldest to stay bounded.
+    fn retain_causal_support(&mut self, claim: SupportingClaim) {
+        while self.causal_support.len() >= CAUSAL_SUPPORT_RETAINED {
+            self.causal_support.pop_front();
+        }
+        self.causal_support.push_back(claim);
     }
 
     /// Absorb a news item: resolve its entities, index it, update sentiment.

@@ -25,6 +25,7 @@ use qip_api::web::{Router, Web};
 use qip_core::error::{Error, Result};
 use qip_core::time::Duration;
 use qip_core::{Clock, SystemClock};
+use qip_data_finder::registration::RegistrationRecord;
 use qip_kernel::central::ArbitragePolicy;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_observability::Telemetry;
@@ -82,7 +83,18 @@ fn run() -> Result<()> {
     // it too; a policy attached after the rebuild would be lost in the swap.
     let (arbitrage, arbitrage_banner) = load_arbitrage_policy()?;
 
-    let mut config = PlatformConfig::default().with_live_ceiling(ceiling);
+    // Who has registered with a venue, from the committed file the deployment
+    // names — see `load_venue_registrations` for why an unset path is a
+    // registry that records nobody and a named file that does not parse is a
+    // refusal to start. Read before the configuration is built because the
+    // registry the feed's admission gate consults is built from that
+    // configuration a few lines below, and a record applied afterwards would
+    // admit a source the connector had already been refused.
+    let (venue_registrations, registrations_source) = load_venue_registrations()?;
+
+    let mut config = PlatformConfig::default()
+        .with_live_ceiling(ceiling)
+        .with_venue_registrations(venue_registrations);
     config.central.arbitrage = arbitrage;
 
     // The source `POST /cycle` senses, chosen before the platform exists
@@ -93,7 +105,20 @@ fn run() -> Result<()> {
     // absent case stays absent instead of falling back to generated prices.
     let feed_settings = qip_api::feed::FeedSettings::from_env()
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
-    let feed = qip_api::feed::ApiFeed::open(&feed_settings, config.seed, now)
+    // The registration registry the connector is admitted against is the one
+    // this configuration stands for — the same function the platform builds
+    // its own from at assembly — so the feed cannot admit a source on a
+    // record the platform then does not hold. With no registrations file
+    // named the registry is the shipped table with no record, and every
+    // source that needs an account is refused here until an operator approves
+    // it through `POST /registrations/{source}/approve`, which reaches the
+    // platform's registry and the event log but not a connector already
+    // opened — a connector is admitted once, at start. A committed file is
+    // how a deployment starts with those records already in place.
+    let registrations = config
+        .registration_registry()
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let feed = qip_api::feed::ApiFeed::open(&feed_settings, &registrations, config.seed, now)
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
     // The clock the platform reasons on. A tape owns its own, and the
     // platform must be assembled on it: opportunities expire at tape time,
@@ -436,6 +461,13 @@ fn run() -> Result<()> {
         println!("{line}");
     }
     println!("  event chain:      {}", archive.describe());
+    {
+        let platform = platform.lock().map_err(|_| {
+            Error::invalid("the platform lock is poisoned before the first request")
+        })?;
+        println!("  registrations:    {registrations_source}");
+        println!("  source standing:  {}", registrations_banner(&platform));
+    }
     println!(
         "  universe:         {}; sector and country buckets are fed from it. Note ADR 0027: under the \
          conservative default the first desk order into an empty book is refused by \
@@ -444,6 +476,32 @@ fn run() -> Result<()> {
     );
 
     server.serve()
+}
+
+/// One banner line: which catalogued sources stand registered, keyless or
+/// pending, as the platform's own registry answers at start.
+///
+/// Read off the assembled platform rather than the configuration so the line
+/// describes the registry a route will read, and every source in the
+/// finder's catalogue is named so an operator sees what is refused as well
+/// as what is admitted — a banner that listed only the admitted sources would
+/// read as a platform with nothing to register.
+fn registrations_banner(platform: &Platform) -> String {
+    let catalogue = match qip_data_finder::admission::catalogue() {
+        Ok(catalogue) => catalogue,
+        Err(error) => return format!("the catalogue did not build: {}", error.message()),
+    };
+    let lines: Vec<String> = catalogue
+        .iter()
+        .map(|entry| {
+            let standing = match platform.registration_standing(entry.source_id) {
+                Ok(standing) => standing.describe(),
+                Err(_) => "pending; refused until an operator approves it".to_string(),
+            };
+            format!("{} ({standing})", entry.source_id)
+        })
+        .collect();
+    lines.join("; ")
 }
 
 /// The instrument universe, from the committed catalogue the deployment names.
@@ -485,6 +543,85 @@ fn load_universe(
         &catalogue.manifest,
     )?;
     Ok(catalogue)
+}
+
+/// Where the venue registrations are read from: a JSON array of
+/// `RegistrationRecord`s, mounted the way the universe is. Unset means nobody
+/// has registered.
+const VENUE_REGISTRATIONS_VARIABLE: &str = "QIP_VENUE_REGISTRATIONS_PATH";
+
+/// The registrations the deployment commits, from the JSON file it names, and
+/// the banner line that says where they came from.
+///
+/// `QIP_VENUE_REGISTRATIONS_PATH` unset is not a refusal: it is a deployment
+/// where nobody has registered with a venue, and the platform's answer to that
+/// is the fail-closed one — the shipped requirement table records nobody, and
+/// every source needing an account is refused by name until an operator
+/// approves it at runtime. Set and unreadable, or readable and not an array of
+/// records, is a refusal to start: a process that fell back to "nobody
+/// registered" because the file the operator pointed at was missing would run
+/// healthy with every account-bearing source silently refused, and the
+/// operator would look for the fault at the venue.
+///
+/// Nothing here can invent an attribution. `RegistrationRecord` has one
+/// constructor, it refuses a blank operator, a blank terms citation and a
+/// `secret` that is not a variable name, and the `Deserialize` impl goes
+/// through that same constructor — so a malformed record is refused at load
+/// with serde naming the field, and a pasted key is refused without being
+/// echoed. That is the whole reason this reads records rather than accepting
+/// a looser shape and validating it afterwards.
+///
+/// An empty array is refused too. A mounted file that registers nobody is a
+/// configured feed that grants nothing, which reads to the next operator as a
+/// registration that failed rather than as a deployment where nobody
+/// registered; unsetting the variable says the second thing, and says it in
+/// the plan as well as in the banner.
+fn load_venue_registrations() -> Result<(Vec<RegistrationRecord>, String)> {
+    let Some(path) = std::env::var(VENUE_REGISTRATIONS_VARIABLE)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok((
+            Vec::new(),
+            format!(
+                "none ({VENUE_REGISTRATIONS_VARIABLE} is not set); the registry records nobody \
+                 and every source that needs an account stays refused until an operator \
+                 approves it"
+            ),
+        ));
+    };
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        Error::io(format!(
+            "configuration: {VENUE_REGISTRATIONS_VARIABLE} names {path}, which cannot be read: \
+             {error}. Unset it to run with no registrations; a named file that does not read is \
+             not a deployment where nobody registered"
+        ))
+    })?;
+    let records: Vec<RegistrationRecord> = serde_json::from_str(&text).map_err(|error| {
+        Error::invalid(format!(
+            "configuration: {VENUE_REGISTRATIONS_VARIABLE} names {path}, which is not an array \
+             of venue registrations: {error}. Each record carries source_id, operator, \
+             terms_read_at, terms and secret.variable — the deployment variable the credential \
+             is read under, never the credential; see docs/operations/registering-a-venue.md"
+        ))
+    })?;
+    if records.is_empty() {
+        return Err(Error::invalid(format!(
+            "configuration: {VENUE_REGISTRATIONS_VARIABLE} names {path}, which registers nobody. \
+             Unset the variable — the deployment then says out loud that nobody registered, \
+             rather than mounting a file that grants nothing"
+        )));
+    }
+    let banner = format!(
+        "{} record(s) from {path}: {}",
+        records.len(),
+        records
+            .iter()
+            .map(|record| format!("{} by {}", record.source_id(), record.operator()))
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
+    Ok((records, banner))
 }
 
 /// Where the arbitrage desk's policy is read from: a JSON `ArbitragePolicy`,

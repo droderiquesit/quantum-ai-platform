@@ -524,6 +524,33 @@ full before citing; one line each below is the decision, not the argument.
   shadow mode, in `dev` only; `execution_nodes` stays `{}` in test, stage and
   prod.
 
+**ADR 0033 now has a module, no caller, and no apply — and it is the
+exception to the method note above.** `infrastructure/terraform/modules/openobserve/`
+(new on 2026-09-05) holds the posture as `access_posture`, defaulting to
+`authenticated` with `nullable = false`, refusing `anonymous` for `prod` in a
+`validation` block, and refusing an anonymous member in `access_principals`;
+it declares no resource and emits the ingress and invoker members the
+manifests must carry. Nothing in the root instantiates it, so "no module is
+instantiated nowhere" — asserted under *Method* above, and counted when there
+were eighteen module directories — is false while this row stands, and the
+root wiring is what closes it. Until then **no environment's posture has
+changed**: `infrastructure/gitops/envs/dev/openobserve.yaml` still declares
+`ingress: INGRESS_TRAFFIC_ALL`, `invokers.yaml` still names the anonymous
+member under ADR 0030, and the service observed serving anonymously on
+2026-09-04 is untouched. What the next plan is expected to change, once a
+`module "openobserve_access"` block exists in the root: **nothing, in
+resources.** The module creates none, so the summary should stay `0 to add, 0
+to change, 0 to destroy` for it, with at most an output value moving; a plan
+that proposes a resource for this module is carrying something this module
+did not put there and is the finding, not the wiring. The refusal is visible
+in the same plan by feeding it a bad value — `access_posture = "anonymous"`
+with `environment = "prod"` fails at variable validation before any refresh,
+which was exercised here against a harness root with no provider rather than
+against `algorik-dev`. Moving the *deployed* posture is a separate act and
+waits on the dev control-plane cluster (run 38 below), because the RunService
+and its invoker are Config Connector's since ADR 0036 and no cluster
+reconciles them today.
+
 **A6 (the managed-Prometheus collector for Cloud Run, tracked in
 `.claude/rules/domains/observability.md`) is REFUSED, not open.** ADR 0032
 names the collector image as "the vendored, digest-pinned,

@@ -79,7 +79,7 @@ argument still holds here.
 | Plane | Blueprint responsibility | Implementation | Status | Evidence | Minimal action | Phase |
 |---|---|---|---|---|---|---|
 | 1 Ingestion | Observe world + prices; resolve to entities; pass-through, not accumulation | `qip-market-ingestion`, `qip-normalization`, `qip-entity-resolution`, `qip-data-finder` (licensing posture before use; the registered outcome is sealed behind the legality assessment since `47e9b81`, so a catalogue entry cannot skip the gate) | PARTIAL | `platform.rs` absorbs 11 record kinds; `Feed::Live` exists at `apps/qip-fastbrain/src/feed.rs:61` and `::live` at `:108` | Prove one live source end to end; no deep-web tier exists | 1, 5 |
-| 2 Cognition | World model, causal graph, episodic memory, belief, counterfactual, self-model, hypotheses | `qip-world-model`, `qip-agents/src/memory.rs`, `qip-twin`, `qip-reasoning-engine/src/hypothesis.rs` | PARTIAL | World model and hypotheses present; counterfactuals in `qip-twin`, and since `b9e2242` every refused order is priced through `Platform::evaluate_alternatives` from LEARN (`platform.rs:5028`); since `04738ee` the belief calibration is a Brier score on `qip_belief_brier_score` (`:1708`) rather than a function nothing called | **No self-model exists** (`grep -rln "SelfModel"` empty); no belief *stage* in the cycle — grading theses after the fact is not sizing by belief before the trade | 7, 8, 9 |
+| 2 Cognition | World model, causal graph, episodic memory, belief, counterfactual, self-model, hypotheses | `qip-world-model`, `qip-agents/src/memory.rs`, `qip-twin`, `qip-reasoning-engine/src/hypothesis.rs` | PARTIAL | World model and hypotheses present; counterfactuals in `qip-twin`, and since `b9e2242` every refused order is priced through `Platform::evaluate_alternatives` from LEARN (`platform.rs:5028`); since `04738ee` the belief calibration is a Brier score on `qip_belief_brier_score` (`:1708`) rather than a function nothing called | Re-scored 2026-09-05. **This cell used to read "No self-model exists (`grep -rln "SelfModel"` empty)" and that is now false**: the same grep returns eight files (`qip-learning-engine/src/self_model.rs`, its two test files, `qip-contracts/src/degradation.rs` and `tests/contracts.rs`, `qip-kernel/src/platform.rs`, `qip-kernel/tests/self_model.rs`, `qip-api/src/self_model_views.rs`), the model is fed from LEARN and served at `GET /cognition/self-model`, and since `aefa255`/`0829b29` its freshness — with the causal graph's and the belief state's — narrows central sizing through `Platform::central_degradation` (`qip-kernel/src/platform.rs`). What remains: no belief *stage* in the cycle — grading theses after the fact, and narrowing size when the belief is old, is still not sizing *by* belief before the trade | 7, 8, 9 |
 | 3 Valuation | Price what has no price: term structure, credit, vol surface, illiquid, cashflow, corporate actions | Corporate actions absorbed in `platform.rs`; `qip-financial/src/extensions.rs` carries illiquid-adjacent types | MISSING-CURRENT | No term-structure, credit or vol-surface engine | Backlog — Phase 14 | 14 |
 | 4 Intelligence | Train, generate and statistically gate strategies, set risk and corridor policy | `qip-training`, `qip-lifecycle`, `qip-evolution`, `qip-simulation-engine/src/validation.rs` | PARTIAL | Statistical gate, champion/challenger and promotion exist; the deflated Sharpe is corrected against the family's lifetime trials (`9332bcb`) with the simulation engine's one Sharpe arithmetic (`436e1fa`), the holdout band is an output of validation and what leaves it is demoted (`d0558b4`), and the kernel's factory enrols every candidate (`94dd7e2`) | Corridor policy has no owner because corridors do not exist. Re-scored at `584c96b`: the trial book is durable in every root (`aa66c5d`) and budgeted per calendar quarter (`e31aae4`), so the per-process count this cell named is closed | 2, 10 |
 | 5 Optimisation | Allocation across families/regimes/horizons; quantum + classical; policy only | `qip-optimization-engine`, `qip-quantum` | PARTIAL | Routing gate and classical baseline present; authority boundary now structural | Family clustering and multi-horizon reconciliation absent | 15 |
@@ -119,8 +119,14 @@ at current scale, and process proliferation was rejected.
   `qip-reasoning-engine` (hypotheses, `bayes.rs` for Bayesian updating).
   *Placement:* global. *I/O:* events → theses. *State:* bitemporal.
   *Authority:* **none — informs only**, matching §39 layer 3.
-  *Degradation:* undefined. *Tests:* `understanding.rs`, `reasoning.rs`.
-  *Gaps:* **no belief stage in the cycle** and **no self-model at all**.
+  *Degradation:* re-scored 2026-09-05 — this bullet said "undefined", and
+  three of §6.2's rows are now measured from this plane's own objects and read
+  by the centre before it sizes (`Platform::central_degradation` in
+  `qip-kernel/src/platform.rs`; see the §6.2 table above).
+  *Tests:* `understanding.rs`, `reasoning.rs`.
+  *Gaps:* **no belief stage in the cycle**. This bullet also said "no
+  self-model at all"; that stopped being true at `e5dc8fc` and the sentence is
+  withdrawn — see the plane's table row for the grep that now answers.
   Confidence-weighted sizing per §11.2 is not the mechanism here. What did
   arrive, at `04738ee`, is the belief *calibration*: `stage_learn` settles each
   resolved claim against the platform's own series and grades it through
@@ -410,11 +416,11 @@ this repository has already been bitten by that nine times.
 | §6.2 row | Required behaviour | Status | Where |
 |---|---|---|---|
 | Ingestion stalls | Event-driven and prediction-market strategies pause; price-only continue unaffected | ALIGNED | `DegradationState::pauses`; `contracts.rs::an_ingestion_stall_pauses_the_strategies_that_need_the_world_and_no_others` |
-| Causal graph stale | Regime-conditional allocation reverts to unconditional; sizing more conservative | ALIGNED | `allocation_mode`, `sizing_multiplier`; `::a_stale_causal_graph_reverts_to_unconditional_allocation_and_sizes_smaller` |
+| Causal graph stale | Regime-conditional allocation reverts to unconditional; sizing more conservative | ALIGNED, and **measured** since `0829b29` | `allocation_mode`, `sizing_multiplier`; `::a_stale_causal_graph_reverts_to_unconditional_allocation_and_sizes_smaller`. The freshness is now a fact the graph records rather than a constant the centre assumes: `CausalGraph::last_updated` (`qip-world-model/src/causal.rs`), monotone against backfill, judged against `CAUSAL_GRAPH_HORIZON` of 90 days (`degradation.rs:276`) by `CausalGraphFreshness::assess`, and observed by `Platform::central_degradation` (`qip-kernel/src/platform.rs`) at sizing time. A graph that has absorbed nothing reads `Unavailable`, not fresh — `understanding.rs::absorbing_a_claim_moves_the_causal_graphs_last_update_and_nothing_else_does`, `contracts.rs::a_causal_graph_beyond_its_horizon_reads_stale_and_narrows_central_sizing` (`:1284`), `::a_causal_graph_that_has_never_absorbed_a_claim_reads_unavailable` (`:1336`), `platform.rs::a_backdated_causal_graph_narrows_the_central_multiplier_to_the_stale_value_and_a_fresh_one_does_not` |
 | Episodic memory unavailable | Situational-recognition strategies pause; the rest continue | ALIGNED | `::episodic_loss_pauses_only_the_strategies_that_recognise_situations` |
-| Belief state stale beyond TTL | Fixed conservative multiplier; nothing halts | ALIGNED | `::a_belief_state_stale_beyond_its_ttl_falls_back_to_a_fixed_multiplier_and_halts_nothing` |
+| Belief state stale beyond TTL | Fixed conservative multiplier; nothing halts | ALIGNED, and **measured** since `0829b29` | `::a_belief_state_stale_beyond_its_ttl_falls_back_to_a_fixed_multiplier_and_halts_nothing`. `BeliefState::last_updated` (`qip-reasoning-engine/src/belief.rs:44`) moves when a hypothesis is formed and never on a refused draft, judged against `BELIEF_HORIZON` of one day (`degradation.rs:286`) and observed at the same seam as the row above. Before the first belief is formed in a process the row reads `Unavailable` rather than fresh — `reasoning.rs::forming_a_hypothesis_moves_the_belief_states_last_update_and_nothing_else_does`, `contracts.rs::a_belief_state_beyond_its_horizon_reads_stale_and_a_never_formed_one_unavailable` (`:1362`) |
 | Counterfactual scoring down | No trading impact whatsoever | ALIGNED | `::losing_counterfactual_scoring_changes_no_trading_decision_whatsoever` |
-| Self-model stale | Exploration budget reverts to flat | PARTIAL | Re-scored 2026-09-05, twice. Earlier the same day: "a `SelfModel` exists but `grep -n -i self_model degradation.rs` returns nothing, and §13.2's exploration budget reads nothing from the model; deliberately not represented". Now represented: `Capability::SelfModel` is row 6 of the table, its freshness is `SelfModelFreshness::assess` over what `SelfModel::sample_facts` reports (fresh when every charged component has at least `MINIMUM_SAMPLE` outcomes and the newest grade is within `SELF_MODEL_HORIZON`; stale naming the thin component or the age; unavailable when nothing was ever absorbed), and `DegradationState::central_sizing_multiplier` compounds it — 0.75 stale, 0.5 unavailable — onto the shared multiplier. Proven by `contracts.rs::a_self_model_under_its_minimum_sample_narrows_central_sizing_by_the_stale_multiplier`, `::a_fresh_self_model_narrows_nothing`, `::an_empty_self_model_reads_as_unavailable_and_the_unavailable_multiplier_applies`, `::a_self_model_whose_newest_grade_is_past_the_horizon_is_stale_not_unavailable`, `::the_self_model_row_refuses_the_inputs_that_would_widen_it` and `self_model.rs::sample_facts_report_every_component_with_its_count_and_newest_grade_in_key_order`, each mutation-verified. Two honest limits. First, the consequence is sizing, not the exploration budget the row names: §13.2's budget still reads nothing from the model, so "reverts to flat" has nothing to revert. Second, no engine calls it yet — the kernel builds no `DegradationState` today, so the row is a typed contract until `platform.rs` observes `Capability::SelfModel` from `SelfModelFreshness::assess(self.self_model.sample_facts(), MINIMUM_SAMPLE, SELF_MODEL_HORIZON, now)?.freshness()` and sizes by `central_sizing_multiplier()`. The edge's `sizing_multiplier` deliberately excludes the row — a cell holds no self-model and its 0.375 floor must not move on a default nobody measured |
+| Self-model stale | Exploration budget reverts to flat | PARTIAL | Re-scored 2026-09-05, twice. Earlier the same day: "a `SelfModel` exists but `grep -n -i self_model degradation.rs` returns nothing, and §13.2's exploration budget reads nothing from the model; deliberately not represented". Now represented: `Capability::SelfModel` is row 6 of the table, its freshness is `SelfModelFreshness::assess` over what `SelfModel::sample_facts` reports (fresh when every charged component has at least `MINIMUM_SAMPLE` outcomes and the newest grade is within `SELF_MODEL_HORIZON`; stale naming the thin component or the age; unavailable when nothing was ever absorbed), and `DegradationState::central_sizing_multiplier` compounds it — 0.75 stale, 0.5 unavailable — onto the shared multiplier. Proven by `contracts.rs::a_self_model_under_its_minimum_sample_narrows_central_sizing_by_the_stale_multiplier`, `::a_fresh_self_model_narrows_nothing`, `::an_empty_self_model_reads_as_unavailable_and_the_unavailable_multiplier_applies`, `::a_self_model_whose_newest_grade_is_past_the_horizon_is_stale_not_unavailable`, `::the_self_model_row_refuses_the_inputs_that_would_widen_it` and `self_model.rs::sample_facts_report_every_component_with_its_count_and_newest_grade_in_key_order`, each mutation-verified. Two honest limits. First, the consequence is sizing, not the exploration budget the row names: §13.2's budget still reads nothing from the model, so "reverts to flat" has nothing to revert. Second — **and this is the half that has since closed; the sentence that stood here is kept below because it was true when written** — the row said that no engine called it yet, that the kernel built no degradation state, and so that "the row is a typed contract until `platform.rs` observes `Capability::SelfModel` … and sizes by `central_sizing_multiplier()`". That is exactly what `Platform::central_degradation` (`qip-kernel/src/platform.rs`, cited by symbol because the file is uncommitted and moving between lanes) now does, with the `state.observe(Capability::SelfModel, …)` call the row named, reached from `construct_from` where the free budget is narrowed before anything is sized (`aefa255` for the observation, `0829b29` for the other two rows beside it). The edge's `sizing_multiplier` deliberately still excludes the row — a cell holds no self-model and its 0.375 floor must not move on a default nobody measured |
 | Valuation engine down | Illiquid assets frozen at last mark and flagged | PLANNED-FUTURE — Phase 14 | No term-structure, credit or vol-surface engine exists. Deliberately not represented |
 
 Two properties are held beyond the table itself, because both are the kind that
@@ -1627,3 +1633,267 @@ was the shape of the gap: every ledger-plane element the blueprint names existed
 record that can be replayed or a refusal that names its limit, and none of
 them can move, sign or call out. That is the whole of what ADR 0021 permits,
 and it is what the row now says.
+
+## Re-score 2026-09-05 (second pass) — `0829b29`, `ba8e767`, `e71c397` and the uncommitted registration wave
+
+Appended rather than folded in, per this file's convention, with one exception
+noted: where an earlier row asserted something the tree now contradicts, the
+row itself was corrected in place and the sentence it used to carry is quoted
+inside the correction. Five such corrections were made this pass: the §6.2
+causal-graph, belief-state and self-model rows, and the Plane 2 table row and
+its detail bullet.
+
+Every claim below was checked by reading the named file at the named symbol,
+and every grep quoted was run, against the working tree of this date. **That tree
+is not quiescent**: three commits are in, and a further wave — the venue
+registration surface in `qip-api`, `qip-kernel`, the portal and
+`scripts/venue-signup/` — is uncommitted and was being extended by other lanes
+while this was written. **Line numbers are therefore given only for files that
+are committed at `e71c397` and unmodified in the working tree; everything in an
+uncommitted or actively-edited file is cited by symbol name.** That is not
+fastidiousness: between two greps in the same session,
+`qip-kernel/src/platform.rs` moved `Platform::approve_registration` by roughly
+270 lines and `qip-world-model/src/causal.rs` moved `CausalGraph::last_updated`
+from 296 to 470, so a line number written here would have been wrong before it
+was read. Find a symbol with `grep -n`, not with a number this file remembers.
+The one gate run for this section is
+`cargo test -p qip-acceptance --test documentation`; no other test named here
+was run by the session that wrote it, and where a paragraph says a test was
+mutation-verified that is the applying session's statement in its own commit
+message, not this one's.
+
+### Ingestion — registration is a second gate, and it is a refusal rather than a capability
+
+The owner asked for a scraper that registers itself with any venue whose API
+needs an account, anonymously. `ba8e767` is the refusal, and it is structural
+rather than a comment. `qip-data-finder/src/registration.rs` declares a
+requirement per source (`RegistrationRequirement`, `:49` — keyless,
+self-service API key, account, account with identity verification), a
+`NOT_OFFERED` sentence carried verbatim by every refusal (`:94`), and a
+`RegistrationRecord` with private fields and one constructor (`:169`) that
+refuses a blank operator, an uncited terms reference and a key-shaped
+`SecretRef`; deserialisation goes through that constructor (`TryFrom`, `:128`),
+so a stored file cannot smuggle a record nobody signed. `RegistrationRegistry`
+(`:265`) holds requirements and records, `shipped()` (`:306`) declares the four
+connectors this build carries — Coinbase and Frankfurter keyless, Alpaca and
+Kalshi `Account`, the restrictive reading until the terms are read — and
+`standing()` (`:360`) answers keyless, registered-by-name, or a refusal naming
+who must register. A source that declares a credential and no requirement is
+refused too (`standing_for_endpoint`, `:379`), rather than admitted as keyless
+by omission. The gate consults it at `admission.rs:309`, ahead of any socket,
+and the finder at `finder.rs:570`. `e71c397` is the follow-up the trunk
+meta-linter forced: the key-shaped fixtures are assembled from parts at run
+time so the scanner reads no key while the platform's own shape screen still
+sees the assembled value.
+
+The uncommitted wave takes the record into a running process rather than a
+library. `PlatformConfig::venue_registrations` and `registration_registry()`
+(`qip-kernel/src/config.rs`) build one registry that both the feed's admission
+gate and the platform are constructed from, which is what stops the two
+disagreeing about who registered — a composition root admits its connector
+before the platform exists, because a tape owns the clock the platform is
+assembled on. `Platform::approve_registration`
+(`qip-kernel/src/platform.rs`) takes the same `OperatorIdentity` an autonomy
+change does, holds it to fifteen minutes (`REGISTRATION_CREDENTIAL_AGE`), and
+goes through `apply_registration`, which checks on a scratch copy, journals a
+`RegistrationEntry` under `Topic::ComplianceEvaluated` with producer
+`kernel/registration`, and only then adopts — so `replay_registrations`
+rebuilds the registry from the log alone. Two routes serve it:
+`GET /registrations` at viewer and `POST /registrations/:source/approve` at
+operator (declared and dispatched in `qip-api/src/routes.rs`; shapes in
+`src/registration_views.rs`, contract in `ROUTES-REGISTRATIONS.md`). The
+approval body carries the terms the operator read and a deployment *variable
+name* screened by the manifest's own `SecretRef` rule
+(`ApprovalRequest::parse`), and a refusal never repeats what it refused — the
+one case that rule exists for is a pasted key. `api_boundary.rs` was widened
+deliberately rather than quietly:
+`every_mutating_route_is_one_of_five_and_each_raises_a_typed_intent` names the
+fourth by pattern and asserts the screen and the kernel call by expression, and
+`approve_registration` joins the allowed-mutator set with the reason beside it.
+Two bookkeeping notes a reader will otherwise trip on, neither caused by this
+wave and neither this pass's to fix. The allowed-mutator set now holds nine
+names while the test that reads it is still called
+`the_api_calls_no_platform_mutator_beyond_the_ten_it_is_allowed` — the
+assertion is unaffected, the name is two behind. And while this was being
+written a parallel lane was adding a *fifth* mutating route,
+`POST /ledger/users/:user/eligibility` (`qip-api/src/routes.rs`, operator
+role), which the boundary suite's expected set of four does not yet name; that
+suite is that lane's to reconcile, and a reader who runs it on this tree
+mid-flight should expect it to say so.
+
+**What this does not do, stated plainly because the request it answers was the
+opposite.** Nothing in the platform registers with a venue, accepts its terms,
+passes an identity check or creates a key; no path in `backend/` or
+`frontend/` reaches a venue's signup form at all. What exists is a job under
+`scripts/venue-signup/` (ADR 0041) that performs the *typing* of a form under
+the company's own identity, and only *after* a named operator has approved that
+venue's terms — the agreement remains the operator's approval record, a named
+person and the terms they read. It hands back — with a screenshot
+and a reason, never a retry — at a captcha, an identity/tax/date-of-birth
+field, a verification or second-factor code, a consent box the approval does
+not name, and any field the reviewed recipe does not list (`signup.mjs`, the
+`judge` function, whose five stop kinds are `captcha`, `identity_or_tax_field`,
+`verification_code`, `unapproved_consent` and `unexpected_field`); a venue
+whose recipe declares identity verification is refused before a browser opens
+(`recipes/kalshi.json` sets exactly that). It is
+dev tooling on an operator's machine: nothing under `backend/` or `frontend/`
+imports it.
+
+**And what has not happened.** No registration record exists for any source, so
+both account-gated sources stand refused today — the correct state for a
+registration nobody has made. No composition root reads a registrations file,
+so the only record that can exist is one an operator approves at runtime, and
+none has been. Neither recipe has been run against a real venue; the selectors
+were written from the public forms and not exercised against them
+(`recipes/alpaca.json`, its `notes`; ADR 0041 says the same in its own words).
+Neither venue host is in `egress_allowed_upstreams` or
+`infrastructure/egress/envoy.yaml` — `grep -c -i alpaca` and `grep -c -i kalshi`
+each return 0 in both files — the egress proxy has never been applied, and **no
+deployed process has ever fetched anything through a deployed egress proxy.**
+The Plane 1 verdict does not move: PARTIAL, and the minimal action is still to
+prove one live source end to end.
+
+### Cognition — three §6.2 rows are measured, and the centre sizes smaller for it
+
+`0829b29` finishes what `aefa255` started. `CausalGraph::last_updated`
+(`qip-world-model/src/causal.rs`) records the instant the graph last absorbed a
+claim, monotone against backfill; `BeliefState::last_updated`
+(`qip-reasoning-engine/src/belief.rs:44`) records the instant a hypothesis was
+last formed, and never on a refused draft. Each has a stated horizon —
+`CAUSAL_GRAPH_HORIZON` 90 days, `BELIEF_HORIZON` 1 day, `SELF_MODEL_HORIZON`
+7 days (`qip-contracts/src/degradation.rs:276`, `:286`, `:265`) — and each
+refuses a future instant or a non-positive horizon rather than reading fresh.
+`Platform::central_degradation` (`qip-kernel/src/platform.rs`) observes all
+three, and `construct_from` narrows the free budget by
+`central_sizing_multiplier()` before anything is sized, refusing the
+construction outright when the table cannot be read.
+
+The number this produces is smaller and truer, and the difference is the
+point. On a platform that has seeded no world and formed no belief — and on the
+demo seed, whose causal claims are backdated a year — the multiplier is 0.75
+(causal stale or absent) × 0.5 (belief) × 0.5 (self-model unavailable) =
+**0.1875** of free capital, asserted in `qip-kernel/src/platform.rs` by
+`a_never_absorbed_self_model_sizes_at_the_unavailable_multiplier_and_a_fed_one_sizes_wider`
+and `a_backdated_causal_graph_narrows_the_central_multiplier_to_the_stale_value_and_a_fresh_one_does_not`
+(whose final block seeds `seed_demo_world` and asserts its newest claim is past
+the horizon), and in `qip-contracts/tests/contracts.rs:1190`. It read 0.5
+before, because the table started rows 2 and 4 fresh on the argument that the
+centre holds the live objects; that was true of their age and false of their
+freshness, and a graph seeded from year-old claims is the live object and is
+stale. The kernel tests that had silently relied on a ten-million book
+breaching a 250k single-order cap now assert that premise, and the fixture that
+needs the breach was raised to forty million with the arithmetic written down
+in `over_limit_order_notional`'s doc comment — which is the honest consequence
+of a narrowing: a test that was passing for a reason nobody had stated had to
+say the reason.
+
+Plane 2 stays PARTIAL. The gap is unchanged and it is not this one: there is
+still no belief stage *in* the cycle, and narrowing size because a belief is
+old is not sizing by belief before the trade. The §6.2 self-model row's own
+consequence is still not the one that fires — §13.2's exploration budget reads
+nothing from the model — and the hosted narrative model runs nowhere.
+
+### Execution — F6's cross-process property is proven in one test, and still in no deployment
+
+The gap the previous re-score named — "a kernel-produced payload applied by a
+`qip-edge` cell in one test", which the two halves proved separately — is
+closed by `qip-acceptance/tests/region_share.rs`, five tests
+(`grep -c '#\[test\]'`): a real `CentralPlane` with two cells under one region,
+grants issued through the plane's own door, payloads signed as the API signs
+them, applied to two real cells opened unfunded —
+`a_payload_the_centre_built_funds_each_cell_to_exactly_its_share_and_the_two_never_exceed_the_grant`
+(`:612`),
+`each_cell_places_within_its_share_and_a_cell_driven_past_its_share_is_refused_before_the_grant_is`
+(`:757`),
+`a_centre_that_no_longer_names_a_cells_grant_narrows_it_to_nothing_and_the_region_gate_refuses`
+(`:873`),
+`a_replayed_lower_sequence_payload_from_the_centre_changes_neither_cells_table`
+(`:934`), and
+`a_cell_funded_by_the_centres_share_is_still_assembled_paper_only` (`:1023`).
+It cost the acceptance crate one in-tree dev-dependency, `qip-lifecycle`,
+because the plane's own door refuses a strategy below pilot and walking one
+there needs the lifecycle's evidence types; no third-party crate was added and
+the two-dependency rule is untouched.
+
+What this does not change: `execution_nodes = {}` in dev, test, stage and prod
+(`grep -rn execution_nodes infrastructure/environments/*/terraform.tfvars`), so
+the suite proves the property in `cargo test` and in no deployment; the §41.5
+producer count stays at three of twelve, because the share travels inside a
+slot that was already produced; and ADR 0039's status line still reads
+*proposed* while the record carries an "Applied" section, which is a
+contradiction in that file for its owner to resolve — this pass does not edit
+`docs/adr/`.
+
+### Ledger — funding has a gate that can fire, and the wallet has a document to read
+
+`Platform::fund_user` (`qip-kernel/src/platform.rs`) is the one place capital
+enters a user's book, and it now consults `UserLedger::eligibility_of`
+(`qip-capital/src/ledger/book.rs:196`) — the mandate first, because
+its jurisdiction is what the eligibility is checked against, then
+`EligibilityRegistry::admit` (`ledger/eligibility.rs:412`) — before any book is
+touched, which is where a limit belongs. A refusal is journalled as
+`LedgerEntry::FundingRefused` with its gate and reason, and
+`EligibilityRegistry::replay` (`:358`) rebuilds the registry from the event log
+alone. Nothing about withdrawing is on the record: not a field that is always
+false, but a field that is not there, because ADR 0021 refuses the path it
+would describe. The rule this satisfies is the one about limits that cannot
+fire, whose standing example is `MaxExpectedShortfall` — shipped in every
+default limit set and unable to trigger for as long as `RiskState`'s tail-risk
+field was always empty, since fixed. This gate has the opposite property from
+the start: it refuses on a fresh platform, because a registry with no decisions
+in it admits nobody.
+
+Beside it, the custodian's statement is a document an operator mounts and never
+a figure a caller sends: `QIP_WALLET_STATEMENT_PATH`
+(`qip-api/src/statement.rs:62`), dated, one venue, decimal strings rather than
+floats, at most 256 holdings (`:71`), parsed once at the hand-over to the
+kernel (`Statement::parse` `:119`, `observe_into` `:254`), observed before
+serving so the first LEARN reconciles it and re-read before an admitted cycle
+(`StatementFeed::from_env` `:326`, `refresh` `:363`), with `absent_banner`
+(`:392`) saying so when it is unset. Each row of `/ledger/users` now carries
+the ledger's own verdict on whether it would fund that user and, when it would
+not, the refusal's token and sentence (`qip-api/src/ledger_views.rs`,
+`EligibilityView` and the `eligibility` field on each user row).
+
+The Plane 7 verdict stays PARTIAL, and of the three reasons the previous
+re-score gave, one is closed and one has moved. What it said was: no deployed
+binary feeds `observe_statement`, and `UserLedger::admit` had no eligibility
+registry to gate `fund_user`. The second is closed. The first has moved rather than
+closed — the feed exists and the API root drives it, and no environment mounts
+a statement, so a deployed `/wallet` still answers `assembled:false`; the
+manifest-wiring suite carries the reason, which is that a statement is a dated
+counterparty document and every environment trades a venue that issues none.
+The twelfth capability, custody as an enforced boundary rather than a policy
+record, is refused by ADR 0021 until Phase 12, exactly as before.
+
+### Experience — the console gains a write, and it is not one that can trade
+
+LAYER 1's verification is unchanged (`npm run lint`, `npm run build`,
+Playwright) and **none of the three was run for this re-score.** What changed is
+worth stating precisely, because "the console is read-only" has been true in
+this document for several passes and is no longer: the venue-registrations page
+(`frontend/portal/src/app/(portal)/data-sources/registrations/page.tsx`, over
+`src/lib/hooks/useRegistrations.ts`, reached from a nav entry that declares
+`reads: ["/registrations"]`) carries what was, at this reading, the gateway's
+fourth and last declared write, `POST /registrations/{source_id}/approve` —
+recount with `grep -n 'method: "POST"' frontend/portal/src/lib/api/endpoints.ts`,
+because the operator eligibility route landing in a parallel lane will want a
+fifth. The gateway's allowlist grew a
+path-parameter matcher for it that matches exactly one non-empty segment
+(`src/lib/api/endpoints.ts`, `declaresWrite` and `pathMatches`), so
+`/registrations/a/b/approve` and `/registrations/approve` stay undeclared and
+are refused before the credential is read off disk.
+
+What the write is: a record that the signed-in operator registered with a venue
+under terms they read. It names no instrument, side, quantity or price; it
+creates no venue account; it carries a deployment variable name and never a
+credential value; and the platform behind it refuses a key-shaped name before
+the kernel sees it. The frontend rule that matters here — no control that could
+submit an order — holds, and the paper-trading boundary's three layers are
+untouched by any of this pass's work: Terraform's refusal of the three live
+ceilings, `AutonomyLevel::deployable` at every composition root, and
+`qip-edge`'s `Cell` having no constructor that takes a non-paper ceiling.
+Coverage exists — 8 Playwright tests in `tests/registrations-page.spec.ts` and
+2 in `tests/registrations-gateway.spec.ts`, among them a viewer whose approve
+button is disabled with the reason and nothing posted — and it has not been run
+by this session.

@@ -91,11 +91,42 @@ fn run() -> Result<()> {
         .local_addr()
         .map_err(|error| Error::io(format!("the health listener has no address: {error}")))?;
 
+    // The ceiling this deployment is permitted to run at. Read here for the
+    // first time: `fastbrain.yaml` has always set QIP_AUTONOMY_CEILING from
+    // the qip-config ConfigMap, and this binary has always ignored it and used
+    // the shipped default. That failed safe — the default is paper trading —
+    // but it meant an operator lowering the ceiling to `observation` in the
+    // ConfigMap changed nothing here, which is a control that reads as present
+    // and is not.
+    //
+    // `deployable` refuses the three live levels outright rather than lowering
+    // them, so a ConfigMap edited past review stops this process instead of
+    // starting it somewhere it should not be.
+    //
+    // Resolved before the feed rather than after it because the feed's
+    // registration gate reads the registry this configuration stands for. The
+    // order also refuses a live ceiling before any socket opens, which is the
+    // right way round for the two to fail.
+    let platform_config = PlatformConfig::default().with_live_ceiling(AutonomyLevel::deployable(
+        std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref(),
+    )?);
+    // The registry the connector is admitted against is the one the platform
+    // will hold: `registration_registry` is the same function `Platform::new`
+    // applies at assembly, so the feed cannot open a source on a record the
+    // platform then does not have. This root commits no record yet, so the
+    // registry is the shipped requirement table with nothing in it — and a
+    // source needing an account is refused by name at start, rather than
+    // opened on nobody's registration.
+    let registrations = platform_config
+        .registration_registry()
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+
     let mut feed = Feed::open(
         config.live_feed.as_ref(),
         config.connector_feed.as_ref(),
         config.replay_path.as_deref(),
         config.tape_path.as_deref(),
+        &registrations,
         config.seed,
         config.cycle_interval,
         started,
@@ -118,20 +149,6 @@ fn run() -> Result<()> {
         None => clock.clone(),
     };
 
-    // The ceiling this deployment is permitted to run at. Read here for the
-    // first time: `fastbrain.yaml` has always set QIP_AUTONOMY_CEILING from
-    // the qip-config ConfigMap, and this binary has always ignored it and used
-    // the shipped default. That failed safe — the default is paper trading —
-    // but it meant an operator lowering the ceiling to `observation` in the
-    // ConfigMap changed nothing here, which is a control that reads as present
-    // and is not.
-    //
-    // `deployable` refuses the three live levels outright rather than lowering
-    // them, so a ConfigMap edited past review stops this process instead of
-    // starting it somewhere it should not be.
-    let platform_config = PlatformConfig::default().with_live_ceiling(AutonomyLevel::deployable(
-        std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref(),
-    )?);
     let context = qip_core::Context::new(platform_clock, platform_config.seed);
     let ceiling = platform_config.autonomy_ceiling.to_string();
     // The registry handle is taken before the telemetry moves into the
@@ -226,6 +243,13 @@ fn run() -> Result<()> {
     banner(
         provenance, &config, &cleared, &feed, &platform, &ceiling, bound, &archive,
     );
+    // Read off the platform's own registry rather than the one handed to the
+    // feed above. The two are built by the same function from the same
+    // configuration, and printing the platform's is what would make a
+    // disagreement between them visible instead of asserting there is none.
+    for line in qip_fastbrain::feed::source_standings(platform.registrations())? {
+        println!("{line}");
+    }
     println!(
         "  universe:         {}; sector and country buckets are fed from it. Note ADR 0027: under the \
          conservative default the first desk order into an empty book is refused by \

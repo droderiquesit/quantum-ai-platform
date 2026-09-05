@@ -59,6 +59,17 @@ execution_nodes = {}
 # and see dev/terraform.tfvars for what setting it requires — a digest and a
 # `management` entry in trust_zones above, neither declared here.
 
+# The two optional files the API can be given stay unset here, at their
+# default of null: venue_registrations_file, because nobody has registered
+# with a venue from this environment and a record is a named person's act
+# (docs/operations/registering-a-venue.md), and wallet_statement_file,
+# because this environment trades on the in-process simulated venue (ADR
+# 0003), which issues no custodian statement to mount. Unset renders no
+# configuration file and therefore no variable, so the API's registry holds
+# nobody and /wallet answers `assembled: false` — see dev/terraform.tfvars
+# for the whole argument, including why a committed statement is a same-day
+# act.
+
 enable_bigquery      = false
 enable_cloud_storage = false
 enable_alloydb       = false

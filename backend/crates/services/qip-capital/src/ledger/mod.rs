@@ -37,6 +37,15 @@
 //!   before it, refusing by an [`Ineligible`] reason named. There is no
 //!   `can_withdraw` on the record — see the module's own comment and ADR
 //!   0021.
+//! * [`ProductCatalogue`] — which strategy family may be sold in which
+//!   jurisdiction, as a [`ProductEligibility`] per family. The product half
+//!   of the gate [`Entitlement`] evaluates: the eligibility registry says an
+//!   operator verified *this user*, and the catalogue says whether the
+//!   *family* their capital is going into was ever cleared where they are.
+//!   Empty by default, because that determination is compliance's and an
+//!   empty catalogue is the honest record of nobody having taken one. No
+//!   `can_withdraw` here either, and see the module's own comment for why a
+//!   family cleared in no jurisdiction is refused rather than stored.
 //! * [`MandateRegistry`] — the mandates, keyed by [`UserId`] and each under
 //!   a [`MandateId`] of its own, admitted against the desk's mandate as a
 //!   ceiling term by term and in aggregate. An id seen twice, or a mandate
@@ -96,6 +105,7 @@ mod eligibility;
 mod entitlement;
 mod identity;
 mod mandate;
+mod product;
 mod registry;
 mod request;
 
@@ -108,5 +118,6 @@ pub use eligibility::{
 pub use entitlement::{Capability, Entitlement, ProductEligibility, Role, WithdrawalEntitlement};
 pub use identity::{Jurisdiction, MAX_MANDATE_ID_LENGTH, MAX_USER_ID_LENGTH, MandateId, UserId};
 pub use mandate::{Mandate, MandateTerms, PermittedFamilies};
+pub use product::ProductCatalogue;
 pub use registry::{DESK_MANDATE_ID, MandateRegistry, RegisteredMandate, RegistryRecord};
 pub use request::{InvestmentDecision, InvestmentOutcome, InvestmentRequest, RefusedLimit};

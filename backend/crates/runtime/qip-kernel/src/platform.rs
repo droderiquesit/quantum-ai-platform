@@ -50,8 +50,9 @@ use qip_ai::memory::{
 };
 use qip_ai::retrieval::SearchIndex;
 use qip_capital::ledger::{
-    AttributedFill, DecidedBy, EligibilityDecision, EligibilityRecord, EligibilityRegistry, UserId,
-    UserLedger, UserShare,
+    AttributedFill, Capability, DecidedBy, EligibilityDecision, EligibilityRecord,
+    EligibilityRegistry, Entitlement, PermittedFamilies, ProductCatalogue, ProductEligibility,
+    Role, UserId, UserLedger, UserShare,
 };
 use qip_capital::reservation::ReservationLedger;
 use qip_capital::{AllocationLimits, CapitalAllocator, DrawdownSchedule};
@@ -92,6 +93,9 @@ use qip_cost_router::{
 };
 use qip_data_finder::finder::{DataFinder, FinderConfig};
 use qip_data_finder::probe::SourceProbe;
+use qip_data_finder::registration::{
+    RegistrationRecord, RegistrationRegistry, RegistrationStanding,
+};
 use qip_data_finder::source::SourceCandidate;
 use qip_data_finder::{RegisteredSource, RegistrationDecision};
 use qip_events::log::EventLog;
@@ -115,6 +119,7 @@ use qip_market::bar::Bar;
 use qip_market::corporate_action::CorporateActionKind;
 use qip_market::snapshot::MarketSnapshot;
 use qip_market_ingestion::adapter::SensedRecord;
+use qip_market_ingestion::connector::manifest::SecretRef;
 use qip_mesh::catalog::Catalog;
 use qip_observability::Telemetry;
 use qip_observability::metrics::{labels, names};
@@ -190,6 +195,22 @@ pub struct Platform {
     /// user mandate is registered — so the §43.4 chain terminates in a
     /// mandate rather than in a strategy lot.
     user_ledger: UserLedger,
+    /// Which strategy family may be sold in which jurisdiction — the product
+    /// half of the gate [`Platform::fund_user`] runs, beside the eligibility
+    /// registry's statement about the user. Empty at assembly, because that
+    /// determination is compliance's and this platform has never been given
+    /// one; a family absent from it is refused everywhere. Moved only
+    /// through [`Platform::offer_product`], which journals the offering
+    /// before adopting it, so [`Platform::replay_products`] rebuilds this
+    /// from the log alone.
+    products: ProductCatalogue,
+    /// Who registered with which venue, under which terms, and the name the
+    /// credential is read under — never the credential. Seeded from the
+    /// shipped requirement table and moved only through
+    /// [`Platform::approve_registration`] and the configuration applied at
+    /// assembly, both of which journal the record before adopting it, so
+    /// [`Platform::replay_registrations`] rebuilds this from the log alone.
+    registrations: RegistrationRegistry,
     /// The fabric journal: every wallet, corridor, destination and gate
     /// decision as the command and its outcome, replayable. Its working
     /// copy of the log is process-local; the platform's own event log
@@ -581,6 +602,27 @@ const ELIGIBILITY_CREDENTIAL_AGE: Duration = Duration::from_mins(15);
 /// journal's producer on the topic they share, so each replay passes over
 /// the other's records rather than refusing them as undecodable.
 const ELIGIBILITY_ORIGIN: &str = "kernel/eligibility";
+
+/// How recently an operator must have authenticated to approve a venue
+/// registration — the same fifteen minutes an eligibility decision and an
+/// autonomy change are held to, because approving a registration is the same
+/// kind of act: a person attaching their name to a credential the platform
+/// will read. A session token from this morning is not evidence that the
+/// person named on the record is at the keyboard now.
+const REGISTRATION_CREDENTIAL_AGE: Duration = ELIGIBILITY_CREDENTIAL_AGE;
+
+/// The producer every venue-registration record in the event log carries,
+/// and the one [`Platform::replay_registrations`] selects on. Distinct from
+/// the eligibility and fabric producers on the topic the three share, so
+/// each replay passes over the others' records rather than refusing them as
+/// undecodable.
+const REGISTRATION_ORIGIN: &str = "kernel/registration";
+
+/// The producer every product-offering record in the event log carries, and
+/// the one [`Platform::replay_products`] selects on. Distinct from the
+/// eligibility, registration and fabric producers on the topic the four
+/// share, for the reason each of the others gives.
+const PRODUCT_ORIGIN: &str = "kernel/product";
 
 /// The most venue-assets the platform keeps a statement about.
 ///
@@ -1396,6 +1438,84 @@ impl EventBody for EligibilityEntry {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// One product offering as the event log keeps it: which family compliance
+/// cleared, where, who took the determination and why.
+///
+/// Journalled so the catalogue is reproducible from the log alone:
+/// [`Platform::replay_products`] rebuilds it from these records and nothing
+/// else. A clearance that lived only in the catalogue's memory would be a
+/// second source of truth for which product a user's capital was allowed
+/// into, and the one that survived a restart would be the empty catalogue,
+/// which refuses everything and would look like the determination had never
+/// been taken.
+///
+/// There is no withdrawal arm here and no field one could be added to: the
+/// record clears a family for *investment*, and ADR 0021 keeps the other
+/// half in [`qip_capital::ledger::WithdrawalEntitlement`], which has one
+/// variant.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProductEntry {
+    pub product: ProductEligibility,
+    pub by: DecidedBy,
+    pub reason: String,
+}
+
+impl EventBody for ProductEntry {
+    /// A compliance determination about what may be sold where, in the
+    /// Decide group the log never evicts. Shared with the eligibility,
+    /// registration and fabric records, which are told apart by producer —
+    /// see [`PRODUCT_ORIGIN`].
+    const TOPIC: Topic = Topic::ComplianceEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// Where a venue registration came from: committed in the deployment's
+/// configuration, or approved by an authenticated operator at runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistrationSource {
+    Configuration,
+    Operator,
+}
+
+impl RegistrationSource {
+    /// The stable token a journal or a metric label carries. The match is
+    /// exhaustive over the enum, so the label set of
+    /// [`names::CENTRAL_REGISTRATIONS`] is bounded by this type and a third
+    /// source could not be added without naming it here.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Configuration => "configuration",
+            Self::Operator => "operator",
+        }
+    }
+}
+
+/// One venue registration as the event log keeps it: the record the
+/// registry adopted and where it came from.
+///
+/// Journalled so the registry is reproducible from the log alone:
+/// [`Platform::replay_registrations`] rebuilds it from these records and
+/// nothing else. A registration that lived only in the registry's memory
+/// would be a second source of truth for whose name is on a credential the
+/// platform reads, and the credential's value is deliberately nowhere in
+/// this record — the [`RegistrationRecord`] carries the deployment variable
+/// it is read under, screened for shape, and nothing else.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistrationEntry {
+    pub record: RegistrationRecord,
+    pub source: RegistrationSource,
+}
+
+impl EventBody for RegistrationEntry {
+    /// A compliance decision about who is bound by a venue's terms, in the
+    /// Decide group the log never evicts. Shared with the eligibility and
+    /// fabric records, which are told apart by producer — see
+    /// [`REGISTRATION_ORIGIN`].
+    const TOPIC: Topic = Topic::ComplianceEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 impl EventBody for CycleJournalEntry {
     // The cycle's record belongs to the stage that closes it. LEARN is what
     // eventually notices that a stage keeps failing, and this is the artefact
@@ -1901,6 +2021,8 @@ impl Platform {
             reservations: ReservationLedger::new(Decimal::ZERO)
                 .unwrap_or_else(|_| unreachable!("zero is not negative")),
             user_ledger,
+            products: ProductCatalogue::new(),
+            registrations: RegistrationRegistry::shipped(),
             fabric,
             holdings_observed: BTreeMap::new(),
             wallet_tolerances: TolerancePolicy::new(),
@@ -1966,6 +2088,17 @@ impl Platform {
                 "committed in the deployment's configuration".to_string(),
                 now,
             )?;
+        }
+        // The committed venue registrations, through the same journaled path
+        // an operator's runtime approval takes. A record the registry refuses
+        // — a source with no declared requirement — stops assembly with the
+        // source named, for the same reason an eligibility refusal does: a
+        // platform that assembled anyway would silently hold a configuration
+        // it did not apply, and a connector admitted before assembly against
+        // `PlatformConfig::registration_registry` would have been admitted
+        // on a record the platform then does not hold.
+        for committed in platform.config.venue_registrations.clone() {
+            platform.apply_registration(committed, RegistrationSource::Configuration, now)?;
         }
         Ok(platform)
     }
@@ -2541,12 +2674,15 @@ impl Platform {
     /// the check there is what makes the gate hold for a caller that did
     /// not ask.
     ///
-    /// Until the registry existed this method funded on the mandate alone,
-    /// because [`UserLedger::admit`] evaluated a product's eligibility this
-    /// process had no registry for and would have refused every request.
-    /// The product gate is still not consulted here — no product-eligibility
-    /// registry exists yet — and that is stated rather than passed by
-    /// inventing one.
+    /// The second gate is the product one, added because the first was only
+    /// half the question: the eligibility registry says an operator verified
+    /// *this user*, and said nothing about whether the *family* their capital
+    /// was going into may be offered where they are. Until the
+    /// [`ProductCatalogue`] existed this method funded on the mandate and the
+    /// user's own clearance alone, and a user verified in one jurisdiction
+    /// could be funded into any family whatever compliance had cleared it
+    /// for. See [`Platform::product_refusal`] for what it asks and for the
+    /// one case it states rather than answers.
     pub fn fund_user(
         &mut self,
         user: &UserId,
@@ -2562,18 +2698,10 @@ impl Platform {
         let currency = mandate.currency();
         if let Err(why) = self.user_ledger.eligibility_of(user, now) {
             let reason = why.describe(user);
-            self.journal_record(
-                LedgerEntry::FundingRefused {
-                    user: user.clone(),
-                    strategy: strategy.clone(),
-                    amount,
-                    gate: why.name().to_string(),
-                    reason: reason.clone(),
-                },
-                "kernel/ledger",
-                now,
-            )?;
-            return Err(Error::denied(reason));
+            return self.refuse_funding(user, strategy, amount, why.name(), reason, now);
+        }
+        if let Some((gate, reason)) = self.product_refusal(user, strategy, now) {
+            return self.refuse_funding(user, strategy, amount, gate, reason, now);
         }
         self.user_ledger.fund(user, strategy, amount, now)?;
         self.journal_record(
@@ -2586,6 +2714,201 @@ impl Platform {
             "kernel/ledger",
             now,
         )
+    }
+
+    /// Whether the product gate refuses this user this strategy, and under
+    /// which gate name.
+    ///
+    /// The [`Entitlement`] is evaluated under [`Role::Investor`], because
+    /// funding is an investment act: evaluating it as a viewer would refuse
+    /// on the role before the product was reached and report a gate that is
+    /// not the one that matters. What it is evaluated *against* is the
+    /// catalogue's standing offering for the strategy's family — the record
+    /// compliance took, or, for a family nobody has cleared, an offering
+    /// eligible in no jurisdiction, which is the same answer and the honest
+    /// one. Nothing here invents an eligibility to get past the gate; that
+    /// was the state this replaced.
+    ///
+    /// The one case this states rather than answers: a strategy the factory
+    /// has registered no family for. There is no family to look an offering
+    /// up by, so the product arm cannot be evaluated at all. A mandate that
+    /// permits only some families is refused — it cannot be shown that the
+    /// strategy is one of them, and the restrictive answer is the one a
+    /// safety default takes — while [`PermittedFamilies::Any`], the desk's
+    /// arm, has consented to every family and so has no family gate left to
+    /// fail. That second path is the gap: an `Any` mandate funding an
+    /// unregistered strategy is not gated on product eligibility, because
+    /// there is nothing to ask about. Registering the strategy's family
+    /// closes it; inventing a family for it would not.
+    fn product_refusal(
+        &self,
+        user: &UserId,
+        strategy: &StrategyId,
+        now: Timestamp,
+    ) -> Option<(&'static str, String)> {
+        let mandate = self.user_ledger.mandate(user)?;
+        let jurisdiction = mandate.jurisdiction();
+        let Some(family) = self.strategy_family(strategy) else {
+            return match mandate.permitted_families() {
+                PermittedFamilies::Any => None,
+                PermittedFamilies::Only(families) => Some((
+                    "unregistered_family",
+                    format!(
+                        "funding {strategy} for {user} is refused: the mandate permits only the \
+                         famil(ies) {} in {jurisdiction} and the factory has registered no family \
+                         for {strategy}, so nothing can show it is one of them. Register the \
+                         strategy's family before funding it",
+                        families
+                            .iter()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                )),
+            };
+        };
+        let product = self.products.offering(&family);
+        let entitlement = Entitlement::evaluate(user, mandate, Role::Investor, &product, now);
+        match entitlement.can_invest() {
+            Capability::Granted { .. } => None,
+            Capability::Refused { reason } => Some((
+                "entitlement",
+                format!(
+                    "funding {strategy} for {user} is refused: the entitlement for the family \
+                     {family} in {jurisdiction} does not grant investing — {reason}"
+                ),
+            )),
+        }
+    }
+
+    /// The family the factory registered this strategy under, if any.
+    ///
+    /// Owned rather than borrowed so the caller's borrow of the factory ends
+    /// here: what follows journals, which needs the platform mutably.
+    fn strategy_family(&self, strategy: &StrategyId) -> Option<String> {
+        self.central()
+            .factory()
+            .candidate(strategy)
+            .map(|candidate| candidate.family().to_string())
+    }
+
+    /// Journal a funding refusal, count it, and return it as the error.
+    ///
+    /// One place, so a refusal cannot reach a caller without both the record
+    /// and the series moving: the log is what an auditor replays and the
+    /// series is what an operator charts, and a refusal visible in one and
+    /// not the other is two accounts of the same fact that will disagree.
+    fn refuse_funding(
+        &mut self,
+        user: &UserId,
+        strategy: &StrategyId,
+        amount: Decimal,
+        gate: &str,
+        reason: String,
+        now: Timestamp,
+    ) -> Result<()> {
+        self.journal_record(
+            LedgerEntry::FundingRefused {
+                user: user.clone(),
+                strategy: strategy.clone(),
+                amount,
+                gate: gate.to_string(),
+                reason: reason.clone(),
+            },
+            "kernel/ledger",
+            now,
+        )?;
+        // The gate is deliberately not a label. It is journalled, where an
+        // auditor reads it; as a label it would be one more dimension on a
+        // series whose point is how often funding was turned away at all.
+        self.telemetry.metrics.count(
+            names::CENTRAL_ELIGIBILITY_DECISIONS,
+            labels([("decision", "refused_funding")]),
+        );
+        Err(Error::denied(reason))
+    }
+
+    /// Which family may be sold where, as compliance determined it —
+    /// read-only; an offering reaches it through
+    /// [`Platform::offer_product`] and nothing else.
+    pub fn products(&self) -> &ProductCatalogue {
+        &self.products
+    }
+
+    /// Clear a strategy family for sale in the jurisdictions named, as an
+    /// authenticated operator.
+    ///
+    /// The one path into the catalogue, holding the same two conditions an
+    /// eligibility decision is held to — a stated reason and a credential
+    /// fresh within [`ELIGIBILITY_CREDENTIAL_AGE`] — because it is the same
+    /// kind of act: a person widening what the platform may do with a user's
+    /// capital. There is no overload taking a family name and a flag, and
+    /// nothing a model, an agent or a configuration file produces can clear a
+    /// product. The offering is journalled before the catalogue adopts it, so
+    /// the log never lacks a clearance the platform is funding on.
+    pub fn offer_product(
+        &mut self,
+        product: ProductEligibility,
+        operator: &OperatorIdentity,
+        reason: impl Into<String>,
+        now: Timestamp,
+    ) -> Result<()> {
+        let reason = reason.into();
+        if reason.trim().len() < 10 {
+            return Err(Error::denied(
+                "a product offering needs a stated reason; which family may be sold where is a \
+                 compliance determination, and the audit trail is the point",
+            ));
+        }
+        if !operator.is_fresh(now, ELIGIBILITY_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to clear a \
+                 product for sale",
+                operator.subject(),
+                ELIGIBILITY_CREDENTIAL_AGE
+            )));
+        }
+        let mut by = DecidedBy::operator(operator.subject(), operator.method())?;
+        if let Some(approver) = operator.second_approver() {
+            by = by.with_second_approver(approver);
+        }
+        // Checked on a scratch copy first so an offering the catalogue would
+        // refuse is never written to the log as though it stood; then
+        // journalled; then the scratch becomes the live catalogue. The same
+        // discipline [`Platform::apply_eligibility`] keeps.
+        let mut scratch = self.products.clone();
+        scratch.offer(product.clone())?;
+        self.journal_record(
+            ProductEntry {
+                product,
+                by,
+                reason,
+            },
+            PRODUCT_ORIGIN,
+            now,
+        )?;
+        self.products = scratch;
+        Ok(())
+    }
+
+    /// Rebuild the product catalogue from the event log alone.
+    ///
+    /// Selects this kernel's product records by topic and producer and
+    /// replays them in log order. The result is what the log says stands; a
+    /// caller compares it to [`Platform::products`] to prove the platform
+    /// funded against no clearance the log does not hold.
+    pub fn replay_products(&self) -> Result<ProductCatalogue> {
+        let mut products = Vec::new();
+        for record in self.event_log.records() {
+            if record.event.topic != ProductEntry::TOPIC
+                || record.event.lineage.producer != PRODUCT_ORIGIN
+            {
+                continue;
+            }
+            let envelope = StreamEnvelope::from_frame(&record.event)?;
+            products.push(envelope.decode::<ProductEntry>()?.body.product);
+        }
+        ProductCatalogue::replay(products)
     }
 
     // --- eligibility ------------------------------------------------------------
@@ -2644,6 +2967,14 @@ impl Platform {
     /// journalled; then applied to the live registry. The same discipline
     /// the fabric journal keeps: the log has the record before the state
     /// moves, and never a record of a state that did not.
+    ///
+    /// This is also where the decision is counted, rather than in
+    /// [`Platform::decide_eligibility`]: both the operator's runtime path and
+    /// the deployment's committed one end here, and a series that counted
+    /// only the first would disagree with the registry it claims to describe
+    /// on every platform that committed a decision at assembly. Counted after
+    /// the registry has taken it, so a decision the registry refused charts
+    /// nothing.
     fn apply_eligibility(
         &mut self,
         record: EligibilityRecord,
@@ -2653,6 +2984,13 @@ impl Platform {
     ) -> Result<()> {
         let mut scratch = self.user_ledger.clone();
         scratch.decide_eligibility(record.clone())?;
+        // The decision's own enum supplies the label, so the series is
+        // bounded by the type: a third arm could not be added without this
+        // match failing to compile.
+        let decision = match record.decision {
+            EligibilityDecision::Granted { .. } => "granted",
+            EligibilityDecision::Revoked { .. } => "revoked",
+        };
         self.journal_record(
             EligibilityEntry {
                 record: record.clone(),
@@ -2662,7 +3000,12 @@ impl Platform {
             ELIGIBILITY_ORIGIN,
             now,
         )?;
-        self.user_ledger.decide_eligibility(record)
+        self.user_ledger.decide_eligibility(record)?;
+        self.telemetry.metrics.count(
+            names::CENTRAL_ELIGIBILITY_DECISIONS,
+            labels([("decision", decision)]),
+        );
+        Ok(())
     }
 
     /// Rebuild the eligibility registry from the event log alone.
@@ -2688,6 +3031,109 @@ impl Platform {
             records.push(envelope.decode::<EligibilityEntry>()?.body.record);
         }
         EligibilityRegistry::replay(records)
+    }
+
+    // --- venue registrations --------------------------------------------------
+
+    /// Record that an authenticated operator registered with a venue.
+    ///
+    /// The one runtime path, and it takes the same identity type an autonomy
+    /// change and an eligibility decision do, held to the same freshness:
+    /// the record's operator is the identity's subject, so there is no
+    /// overload taking a name string, and nothing a model, an agent or a
+    /// request body produces can put a name on a registration. `terms` is
+    /// the URL or document the operator read; `secret` is the deployment
+    /// variable the credential is read under, already screened for shape by
+    /// [`SecretRef`], so the credential's value cannot be passed here at all.
+    /// The record is journalled before the registry adopts it, so the log
+    /// never lacks a registration the platform is admitting a source on.
+    pub fn approve_registration(
+        &mut self,
+        source_id: &str,
+        operator: &OperatorIdentity,
+        terms: &str,
+        secret: SecretRef,
+        now: Timestamp,
+    ) -> Result<RegistrationRecord> {
+        if !operator.is_fresh(now, REGISTRATION_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to approve a \
+                 venue registration",
+                operator.subject(),
+                REGISTRATION_CREDENTIAL_AGE
+            )));
+        }
+        let record = RegistrationRecord::new(source_id, operator.subject(), now, terms, secret)?;
+        self.apply_registration(record.clone(), RegistrationSource::Operator, now)?;
+        Ok(record)
+    }
+
+    /// Journal a registration and adopt it — in that order, and only after
+    /// the registry has been shown to accept it.
+    ///
+    /// Checked on a scratch copy first so a record the registry would refuse
+    /// is never written to the log as though it stood; then journalled; then
+    /// the scratch becomes the live registry. The same discipline
+    /// [`Platform::apply_eligibility`] keeps.
+    ///
+    /// Counted here, after the registry has taken it and by the source that
+    /// brought it, so a registration that appeared at runtime under nobody's
+    /// review is a different series from the committed set rather than
+    /// indistinguishable from it. A record the registry refused charts
+    /// nothing.
+    fn apply_registration(
+        &mut self,
+        record: RegistrationRecord,
+        source: RegistrationSource,
+        now: Timestamp,
+    ) -> Result<()> {
+        let scratch = self.registrations.clone().with_record(record.clone())?;
+        self.journal_record(
+            RegistrationEntry { record, source },
+            REGISTRATION_ORIGIN,
+            now,
+        )?;
+        self.registrations = scratch;
+        self.telemetry.metrics.count(
+            names::CENTRAL_REGISTRATIONS,
+            labels([("source", source.name())]),
+        );
+        Ok(())
+    }
+
+    /// Rebuild the registration registry from the event log alone.
+    ///
+    /// The requirement table is the shipped one — a source-file literal,
+    /// reviewed like code — and every record is read back from this kernel's
+    /// registration entries in log order. The result is what the log says
+    /// stands; a caller compares it to [`Platform::registrations`] to prove
+    /// the platform admits no source on a record the log does not hold.
+    pub fn replay_registrations(&self) -> Result<RegistrationRegistry> {
+        let mut registry = RegistrationRegistry::shipped();
+        for record in self.event_log.records() {
+            if record.event.topic != RegistrationEntry::TOPIC
+                || record.event.lineage.producer != REGISTRATION_ORIGIN
+            {
+                continue;
+            }
+            let envelope = StreamEnvelope::from_frame(&record.event)?;
+            registry = registry.with_record(envelope.decode::<RegistrationEntry>()?.body.record)?;
+        }
+        Ok(registry)
+    }
+
+    /// Who registered with which venue — read-only; a record reaches it
+    /// through [`Platform::approve_registration`] and the configuration
+    /// applied at assembly, and nothing else.
+    pub fn registrations(&self) -> &RegistrationRegistry {
+        &self.registrations
+    }
+
+    /// Where one source stands: keyless, registered by a named person, or a
+    /// refusal naming who must register. The registry's own answer, so the
+    /// feed's admission gate and a route reading this cannot disagree.
+    pub fn registration_standing(&self, source_id: &str) -> Result<RegistrationStanding> {
+        self.registrations.standing(source_id)
     }
 
     // --- the fabric journal ---------------------------------------------------
@@ -3121,35 +3567,34 @@ impl Platform {
     /// Evaluated here rather than in the API because the API is forbidden
     /// the capital crate (`api_boundary.rs`, `FORBIDDEN_CRATES`) and so
     /// cannot name the evaluator; what it may do is read the result. The
-    /// products are the registered strategies' families, each under an
-    /// eligibility record cleared in no jurisdiction, because this process
-    /// holds no product-eligibility registry — a family nobody has cleared
-    /// is refused everywhere, which is the type's own default and the honest
-    /// one. The viewer role is fixed rather than mapped from the caller's
+    /// products are the registered strategies' families, each under the
+    /// clearance the [`ProductCatalogue`] holds for it — the same offering
+    /// [`Platform::fund_user`] gates on, so the page and the gate cannot
+    /// disagree about what a family is cleared for. A family nobody has
+    /// cleared is eligible in no jurisdiction, which is refused everywhere
+    /// and is the honest answer for a determination nobody has taken. The
+    /// viewer role is fixed rather than mapped from the caller's
     /// API role: an operator credential on the API is not an investor in the
     /// ledger, and the surface that reads this is the viewer's. Ordered by
     /// user then family, so a report renders the same on every machine.
     /// Empty when no strategy is registered, which the caller states rather
     /// than fills in.
-    pub fn viewer_entitlements(&self, now: Timestamp) -> Vec<qip_capital::ledger::Entitlement> {
-        let families: std::collections::BTreeSet<&str> = self
+    pub fn viewer_entitlements(&self, now: Timestamp) -> Vec<Entitlement> {
+        let products: Vec<ProductEligibility> = self
             .central()
             .factory()
             .candidates()
             .map(|candidate| candidate.family().as_str())
+            .collect::<std::collections::BTreeSet<&str>>()
+            .into_iter()
+            .map(|family| self.products.offering(family))
             .collect();
         self.user_ledger
             .mandates()
             .iter()
             .flat_map(|(user, mandate)| {
-                families.iter().map(move |family| {
-                    qip_capital::ledger::Entitlement::evaluate(
-                        user,
-                        mandate,
-                        qip_capital::ledger::Role::Viewer,
-                        &qip_capital::ledger::ProductEligibility::new(*family),
-                        now,
-                    )
+                products.iter().map(move |product| {
+                    Entitlement::evaluate(user, mandate, Role::Viewer, product, now)
                 })
             })
             .collect()

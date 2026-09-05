@@ -1,43 +1,90 @@
 "use client";
 
-import { Chip, Freshness, KeyValue } from "@/components/data/Bits";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Chip, Freshness, KeyValue, StatusChip } from "@/components/data/Bits";
 import { Kpi, KpiRow } from "@/components/data/Kpi";
 import { Panel, PanelBody, PanelHead, TableWell } from "@/components/data/Panel";
 import { EmptyBlock, ResourceView } from "@/components/data/States";
+import { platform } from "@/lib/api/client";
+import type { SystemStatus } from "@/lib/api/types";
 import { formatCount, formatDecimal, formatTimestamp } from "@/lib/format";
-import { useLedgerUsers, type LedgerUser } from "@/lib/hooks/useTreasury";
-import { CapabilityChip, Muted, TreasuryHeader, WithdrawalChip } from "../_shared";
+import { useResource } from "@/lib/hooks/useResource";
+import {
+  eligibilityPermission,
+  useLedgerUsers,
+  useSessionIdentity,
+  type EligibilityPermission,
+  type LedgerUser,
+  type SessionIdentity,
+} from "@/lib/hooks/useTreasury";
+import { CapabilityChip, Muted, WithdrawalChip } from "../_shared";
+import { EligibilityPanel } from "./EligibilityPanel";
 
 /**
- * The per-user, per-strategy ledger (blueprint §43.3, §43.4), read-only.
+ * The per-user, per-strategy ledger (blueprint §43.3, §43.4).
  *
  * `GET /ledger/users` answers every user the ledger holds a mandate for, the
- * terms of that mandate, one balance row per `(strategy, currency)` book, and
- * the entitlements it evaluated for the viewer role at request time. This
- * page renders those fields and nothing derived from them.
+ * terms of that mandate, the ledger's own eligibility verdict on them, one
+ * balance row per `(strategy, currency)` book, and the entitlements it
+ * evaluated for the viewer role at request time. This page renders those
+ * fields and nothing derived from them.
  *
- * Two things are deliberate about the balances table. `available` is the
- * platform's own `settled - reserved`; the page shows the figure the route
- * answered rather than subtracting for itself. And expected inflows are a
- * separate column with the platform's separate total: a deposit the user
- * says is on its way is a claim the ledger has not yet seen,
- * `CashBalance::available` excludes it by construction, and a page that
- * folded it into a headline number would be sizing the reader's expectations
- * against money that may never arrive.
+ * Three things are deliberate about it.
  *
- * The withdrawal entitlement is rendered as refused with the platform's
- * reason on every row, because that is the only value the platform's type can
- * hold (ADR 0021, ADR 0023).
+ * `available` is the platform's own `settled - reserved`; the page shows the
+ * figure the route answered rather than subtracting for itself. And expected
+ * inflows are a separate column with the platform's separate total: a deposit
+ * the user says is on its way is a claim the ledger has not yet seen,
+ * `CashBalance::available` excludes it by construction, and a page that folded
+ * it into a headline number would be sizing the reader's expectations against
+ * money that may never arrive.
+ *
+ * The withdrawal entitlement is rendered as refused with the platform's reason
+ * on every row, because that is the only value the platform's type can hold
+ * (ADR 0021, ADR 0023).
+ *
+ * And the eligibility verdict is rendered on every row — eligible with the
+ * terms an operator wrote, or the ledger's own refusal token with its
+ * sentence — because a page listing a user with balances and no way to tell
+ * whether the next funding would be refused, and why, is the page the desk
+ * had before. Beside it sits the one control this section holds: an
+ * operator's decision about that user. It records a finding about a person and
+ * moves no capital, names no instrument, and carries no field about capital
+ * leaving the platform.
  */
 export default function LedgerPage() {
   const ledger = useLedgerUsers();
+  const identity = useSessionIdentity();
+  const permission = eligibilityPermission(identity);
+  const operatorName = identity.status === "authenticated" ? identity.name : null;
+
+  // The row the platform answered to a decision, shown in place of the one the
+  // list carried until the next GET lands. The platform's own list wins on
+  // every refresh: a page that kept its memory of a click over the platform's
+  // record would be the page showing "eligible" the day the record was lost.
+  const [decided, setDecided] = useState<ReadonlyMap<string, LedgerUser>>(new Map());
+  const lastReceived = useRef<number | null>(ledger.receivedAt);
+  useEffect(() => {
+    if (ledger.receivedAt !== lastReceived.current) {
+      lastReceived.current = ledger.receivedAt;
+      setDecided(new Map());
+    }
+  }, [ledger.receivedAt]);
+
+  const refresh = ledger.refresh;
+  const onDecided = useCallback(
+    (row: LedgerUser) => {
+      setDecided((current) => new Map(current).set(row.user_id, row));
+      refresh();
+    },
+    [refresh],
+  );
 
   return (
     <div className="flex flex-col gap-3 p-3">
-      <TreasuryHeader
-        title="Ledger"
-        reads="GET /ledger/users"
+      <LedgerHeader
         posture={ledger.data?.posture ?? null}
+        identity={identity}
         meta={<Freshness resource={ledger} name="ledger" />}
       />
 
@@ -91,8 +138,14 @@ export default function LedgerPage() {
                   </div>
                 ) : (
                   <div className="mt-3 flex flex-col gap-3">
-                    {data.users.map((user) => (
-                      <UserCard key={user.user_id} user={user} />
+                    {data.users.map((listed) => (
+                      <UserCard
+                        key={listed.user_id}
+                        user={decided.get(listed.user_id) ?? listed}
+                        operatorName={operatorName}
+                        permission={permission}
+                        onDecided={onDecided}
+                      />
                     ))}
                   </div>
                 )}
@@ -108,7 +161,95 @@ export default function LedgerPage() {
   );
 }
 
-function UserCard({ user }: { user: LedgerUser }) {
+/**
+ * The declaration, on the page and not only in the chrome.
+ *
+ * The treasury section shares `TreasuryHeader`, whose sentence states that the
+ * page holds no control and that the gateway declares no write it could call.
+ * That is true of the wallet, the corridors and the transfer gate and it is no
+ * longer true here, so this page carries its own — because a page that grew a
+ * control while still displaying the sentence "there is no control here" would
+ * be lying in exactly the place an operator goes to check.
+ *
+ * Everything else is the shared header's, deliberately: the body's own
+ * `posture` literal rendered as it came, so a body that ever said something
+ * else would be shown saying it; and the platform's live capability from
+ * `GET /system/status`, read the same way the other treasury pages read it.
+ */
+function LedgerHeader({
+  posture,
+  identity,
+  meta,
+}: {
+  posture: string | null;
+  identity: SessionIdentity;
+  meta: ReactNode;
+}) {
+  const status = useResource<SystemStatus>(platform.systemStatus, {
+    key: "treasury-status-ledger",
+    label: "GET /system/status",
+    intervalMs: 15_000,
+  });
+
+  return (
+    <Panel data-testid="treasury-header">
+      <PanelHead
+        title="Ledger"
+        meta={meta}
+        actions={
+          <>
+            {posture === null ? null : (
+              <Chip tone={posture === "PAPER TRADING" ? "ok" : "bad"} title="GET /ledger/users: posture">
+                <span data-testid="treasury-body-posture">{posture}</span>
+              </Chip>
+            )}
+            {status.data === null ? null : (
+              <StatusChip
+                tone={status.data.live_capable ? "bad" : "ok"}
+                label={status.data.live_capable ? "LIVE-CAPABLE" : "PAPER TRADING"}
+                title="GET /system/status: live_capable"
+              />
+            )}
+          </>
+        }
+      />
+      <PanelBody>
+        <p className="text-[11.5px] leading-relaxed text-[color:var(--color-ink-dim)]" data-testid="treasury-declaration">
+          <span className="chip mr-2" data-tone="ok" data-testid="treasury-paper-label">
+            PAPER TRADING
+          </span>
+          Nothing on this page can move capital. It reads{" "}
+          <span className="num">GET /ledger/users</span> and renders what the platform answered. Its
+          one control records an operator&rsquo;s eligibility decision about a user — who was
+          verified, when, where, until when, and against which document — and that record moves no
+          money: it names no instrument, side, quantity or price, and it carries no field about
+          capital leaving the platform. There is nothing here that proposes, signs or transfers.
+          ADR 0021 refuses the half of the treasury by which capital leaves and ADR 0023 keeps that
+          in force.
+        </p>
+        <p className="mt-2 text-[11px] leading-snug text-[color:var(--color-ink-faint)]" data-testid="ledger-session">
+          {identity.status === "loading"
+            ? "reading who is signed in…"
+            : identity.status === "unauthenticated"
+              ? "no one is signed in to this console; an eligibility decision needs a named operator"
+              : `signed in as ${identity.name} (${identity.email}), roles: ${identity.roles.length === 0 ? "none" : identity.roles.join(", ")}`}
+        </p>
+      </PanelBody>
+    </Panel>
+  );
+}
+
+function UserCard({
+  user,
+  operatorName,
+  permission,
+  onDecided,
+}: {
+  user: LedgerUser;
+  operatorName: string | null;
+  permission: EligibilityPermission;
+  onDecided: (row: LedgerUser) => void;
+}) {
   const mandate = user.mandate;
   return (
     <section
@@ -225,6 +366,15 @@ function UserCard({ user }: { user: LedgerUser }) {
         </div>
       </div>
 
+      <EligibilityVerdict user={user} />
+
+      <EligibilityPanel
+        user={user}
+        operatorName={operatorName}
+        permission={permission}
+        onDecided={onDecided}
+      />
+
       <div>
         <span className="eyebrow">entitlements, as last evaluated</span>
         {user.entitlements.length === 0 ? (
@@ -255,5 +405,69 @@ function UserCard({ user }: { user: LedgerUser }) {
         )}
       </div>
     </section>
+  );
+}
+
+/**
+ * The ledger's verdict on this user, as it answered it.
+ *
+ * Three states and no fourth. Eligible, with the terms an operator wrote;
+ * refused, with the ledger's stable token and its own sentence, rendered
+ * verbatim because the sentence names what to do; or a row that carried no
+ * verdict at all, which is stated in those words. The third is not read as
+ * eligible and not read as refused: a console that guessed either way about a
+ * field the platform did not send would be inventing the answer to the one
+ * question this block exists to ask.
+ */
+function EligibilityVerdict({ user }: { user: LedgerUser }) {
+  const verdict = user.eligibility;
+  const id = user.user_id;
+
+  if (verdict === undefined) {
+    return (
+      <div data-testid={`eligibility-${id}`} data-eligible="unknown">
+        <span className="eyebrow">eligibility, as the ledger decided it at request time</span>
+        <p className="mt-1 flex flex-wrap items-center gap-2">
+          <Chip tone="warn">
+            <span data-testid={`eligibility-verdict-${id}`}>no verdict answered</span>
+          </Chip>
+          <Muted>
+            this row carried no eligibility field. That is not an eligible user and not a refused
+            one; it is a process serving a shape from before the verdict existed, and the answer to
+            &ldquo;may capital be put to work for this person&rdquo; is unknown until it does.
+          </Muted>
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid={`eligibility-${id}`} data-eligible={verdict.eligible ? "true" : "false"}>
+      <span className="eyebrow">eligibility, as the ledger decided it at request time</span>
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        <Chip tone={verdict.eligible ? "ok" : "warn"}>
+          <span data-testid={`eligibility-verdict-${id}`}>
+            {verdict.eligible ? "eligible" : (verdict.refused ?? "not eligible")}
+          </span>
+        </Chip>
+        {verdict.eligible ? (
+          <span className="text-[11.5px]" data-testid={`eligibility-terms-${id}`}>
+            <Muted>
+              verified {formatTimestamp(verdict.verified_at)} in{" "}
+              {verdict.jurisdiction ?? "an unstated jurisdiction"} ·{" "}
+              {verdict.can_invest === true
+                ? "may have capital put to work"
+                : "cleared to view and not to invest"}{" "}
+              · expires {formatTimestamp(verdict.expires_at)}
+            </Muted>
+          </span>
+        ) : null}
+      </div>
+      {verdict.eligible ? null : (
+        <p className="mt-1 text-[11.5px] leading-relaxed" data-testid={`eligibility-reason-${id}`}>
+          <Muted>{verdict.reason ?? "the platform gave no reason."}</Muted>
+        </p>
+      )}
+    </div>
   );
 }

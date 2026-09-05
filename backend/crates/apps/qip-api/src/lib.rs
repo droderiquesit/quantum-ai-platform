@@ -47,6 +47,7 @@ pub mod mesh;
 pub mod missing;
 pub mod openapi;
 pub mod openobserve;
+pub mod registration_views;
 pub mod routes;
 pub mod self_model_views;
 pub mod statement;

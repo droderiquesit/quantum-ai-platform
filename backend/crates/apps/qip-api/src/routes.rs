@@ -354,11 +354,14 @@ pub const ROUTES: &[Route] = &[
     // --- the treasury read surface -------------------------------------------
     //
     // The blueprint's per-account entitlements and wallet, corridor and
-    // transfer-gate views, read-only. ADR 0021 permits the deterministic
-    // half of the treasury and refuses the path by which capital leaves, so
-    // there is no route here that could submit, approve, sign or move
-    // anything, and `api_boundary.rs` pins the mutating set to the three
-    // above. Each body is read off the kernel's fabric journal — the wallet
+    // transfer-gate views, read-only, and one operator route beside them.
+    // ADR 0021 permits the deterministic half of the treasury and refuses the
+    // path by which capital leaves, so there is no route here that could
+    // submit, approve, sign or move anything; `api_boundary.rs` pins the
+    // whole mutating set, and the one addition here — an eligibility
+    // decision — records a precondition the ledger checks *before* a
+    // funding, which is the opposite of a transfer. Each body is read off
+    // the kernel's fabric journal — the wallet
     // it last assembled, the registries it holds, the newest gate
     // assessment — and what the journal does not yet hold (a wallet, before
     // a statement and a cycle) is stated in the body, not zero-filled. The
@@ -379,6 +382,24 @@ pub const ROUTES: &[Route] = &[
         summary: "every user in the mandate registry: mandate, the per-strategy balances the \
                   pro-rata booking moved with expected inflows kept apart, and the viewer-role \
                   entitlement evaluation, in which withdrawal is never granted",
+        success: 200,
+    },
+    // The one route on this surface that changes anything, and an operator's.
+    // Until it existed, an eligibility could be decided only from the
+    // deployment's committed configuration or from a test, so the gate the
+    // ledger runs before every funding could be moved by nobody a running
+    // process could name. It raises the kernel's typed intent
+    // `Platform::decide_eligibility`, which takes the same `OperatorIdentity`
+    // an autonomy change does, journals the decision before the registry
+    // adopts it, and refuses a credential older than the kernel accepts. It
+    // moves no capital: an eligibility is a precondition of a funding.
+    Route {
+        method: Method::Post,
+        pattern: "/ledger/users/:user/eligibility",
+        required_role: Role::Operator,
+        summary: "record the authenticated operator's eligibility decision for one user — \
+                  granted on stated terms, or revoked with a reason — journalled before the \
+                  registry adopts it and answered with that user's updated ledger row",
         success: 200,
     },
     Route {
@@ -403,6 +424,42 @@ pub const ROUTES: &[Route] = &[
         required_role: Role::Viewer,
         summary: "the transfer gate's seven checks in order, the newest assessment the \
                   fabric journal holds (or null) and the kill switch its seventh check reads",
+        success: 200,
+    },
+    // --- venue registrations ------------------------------------------------
+    //
+    // The platform does everything about a venue registration except the
+    // part that must be a person's. The list names, per catalogued source,
+    // what the venue demands, where the source stands, the terms to read,
+    // the deployment variable the credential is read under and the one
+    // command that fills it; the approval records that an operator did
+    // those things, under the operator's own authenticated subject. The
+    // fourth mutating route, and the typed intent it raises is
+    // `Platform::approve_registration`, which takes the same
+    // `OperatorIdentity` an autonomy change does and refuses a body whose
+    // secret looks like a key before the kernel sees it. Nothing a caller
+    // sends becomes a credential: the body carries a variable name, screened
+    // by the manifest's own shape rule, and the value stays in Secret
+    // Manager where the operator put it. The shapes are
+    // `crate::registration_views` and `ROUTES-REGISTRATIONS.md`.
+    Route {
+        method: Method::Get,
+        pattern: "/registrations",
+        required_role: Role::Viewer,
+        summary: "every catalogued source with its registration requirement, standing \
+                  (keyless, registered by whom, or pending and why), the terms to read, the \
+                  deployment variable the credential is read under and the Secret Manager \
+                  command that fills it — names only, never a value",
+        success: 200,
+    },
+    Route {
+        method: Method::Post,
+        pattern: "/registrations/:source/approve",
+        required_role: Role::Operator,
+        summary: "record that the authenticated operator registered with the venue, read the \
+                  terms cited in the body and put the credential in Secret Manager under the \
+                  variable the body names; journalled before it stands, answered with the \
+                  source's new standing",
         success: 200,
     },
     // --- the live surface ---------------------------------------------------
@@ -504,6 +561,19 @@ pub struct Api {
     /// them the other way around. Records in transit from a source to the
     /// platform, not state the API keeps.
     feed: Option<Arc<Mutex<crate::feed::ApiFeed>>>,
+    /// Where a connector credential slot is looked up when a registration is
+    /// approved at runtime, or `None` to read the process environment at the
+    /// instant of the lookup.
+    ///
+    /// `None` is what a deployment runs: reading the environment then rather
+    /// than at start-up is what lets a secret mounted after the process came
+    /// up be seen at all. The map exists because a test cannot put a
+    /// `_FILE` variable into the process it runs in — `std::env::set_var` is
+    /// unsafe in the 2024 edition and `unsafe` is forbidden at the workspace
+    /// root — which is the same reason `FeedSettings::parse` takes a map
+    /// rather than reading the environment. It holds variable *names* the
+    /// caller supplied; no credential value is ever stored on this type.
+    credential_variables: Option<std::collections::BTreeMap<String, String>>,
     /// The bounds every live connection runs under.
     ///
     /// Held here rather than read from a constant so a test can open a stream
@@ -544,6 +614,7 @@ impl Api {
             mesh: None,
             overview: None,
             feed: None,
+            credential_variables: None,
             stream_limits: StreamLimits::default(),
             pulse: Arc::new(HealthPulse::default()),
         }
@@ -582,6 +653,89 @@ impl Api {
     pub fn with_feed(mut self, feed: Arc<Mutex<crate::feed::ApiFeed>>) -> Self {
         self.feed = Some(feed);
         self
+    }
+
+    /// Look a connector credential slot up in `variables` rather than in the
+    /// process environment.
+    ///
+    /// For a test, which cannot write the environment of the process it runs
+    /// in: `std::env::set_var` is unsafe in the 2024 edition and this
+    /// workspace forbids `unsafe`, so the only way to exercise the
+    /// re-admission's `_FILE` indirection is to hand it the variables. A
+    /// deployment never calls this and reads the environment, which is what
+    /// lets a secret mounted after start-up be found.
+    pub fn with_credential_variables(
+        mut self,
+        variables: std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        self.credential_variables = Some(variables);
+        self
+    }
+
+    /// The two places a credential slot can be set: the variable itself and
+    /// its `_FILE` projection.
+    ///
+    /// Read here and resolved in [`crate::feed::credential_is_readable`], so
+    /// the `_FILE` rule has exactly one implementation and this only decides
+    /// *where* to look.
+    fn credential_sources(&self, slot: &str) -> (Option<String>, Option<String>) {
+        let file = format!("{slot}{}", qip_core::secret::FILE_SUFFIX);
+        match &self.credential_variables {
+            Some(variables) => (variables.get(slot).cloned(), variables.get(&file).cloned()),
+            None => (std::env::var(slot).ok(), std::env::var(&file).ok()),
+        }
+    }
+
+    /// Re-open this process's connector on a registration just approved.
+    ///
+    /// The failure this closes: the feed's admission gate runs once, at
+    /// start-up, against the registry the deployment's configuration stood
+    /// for. An operator who approved a registration through the API moved
+    /// the registry and the event log and nothing else — the process went on
+    /// refusing the source it had refused at boot, and the answer said the
+    /// source was registered, which is true and was read as "and is now
+    /// being read", which was not.
+    ///
+    /// `None` is "there is nothing here to re-open": no feed, a tape, or a
+    /// connector for some other source. That is not a failure and is not
+    /// reported as one.
+    ///
+    /// The feed lock is taken with the platform lock already held, which is
+    /// the order `POST /cycle` takes them in and the only order any path in
+    /// this file takes them in. Re-opening touches a socket under both, as
+    /// the cycle's own SENSE does; what it must never do is leave the
+    /// process with no feed, so the replacement happens inside
+    /// [`crate::feed::ApiFeed::readmit`] only after the new connector is
+    /// built.
+    fn readmit_connector(
+        &self,
+        platform: &Platform,
+        source_id: &str,
+        slot: &str,
+        now: Timestamp,
+    ) -> Option<crate::registration_views::ConnectorAdmissionView> {
+        use crate::registration_views::ConnectorAdmissionView as Admission;
+        let feed = self.feed.as_ref()?;
+        let Ok(mut feed) = feed.lock() else {
+            return Some(Admission::refused(
+                "the feed is in an inconsistent state, so the connector was not re-opened. The \
+                 registration stands and is in the log; restart the process to sense through it",
+            ));
+        };
+        if feed.connector_source() != Some(source_id) {
+            return None;
+        }
+        // Asked before the gate, because a source admitted onto a feed whose
+        // credential this process cannot read would fail at the vendor with
+        // an error naming neither the variable nor the record.
+        let (direct, path) = self.credential_sources(slot);
+        if let Err(refusal) = crate::feed::credential_is_readable(slot, direct, path) {
+            return Some(Admission::refused(refusal.message()));
+        }
+        match feed.readmit(platform.registrations(), now) {
+            Ok(()) => Some(Admission::admitted(feed.describe())),
+            Err(refusal) => Some(Admission::refused(refusal.message())),
+        }
     }
 
     /// Read cell reports from a registry shared with the operator console.
@@ -823,6 +977,86 @@ impl Api {
                 );
                 Response::json(status, body)
             }
+            (Method::Post, "/ledger/users/:user/eligibility") => {
+                // The user is the path's third segment under the prefix; the
+                // route matched, so it is present.
+                let Some(user) = path_segment(&request.path, 2) else {
+                    return Response::json(404, r#"{"error":"no such route"}"#);
+                };
+                let decided = match request
+                    .body_as_str()
+                    .map_err(|error| error.message().to_string())
+                    .and_then(crate::ledger_views::EligibilityRequest::parse)
+                {
+                    Ok(decided) => decided,
+                    Err(reason) => {
+                        return Response::json(400, crate::registration_views::refusal(&reason));
+                    }
+                };
+                // The user is taken from the mandate registry rather than
+                // built from the path. Eligibility is a statement about a
+                // mandate holder — the ledger's own first refusal says so —
+                // and a decision recorded against a user nobody enrolled
+                // would be a record `/ledger/users` never shows and nobody
+                // would find again.
+                let Some(held) = platform
+                    .user_ledger()
+                    .mandates()
+                    .keys()
+                    .find(|held| held.as_str() == user)
+                    .cloned()
+                else {
+                    return Response::json(
+                        404,
+                        crate::registration_views::refusal(&format!(
+                            "no mandate is registered for `{user}`, and eligibility is a \
+                             statement about a mandate holder; enrol the mandate first"
+                        )),
+                    );
+                };
+                let decision = match decided.decision() {
+                    Ok(decision) => decision,
+                    Err(reason) => {
+                        return Response::json(400, crate::registration_views::refusal(&reason));
+                    }
+                };
+                // The operator is the authenticated principal, as clearing
+                // the kill switch establishes one — and dated at the instant
+                // the *credential* was issued rather than at `now`. The
+                // kernel refuses a decision taken on a credential older than
+                // fifteen minutes, and an identity stamped `now` is fresh by
+                // construction: the check would then be a control that
+                // cannot fire, which reads as protection and is not. What it
+                // costs is that a long-lived deployment token stops being
+                // able to decide eligibility fifteen minutes after the
+                // process started, which is the kernel's rule actually
+                // applied rather than defeated.
+                let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
+                    principal.subject.clone(),
+                    "api-bearer-token",
+                    principal.issued_at,
+                );
+                match platform.decide_eligibility(&held, decision, &operator, decided.reason(), now)
+                {
+                    Ok(_) => {
+                        // The row is read back from the ledger, not built
+                        // from the request: what an operator sees is what the
+                        // registry adopted.
+                        let (status, body) = crate::ledger_views::render_fallible(
+                            crate::ledger_views::decided_eligibility(&platform, user, now),
+                        );
+                        Response::json(status, body)
+                    }
+                    // The same mapping the venue approval answers with, from
+                    // the same place, so the two operator routes refuse in
+                    // one grammar: the caller's to fix is 400, an identity
+                    // the kernel will not act on is 409.
+                    Err(error) => Response::json(
+                        crate::registration_views::refusal_status(&error),
+                        crate::registration_views::refusal(error.message()),
+                    ),
+                }
+            }
             (Method::Get, "/wallet") => {
                 let (status, body) = crate::ledger_views::render_fallible(
                     crate::ledger_views::wallet(&platform, now),
@@ -840,6 +1074,71 @@ impl Api {
                     crate::ledger_views::transfer_gate(&platform, now),
                 );
                 Response::json(status, body)
+            }
+            (Method::Get, "/registrations") => {
+                let (status, body) = crate::ledger_views::render_fallible(
+                    crate::registration_views::registrations(&platform, now),
+                );
+                Response::json(status, body)
+            }
+            (Method::Post, "/registrations/:source/approve") => {
+                // The source is the path's second segment under the prefix;
+                // the route matched, so it is present.
+                let Some(source_id) = path_segment(&request.path, 1) else {
+                    return Response::json(404, r#"{"error":"no such route"}"#);
+                };
+                // The body is screened before the kernel sees it, and the
+                // screen never repeats what it refused: the one thing this
+                // route exists to refuse is a pasted key where a variable
+                // name belongs.
+                let body = match request
+                    .body_as_str()
+                    .map_err(|error| error.message().to_string())
+                    .and_then(crate::registration_views::ApprovalRequest::parse)
+                {
+                    Ok(body) => body,
+                    Err(reason) => {
+                        return Response::json(400, crate::registration_views::refusal(&reason));
+                    }
+                };
+                // The operator is the authenticated principal, exactly as
+                // clearing the kill switch establishes one; the kernel takes
+                // the record's operator from this identity and from nothing
+                // the body says.
+                let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
+                    principal.subject.clone(),
+                    "api-bearer-token",
+                    now,
+                );
+                match platform.approve_registration(
+                    source_id,
+                    &operator,
+                    &body.terms,
+                    body.secret,
+                    now,
+                ) {
+                    Ok(record) => {
+                        // The slot is the record the kernel just adopted,
+                        // not the body that proposed it: one claim about
+                        // which variable holds this venue's credential,
+                        // taken from the side that will be replayed.
+                        let connector = self.readmit_connector(
+                            &platform,
+                            source_id,
+                            record.secret().variable(),
+                            now,
+                        );
+                        let (status, body) =
+                            crate::ledger_views::render(&crate::registration_views::approved(
+                                &platform, source_id, now, connector,
+                            ));
+                        Response::json(status, body)
+                    }
+                    Err(error) => Response::json(
+                        crate::registration_views::refusal_status(&error),
+                        crate::registration_views::refusal(error.message()),
+                    ),
+                }
             }
             // A stream asked for through the handler rather than over a socket
             // — by a test, an embedder, or a client library that buffers a
@@ -1142,6 +1441,20 @@ impl Handler for Api {
             request.header(LAST_EVENT_ID),
         )))
     }
+}
+
+/// The `index`th segment of a request path under the version prefix, for a
+/// route whose pattern names a parameter there.
+///
+/// Read from the path the router already matched rather than parsed again
+/// from the pattern, so the segment a handler acts on is the one the table
+/// admitted. `None` only for a path that did not match, which the router
+/// has already answered.
+fn path_segment(path: &str, index: usize) -> Option<&str> {
+    path.strip_prefix(VERSION_PREFIX)?
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .nth(index)
 }
 
 /// Whether a concrete path matches a pattern with `:name` parameters.

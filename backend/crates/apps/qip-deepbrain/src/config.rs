@@ -11,11 +11,20 @@
 //! operator who asked for a hundred-millisecond deep brain has misunderstood
 //! which node they are configuring and should be told so.
 //!
-//! Nothing is read from a file in the repository and nothing is a credential.
+//! Two values here are read from files a variable names, and both are read
+//! here rather than by the code that uses them because this is the
+//! composition root: the credential, through `qip_core::secret`'s `_FILE`
+//! indirection, which is what the Secret Manager projection gives the process;
+//! and the committed provider-terms attestation (ADR 0037, and
+//! [`crate::attestation`]). Neither is echoed into a message — the token is
+//! held in a type that redacts in `Debug`, and the attestation names no
+//! credential at all.
+//!
 //! Parsing takes a map rather than reading the process environment, so the
 //! defaults and the refusals are asserted directly instead of by setting
 //! variables in a process that other tests share.
 
+use crate::attestation::{ATTESTATION_PATH_VARIABLE, ProviderTermsAttestation};
 use qip_core::Duration;
 use qip_core::error::{Error, Result};
 use qip_kernel::EventLogDestination;
@@ -133,11 +142,20 @@ pub struct HostedLanguageModel {
     pub model: String,
     /// The loopback listener, validated to be one.
     pub base_url: String,
-    /// The credential, when the deployment supplied one. `None` is the
-    /// built-dark state: the adapter is installed, reports itself
-    /// unavailable naming the variable, and the chain falls through to the
-    /// deterministic model.
+    /// The credential, when the deployment supplied one. `None` withholds the
+    /// adapter entirely — it is not constructed, the banner says which
+    /// variable is missing, and the chain is the deterministic model alone.
     pub token: Option<HuggingFaceToken>,
+    /// The committed record that an operator read the terms of the providers
+    /// this model may resolve to, when the deployment mounted one.
+    ///
+    /// `None` is the state of every environment today: no attestation is
+    /// mounted anywhere, so no hosted adapter is constructed anywhere. Read
+    /// only when a provider is named, and never a refusal in its own right
+    /// when it is absent — see [`hosted_language_model`] for why mounting the
+    /// attestation before naming the provider is the order ADR 0037 asks for
+    /// rather than a half-configuration.
+    pub attestation: Option<ProviderTermsAttestation>,
 }
 
 /// Everything the node needs to run, resolved.
@@ -426,7 +444,43 @@ fn hosted_language_model(vars: &BTreeMap<String, String>) -> Result<Option<Hoste
         model,
         base_url,
         token,
+        attestation: provider_terms_attestation(vars)?,
     }))
+}
+
+/// The committed attestation the deployment mounted, if it mounted one.
+///
+/// Absent is not a refusal here, and that is the whole point of the split: ADR
+/// 0037's sequence puts *reading the terms* first, before the secret and
+/// before the variables, so an attestation that exists while no provider is
+/// named is the correct intermediate state and a process that refused to start
+/// on it would invert the order it is enforcing. What is refused is a variable
+/// that is set and cannot be honoured — a path naming nothing, or bytes that
+/// are not the document — because that is a deployment which believes it
+/// mounted an attestation, and the alternative is a hosted model withheld for
+/// a reason the banner would report as "no attestation" when there is one
+/// mounted a metre away.
+fn provider_terms_attestation(
+    vars: &BTreeMap<String, String>,
+) -> Result<Option<ProviderTermsAttestation>> {
+    let Some(path) = text(vars, ATTESTATION_PATH_VARIABLE) else {
+        return Ok(None);
+    };
+    let document = std::fs::read_to_string(&path).map_err(|error| {
+        Error::invalid(format!(
+            "configuration: {ATTESTATION_PATH_VARIABLE} names {path}, which cannot be read: \
+             {error}. Point it at the committed record of the terms the operator read for each \
+             provider the model may resolve to (ADR 0037)"
+        ))
+    })?;
+    ProviderTermsAttestation::load(&document)
+        .map(Some)
+        .map_err(|error| {
+            Error::invalid(format!(
+                "configuration: {ATTESTATION_PATH_VARIABLE} names {path}, and {}",
+                error.message()
+            ))
+        })
 }
 
 /// A non-empty value, trimmed. Empty is treated as unset: a variable set to the
@@ -745,9 +799,10 @@ mod tests {
     fn a_missing_model_listener_or_token_is_refused_or_reported_by_name() {
         // The failure this prevents: a half-configured provider starting on
         // the half it has, narrating through templates while its manifest
-        // says a model is installed. The model and the listener are refusals;
-        // the token's absence is the built-dark state and is reported by the
-        // adapter, not refused here (see `language.rs`).
+        // says a model is installed. The model and the listener are refusals
+        // here; the token's absence is not, because it is not a fault — it
+        // withholds the adapter at assembly, where the banner names the
+        // variable and the templates keep narrating (see `language.rs`).
         for missing in [LANGUAGE_MODEL_VARIABLE, LANGUAGE_MODEL_BASE_URL_VARIABLE] {
             let refusal = DeepBrainConfig::parse(&vars(&hosted(&[(missing, "")])))
                 .err()
