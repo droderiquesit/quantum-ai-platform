@@ -933,6 +933,15 @@ went to 237), so Terraform has marked it tainted. The next `plan` will show
       + resource "google_compute_firewall" "nodes_reach_each_other" { ... }   # destination_ranges (known after apply)
     Plan: 3 to add, 0 to change, 1 to destroy.
 
+**Observed, not predicted — run 38.** `infra.yml` `dev` `plan` on `9ded2ea`
+(https://github.com/droderiquesit/quantum-ai-platform/actions/runs/33963633137,
+dispatched 11:33Z 2026-09-05, terminal status success) printed exactly
+that: the cluster `is tainted, so must be replaced`, the two firewall
+rules to add, `Plan: 3 to add, 0 to change, 1 to destroy.`, 237 resources
+in state. Under ADR 0040 decision 1 a plan that destroys the cluster is
+not one the agent dispatches `up` on, so no `up` was dispatched; the
+person's path below is the next step.
+
 The next `up`, dispatched against that state, will **fail**, on purpose:
 the replacement's first half is a destroy, and `deletion_protection = true`
 (`modules/gitops-control-plane/main.tf`, the cluster block) makes the
