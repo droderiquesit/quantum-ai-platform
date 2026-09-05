@@ -89,6 +89,7 @@ fn a_private_asset_with_no_residual_and_no_net_cost_is_refused_rather_than_marke
         &details(Decimal::ZERO, dec!("400"), dec!("100")),
         origin(),
         origin(),
+        origin(),
         None,
         day(1),
     )?;
@@ -98,6 +99,7 @@ fn a_private_asset_with_no_residual_and_no_net_cost_is_refused_rather_than_marke
     let refusal = IlliquidValuator::mark_private_asset(
         "obj-venture",
         &details(Decimal::ZERO, dec!("400"), dec!("400")),
+        origin(),
         origin(),
         origin(),
         None,
@@ -291,6 +293,7 @@ fn a_private_record_with_a_required_yield_is_discounted_rather_than_taken_at_fac
         &record,
         origin(),
         origin(),
+        origin(),
         Some(0.12),
         day(1),
     )?;
@@ -306,6 +309,7 @@ fn a_private_record_with_a_required_yield_is_discounted_rather_than_taken_at_fac
     let face = IlliquidValuator::mark_private_asset(
         "obj-fund",
         &record,
+        origin(),
         origin(),
         origin(),
         None,
