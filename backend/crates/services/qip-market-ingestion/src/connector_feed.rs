@@ -23,20 +23,42 @@ use crate::connector::checkpoint::Checkpoint;
 use crate::connector::runtime::{ConnectorRuntime, RuntimeConfig};
 use crate::connector::transport::{HttpSourceTransport, SourceTransport};
 use crate::connector::{SourceConnector, manifest::SourceManifest};
-use crate::connectors::{CoinbaseTickerConnector, FrankfurterRatesConnector};
+use crate::connectors::{
+    AlpacaBarsConnector, CoinbaseTickerConnector, FrankfurterRatesConnector, KalshiMarketsConnector,
+};
 use qip_core::error::{Error, Result};
 use qip_core::{ObjectId, Timestamp};
 use qip_events::Topic;
+use std::collections::BTreeMap;
 
 /// The sources this build can open by name.
 ///
 /// A closed set, deliberately: opening a source is preceded by a licensing
 /// evaluation, and an evaluation must name the thing it evaluated. A string
 /// that could name any URL would let configuration reach past the catalogue.
+///
+/// Being named here is not being admitted: Kalshi and Alpaca are ADR 0034
+/// candidates whose terms are unread, and `qip_data_finder::admission::admit`
+/// refuses both. They are listed so that a deployment can select them the
+/// day the gate admits them, and so the catalogue's own integrity check —
+/// an entry for a source no build carries is decoration — holds for them.
 pub const KNOWN_SOURCES: &[&str] = &[
     CoinbaseTickerConnector::SOURCE_ID,
     FrankfurterRatesConnector::SOURCE_ID,
+    KalshiMarketsConnector::SOURCE_ID,
+    AlpacaBarsConnector::SOURCE_ID,
 ];
+
+/// The symbols the shipped Alpaca manifest fetches, each with the instrument
+/// it maps to. Hard-coded beside Coinbase's `BTC-USD` for the same reason:
+/// the mapping is the composition root's decision and the root does not
+/// carry one yet.
+fn alpaca_instruments() -> BTreeMap<String, ObjectId> {
+    ["AAPL", "MSFT"]
+        .into_iter()
+        .map(|symbol| (symbol.to_string(), ObjectId::from_string(symbol)))
+        .collect()
+}
 
 /// The topic a named source's records are published under.
 ///
@@ -51,6 +73,8 @@ fn topic_for(source_id: &str) -> Result<Topic> {
     match source_id {
         CoinbaseTickerConnector::SOURCE_ID => Ok(Topic::MarketTick),
         FrankfurterRatesConnector::SOURCE_ID => Ok(Topic::MacroUpdated),
+        KalshiMarketsConnector::SOURCE_ID => Ok(Topic::MarketQuote),
+        AlpacaBarsConnector::SOURCE_ID => Ok(Topic::MarketBar),
         other => Err(Error::invalid(format!(
             "{other:?} names no connector this build carries; the known sources are: {}",
             KNOWN_SOURCES.join(", ")
@@ -72,6 +96,10 @@ pub fn shipped_class(source_id: &str) -> Result<qip_financial::quality::Licensin
         FrankfurterRatesConnector::SOURCE_ID => {
             Ok(FrankfurterRatesConnector::shipped_manifest()?.licensing)
         }
+        KalshiMarketsConnector::SOURCE_ID => {
+            Ok(KalshiMarketsConnector::shipped_manifest()?.licensing)
+        }
+        AlpacaBarsConnector::SOURCE_ID => Ok(AlpacaBarsConnector::shipped_manifest()?.licensing),
         other => Err(Error::invalid(format!(
             "{other:?} names no connector this build carries; the known sources are: {}",
             KNOWN_SOURCES.join(", ")
@@ -128,6 +156,17 @@ impl ConnectorFeed {
                 FrankfurterRatesConnector::SOURCE_ID => {
                     let manifest = FrankfurterRatesConnector::shipped_manifest()?;
                     let connector = FrankfurterRatesConnector::new(manifest.clone())?;
+                    (Box::new(connector), manifest)
+                }
+                KalshiMarketsConnector::SOURCE_ID => {
+                    let manifest = KalshiMarketsConnector::shipped_manifest()?;
+                    let connector = KalshiMarketsConnector::new(manifest.clone())?;
+                    (Box::new(connector), manifest)
+                }
+                AlpacaBarsConnector::SOURCE_ID => {
+                    let manifest = AlpacaBarsConnector::shipped_manifest()?;
+                    let connector =
+                        AlpacaBarsConnector::new(manifest.clone(), alpaca_instruments())?;
                     (Box::new(connector), manifest)
                 }
                 other => {

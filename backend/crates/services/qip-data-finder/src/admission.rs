@@ -122,8 +122,48 @@ impl LicensingDecision {
 /// from the published terms and not from a negotiated agreement — there is
 /// no contract to read — so a change in either party's terms is a change to
 /// this entry, reviewed like code.
+///
+/// # kalshi-markets and alpaca-daily-bars — refused until their terms are read
+///
+/// The two remaining ADR 0034 candidates. Both connectors exist and both are
+/// on `KNOWN_SOURCES`, so this catalogue must say something about them or
+/// `admit` refuses them as uncatalogued — which is the right outcome for the
+/// wrong reason, and an operator reading the refusal would go looking for a
+/// missing entry rather than for the terms. Each carries
+/// [`LicensingPosture::Ambiguous`]: the terms exist and nobody has mapped
+/// them onto this platform's usages, so every usage question answers
+/// `unknown` and `admit` refuses. ADR 0034 is explicit that its description
+/// of each vendor's terms is not an evaluation and not legal advice; the
+/// evidence names the document to read. Neither is `Declared`, and neither
+/// becomes so by an edit to the connector or the manifest — only by
+/// replacing the posture here, with the terms cited, under review.
+///
+/// Both manifests declare `Restricted`, the most restrictive class short of
+/// `Synthetic`, and `expected_class` agrees so that the refusal an operator
+/// sees is the licensing one and not a class disagreement. When the terms
+/// are read the class may relax; it does so in the manifest and here in one
+/// commit, or the disagreement check refuses the source again.
 pub fn catalogue() -> Result<Vec<CatalogueEntry>> {
     Ok(vec![
+        CatalogueEntry {
+            source_id: "kalshi-markets",
+            expected_class: LicensingClass::Restricted,
+            posture: LicensingPosture::ambiguous(
+                "Kalshi's terms of service and API terms at https://kalshi.com/terms have not \
+                 been read against this platform's usages; ADR 0034 names the source as a \
+                 candidate only",
+            ),
+        },
+        CatalogueEntry {
+            source_id: "alpaca-daily-bars",
+            expected_class: LicensingClass::Restricted,
+            posture: LicensingPosture::ambiguous(
+                "Alpaca's market-data terms and account agreement at \
+                 https://alpaca.markets/terms-and-conditions have not been read against this \
+                 platform's usages; ADR 0034 names the source as a candidate only, and its \
+                 paper brokerage is the account the data terms come with",
+            ),
+        },
         CatalogueEntry {
             source_id: "coinbase-spot-ticker",
             expected_class: LicensingClass::Internal,
@@ -327,6 +367,51 @@ mod tests {
             "the refusal was not about the trading usage: {}",
             refused.message()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn the_adr_0034_candidates_whose_terms_are_unread_are_refused_by_the_real_catalogue()
+    -> Result<()> {
+        // Not a placeholder catalogue: the shipped one, with the class the
+        // shipped manifest declares — the exact call the composition root
+        // makes. The refusal must be the Derive question's own answer and
+        // must name the terms to read, so an operator paged on it goes to
+        // the document and not to this file.
+        for source_id in ["kalshi-markets", "alpaca-daily-bars"] {
+            // Premise: the source is one the feed can open by name, so the
+            // refusal below cannot be the known-sources integrity check.
+            assert!(
+                qip_market_ingestion::connector_feed::KNOWN_SOURCES.contains(&source_id),
+                "{source_id} is not a source the build carries"
+            );
+            let class = qip_market_ingestion::connector_feed::shipped_class(source_id)?;
+            let entry = catalogue()?
+                .into_iter()
+                .find(|entry| entry.source_id == source_id)
+                .unwrap_or_else(|| panic!("{source_id} has no catalogue entry"));
+            assert!(
+                entry.posture.license().is_none(),
+                "{source_id} carries a declared licence, and ADR 0034 says its terms are unread"
+            );
+            assert_eq!(entry.expected_class, class);
+
+            let refused = admit(source_id, class, now()).expect_err(&format!(
+                "{source_id} was admitted, so terms nobody read were treated as read"
+            ));
+            let message = refused.message();
+            assert!(
+                message.contains(&format!(
+                    "{source_id} for derive may not be collected because its legality is \
+                     undetermined"
+                )),
+                "the refusal is not the Derive question's answer: {message}"
+            );
+            assert!(
+                message.contains("https://"),
+                "the refusal does not name the terms to read: {message}"
+            );
+        }
         Ok(())
     }
 

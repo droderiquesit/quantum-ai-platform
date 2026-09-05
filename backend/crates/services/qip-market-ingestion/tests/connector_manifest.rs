@@ -13,7 +13,9 @@ use qip_core::error::Result;
 use qip_market_ingestion::connector::manifest::{AuthScheme, AuthSpec, SchemaVersion, SecretRef};
 use qip_market_ingestion::connector::transport::HttpSourceTransport;
 use qip_market_ingestion::connector::{Protocol, SourceManifest};
-use qip_market_ingestion::connectors::{coinbase_ticker, frankfurter_rates};
+use qip_market_ingestion::connectors::{
+    alpaca_bars, coinbase_ticker, frankfurter_rates, kalshi_markets,
+};
 
 #[test]
 fn a_manifest_cannot_carry_a_credential_because_no_field_can_hold_one() -> Result<()> {
@@ -246,6 +248,108 @@ fn the_shipped_example_manifests_validate_and_describe_free_public_sources() -> 
         Duration::from_hours(16),
         "the ECB publishes these rates hours after the date they are stamped with, and a delay \
          of zero would make each one knowable at midnight on its own reference date"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_kalshi_manifest_is_open_polls_the_recorded_query_and_probes_the_cheap_status_path()
+-> Result<()> {
+    // The manifest's query is what the fixture was recorded with, so the
+    // harness exercises the request a deployment would make; the health path
+    // is the status endpoint so a liveness probe is not a 40 KB page.
+    let kalshi = kalshi_markets::KalshiMarketsConnector::shipped_manifest()?;
+    assert_eq!(kalshi.source_id, "kalshi-markets");
+    assert_eq!(kalshi.protocol, Protocol::Poll);
+    assert_eq!(kalshi.auth.scheme, AuthScheme::None);
+    assert!(
+        kalshi.auth.secret.is_none(),
+        "an open endpoint named a credential"
+    );
+    assert_eq!(kalshi.endpoint.path, "/trade-api/v2/markets");
+    assert_eq!(
+        kalshi.endpoint.health_path(),
+        "/trade-api/v2/exchange/status"
+    );
+    let query: Vec<(&str, &str)> = kalshi
+        .endpoint
+        .query
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    assert_eq!(
+        query,
+        [
+            ("limit", "20"),
+            ("mve_filter", "exclude"),
+            ("status", "open")
+        ]
+    );
+    assert!(
+        kalshi.provider.contains(&format!(
+            "({})",
+            kalshi_markets::KalshiMarketsConnector::UPSTREAM_HOST
+        )),
+        "{}",
+        kalshi.provider
+    );
+    assert!(
+        !kalshi.is_configured(),
+        "the shipped manifest must not carry an address: the host is in no allowlist"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_alpaca_manifest_names_its_credential_by_reference_and_the_deployment_must_supply_both()
+-> Result<()> {
+    // The credential is a variable name and never a value; an unconfigured
+    // deployment is told about the address and the credential separately.
+    let alpaca = alpaca_bars::AlpacaBarsConnector::shipped_manifest()?;
+    assert_eq!(alpaca.source_id, "alpaca-daily-bars");
+    assert_eq!(alpaca.protocol, Protocol::Rest);
+    assert_eq!(alpaca.auth.scheme, AuthScheme::Header);
+    assert_eq!(
+        alpaca.auth.header.as_deref(),
+        Some(alpaca_bars::AlpacaBarsConnector::SECRET_KEY_HEADER)
+    );
+    let secret = alpaca
+        .auth
+        .secret
+        .as_ref()
+        .expect("an authenticated manifest names its secret");
+    assert_eq!(secret.variable(), "QIP_ALPACA_API_SECRET_KEY");
+    // The manifest text itself carries no field that could hold a value: the
+    // only place the credential's name appears is the `variable` field.
+    let text: serde_json::Value = serde_json::from_str(alpaca_bars::MANIFEST)?;
+    assert_eq!(
+        text["auth"]
+            .as_object()
+            .map(|auth| auth.keys().cloned().collect::<Vec<_>>()),
+        Some(vec![
+            "header".to_string(),
+            "scheme".to_string(),
+            "secret".to_string()
+        ])
+    );
+    assert!(
+        alpaca.provider.contains(&format!(
+            "({})",
+            alpaca_bars::AlpacaBarsConnector::UPSTREAM_HOST
+        )),
+        "{}",
+        alpaca.provider
+    );
+
+    assert!(!alpaca.is_configured());
+    let missing = alpaca.missing_configuration();
+    assert_eq!(missing.len(), 2, "{missing:?}");
+    assert!(missing[0].contains("base_url"), "{}", missing[0]);
+    assert!(
+        missing[1].contains("QIP_ALPACA_API_SECRET_KEY")
+            && missing[1].contains("QIP_ALPACA_API_SECRET_KEY_FILE"),
+        "the missing-credential message does not name the variable and its _FILE form: {}",
+        missing[1]
     );
     Ok(())
 }

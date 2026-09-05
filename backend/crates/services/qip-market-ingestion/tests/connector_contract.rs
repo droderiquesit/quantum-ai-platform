@@ -18,9 +18,11 @@ use qip_market_ingestion::connector::{
     ConnectorRuntime, ContractHarness, ContractReport, RuntimeConfig, SourceConnector,
 };
 use qip_market_ingestion::connectors::{
-    CoinbaseTickerConnector, FrankfurterRatesConnector, coinbase_ticker, frankfurter_rates,
+    AlpacaBarsConnector, CoinbaseTickerConnector, FrankfurterRatesConnector,
+    KalshiMarketsConnector, alpaca_bars, coinbase_ticker, frankfurter_rates, kalshi_markets,
 };
 use qip_transport::RecordingSleeper;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 fn at(text: &str) -> Timestamp {
@@ -60,6 +62,36 @@ fn frankfurter() -> Result<(FrankfurterRatesConnector, SourceEmulator)> {
     ))
 }
 
+/// After the newest `updated_time` in the Kalshi recording (02:07:00Z on
+/// 2026-09-05), on a feed with no dissemination delay.
+fn kalshi_horizon() -> Timestamp {
+    at("2026-09-05T03:00:00Z")
+}
+
+/// After the placeholder's newest session midnight (2026-09-04T04:00Z) plus
+/// the seventeen-hour delay, so both sessions' bars are knowable.
+fn alpaca_horizon() -> Timestamp {
+    at("2026-09-05T12:00:00Z")
+}
+
+fn kalshi() -> Result<(KalshiMarketsConnector, SourceEmulator)> {
+    let connector = KalshiMarketsConnector::new(KalshiMarketsConnector::shipped_manifest()?)?;
+    Ok((
+        connector,
+        SourceEmulator::from_json(kalshi_markets::FIXTURE)?,
+    ))
+}
+
+fn alpaca() -> Result<(AlpacaBarsConnector, SourceEmulator)> {
+    let instruments: BTreeMap<String, ObjectId> = [("AAPL", "OBJ-AAPL"), ("MSFT", "OBJ-MSFT")]
+        .into_iter()
+        .map(|(symbol, id)| (symbol.to_string(), ObjectId::from_string(id)))
+        .collect();
+    let connector =
+        AlpacaBarsConnector::new(AlpacaBarsConnector::shipped_manifest()?, instruments)?;
+    Ok((connector, SourceEmulator::from_json(alpaca_bars::FIXTURE)?))
+}
+
 fn runtime_for(connector: &dyn SourceConnector) -> Result<ConnectorRuntime> {
     let config = RuntimeConfig::seeded(11).with_sleeper(Arc::new(RecordingSleeper::new()));
     ConnectorRuntime::new(connector.manifest().clone(), config)
@@ -93,6 +125,146 @@ fn the_frankfurter_rates_connector_passes_the_connector_contract() -> Result<()>
     let report = ContractHarness::new(frankfurter_horizon()).run(&mut connector, &mut emulator)?;
 
     assert_report(&report);
+    Ok(())
+}
+
+#[test]
+fn the_kalshi_markets_connector_passes_the_connector_contract() -> Result<()> {
+    let (mut connector, mut emulator) = kalshi()?;
+    let report = ContractHarness::new(kalshi_horizon()).run(&mut connector, &mut emulator)?;
+
+    assert_report(&report);
+    // The health probe hit the status endpoint and not the 40 KB page.
+    assert!(
+        emulator
+            .calls()
+            .iter()
+            .any(|target| target.contains("/trade-api/v2/exchange/status")),
+        "the health check never asked the status endpoint: {:?}",
+        emulator.calls()
+    );
+    Ok(())
+}
+
+#[test]
+fn the_alpaca_bars_connector_passes_the_connector_contract() -> Result<()> {
+    let (mut connector, mut emulator) = alpaca()?;
+    let report = ContractHarness::new(alpaca_horizon()).run(&mut connector, &mut emulator)?;
+
+    assert_report(&report);
+    Ok(())
+}
+
+#[test]
+fn the_kalshi_connector_publishes_nineteen_quotes_and_quarantines_the_empty_book() -> Result<()> {
+    // The recording holds twenty markets, one of them with no resting order
+    // on either side. One quarantine with a reason, nineteen quotes — not a
+    // lost page, and not a 0/0 quote.
+    let (mut connector, mut emulator) = kalshi()?;
+    let mut runtime = runtime_for(&connector)?;
+    let transport: &mut dyn SourceTransport = &mut emulator;
+
+    let report = runtime.poll(&mut connector, transport, kalshi_horizon())?;
+    assert_eq!(report.admitted.len(), 19, "{report:?}");
+    assert_eq!(report.quarantined, 1);
+    assert_eq!(report.withheld, 0);
+
+    let quoted = report
+        .admitted
+        .iter()
+        .find(|envelope| envelope.upstream_key() == "KXUSL1HTOTAL-26SEP05MONPHO-2")
+        .expect("the two-sided market is in the recording");
+    match quoted.record() {
+        SensedRecord::Quote(quote) => {
+            assert_eq!(quote.bid.to_string(), "0.34");
+            assert_eq!(quote.ask.to_string(), "0.4");
+            assert_eq!(quote.bid_size.to_string(), "564");
+            assert_eq!(quote.ask_size.to_string(), "50");
+            assert_eq!(quote.venue, KalshiMarketsConnector::VENUE);
+            assert_eq!(quote.at, at("2026-09-05T02:07:00.686274Z"));
+            assert_eq!(
+                quote.object_id.as_str(),
+                "KALSHI:KXUSL1HTOTAL-26SEP05MONPHO-2"
+            );
+        }
+        other => panic!("a Kalshi market decoded into {other:?} rather than a quote"),
+    }
+    for envelope in &report.admitted {
+        assert!(
+            envelope.record().validate().is_empty(),
+            "a published quote fails the platform's own validation: {:?}",
+            envelope.record().validate()
+        );
+    }
+    assert!(
+        !report
+            .admitted
+            .iter()
+            .any(|envelope| envelope.upstream_key() == "KXUSL1HTOTAL-26SEP05MONPHO-3"),
+        "the market with an empty book was published"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_alpaca_connector_decodes_the_placeholder_into_four_daily_bars() -> Result<()> {
+    let (mut connector, mut emulator) = alpaca()?;
+    let mut runtime = runtime_for(&connector)?;
+    let transport: &mut dyn SourceTransport = &mut emulator;
+
+    let report = runtime.poll(&mut connector, transport, alpaca_horizon())?;
+    assert_eq!(report.admitted.len(), 4, "{report:?}");
+
+    let aapl = report
+        .admitted
+        .iter()
+        .find(|envelope| envelope.upstream_key() == "AAPL@2026-09-03T04:00:00Z")
+        .expect("the placeholder holds an AAPL bar for 2026-09-03");
+    match aapl.record() {
+        SensedRecord::Bar(bar) => {
+            assert_eq!(bar.open.to_string(), "189.2");
+            assert_eq!(bar.close.to_string(), "190.1");
+            assert_eq!(bar.volume.to_string(), "52341");
+            assert_eq!(bar.venue, AlpacaBarsConnector::VENUE);
+            assert_eq!(bar.open_time, at("2026-09-03T04:00:00Z"));
+            assert!(bar.is_coherent());
+        }
+        other => panic!("an Alpaca bar decoded into {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_daily_bar_is_withheld_until_the_session_it_reports_has_closed() -> Result<()> {
+    // A bar stamped at the session's midnight, polled at noon that day, is
+    // the day's close handed to a backtest before the day happened.
+    let (mut connector, mut emulator) = alpaca()?;
+    let mut runtime = runtime_for(&connector)?;
+    let transport: &mut dyn SourceTransport = &mut emulator;
+
+    let midday = runtime.poll(&mut connector, transport, at("2026-09-04T12:00:00Z"))?;
+    // Premise: the 09-03 bars are already knowable at this instant, so the
+    // withholding below is the 09-04 session's alone.
+    assert_eq!(midday.admitted.len(), 2, "{midday:?}");
+    assert_eq!(midday.withheld, 2);
+    assert!(
+        !midday
+            .admitted
+            .iter()
+            .any(|envelope| envelope.upstream_key().ends_with("2026-09-04T04:00:00Z")),
+        "a bar for the session in progress was published at midday"
+    );
+
+    let after_close = runtime.poll(&mut connector, transport, alpaca_horizon())?;
+    assert_eq!(after_close.admitted.len(), 2, "{after_close:?}");
+    for envelope in &after_close.admitted {
+        assert_eq!(
+            envelope.knowable_at(),
+            envelope
+                .event_time()
+                .saturating_add(Duration::from_hours(17))
+        );
+    }
     Ok(())
 }
 
@@ -381,5 +553,74 @@ fn the_shipped_class_and_the_known_sources_agree_with_the_manifests() -> Result<
     assert!(shipped_class("unknown-source").is_err());
     // Premise for every list-driven check: the list is not empty.
     assert!(!KNOWN_SOURCES.is_empty());
+
+    // The two ADR 0034 candidates whose terms are unread declare the
+    // fail-closed floor, and the bridge reports exactly that class — the
+    // gate compares it with the catalogue's, and a manifest quietly relaxed
+    // to `public` would disagree and be refused.
+    for (source_id, connector_class) in [
+        (
+            KalshiMarketsConnector::SOURCE_ID,
+            KalshiMarketsConnector::shipped_manifest()?.licensing,
+        ),
+        (
+            AlpacaBarsConnector::SOURCE_ID,
+            AlpacaBarsConnector::shipped_manifest()?.licensing,
+        ),
+    ] {
+        assert!(
+            KNOWN_SOURCES.contains(&source_id),
+            "{source_id} is not openable by name"
+        );
+        assert_eq!(shipped_class(source_id)?, connector_class);
+        assert_eq!(
+            shipped_class(source_id)?,
+            LicensingClass::Restricted,
+            "{source_id}'s terms have not been read (ADR 0034), so its manifest must declare \
+             the most restrictive class short of synthetic until they are"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn every_known_source_opens_by_name_through_the_bridge_over_its_own_fixture() -> Result<()> {
+    // `KNOWN_SOURCES` is the list a deployment selects from, and a name on
+    // it that `ConnectorFeed` cannot actually construct is a source that
+    // fails at start-up with a message about a missing arm. Each is opened
+    // over its recorded (or placeholder) fixture through the same
+    // `over_transport` path `open` takes after it builds the transport.
+    assert_eq!(KNOWN_SOURCES.len(), 4, "{KNOWN_SOURCES:?}");
+    let (kalshi, kalshi_emulator) = kalshi()?;
+    let (alpaca, alpaca_emulator) = alpaca()?;
+    let cases: Vec<(
+        Box<dyn SourceConnector + Send>,
+        SourceEmulator,
+        Timestamp,
+        usize,
+    )> = vec![
+        (Box::new(kalshi), kalshi_emulator, kalshi_horizon(), 19),
+        (Box::new(alpaca), alpaca_emulator, alpaca_horizon(), 4),
+    ];
+    for (connector, emulator, horizon, expected) in cases {
+        let manifest = connector.manifest().clone();
+        let source_id = manifest.source_id.clone();
+        let mut feed =
+            ConnectorFeed::over_transport(connector, manifest, Box::new(emulator), 11, horizon)?;
+        let records = feed.poll(horizon)?;
+        assert_eq!(records.len(), expected, "{source_id} produced {records:?}");
+        let topics: std::collections::BTreeSet<_> =
+            records.iter().map(|record| record.topic()).collect();
+        assert_eq!(
+            topics.len(),
+            1,
+            "{source_id} publishes on more than one topic: {topics:?}"
+        );
+        assert_eq!(
+            feed.descriptor().topics,
+            topics.into_iter().collect::<Vec<_>>(),
+            "{source_id}'s descriptor promises a topic its records do not carry"
+        );
+    }
     Ok(())
 }
