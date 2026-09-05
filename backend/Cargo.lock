@@ -155,6 +155,7 @@ dependencies = [
  "qip-financial",
  "qip-portfolio",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

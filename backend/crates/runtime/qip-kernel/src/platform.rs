@@ -45,6 +45,7 @@ use qip_agents::runtime::{Reading, Upstream};
 use qip_agents::{Budget, RunStatus};
 use qip_ai::language::{DeterministicModel, LanguageModel};
 use qip_ai::retrieval::SearchIndex;
+use qip_capital::ledger::{AttributedFill, UserId, UserLedger};
 use qip_capital::reservation::ReservationLedger;
 use qip_capital::{AllocationLimits, CapitalAllocator, DrawdownSchedule};
 use qip_capital_fabric::{
@@ -60,6 +61,7 @@ use qip_chain::{
 use qip_contracts::edge::Deduction;
 use qip_contracts::governance::Usage;
 use qip_contracts::message::BookSide;
+use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::{VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::ids::{DecisionKind, EventKind, ObjectId, OrderId, ProposalId};
@@ -164,6 +166,10 @@ pub struct Platform {
     /// the same window cannot pass against the same free balance — gap-matrix
     /// item 10, wired.
     reservations: ReservationLedger,
+    /// The per-user, per-strategy books (blueprint §43.3). Every attributed
+    /// fill the centre settles is journalled here to the desk user, so the
+    /// §43.4 chain terminates in a mandate rather than in a strategy lot.
+    user_ledger: UserLedger,
     attributor: Attributor,
     evaluator: ThesisEvaluator,
     feedback: FeedbackEngine,
@@ -498,6 +504,12 @@ const DECLINED_HISTORY: usize = 256;
 /// arriving beside it as cell fills are carried across.
 const DESK_STRATEGY: &str = "central-desk";
 
+/// The one user the per-user ledger books to until users exist: the desk,
+/// under [`qip_capital::ledger::Mandate::desk`]. A literal, like
+/// [`DESK_STRATEGY`], so the ledger's user set is bounded by the source
+/// until a mandate registry enrols anyone else.
+const DESK_USER: &str = "desk";
+
 /// The exposure buckets one instrument record vouches for.
 ///
 /// Axis names are the ones the default limit set looks up — `sector` and
@@ -519,6 +531,43 @@ fn exposure_axes_of(object: &qip_financial::object::FinancialObject) -> BTreeMap
         }
     }
     axes
+}
+
+/// The feasibility grid one instrument record vouches for, in the shape the
+/// execution engine's central gate judges an order against.
+///
+/// The lot and the tick are the record's own — the value the catalogue
+/// stated, or `qip_financial`'s builder default of one lot and a hundredth of
+/// a tick where the record stated none, which is a fact about the reference
+/// data and not a number invented here. The two minimums are zero, which the
+/// engine defines as "the venue states none": the catalogue carries no
+/// minimum quantity or notional, and `qip_execution_engine::feasibility`
+/// states no numeric constants of its own, only the gate literals, so a
+/// positive minimum here would be a guess wearing a refusal's clothes. Until
+/// this existed the kernel constructed its order manager bare, so the
+/// central path judged no order against any grid: every off-lot or off-tick
+/// order rode the kill switch, the autonomy gate and pre-trade risk to the
+/// venue, and the platform's test universes — lot one, tick a hundredth,
+/// stated on every record — protected nothing. Fallible because a record
+/// with a non-positive lot or tick is one `ObjectBuilder::build` already
+/// refuses, and a universe that reached here carrying one anyway should stop
+/// assembly rather than be checked for nothing.
+fn instrument_grid_of(
+    object: &qip_financial::object::FinancialObject,
+) -> Result<qip_execution_engine::VenueFeasibility> {
+    qip_execution_engine::VenueFeasibility::new(
+        object.lot_size,
+        Some(object.tick_size),
+        Decimal::ZERO,
+        Decimal::ZERO,
+    )
+    .map_err(|error| {
+        Error::invalid(format!(
+            "{} carries a grid the execution engine cannot judge against: {}",
+            object.object_id.as_str(),
+            error.message()
+        ))
+    })
 }
 
 /// Bars the twin estimates liquidity over when pricing a declined path — the
@@ -1326,6 +1375,16 @@ impl Platform {
                 )
             })
             .collect();
+        // The lot and tick grid of every instrument, taken here for the same
+        // reason and installed on the order manager below, so the central
+        // path refuses an order the venue could not express before any
+        // downstream control treats its size as real (blueprint §18.1).
+        let instrument_grids: BTreeMap<String, qip_execution_engine::VenueFeasibility> = universe
+            .iter()
+            .map(|object| {
+                instrument_grid_of(object).map(|grid| (object.object_id.as_str().to_string(), grid))
+            })
+            .collect::<Result<_>>()?;
         // What in this universe may not drive a decision, and why, taken here
         // for the same reason: `Universe::not_decision_grade` said the kernel
         // logged it at start-up, and nothing did, so a universe assembled
@@ -1504,7 +1563,13 @@ impl Platform {
                 DetectorRegistry::standard(),
                 EngineConfig::default(),
             ),
-            orders: OrderManager::new(PreTradeChecker::new(limits.clone())),
+            // Every instrument's grid installed at assembly, keyed on the
+            // object id an order carries, so the feasibility gate is a
+            // control that can fire rather than a module nothing reaches.
+            orders: instrument_grids.into_iter().fold(
+                OrderManager::new(PreTradeChecker::new(limits.clone())),
+                |orders, (object_id, grid)| orders.with_instrument_feasibility(object_id, grid),
+            ),
             broker: Box::new(SimulatedBroker::new(
                 SimulationSettings::default(),
                 config.seed,
@@ -1515,6 +1580,14 @@ impl Platform {
             // pass; zero here is one honest cycle of refusals at worst.
             reservations: ReservationLedger::new(Decimal::ZERO)
                 .unwrap_or_else(|_| unreachable!("zero is not negative")),
+            // One user until users exist: the desk, under a mandate sized to
+            // the book's opening equity, so wiring the ledger changed nothing
+            // about what the platform already did.
+            user_ledger: UserLedger::with_desk(
+                UserId::new(DESK_USER)?,
+                config.initial_equity,
+                Currency::USD,
+            )?,
             attributor: Attributor::new(),
             evaluator: ThesisEvaluator::default(),
             feedback: FeedbackEngine::default(),
@@ -1984,7 +2057,55 @@ impl Platform {
         } = self;
         let ingestion = central.ingest(report, autonomy.kill_switch_mut(), now)?;
         self.charge_cell_fills(&ingestion.cell, &ingestion.settlement.absorbed);
+        self.journal_to_desk(&ingestion.settlement, now);
         Ok(ingestion)
+    }
+
+    /// Book what the settlement's exact attribution said each strategy
+    /// realised into the desk user's per-strategy books (blueprint §43.4:
+    /// `Strategy → Mandate → User`).
+    ///
+    /// Fed from the attribution and not from the report, so the user books
+    /// carry only what the centre accepted and closed to the last unit (ADR
+    /// 0007); a fill the centre refused reaches no user. A position graded
+    /// under other than exactly one strategy is recorded as a capture
+    /// problem rather than split, because a split the attribution did not
+    /// state would be a guess in the one record that must not carry one.
+    /// The fill has already happened, so a refusal here is a problem on the
+    /// record and not an error to the caller — the same reasoning as
+    /// [`Self::charge_cell_fills`].
+    fn journal_to_desk(&mut self, settlement: &crate::central::plane::Settlement, now: Timestamp) {
+        let Some(attribution) = &settlement.attribution else {
+            return;
+        };
+        let Ok(desk) = UserId::new(DESK_USER) else {
+            return;
+        };
+        for position in &attribution.positions {
+            let [strategy] = position.hypotheses.as_slice() else {
+                self.capture_problems.push(format!(
+                    "the attributed position {} names {} strategies and was not journalled \
+                     to the desk's books; the ledger books exactly one per position",
+                    position.object_id,
+                    position.hypotheses.len()
+                ));
+                continue;
+            };
+            let fill = AttributedFill {
+                strategy: StrategyId::new(strategy.as_str()),
+                source: position.object_id.clone(),
+                currency: Currency::USD,
+                amount: position.total,
+            };
+            if let Err(error) = self.user_ledger.journal_to(&desk, &fill, now) {
+                self.capture_problems.push(format!(
+                    "the attributed position {} was settled and not journalled to the \
+                     desk's books: {}",
+                    position.object_id,
+                    error.message()
+                ));
+            }
+        }
     }
 
     /// Charge one cell's absorbed fills into the running risk counters.
@@ -2163,6 +2284,12 @@ impl Platform {
     /// tracked equity it was last anchored to.
     pub fn reservations(&self) -> &ReservationLedger {
         &self.reservations
+    }
+
+    /// The per-user, per-strategy books — read-only; fills reach them
+    /// through [`Platform::ingest_cell_report`] and nothing else.
+    pub fn user_ledger(&self) -> &UserLedger {
+        &self.user_ledger
     }
 
     pub fn proposals(&self) -> &[Proposal] {
@@ -4452,6 +4579,11 @@ impl Platform {
         // every control in the paragraph above.
         let mut released = 0usize;
         let mut refused = 0usize;
+        // Legs whose order carries fewer units than the leg sized, because the
+        // instrument's lot does not divide the target. Counted into the
+        // stage's summary so the residual is on the record rather than a
+        // silent difference between the proposal and the book.
+        let mut sized_to_lots = 0usize;
         let mut problems: Vec<String> = sign_off_problems.clone();
 
         let approved: Vec<Proposal> = self
@@ -4485,11 +4617,35 @@ impl Platform {
                 let order_id =
                     OrderId::from_string(format!("ord-{}-{index}", proposal.proposal_id.as_str()));
 
+                // The leg's size is a continuous target the optimiser's
+                // weight produced; the order's is a whole number of the
+                // instrument's lots. Expressed here, where the leg becomes an
+                // order, from the same grid the order manager judges it
+                // against below — so a leg that rounds to nothing is stopped
+                // before a control decision is spent on it, and one that
+                // does not is submitted at a size the gate will admit rather
+                // than refused on every cycle for a grid the sizer never saw.
+                let quantity = self.whole_lots(leg.object_id.as_str(), leg.quantity);
+                if !quantity.is_positive() {
+                    refused += 1;
+                    problems.push(format!(
+                        "{} leg {index} was refused: {} of {} is less than one lot; nothing to \
+                         release",
+                        proposal.proposal_id.as_str(),
+                        leg.quantity,
+                        leg.object_id.as_str()
+                    ));
+                    continue;
+                }
+                if quantity != leg.quantity {
+                    sized_to_lots += 1;
+                }
+
                 let order = Order::new(
                     order_id,
                     leg.object_id.clone(),
                     Self::release_side(leg.side),
-                    leg.quantity,
+                    quantity,
                     // Market, because the simulated broker fills against the
                     // book it was given and a limit price invented here would
                     // be a number with no source. A working-algo order type is
@@ -4592,8 +4748,8 @@ impl Platform {
             Stage::Act,
             released,
             format!(
-                "{released} order(s) released from {} approved proposal(s), {refused} refused; \
-                 risk monitor says {}",
+                "{released} order(s) released from {} approved proposal(s), {refused} refused, \
+                 {sized_to_lots} sized down to whole lots; risk monitor says {}",
                 approved.len(),
                 action.as_str()
             ),
@@ -4602,6 +4758,21 @@ impl Platform {
             outcome = outcome.with_problem(problem);
         }
         outcome
+    }
+
+    /// The largest whole number of the instrument's lots that does not exceed
+    /// `quantity`, or `quantity` itself for an instrument with no grid.
+    ///
+    /// Read from the order manager's installed grid rather than a second copy
+    /// of the lot, so the size released and the size judged are the same
+    /// fact. Floors toward zero, as `Decimal::floor_to_step` does, because a
+    /// sized leg is a ceiling the risk projection approved and a lot rounded
+    /// up would be exposure nobody sized.
+    fn whole_lots(&self, object_id: &str, quantity: Decimal) -> Decimal {
+        match self.orders.instrument_feasibility(object_id) {
+            Some(grid) => quantity.floor_to_step(grid.lot_size()),
+            None => quantity,
+        }
     }
 
     /// Carry a proposal leg's direction across to the execution engine's own.
@@ -6154,7 +6325,10 @@ impl Platform {
 /// description would fragment the moment a message was reworded.
 fn gate_of(refusal: &RefusalReason) -> String {
     match refusal {
-        RefusalReason::Malformed { .. } => "order-validation",
+        // A feasibility veto is carried as `Malformed` and named by its own
+        // gate literal — the same four the edge plane charts under — so an
+        // off-lot order and an order tracing to no hypothesis are not one bar.
+        RefusalReason::Malformed { .. } => refusal.feasibility_gate().unwrap_or("order-validation"),
         RefusalReason::Halted { .. } => "kill-switch",
         RefusalReason::AutonomyTooLow { .. } => "autonomy",
         RefusalReason::LiveVenueBelowLiveAutonomy { .. } => "autonomy-live-venue",
@@ -6416,6 +6590,135 @@ mod decide_tests {
             let wiggle = if index % 2 == 0 { 0.7 } else { -0.5 };
             series.push(100.0 + index as f64 * 0.1 + wiggle);
         }
+    }
+
+    /// The small-book platform over a universe whose two names each state a
+    /// lot, so the order manager holds a grid for them.
+    ///
+    /// The fixtures above assemble over `Universe::new()`, which installs no
+    /// grid at all — honest for what they test, and exactly the state in
+    /// which the release path could submit any fraction the optimiser
+    /// produced.
+    fn gridded_small_book_platform(lot: Decimal) -> Platform {
+        use qip_financial::asset_class::{InstrumentType, Sector};
+        use qip_financial::object::FinancialObject;
+        use qip_financial::quality::Provenance;
+
+        let now = Timestamp::from_secs(1_760_000_000);
+        let mut universe = Universe::new();
+        for symbol in ["AAPL", "MSFT"] {
+            universe
+                .insert(
+                    FinancialObject::builder(
+                        qip_core::ObjectId::from_string(symbol),
+                        symbol,
+                        InstrumentType::CommonStock,
+                    )
+                    .venue("XNAS")
+                    .sector(Sector::InformationTechnology)
+                    .price(Decimal::from_int(100))
+                    .lot_size(lot)
+                    .provenance(Provenance::synthetic("test", now))
+                    .build(now)
+                    .expect("valid object"),
+                )
+                .expect("insertable");
+        }
+        let config = PlatformConfig::default().with_initial_equity(Decimal::from_int(200_000));
+        let (context, _clock) = qip_core::Context::deterministic(now, config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            universe,
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    #[test]
+    fn a_sized_leg_is_released_as_whole_lots_and_the_installed_gate_admits_it() {
+        // The optimiser sizes a leg as notional over price, a fraction; the
+        // venue accepts whole lots. With the grid installed on the order
+        // manager and nothing expressing the leg at it, every sized leg
+        // would be refused on every cycle — a gate that fires on everything
+        // reads as a platform that never trades, not as a control.
+        let lot = Decimal::from_int(7);
+        let mut platform = gridded_small_book_platform(lot);
+        feed_history(&mut platform, "AAPL", 30);
+        feed_history(&mut platform, "MSFT", 30);
+        platform.pending_theses.push(thesis("AAPL", 0.6));
+        platform.pending_theses.push(thesis("MSFT", -0.4));
+
+        let now = Timestamp::from_secs(1_760_000_100);
+        platform.stage_decide(now);
+
+        // The premise: at least one leg was sized off the grid, so the
+        // assertion below is about expression and not about legs that
+        // happened to land on it.
+        let sized_legs = platform
+            .proposals
+            .last()
+            .expect("a proposal is recorded")
+            .legs
+            .clone();
+        assert!(
+            !sized_legs.is_empty(),
+            "the premise failed: no legs were sized"
+        );
+        let off_grid: Vec<_> = sized_legs
+            .iter()
+            .filter(|leg| leg.quantity.floor_to_step(lot) != leg.quantity)
+            .cloned()
+            .collect();
+        assert!(
+            !off_grid.is_empty(),
+            "every sized leg sat on a lot of seven by chance; the test measures nothing"
+        );
+        let legs = sized_legs.len();
+
+        let correlation = CorrelationId::from_string("corr-lots");
+        let outcome = platform.stage_act(now, &correlation);
+
+        assert_eq!(
+            outcome.produced, legs,
+            "{legs} leg(s) were sized and {} order(s) were released: {} :: problems={:?}",
+            outcome.produced, outcome.detail, outcome.problems
+        );
+        assert!(
+            platform.orders.refusals().is_empty(),
+            "the gate refused a leg the stage was meant to have expressed at its lot: {:?}",
+            platform.orders.refusals()
+        );
+        for order in platform.orders.orders() {
+            assert_eq!(
+                order.quantity.floor_to_step(lot),
+                order.quantity,
+                "order {} was released at {} — not a whole number of lots of {lot}",
+                order.order_id,
+                order.quantity
+            );
+            let leg = sized_legs
+                .iter()
+                .find(|leg| leg.object_id == order.object_id)
+                .expect("an order names a sized leg");
+            assert!(
+                order.quantity <= leg.quantity && leg.quantity - order.quantity < lot,
+                "order {} at {} is not the largest whole-lot size under the sized {}",
+                order.order_id,
+                order.quantity,
+                leg.quantity
+            );
+        }
+        // The residual is on the record: the summary counts the legs whose
+        // order carries fewer units than were sized.
+        assert!(
+            outcome
+                .detail
+                .contains(&format!("{} sized down to whole lots", off_grid.len())),
+            "the stage summary does not say how many legs were expressed at the lot: {}",
+            outcome.detail
+        );
     }
 
     #[test]
@@ -7323,5 +7626,180 @@ mod retention_tests {
         let quote = state.quote.as_ref().expect("the desk holds the quote");
         // The newest quote of the three: half-spread 0.03 either side of 100.
         assert_eq!(quote.ask - quote.bid, Decimal::from_f64(0.06).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod user_ledger_tests {
+    //! The §43.4 chain reaching a user: a fill the centre settles is booked
+    //! to the desk's per-strategy books. A unit test because the seam is
+    //! `Platform::journal_to_desk`, which is private on purpose — the only
+    //! road into the user books is a report the centre accepted.
+
+    use super::*;
+    use qip_contracts::intent::Contributor;
+    use qip_contracts::wire::{FillRecord, FillShare};
+    use qip_core::dec;
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    use qip_financial::universe::Universe;
+    use qip_mesh::delta::DeltaOrder;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::{Limit, LimitKind, LimitSet};
+
+    const CELL: &str = "cell-lon-1";
+    const INSTRUMENT: &str = "obj-AAA";
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn platform() -> Platform {
+        let mut universe = Universe::new();
+        universe
+            .insert(
+                FinancialObject::builder(
+                    ObjectId::from_string(INSTRUMENT),
+                    "AAA",
+                    InstrumentType::CommonStock,
+                )
+                .venue("XNYS")
+                .sector(Sector::InformationTechnology)
+                .price(dec!("100"))
+                .provenance(Provenance::synthetic("test", start()))
+                .build(start())
+                .expect("valid object"),
+            )
+            .expect("insertable");
+        let limits = LimitSet::new("kernel-test").with(
+            Limit::new("max-leverage", LimitKind::MaxLeverage { limit: 2.0 })
+                .with_rationale("gross exposure is capped at 2x equity"),
+        );
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(config, context, Telemetry::silent(), universe, limits)
+            .expect("the platform assembles")
+    }
+
+    /// One order sent and filled whole for a single strategy, as the cell
+    /// reports it: the order registered as sent and the venue's fill beside
+    /// it, attributed entirely to `strategy`.
+    fn report(order_id: &str, side: BookSide, quantity: Decimal, price: Decimal) -> CellReport {
+        let strategy = StrategyId::new("alpha");
+        let order = DeltaOrder {
+            order_id: order_id.to_string(),
+            strategy: strategy.clone(),
+            object_id: ObjectId::from_string(INSTRUMENT),
+            venue: VenueId::new("XNYS"),
+            side,
+            quantity,
+            price,
+            simulated: true,
+            contributors: vec![Contributor {
+                strategy: strategy.clone(),
+                signed_size: quantity,
+                inputs: vec![("alpha-feature".to_string(), 1)],
+            }],
+        };
+        let fill = FillRecord {
+            order_id: order_id.to_string(),
+            object_id: ObjectId::from_string(INSTRUMENT),
+            venue: VenueId::new("XNYS"),
+            side,
+            quantity,
+            price,
+            simulated: true,
+            at: start(),
+            shares: vec![FillShare { strategy, quantity }],
+        };
+        CellReport::new(CELL, start())
+            .with_orders(vec![order])
+            .with_fills(vec![fill])
+    }
+
+    #[test]
+    fn a_fill_the_centre_settles_is_booked_to_the_desk_users_per_strategy_balance() {
+        // The failure this closes: the platform's books were per strategy
+        // and not per user, so the attribution chain stopped at the lot and
+        // nothing could say whose capital `alpha` was trading. Premise
+        // first: the desk holds a mandate and no book, and the round trip
+        // below genuinely realises something — a buy at 50 and a sell at 60
+        // is a thousand, which a ledger that booked nothing would not show.
+        let mut platform = platform();
+        let desk = UserId::new(DESK_USER).expect("the desk user id is valid");
+        let alpha = StrategyId::new("alpha");
+        assert!(
+            platform.user_ledger().mandate(&desk).is_some(),
+            "the premise is a desk with a mandate"
+        );
+        assert!(platform.user_ledger().book(&desk, &alpha).is_none());
+        assert_eq!(platform.user_ledger().fills_journalled(), 0);
+
+        let bought = platform
+            .ingest_cell_report(
+                report("ord-1", BookSide::Ask, dec!("100"), dec!("50")),
+                start(),
+            )
+            .expect("the buy is ingested");
+        assert_eq!(
+            bought.settlement.fills_settled, 1,
+            "the premise is a settled fill"
+        );
+        assert!(
+            bought.settlement.refused.is_empty(),
+            "nothing was refused: {:?}",
+            bought.settlement.refused
+        );
+        let opened = platform
+            .user_ledger()
+            .book(&desk, &alpha)
+            .expect("the buy opened the desk's book at alpha");
+        assert_eq!(opened.entries(), 1, "the opening buy is one entry");
+        assert_eq!(
+            opened
+                .cash(Currency::USD)
+                .map(qip_capital::ledger::CashBalance::settled),
+            Some(Decimal::ZERO),
+            "an opening buy realises nothing yet"
+        );
+
+        let sold = platform
+            .ingest_cell_report(
+                report("ord-2", BookSide::Bid, dec!("100"), dec!("60")),
+                start(),
+            )
+            .expect("the sell is ingested");
+        assert_eq!(sold.settlement.fills_settled, 1);
+        let attributed = sold
+            .settlement
+            .by_strategy()
+            .get("alpha")
+            .copied()
+            .expect("the sell is attributed to alpha");
+        assert_eq!(
+            attributed,
+            dec!("1000"),
+            "the premise is a realised thousand"
+        );
+
+        let closed = platform
+            .user_ledger()
+            .book(&desk, &alpha)
+            .expect("the desk's book at alpha persists");
+        assert_eq!(closed.entries(), 2);
+        assert_eq!(
+            closed
+                .cash(Currency::USD)
+                .map(qip_capital::ledger::CashBalance::settled),
+            Some(dec!("1000")),
+            "the desk's per-strategy balance carries what alpha realised"
+        );
+        assert_eq!(platform.user_ledger().fills_journalled(), 2);
+        assert!(
+            platform.capture_problems.is_empty(),
+            "nothing was left unjournalled: {:?}",
+            platform.capture_problems
+        );
     }
 }

@@ -4,8 +4,10 @@
 //! the platform's safety controls converge. In order:
 //!
 //! 1. The order must be well formed and trace to a proposal and a hypothesis.
-//! 2. If the destination venue has a [`crate::feasibility::VenueFeasibility`]
-//!    installed through [`OrderManager::with_venue_feasibility`], the order
+//! 2. If the instrument has a [`crate::feasibility::VenueFeasibility`]
+//!    installed through [`OrderManager::with_instrument_feasibility`], or
+//!    failing that the destination venue has one installed through
+//!    [`OrderManager::with_venue_feasibility`], the order
 //!    must sit on its lot and tick grids and clear its minimums. This is
 //!    `qip-edge`'s feasibility gate mirrored onto the central path: an
 //!    off-lot or below-minimum order is a strategy that does not know the
@@ -114,6 +116,33 @@ impl RefusalReason {
                 | Self::RiskRejected { .. }
         )
     }
+
+    /// The `feasibility_*` gate literal this refusal names, if it is a
+    /// feasibility veto rather than any other malformation.
+    ///
+    /// Read back from the prefix [`OrderManager::submit`] wrote, and matched
+    /// against the four literals exactly — `infeasible (<gate>):` with both
+    /// delimiters — so that a counter keyed on the answer is bounded by the
+    /// gate constants and cannot be minted by a reworded reason. It exists
+    /// because the kernel counts refusals by the control that made them, and
+    /// until it did an off-lot order and an order tracing to no hypothesis
+    /// were the same bar on the same chart: `order-validation`. The edge plane
+    /// charts its own feasibility vetoes under the gate literal, and a
+    /// central refusal that could not be correlated with it was a control
+    /// whose firing rate nobody could read.
+    pub fn feasibility_gate(&self) -> Option<&'static str> {
+        let Self::Malformed { detail } = self else {
+            return None;
+        };
+        [
+            feasibility::GATE_MINIMUM_QUANTITY,
+            feasibility::GATE_MINIMUM_NOTIONAL,
+            feasibility::GATE_LOT,
+            feasibility::GATE_TICK,
+        ]
+        .into_iter()
+        .find(|gate| detail.starts_with(&format!("infeasible ({gate}):")))
+    }
 }
 
 /// What happened to a submission.
@@ -167,6 +196,12 @@ pub struct OrderManager {
     /// `crate::feasibility`'s module comment for why that is the honest
     /// answer rather than a gap.
     feasibility: BTreeMap<String, VenueFeasibility>,
+    /// Feasibility grids by instrument, keyed on the order's `object_id`, and
+    /// consulted ahead of the venue's. A lot and a tick are facts about the
+    /// instrument's listing, which is where a reference catalogue states
+    /// them; a venue-wide grid is the coarser statement for a venue whose
+    /// instruments all share one.
+    instrument_feasibility: BTreeMap<String, VenueFeasibility>,
     sequence: u64,
 }
 
@@ -178,8 +213,34 @@ impl OrderManager {
             refusals: Vec::new(),
             reconciliation_breaks: Vec::new(),
             feasibility: BTreeMap::new(),
+            instrument_feasibility: BTreeMap::new(),
             sequence: 0,
         }
+    }
+
+    /// Install the lot/tick/minimum grid for one instrument, keyed on the
+    /// exact string its `object_id` renders to.
+    ///
+    /// Takes precedence over [`OrderManager::with_venue_feasibility`] for
+    /// that instrument, because the instrument's own record is the more
+    /// specific claim: a venue-wide lot of one is true of most of an equity
+    /// venue and false of the board lot a particular listing states, and the
+    /// order that would be wrong is the one in that listing.
+    #[must_use]
+    pub fn with_instrument_feasibility(
+        mut self,
+        object_id: impl Into<String>,
+        model: VenueFeasibility,
+    ) -> Self {
+        self.instrument_feasibility.insert(object_id.into(), model);
+        self
+    }
+
+    /// The grid installed for one instrument, if any — so the stage that
+    /// sizes a leg can express it in whole lots before this manager judges
+    /// it, from the same grid, rather than from a second copy of the lot.
+    pub fn instrument_feasibility(&self, object_id: &str) -> Option<&VenueFeasibility> {
+        self.instrument_feasibility.get(object_id)
     }
 
     /// Install the lot/tick/minimum grid for one venue, keyed on the exact
@@ -292,11 +353,14 @@ impl OrderManager {
         }
 
         // 2. Feasibility, before anything spends effort on an order that
-        //    cannot be expressed at this venue at all. Opt in per venue: a
-        //    venue with no grid installed is checked for nothing, which
-        //    mirrors `qip-edge`'s stated behaviour for a venue it has not
-        //    modelled either.
-        if let Some(model) = self.feasibility.get(broker.name())
+        //    cannot be expressed at this venue at all. Opt in per instrument,
+        //    then per venue: an instrument with no grid at a venue with no
+        //    grid is checked for nothing, which mirrors `qip-edge`'s stated
+        //    behaviour for a venue it has not modelled either.
+        if let Some(model) = self
+            .instrument_feasibility
+            .get(order.object_id.as_str())
+            .or_else(|| self.feasibility.get(broker.name()))
             && let Err(infeasible) = feasibility::assess(model, &order)
         {
             let result = refuse(
