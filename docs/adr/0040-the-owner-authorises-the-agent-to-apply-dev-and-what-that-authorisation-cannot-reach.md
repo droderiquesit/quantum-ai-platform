@@ -71,6 +71,41 @@ instruction into the part a record can carry and the part it cannot.
    not that, and this record is the approval the hook exists to demand;
    an agent running `terraform apply` locally remains refused.
 
+## Amendment of 2026-09-05: the instruction was given a third time
+
+The owner repeated "update ADR to allow yourself to deliver entire thing"
+after decision 1 had been used: run 34 was dispatched, created 82 of the 83
+planned resources, and refused the control-plane cluster with two messages
+(the Config Connector addon is not supported on Autopilot; the infra
+account lacks `gkehub.memberships.create`). Decision 1 said "once", and a
+literal reading would leave a half-applied environment waiting on a person
+for every fix. The repetition is read as the owner's decision that it
+should not, and the record widens by exactly this much:
+
+6. **Dev may be re-dispatched after each fix, until it is green.** Each
+   re-dispatch follows a `plan` run on the fixed commit, read by the agent
+   under decision 1's test (nothing destroyed beyond a replaced binding),
+   and each run's URL and terminal status are recorded in the register.
+   A fix that widens an IAM grant beyond the one missing permission, or
+   that drops a property ADR 0036 named (Autopilot, the private endpoint,
+   Binary Authorization, the etcd key), is not a fix this record covers.
+
+7. **`test` and `stage` become coverable once dev is green**, on the same
+   terms — a plan read first, a dispatch through the workflow, the run
+   recorded — and not before, because a migration that has not yet
+   succeeded once is not one to run three times. Decision 4's other
+   half stands: `prod` is refused by the workflow and by this record.
+
+8. **Everything else in decisions 2, 3 and "What this record cannot
+   reach" is unchanged by the repetition.** Saying an instruction three
+   times changes what the agent may apply; it does not change what a
+   rules file says no task instruction can weaken, and it does not put
+   the owner's eyes on a vendor's terms or a private key into a secret
+   container. Those remain the owner's, and the shortest form of each is:
+   for Alpaca and Kalshi, one sentence in the session that names the
+   document read and the date; for the GitHub App keys and the hosted
+   model's token, a `gcloud secrets versions add` the owner runs.
+
 ## What this record cannot reach
 
 - **The paper-trading boundary.** Terraform's refusal of the three live
@@ -113,7 +148,9 @@ instruction into the part a record can carry and the part it cannot.
 
 ## Applied by this record
 
-The dispatch of `infra.yml` `dev` `up`, once, after the plan is read; the
-run URL and its terminal status are recorded in
-`docs/ops/missing-infrastructure-register.md` beside the observation of
-what the apply produced.
+The dispatch of `infra.yml` `dev` `up` after the plan is read, and its
+re-dispatch after each fix under decision 6; every run's URL and terminal
+status are recorded in `docs/ops/missing-infrastructure-register.md`
+beside the observation of what the apply produced. Runs 34 and 35 on
+`e1711fb` are the first two entries: both failed on the cluster, and the
+fix is the commit that carries this amendment.
