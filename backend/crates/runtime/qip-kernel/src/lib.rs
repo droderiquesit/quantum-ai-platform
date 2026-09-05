@@ -35,6 +35,7 @@ pub mod central;
 pub mod config;
 pub mod cycle;
 pub mod platform;
+pub mod valuation;
 
 pub use central::{CellReport, CentralPlane, StrategyDna, StrategyFactory};
 pub use config::{EventLogDestination, PlatformConfig};
@@ -43,3 +44,4 @@ pub use platform::{
     ChainAbsorption, CycleJournalEntry, Platform, RecordedPrediction, SourceAssessment,
     UniverseAssembled,
 };
+pub use valuation::CreditRegister;
