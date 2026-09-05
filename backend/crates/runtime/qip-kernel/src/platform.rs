@@ -361,6 +361,41 @@ pub struct Platform {
     /// decision, with the reason, in object-id order. Empty is the only
     /// state a production universe should show.
     universe_not_decision_grade: Vec<(String, String)>,
+    /// Unfunded private commitments this book is on the hook for, derived
+    /// from the universe at assembly.
+    ///
+    /// A promise of capital somebody else may call is a liability, not spare
+    /// cash. `construct_from` subtracts the whole unfunded balance from the
+    /// free budget before anything is sized, which is the only place in the
+    /// platform where capital is withheld from deployment for an obligation
+    /// that has not yet been demanded.
+    commitments: qip_financial::cashflow::CommitmentBook,
+    /// The mark on every private asset in the universe, by object id, with
+    /// the method and the confidence it was arrived at by.
+    ///
+    /// Read in `construct_from`: a thesis on a marked instrument is sized
+    /// against the mark's decayed confidence rather than its face value, so
+    /// an uncertain mark cannot silently support leverage (blueprint §16.3).
+    illiquid_marks: BTreeMap<String, qip_financial::valuation::AssetValuation>,
+    /// Private assets the valuation plane refused to mark, by object id, with
+    /// the refusal.
+    ///
+    /// `construct_from` refuses to size any of them. The alternative — a
+    /// mark the platform invented so that sizing had a number to work with —
+    /// is indistinguishable downstream from an observed one and would support
+    /// leverage on its own authority.
+    illiquid_unmarkable: BTreeMap<String, String>,
+    /// The credit half of the valuation plane: one profile per obligor the
+    /// universe holds a claim on, and the sovereign curve per currency those
+    /// claims discount against.
+    ///
+    /// Read in `stage_understand`, which reports what it holds and raises
+    /// every unquantified claim, every currency with no curve and every
+    /// breached covenant as a stage problem. Built at assembly rather than per
+    /// cycle because it is a fact about the instruments, and rebuilding it
+    /// each pass would be a second reading of the universe that could disagree
+    /// with the one the log recorded.
+    credit: crate::valuation::CreditRegister,
     /// What the event log's first record says about the universe this
     /// platform was assembled from. Kept so the overview can say it without
     /// decoding the log; the log is the record.
@@ -671,6 +706,77 @@ fn exposure_axes_of(object: &qip_financial::object::FinancialObject) -> BTreeMap
         }
     }
     axes
+}
+
+/// Where a private-asset record's life begins, for the valuation and
+/// commitment engines.
+///
+/// The vintage year is the only origin the record carries, and the first
+/// instant of it is the one date every private-fund convention agrees on.
+/// Taken from the record rather than from the clock, so two platforms
+/// assembled from the same catalogue at different moments derive the same
+/// origin and therefore the same discounted mark.
+fn private_asset_origin(details: &qip_financial::extensions::PrivateAssetDetails) -> Timestamp {
+    Timestamp::from_civil(details.vintage_year as i32, 1, 1)
+}
+
+/// Sweep the universe for what the platform is obliged to and what it cannot
+/// price, in one pass.
+///
+/// Two facts come out of it and both are load-bearing in `construct_from`:
+///
+/// * Every unfunded private commitment in the universe. The capital engine
+///   treats it as a hard reservation and never as available capital
+///   (blueprint §16.4): failing a capital call typically forfeits the
+///   position, so the reserve is not optional and cannot wait for a pacing
+///   model to exist.
+/// * A mark for every private asset, or the refusal that says why there is
+///   none. An instrument the valuation plane refuses to price is one nothing
+///   may be sized into, and it joins `not_decision_grade` for the same reason
+///   a research-only instrument does — the platform can say what it is and
+///   cannot say what it is worth.
+///
+/// A universe of listed equities produces an empty book and no marks, so
+/// nothing about an ordinary assembly changes.
+#[allow(clippy::type_complexity)]
+fn private_holdings_of(
+    universe: &Universe,
+    now: Timestamp,
+) -> Result<(
+    qip_financial::cashflow::CommitmentBook,
+    BTreeMap<String, qip_financial::valuation::AssetValuation>,
+    Vec<(String, String)>,
+)> {
+    let mut book = qip_financial::cashflow::CommitmentBook::new();
+    let mut marks = BTreeMap::new();
+    let mut unmarkable = Vec::new();
+    for object in universe.iter() {
+        let qip_financial::extensions::Extension::PrivateAsset(details) = &object.extension else {
+            continue;
+        };
+        let id = object.object_id.as_str().to_string();
+        let origin = private_asset_origin(details);
+        if let Some(commitment) = qip_financial::cashflow::Commitment::from_private_asset(
+            id.clone(),
+            details,
+            origin,
+            object.updated_at.max(origin),
+        )? {
+            book.record(commitment)?;
+        }
+        match qip_financial::valuation::IlliquidValuator::mark_object(object, origin, now) {
+            Ok(Some(mark)) => {
+                marks.insert(id, mark);
+            }
+            // `mark_object` returns `None` only for an object this engine has
+            // no business marking, and the `let else` above has already
+            // excluded those, so this arm is unreachable in practice and is
+            // still not a `panic!` in a `Result` function.
+            Ok(None) => {}
+            Err(refusal) => unmarkable.push((id, refusal.message().to_string())),
+        }
+    }
+    Ok((book, marks, unmarkable))
 }
 
 /// The feasibility grid one instrument record vouches for, in the shape the
@@ -1809,11 +1915,41 @@ impl Platform {
         // entirely from research-only or synthetic instruments looked exactly
         // like one fit to trade. Kept as (object, reason) pairs for the
         // overview and recorded as a gauge once the registry exists below.
-        let not_decision_grade: Vec<(String, String)> = universe
+        let mut not_decision_grade: Vec<(String, String)> = universe
             .not_decision_grade()
             .into_iter()
             .map(|(object, reason)| (object.object_id.as_str().to_string(), reason))
             .collect();
+        // The valuation plane's sweep, taken here for the same reason as the
+        // exposure axes above: a control derived after assembly is a control
+        // the first cycle runs without. `Universe::not_decision_grade` already
+        // catches an instrument with no positive price, but a private asset
+        // can carry a stale price and still be unmarkable, and an unmarkable
+        // instrument is exactly one no capital may be sized into.
+        let (commitments, illiquid_marks, unmarkable) = private_holdings_of(&universe, now)?;
+        let illiquid_unmarkable: BTreeMap<String, String> = unmarkable.into_iter().collect();
+        for (id, refusal) in &illiquid_unmarkable {
+            not_decision_grade.push((id.clone(), format!("no defensible mark: {refusal}")));
+        }
+        not_decision_grade.sort();
+        not_decision_grade.dedup();
+        // The credit half of the valuation plane, derived here for the same
+        // reason as the sweep above and from the same universe: the sovereign
+        // curve and every obligor's profile are facts about the instruments,
+        // known at assembly, and a register built later is one the first cycle
+        // reasons without. This is the only production construction of
+        // `qip_market::curve::TermStructure` in the tree — it was built,
+        // tested and called by nothing — and the only one of
+        // `qip_financial::credit::CreditProfile`.
+        //
+        // It deliberately does not feed `not_decision_grade`. An unquantified
+        // credit claim is reported as an UNDERSTAND-stage problem, not as a
+        // trading disqualification, because disqualifying every bond that
+        // carries neither a rating nor a stated default probability would
+        // silently stop the research node trading its own synthetic sovereign
+        // — a change to what the platform trades, which belongs in a change
+        // that says so rather than arriving inside a valuation engine.
+        let credit = crate::valuation::CreditRegister::from_universe(&universe, now);
         // What the log's first record will say. Taken here, before the
         // universe moves into the desk, and appended below once the log and
         // the journal both exist — but before this function returns, so no
@@ -1984,6 +2120,10 @@ impl Platform {
             cost_router: Router::default(),
             reason_routing: None,
             universe_not_decision_grade: not_decision_grade,
+            commitments,
+            illiquid_marks,
+            illiquid_unmarkable,
+            credit,
             universe_assembled,
             inherited_through,
             asset_classes,
@@ -4631,13 +4771,22 @@ impl Platform {
             ),
             (None, _) => String::new(),
         };
-        StageOutcome::ran(
+        // The valuation plane's credit half, as the assembly derived it. An
+        // obligor whose covenant has gone, a currency the platform holds
+        // credit in and has no curve for, and a credit claim whose terms will
+        // not support a default probability are each raised as problems: a
+        // register that computed an expected loss and told nobody would be
+        // the control-that-cannot-fire shape this platform already records one
+        // example of.
+        let credit = self.credit.summary();
+        let credit_problems = self.credit.problems();
+        let mut outcome = StageOutcome::ran(
             Stage::Understand,
             state.object_count + state.entity_count,
             format!(
                 "world model holds {} instrument(s), {} entity(ies), {} relationship(s), \
                  {} causal claim(s), {} readable feature value(s), {} document(s)\
-                 {liquidity}{events}{chain}",
+                 {liquidity}{events}{chain}{credit}",
                 state.object_count,
                 state.entity_count,
                 state.relationship_count,
@@ -4645,7 +4794,11 @@ impl Platform {
                 state.features.len(),
                 documents
             ),
-        )
+        );
+        for problem in credit_problems {
+            outcome = outcome.with_problem(problem);
+        }
+        outcome
     }
 
     fn stage_discover(&mut self, now: Timestamp) -> StageOutcome {
@@ -5624,6 +5777,122 @@ impl Platform {
         Ok(state)
     }
 
+    /// The credit register derived from the universe at assembly: one profile
+    /// per obligor, the sovereign curve per currency, and the reason for every
+    /// claim whose terms would not support one.
+    pub fn credit_register(&self) -> &crate::valuation::CreditRegister {
+        &self.credit
+    }
+
+    /// The unfunded private commitments this book is on the hook for.
+    pub fn commitments(&self) -> &qip_financial::cashflow::CommitmentBook {
+        &self.commitments
+    }
+
+    /// The mark on a private asset, with the method and confidence it was
+    /// arrived at by, or `None` where the universe holds no private record
+    /// for the id.
+    pub fn illiquid_mark(&self, object_id: &str) -> Option<&qip_financial::AssetValuation> {
+        self.illiquid_marks.get(object_id)
+    }
+
+    /// Private assets the valuation plane refused to mark, with the refusal.
+    pub fn illiquid_unmarkable(&self) -> &BTreeMap<String, String> {
+        &self.illiquid_unmarkable
+    }
+
+    /// How far a construction must be narrowed for the marks it rests on.
+    ///
+    /// One multiplier rather than one per thesis, because the constructor
+    /// takes a single budget: the weakest mark in the set governs, which is
+    /// the conservative reading and the only one that cannot be gamed by
+    /// pairing a venture position with a liquid one.
+    ///
+    /// A thesis on an instrument the valuation plane refused to mark is not
+    /// narrowed, it is refused. Sizing it at some reduced fraction of a
+    /// fabricated mark would still be sizing against a number nobody
+    /// observed.
+    fn mark_confidence_multiplier(
+        &self,
+        theses: &[qip_portfolio_engine::construction::ApprovedThesis],
+        now: Timestamp,
+    ) -> Result<Decimal> {
+        let mut weakest = Decimal::ONE;
+        for thesis in theses {
+            weakest = weakest.min(self.sizing_confidence(thesis.object_id.as_str(), now)?);
+        }
+        Ok(weakest)
+    }
+
+    /// How far a position in `object_id` must be narrowed for the quality of
+    /// the mark behind it, as a fraction in `(0, 1]`.
+    ///
+    /// One for an instrument the valuation plane has no view on — a listed
+    /// equity is priced by the market and needs no haircut from here. A
+    /// refusal for an instrument it declined to mark, and for one whose mark
+    /// has passed its review date: sizing at some reduced fraction of a
+    /// fabricated or expired mark is still sizing against a number nobody
+    /// observed.
+    ///
+    /// Read by [`Self::mark_confidence_multiplier`] on every construction, so
+    /// this is the production path rather than a query beside it.
+    pub fn sizing_confidence(&self, object_id: &str, now: Timestamp) -> Result<Decimal> {
+        if let Some(refusal) = self.illiquid_unmarkable.get(object_id) {
+            return Err(Error::invalid(format!(
+                "{object_id} cannot be sized because the valuation plane holds no defensible mark \
+                 for it: {refusal}"
+            )));
+        }
+        let Some(mark) = self.illiquid_marks.get(object_id) else {
+            return Ok(Decimal::ONE);
+        };
+        if mark.is_stale(now) {
+            return Err(Error::invalid(format!(
+                "the {} mark on {object_id} was due for review at {} and is not fit to size \
+                 against as of {}; refresh the mark before sizing into it",
+                mark.method().label(),
+                mark.next_review().to_rfc3339(),
+                now.to_rfc3339()
+            )));
+        }
+        let confidence = mark.confidence_at(now)?;
+        // Statistic meets money here: `confidence` is a decayed weight, an
+        // `f64`, and it crosses into `Decimal` exactly once so that the budget
+        // it narrows stays exact decimal money from this point on.
+        Decimal::from_f64(confidence).ok_or_else(|| {
+            Error::numeric(format!(
+                "the decayed mark confidence {confidence} on {object_id} cannot be represented at \
+                 decimal scale"
+            ))
+        })
+    }
+
+    /// Free capital after every unfunded private commitment has been taken
+    /// off it.
+    ///
+    /// Read by `construct_from` before anything is sized, so this is the
+    /// figure the platform actually deploys against rather than a second
+    /// opinion about it. Refuses when the obligations meet or exceed what is
+    /// free: a book that could not meet a call has a funding problem, and
+    /// sizing against a budget of zero would report that as an ordinary quiet
+    /// cycle.
+    pub fn deployable_capital(&mut self, now: Timestamp) -> Result<Decimal> {
+        let free = self.reservations.free(now);
+        let obligations = self.commitments.unfunded_total(now)?;
+        if !obligations.is_positive() {
+            return Ok(free);
+        }
+        free.checked_sub(obligations)
+            .filter(|remaining| remaining.is_positive())
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "unfunded capital commitments of {obligations} meet or exceed the free capital \
+                     {free}; fund the reserve or reduce the commitment before sizing anything — a \
+                     called commitment that cannot be met forfeits the position"
+                ))
+            })
+    }
+
     fn construct_from(
         &mut self,
         theses: &[qip_portfolio_engine::construction::ApprovedThesis],
@@ -5680,13 +5949,29 @@ impl Platform {
         // minus every active hold, as `stage_decide` anchored it this pass.
         // This is the line that makes a second proposal unable to pass
         // against capital a first one already claimed.
-        let free = self.reservations.free(now);
+        // Every unfunded private commitment comes off the free budget before
+        // anything else touches it (blueprint §16.4). A commitment can be
+        // called on somebody else's schedule and failing the call typically
+        // forfeits the position, so promised capital is not available capital.
+        let free = self.deployable_capital(now)?;
         // Narrowed by §6.2 as the centre reads it — the self-model row
         // measured from the learning engine's own record. A refused
         // assessment refuses the construction: nothing is sized against a
         // table that could not be read, rather than sized as though it read
         // fresh.
         let multiplier = self.central_degradation(now)?.central_sizing_multiplier();
+        // And narrowed again by the weakest mark any thesis in this
+        // construction rests on. §16.3: confidence enters position sizing, so
+        // an uncertain mark cannot silently support leverage. A thesis on an
+        // instrument the valuation plane refused to mark stops the
+        // construction outright.
+        let multiplier = multiplier
+            .checked_mul(self.mark_confidence_multiplier(theses, now)?)
+            .ok_or_else(|| {
+                Error::numeric(
+                    "narrowing the sizing multiplier by mark confidence overflows".to_string(),
+                )
+            })?;
         let budget = free.checked_mul(multiplier).ok_or_else(|| {
             Error::numeric(format!(
                 "the free budget {free} narrowed by the degradation multiplier {multiplier} \

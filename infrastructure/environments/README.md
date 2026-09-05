@@ -42,16 +42,22 @@ acceptance suite holds both halves of that.
 
 | env | Cloud Run services | execution nodes | why |
 | --- | --- | --- | --- |
-| `dev` | api, fastbrain, deepbrain | 0 | A node exists to be next to a venue and there is no venue here. |
+| `dev` | api, fastbrain, deepbrain | 0, and 1 authorised | ADR 0035 authorises `newyork-1` in `us-east4`, shadow mode. No boot image exists yet and no allocation has been chosen, so the entry sits in the tfvars as a comment. |
 | `test` | the same three | 0 | A test node that could reach a real venue could send a real order. |
-| `stage` | the same three | 0 until a venue decision | The first node is the shadow-mode one ADR 0020 step 3 observes. |
-| `prod` | the same three | 0 until a venue decision | Nodes come up one at a time, in shadow mode. |
+| `stage` | the same three | 0 | ADR 0035 authorises `dev` and nothing else, until the first node has run and taught something. |
+| `prod` | the same three | 0 | The same, and prod additionally requires a human dispatch and its own approval. |
 
-Every environment leaves `execution_nodes = {}` for the same reason: a node
-must be configured for at least one venue — `qip-edge-node` refuses an empty
-`QIP_VENUES`, and the module's precondition refuses the plan first — and no
-venue's published address ranges are recorded anywhere in this repository.
-`modules/execution-node/README.md` has the entry a node needs.
+Every environment leaves `execution_nodes = {}`, and only `dev` has an
+authorisation to stop doing so. The reason is no longer "no venue's ranges are
+recorded" — the node ADR 0035 authorises prices from the in-process simulated
+feed and needs none. It is that nothing in this repository bakes a Compute
+Engine boot image, and that `region_allocation` is a number a person chooses.
+`modules/execution-node/README.md` has the entry a node needs and
+`environments/dev/terraform.tfvars` has the one that is decided.
+
+Adding an entry to `test`, `stage` or `prod` is outside ADR 0035 and
+`adr_0035_authorises_one_shadow_node_in_dev_and_none_anywhere_else` in the
+`infrastructure` acceptance suite refuses it.
 
 ## The CIDR plan
 

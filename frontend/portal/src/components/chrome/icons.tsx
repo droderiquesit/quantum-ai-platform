@@ -35,6 +35,13 @@ const P: Record<string, string[]> = {
   plug: ["M12 22v-5", "M9 8V2", "M15 8V2", "M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"],
   brain: ["M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z", "M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z", "M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4", "M17.599 6.5a3 3 0 0 0 .399-1.375", "M6.003 5.125A3 3 0 0 0 6.401 6.5", "M3.477 10.896a4 4 0 0 1 .585-.396", "M19.938 10.5a4 4 0 0 1 .585.396", "M6 18a4 4 0 0 1-1.967-.516", "M19.967 17.484A4 4 0 0 1 18 18"],
   history: ["M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", "M3 3v5h5", "M12 7v5l4 2"],
+  package: [
+    "m7.5 4.27 9 5.15",
+    "M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z",
+    "m3.3 7 8.7 5 8.7-5",
+    "M12 22V12",
+  ],
+  "user-round": ["M18 20a6 6 0 0 0-12 0", "M12 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"],
 };
 
 export type IconName = keyof typeof P & string;
@@ -101,6 +108,8 @@ export const ITEM_ICON: Record<string, IconName> = {
   // The treasury section shipped without entries here and every item fell
   // back to the dashboard glyph, so four different pages wore the same icon.
   "/treasury/ledger": "table-2",
+  "/treasury/products": "package",
+  "/treasury/accounts": "user-round",
   "/treasury/wallet": "wallet",
   "/treasury/corridors": "waypoints",
   "/treasury/transfer-gate": "shield-check",

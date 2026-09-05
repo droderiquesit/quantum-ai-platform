@@ -9,12 +9,22 @@ code. This module is the Terraform for that machine.
 
 **Wired, and provisioning nothing.** `infrastructure/terraform/main.tf`
 instantiates this module once per entry in `execution_nodes`, and every
-environment's tfvars leaves that map empty. A node must be configured for at
-least one venue — `qip-edge-node` refuses an empty `QIP_VENUES` and the
-template's precondition refuses the plan first — and no venue's published
-address ranges have been recorded anywhere in this repository. The first entry
-is therefore a venue decision, not a Terraform one, and the plan that carries it
-is the evidence ADR 0020's step 3 asks for.
+environment's tfvars leaves that map empty.
+
+The reason used to be that the first entry was a venue decision nobody had
+made. It is not that any more. ADR 0035 decides it: one node, `newyork-1`, in
+`us-east4`, in shadow mode, in `dev` — and that node prices from
+`QIP_VENUE_FEED=simulated`, the in-process matching engine, so no venue's
+published ranges are needed for it. `environments/dev/terraform.tfvars` carries
+the whole entry as a comment, with every field determined.
+
+What is missing is an artefact and a number, and neither is Terraform's to
+supply: **no boot image exists** (see "No image bake exists" below — nothing
+here builds one), and nobody has chosen the node's `region_allocation`. Writing
+a plausible self-link for the first would produce a plan that reads as ready
+and an apply that fails after the subnet, the identity and four IAM bindings
+already exist. The plan that eventually carries a real entry is the evidence
+ADR 0020's step 3 asks for.
 
 ## What it provisions
 
@@ -134,14 +144,27 @@ execution_nodes = {
     venues = {
       "sim-1" = { cidr = "203.0.113.0/24", port = 443 }
     }
-    create_egress_nat = true   # its region has no NAT of its own
-    instances         = 0      # provisioned, not running
+    create_egress_nat  = true   # its region has no NAT of its own
+    region_allocation  = "250000"
+    default_pricing    = ""
+    strategy_plan_path = ""
   }
 }
 ```
 
-`instances` is 0 by default. The instance template still names `boot_image`, so
-a group of zero does not remove the image requirement — it removes the bill.
+This example previously carried `instances = 0` and no `region_allocation`,
+and both were wrong in the direction that costs a reviewer a plan: `instances`
+is not a field of `var.execution_nodes` — Terraform refuses the whole map with
+an unsupported-attribute error — and `region_allocation` has no default, so an
+entry without it is refused too. Copying the old block produced two plan errors
+before anything about the node had been considered.
+
+`node_count` is not a tfvars field either. The root does not pass it, so the
+module's default of one applies: a node in `execution_nodes` is a node that
+runs. `node_count = 0` — provisioned, not running, every rule and binding and
+template created and no machine — is reachable only by passing it in
+`main.tf`, and `ignore_changes = [target_size]` is what keeps an operator's
+later resize from being undone.
 
 The root passes `shadow_mode = true` unconditionally: the first node is
 observed before it takes anything, per ADR 0020 step 3, and letting a node out

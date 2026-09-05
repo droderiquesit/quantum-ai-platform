@@ -247,6 +247,28 @@ export const NAV: readonly NavGroup[] = [
         reads: ["/ledger/users"],
       },
       {
+        // The catalogue down the other axis from the ledger: one card per
+        // product, every account's evaluation inside it. Same route, no
+        // capability decided here — the browser holds no entitlement logic.
+        href: "/treasury/products",
+        label: "Product entitlements",
+        mark: "PE",
+        description:
+          "Every registered product and what the platform decided each account may do with it, with the reason it decided so",
+        reads: ["/ledger/users"],
+      },
+      {
+        // One account whole: mandate, eligibility verdict, books, entitlements.
+        // The account is the one an operator selected; the platform serves no
+        // per-user route and binds no console session to a ledger account, and
+        // the page says so where it is read.
+        href: "/treasury/accounts",
+        label: "Account",
+        mark: "AC",
+        description: "One account as the ledger holds it: mandate, eligibility, books and entitlements",
+        reads: ["/ledger/users"],
+      },
+      {
         href: "/treasury/wallet",
         label: "Wallet",
         mark: "WL",

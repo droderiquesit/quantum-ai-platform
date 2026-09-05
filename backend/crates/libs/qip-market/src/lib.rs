@@ -15,6 +15,7 @@ pub mod curve;
 pub mod microstructure;
 pub mod quote;
 pub mod snapshot;
+pub mod volatility;
 
 pub use bar::{Bar, BarSeries, Interval};
 pub use book::{BookLevel, OrderBook, Side};
@@ -23,3 +24,4 @@ pub use curve::{CurvePoint, TermStructure};
 pub use microstructure::MicrostructureMetrics;
 pub use quote::{Quote, Tick, Trade, TradeCondition};
 pub use snapshot::MarketSnapshot;
+pub use volatility::{Smile, VolPoint, VolatilitySurface, implied_correlation};

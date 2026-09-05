@@ -1,9 +1,19 @@
 # Development: the central plane on its own, on Cloud Run.
 #
-# No execution node. A node exists to be next to a venue, and there is no
-# venue here — and a node must be configured for at least one venue before
-# the plan admits it. `execution_nodes = {}` is a working configuration, not
-# an incomplete one.
+# Still no execution node, and the reason has changed. This header used to say
+# "a node exists to be next to a venue, and there is no venue here". That
+# reason no longer holds: ADR 0035 authorises exactly one node — `newyork-1`,
+# `us-east4`, shadow mode, this environment and no other — and the node it
+# authorises prices from `QIP_VENUE_FEED=simulated`, the in-process matching
+# engine, so it needs no venue's published address ranges at all. Leaving the
+# stale reason in place would tell the next reader the node is unauthorised
+# when what it actually is, is unbuildable.
+#
+# What blocks it is named beside the commented entry below: no boot image
+# exists and nothing in this repository builds one, and nobody has chosen the
+# node's capital allocation. Both are values a person supplies, not values
+# Terraform can derive, so `execution_nodes = {}` stays — a working
+# configuration, not an incomplete one.
 
 # The project this environment lives in. An identifier, not a secret: it
 # appears in every resource name and in the pipeline's own configuration, so
@@ -90,8 +100,75 @@ public_ingress  = {}
 gitops_enabled                = true
 gitops_master_ipv4_cidr_block = "10.0.36.0/28"
 
-# No execution node. See the header, and modules/execution-node/README.md
-# for the entry a node needs when a venue's published ranges exist.
+# --- The one node ADR 0035 authorises, and the two values it still lacks -----
+#
+# ADR 0035 decides: one execution node, `us-east4`, shadow mode, `dev`. Every
+# field below is determined and reviewable; the two written as `<...>` are the
+# ones nobody in this repository can honestly supply, and they are why the map
+# below this comment is still empty rather than why the decision is open.
+#
+#   * `newyork-1` is the ladder's third block (environments/README.md) and
+#     `modules/connectivity/NOT-ORDERED.md` records it as the `us-east4` cell:
+#     Ashburn, about 300km from the NY/NJ venues. Node id and cell id are one
+#     name — the binary reads it as QIP_CELL_ID and refuses an envelope
+#     addressed elsewhere.
+#   * `10.67.0.0/20` is that block. It overlaps neither the trust zones
+#     (10.0.32-35.0/24), nor the console (10.0.16.0/26), nor the control
+#     plane's endpoint (10.0.36.0/28).
+#   * `c3-highcpu-8` is the smallest shape §41.4 permits, which is the right
+#     one for a node configured for a single venue. Note what it costs: the
+#     module derives `isolcpus=2-7`, and §41.3's thread assignment wants
+#     2-15. modules/execution-node/README.md says so and the module exports
+#     `isolated_cpus` so a deployment can see which of the two it got.
+#   * The venue is the in-process matching engine. `startup.sh.tftpl` writes
+#     `QIP_VENUE_FEED=simulated`, which is the only value the binary accepts,
+#     and it sets no QIP_VENUE_ADAPTER, so `VenueChoice` builds the simulator.
+#     `venues` cannot be empty — the module's precondition and the binary both
+#     refuse that — so the entry names the simulated venue and gives it a
+#     range from RFC 5737's documentation block, which routes nowhere by
+#     definition. That is the honest address for a venue that is in the
+#     process: not a real venue's range, and not guessed to be one. Shadow
+#     mode creates no rule from it in any case.
+#   * `create_egress_nat = false`. `modules/network` creates no NAT anywhere
+#     and this node needs none: it reaches Google APIs over the restricted VIP
+#     through private Google access and the central plane over the VPC, and a
+#     NAT would give it an IP-layer route to the internet that nothing asked
+#     for.
+#   * `boot_image` has no value anyone can write. Nothing in this repository
+#     bakes a Compute Engine image — `deploy.yml` builds a *container* image of
+#     qip-edge-node — and the startup script's checks (isolcpus, huge pages, no
+#     swap, no container runtime, /usr/local/bin/{qip-edge-node,envoy,
+#     qip-fetch-secret}, the Ops Agent) are the contract that image has to
+#     meet. modules/execution-node/README.md's "No image bake exists" is the
+#     record. Writing a plausible self-link here would produce a plan that
+#     reads as ready and an apply that fails after the subnet, the identity
+#     and four IAM bindings exist.
+#   * `region_allocation` is the ceiling on the capital this cell may hold in
+#     reservation. It has no default anywhere on purpose: a default is a number
+#     nobody chose, and this is the one number in a cell's envelope a reviewer
+#     has to have read. An agent picking it would be exactly that failure.
+#
+# execution_nodes = {
+#   "newyork-1" = {
+#     region       = "us-east4"
+#     zone         = "us-east4-a"
+#     subnet_cidr  = "10.67.0.0/20"
+#     machine_type = "c3-highcpu-8"
+#     boot_image   = "projects/algorik-dev/global/images/<the baked image>"
+#     venues = {
+#       "simulated-1" = { cidr = "192.0.2.0/24", port = 443 }
+#     }
+#     create_egress_nat = false
+#     region_allocation = "<the ceiling a person chose>"
+#     default_pricing    = ""
+#     strategy_plan_path = ""
+#   }
+# }
+#
+# Shadow mode is not here and must not be added: `main.tf` passes
+# `shadow_mode = true` as a literal, so no tfvars value can let a node out of
+# it, and `an_execution_node_may_reach_its_venues_and_the_central_plane_and_
+# nothing_else` in the acceptance suite refuses the change.
 execution_nodes = {}
 
 # Every managed service off. Development runs on memory, which is what the
