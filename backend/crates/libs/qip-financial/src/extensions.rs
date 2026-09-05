@@ -5,7 +5,8 @@
 //! non-optional value; code that works across the whole portfolio uses the
 //! common base fields on [`crate::FinancialObject`] and never sees them.
 
-use qip_core::{Currency, Decimal, Timestamp};
+use qip_core::error::{Error, Result};
+use qip_core::{Currency, Decimal, Duration, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::risk_profile::Greeks;
@@ -502,7 +503,25 @@ impl RedemptionFrequency {
     }
 }
 
+/// A private-fund position as the administrator reports it.
+///
+/// Two of these fields are dates in disguise — `vintage_year` becomes the
+/// commitment origin and the discounting origin, `lockup_years` becomes the
+/// instant the residual is expected back — and both arrive from a catalogue
+/// file with nobody between them and the arithmetic. Deserialisation is
+/// therefore routed through [`Self::checked`] by `serde(try_from)`, so a file
+/// stating a vintage of 2300 or a lockup of `1e18` is refused where the
+/// refusal can name the record, rather than aborting `Platform::new` inside a
+/// multiplication.
+///
+/// The fields stay public: this is reference data assembled field by field in
+/// fixtures and adapters, and a private-field rewrite would buy nothing the
+/// consumers do not already enforce — [`Self::vintage_origin`] and
+/// [`Self::lockup`] are fallible and are the only way the platform turns
+/// either field into an instant. What `try_from` adds is that a *file* cannot
+/// smuggle one past them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "PrivateAssetDetailsWire")]
 pub struct PrivateAssetDetails {
     pub vintage_year: u32,
     pub committed_capital: Decimal,
@@ -516,7 +535,114 @@ pub struct PrivateAssetDetails {
     pub capital_call_notice_days: u32,
 }
 
+/// The on-disk shape. Deserialising goes through [`PrivateAssetDetails::checked`],
+/// so an unrepresentable vintage year is refused at load and not discovered by
+/// an overflowing multiplication three crates away.
+#[derive(Deserialize)]
+struct PrivateAssetDetailsWire {
+    vintage_year: u32,
+    committed_capital: Decimal,
+    called_capital: Decimal,
+    distributed_capital: Decimal,
+    residual_value: Decimal,
+    stage: String,
+    lockup_years: f64,
+    capital_call_notice_days: u32,
+}
+
+impl TryFrom<PrivateAssetDetailsWire> for PrivateAssetDetails {
+    type Error = Error;
+
+    fn try_from(wire: PrivateAssetDetailsWire) -> Result<Self> {
+        Self {
+            vintage_year: wire.vintage_year,
+            committed_capital: wire.committed_capital,
+            called_capital: wire.called_capital,
+            distributed_capital: wire.distributed_capital,
+            residual_value: wire.residual_value,
+            stage: wire.stage,
+            lockup_years: wire.lockup_years,
+            capital_call_notice_days: wire.capital_call_notice_days,
+        }
+        .checked()
+    }
+}
+
+/// The longest lockup this platform will turn into a date.
+///
+/// Not a clamp and not a view on fund terms: a hundred years of lockup is
+/// longer than any private structure has ever been written for, so a record
+/// stating more is a corrupt record and is refused by name. The bound also
+/// keeps `vintage + lockup` inside the representable instants for every
+/// vintage year [`PrivateAssetDetails::vintage_origin`] admits.
+pub const MAX_LOCKUP_YEARS: f64 = 100.0;
+
 impl PrivateAssetDetails {
+    /// Return the record if every field that becomes an instant can become
+    /// one, and a refusal naming the field and its value otherwise.
+    ///
+    /// Consumed rather than borrowed so a caller cannot hold on to the
+    /// unchecked value it handed in.
+    pub fn checked(self) -> Result<Self> {
+        self.vintage_origin()?;
+        self.lockup()?;
+        Ok(self)
+    }
+
+    /// The first instant of the vintage year — where the position's life
+    /// begins for the commitment and valuation engines.
+    ///
+    /// Refuses a year outside the representable instants rather than
+    /// correcting it to the nearest one: a catalogue that says 2300 is a
+    /// catalogue with a typo in it, and a commitment origin quietly moved to
+    /// 2262 would discount a real position against a date nobody entered.
+    pub fn vintage_origin(&self) -> Result<Timestamp> {
+        i32::try_from(self.vintage_year)
+            .ok()
+            .and_then(|year| Timestamp::from_civil_checked(year, 1, 1))
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "a private-asset record states a vintage year of {}, which is not an instant \
+                     this platform can name — supply a year between 1678 and 2262, because the \
+                     vintage is the origin every capital call and every discounted mark is dated \
+                     from",
+                    self.vintage_year
+                ))
+            })
+    }
+
+    /// The lockup as a duration.
+    ///
+    /// Refuses a lockup that is not a finite non-negative number of years, and
+    /// one longer than [`MAX_LOCKUP_YEARS`]. `lockup_years` is `f64` because
+    /// a fund term is stated in fractional years and is not money; the cast to
+    /// whole days below is safe only because of the bound checked above it,
+    /// and an unbounded cast is exactly the defect this replaces — `as i64`
+    /// turns `NaN` into a lockup of zero and `f64::INFINITY` into `i64::MAX`
+    /// days, neither of which any record said.
+    pub fn lockup(&self) -> Result<Duration> {
+        if !self.lockup_years.is_finite()
+            || self.lockup_years < 0.0
+            || self.lockup_years > MAX_LOCKUP_YEARS
+        {
+            return Err(Error::invalid(format!(
+                "a private-asset record states a lockup of {} years; supply a finite term between \
+                 0 and {MAX_LOCKUP_YEARS} — the lockup dates the distribution the mark is \
+                 discounted from, and a term nobody could have written is not shortened here",
+                self.lockup_years
+            )));
+        }
+        // Statistic to duration, not money: a term in years becomes whole days
+        // at the platform's 365-day convention. The cast cannot saturate
+        // because the guard above holds the value in [0, 100].
+        Duration::from_days_checked((self.lockup_years * 365.0) as i64).ok_or_else(|| {
+            Error::numeric(format!(
+                "a lockup of {} years cannot be expressed as a duration",
+                self.lockup_years
+            ))
+        })
+    }
+
     /// Total value to paid-in: `(distributions + residual) / called`.
     pub fn tvpi(&self) -> Option<f64> {
         if self.called_capital.is_zero() {

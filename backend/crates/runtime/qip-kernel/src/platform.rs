@@ -793,8 +793,20 @@ fn ladder_reference_of(
 /// Taken from the record rather than from the clock, so two platforms
 /// assembled from the same catalogue at different moments derive the same
 /// origin and therefore the same discounted mark.
-fn private_asset_origin(details: &qip_financial::extensions::PrivateAssetDetails) -> Timestamp {
-    Timestamp::from_civil(details.vintage_year as i32, 1, 1)
+///
+/// Fallible because the year is a `u32` off a catalogue file and the origin is
+/// an `i64` nanosecond instant. This once read
+/// `Timestamp::from_civil(details.vintage_year as i32, 1, 1)`, so a record
+/// stating 2300 — or a typed 20204 — aborted `Platform::new` on an overflowing
+/// multiplication in a debug build, and in a release build wrapped to a
+/// negative instant that went on to be the commitment origin, the discounting
+/// origin and the knowability stamp. `PrivateAssetDetails::vintage_origin`
+/// holds the range check, so the same refusal is reached whether the record
+/// arrived through `serde` or was built field by field.
+fn private_asset_origin(
+    details: &qip_financial::extensions::PrivateAssetDetails,
+) -> Result<Timestamp> {
+    details.vintage_origin()
 }
 
 /// Sweep the universe for what the platform is obliged to and what it cannot
@@ -832,12 +844,21 @@ fn private_holdings_of(
             continue;
         };
         let id = object.object_id.as_str().to_string();
-        let origin = private_asset_origin(details);
+        let origin = private_asset_origin(details)?;
+        // `object.updated_at` is handed over as it stands. It was once
+        // `object.updated_at.max(origin)`, which disarmed
+        // `Commitment::unscheduled`'s refusal of `known_at < origin` — "a
+        // commitment cannot be known before it was made" — for precisely the
+        // record the check exists to catch: a vintage of 2020 with an
+        // administrator's update stamped November 2019 is a plausible typing
+        // error, and the repair booked it as a real obligation dated from a
+        // year nobody entered. The engine refuses it now, and the refusal
+        // names the record.
         if let Some(commitment) = qip_financial::cashflow::Commitment::from_private_asset(
             id.clone(),
             details,
             origin,
-            object.updated_at.max(origin),
+            object.updated_at,
         )? {
             book.record(commitment)?;
         }
