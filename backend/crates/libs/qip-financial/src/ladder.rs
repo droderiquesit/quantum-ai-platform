@@ -29,8 +29,11 @@
 //! question worth answering whether or not anything is ever withdrawn.
 //!
 //! Every value and every cost is a [`Decimal`], because both are money. The
-//! horizons are categorical and the rungs are an enum, so nothing here needs
-//! a statistic at all.
+//! horizons are categorical and the rungs are an enum, so no money here is
+//! ever a statistic. The one number that is not money is
+//! [`LiquidationHorizon::least_days`], which exists because the risk domain
+//! states its liquidity floors in days and something has to translate; it is
+//! a floor rather than an estimate, for the reason given on it.
 
 use crate::asset_class::AssetClass;
 use crate::costs::LiquidityProfile;
@@ -61,6 +64,72 @@ impl LiquidationHorizon {
             Self::Months => "months",
             Self::Years => "years",
         }
+    }
+
+    /// The fewest days an exit on this horizon can honestly be claimed to
+    /// take.
+    ///
+    /// A **floor**, not an estimate, and the distinction is the whole point.
+    /// The horizons are categorical because that is what the ladder can
+    /// defend; a risk limit stated in days — `qip_risk`'s `MinLiquidity` and
+    /// `MaxDaysToLiquidate` both are — needs a number, and the only number
+    /// this type can supply without inventing one is the boundary of its own
+    /// bucket. Reading a floor into a liquidity control fails in the safe
+    /// direction: it can call a position slower to exit than it is, never
+    /// faster, so a floor that is wrong makes a book look less liquid and
+    /// tightens the floor rather than relaxing it.
+    ///
+    /// The values are the boundaries the horizon names, not risk parameters:
+    /// `Immediate` and `Seconds` are both inside one trading day and are
+    /// therefore zero days, `SameDay` is one, `Days` is two because
+    /// [`Rung::classify`] already reserves it for anything stated as taking
+    /// more than a single day, `Months` is thirty and `Years` is
+    /// three-hundred-and-sixty-five. Anyone tempted to tune one of these is
+    /// tuning a calendar, which is the signal that the limit wanted a
+    /// different horizon rather than a different number.
+    pub fn least_days(&self) -> f64 {
+        match self {
+            Self::Immediate | Self::Seconds => 0.0,
+            Self::SameDay => 1.0,
+            Self::Days => 2.0,
+            Self::Months => 30.0,
+            Self::Years => 365.0,
+        }
+    }
+
+    /// The deepest horizon that is still inside `days`, or `None` when not
+    /// even an immediate exit is.
+    ///
+    /// The inverse of [`Self::least_days`], and the function a caller needs to
+    /// turn a limit stated in days into the ladder question
+    /// [`LiquidityLadder::reachable_within`] answers. Deriving it here rather
+    /// than at the call site keeps one rule: a caller that re-implemented the
+    /// mapping would sooner or later place the boundary on the other side of
+    /// a comparison from this one, and the two would disagree about a book
+    /// sitting exactly on a horizon.
+    ///
+    /// `None` for a negative or non-finite `days`, which is a caller stating
+    /// a horizon that cannot exist. Refused rather than floored at
+    /// `Immediate`, because a limit configured with a nonsense horizon should
+    /// read as unevaluated, not as one that passed.
+    ///
+    /// [`Self::Immediate`] is never returned and is deliberately absent from
+    /// the search: it and [`Self::Seconds`] are both zero days, so `Seconds`
+    /// is always the deeper of the two answers to the same question, and
+    /// `reachable_within(Seconds)` already includes every `Immediate` rung.
+    pub fn deepest_within(days: f64) -> Option<Self> {
+        if !days.is_finite() || days < 0.0 {
+            return None;
+        }
+        [
+            Self::Years,
+            Self::Months,
+            Self::Days,
+            Self::SameDay,
+            Self::Seconds,
+        ]
+        .into_iter()
+        .find(|horizon| horizon.least_days() <= days)
     }
 }
 

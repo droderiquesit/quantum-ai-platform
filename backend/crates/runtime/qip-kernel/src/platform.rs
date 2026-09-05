@@ -105,6 +105,7 @@ use qip_execution_engine::oms::{OrderManager, RefusalReason, SubmissionResult};
 use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_financial::asset_class::AssetClass;
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
+use qip_financial::ladder::{LadderEntry, LiquidationHorizon, LiquidityLadder, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
 use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{BookView, ComplianceView, Desk, MarketView, RiskView};
@@ -430,6 +431,23 @@ pub struct Platform {
     /// all, so a `MaxConcentration` or `MaxBucketExposure` limit sees only
     /// what the reference data can vouch for.
     exposure_axes: BTreeMap<String, BTreeMap<String, String>>,
+    /// Where every instrument this platform was assembled to trade sits on the
+    /// liquidity ladder, and what a full exit from it costs — the same
+    /// projection of reference data as `asset_classes` and `exposure_axes`,
+    /// taken at the same moment for the same reason.
+    ///
+    /// This is what [`Platform::liquidity_ladder`] builds the book's ladder
+    /// from, and therefore what the shipped `liquidity` limit —
+    /// `LimitKind::MinLiquidity`, in `LimitSet::conservative_default` — reads.
+    /// Before it existed nothing in the kernel filled either
+    /// `RiskState::days_to_liquidate` or `RiskState::liquidatable_within`:
+    /// `RiskAggregates::mark_liquidity` had no caller anywhere outside its own
+    /// tests, and `Platform::risk_state_from` never called
+    /// `RiskState::with_liquidity_horizons`. Two independent gaps, either of
+    /// which alone was enough — the limit took its `None` arm on every book of
+    /// every cycle, so every deployment believed it held a liquidity floor it
+    /// did not have. A control that cannot fire reads as protection and is not.
+    liquidity_reference: BTreeMap<String, LadderReference>,
     /// Turns what a decision spent into what its edge has to survive.
     cost_engine: CostEngine,
     /// The rungs the most recent cycle actually used.
@@ -706,6 +724,65 @@ fn exposure_axes_of(object: &qip_financial::object::FinancialObject) -> BTreeMap
         }
     }
     axes
+}
+
+/// What one instrument record says about how readily a holding in it becomes
+/// cash: the liquidity-ladder rung it sits on, and the rate a full exit costs.
+///
+/// Two fields and no arithmetic, because both are facts of the reference data
+/// rather than opinions formed here. The rung is
+/// [`qip_financial::ladder::Rung::classify`]'s own answer, unmodified — the
+/// kernel deliberately adds no classification law of its own, so the rung a
+/// risk read fires on and the rung the valuation plane would report are one
+/// answer, not two.
+#[derive(Clone, Copy, Debug)]
+struct LadderReference {
+    rung: Rung,
+    /// Quoted spread in basis points of mid, the record's own figure. Not a
+    /// [`Decimal`] because a rate is not money; it becomes money exactly once,
+    /// at [`Decimal::apply_bps`] in `Platform::liquidity_ladder`, where a
+    /// holding's mark is multiplied by it. That is the crossing point.
+    spread_bps: f64,
+}
+
+/// The ladder placement one instrument record vouches for, or a refusal
+/// naming the record.
+///
+/// Fallible for the same reason `instrument_grid_of` is: a record whose
+/// stated spread cannot be turned into an exit cost should stop assembly
+/// rather than be quietly given a made-up one. The three refusals are a
+/// non-finite spread, a negative spread, and a spread of a hundred percent or
+/// more — the last because `LiquidityLadder::new` refuses an entry costing
+/// more to exit than it is marked at, so a record stating 10,000bps would
+/// take the whole book's liquidity read down with it, one cycle at a time and
+/// for a reason no operator could see from the risk report. Better to name
+/// the record at start-up.
+fn ladder_reference_of(
+    object: &qip_financial::object::FinancialObject,
+) -> Result<(String, LadderReference)> {
+    let spread_bps = object.liquidity.typical_spread_bps;
+    if !spread_bps.is_finite() || spread_bps < 0.0 {
+        return Err(Error::invalid(format!(
+            "{} states a typical spread of {spread_bps}bps, which is not a spread; correct the \
+             reference record — the liquidity ladder prices an exit from it",
+            object.object_id.as_str()
+        )));
+    }
+    if spread_bps >= 10_000.0 {
+        return Err(Error::invalid(format!(
+            "{} states a typical spread of {spread_bps}bps, at or beyond the whole value of the \
+             holding; correct the reference record — an instrument that costs more to exit than \
+             it is marked at raises no cash and the ladder will not carry it",
+            object.object_id.as_str()
+        )));
+    }
+    Ok((
+        object.object_id.as_str().to_string(),
+        LadderReference {
+            rung: Rung::classify(object.asset_class, &object.liquidity),
+            spread_bps,
+        },
+    ))
 }
 
 /// Where a private-asset record's life begins, for the valuation and
@@ -1899,6 +1976,18 @@ impl Platform {
                 )
             })
             .collect();
+        // Where each instrument sits on the liquidity ladder and what leaving
+        // it costs, taken here for the same reason as the axes above and, like
+        // them, closing a limit that could not fire: `MinLiquidity` ships in
+        // `LimitSet::conservative_default` and reads a map nothing in this
+        // kernel filled, so "most of the book must be exitable within a week"
+        // was a rationale attached to a control that never evaluated. Fallible
+        // because a record stating an impossible spread should stop assembly
+        // rather than silently take the book's liquidity read with it later.
+        let liquidity_reference: BTreeMap<String, LadderReference> = universe
+            .iter()
+            .map(ladder_reference_of)
+            .collect::<Result<_>>()?;
         // The lot and tick grid of every instrument, taken here for the same
         // reason and installed on the order manager below, so the central
         // path refuses an order the venue could not express before any
@@ -2128,6 +2217,7 @@ impl Platform {
             inherited_through,
             asset_classes,
             exposure_axes,
+            liquidity_reference,
             cycle_ledger: None,
             compute_spend: Decimal::ZERO,
             data_reads: DataReads::new(),
@@ -6414,7 +6504,24 @@ impl Platform {
             .metrics
             .gauge(names::LIMIT_BREACHES, labels([]), blocking as f64);
 
+        // Problems raised before anything is released. Both exits of this
+        // stage drain it, so a refusal recorded here reaches the cycle report
+        // whether or not there was a proposal to sign.
         let mut sign_off_problems: Vec<String> = Vec::new();
+        // Why the liquidity floor may not have been evaluated. `risk_state`
+        // above fills `liquidatable_within` from the book's liquidity ladder
+        // and leaves it empty when the ladder refuses — the honest state for a
+        // figure nobody computed, but silent, and a silent liquidity floor is
+        // the defect this wiring exists to close. Recomputed rather than
+        // threaded out of `risk_state`, which is also called per order from
+        // `submit_order` and must stay a plain read; the cost is one pass over
+        // the open positions, once per cycle.
+        if let Err(error) = self.liquidity_ladder(&self.aggregates) {
+            sign_off_problems.push(format!(
+                "the liquidity floor was not evaluated: {}",
+                error.message()
+            ));
+        }
         // Sign off the drafts, or do not. `Proposal::approve` requires two
         // controls because a single approver is a single point of failure, and
         // until this call existed nothing in the platform called it at all:
@@ -7294,10 +7401,153 @@ impl Platform {
     /// away from a limit that silently never evaluates. The return series is
     /// the crossing from the book's `Decimal` equity to a statistic, made in
     /// `equity_returns`.
+    ///
+    /// The liquidity figures are filled from the book's own liquidity ladder
+    /// — see [`Self::liquidity_ladder`] — for the same reason the tail
+    /// statistics are filled above: `LimitKind::MinLiquidity` ships in
+    /// `LimitSet::conservative_default` and looks its figure up in a map that
+    /// nothing in this kernel wrote, so the floor took its `None` arm on every
+    /// book. A refused ladder leaves both maps empty rather than recording a
+    /// zero: an unmeasured book must not read as one measured and found
+    /// perfectly illiquid, which is the same rule `with_tail_risk` follows for
+    /// a return series too short to have a tail. The refusal is not swallowed
+    /// — `stage_act` puts its message on the cycle report, so an operator sees
+    /// that the liquidity floor went unevaluated and why, rather than seeing
+    /// nothing at all.
     #[doc(hidden)]
     pub fn risk_state_from(&self, figures: &impl AggregateFigures) -> RiskState {
         let returns = self.equity_returns();
-        RiskState::from_figures(figures).with_tail_risk(self.monitor.limits(), &returns)
+        let mut state =
+            RiskState::from_figures(figures).with_tail_risk(self.monitor.limits(), &returns);
+        if let Ok(ladder) = self.liquidity_ladder(figures) {
+            state.days_to_liquidate = Self::days_to_liquidate_of(&ladder);
+            state.liquidatable_within = self.liquidatable_within(&ladder);
+        }
+        state
+    }
+
+    /// The book as a liquidity ladder, or a refusal naming what stopped it.
+    ///
+    /// Every position the aggregate carries, at the absolute value of its
+    /// at-cost notional, on the rung its reference record places it on, with a
+    /// full exit priced at the record's own quoted spread. Cash is
+    /// deliberately not an entry: `LimitKind::MinLiquidity` is a fraction of
+    /// *the portfolio*, and the derivation it replaces
+    /// (`RiskState::with_liquidity_horizons`) totals position notionals alone,
+    /// so adding the cash balance here would quietly redefine a shipped limit
+    /// from "most of the book must be exitable within a week" to "most of the
+    /// book plus the cash we are already holding must be", which every book
+    /// passes for the wrong reason.
+    ///
+    /// Two refusals rather than a shrug, because both mean the read would lie:
+    ///
+    /// * a position in an instrument the platform holds no reference record
+    ///   for. Dropping it would leave it out of the numerator *and* the
+    ///   denominator, so a book made entirely of unknown holdings would report
+    ///   itself perfectly liquid. It cannot happen from a fill the platform
+    ///   placed — every order is on a universe instrument — which is exactly
+    ///   why it is worth refusing loudly if it ever does.
+    /// * a non-monotonic ladder, which [`LiquidityLadder::new`] finds: a lower
+    ///   rung cheaper to exit than a higher one means the reference data
+    ///   contradicts the rung assignment, and a liquidity floor computed over
+    ///   rungs nobody can trust is a number with a control attached.
+    ///
+    /// This is a risk read and nothing else. It hands no
+    /// `qip_financial::ladder::LiquidationPlan` to anything, and there is no
+    /// path from here to an order: ADR 0021 refuses the route by which capital
+    /// leaves the platform and `qip_capital`'s `WithdrawalEntitlement` has one
+    /// variant, `Refused`. The ladder answers "how much of this book becomes
+    /// cash inside a week", which is worth knowing whether or not anything is
+    /// ever withdrawn.
+    pub fn liquidity_ladder(&self, figures: &impl AggregateFigures) -> Result<LiquidityLadder> {
+        let mut entries = Vec::new();
+        for (instrument, notional) in figures.position_notionals() {
+            let value = notional.abs();
+            // A position that has been closed is not a holding. `LadderEntry`
+            // refuses a non-positive value, and this is not a correction of a
+            // bad input: a flat instrument is one the book no longer holds.
+            if !value.is_positive() {
+                continue;
+            }
+            let Some(reference) = self.liquidity_reference.get(instrument) else {
+                return Err(Error::invalid(format!(
+                    "the book holds {instrument}, which this platform was not assembled to trade \
+                     and holds no liquidity record for; assemble the platform over a universe \
+                     containing it — a liquidity read that omitted it would report the book more \
+                     exitable than it is"
+                )));
+            };
+            entries.push(LadderEntry::new(
+                instrument.clone(),
+                reference.rung,
+                value,
+                // The one crossing from a rate to money: a spread in basis
+                // points of mid becomes the `Decimal` cost of leaving the
+                // whole holding.
+                value.apply_bps(reference.spread_bps),
+            ));
+        }
+        LiquidityLadder::new(entries)
+    }
+
+    /// Days to exit each holding, from the rung the ladder placed it on.
+    ///
+    /// The rung's horizon is categorical, so the number is
+    /// `LiquidationHorizon::least_days` — a floor. It reads into
+    /// `LimitKind::MaxDaysToLiquidate`, which is a ceiling, so a floor can
+    /// only understate the breach and never invent one: a limit that fires on
+    /// this number is firing on an exit time the book cannot beat.
+    ///
+    /// Derived from the same ladder as [`Self::liquidatable_within`] and from
+    /// the same rungs, so the two cannot disagree about how fast one holding
+    /// leaves.
+    fn days_to_liquidate_of(ladder: &LiquidityLadder) -> BTreeMap<String, f64> {
+        ladder
+            .entries()
+            .map(|entry| (entry.object_id.clone(), entry.rung.horizon().least_days()))
+            .collect()
+    }
+
+    /// The fraction of the book reachable inside each configured liquidity
+    /// floor's horizon, keyed exactly as the limit keys its own lookup.
+    ///
+    /// `LiquidityLadder::reachable_within` answers this directly, over a
+    /// structure whose construction *proved* that cost rises as the ladder
+    /// descends. `RiskState::with_liquidity_horizons` computes the same ratio
+    /// by refiltering a flat map of day counts and cannot detect that the
+    /// classification underneath it is wrong; this kernel therefore takes the
+    /// ladder's answer and does not call that method, so there is one writer
+    /// of `liquidatable_within` on this path rather than two claims about one
+    /// fact.
+    ///
+    /// A book with nothing in it records nothing. An empty ladder has no
+    /// denominator, and a fabricated `1.0` would read as a measurement that
+    /// found the book perfectly liquid.
+    ///
+    /// A limit whose horizon is not a number of days —
+    /// `LiquidationHorizon::deepest_within` returns `None` — records nothing
+    /// either, so it reads as unevaluated rather than as passed.
+    fn liquidatable_within(&self, ladder: &LiquidityLadder) -> BTreeMap<String, f64> {
+        let mut fractions = BTreeMap::new();
+        let total = ladder.total_value();
+        if !total.is_positive() {
+            return fractions;
+        }
+        for limit in &self.monitor.limits().limits {
+            let qip_risk::limits::LimitKind::MinLiquidity { days, .. } = limit.kind else {
+                continue;
+            };
+            let Some(horizon) = LiquidationHorizon::deepest_within(days) else {
+                continue;
+            };
+            // The crossing from money to a statistic: two `Decimal` sums
+            // become one ratio, because the limit is stated as a fraction.
+            fractions.insert(
+                format!("{days:.0}"),
+                ladder.reachable_within(horizon).to_f64() / total.to_f64(),
+            );
+        }
+        fractions
     }
 
     /// Submit one order through the full control path.
@@ -10470,5 +10720,315 @@ mod self_model_tests {
         // And the window still holds both, as it did before the fix — the
         // self-model's silence about one is stated, not hidden.
         assert_eq!(platform.evaluations.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod liquidity_ladder_tests {
+    //! The liquidity floor stops being a rationale attached to nothing.
+    //!
+    //! `LimitKind::MinLiquidity` — the `liquidity` limit in
+    //! `LimitSet::conservative_default`, rationale "most of the book must be
+    //! exitable within a week" — reads `RiskState::liquidatable_within`.
+    //! Nothing in this kernel wrote that map: `RiskAggregates::mark_liquidity`
+    //! had no caller outside its own crate's tests, and `risk_state_from`
+    //! never called `RiskState::with_liquidity_horizons`. The limit took its
+    //! `None` arm on every book of every cycle. That is the failure
+    //! `.claude/rules/domains/risk-and-execution.md` names by example, and it
+    //! has already happened twice here — `MaxExpectedShortfall` and
+    //! `MaxConcentration` were the same defect wearing different names.
+    //!
+    //! Unit tests because `risk_state` and `liquidity_reference` are private:
+    //! the seam is inside the kernel, and asserting it from outside would
+    //! prove only that a public wrapper exists.
+
+    use super::*;
+    use qip_core::dec;
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::costs::LiquidityProfile;
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    use qip_financial::universe::Universe;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    const FAST: &str = "obj-FAST";
+    const SLOW: &str = "obj-SLOW";
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    /// Two names, one on each side of a week.
+    ///
+    /// `FAST` is an ordinary listed equity: `Rung::classify` puts it on
+    /// `ListedEquityAndFutures`, whose horizon is same-day. `SLOW` is the same
+    /// instrument type carrying a negotiated liquidity profile, which
+    /// `Rung::classify` pushes down to `PrivateCreditAndRealAssets` — months.
+    /// Nothing about the *class* differs, so the test cannot pass by accident
+    /// on an asset-class comparison that ignored the liquidity record.
+    ///
+    /// The spreads rise as the ladder descends (5bps against 250bps), because
+    /// `LiquidityLadder::new` refuses a ladder where they do not, and a
+    /// fixture that tripped that refusal would be testing the refusal instead
+    /// of the floor.
+    fn platform_with(fast_notional: Decimal, slow_notional: Decimal) -> Platform {
+        let mut universe = Universe::new();
+        for (id, liquidity) in [
+            (
+                FAST,
+                LiquidityProfile::listed(Decimal::from_int(10_000_000), 5.0),
+            ),
+            (SLOW, LiquidityProfile::illiquid(30.0)),
+        ] {
+            universe
+                .insert(
+                    FinancialObject::builder(
+                        ObjectId::from_string(id),
+                        id,
+                        InstrumentType::CommonStock,
+                    )
+                    .venue("XNYS")
+                    .sector(Sector::InformationTechnology)
+                    .price(Decimal::from_int(100))
+                    .liquidity(liquidity)
+                    .provenance(Provenance::synthetic("test", start()))
+                    .build(start())
+                    .expect("valid object"),
+                )
+                .expect("insertable");
+        }
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            universe,
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles");
+        for (id, notional) in [(FAST, fast_notional), (SLOW, slow_notional)] {
+            platform
+                .aggregates
+                .apply_fill("alpha", id, &BTreeMap::new(), notional)
+                .expect("the fill applies");
+        }
+        platform
+    }
+
+    #[test]
+    fn the_liquidity_floor_limit_can_actually_fire() {
+        // A book nine tenths of which takes months to leave. The conservative
+        // default demands 0.80 exitable within five days; this book offers
+        // 0.10, so the floor must breach. Before the ladder was wired the
+        // identical book produced no breach at all, because the map the limit
+        // reads was empty.
+        let platform = platform_with(dec!("100000"), dec!("900000"));
+        let state = platform.risk_state();
+
+        // The premise, before the conclusion. An empty map is exactly the
+        // state this test exists to end, and a `check` against it would report
+        // no breach for the wrong reason — which is what it did.
+        let fraction = state
+            .liquidatable_within
+            .get("5")
+            .copied()
+            .unwrap_or_else(|| {
+                panic!(
+                    "the fraction exitable within five days was not computed for the horizon the \
+                     default limit names; the map holds {:?}",
+                    state.liquidatable_within.keys().collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            (fraction - 0.10).abs() < 1e-9,
+            "a book of 100k same-day against 900k months should read 0.10 exitable within a \
+             week, not {fraction}"
+        );
+
+        let check = LimitSet::conservative_default().check(&state);
+        let breach = check
+            .breaches
+            .iter()
+            .find(|breach| breach.limit_name == "liquidity")
+            .unwrap_or_else(|| {
+                panic!(
+                    "the liquidity floor recorded no breach against a book 90% of which takes \
+                     months to leave; the check recorded {:?}",
+                    check
+                        .breaches
+                        .iter()
+                        .map(|breach| breach.limit_name.as_str())
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            breach.blocks(),
+            "a liquidity floor missed by seven tenths should block, not warn: {breach:?}"
+        );
+    }
+
+    #[test]
+    fn a_book_that_is_exitable_within_the_week_does_not_breach_the_liquidity_floor() {
+        // The other half of a working gate. A floor that refuses every book is
+        // not a control, it is an outage, and a test that only ever proves the
+        // refusal cannot tell the two apart.
+        // Comfortably clear, not marginally: the conservative default warns
+        // at 0.85 of its floor — 0.941 exitable — so a book at 0.90 would
+        // still raise a warning, and a test written against that number would
+        // be asserting the warning band rather than the pass.
+        let platform = platform_with(dec!("990000"), dec!("10000"));
+        let state = platform.risk_state();
+
+        let fraction = state
+            .liquidatable_within
+            .get("5")
+            .copied()
+            .expect("the fraction exitable within five days is computed");
+        assert!(
+            (fraction - 0.99).abs() < 1e-9,
+            "a book of 990k same-day against 10k months should read 0.99, not {fraction}"
+        );
+
+        let check = LimitSet::conservative_default().check(&state);
+        assert!(
+            !check
+                .breaches
+                .iter()
+                .any(|breach| breach.limit_name == "liquidity"),
+            "a book 90% exitable within a week breached a floor set at 80%: {:?}",
+            check.breaches
+        );
+    }
+
+    #[test]
+    fn the_days_to_exit_each_holding_come_from_the_rung_the_ladder_placed_it_on() {
+        // `LimitKind::MaxDaysToLiquidate` reads this map per instrument. It is
+        // filled from the same ladder as the fraction above, so the two cannot
+        // disagree about how fast one holding leaves — which they would if the
+        // kernel derived one from rungs and the other from the record's own
+        // stated day count.
+        let platform = platform_with(dec!("100000"), dec!("900000"));
+        let state = platform.risk_state();
+
+        assert_eq!(
+            state.days_to_liquidate.get(FAST).copied(),
+            Some(1.0),
+            "a listed equity sits on the same-day rung, whose floor is one day"
+        );
+        assert_eq!(
+            state.days_to_liquidate.get(SLOW).copied(),
+            Some(30.0),
+            "a negotiated holding sits on the private-credit rung, whose floor is a month"
+        );
+    }
+
+    #[test]
+    fn a_holding_the_platform_has_no_liquidity_record_for_refuses_the_ladder_rather_than_omitting_it()
+     {
+        // Dropping the unknown holding would take it out of the numerator and
+        // the denominator together, so a book made entirely of unknowns would
+        // report itself perfectly exitable. The refusal names the instrument.
+        let mut platform = platform_with(dec!("100000"), dec!("900000"));
+        platform
+            .aggregates
+            .apply_fill("alpha", "obj-UNKNOWN", &BTreeMap::new(), dec!("500000"))
+            .expect("the fill applies");
+
+        let error = platform
+            .liquidity_ladder(&platform.aggregates)
+            .expect_err("a book holding an instrument with no liquidity record is refused");
+        assert!(
+            error.message().contains("obj-UNKNOWN"),
+            "the refusal must name the holding it could not place: {}",
+            error.message()
+        );
+
+        // And the refusal leaves the map empty rather than a fabricated zero,
+        // which would read as a book measured and found completely illiquid.
+        let state = platform.risk_state();
+        assert!(
+            state.liquidatable_within.is_empty(),
+            "a refused ladder recorded a liquidity fraction anyway: {:?}",
+            state.liquidatable_within
+        );
+    }
+
+    #[test]
+    fn a_refused_ladder_puts_the_unevaluated_liquidity_floor_on_the_cycle_report() {
+        // The refusal above is silent inside `risk_state`, and a silent
+        // liquidity floor is the defect this wiring closes, not a smaller
+        // version of it. ACT names it, so an operator reading the cycle sees
+        // that the floor went unevaluated and why.
+        let mut platform = platform_with(dec!("100000"), dec!("900000"));
+        let correlation = CorrelationId::from_string("test-correlation");
+
+        let clean = platform.stage_act(start(), &correlation);
+        assert!(
+            !clean
+                .problems
+                .iter()
+                .any(|problem| problem.contains("liquidity floor")),
+            "a book the ladder accepts reported the floor unevaluated: {:?}",
+            clean.problems
+        );
+
+        platform
+            .aggregates
+            .apply_fill("alpha", "obj-UNKNOWN", &BTreeMap::new(), dec!("500000"))
+            .expect("the fill applies");
+        let outcome = platform.stage_act(start(), &correlation);
+        assert!(
+            outcome.problems.iter().any(|problem| problem
+                .contains("the liquidity floor was not evaluated")
+                && problem.contains("obj-UNKNOWN")),
+            "ACT did not report the unevaluated liquidity floor: {:?}",
+            outcome.problems
+        );
+    }
+
+    #[test]
+    fn a_reference_record_stating_an_impossible_spread_stops_assembly() {
+        // A spread at or beyond the whole value of the holding makes an exit
+        // cost more than it raises, which `LiquidityLadder::new` refuses. Left
+        // to be discovered there it would take the whole book's liquidity read
+        // down every cycle for a reason no risk report could show. Refused at
+        // start-up instead, naming the record.
+        let mut universe = Universe::new();
+        universe
+            .insert(
+                FinancialObject::builder(
+                    ObjectId::from_string(FAST),
+                    FAST,
+                    InstrumentType::CommonStock,
+                )
+                .venue("XNYS")
+                .sector(Sector::InformationTechnology)
+                .price(Decimal::from_int(100))
+                .liquidity(LiquidityProfile::listed(
+                    Decimal::from_int(10_000_000),
+                    10_000.0,
+                ))
+                .provenance(Provenance::synthetic("test", start()))
+                .build(start())
+                .expect("valid object"),
+            )
+            .expect("insertable");
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        let error = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            universe,
+            LimitSet::conservative_default(),
+        )
+        .expect_err("a record stating a 100% spread stops assembly");
+        assert!(
+            error.message().contains(FAST) && error.message().contains("10000"),
+            "the refusal must name the record and the spread it stated: {}",
+            error.message()
+        );
     }
 }
