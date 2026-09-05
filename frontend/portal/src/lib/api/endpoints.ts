@@ -63,6 +63,33 @@ export const REST: Record<string, EndpointSpec> = {
     role: "operator",
     summary: "record that the operator registered with a venue under terms they read",
   },
+  /**
+   * The fifth write, and it was missing from this table for a whole wave.
+   *
+   * `EligibilityPanel` has called `POST /ledger/users/{user}/eligibility`
+   * since the panel landed, `ledger_views.rs` serves it, and the backend's
+   * own boundary suite pins it as the fifth mutating route
+   * (`every_mutating_route_is_one_of_five_and_each_raises_a_typed_intent`).
+   * The gateway, meanwhile, refuses any non-GET this table does not declare,
+   * so every decision a person made in a real deployment came back 405.
+   *
+   * Nothing caught it because the seven eligibility specs `page.route`-mock
+   * the gateway, which is the one component that would have refused — a test
+   * that stubs the thing under test. `the_gateway_declares_every_write_the_console_can_make`
+   * in `tests/registrations-gateway.spec.ts` now derives the check from this
+   * table rather than from a list someone must remember to extend.
+   *
+   * It records an operator's decision about whether one investor may be
+   * funded. It names no instrument, side or quantity, and it cannot move
+   * capital: `fund_user` is refused until a standing grant exists, so this
+   * route can only ever lift a refusal a person took responsibility for.
+   */
+  ledgerEligibilityDecide: {
+    method: "POST",
+    path: "/ledger/users/{user}/eligibility",
+    role: "operator",
+    summary: "record an operator's decision on whether one investor may be funded",
+  },
 } as const;
 
 /** Server-sent event channels under `/api/v1/stream`. */
@@ -147,6 +174,26 @@ export function declaresWrite(method: string, path: string): boolean {
   return Object.values(REST).some(
     (spec) => spec.method !== "GET" && spec.method === method && pathMatches(spec.path, path),
   );
+}
+
+/**
+ * The declared writes, as a sentence, derived from the table rather than
+ * transcribed from it.
+ *
+ * The gateway's refusal used to spell the four writes out by hand and say
+ * "adding a fifth is an edit to the route table". A fifth was added to the
+ * platform and the panel, nobody edited the table, and the refusal went on
+ * confidently naming four — so the message that was supposed to tell an
+ * operator what to do instead was itself the stale thing. Deriving it means
+ * the sentence cannot disagree with the allowlist it describes.
+ */
+export function describeWrites(): string {
+  const writes = Object.values(REST)
+    .filter((spec) => spec.method !== "GET")
+    .map((spec) => `${spec.method} ${spec.path}`);
+  if (writes.length === 0) return "none";
+  if (writes.length === 1) return writes[0] ?? "none";
+  return `${writes.slice(0, -1).join(", ")} and ${writes[writes.length - 1]}`;
 }
 
 function pathMatches(template: string, path: string): boolean {

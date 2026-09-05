@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { declaresWrite } from "@/lib/api/endpoints";
+import { declaresWrite, describeWrites } from "@/lib/api/endpoints";
 import { authRequired } from "@/lib/server/auth-gate";
 import { requireCsrf, sessionFrom } from "@/lib/server/auth-http";
 import {
@@ -73,10 +73,18 @@ async function forward(request: NextRequest, context: RouteContext): Promise<Res
     path = resolveUpstreamPath(segments);
     // Asked before `upstream()`, so a write this console does not declare does
     // not even cause the credential to be read off disk. The allowlist is the
-    // `REST` table in `@/lib/api/endpoints`; its four writes are POST /cycle,
-    // POST /kill-switch, DELETE /kill-switch and — the one with a path
-    // parameter — POST /registrations/{source_id}/approve, which matches
-    // exactly one source segment (`tests/registrations-gateway.spec.ts`).
+    // `REST` table in `@/lib/api/endpoints`, and both this comment and the
+    // refusal below now derive their list from it rather than restating it.
+    //
+    // They did not, and the cost was a shipped route that could never work:
+    // this comment named four writes, the eligibility decision was added to
+    // the platform and the panel as a fifth, nobody edited the table, and
+    // every decision an operator made in a real deployment came back 405 from
+    // here. The seven eligibility specs did not catch it because they
+    // `page.route`-mock the gateway — they stub the component that refuses.
+    // A `{parameter}` segment matches exactly one non-empty segment, so
+    // `/registrations/a/b/approve` stays undeclared
+    // (`tests/registrations-gateway.spec.ts`).
     const undeclared =
       request.method !== "GET" &&
       request.method !== "HEAD" &&
@@ -86,8 +94,7 @@ async function forward(request: NextRequest, context: RouteContext): Promise<Res
         {
           error:
             `this console declares no ${request.method} on ${path}. ` +
-            "Its writes are POST /cycle, POST /kill-switch, DELETE /kill-switch and " +
-            "POST /registrations/{source_id}/approve; adding a fifth is an edit to the " +
+            `Its writes are ${describeWrites()}; adding another is an edit to the ` +
             "route table, not to a page.",
           gateway: "refused",
         },
