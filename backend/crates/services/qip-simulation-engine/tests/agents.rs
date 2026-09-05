@@ -22,7 +22,7 @@ use qip_financial::quality::DataQuality;
 use qip_market::bar::{Bar, Interval};
 use qip_market::book::Side;
 use qip_simulation_engine::agents::{
-    AgentKind, CounterpartyAgent, FlowAction, FlowCalibration, FlowRecord,
+    AgentKind, AgentRecord, CounterpartyAgent, FlowAction, FlowCalibration, FlowRecord,
     NOT_CALIBRATED_STATEMENT, PathObservation, PathWindow,
 };
 use qip_simulation_engine::conditions::{ConditionSchedule, ConditionWindow, MarketCondition};
@@ -711,4 +711,51 @@ fn an_agent_with_a_parameter_that_would_generate_nothing_is_refused() {
     assert!(CounterpartyAgent::maker("k", dec!("1"), 0.0, 1.0, dec!("1")).is_err());
     assert!(CounterpartyAgent::maker("k", dec!("1"), 1.0, -1.0, dec!("1")).is_err());
     assert!(CounterpartyAgent::maker("k", dec!("1"), 1.0, 1.0, dec!("0")).is_err());
+}
+
+#[test]
+fn two_runs_whose_agent_records_differ_only_in_where_one_string_ends_have_different_digests()
+-> Result<()> {
+    // The failure this prevents was found by review: the digest concatenated
+    // each agent's name, kind and rule with no delimiter, so a run whose
+    // first agent's rule ended in "y" beside a second agent named "b" hashed
+    // to the same bytes as one whose rule ended in "" beside an agent named
+    // "yb". A digest two different runs share is a record that cannot tell
+    // them apart, which is the one thing a digest is for.
+    let closes = trending_closes();
+    let base = replay(&closes, 11)?.run(&mut Watcher)?;
+    // Premise: the two agent lists really are different records.
+    let mut left = base.clone();
+    left.agents = vec![
+        AgentRecord {
+            name: "a".into(),
+            kind: AgentKind::Passive,
+            rule: "xy".into(),
+        },
+        AgentRecord {
+            name: "b".into(),
+            kind: AgentKind::Passive,
+            rule: String::new(),
+        },
+    ];
+    let mut right = base.clone();
+    right.agents = vec![
+        AgentRecord {
+            name: "a".into(),
+            kind: AgentKind::Passive,
+            rule: "x".into(),
+        },
+        AgentRecord {
+            name: "yb".into(),
+            kind: AgentKind::Passive,
+            rule: String::new(),
+        },
+    ];
+    assert_ne!(left.agents, right.agents);
+    assert_ne!(
+        left.digest(),
+        right.digest(),
+        "two different agent records produced one digest"
+    );
+    Ok(())
 }

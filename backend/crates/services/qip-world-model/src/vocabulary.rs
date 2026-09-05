@@ -181,6 +181,13 @@ impl MacroSeries {
     /// neither is trusted. An unrecognised release is not an error; it is
     /// recorded under [`names::MACRO_LEVEL`] as every release is.
     pub fn recognise(series_id: &str, region: &str) -> Option<Self> {
+        // An empty region would let `.POLICY_RATE` pass as the policy rate of
+        // no economy and be recorded under an empty subject, which the
+        // analyst could then read as a real economy's series. Refused, not
+        // defaulted.
+        if region.is_empty() {
+            return None;
+        }
         let code = series_id.strip_prefix(region)?.strip_prefix('.')?;
         Self::ALL
             .into_iter()
@@ -381,6 +388,9 @@ mod tests {
         assert_eq!(MacroSeries::recognise("EA.POLICY_RATE", "US"), None);
         // The raw vendor spelling the platform already carries is left raw.
         assert_eq!(MacroSeries::recognise("US.CPI.YOY", "US"), None);
+        // An empty region is not an economy: `.POLICY_RATE` under region ""
+        // would otherwise be recognised and keyed on an empty subject.
+        assert_eq!(MacroSeries::recognise(".POLICY_RATE", ""), None);
     }
 
     #[test]

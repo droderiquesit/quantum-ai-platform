@@ -401,15 +401,26 @@ impl SimulationRun {
     /// convention did. This is what "same seed, same conditions, byte-identical
     /// outcome" is checked on.
     pub fn digest(&self) -> String {
+        // Every variable-length string is length-prefixed. Without the
+        // prefix, two runs whose agent names and rules differ only in where
+        // one string ends and the next begins -- `("a", "xy")` beside `("a",
+        // "x")` followed by `("yb", ..)` -- concatenate to the same bytes and
+        // so the same digest, and a digest that two different runs share is
+        // a record that cannot tell them apart. An external review found it
+        // on the agent fields; the object ids were concatenated the same way.
+        fn push_str(bytes: &mut Vec<u8>, text: &str) {
+            bytes.extend_from_slice(&(text.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(text.as_bytes());
+        }
         let mut bytes = Vec::with_capacity(256 + self.reports.len() * 96);
-        bytes.extend_from_slice(self.strategy.as_bytes());
+        push_str(&mut bytes, &self.strategy);
         bytes.extend_from_slice(&self.seed.to_le_bytes());
-        bytes.extend_from_slice(self.source.as_str().as_bytes());
-        bytes.extend_from_slice(self.schedule_digest.as_bytes());
+        push_str(&mut bytes, self.source.as_str());
+        push_str(&mut bytes, &self.schedule_digest);
         bytes.extend_from_slice(&(self.steps as u64).to_le_bytes());
         for report in &self.reports {
-            bytes.extend_from_slice(report.object_id.as_bytes());
-            bytes.extend_from_slice(report.venue.as_bytes());
+            push_str(&mut bytes, &report.object_id);
+            push_str(&mut bytes, &report.venue);
             bytes.push(match report.side {
                 Side::Buy => 1,
                 Side::Sell => 2,
@@ -422,8 +433,8 @@ impl SimulationRun {
             bytes.extend_from_slice(&report.residual.raw().to_le_bytes());
             bytes.extend_from_slice(&report.notional.raw().to_le_bytes());
             bytes.extend_from_slice(&report.commission.raw().to_le_bytes());
-            bytes.extend_from_slice(report.status.as_str().as_bytes());
-            bytes.extend_from_slice(report.book_condition.as_str().as_bytes());
+            push_str(&mut bytes, report.status.as_str());
+            push_str(&mut bytes, report.book_condition.as_str());
             bytes.extend_from_slice(
                 &report
                     .crossed_by
@@ -435,31 +446,31 @@ impl SimulationRun {
             bytes.extend_from_slice(&report.mark.observed_at.as_nanos().to_le_bytes());
         }
         for (object_id, quantity) in &self.positions {
-            bytes.extend_from_slice(object_id.as_bytes());
+            push_str(&mut bytes, object_id);
             bytes.extend_from_slice(&quantity.raw().to_le_bytes());
         }
         for (object_id, price) in &self.final_marks {
-            bytes.extend_from_slice(object_id.as_bytes());
+            push_str(&mut bytes, object_id);
             bytes.extend_from_slice(&price.raw().to_le_bytes());
         }
         for object_id in &self.unmarked_positions {
-            bytes.extend_from_slice(b"unmarked:");
-            bytes.extend_from_slice(object_id.as_bytes());
+            push_str(&mut bytes, "unmarked:");
+            push_str(&mut bytes, object_id);
         }
         bytes.extend_from_slice(&self.cash.raw().to_le_bytes());
         bytes.extend_from_slice(&self.commission.raw().to_le_bytes());
         bytes.extend_from_slice(&self.profit_and_loss.raw().to_le_bytes());
-        bytes.extend_from_slice(self.flow_calibration.statement().as_bytes());
+        push_str(&mut bytes, self.flow_calibration.statement());
         for agent in &self.agents {
-            bytes.extend_from_slice(agent.name.as_bytes());
-            bytes.extend_from_slice(agent.kind.as_str().as_bytes());
-            bytes.extend_from_slice(agent.rule.as_bytes());
+            push_str(&mut bytes, &agent.name);
+            push_str(&mut bytes, agent.kind.as_str());
+            push_str(&mut bytes, &agent.rule);
         }
         for flow in &self.counterparty_flow {
             bytes.extend_from_slice(&flow.at.as_nanos().to_le_bytes());
-            bytes.extend_from_slice(flow.agent.as_bytes());
-            bytes.extend_from_slice(flow.object_id.as_bytes());
-            bytes.extend_from_slice(flow.venue.as_bytes());
+            push_str(&mut bytes, &flow.agent);
+            push_str(&mut bytes, &flow.object_id);
+            push_str(&mut bytes, &flow.venue);
             match flow.action {
                 FlowAction::Take { side, quantity } => {
                     bytes.push(match side {
