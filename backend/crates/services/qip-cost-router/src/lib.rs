@@ -127,7 +127,7 @@ pub use context::{
 pub use data::{DataCostModel, DataReads, DataSource};
 pub use engine::CostEngine;
 pub use ledger::{ComputeLedger, TierCharge};
-pub use reputation::{ModelReputation, Rated, Record, ReputationBook};
+pub use reputation::{Judgement, ModelReputation, Rated, Record, ReputationBook};
 pub use router::{
     DeterministicRouting, Escalation, EscalationLimits, JudgedRouting, Router, Routing,
     RoutingPolicy, TierVerdict,

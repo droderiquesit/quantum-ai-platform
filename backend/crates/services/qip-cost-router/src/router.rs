@@ -29,7 +29,7 @@
 //! the same way every time, which is what lets a replay reproduce not just the
 //! decision but the reasoning that priced it.
 
-use crate::context::{DecisionContext, Determinism};
+use crate::context::{Conditions, DecisionContext, Determinism};
 use crate::ledger::TierCharge;
 use crate::tier::{IntelligenceTier, ModelTier};
 use qip_contracts::signal::Conviction;
@@ -160,11 +160,17 @@ impl TierVerdict {
 pub struct DeterministicRouting {
     rationale: String,
     charge: TierCharge,
+    conditions: Conditions,
 }
 
 impl DeterministicRouting {
     pub fn rationale(&self) -> &str {
         &self.rationale
+    }
+
+    /// The conditions this decision was made under.
+    pub fn conditions(&self) -> &Conditions {
+        &self.conditions
     }
 
     pub fn charge(&self) -> TierCharge {
@@ -187,12 +193,28 @@ pub struct JudgedRouting {
     tier: IntelligenceTier,
     rationale: String,
     charges: Vec<TierCharge>,
+    conditions: Conditions,
 }
 
 impl JudgedRouting {
     /// The rung that produced the answer.
     pub fn tier(&self) -> IntelligenceTier {
         self.tier
+    }
+
+    /// The conditions this decision was made under.
+    ///
+    /// Structured, and not merely recited inside [`JudgedRouting::rationale`].
+    /// The outcome of this decision is resolved later — hours or months later,
+    /// at a [`crate::Horizon`] the decision itself names — and by then the
+    /// market is in some other regime. A caller scoring the model that answered
+    /// has to key that score on the conditions the answer was *given* under, and
+    /// if the only structured `Conditions` in reach is the one it can build from
+    /// today's market, that is the one it will use. A reputation book keyed on
+    /// the conditions at resolution time is a reputation for a decision nobody
+    /// made.
+    pub fn conditions(&self) -> &Conditions {
+        &self.conditions
     }
 
     /// The rung as something that can be wrong, or `None` if deterministic code
@@ -274,6 +296,14 @@ impl Routing {
         match self {
             Self::Deterministic(routing) => routing.rationale(),
             Self::Judged(judged) => judged.rationale(),
+        }
+    }
+
+    /// The conditions the decision was made under, on either arm.
+    pub fn conditions(&self) -> &Conditions {
+        match self {
+            Self::Deterministic(routing) => routing.conditions(),
+            Self::Judged(judged) => judged.conditions(),
         }
     }
 
@@ -432,6 +462,7 @@ impl Router {
                 context.conditions.label()
             ),
             charge: TierCharge::of(IntelligenceTier::DeterministicCode),
+            conditions: context.conditions.clone(),
         }
     }
 
@@ -454,6 +485,7 @@ impl Router {
                             context.conditions.label()
                         ),
                         charges: vec![TierCharge::of(tier)],
+                        conditions: context.conditions.clone(),
                     });
                 }
                 other => {
@@ -551,6 +583,14 @@ impl Router {
         let mut charges = routing.charges.clone();
         charges.push(TierCharge::of(next));
         Ok(Escalation::Climbed(JudgedRouting {
+            // The conditions come from the routing being climbed, never from
+            // `context`. Climbing a rung is the same decision continuing, and
+            // the caller holds a `&DecisionContext` it is free to have rebuilt
+            // from a fresher market between rungs. Taking the conditions from
+            // the routing means the record of what the platform believed the
+            // market was doing is fixed at the instant the decision started,
+            // which is the instant the model's score has to be keyed on.
+            conditions: routing.conditions.clone(),
             tier: next,
             rationale: format!(
                 "'{}' answered at {} with {} confidence against a {} bar, so it climbed to {}; both rungs are charged",
