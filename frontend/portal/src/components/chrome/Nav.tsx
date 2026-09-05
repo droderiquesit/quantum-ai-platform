@@ -14,7 +14,7 @@ import { Icon, ITEM_ICON } from "./icons";
  * `nav-section-title`, `nav-item`, `nav-text`, `live-dot` — so its CSS layer
  * styles this untouched: collapse to an icon rail on desktop, off-canvas
  * behind an overlay on mobile, hover flyout labels when collapsed. What is
- * ours is the *data*: Algorik's eight sections and thirty-four destinations,
+ * ours is the *data*: Algorik's ten sections and forty destinations,
  * the real hrefs, and the active state from the router rather than a build
  * step.
  *
@@ -145,11 +145,6 @@ export function Sidebar({
                     {item.href === "/signals" ? (
                       <span className="live-dot ml-auto nav-text" aria-hidden="true" />
                     ) : null}
-                    {item.simulated ? (
-                      <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-secondary/15 text-secondary nav-text">
-                        SIM
-                      </span>
-                    ) : null}
                   </Link>
                 );
               })}
@@ -173,7 +168,7 @@ export function Sidebar({
  * active state — so the "mobile app" is visibly the same product.
  *
  * Four primary surfaces plus Menu, which opens the full off-canvas sidebar:
- * a strip that tried to carry all thirty-four destinations would carry none
+ * a strip that tried to carry all forty destinations would carry none
  * of them reachably. Phones only; tablets and desktops keep the sidebar.
  */
 const TABS = [

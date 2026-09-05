@@ -12,6 +12,7 @@
 //! decision numbers survives contact with eighteen agents written at
 //! different times.
 
+use qip_ai::memory::PrecedentDigest;
 use qip_core::error::{Error, Result};
 use qip_core::ids::{AgentRunId, ObjectId};
 use qip_core::time::{Duration, Timestamp};
@@ -181,13 +182,136 @@ impl fmt::Display for Direction {
     }
 }
 
+/// Precedent as the panel may see it: the digest of the nearest resolved
+/// episodes, the nearest one's similarity and outcome, and how long before
+/// the question that outcome became knowable.
+///
+/// Typed, with private fields, and kept apart from [`AgentBrief::context`]
+/// for one reason. The reviewer's lesson matcher substring-matches
+/// `context`, so a precedent written there as prose would change which
+/// lessons apply, which objections are raised and, through the objection
+/// count, the reviewer's conviction — a statistic about the past would have
+/// moved a confidence without ever entering ADR 0005's evidence arithmetic.
+/// A value of this type cannot be passed where a `&str` is expected, and
+/// the only text it yields is [`BriefPrecedent::cite`], which is narrative
+/// for a claim or a caveat and nothing the reasoning engine weighs: the
+/// engine reads a finding's direction, status, conviction and the *count*
+/// of its facts and evidence, never its words. An agent that wrote the
+/// citation into `evidence` would move diagnosticity, which is why the
+/// citation is a sentence and not a record id.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BriefPrecedent {
+    digest: PrecedentDigest,
+    similarity: f32,
+    prior_outcome: Option<bool>,
+    age: Duration,
+}
+
+impl BriefPrecedent {
+    /// A precedent for a brief, refused rather than corrected where it could
+    /// not honestly be one.
+    ///
+    /// `age` is how long before the brief's `as_of` the nearest episode's
+    /// outcome became knowable. Zero or negative means the episode was
+    /// stamped at or after the question — the point-in-time leak the store
+    /// refuses at recall — so a caller presenting one has bypassed the store
+    /// and is told so. `similarity` is a cosine and lives in `[-1, 1]`; a
+    /// value outside it is not a similarity.
+    pub fn new(
+        digest: PrecedentDigest,
+        similarity: f32,
+        prior_outcome: Option<bool>,
+        age: Duration,
+    ) -> Result<Self> {
+        if age.as_nanos() <= 0 {
+            return Err(Error::invalid(format!(
+                "a precedent knowable {} before the question is not yet knowledge; recall it \
+                 through the episodic store, which refuses the boundary",
+                age.as_nanos()
+            )));
+        }
+        if !similarity.is_finite() || !(-1.0..=1.0).contains(&similarity) {
+            return Err(Error::numeric(format!(
+                "a precedent similarity of {similarity} is not a cosine; it must lie in [-1, 1]"
+            )));
+        }
+        Ok(Self {
+            digest,
+            similarity,
+            prior_outcome,
+            age,
+        })
+    }
+
+    pub fn digest(&self) -> &PrecedentDigest {
+        &self.digest
+    }
+
+    /// Cosine similarity of the nearest episode, in `[-1, 1]`.
+    pub fn similarity(&self) -> f32 {
+        self.similarity
+    }
+
+    /// Whether the nearest episode's outcome went the current claim's way;
+    /// `None` where either side has no sign.
+    pub fn prior_outcome(&self) -> Option<bool> {
+        self.prior_outcome
+    }
+
+    /// How long before the brief's `as_of` the nearest outcome became
+    /// knowable. Strictly positive by construction.
+    pub fn age(&self) -> Duration {
+        self.age
+    }
+
+    /// The one sentence an agent may put in its narrative about this.
+    ///
+    /// Prose for a claim or a caveat. Not a record id, not a fact: those
+    /// are counted by the reasoning engine, and a precedent is context, not
+    /// grounding.
+    pub fn cite(&self) -> String {
+        let outcome = match self.prior_outcome {
+            Some(true) => "went the claim's way",
+            Some(false) => "went against the claim",
+            None => "had no sign against the claim",
+        };
+        let share = match self.digest.agreement {
+            Some(share) => format!(", an agreement share of {share:.2}"),
+            None => ", no agreement share".to_string(),
+        };
+        let days = self.age.as_days_f64();
+        let age = if days >= 1.0 {
+            format!("{days:.1} day(s)")
+        } else {
+            format!("{:.1} hour(s)", days * 24.0)
+        };
+        format!(
+            "precedent: {} nearest episode(s), {} resolved with a sign, {} agreeing{share}; the \
+             nearest (similarity {:.2}) {outcome} and was knowable {age} before the question",
+            self.digest.nearest, self.digest.resolved, self.digest.agreeing, self.similarity
+        )
+    }
+}
+
 /// The question put to an agent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AgentBrief {
     /// What is being asked, in one sentence.
     pub question: String,
     /// Why it is being asked, so the agent can judge relevance.
+    ///
+    /// Free text, and substring-matched by the reviewer's lesson matcher —
+    /// which is why precedent has its own typed field below and is never
+    /// folded into this one.
     pub context: String,
+    /// What memory holds about situations like this one, as of `as_of`.
+    ///
+    /// `None` where nothing resolved was knowable before the question —
+    /// distinct from a precedent that disagrees. Agents may cite it in
+    /// narrative through [`BriefPrecedent::cite`]; nothing that computes a
+    /// conviction reads it, and the type keeps it out of `context`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub precedent: Option<BriefPrecedent>,
     /// Instruments in scope.
     pub objects: Vec<ObjectId>,
     /// Entities in scope, by resolved entity id.
@@ -207,6 +331,7 @@ impl AgentBrief {
         Self {
             question: question.into(),
             context: String::new(),
+            precedent: None,
             objects: Vec::new(),
             entities: Vec::new(),
             as_of,
@@ -217,6 +342,16 @@ impl AgentBrief {
 
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
         self.context = context.into();
+        self
+    }
+
+    /// Attach the precedent memory recalled for this situation.
+    ///
+    /// Sets the typed field and touches nothing else — in particular not
+    /// `context`, where the reviewer's lesson matcher would read it as
+    /// prose and let it change an objection count.
+    pub fn with_precedent(mut self, precedent: BriefPrecedent) -> Self {
+        self.precedent = Some(precedent);
         self
     }
 

@@ -1,0 +1,14 @@
+# The Config Connector operator for stage: the vendored manifest, with its one
+# image moved to this environment's own registry at the digest
+# infrastructure/egress/vendored-images.txt reviewed and vendor.yml mirrored
+# and attested. The cluster's Binary Authorization policy admits nothing
+# else, so an overlay that named the upstream repository would produce a Pod
+# that never starts.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../../base
+images:
+- name: gcr.io/gke-release/cnrm/operator
+  newName: europe-west2-docker.pkg.dev/unprovisioned/qip-stage/vendor/config-connector-operator
+  digest: sha256:ed4bd32055c435af80a33131ff8a92c9d75b22c29bf9de5e9c8c3a677db2156c

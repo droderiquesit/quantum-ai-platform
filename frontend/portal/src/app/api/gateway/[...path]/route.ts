@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { declaresWrite } from "@/lib/api/endpoints";
+import { authRequired } from "@/lib/server/auth-gate";
 import { requireCsrf, sessionFrom } from "@/lib/server/auth-http";
 import {
   API_VERSION_PREFIX,
@@ -44,7 +45,10 @@ interface RouteContext {
  * user became anonymous at a scale event, not how a revoked one was refused.
  */
 function refuseUnauthenticated(request: NextRequest): NextResponse | null {
-  if (process.env.ALGORIK_AUTH_REQUIRED !== "true") return null;
+  // The closed gate is the default; see `auth-gate.ts` for the deployment
+  // that once forgot the variable and served the platform's credential to
+  // everyone.
+  if (!authRequired()) return null;
   if (!sessionFrom(request)) {
     return NextResponse.json(
       { error: "sign in to use this console", gateway: "unauthenticated" },

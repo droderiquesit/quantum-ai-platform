@@ -1,5 +1,8 @@
 # Blueprint v10.1 gap map
 
+> **Superseded for status by [`PROJECT-PLAN.md`](PROJECT-PLAN.md).** This
+> document's structural inventory is kept as history.
+
 A first-pass structural inventory: for each capability the "Algorik —
 Cognitive Investment Platform, Blueprint v10.1" document names, does anything
 resembling it exist in the actual tree, and if so, does a real caller reach
@@ -66,6 +69,26 @@ ABSENT, and the terms tried are named in the evidence column.
 | Hypothesis generation with falsification | BUILT+WIRED | `qip-reasoning-engine/src/hypothesis.rs` (`Claim`, `CausalChain`) and `src/redteam.rs` (adversarial challenge against a hypothesis's structure, `Severity`, `ReviewOutcome::rejection_rate`) both wired into `qip-kernel/src/platform.rs:116,3630-3633,5843-5847` |
 | Degradation ("narrow rather than halt") | BUILT+WIRED (edge code path exists and has a real caller; that caller is exercised only in tests, no deployment) | `.claude/rules/domains/observability.md` documents extensively that `qip-edge`'s `Cell` narrows on stale capability freshness with per-source telemetry (`qip_edge_capability_freshness{capability}`), each recording site proven by `backend/crates/edge/qip-edge/tests/telemetry.rs`; `Cell::work` is reached from `qip-edge-node/src/pass.rs:118` → `main.rs:586`, but only when `QIP_VENUE_FEED=simulated`, and `execution_nodes = {}` in every Terraform environment, so no deployed process exercises it today |
 | Source discovery (surface/deep/dark-web tiers, discovery crawler, `SourceCandidate`, `DeepWebAdapter`) | PARTIAL | `qip-data-finder/src/{source,finder,legal,robots,probe}.rs` define `SourceCandidate` (`source.rs:82`) and a robots.txt-respecting finder with a legality/licensing gate; `SourceCandidate`, `DataFinder`, `RegistrationDecision` are imported and used in `qip-kernel/src/platform.rs:75-78,5084`, so the licensing-gated source-registration path is real and wired. But the blueprint's specific three-tier model (surface/deep/dark web) does not exist — `grep -rn "surface_web\|SurfaceWeb\|DarkWeb\|dark_web"` returns nothing — nor does a `DeepWebAdapter` type or its six access modes (`open_query`/`api`/`registered`/`licensed`/`rendered`/`bulk`; `grep -rn "struct DeepWebAdapter"` returns nothing), nor an isolated discovery enclave, nor dark-web defensive monitoring |
+
+Re-scored 2026-09-05, source-discovery row only: the three-tier model now
+exists as typed policy in `qip-data-finder/src/tier.rs` — `SourceTier`
+(`surface_web`/`deep_web`/`dark_web`), classified by `SourceTier::classify`
+from a `TierEvidence` built from the candidate before the probe and from the
+`Source` after it, refusing on insufficient evidence rather than defaulting to
+the surface web; `DeepWebAdapter` with the six `AccessMode` arms
+(`open_query`/`api`/`registered`/`licensed`/`rendered`/`bulk`), each carrying
+what it needs (a `CredentialReference` by name only, a licence identifier
+checked against the `Declared` posture, a `RenderingBudget`, a `BulkCadence`
+with a retention bound) and an `admissible()` rule per arm; `DiscoveryEnclave`
+as the isolation record the `rendered` and `bulk` modes are refused without;
+and `DefensiveMonitoring` as a watch-list record with no fetch path. The tier
+is wired into `DataFinder::assess` (`finder.rs`, `route_by_tier`): a
+hidden-service host is rejected before any probe call, an unplaceable source
+is deferred, and the routing decision records tier, mode and refusal in the
+`classify` and `route` reasoning steps. Proven by
+`qip-data-finder/tests/tiers.rs`. Status is now **BUILT+WIRED (policy)**:
+still no crawler, no renderer and no Tor client — this crate opens no sockets
+— so the tier decides what may be reached and how, and nothing yet reaches it.
 
 ## Valuation & assets plane
 

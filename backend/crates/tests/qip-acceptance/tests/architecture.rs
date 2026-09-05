@@ -1517,3 +1517,144 @@ fn neither_end_of_the_cell_uplink_declares_its_schema_version_as_a_literal() {
          found {checked}; this test is no longer looking at the right lines"
     );
 }
+
+/// No library, service, runtime or edge crate reads the process environment.
+///
+/// `.claude/rules/domains/core-rust.md` forbids `std::env` outside
+/// `backend/crates/apps/**`: a service that reads the environment cannot be
+/// tested without mutating a process-global every other test in the binary
+/// shares, and cannot be deployed twice with different settings. The rule
+/// held everywhere except `qip-storage`, which read the Memorystore AUTH
+/// string and the GCP access token straight from `std::env::var` three calls
+/// below any composition root — bypassing `qip_core::secret`, so neither
+/// could be mounted as a file the way every other secret is. Nothing
+/// mechanical caught it; a reviewer did.
+///
+/// This walks every `src/` file under the six library-side directories and
+/// refuses any line naming `std::env`, with one sanctioned seam: `qip-core`'s
+/// own `secret` and `config` modules, which are *the* environment readers the
+/// rule tells everything else to go through. The list is asserted to be
+/// exactly that, and each entry is asserted to still read the environment,
+/// so an entry that stops needing its exemption fails here rather than
+/// staying as a permanent hole.
+///
+/// The scan is line-based and honest about what that means: a line whose
+/// first token is `//` is prose and skipped, and everything else is code —
+/// including a trailing comment, a doc example inside a string, and a
+/// `#[cfg(test)]` module. Each of those is a false positive that fails
+/// closed and is fixed by rewording, which is preferred to a parser that
+/// could be fooled into failing open. `use std::{…, env, …}` is caught by
+/// splitting the line into identifiers and looking for the token `env`
+/// beside `std`, so the import cannot be spelled around the check.
+#[test]
+fn no_library_service_runtime_or_edge_crate_reads_the_process_environment() {
+    const SCOPES: [&str; 6] = ["libs", "services", "runtime", "edge", "agents", "quant"];
+    const SANCTIONED: [&str; 2] = [
+        // `qip_core::secret::from_environment`: the `_FILE` indirection every
+        // credential is read through.
+        "backend/crates/libs/qip-core/src/secret.rs",
+        // `qip_core::config::Config::with_env`: the QIP_-prefixed overlay. No
+        // production caller in the workspace today; removing it is a
+        // follow-up, and until then it stays named here rather than hidden.
+        "backend/crates/libs/qip-core/src/config.rs",
+    ];
+
+    let root = repository_root();
+    let mut scanned = 0usize;
+    let mut hits: BTreeMap<String, Vec<(usize, String)>> = BTreeMap::new();
+    for scope in SCOPES {
+        let directory = root.join("backend/crates").join(scope);
+        assert!(
+            directory.is_dir(),
+            "no such directory: {}",
+            directory.display()
+        );
+        for path in qip_acceptance::files_with_extension(&format!("backend/crates/{scope}"), "rs") {
+            let relative = path
+                .strip_prefix(&root)
+                .expect("the file is under the repository")
+                .to_string_lossy()
+                .replace('\\', "/");
+            // A crate's `tests/` directory is its own test binary and may set
+            // up whatever it likes; the rule is about shipped code.
+            if !relative.contains("/src/") {
+                continue;
+            }
+            scanned += 1;
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("cannot read {relative}: {error}"));
+            for (index, line) in text.lines().enumerate() {
+                if names_the_process_environment(line) {
+                    hits.entry(relative.clone())
+                        .or_default()
+                        .push((index + 1, line.trim().to_string()));
+                }
+            }
+        }
+    }
+
+    // The premise: the walk saw the workspace. An empty or tiny scan would
+    // pass vacuously.
+    assert!(
+        scanned >= 100,
+        "only {scanned} source files were scanned; the walk is not reaching the crates"
+    );
+
+    // The sanctioned seam still is one. An entry that no longer reads the
+    // environment is a hole waiting for something to crawl through.
+    for sanctioned in SANCTIONED {
+        assert!(
+            hits.contains_key(sanctioned),
+            "{sanctioned} is exempted but no longer names std::env; remove it from the list \
+             so the exemption does not outlive its reason"
+        );
+    }
+    assert!(
+        SANCTIONED
+            .iter()
+            .all(|path| path.starts_with("backend/crates/libs/qip-core/src/")),
+        "the only sanctioned environment readers are qip-core's own; anything else must \
+         take the environment as a value from its composition root"
+    );
+
+    let violations: Vec<String> = hits
+        .iter()
+        .filter(|(path, _)| !SANCTIONED.contains(&path.as_str()))
+        .flat_map(|(path, lines)| {
+            lines
+                .iter()
+                .map(move |(number, line)| format!("{path}:{number}: {line}"))
+        })
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "std::env is read outside a composition root. Take the value as a parameter — a \
+         lookup closure the root passes in, or `qip_core::secret::resolve_from` for a \
+         credential — so the library can be tested and the deployment can mount a file:\n{}",
+        violations.join("\n")
+    );
+}
+
+/// Whether a line of Rust names `std::env`, by any spelling of the import.
+///
+/// Prose — a line whose first token is `//` — is not code and is skipped.
+/// Everything else counts, including a trailing comment on a code line: that
+/// is a false positive that fails closed and is fixed by rewording.
+fn names_the_process_environment(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("//") {
+        return false;
+    }
+    if trimmed.contains("std::env") {
+        return true;
+    }
+    // `use std::{env, fs};` and `use std::{fs, env::var};` spell it without
+    // the `std::env` substring. Inside a `use std::{` list, the identifier
+    // `env` on its own is the module.
+    if let Some(list) = trimmed.strip_prefix("use std::{") {
+        return list
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .any(|token| token == "env");
+    }
+    false
+}

@@ -29,6 +29,37 @@ readonly AR="${REGION}-docker.pkg.dev/${PROJECT}/qip-dev"
 SHA="$(git -C "${REPO_ROOT}" rev-parse --short HEAD)"
 readonly SHA
 
+# --- what gets signed is a reviewed commit, not whatever is on disk ---------
+#
+# `gcloud builds submit` uploads the directory as it is, and `attest` below
+# puts the pipeline's own attestor and key version on the digest that comes
+# back. Run from a tree with uncommitted edits, that signs bytes no commit
+# holds and no review saw, under a `:${SHA}` tag naming a commit they are not
+# — an operator identity minting the pipeline's signature for unreviewed
+# code. So, before anything is built: the tree must be clean, and HEAD must
+# already be contained in the remote default branch, because a branch only
+# its author has read is not reviewed either. Both refusals say what to do.
+if [[ -n "$(git -C "${REPO_ROOT}" status --porcelain)" ]]; then
+  echo "the working tree has uncommitted changes; the attestor signs only what a reviewed commit holds. Commit them, merge to the default branch, and run this again from a clean checkout of it:" >&2
+  git -C "${REPO_ROOT}" status --short >&2
+  exit 1
+fi
+# The remote's default branch: from the tracking ref when the clone recorded
+# one, from the remote itself when it did not, and `main` as the last resort.
+DEFAULT_BRANCH="$(git -C "${REPO_ROOT}" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
+if [[ -z "${DEFAULT_BRANCH}" ]]; then
+  DEFAULT_BRANCH="$(git -C "${REPO_ROOT}" ls-remote --symref origin HEAD 2>/dev/null \
+    | sed -n 's|^ref: refs/heads/\([^[:space:]]*\)[[:space:]]HEAD$|\1|p' | head -1)"
+fi
+DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+readonly DEFAULT_BRANCH
+git -C "${REPO_ROOT}" fetch --quiet origin "${DEFAULT_BRANCH}"
+if ! git -C "${REPO_ROOT}" merge-base --is-ancestor HEAD "origin/${DEFAULT_BRANCH}"; then
+  echo "HEAD (${SHA}) is not contained in origin/${DEFAULT_BRANCH}; merge it there first. The pipeline's attestor signs what the default branch holds, not what one operator has checked out" >&2
+  exit 1
+fi
+
 # --- session secret: exists once, rotated deliberately, never echoed -------
 if ! gcloud secrets describe algorik-session-secret --project "${PROJECT}" >/dev/null 2>&1; then
   gcloud secrets create algorik-session-secret --project "${PROJECT}" --replication-policy=user-managed --locations="${REGION}"
@@ -201,6 +232,13 @@ PORTAL_IMAGE="${AR}/algorik-portal@$(digest_of "${AR}/algorik-portal:${SHA}")"
 readonly PORTAL_IMAGE
 attest "${PORTAL_IMAGE}"
 
+# `--allow-unauthenticated` is Cloud Run's ingress, not the portal's: the
+# landing must be able to send an anonymous browser to the sign-in page. The
+# portal's gateway proxies qip-api with the viewer token it mounts below, so
+# what stands between the internet and the platform is the portal's own
+# session check, and `ALGORIK_AUTH_REQUIRED=true` is what turns it on. Left
+# out once, the gateway answered anyone with the platform's data on a token
+# nobody had to present; `infrastructure.rs` refuses the deploy without it.
 echo "deploying algorik-portal…"
 gcloud run deploy algorik-portal \
   --project "${PROJECT}" --region "${REGION}" \
@@ -212,7 +250,7 @@ gcloud run deploy algorik-portal \
   --network "${VPC_NETWORK}" --subnet "${CONSOLE_SUBNET}" \
   --network-tags "${CONSOLE_EGRESS_TAG}" \
   --vpc-egress private-ranges-only \
-  --set-env-vars "ALGORIK_ENV=development,ALGORIK_POSTURE=paper,ALGORIK_IDENTITY_PROJECT_ID=${PROJECT},ALGORIK_IDENTITY_API_KEY=${IDENTITY_API_KEY},QIP_API_BASE_URL=${API_BASE_URL},QIP_API_TOKEN_FILE=${TOKEN_MOUNT},ALGORIK_SESSION_SECRET_FILE=${SESSION_SECRET_MOUNT}" \
+  --set-env-vars "ALGORIK_ENV=development,ALGORIK_POSTURE=paper,ALGORIK_AUTH_REQUIRED=true,ALGORIK_IDENTITY_PROJECT_ID=${PROJECT},ALGORIK_IDENTITY_API_KEY=${IDENTITY_API_KEY},QIP_API_BASE_URL=${API_BASE_URL},QIP_API_TOKEN_FILE=${TOKEN_MOUNT},ALGORIK_SESSION_SECRET_FILE=${SESSION_SECRET_MOUNT}" \
   --set-secrets "${SESSION_SECRET_MOUNT}=algorik-session-secret:latest,${TOKEN_MOUNT}=qip-token-viewer-dev:latest" \
   --quiet
 prove_serving algorik-portal "${PORTAL_IMAGE}"

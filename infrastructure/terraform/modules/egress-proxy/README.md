@@ -13,7 +13,9 @@ runtime.
 
 ADR 0020's corrections record the fact plainly: the Kubernetes chart's
 `egress.yaml` described an Envoy Deployment and committed it commented out, so
-Argo CD rendered the chart and no proxy pod ever ran. The `qip-egress` Service
+the Argo CD of that time rendered the chart and no proxy pod ever ran. (That
+chart and that controller are gone under ADR 0024; this paragraph is history,
+not a description of anything running.) The `qip-egress` Service
 had no endpoints, the NetworkPolicies naming it selected nothing, and every
 adapter configured through it was inert. There is therefore **no "same request
 served by both" evidence to produce** for ADR 0020's step 2 — there was never
@@ -85,9 +87,14 @@ from one that refuses everything.
 - **It reaches no venue and no broker, and one market-data vendor.** The
   variable's validation refuses a host whose name contains `venue`, `broker`
   or `exchange`, and the acceptance suite refuses a bootstrap that dials one.
-  `api.frankfurter.app` is a republisher of the ECB's daily reference rates,
+  `api.frankfurter.dev` is a republisher of the ECB's daily reference rates,
   polled hourly for a table with a sixteen-hour dissemination delay; it is on
   the list because a manifest in this workspace names it and its licence was
   evaluated before it could be opened, not because a market-data path was
-  wanted. Nothing reads it yet — see the fast brain's missing sidecar in
+  wanted. The vendor moved from `api.frankfurter.app` (which now answers a
+  redirect, and the client follows none), so the manifest, this cluster and
+  the allowlist name the new host together; `egress.rs` refuses a bootstrap
+  whose cluster disagrees with the manifest. A request through it has been
+  observed from a session behind a loopback TLS bridge, not from a deployed
+  process — see the fast brain's missing sidecar in
   `infrastructure/terraform/catalogue.tf`.

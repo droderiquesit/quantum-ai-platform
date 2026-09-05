@@ -1,0 +1,10 @@
+# Kargo's own namespace. `helm template --namespace kargo` sets the field on
+# every object and creates the namespace in none of them, and the three the
+# render does create are the ones Kargo reads cluster-wide secrets and shared
+# resources from; this is the fourth, the one its deployments run in.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kargo
+  labels:
+    platform: qip

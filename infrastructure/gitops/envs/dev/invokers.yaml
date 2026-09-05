@@ -1,0 +1,40 @@
+# Generated shape, reviewed content. One file per environment rather than a
+# kustomize base with replacements, so a reader — and the acceptance suite's
+# parity test, which reads these files without a kustomize binary — sees
+# every concrete value the running service must carry. The catalogue entry
+# in infrastructure/terraform/catalogue.tf is the source of truth for each
+# value here; a disagreement fails the build, not the sync (ADR 0036).
+# Who may call each service. Nothing, unless a member is named here: the
+# module's invoker binding left with the service (ADR 0036 decision 5), and
+# these are its manifest form.
+apiVersion: iam.cnrm.cloud.google.com/v1beta1
+kind: IAMPolicyMember
+metadata:
+  name: qip-dev-api-invoker-qip-dev-console
+  annotations:
+    cnrm.cloud.google.com/deletion-policy: abandon
+    qip.algorik.ai/why: The console reaches the API as its named invoker over the VPC (ADR 0018); catalogue.tf's
+      api.invokers.
+spec:
+  member: serviceAccount:qip-dev-console@algorik-dev.iam.gserviceaccount.com
+  role: roles/run.invoker
+  resourceRef:
+    apiVersion: run.cnrm.cloud.google.com/v1beta1
+    kind: RunService
+    name: qip-dev-api
+---
+apiVersion: iam.cnrm.cloud.google.com/v1beta1
+kind: IAMPolicyMember
+metadata:
+  name: qip-dev-openobserve-invoker-all-users
+  annotations:
+    cnrm.cloud.google.com/deletion-policy: abandon
+    qip.algorik.ai/why: Anonymous on the public internet on the owner's instruction (ADR 0030, revisited
+      by ADR 0033); the one anonymous workload the parity test admits.
+spec:
+  member: allUsers
+  role: roles/run.invoker
+  resourceRef:
+    apiVersion: run.cnrm.cloud.google.com/v1beta1
+    kind: RunService
+    name: qip-dev-openobserve

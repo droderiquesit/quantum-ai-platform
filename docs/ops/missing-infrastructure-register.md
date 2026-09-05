@@ -550,6 +550,40 @@ therefore cannot flip on this path; ADR 0032's own fallback (a second, narrow
 egress-proxy route, accepting the public-internet hop under ADR 0033's
 mitigation) is the remaining route, and nothing in this tree has taken it yet.
 
+**Re-checked 2026-09-05, and the refusal stands on today's evidence rather
+than on 2026-09-04's.** The registry's tag list
+(`https://us-docker.pkg.dev/v2/cloud-ops-agents-artifacts/cloud-run-gmp-sidecar/cloud-run-gmp-sidecar/tags/list`,
+anonymous, HTTP 200) carries the version tags `1.0.0 1.1.0 1.1.1 1.2.0 1.3.0
+1.4.0 1.6.0 1.7.0 1.8.0 1.9.1 1.9.2` and `latest`; `latest` and `1.9.2` both
+name `sha256:ff1fc68871118f1032a3ce17e2b0abd703292e883989d220244330ebdf522fd1`
+(uploaded 2026-07-15), the digest run 11 refused. Nothing newer is published.
+The twenty manifests the registry gained on 2026-09-05 are not images: each is
+an Artifact Analysis attachment (`application/vnd.in-toto.vuln+dsse` or
+`.triage+dsse`, `artifactregistry.attachment_namespace:
+artifactanalysis.googleapis.com`) whose `subject` is one of the existing
+tagged digests. Google's own vulnerability attestation on `ff1fc688…`
+(`scanFinishedOn: 2026-09-04T18:40:40-07:00`) lists CVE-2026-33997,
+CVE-2026-84304 and GHSA-hrxh-6v49-42gf with every triage decision
+`TRIAGE_STATUS_UNSPECIFIED` — nothing Google has waived, and nothing that
+names the finding this platform's gate fires on. A Trivy 0.74.0 scan of that
+digest from this checkout on 2026-09-05 (`trivy image --severity
+CRITICAL,HIGH --ignore-unfixed --exit-code 1 --scanners vuln
+us-docker.pkg.dev/…/cloud-run-gmp-sidecar@sha256:ff1fc688…`, the same flags
+`vendor.yml` runs, DB from `mirror.gcr.io/aquasec/trivy-db:2`) exited 1:
+
+    run-gmp-entrypoint (gobinary)  Total: 10 (HIGH: 9, CRITICAL: 1)
+    rungmpcol (gobinary)           Total: 12 (HIGH: 11, CRITICAL: 1)
+    golang.org/x/crypto  CVE-2026-56854  CRITICAL  fixed  v0.54.0 -> 0.55.0
+
+The CRITICAL is the one run 11 found; the HIGHs (grpc-go CVE-2026-84304 and
+GHSA-hrxh-6v49-42gf, and nine Go 1.26.4 stdlib advisories fixed in 1.26.6)
+are new to the database since, not to the image. `vendor.yml`'s refusing
+pass is `--severity CRITICAL --exit-code 1`, so the image still fails on
+exactly the finding it failed on before. No digest was added to
+`vendored-images.txt` and no tfvars line changed. Re-check the tag list
+before the next observability pass; the condition for adoption is unchanged
+— a published tag carrying `x/crypto >= 0.55.0`, scanned to zero CRITICAL.
+
 **F1–F4 are in progress this wave, not closed.** Other agents are working the
 follow-ups this register lists (`scripts/deploy-frontends.sh`'s missing
 `--binary-authorization` flags, the landing's missing service account, the
@@ -606,6 +640,385 @@ it is a decision and possibly an ADR rather than an edit. F2 changes the
 five-account set `infrastructure.rs:959-970` pins, so it lands with that test in
 one commit. F8 is the root question behind gaps 1, 2, 3, 4 and 7: F1 to F4 patch
 the script, and F8 decides whether the script should exist.
+
+## Observed on 2026-09-04, from outside the project
+
+The first entry in this register that rests on an observation of
+`algorik-dev` rather than on a file that says something about it. Everything
+above this heading was read off the tree; this section says what was seen,
+what could not be, and which rows move.
+
+**What could not be done, and why.** The session held a Google access token
+in `CLOUDSDK_AUTH_ACCESS_TOKEN` for read-only use. It was fourteen characters
+long, and every Google API refused it the same way — Cloud Run, Compute
+Engine, Binary Authorization, Secret Manager and Cloud Monitoring, one call
+each:
+
+    "code": 401, "status": "UNAUTHENTICATED",
+    "reason": "ACCESS_TOKEN_TYPE_UNSUPPORTED"
+
+`terraform init -input=false -backend-config="bucket=algorik-dev-qip-tfstate"`
+against the real state bucket failed on the same credential:
+
+    Error: Failed to get existing workspaces: querying Cloud Storage failed:
+    googleapi: Error 401: Invalid Credentials, authError
+
+So the serving revisions, digests, traffic splits, service accounts, secret
+volumes, the instance groups, the attestations, the secret-version counts,
+the real drift plan and the `qip_*` metric descriptors were **not
+observed**. No row below claims any of them. The token was not echoed,
+written or quoted.
+
+**What ran instead.** From a copy of `infrastructure/` in a scratch
+directory with a `backend "local"` override — the working tree was not
+touched — `terraform init` succeeded and
+
+    terraform plan -input=false -refresh=false -lock=false \
+      -var-file=../environments/dev/terraform.tfvars \
+      -var-file=../environments/dev/images.tfvars
+    Plan: 164 to add, 0 to change, 0 to destroy.
+
+with no error and no warning. Against empty state that is not a drift
+measurement — every resource is "to add" — but it is more than `validate`:
+every precondition in `catalogue.tf`, every `for_each`, every validation
+block and the provider schema were evaluated against the committed dev
+inputs and all passed. The two data sources that read the project
+(`module.evidence.data.google_storage_project_service_account.storage`,
+`module.binary_authorization.data.google_kms_crypto_key_version.attestor`)
+were deferred to apply, so the bogus credential was never presented. In the
+real tree, `terraform fmt -check -recursive` exited 0 and `terraform validate`
+printed `Success! The configuration is valid.`
+
+**What was observed.** Unauthenticated `GET`s over the public internet, which
+is the whole of what a credential-less session can see. The discriminator
+is the shape of a 404: a `*.run.app` hostname with no service behind it
+answers `404 Page not found` with no `server` header (control:
+`qip-dev-definitely-not-a-service-rgxpsss2lq-uk.a.run.app`), while a service
+with internal ingress answers Google Frontend's `404 Not Found` — `server:
+Google Frontend`, "The requested URL / was not found on this server".
+
+| Hostname | Answer | What it shows |
+|---|---|---|
+| `algorik-portal-rgxpsss2lq-uk.a.run.app` | `200`, title "Algorik — paper trading" | The portal serves, publicly, and renders the paper-trading label |
+| `algorik-landing-rgxpsss2lq-uk.a.run.app` | `200`, title "Algorik — AI and quantum research…" | The landing serves, publicly |
+| `qip-dev-openobserve-rgxpsss2lq-uk.a.run.app` | `308 -> /web/`; `/web/` `200`; `/api/default/` `401 {"code":401,"message":"Unauthorized Access"}` | OpenObserve exists, is reachable anonymously (ADR 0030), and its own login is enforced on the API |
+| `qip-dev-api-rgxpsss2lq-uk.a.run.app` | Google Frontend `404 Not Found` | A service exists at the catalogue's name with internal ingress |
+| `qip-dev-fastbrain-rgxpsss2lq-uk.a.run.app` | Google Frontend `404 Not Found` | Same |
+| `qip-dev-deepbrain-rgxpsss2lq-uk.a.run.app` | Google Frontend `404 Not Found` | Same |
+| `qip-dev-nothing-95200532413.us-east4.run.app` (control) | `404 Page not found`, no `server` header | The shape of "no such service", on the deterministic URL form too |
+
+One limit worth writing down so nobody repeats the probe: `/healthz` on
+*any* `*.run.app` hostname — the landing's, OpenObserve's — is answered by
+Google's own generic 404 page before the request reaches a container,
+while `/healthzz` reaches the application. An external `GET /healthz`
+therefore says nothing about `catalogue.tf:488`'s probe path; the evidence
+that path is right is that the revision is Ready and serving, because the
+startup probe runs inside the instance.
+
+**Rows that move.**
+
+| # | Gap | Severity |
+|---|---|---|
+| 1 | The two frontends: `scripts/deploy-frontends.sh` now deploys both by digest (`:200`, `:242`) with `--binary-authorization=default` (`:208`, `:250`). Fixed in the tree; both hostnames observed serving. Whether the *running* revisions carry the flag was not observed | Was BLOCKING-A-GATE; closed in code, unverified in the project |
+| 2 | The landing has its own identity: `modules/secrets/main.tf:277` creates `landing`, `deploy-frontends.sh:252` passes it, and the acceptance suite's five-account set became six. Fixed in the tree; the running service's identity was not observed | Was BLOCKING-A-GATE; closed in code, unverified in the project |
+| 3 | `modules/network/main.tf:185-199` is `console_egress_deny_egress`, with the Google-APIs allow above it at `:223-238` (`fbb73a7`). Fixed in the tree; not observed | Was BLOCKING-A-GATE; closed in code, unverified in the project |
+| 4 | `deploy-frontends.sh:216` now mounts the session secret at `${SESSION_SECRET_MOUNT}`, a path, so it is a file. Fixed in the tree; not observed | Was BLOCKING-A-GATE; closed in code, unverified in the project |
+| 8 | OpenObserve observed serving anonymously at its Cloud Run URL, exactly as gap 8 said. The §2.1 row is now contradicted by an observation, not only by a file | BLOCKING-A-GATE, confirmed |
+| 10 | `infrastructure/CLAUDE.md:33-35` said "Nothing in this directory has been applied by an agent; the first real plan is a human's to read" while four services it describes were serving. Rewritten in this change to say what was applied and what was observed | COSMETIC, fixed |
+
+The paragraph above headed "F1–F4 are in progress this wave" is superseded
+by rows 1–4 here: each is closed in the tree as of this observation. What
+none of them has is the second half — a `gcloud run services describe`, or
+the Cloud Run API, showing the running revision carries the flag, the
+identity and the mount. That is one authenticated read per service and it
+is the next thing to do with a credential that works.
+
+**Stale decisions, re-read.** ADR 0024's closing sentence — "the platform is
+not running anywhere" — is now contradicted by observation and not only by
+this repository's own files. `workload_metrics_exist = false` is **not**
+stale: the Monitoring API could not be queried, so no descriptor was seen,
+and a gate that stays closed for want of evidence is doing its job.
+
+**What this section does not claim.** Nothing about which digest any
+service serves, whether it matches `images.tfvars`, whether Binary
+Authorization was evaluated on its revision, which secrets have a version,
+whether any execution node exists, or whether anything has scraped. Each of
+those is one `GET` with a real token and none of them was made.
+
+## Applied by ADR 0040's record: infra.yml `dev` `up`, runs 34 and 35
+
+ADR 0040 says the dispatch's run URL and terminal status are recorded here,
+beside what the apply produced. Two dispatches, both on commit `e1711fb`,
+both on 2026-09-05, both **failure**:
+
+| Run | URL | Dispatched | Plan | Terminal status |
+|---|---|---|---|---|
+| 34 | https://github.com/droderiquesit/quantum-ai-platform/actions/runs/33944963018 | 04:35Z | 83 to add | failure — 82 created, the cluster refused |
+| 35 | https://github.com/droderiquesit/quantum-ai-platform/actions/runs/33946596091 | 05:12Z | 1 to add, 0 to change, 0 to destroy | failure — the same cluster, the same refusal |
+
+**What run 34 created.** State went from 163 to 234 resources: 82 of the 83
+the plan named. The six Cloud Run objects the root's `removed` blocks
+release under ADR 0036 left state undestroyed, as intended; every identity,
+key, grant, zone and bucket of `modules/gitops-control-plane` except the
+cluster now exists in `algorik-dev`. Run 35's plan, read before its
+dispatch, was the one remaining resource.
+
+**What both refused.** `module.gitops_control_plane[0].google_container_cluster.control_plane`
+(`modules/gitops-control-plane/main.tf`, the `resource "google_container_cluster"`
+block), with one `googleapi: Error 400` carrying two messages:
+
+    addons {"config-connector"} are not supported for Autopilot clusters
+    generic::permission_denied: Permission 'gkehub.memberships.create' denied
+      on 'projects/algorik-dev/locations/us-east4/memberships/qip-dev-control-plane'
+
+The first is a contradiction inside ADR 0036 itself — decision 1 wants
+Autopilot and "installed as the GKE addon" in the same sentence, and the
+API admits one of the two. The second is the register of missing
+permissions gaining an entry: neither `roles/gkehub.gatewayEditor` nor
+`roles/gkehub.viewer`, the two the module grants the infrastructure
+account, carries the permission the cluster's `fleet` block needs at
+create time.
+
+**The fix, in this commit, awaiting re-dispatch.** Autopilot stays, because
+it is the property that keeps a `qip-*` image off the cluster; the addon
+goes. Config Connector's operator is now a vendored, digest-pinned manifest
+under `infrastructure/gitops/bootstrap/config-connector-operator/`
+(1.156.0, the Autopilot variant; `SOURCE.md` there records the bundle, the
+hashes and the image digest), one more line in
+`infrastructure/egress/vendored-images.txt` for `vendor.yml` to mirror and
+attest, and one more step in `infra.yml`'s bootstrap between Kargo and the
+`ConfigConnector` object, which waits for the operator's CRD before naming
+it. The permission is one custom role,
+`qipGitopsFleetRegistrar_<env>` — `gkehub.memberships.create`, `.get`,
+`.delete` and nothing else — bound to the infrastructure account in the same
+module, with the cluster's `depends_on` naming the binding. Not
+`roles/gkehub.editor`, which carries every feature and scope in the fleet
+API to close one permission.
+
+**What the next `up` still has to prove, and where it will say so.** Three
+things this commit asserts and no run has observed. First, that the create
+succeeds at all with a binding made seconds earlier: IAM propagation can
+refuse a fresh grant, and a second dispatch is the remedy, not a wider
+role. Second, that `vendor.yml` has mirrored and attested the operator image
+before the bootstrap pulls it — the list change triggers that workflow into
+`dev` on push, and the bootstrap's `rollout status` on the operator's
+StatefulSet is where an unattested image shows as a Pod that never starts.
+Third, and the one this commit could not settle from here: the operator
+installs the four `cnrm-system` controllers from `gcr.io/gke-release/cnrm/*`
+images pinned inside its own image, which no overlay moves; they are
+admitted only if Google's global policy, which `modules/binaryauthorization`
+enables, admits that registry, and neither the public documentation nor an
+anonymous read of the policy would say. The bootstrap's
+`kubectl -n cnrm-system wait` is where that is answered, and a denial there
+is a decision about `exempt_image_patterns` for a person, recorded in
+`bootstrap/config-connector-operator/SOURCE.md` rather than left to be
+rediscovered.
+
+Neither the cluster nor any controller was observed running. Every claim
+above about `algorik-dev` is read off the two runs' logs as reported to
+this record, and the resource count is the workflow's own `what exists now`
+step.
+
+### Runs 36 and 37: the fleet grant held, the addon was gone, and the node could not reach its control plane
+
+Two more dispatches, both on commit `3848a89`, both on 2026-09-05:
+
+| Run | URL | Dispatched | Plan | Terminal status |
+|---|---|---|---|---|
+| 36 | https://github.com/droderiquesit/quantum-ai-platform/actions/runs/33960966370 | before 10:35Z | 3 to add, 0 to change, 0 to destroy | success — plan only |
+| 37 | https://github.com/droderiquesit/quantum-ai-platform/actions/runs/33961066585 | 10:35Z | the same three | failure after 38 minutes — three created, the cluster's node never registered |
+
+**What run 37 created.** State went from 234 to 237:
+`google_project_iam_custom_role.fleet_registrar`, its binding
+`google_project_iam_member.infra_registers_fleet`, and
+`google_container_cluster.control_plane` — all three under
+`module.gitops_control_plane[0]`. Both refusals of runs 34 and 35 are
+closed: the API accepted the create without the addon and the fleet
+membership was registered by the custom role, which is the evidence the
+previous section said the next `up` had to produce. The cluster object
+exists in `algorik-dev` (`qip-dev-control-plane`, `us-east4`), with its
+etcd key, its peering and its one Autopilot node.
+
+**The exact error.** The create call waited for its node and gave up:
+
+    Error waiting for creating GKE cluster: All cluster resources were
+    brought up, but: only 0 nodes out of 1 have registered. Node
+    gk3-qip-dev-control-plan-default-pool-1b8ecf12-3gg8 experienced kubelet
+    errors.
+
+The node's serial log, as reported to this record:
+
+    failed to get node info: node ... not found
+    F0905 10:46:11 main.go:78] unable to lock file, error: context deadline exceeded
+    Unable to write event ... Post https://10.0.36.2/api/v1/namespaces/default/events:
+      getting credentials: exec: executable /home/kubernetes/bin/gke-exec-auth-plugin
+      failed with exit code 1
+    Failed to ensure lease exists ... Get https://10.0.36.2/apis/coordination.k8s.io/...
+      getting credentials: exec ... gke-exec-auth-plugin failed with exit code 1
+      (Client.Timeout exceeded while awaiting headers)
+
+**The diagnosis, from the tree.** Every address the node failed to reach is
+`10.0.36.2`: the second address of `gitops_master_ipv4_cidr_block =
+"10.0.36.0/28"` (`environments/dev/terraform.tfvars`), which is the private
+endpoint — a range in a VPC Google peers to ours, so a packet to it leaves
+the node's interface and is subject to our egress rules. The cluster puts
+the management zone's tag on every node
+(`modules/gitops-control-plane/main.tf`, `node_pool_auto_config`), so the
+zone's rules are the node's rules, and the zone's rules are
+(`modules/trust-zones/main.tf`): `deny_egress`, priority 65000, all
+protocols to `0.0.0.0/0`; `google_apis`, TCP 443 to `199.36.153.8/30`; and
+the forty `external_egress` rules the root generates for GitHub's ranges on
+443 (`main.tf`, `local.github_egress`). Nothing names `10.0.36.0/28`. The
+kubelet's registration, its lease, its events and the certificate
+`gke-exec-auth-plugin` fetches all go to the endpoint on 443, and every
+one of them timed out — which is what a firewall drop looks like from the
+inside, and what the serial log shows.
+
+What was checked and found *not* to be the cause, so the next reader does
+not re-check it: Private Google Access is on for every zone subnet
+(`trust-zones/main.tf`, `private_ip_google_access = true`);
+`container.googleapis.com`, `oauth2.googleapis.com`, `logging`, `monitoring`
+and `storage` are all under the `googleapis.com.` zone `modules/network`
+sends to the restricted VIP by wildcard CNAME, and the zone's `google_apis`
+rule admits that /30 on 443; `pkg.dev` and `gcr.io` have their own zones to
+the same addresses in the control-plane module; the metadata server
+(`169.254.169.254`) is not subject to VPC firewall rules at all; and the
+return path — the control plane reaching the node on 443 and 10250 — is the
+`gke-<cluster>-<hash>-master` INGRESS rule GKE writes itself at priority
+1000, above the zone's 65000 `deny_ingress`. No DNS change was needed and
+none was made.
+
+**The fix, in this commit, awaiting re-dispatch.** Two firewall rules in
+`modules/gitops-control-plane/main.tf`, under "what a node needs that the
+zone's deny refuses", both targeted at the management zone's tag and both
+at priority 1000 like every allow the zone writes:
+
+  * `nodes_reach_control_plane` — `qip-dev-control-plane-nodes-to-endpoint`
+    — TCP 443, 10250 and 8132 to `var.master_ipv4_cidr_block` and nothing
+    wider. 443 is the port the serial log proves; 10250 and 8132
+    (Konnectivity, the tunnel the control plane reaches a private cluster's
+    nodes back through — admission webhooks, `logs`, `exec`) are what GKE
+    documents for a node whose egress is restricted, added now rather than
+    found by the next forty-minute wait. The cluster's `depends_on` names
+    it, because Terraform infers nothing from a firewall rule and a rule
+    created in parallel with the create's wait may arrive after the wait
+    gave up.
+  * `nodes_reach_each_other` — `qip-dev-control-plane-nodes-intra-cluster`
+    — TCP, UDP and ICMP to the zone's own subnet and to the Pod range the
+    cluster reports (`cluster_ipv4_cidr`, known only after the cluster
+    exists, so this rule follows the cluster). **Not observed by run 37**:
+    one node registering needs none of it. Named here because the
+    mechanism is certain — Autopilot's Pods hold VPC-native addresses and a
+    Pod reaching a Pod on another node leaves the interface and meets the
+    same deny — and because every failed create costs another cluster a
+    person has to delete (below).
+
+The rule lives in the control-plane module and not in `modules/trust-zones`
+because only the control-plane module knows the endpoint's range; the zone
+module keeps refusing a path from a zone to itself, and neither rule is a
+boundary crossing — the endpoint and the Pod range are this cluster's own.
+No `0.0.0.0/0`, no widening of the zone's deny, no IAM change.
+`the_control_plane_nodes_may_reach_their_endpoint_and_the_cluster_waits_for_that_rule`
+in the acceptance suite pins the first rule's direction, target, destination,
+the three ports, its precedence over the zone's deny (read from the zone
+module, not assumed) and the cluster's `depends_on`.
+
+**The tainted cluster, and what the next `plan` and `up` will do.** The
+provider recorded the cluster in state before its wait failed (the count
+went to 237), so Terraform has marked it tainted. The next `plan` will show
+
+    # module.gitops_control_plane[0].google_container_cluster.control_plane is tainted, so must be replaced
+    -/+ resource "google_container_cluster" "control_plane" { ... }
+      + resource "google_compute_firewall" "nodes_reach_control_plane" { ... }
+      + resource "google_compute_firewall" "nodes_reach_each_other" { ... }   # destination_ranges (known after apply)
+    Plan: 3 to add, 0 to change, 1 to destroy.
+
+**Observed, not predicted — run 38.** `infra.yml` `dev` `plan` on `9ded2ea`
+(https://github.com/droderiquesit/quantum-ai-platform/actions/runs/33963633137,
+dispatched 11:33Z 2026-09-05, terminal status success) printed exactly
+that: the cluster `is tainted, so must be replaced`, the two firewall
+rules to add, `Plan: 3 to add, 0 to change, 1 to destroy.`, 237 resources
+in state. Under ADR 0040 decision 1 a plan that destroys the cluster is
+not one the agent dispatches `up` on, so no `up` was dispatched; the
+person's path below is the next step.
+
+The next `up`, dispatched against that state, will **fail**, on purpose:
+the replacement's first half is a destroy, and `deletion_protection = true`
+(`modules/gitops-control-plane/main.tf`, the cluster block) makes the
+provider refuse it at apply time —
+
+    Error: Cannot destroy cluster because deletion_protection is set to true. Set it to false to proceed.
+
+— so nothing is destroyed, the bootstrap step does not run, and the
+`nodes_reach_each_other` rule, which depends on the replacement, is not
+created. Whether `nodes_reach_control_plane` is created before the refusal
+is a graph-ordering question this record does not settle; the apply log's
+`Creation complete` line answers it. `deletion_protection` stays exactly
+as it is: it is doing what it was written for, which is to make removing a
+cluster a person's act.
+
+**The narrowest path, and why the workflow does not get an `untaint`
+action.** Two ways exist to clear a taint. `terraform untaint
+module.gitops_control_plane[0].google_container_cluster.control_plane`
+destroys nothing and would let a plain `up` add the two rules and change
+nothing else — *if* the cluster is worth keeping, which is a fact about
+whether its node registered on its own once the rule existed, and the rule
+does not exist until an `up` that the taint makes fail. The only identity
+that can run `untaint` against this state is the workflow's (Workload
+Identity Federation, no key, no local state access), so "the operator runs
+`untaint`" means "a fourth `action` in `infra.yml`". This commit does not
+add one, for three reasons. First, the acceptance suite refuses the word
+`untaint` in `infra.yml`'s commands
+(`no_service_can_be_left_tainted_because_terraform_no_longer_creates_one`):
+the workflow once had an untaint-on-evidence step for a Cloud Run service
+and the repository retired it as a mechanism, not as a bug — a step that
+untaints from a workflow is the step that puts a refused object back into
+service without the evidence being in front of anyone. Second, an
+`untaint` action taking a resource address is a general state-mutation
+primitive dispatched by name; guarding it to one address makes it a
+one-off encoded in a workflow for ever. Third, the thing a person is
+deciding — "this cluster is good" — cannot be observed from the workflow
+before the untaint: the node's registration is visible only through the
+Connect gateway once the cluster is `RUNNING`, and the cluster is not.
+Weakening the test to admit the action would be the change the test exists
+to make somebody argue for, and this record argues against it.
+
+What a person does instead, in this order, and what each step costs:
+
+  1. Confirm nothing on the cluster is worth keeping. Nothing is: no
+     bootstrap ran (the `up` step failed before it), no controller was
+     installed, neither App credential was projected, and the etcd key is
+     a separate resource under `prevent_destroy` that the cluster's removal
+     does not touch.
+  2. Delete the cluster by name, as themselves, in the console or with
+     `gcloud container clusters delete qip-dev-control-plane --project
+     algorik-dev --region us-east4`. `deletion_protection` is a provider
+     attribute, not a GKE one, so the deletion is not refused. Then confirm
+     the fleet membership went with it — `gcloud container fleet memberships
+     list --project algorik-dev` should not list `qip-dev-control-plane` —
+     because a membership left behind is refused by the next create as
+     already existing. This is the "deliberate two-step by a person" the
+     cluster block names, and the domain rule that a cloud deletion needs
+     the resource named by a person is why no agent and no workflow does
+     it.
+  3. Dispatch `plan`. The refresh finds the cluster gone and drops it from
+     state; the expected summary is **3 to add, 0 to change, 0 to destroy**
+     — the cluster and the two rules — with no `-/+` and no `tainted`.
+  4. Dispatch `up`. The ordering is now the module's: `nodes_reach_control_plane`
+     first, the cluster after it, `nodes_reach_each_other` after the
+     cluster reports its Pod range, then the bootstrap. Where the next
+     failure would show, if there is one: the create's own wait again if a
+     port is still missing; the bootstrap's `rollout status` on cert-manager
+     if 8132 was wrong or insufficient; the `cnrm-system` wait for the
+     admission question the previous section left open.
+
+**What the next `up` still has to prove.** That a node registers with the
+rule in place; that Konnectivity's tunnel comes up on 8132 and the
+cert-manager webhook rollout succeeds; that Pods on a second node reach
+Pods on the first; and everything the previous section listed for the
+bootstrap. None of it has been observed. Every claim above about
+`algorik-dev` is read off run 37's log as reported to this record and off
+the tree at `3848a89` plus this commit.
 
 ## The paper-trading boundary
 

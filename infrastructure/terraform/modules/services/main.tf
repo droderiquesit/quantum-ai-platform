@@ -86,6 +86,15 @@ locals {
     # this enables the project's half of a service whose activation is an
     # organisation-level act.
     var.enable_security_command_center ? { "securitycenter.googleapis.com" = "modules/scc" } : {},
+    # The control-plane cluster (ADR 0036) and the two APIs a workflow reaches
+    # its private endpoint through: the fleet it is registered to, and the
+    # Connect gateway that proxies a kubectl call to it as an authenticated
+    # Google API request rather than a route into the VPC.
+    var.enable_gitops ? {
+      "container.googleapis.com"      = "the control-plane cluster in modules/gitops-control-plane"
+      "gkehub.googleapis.com"         = "the fleet membership the cluster registers with, in modules/gitops-control-plane"
+      "connectgateway.googleapis.com" = "infra.yml's bootstrap step, which applies the controller manifests through the gateway"
+    } : {},
   )
 
   services = merge(local.always, local.optional)

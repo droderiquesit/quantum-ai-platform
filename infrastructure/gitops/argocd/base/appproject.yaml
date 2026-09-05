@@ -1,0 +1,35 @@
+# The one project, and what it may reach: this repository, this cluster's
+# `qip-run` namespace, and the kinds a RunService deployment is made of.
+# Nothing cluster-scoped, so an Application in this project cannot create a
+# namespace, a CRD or a cluster role however its manifests are edited; and
+# no `Deployment`, `StatefulSet` or `Pod` in the whitelist, which is the
+# project-level form of ADR 0036's "no trading binary ever runs as a Pod".
+# The one workload kind admitted is the `Job` the proving hook runs, and
+# the acceptance suite refuses a `qip-*` image in it.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: qip
+spec:
+  description: The platform's Cloud Run services, as Config Connector manifests, from this repository alone.
+  sourceRepos:
+    - https://github.com/droderiquesit/quantum-ai-platform.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: qip-run
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - group: run.cnrm.cloud.google.com
+      kind: RunService
+    - group: iam.cnrm.cloud.google.com
+      kind: IAMPolicyMember
+    - group: batch
+      kind: Job
+    - group: ""
+      kind: ServiceAccount
+    - group: ""
+      kind: ConfigMap
+    - group: rbac.authorization.k8s.io
+      kind: Role
+    - group: rbac.authorization.k8s.io
+      kind: RoleBinding

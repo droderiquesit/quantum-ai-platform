@@ -39,13 +39,17 @@
 pub mod auth;
 pub mod cells;
 pub mod console;
+pub mod feed;
 pub mod http;
 pub mod json;
+pub mod ledger_views;
 pub mod mesh;
 pub mod missing;
 pub mod openapi;
 pub mod openobserve;
 pub mod routes;
+pub mod self_model_views;
+pub mod statement;
 pub mod stream;
 pub mod trust;
 pub mod web;
@@ -53,6 +57,7 @@ pub mod web;
 pub use auth::{Authenticator, Credential, Principal, RateLimiter, Role};
 pub use cells::{CellObservation, CellRegistry};
 pub use console::Console;
+pub use feed::{ApiFeed, ConnectorSettings, FeedSettings, Sensed};
 pub use http::{
     Handler, Method, Request, Response, ResponseStream, Server, ServerLimits, StreamDecision,
     StreamEnd, StreamOutcome, pump,

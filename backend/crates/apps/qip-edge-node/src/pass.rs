@@ -24,9 +24,21 @@
 //! safe to resume — and then does nothing else, so that a halted node's
 //! pass counter is flat and its order counter cannot move by any path. The
 //! halt itself is already charted by the gauge every halt wire writes.
+//!
+//! # Where the requote sits in the pass
+//!
+//! After the venue's reports have been drained into the cell and before the
+//! cell decides, and only past the halt check. The order is the whole of
+//! the requoter's correctness: judged before the drain, a fill that arrived
+//! this pass is not yet booked and the replacement would carry a quantity
+//! that no longer exists; judged before the halt check, a halted node would
+//! send. Every call the cell makes to the venue on the pass goes through
+//! [`RequotingPlacer`], so a replacement's fresh venue id reaches the cell
+//! as the id the cell sent — see `crate::reprice`.
 
 use crate::feed::{FeedTick, SimulatedFeed};
 use crate::gateway::SimulatedGateway;
+use crate::reprice::{Requote, Requoter, RequotingPlacer};
 use qip_core::error::Result;
 use qip_core::time::Timestamp;
 use qip_edge::cell::{Cell, ConfirmedFill, WorkReport};
@@ -51,6 +63,11 @@ pub struct PassStats {
     pub fills: u64,
     /// Resting orders withdrawn at their time to live, on any turn.
     pub expired: u64,
+    /// Resting orders withdrawn for drift and re-sent at the touch: one
+    /// cancel acknowledged, one new order. Counted only when the
+    /// replacement reached the venue; a refused cancel or replacement is
+    /// reported on the outcome and counted nowhere.
+    pub repriced: u64,
     /// Reconciliation breaks found after a pass; each one has halted the cell.
     pub breaks: u64,
 }
@@ -68,6 +85,9 @@ pub enum PassOutcome {
     Ran {
         feed: FeedTick,
         report: WorkReport,
+        /// What the requoter did to each resting order it did not leave
+        /// alone, before the cell decided. Empty with no requoter.
+        requotes: Vec<Requote>,
         /// Disagreements between the cell's fills and the venue's account,
         /// as the reconciler described them. Non-empty means the cell is now
         /// halted by its kill switch.
@@ -80,20 +100,26 @@ pub enum PassOutcome {
 /// Takes the simulated gateway and the simulated feed by their own types:
 /// there is no signature here that accepts a live gateway, so the pass loop
 /// cannot be pointed at one by a later edit to `main.rs` without this
-/// function changing.
+/// function changing. The requoter is optional — a node with no declared
+/// requote policy leaves every resting order where it was sent — and when
+/// present it sees the venue only through the same gateway the cell does.
 pub fn run_pass(
     cell: &mut Cell,
     gateway: &mut SimulatedGateway,
     feed: &mut SimulatedFeed,
+    requoter: Option<&mut Requoter>,
     stats: &mut PassStats,
     now: Timestamp,
 ) -> Result<PassOutcome> {
     let tick = feed.publish(gateway, cell, now)?;
+    // From here every call the cell makes to the venue is mapped, so a
+    // replacement's venue id reaches the cell as the id the cell sent.
+    let mut gateway = RequotingPlacer::new(gateway, requoter);
     // The venue's answers about orders already out, before the halt check:
     // a halted node sends nothing and still has to book what filled, or the
     // reconciler below compares the venue's account with a record that
     // stopped listening.
-    let mut already_out = cell.confirm_execution_reports(gateway, now);
+    let mut already_out = cell.confirm_execution_reports(&mut gateway, now);
     // And withdraw what has rested past its time to live, on a halted node
     // too: withdrawing is not sending. Withdrawing confirms internally, so
     // the fills it books arrive on the tail of the cell's record and this
@@ -113,7 +139,7 @@ pub fn run_pass(
     // channel empty — booked by the cell, charted by the venue counter, and
     // in no delta the centre ever saw.
     let known = cell.fills().len();
-    let expired = cell.withdraw_expired(gateway, now);
+    let expired = cell.withdraw_expired(&mut gateway, now);
     stats.expired = stats.expired.saturating_add(expired.len() as u64);
     // Nothing between the two lines above removes from the record — only
     // `settle`, reached from `reconcile`, does — so the tail is exactly what
@@ -128,7 +154,19 @@ pub fn run_pass(
         });
     }
 
-    let mut report = cell.work(now, gateway)?;
+    // Staleness is judged only now: past the halt check, because a requote
+    // sends; after the drain, because a fill booked above is a quantity the
+    // replacement must not carry. Once per book update, which is once per
+    // pass — the feed published exactly one above.
+    let requotes = gateway.reprice(cell, now);
+    stats.repriced = stats.repriced.saturating_add(
+        requotes
+            .iter()
+            .filter(|requote| matches!(requote, Requote::Replaced { .. }))
+            .count() as u64,
+    );
+
+    let mut report = cell.work(now, &mut gateway)?;
     stats.passes = stats.passes.saturating_add(1);
     stats.refusals = stats.refusals.saturating_add(report.refusals.len() as u64);
     stats.signals = stats.signals.saturating_add(report.signals.len() as u64);
@@ -155,6 +193,7 @@ pub fn run_pass(
     Ok(PassOutcome::Ran {
         feed: tick,
         report,
+        requotes,
         breaks,
     })
 }

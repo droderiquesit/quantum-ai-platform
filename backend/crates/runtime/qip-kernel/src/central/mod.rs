@@ -54,15 +54,23 @@ pub mod insights;
 pub mod learning;
 pub mod models;
 pub mod plane;
+pub mod realised;
+pub mod regions;
 pub mod whitelist;
 
 pub use dna::{DnaPayload, StrategyDna};
 pub use factory::{StrategyCandidate, StrategyFactory, StrategyReview};
-pub use learning::{CellOutcome, LearningReport, LearningVerdict, StrategyLearning};
+pub use learning::{
+    CellOutcome, DispositionInstruction, DispositionOutcome, DispositionRefused,
+    DispositionedPosition, LearningReport, LearningVerdict, PositionDiscrepancy,
+    RetirementDisposition, StrategyLearning,
+};
 pub use plane::{
     AbsorbedFill, BreakDirection, BreakOrigin, CellIngestion, CellReport, CentralConfig,
     CentralPlane, IssuedCapital, ReconciliationBreak, capital_subject,
 };
+pub use realised::{REALISED_SESSIONS, RealisedSeries, RealisedSession};
+pub use regions::{GrantManifests, ManifestDecision, RegionMembership, RegionShare, RegionShares};
 pub use whitelist::{
     ArbitragePolicy, WhitelistIssue, WhitelistOutcome, WhitelistedMarket, WhitelistedVenue,
 };

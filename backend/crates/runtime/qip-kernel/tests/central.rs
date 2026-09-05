@@ -41,8 +41,9 @@ use qip_financial::quality::{DataQuality, Provenance as DataProvenance};
 use qip_financial::universe::Universe;
 use qip_kernel::central::{
     ArbitragePolicy, BreakOrigin, CellOutcome, CellReport, CentralConfig, CentralPlane,
-    IssuedCapital, LearningVerdict, ReconciliationBreak, StrategyCandidate, StrategyDna,
-    WhitelistIssue, WhitelistOutcome, WhitelistedMarket, WhitelistedVenue, capital_subject,
+    DispositionInstruction, DispositionOutcome, DispositionRefused, IssuedCapital, LearningVerdict,
+    ReconciliationBreak, RetirementDisposition, StrategyCandidate, StrategyDna, WhitelistIssue,
+    WhitelistOutcome, WhitelistedMarket, WhitelistedVenue, capital_subject,
 };
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::Stage;
@@ -1632,5 +1633,851 @@ fn issuing_a_whitelist_through_the_platform_journals_what_was_issued() -> Result
         })
         .collect::<Result<_>>()?;
     assert_eq!(bodies, vec![empty, emitted]);
+    Ok(())
+}
+
+// --- §35.2: a retirement dispositions the strategy's positions -----------------
+
+/// One order the cell sent for the strategy alone, and the venue's fill of
+/// it attributed wholly to that strategy — the shortest path to a lot in the
+/// centre's books.
+fn strategy_order_and_fill(
+    id: &StrategyId,
+    order_id: &str,
+    side: qip_contracts::message::BookSide,
+    quantity: Decimal,
+    price: Decimal,
+    at: Timestamp,
+) -> (qip_mesh::delta::DeltaOrder, qip_contracts::wire::FillRecord) {
+    let order = qip_mesh::delta::DeltaOrder {
+        order_id: order_id.to_string(),
+        strategy: id.clone(),
+        object_id: ObjectId::from_string(INSTRUMENT),
+        venue: venue(),
+        side,
+        quantity,
+        price,
+        simulated: true,
+        contributors: vec![qip_contracts::intent::Contributor {
+            strategy: id.clone(),
+            signed_size: if side == qip_contracts::message::BookSide::Ask {
+                quantity
+            } else {
+                -quantity
+            },
+            inputs: vec![("book_pressure".to_string(), 1)],
+        }],
+    };
+    let fill = qip_contracts::wire::FillRecord {
+        order_id: order_id.to_string(),
+        object_id: ObjectId::from_string(INSTRUMENT),
+        venue: venue(),
+        side,
+        quantity,
+        price,
+        simulated: true,
+        at,
+        shares: vec![qip_contracts::wire::FillShare {
+            strategy: id.clone(),
+            quantity,
+        }],
+    };
+    (order, fill)
+}
+
+/// Live returns with the drift gone: the same series the lifecycle suite
+/// retires on, so the review trips decay and nothing else.
+fn decayed_returns() -> Vec<f64> {
+    good_returns(11, 60, -0.0002)
+}
+
+/// Drive a pilot strategy off capital by decay and then, the default ninety
+/// days later and still decaying, to retirement — through `learn_from_cells`
+/// alone, exactly as the LEARN edge would. Returns the retiring report.
+fn retire_by_decay(platform: &mut Platform, id: &StrategyId) -> Result<LearningReportAt> {
+    let demoted_at = start().saturating_add(Duration::from_days(60));
+    let demoting = platform.learn_from_cells(
+        &[CellOutcome::new(
+            id.clone(),
+            CELL,
+            demoted_at,
+            decayed_returns(),
+        )],
+        demoted_at,
+    )?;
+    assert_eq!(
+        platform.central().factory().stage_of(id),
+        GateStage::Shadow,
+        "premise: decay demoted the strategy off capital: {:?}",
+        demoting.learnings.first().map(|l| &l.review.triggers)
+    );
+    assert!(
+        demoting.dispositions.is_empty(),
+        "premise: a demotion that is not a retirement dispositions nothing: {:?}",
+        demoting.dispositions
+    );
+
+    let retired_at = demoted_at.saturating_add(Duration::from_days(90));
+    let retiring = platform.learn_from_cells(
+        &[CellOutcome::new(
+            id.clone(),
+            CELL,
+            retired_at,
+            decayed_returns(),
+        )],
+        retired_at,
+    )?;
+    assert_eq!(
+        platform.central().factory().stage_of(id),
+        GateStage::Retired,
+        "premise: sustained decay at the floor retired the strategy: {:?}",
+        retiring.learnings.first().map(|l| &l.review.triggers)
+    );
+    Ok(LearningReportAt {
+        report: retiring,
+        retired_at,
+    })
+}
+
+struct LearningReportAt {
+    report: qip_kernel::central::LearningReport,
+    retired_at: Timestamp,
+}
+
+/// Blueprint §35.2: "on retirement, each position is ... scheduled for
+/// unwinding". Before this, `DemotionMonitor::enforce` retired the strategy
+/// through the ledger and its lot stayed in the books under a strategy that
+/// no longer existed at any rung — the orphan the blueprint calls a
+/// reconciliation break — with nothing in the log saying so.
+#[test]
+fn an_automatic_retirement_schedules_every_lot_the_strategy_holds_for_unwinding_and_journals_it()
+-> Result<()> {
+    use qip_contracts::message::BookSide;
+    use qip_events::{EventFilter, Topic};
+
+    let mut platform = platform()?;
+    let id = strategy();
+    register(platform.central_mut(), &id, CELL)?;
+    walk_to(platform.central_mut(), &id, GateStage::Pilot)?;
+
+    // The strategy buys a hundred at fifty, and the centre attributes it.
+    let (order, fill) = strategy_order_and_fill(
+        &id,
+        "ord-retire-1",
+        BookSide::Ask,
+        dec!("100"),
+        dec!("50"),
+        start(),
+    );
+    let ingestion = platform.ingest_cell_report(
+        CellReport::new(CELL, start())
+            .with_orders(vec![order])
+            .with_fills(vec![fill]),
+        start(),
+    )?;
+    assert!(
+        ingestion.settlement.refused.is_empty(),
+        "premise: the fill settled: {:?}",
+        ingestion.settlement.refused
+    );
+    let held = platform
+        .central()
+        .strategy_lot(CELL, &id, INSTRUMENT)
+        .copied()
+        .ok_or_else(|| qip_core::Error::not_found("the strategy's lot"))?;
+    assert_eq!(
+        (held.quantity, held.average_price),
+        (dec!("100"), dec!("50")),
+        "premise: the attribution holds the lot"
+    );
+    assert!(
+        platform.central().scheduled_unwinds().is_empty(),
+        "premise: a lot held by a strategy at a rung is not scheduled for anything"
+    );
+    let positions = EventFilter::new().topic(Topic::PositionUpdated);
+    assert!(
+        platform.replay_journal(&positions)?.is_empty(),
+        "premise: nothing about positions has been journaled yet"
+    );
+
+    let LearningReportAt { report, retired_at } = retire_by_decay(&mut platform, &id)?;
+
+    // One disposition, for the retired strategy, naming the one lot.
+    assert_eq!(report.dispositions.len(), 1, "{:?}", report.dispositions);
+    let DispositionOutcome::Dispositioned(disposition) = &report.dispositions[0] else {
+        panic!(
+            "the attribution names the lot, so nothing was there to refuse: {:?}",
+            report.dispositions[0]
+        );
+    };
+    assert_eq!(disposition.strategy, id);
+    assert_eq!(disposition.retired_at, retired_at);
+    assert!(
+        disposition.rationale.contains("retirement threshold"),
+        "the record carries the ledger's own rationale: {}",
+        disposition.rationale
+    );
+    let keys: Vec<&String> = disposition.positions.keys().collect();
+    assert_eq!(keys, vec![&format!("{CELL}/{INSTRUMENT}")]);
+    let lot = &disposition.positions[&format!("{CELL}/{INSTRUMENT}")];
+    assert_eq!(
+        (
+            lot.cell.as_str(),
+            lot.instrument.as_str(),
+            lot.quantity,
+            lot.average_price
+        ),
+        (CELL, INSTRUMENT, dec!("100"), dec!("50"))
+    );
+    // The instruction flattens: a hundred long is sold a hundred, through
+    // the cell's own path, and nothing here is an order.
+    assert_eq!(
+        lot.instruction,
+        DispositionInstruction::Unwind {
+            flatten_by: dec!("-100")
+        }
+    );
+
+    // The same record is in the log, decodable, and equal to what the
+    // report said — the disposition is reproducible from the log alone.
+    let journaled = platform.replay_journal(&positions)?;
+    assert_eq!(journaled.len(), 1, "one disposition, journaled once");
+    let replayed = journaled[0].decode::<RetirementDisposition>()?.body;
+    assert_eq!(&replayed, disposition);
+
+    // And the lot is now listed as awaiting its unwind, from the ledger and
+    // the books rather than from any schedule kept beside them.
+    let scheduled = platform.central().scheduled_unwinds();
+    assert_eq!(
+        scheduled
+            .get(&id)
+            .and_then(|lots| lots.get(&format!("{CELL}/{INSTRUMENT}"))),
+        Some(&dec!("-100"))
+    );
+
+    // The cell flattens it — a fill the venue confirmed — and the schedule
+    // empties by the same arithmetic that moved the lot.
+    let later = retired_at.saturating_add(Duration::from_hours(1));
+    let (order, fill) = strategy_order_and_fill(
+        &id,
+        "ord-retire-2",
+        BookSide::Bid,
+        dec!("100"),
+        dec!("52"),
+        later,
+    );
+    platform.ingest_cell_report(
+        CellReport::new(CELL, later)
+            .with_orders(vec![order])
+            .with_fills(vec![fill]),
+        later,
+    )?;
+    assert!(
+        platform.central().scheduled_unwinds().is_empty(),
+        "the lot was flattened, so nothing is left to unwind: {:?}",
+        platform.central().scheduled_unwinds()
+    );
+    Ok(())
+}
+
+/// The other half of §35.2's answer: a position with no owner is a
+/// reconciliation break. When the cell's own book and the attribution
+/// disagree about what the retired strategy holds, the centre does not
+/// schedule an unwind for either number; it records the disagreement, and
+/// that record is what the desk reconciles from.
+#[test]
+fn a_retirement_whose_lots_the_cells_book_and_the_attribution_disagree_on_is_refused_not_guessed()
+-> Result<()> {
+    use qip_contracts::message::BookSide;
+    use qip_events::{EventFilter, Topic};
+
+    let mut platform = platform()?;
+    let id = strategy();
+    register(platform.central_mut(), &id, CELL)?;
+    walk_to(platform.central_mut(), &id, GateStage::Pilot)?;
+
+    // The venue filled a hundred; the cell's book says sixty.
+    let (order, fill) = strategy_order_and_fill(
+        &id,
+        "ord-retire-3",
+        BookSide::Ask,
+        dec!("100"),
+        dec!("50"),
+        start(),
+    );
+    platform.ingest_cell_report(
+        CellReport::new(CELL, start())
+            .with_positions(vec![position(CELL, &id, INSTRUMENT, dec!("60"))])
+            .with_orders(vec![order])
+            .with_fills(vec![fill]),
+        start(),
+    )?;
+    assert_eq!(
+        platform
+            .central()
+            .strategy_lot(CELL, &id, INSTRUMENT)
+            .map(|lot| lot.quantity),
+        Some(dec!("100")),
+        "premise: the attribution holds a hundred"
+    );
+    assert_eq!(
+        platform
+            .central()
+            .reported_positions()
+            .map(|p| p.quantity)
+            .sum::<Decimal>(),
+        dec!("60"),
+        "premise: the cell's book claims sixty"
+    );
+
+    let LearningReportAt { report, retired_at } = retire_by_decay(&mut platform, &id)?;
+
+    assert_eq!(report.dispositions.len(), 1, "{:?}", report.dispositions);
+    let DispositionOutcome::Refused(refusal) = &report.dispositions[0] else {
+        panic!(
+            "two claims that disagree must be refused, not dispositioned: {:?}",
+            report.dispositions[0]
+        );
+    };
+    assert_eq!(refusal.strategy, id);
+    assert_eq!(refusal.retired_at, retired_at);
+    let discrepancy = refusal
+        .discrepancies
+        .get(&format!("{CELL}/{INSTRUMENT}"))
+        .ok_or_else(|| qip_core::Error::not_found("the disagreeing lot"))?;
+    assert_eq!(
+        (discrepancy.attributed, discrepancy.reported),
+        (dec!("100"), dec!("60"))
+    );
+    assert!(
+        refusal
+            .describe()
+            .contains("attributed 100, cell reports 60"),
+        "{}",
+        refusal.describe()
+    );
+
+    // The refusal is its own record, and no unwind instruction was written
+    // for either number.
+    let refusals =
+        platform.replay_journal(&EventFilter::new().topic(Topic::ReconciliationCompleted))?;
+    assert_eq!(refusals.len(), 1, "the refusal was journaled once");
+    assert_eq!(&refusals[0].decode::<DispositionRefused>()?.body, refusal);
+    assert!(
+        platform
+            .replay_journal(&EventFilter::new().topic(Topic::PositionUpdated))?
+            .is_empty(),
+        "no disposition was guessed"
+    );
+    Ok(())
+}
+
+/// A retired strategy that holds nothing is still recorded as such: the
+/// absence of a record would read the same as a retirement nobody
+/// dispositioned, and the log is where the desk checks.
+#[test]
+fn a_retired_strategy_holding_no_lot_is_dispositioned_as_holding_nothing_and_that_is_journaled()
+-> Result<()> {
+    use qip_events::{EventFilter, Topic};
+
+    let mut platform = platform()?;
+    let id = strategy();
+    register(platform.central_mut(), &id, CELL)?;
+    walk_to(platform.central_mut(), &id, GateStage::Pilot)?;
+    assert!(
+        platform
+            .central()
+            .strategy_books()
+            .keys()
+            .all(|(_, owner, _)| owner != &id),
+        "premise: the strategy holds nothing anywhere"
+    );
+
+    let LearningReportAt { report, retired_at } = retire_by_decay(&mut platform, &id)?;
+
+    assert_eq!(
+        report.dispositions.len(),
+        1,
+        "a retirement with nothing held is still dispositioned: {:?}",
+        report.dispositions
+    );
+    let DispositionOutcome::Dispositioned(disposition) = &report.dispositions[0] else {
+        panic!("nothing to disagree about: {:?}", report.dispositions[0]);
+    };
+    assert_eq!(disposition.strategy, id);
+    assert_eq!(disposition.retired_at, retired_at);
+    assert!(disposition.positions.is_empty());
+    let journaled = platform.replay_journal(&EventFilter::new().topic(Topic::PositionUpdated))?;
+    assert_eq!(journaled.len(), 1);
+    assert_eq!(
+        &journaled[0].decode::<RetirementDisposition>()?.body,
+        disposition
+    );
+    Ok(())
+}
+
+// --- §20.3 through the cycle: the LEARN stage reviews what the cells realised --
+
+/// One session's round trip for the strategy: `quantity` bought at par and
+/// sold at par plus whatever moves the day's attributed P&L to `pnl`.
+fn round_trip(
+    id: &StrategyId,
+    day: usize,
+    quantity: Decimal,
+    pnl: Decimal,
+    at: Timestamp,
+) -> Result<CellReport> {
+    use qip_contracts::message::BookSide;
+    let entry = dec!("100");
+    let exit = entry
+        + pnl
+            .checked_div(quantity)
+            .ok_or_else(|| qip_core::Error::numeric("a positive quantity divides any P&L"))?;
+    let (buy, bought) = strategy_order_and_fill(
+        id,
+        &format!("ord-session-{day}-buy"),
+        BookSide::Ask,
+        quantity,
+        entry,
+        at,
+    );
+    let (sell, sold) = strategy_order_and_fill(
+        id,
+        &format!("ord-session-{day}-sell"),
+        BookSide::Bid,
+        quantity,
+        exit,
+        at,
+    );
+    Ok(CellReport::new(CELL, at)
+        .with_orders(vec![buy, sell])
+        .with_fills(vec![bought, sold]))
+}
+
+/// The cycle's own record of what its LEARN stage reviewed, decoded from the
+/// log rather than read off the returned report.
+fn journaled_reviews(
+    platform: &Platform,
+) -> Result<Vec<Option<qip_kernel::platform::StrategyReviewJournal>>> {
+    use qip_events::{EventFilter, Topic};
+    platform
+        .replay_journal(&EventFilter::new().topic(Topic::LearningCompleted))?
+        .iter()
+        .map(|event| {
+            event
+                .decode::<qip_kernel::platform::CycleJournalEntry>()
+                .map(|envelope| envelope.body.strategy_review)
+        })
+        .collect()
+}
+
+/// Blueprint §20.3, "retirement is as automated as promotion", proven
+/// through the cycle and the ingest path alone — nothing here calls
+/// `learn_from_cells`, `learn`, `review` or `retire`. Before this, every one
+/// of those was reached only by a test: `stage_learn` never called the
+/// strategy review, no composition root did, and a strategy could decay at
+/// the floor for a year in a deployed `qip-api` with the trigger written to
+/// catch it never once evaluated. The series the review reads is the
+/// centre's own attribution of the fills the cell reported, one session per
+/// day, and the LEARN stage's record says how many it reviewed, demoted,
+/// retired and dispositioned so the outcome is reproducible from the log.
+#[test]
+fn the_learn_stage_retires_a_strategy_whose_cells_realised_sustained_decay_and_journals_its_disposition()
+-> Result<()> {
+    use qip_contracts::message::BookSide;
+    use qip_events::{EventFilter, Topic};
+    use qip_kernel::platform::StrategyReviewJournal;
+
+    let mut platform = platform()?;
+    let id = strategy();
+    register(platform.central_mut(), &id, CELL)?;
+    walk_to(platform.central_mut(), &id, GateStage::Pilot)?;
+    let issued = issue(platform.central_mut(), &id, CELL, start())?;
+    let capital = issued.envelope().gross_limit();
+    assert!(
+        capital.is_positive(),
+        "premise: the grant has a gross limit for a return to be a fraction of"
+    );
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Pilot,
+        "premise: the strategy holds capital"
+    );
+    // A tenth of the grant per leg at par, so a day's return of a percent
+    // or so moves the exit price by a few units rather than off the scale.
+    let quantity = capital
+        .checked_div(dec!("1000"))
+        .ok_or_else(|| qip_core::Error::numeric("a thousand divides any grant"))?;
+
+    // Sixty closed sessions in decay: each day's attributed P&L is the day's
+    // decayed return on the grant, made by a round trip the venue filled.
+    let returns = decayed_returns();
+    assert!(
+        returns.len() >= 20,
+        "premise: enough sessions for decay to be judged at all"
+    );
+    for (day, realised) in returns.iter().enumerate() {
+        let at = start().saturating_add(Duration::from_days(day as i64));
+        // The test crosses from the f64 return it wants to the Decimal P&L
+        // the fills must realise; the platform under test crosses back.
+        let pnl = Decimal::from_f64(realised * capital.to_f64())
+            .ok_or_else(|| qip_core::Error::numeric("a finite return"))?;
+        let ingestion =
+            platform.ingest_cell_report(round_trip(&id, day, quantity, pnl, at)?, at)?;
+        assert!(
+            ingestion.settlement.refused.is_empty(),
+            "premise: session {day} settled: {:?}",
+            ingestion.settlement.refused
+        );
+        assert_eq!(
+            ingestion.settlement.fills_settled, 2,
+            "premise: both legs of session {day} were billed"
+        );
+    }
+    // Then a lot left open, so the retirement has something to disposition.
+    let opened_at = start().saturating_add(Duration::from_days(returns.len() as i64));
+    let (order, fill) = strategy_order_and_fill(
+        &id,
+        "ord-session-open",
+        BookSide::Ask,
+        quantity,
+        dec!("100"),
+        opened_at,
+    );
+    platform.ingest_cell_report(
+        CellReport::new(CELL, opened_at)
+            .with_orders(vec![order])
+            .with_fills(vec![fill]),
+        opened_at,
+    )?;
+    assert_eq!(
+        platform
+            .central()
+            .strategy_lot(CELL, &id, INSTRUMENT)
+            .map(|lot| lot.quantity),
+        Some(quantity),
+        "premise: the attribution holds the open lot"
+    );
+    let positions = EventFilter::new().topic(Topic::PositionUpdated);
+    assert!(
+        platform.replay_journal(&positions)?.is_empty(),
+        "premise: nothing about positions has been journaled by ingest"
+    );
+
+    // Cycle one, the day after the last session closed: decay is judged on
+    // the closed sessions and the strategy is pushed off capital.
+    let demoting_at = opened_at.saturating_add(Duration::from_days(1));
+    let demoting = platform.run_cycle(demoting_at);
+    let learn = demoting
+        .stage(Stage::Learn)
+        .ok_or_else(|| qip_core::Error::not_found("the LEARN stage ran"))?;
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Shadow,
+        "the LEARN stage demoted the strategy on the sessions its cell realised: {}",
+        learn.detail
+    );
+    assert!(
+        learn
+            .detail
+            .contains("1 strategy(ies) reviewed on realised sessions (1 demoted, 0 retired"),
+        "the stage says what its review did: {}",
+        learn.detail
+    );
+    assert!(
+        learn.problems.is_empty(),
+        "the review ran clean: {:?}",
+        learn.problems
+    );
+
+    // Cycle two, the retirement threshold later and still decaying: retired
+    // without a human, and the open lot scheduled for unwinding.
+    let retiring_at = demoting_at.saturating_add(Duration::from_days(90));
+    let retiring = platform.run_cycle(retiring_at);
+    let learn = retiring
+        .stage(Stage::Learn)
+        .ok_or_else(|| qip_core::Error::not_found("the LEARN stage ran"))?;
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Retired,
+        "the LEARN stage retired the strategy after sustained decay at the floor; \
+         the stage said: {}",
+        learn.detail
+    );
+    assert!(
+        learn
+            .detail
+            .contains("1 strategy(ies) reviewed on realised sessions (0 demoted, 1 retired, 1 dispositioned, 0 disposition(s) refused, 0 skipped)"),
+        "the stage says what its review did: {}",
+        learn.detail
+    );
+
+    // The disposition is in the log, from the cycle and nothing else.
+    let journaled = platform.replay_journal(&positions)?;
+    assert_eq!(journaled.len(), 1, "one retirement, dispositioned once");
+    let disposition = journaled[0].decode::<RetirementDisposition>()?.body;
+    assert_eq!(disposition.strategy, id);
+    assert_eq!(disposition.retired_at, retiring_at);
+    assert!(
+        disposition.rationale.contains("retirement threshold"),
+        "the record carries the ledger's own rationale: {}",
+        disposition.rationale
+    );
+    assert_eq!(
+        disposition
+            .positions
+            .get(&format!("{CELL}/{INSTRUMENT}"))
+            .map(|lot| lot.instruction),
+        Some(DispositionInstruction::Unwind {
+            flatten_by: -quantity
+        })
+    );
+
+    // And the cycle's own entries carry the counts, so the two reviews are
+    // reproducible from the journal without the returned reports.
+    assert_eq!(
+        journaled_reviews(&platform)?,
+        vec![
+            Some(StrategyReviewJournal {
+                reviewed: 1,
+                demoted: 1,
+                retired: 0,
+                dispositioned: 0,
+                dispositions_refused: 0,
+                skipped: 0,
+            }),
+            Some(StrategyReviewJournal {
+                reviewed: 1,
+                demoted: 0,
+                retired: 1,
+                dispositioned: 1,
+                dispositions_refused: 0,
+                skipped: 0,
+            }),
+        ]
+    );
+
+    // A retired strategy is finished with: the next cycle reviews nothing
+    // and its entry says so by carrying no review at all.
+    let after = platform.run_cycle(retiring_at.saturating_add(Duration::from_days(1)));
+    let learn = after
+        .stage(Stage::Learn)
+        .ok_or_else(|| qip_core::Error::not_found("the LEARN stage ran"))?;
+    assert!(
+        !learn.detail.contains("reviewed on realised sessions"),
+        "a retired strategy's sessions are not reviewed again: {}",
+        learn.detail
+    );
+    assert_eq!(journaled_reviews(&platform)?.last(), Some(&None));
+    Ok(())
+}
+
+// --- ADR 0039: the share a cell's grant manifest carries -----------------------
+
+#[test]
+fn a_cells_manifest_names_only_grants_whose_gross_fits_its_share() -> Result<()> {
+    // The half of ADR 0039 the plan-only suite cannot reach: the manifest a
+    // cell is shipped names the grants the centre holds live for it, and is
+    // withheld — not trimmed, not shipped anyway — when those grants already
+    // sum past the cell's share under the current plan. A manifest that
+    // named them regardless would have the cell derive a share the
+    // partitioner never produced.
+    let mut plane = plane()?;
+    let id = strategy();
+    register(&mut plane, &id, CELL)?;
+    walk_to(&mut plane, &id, GateStage::Pilot)?;
+    let issued = issue(&mut plane, &id, CELL, start())?;
+    let envelope = issued.envelope().clone();
+    let plan = plane.allocate(0.0, start())?;
+    assert_eq!(
+        plan.for_cell(CELL),
+        envelope.gross_limit(),
+        "the premise: the envelope was issued against this plan's gross for the cell"
+    );
+    let region = "europe-west2".to_string();
+    let membership = qip_kernel::central::RegionMembership::new(
+        BTreeMap::from([(region.clone(), plan.for_cell(CELL))]),
+        BTreeMap::from([(CELL.to_string(), region.clone())]),
+    )?;
+
+    let shares = plane.region_shares(&plan, &membership, start())?;
+    let share = shares
+        .for_cell(CELL)
+        .unwrap_or_else(|| panic!("the cell was withheld a share: {:?}", shares.withheld()));
+    assert_eq!(share.region(), region);
+    assert_eq!(share.amount(), plan.for_cell(CELL));
+    assert_eq!(
+        share.live_grants(),
+        &[envelope.signature().to_string()],
+        "the manifest did not name exactly the issued grant"
+    );
+    assert_eq!(share.named_gross(), envelope.gross_limit());
+    assert!(share.named_gross() <= share.amount());
+    assert_eq!(share.manifest().live_grants, share.live_grants());
+
+    // A narrower plan — the allocator under a drawdown, say — gives the cell
+    // less than its live grant already admits. The cell is withheld, with
+    // the reason, rather than shipped a manifest naming a grant its share
+    // cannot cover.
+    let narrower = qip_capital::allocation::AllocationPlan {
+        allocations: plan
+            .allocations
+            .iter()
+            .cloned()
+            .map(|mut allocation| {
+                allocation.notional -= Decimal::ONE;
+                allocation
+            })
+            .collect(),
+        ..plan.clone()
+    };
+    assert!(
+        narrower.for_cell(CELL) < envelope.gross_limit(),
+        "the premise: the narrower plan is below the live grant"
+    );
+    let withheld = plane.region_shares(&narrower, &membership, start())?;
+    assert!(
+        withheld.for_cell(CELL).is_none(),
+        "a manifest was shipped naming grants past the cell's share: {:?}",
+        withheld.for_cell(CELL)
+    );
+    let reason = withheld
+        .withheld()
+        .get(CELL)
+        .unwrap_or_else(|| panic!("the cell was neither shared nor withheld with a reason"));
+    assert!(
+        reason.contains("past its share") && reason.contains("renewed"),
+        "the reason did not say what to do instead: {reason}"
+    );
+    // And once the grant has expired it no longer counts against the share:
+    // the cell is shipped an empty manifest, which its table reads as
+    // nothing, rather than being withheld forever on a dead grant.
+    let later = envelope.expires_at();
+    let after = plane.region_shares(&narrower, &membership, later)?;
+    let expired = after.for_cell(CELL).unwrap_or_else(|| {
+        panic!(
+            "the cell was withheld on an expired grant: {:?}",
+            after.withheld()
+        )
+    });
+    assert!(expired.live_grants().is_empty());
+    assert_eq!(expired.named_gross(), Decimal::ZERO);
+    Ok(())
+}
+
+#[test]
+fn the_centres_manifests_for_a_regions_cells_never_together_exceed_its_grant_and_each_payload_carries_its_own()
+-> Result<()> {
+    // The producer's call, end to end at the centre: two cells of one
+    // region, each holding a grant this plane issued, and the manifests
+    // `grant_manifests` decides for them from the plan it sizes itself. What
+    // a cell will derive from its manifest is the gross of the grants it
+    // names, so the property is that the two manifests' gross sums to at
+    // most the region's grant — and that when it cannot, nothing ships.
+    use qip_contracts::policy::{PolicyPayload, Slot};
+    let mut plane = plane()?;
+    let first = strategy();
+    let second = StrategyId::new("central-momentum-2");
+    const SECOND_CELL: &str = "cell-lon-2";
+    register(&mut plane, &first, CELL)?;
+    register(&mut plane, &second, SECOND_CELL)?;
+    walk_to(&mut plane, &first, GateStage::Pilot)?;
+    walk_to(&mut plane, &second, GateStage::Pilot)?;
+    let first_envelope = issue(&mut plane, &first, CELL, start())?.envelope().clone();
+    let second_envelope = issue(&mut plane, &second, SECOND_CELL, start())?
+        .envelope()
+        .clone();
+    let plan = plane.allocate(0.0, start())?;
+    assert_eq!(
+        plan.for_cell(CELL),
+        first_envelope.gross_limit(),
+        "the premise: the first grant was issued against this plan's gross for its cell"
+    );
+    assert_eq!(
+        plan.for_cell(SECOND_CELL),
+        second_envelope.gross_limit(),
+        "the premise: the second grant was issued against this plan's gross for its cell"
+    );
+    let together = plan.for_cell(CELL) + plan.for_cell(SECOND_CELL);
+    assert!(
+        together.is_positive(),
+        "the premise: the plan allocates to both cells"
+    );
+    let region = "europe-west2";
+    let cells = [CELL, SECOND_CELL, "cell-nyc-9"];
+    let membership = qip_kernel::central::RegionMembership::parse(&format!(
+        "{region}={together}:{CELL},{SECOND_CELL}"
+    ))?;
+    assert!(
+        membership.covering(cells).is_err(),
+        "the premise: the third cell is in no region"
+    );
+
+    let manifests = plane.grant_manifests(cells, &membership, 0.0, start());
+    let mut named_gross = Decimal::ZERO;
+    for (cell, envelope) in [(CELL, &first_envelope), (SECOND_CELL, &second_envelope)] {
+        let share = match manifests.for_cell(cell) {
+            Some(qip_kernel::central::ManifestDecision::Ship(share)) => share,
+            other => panic!("{cell} was not shipped a share: {other:?}"),
+        };
+        assert_eq!(share.region(), region);
+        assert_eq!(
+            share.live_grants(),
+            &[envelope.signature().to_string()],
+            "{cell}'s manifest did not name exactly its own grant"
+        );
+        named_gross += share.named_gross();
+        // The slot as the producer places it: a produced manifest naming
+        // the grant, on a payload addressed to the cell.
+        let mut payload = PolicyPayload::unproduced(1, cell, start());
+        let manifest = manifests
+            .for_cell(cell)
+            .and_then(qip_kernel::central::ManifestDecision::manifest)
+            .unwrap_or_else(|| panic!("{cell}'s decision carries no manifest"));
+        payload.capital_grants = Slot::produced(manifest, start());
+        assert_eq!(
+            payload
+                .capital_grants
+                .value()
+                .map(|manifest| manifest.live_grants.clone()),
+            Some(vec![envelope.signature().to_string()]),
+            "{cell}'s payload does not carry its manifest"
+        );
+    }
+    assert!(
+        named_gross <= together,
+        "the manifests together name {named_gross} of grants against a grant of {together}"
+    );
+    match manifests.for_cell("cell-nyc-9") {
+        Some(qip_kernel::central::ManifestDecision::Withhold(reason)) => {
+            assert!(reason.contains("in no region"), "{reason}");
+        }
+        other => panic!("a cell in no region was decided as {other:?}"),
+    }
+
+    // A grant one unit short of what the plan allocates: the plan is
+    // refused whole and neither cell ships a manifest — not the first cell
+    // alone, not a scaled pair — with the refusal on each.
+    let short = qip_kernel::central::RegionMembership::parse(&format!(
+        "{region}={}:{CELL},{SECOND_CELL}",
+        together - Decimal::ONE
+    ))?;
+    let withheld = plane.grant_manifests(cells, &short, 0.0, start());
+    for cell in [CELL, SECOND_CELL] {
+        match withheld.for_cell(cell) {
+            Some(qip_kernel::central::ManifestDecision::Withhold(reason)) => assert!(
+                reason.contains("could not be partitioned") && reason.contains("past its grant"),
+                "{cell}'s withholding does not carry the refusal: {reason}"
+            ),
+            other => panic!("{cell} was shipped a share under a grant the plan exceeds: {other:?}"),
+        }
+        assert_eq!(
+            withheld
+                .for_cell(cell)
+                .and_then(qip_kernel::central::ManifestDecision::manifest),
+            None,
+            "{cell} was given a manifest under a refused plan"
+        );
+    }
     Ok(())
 }

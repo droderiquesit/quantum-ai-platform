@@ -278,3 +278,240 @@ fn the_banner_states_where_state_goes_and_what_a_restart_takes_away() {
         "a memory configuration must not claim the chain persists: {text}"
     );
 }
+
+// --- what a managed target is given -----------------------------------------
+//
+// Two credentials in this crate were once read straight from `std::env::var`,
+// three calls below the composition root, which meant a deployment could not
+// mount either as a file and no test could exercise the resolution without
+// racing every other test in the binary. They are now resolved from a lookup
+// the root supplies, by the same rule every other secret is read by.
+
+use qip_storage::managed::ManagedSettings;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+fn lookup(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect()
+}
+
+fn secret_file(label: &str, contents: &str) -> String {
+    let path = temp_dir(label).join("secret");
+    std::fs::write(&path, contents).expect("the fixture is writable");
+    path.display().to_string()
+}
+
+#[test]
+fn a_memorystore_auth_string_mounted_as_a_file_resolves_to_the_same_settings_as_the_variable() {
+    // The newline is what `echo secret > file` and every editor write, and a
+    // credential that verifies only without it fails for a byte nobody can see.
+    let path = secret_file("auth-file", "the-auth-string\n");
+    let direct = lookup(&[
+        (qip_storage::redis::ADDRESS_VARIABLE, "10.0.0.5"),
+        (qip_storage::redis::AUTH_VARIABLE, "the-auth-string"),
+    ]);
+    let from_file = lookup(&[
+        (qip_storage::redis::ADDRESS_VARIABLE, "10.0.0.5"),
+        ("QIP_MEMORYSTORE_AUTH_FILE", path.as_str()),
+    ]);
+
+    let direct = ManagedSettings::from_env(StorageTarget::Memorystore, &|n| direct.get(n).cloned())
+        .expect("an address and an AUTH string resolve");
+    // The premise: the direct form really carries a credential, so equality
+    // below is a claim about the file having been read rather than about two
+    // empty values agreeing.
+    assert!(!direct.is_empty());
+    assert!(
+        direct
+            .redis_config()
+            .expect("an address is enough for a config")
+            .is_authenticated()
+    );
+
+    let from_file =
+        ManagedSettings::from_env(StorageTarget::Memorystore, &|n| from_file.get(n).cloned())
+            .expect("a mounted file resolves the same way");
+    assert_eq!(
+        from_file, direct,
+        "the file's contents, without its trailing newline, are the credential"
+    );
+}
+
+#[test]
+fn setting_the_auth_string_and_its_file_together_is_refused_rather_than_one_quietly_winning() {
+    let path = secret_file("auth-both", "from-the-file");
+    let both = lookup(&[
+        (qip_storage::redis::ADDRESS_VARIABLE, "10.0.0.5"),
+        (qip_storage::redis::AUTH_VARIABLE, "from-the-variable"),
+        ("QIP_MEMORYSTORE_AUTH_FILE", path.as_str()),
+    ]);
+
+    let error = ManagedSettings::from_env(StorageTarget::Memorystore, &|n| both.get(n).cloned())
+        .expect_err("two sources that can disagree were accepted and one of them won");
+    assert_eq!(error.code(), "invalid", "{error}");
+    assert!(
+        error.message().contains("QIP_MEMORYSTORE_AUTH_FILE"),
+        "the refusal names the file variable so an operator knows which to remove: {error}"
+    );
+}
+
+#[test]
+fn an_empty_auth_string_is_refused_rather_than_read_as_no_authentication() {
+    // The premise: with no AUTH string at all the target resolves and the
+    // config is unauthenticated — that is the path an empty value must not
+    // silently take, because the instance has auth_enabled = true and the
+    // NOAUTH it would answer reads like a wrong password rather than a
+    // missing one.
+    let absent = lookup(&[(qip_storage::redis::ADDRESS_VARIABLE, "10.0.0.5")]);
+    let resolved =
+        ManagedSettings::from_env(StorageTarget::Memorystore, &|n| absent.get(n).cloned())
+            .expect("an address alone resolves");
+    assert!(
+        !resolved
+            .redis_config()
+            .expect("resolves")
+            .is_authenticated()
+    );
+
+    for empty in ["", "   ", "\n"] {
+        let blank = lookup(&[
+            (qip_storage::redis::ADDRESS_VARIABLE, "10.0.0.5"),
+            (qip_storage::redis::AUTH_VARIABLE, empty),
+        ]);
+        let error =
+            ManagedSettings::from_env(StorageTarget::Memorystore, &|n| blank.get(n).cloned())
+                .expect_err("an empty credential was read as absent");
+        assert_eq!(error.code(), "invalid", "{empty:?}: {error}");
+        assert!(
+            error.message().contains(qip_storage::redis::AUTH_VARIABLE),
+            "the refusal names the variable: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_target_that_is_not_managed_looks_up_nothing_a_managed_target_needs() {
+    // A deployment on the engine may carry a GCP token file for some other
+    // purpose, or a half-finished Memorystore pair. Refusing it over a
+    // credential the process would never present sends an operator to fix the
+    // wrong thing, so the resolver reads only its own target's variables —
+    // proven by recording every name it asks for.
+    let asked = std::sync::Mutex::new(Vec::new());
+    let vars = lookup(&[
+        (TARGET_VARIABLE, "engine"),
+        (ROOT_VARIABLE, "/var/lib/qip"),
+        // Both set, which would be refused if it were read.
+        (qip_storage::redis::AUTH_VARIABLE, "x"),
+        ("QIP_MEMORYSTORE_AUTH_FILE", "/nonexistent"),
+    ]);
+    let settings = StorageSettings::from_env(&|name| {
+        asked
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(name.to_string());
+        vars.get(name).cloned()
+    })
+    .expect("an engine deployment resolves whatever else is in its environment");
+
+    assert_eq!(settings.target(), StorageTarget::Engine);
+    assert!(settings.managed().is_empty());
+    let asked = asked
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    assert_eq!(
+        asked,
+        vec![TARGET_VARIABLE.to_string(), ROOT_VARIABLE.to_string()],
+        "only the target and root were looked up"
+    );
+
+    // And the same environment with the target switched is refused: the
+    // premise that the variables above really would be refused when read.
+    let mut switched = vars.clone();
+    switched.insert(TARGET_VARIABLE.to_string(), "memorystore".to_string());
+    switched.insert(
+        qip_storage::redis::ADDRESS_VARIABLE.to_string(),
+        "10.0.0.5".to_string(),
+    );
+    let error = StorageSettings::from_env(&|name| switched.get(name).cloned())
+        .expect_err("a memorystore deployment with the AUTH string set twice was accepted");
+    assert!(
+        error.message().contains("QIP_MEMORYSTORE_AUTH_FILE"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_gcp_access_token_mounted_as_a_file_resolves_to_the_same_settings_as_the_variable() {
+    let path = secret_file("gcp-token", "ya29.a-token\n");
+    let direct = lookup(&[
+        (
+            qip_storage::gcp::ENDPOINT_VARIABLE,
+            "http://proxy.internal:8080",
+        ),
+        (qip_storage::gcp::BUCKET_VARIABLE, "archive"),
+        (qip_storage::gcp::TOKEN_VARIABLE, "ya29.a-token"),
+    ]);
+    let from_file = lookup(&[
+        (
+            qip_storage::gcp::ENDPOINT_VARIABLE,
+            "http://proxy.internal:8080",
+        ),
+        (qip_storage::gcp::BUCKET_VARIABLE, "archive"),
+        ("QIP_GCP_ACCESS_TOKEN_FILE", path.as_str()),
+    ]);
+    let clock: Arc<dyn qip_core::Clock> = Arc::new(qip_core::ManualClock::new(
+        qip_core::Timestamp::from_secs(1_760_000_000),
+    ));
+
+    let direct =
+        ManagedSettings::from_env(StorageTarget::CloudStorage, &|n| direct.get(n).cloned())
+            .expect("an endpoint, a bucket and a token resolve");
+    // The premise: the direct form is a complete configuration.
+    let config = direct
+        .cloud_storage_config(clock)
+        .expect("a bucket and an access resolve to a config");
+    assert!(
+        config.access.is_configured(),
+        "{:?}",
+        config.access.missing_configuration()
+    );
+
+    let from_file =
+        ManagedSettings::from_env(StorageTarget::CloudStorage, &|n| from_file.get(n).cloned())
+            .expect("a mounted file resolves the same way");
+    assert_eq!(from_file, direct);
+}
+
+#[test]
+fn the_resolved_settings_never_render_a_credential() {
+    let path = secret_file("debug", "ya29.file-token");
+    let vars = lookup(&[
+        (qip_storage::redis::ADDRESS_VARIABLE, "10.0.0.5"),
+        (qip_storage::redis::AUTH_VARIABLE, "s3cr3t-auth"),
+    ]);
+    let gcp = lookup(&[
+        (
+            qip_storage::gcp::ENDPOINT_VARIABLE,
+            "http://proxy.internal:8080",
+        ),
+        ("QIP_GCP_ACCESS_TOKEN_FILE", path.as_str()),
+    ]);
+
+    let redis = ManagedSettings::from_env(StorageTarget::Memorystore, &|n| vars.get(n).cloned())
+        .expect("resolves");
+    let cloud = ManagedSettings::from_env(StorageTarget::CloudStorage, &|n| gcp.get(n).cloned())
+        .expect("resolves");
+    let rendered = format!("{redis:?} {cloud:?}");
+
+    // The premise: the rendering is of the resolved values, not of an empty
+    // struct — the non-secret fields are visible in it.
+    assert!(rendered.contains("10.0.0.5"), "{rendered}");
+    assert!(rendered.contains("proxy.internal"), "{rendered}");
+    assert!(!rendered.contains("s3cr3t-auth"), "{rendered}");
+    assert!(!rendered.contains("file-token"), "{rendered}");
+    assert_eq!(rendered.matches("<redacted>").count(), 2, "{rendered}");
+}

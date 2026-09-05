@@ -47,6 +47,7 @@ dependencies = [
  "qip-investment-agents",
  "qip-kernel",
  "qip-learning-engine",
+ "qip-lifecycle",
  "qip-market",
  "qip-market-ingestion",
  "qip-mesh",
@@ -99,11 +100,14 @@ dependencies = [
  "qip-compliance",
  "qip-contracts",
  "qip-core",
+ "qip-data-finder",
  "qip-edge",
  "qip-events",
  "qip-financial",
  "qip-kernel",
  "qip-lifecycle",
+ "qip-market",
+ "qip-market-ingestion",
  "qip-mesh",
  "qip-observability",
  "qip-risk",
@@ -152,6 +156,7 @@ dependencies = [
  "qip-financial",
  "qip-portfolio",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -161,9 +166,11 @@ dependencies = [
  "qip-capital",
  "qip-contracts",
  "qip-core",
+ "qip-events",
  "qip-financial",
  "qip-numerics",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -285,6 +292,7 @@ dependencies = [
  "qip-numerics",
  "qip-observability",
  "qip-quant",
+ "qip-reasoning-engine",
  "qip-risk",
  "qip-risk-engine",
  "qip-simulation-engine",
@@ -333,6 +341,7 @@ dependencies = [
  "qip-observability",
  "qip-orderbook",
  "qip-protocols",
+ "qip-routing",
  "qip-storage",
  "qip-strategy",
  "qip-transport",
@@ -674,9 +683,12 @@ name = "qip-reasoning-engine"
 version = "0.1.0"
 dependencies = [
  "qip-agents",
+ "qip-ai",
  "qip-core",
+ "qip-transport",
  "qip-world-model",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

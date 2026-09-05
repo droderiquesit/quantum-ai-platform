@@ -7,6 +7,7 @@
 //! what else is configured.
 
 use crate::central::CentralConfig;
+use qip_capital::ledger::{DecidedBy, Eligibility, Mandate as LedgerMandate, MandateId, UserId};
 use qip_core::Decimal;
 use qip_core::error::Result;
 use qip_core::time::Duration;
@@ -143,6 +144,44 @@ impl EventLogDestination {
     }
 }
 
+/// One user's mandate, as the deployment enrols it beside the desk's.
+///
+/// Carried in configuration — the same committed source the desk's own
+/// mandate is sized from (`initial_equity`) — because a user mandate is a
+/// statement about whose capital the deployment manages, and the kernel has
+/// no other honest source for one: a mandate invented at runtime would be
+/// capital the platform promised to somebody nobody named. Every field is
+/// validated on the way in ([`UserId`], [`MandateId`] and the ledger's `Mandate` all
+/// refuse rather than correct), and the registry refuses the enrolment at
+/// assembly if the terms exceed the desk's, so a bad entry stops the process
+/// rather than opening a book under it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UserMandate {
+    pub user: UserId,
+    pub id: MandateId,
+    pub mandate: LedgerMandate,
+}
+
+/// One user's eligibility, as the deployment commits it beside their mandate.
+///
+/// A committed list, like [`UserMandate`], and for the same reason: the
+/// kernel has no other honest source for who was verified. What it is not
+/// is a bare flag — `decided_by` is the operator who took the decision, and
+/// [`DecidedBy`] refuses a blank subject on deserialisation, so a
+/// configuration that says `can_invest: true` and names nobody stops
+/// assembly rather than admitting a user on the file's say-so. ADR 0021
+/// lists "a configuration value" among the things that must never decide;
+/// the operator in the record is what makes this a decision instead. Applied
+/// at assembly through the same journaled path an operator's runtime
+/// decision takes, so the log says who admitted whom whichever way it
+/// happened.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UserEligibility {
+    pub user: UserId,
+    pub eligibility: Eligibility,
+    pub decided_by: DecidedBy,
+}
+
 /// How the platform is assembled.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlatformConfig {
@@ -216,6 +255,27 @@ pub struct PlatformConfig {
     /// exactly the behaviour it had.
     #[serde(default = "default_initial_equity")]
     pub initial_equity: Decimal,
+
+    /// The user mandates enrolled under the desk's ceiling at assembly.
+    ///
+    /// Empty by default, and empty means what it says: the per-user ledger
+    /// then holds the desk alone and books every settled fill to it whole.
+    /// Nothing here is inferred from anywhere else — see [`UserMandate`].
+    /// `#[serde(default)]` so a configuration stored before users existed
+    /// keeps deserialising, to the one-user ledger it always had.
+    #[serde(default)]
+    pub user_mandates: Vec<UserMandate>,
+
+    /// The eligibility decisions the deployment commits, each attributed to
+    /// the operator who took it — see [`UserEligibility`].
+    ///
+    /// Empty by default, and empty means nobody may be funded: the registry
+    /// refuses every user it holds no decision about, which is the honest
+    /// state of a deployment that verified no one. `#[serde(default)]` so a
+    /// configuration stored before eligibility existed keeps deserialising,
+    /// to a platform that funds nobody rather than everybody.
+    #[serde(default)]
+    pub user_eligibilities: Vec<UserEligibility>,
 
     /// How deep a chain observation has to be buried before the platform will
     /// read state derived from it.
@@ -311,6 +371,8 @@ impl Default for PlatformConfig {
             owner: default_owner(),
             data_user_agent: default_data_user_agent(),
             initial_equity: default_initial_equity(),
+            user_mandates: Vec::new(),
+            user_eligibilities: Vec::new(),
             chain_confirmations: default_chain_confirmations(),
             reasoning_confidence_bar: default_reasoning_confidence_bar(),
         }
@@ -384,6 +446,26 @@ impl PlatformConfig {
     /// State the equity the book starts with.
     pub fn with_initial_equity(mut self, equity: Decimal) -> Self {
         self.initial_equity = equity;
+        self
+    }
+
+    /// Enrol user mandates beside the desk's at assembly.
+    ///
+    /// Not validated here — each is validated where it is enrolled, against
+    /// the desk's mandate as the ceiling, and a refused enrolment stops
+    /// assembly with the term named.
+    pub fn with_user_mandates(mut self, mandates: Vec<UserMandate>) -> Self {
+        self.user_mandates = mandates;
+        self
+    }
+
+    /// Commit eligibility decisions to be applied at assembly.
+    ///
+    /// Each is applied after the mandates through the platform's journaled
+    /// eligibility path, and a decision about a user who holds no mandate
+    /// stops assembly with the user named.
+    pub fn with_user_eligibilities(mut self, eligibilities: Vec<UserEligibility>) -> Self {
+        self.user_eligibilities = eligibilities;
         self
     }
 

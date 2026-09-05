@@ -49,6 +49,7 @@ use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, SystemClock};
 use qip_edge::cell::PolledHalt;
 use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy, WorkReport};
+use qip_edge::telemetry::CellMetrics;
 use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::arbitrage::{ArbitrageInstaller, STRATEGY_VARIABLE};
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SIMULATED_FEED, SimulatedFeed};
@@ -57,6 +58,8 @@ use qip_edge_node::halt::{FLAG_VARIABLE, HaltFlag};
 use qip_edge_node::mesh::{MeshLink, MeshSettings, PEER_VARIABLE};
 use qip_edge_node::mirror::StoreMirror;
 use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
+use qip_edge_node::reprice::{REPRICE_VARIABLE, Requoter, parse_reprice};
+use qip_edge_node::share::RegionShareStatus;
 use qip_edge_node::strategies::{
     MARKETABLE, PLAN_VARIABLE, PRICING_VARIABLE, REST_AT_MID_PREFIX, StrategyInstaller,
     parse_pricing,
@@ -67,6 +70,7 @@ use qip_edge_node::{NodeAssembly, assemble};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_observability::metrics::Metrics;
+use qip_routing::reprice::RepricePolicy;
 use qip_storage::settings::{ROOT_VARIABLE, StorageSettings, TARGET_VARIABLE};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -149,6 +153,13 @@ struct NodeConfig {
     /// Where the compiled plan the payload names by digest is read from.
     /// `None` deploys nothing and is named in the production requirements.
     plan_path: Option<PathBuf>,
+    /// When a resting order is stale enough to withdraw and re-send at the
+    /// touch. `None` leaves every resting order where it was sent until its
+    /// time to live and is named in the production requirements; a value
+    /// with no feed to run passes is refused, because a policy nothing
+    /// consults is a control that reads as one — see
+    /// `qip_edge_node::reprice`.
+    reprice: Option<RepricePolicy>,
 }
 
 impl NodeConfig {
@@ -218,7 +229,7 @@ impl NodeConfig {
             )));
         }
 
-        let storage = StorageSettings::from_env()
+        let storage = StorageSettings::from_env(&|name| std::env::var(name).ok())
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
         let mesh = MeshSettings::from_env(&cell_id, &region)?;
         // Set but unusable is refused; unset is a node without the second
@@ -238,6 +249,15 @@ impl NodeConfig {
             Ok(value) if !value.trim().is_empty() => Some(PathBuf::from(value.trim())),
             _ => None,
         };
+        let reprice = parse_reprice(std::env::var(REPRICE_VARIABLE).ok().as_deref())?;
+        if reprice.is_some() && feed.is_none() {
+            return Err(Error::invalid(format!(
+                "configuration: {REPRICE_VARIABLE} is set and {FEED_VARIABLE} is not; a node \
+                 that runs no pass consults no requote policy, and a policy nothing consults \
+                 reads as a control. Set {FEED_VARIABLE}={SIMULATED_FEED} or unset \
+                 {REPRICE_VARIABLE}"
+            )));
+        }
 
         Ok(Self {
             cell_id,
@@ -253,6 +273,7 @@ impl NodeConfig {
             feed,
             pricing,
             plan_path,
+            reprice,
         })
     }
 }
@@ -370,6 +391,29 @@ fn run() -> Result<()> {
         }
         None => None,
     };
+    // The requoter, recording into the registry the scrape serves — the
+    // same handle the cell was given, so its one series sits beside the
+    // cell's. `from_env` has already refused a policy with no feed.
+    let mut requoter = match &config.reprice {
+        Some(policy) => {
+            let requoter = Requoter::new(
+                policy.clone(),
+                CellMetrics::new(Arc::clone(metrics), &config.cell_id, &config.region),
+            )?;
+            println!(
+                "qip-edge-node: requote policy tick={} stale at {} tick(s) or {} bps, \
+                 {} requotes per order, {} per instrument per {:.0}s",
+                policy.tick,
+                policy.max_drift_ticks,
+                policy.max_drift_bps_f64,
+                policy.max_requotes_per_order,
+                policy.max_requotes_per_instrument,
+                policy.per_instrument_window.as_secs_f64()
+            );
+            Some(requoter)
+        }
+        None => None,
+    };
 
     // The store is opened and proven writable before the health surface binds.
     // A node that started, reported healthy, and only discovered at the first
@@ -386,24 +430,34 @@ fn run() -> Result<()> {
     )?;
     let retained_sessions = mirror.retained_sessions()?;
 
-    // The allocation is printed as the cell holds it, not as configuration
-    // read it, so the banner is a claim about the cell and not about a
-    // variable — the two were allowed to differ for as long as no root
-    // installed the value it read.
+    // The table is printed as the cell holds it, not as configuration read
+    // it, so the banner is a claim about the cell and not about a variable —
+    // the two were allowed to differ for as long as no root installed the
+    // value it read. Both numbers, because they are different facts: the
+    // ceiling is the operator's and the bound is the centre's share, which
+    // is nothing until a payload names one (ADR 0039).
+    let share = RegionShareStatus::of(&cell);
     println!(
-        "qip-edge-node cell={} region={} venues={} region_allocation={} live_capable={} \
-         gateway={}({}) adapter={} reaches_a_socket={}",
+        "qip-edge-node cell={} region={} venues={} region_ceiling={} region_bound={} \
+         live_capable={} gateway={}({}) adapter={} reaches_a_socket={}",
         config.cell_id,
         config.region,
         config.venues.len(),
-        cell.region_allocation_free()
-            .map_or_else(|| "none".to_string(), |free| free.to_string()),
+        share
+            .ceiling
+            .map_or_else(|| "none".to_string(), |ceiling| ceiling.to_string()),
+        share
+            .bound
+            .map_or_else(|| "none".to_string(), |bound| bound.to_string()),
         ceiling.is_live(),
         gateway.class(),
         gateway.venue(),
         choice.selector(),
         gateway.reaches_a_socket()
     );
+    if let Some(why) = &share.why {
+        println!("qip-edge-node: region share: {why}");
+    }
 
     for line in config.storage.banner_lines(
         &["the cell's decision journal, chained within each session"],
@@ -461,6 +515,7 @@ fn run() -> Result<()> {
         config.feed,
         &gateway,
         &strategies,
+        requoter.is_some(),
     ) {
         println!("qip-edge-node: awaiting {requirement}");
     }
@@ -471,11 +526,19 @@ fn run() -> Result<()> {
         );
     }
 
+    // The requoter rides with the feed and nowhere else: `from_env` refused
+    // a policy without one, so a `PassLoop` is the only place a requoter
+    // can be, and a node with no feed has no requoter to consult.
+    let mut pass_loop = feed.as_mut().map(|feed| PassLoop {
+        feed,
+        requoter: requoter.as_mut(),
+    });
+
     serve(
         &config,
         &mut cell,
         &mut gateway,
-        feed.as_mut(),
+        pass_loop.as_mut(),
         &mut mirror,
         link.as_mut(),
         installer.as_mut(),
@@ -507,6 +570,7 @@ fn missing_production_requirements(
     feed: Option<FeedChoice>,
     gateway: &NodeGateway,
     strategies: &StrategyInstaller,
+    has_requoter: bool,
 ) -> Vec<String> {
     let mut missing = vec![
         "QIP_VENUE_FEED_ENDPOINT and its multicast group or session credential".to_string(),
@@ -568,6 +632,17 @@ fn missing_production_requirements(
              without a file to read the digest names nothing this node can deploy"
         ));
     }
+    if !has_requoter {
+        // Unset is allowed and requotes nothing: a resting order stays at
+        // the price it was sent until its time to live, however far the
+        // touch moves. Said here because a cell whose orders never fill and
+        // never move reads as a quiet market rather than a missing policy.
+        missing.push(format!(
+            "{REPRICE_VARIABLE} for the requote threshold: without it a resting order stays where \
+             it was sent until its time to live however far the touch moves; set \
+             `<tick>:<ticks>:<bps>`"
+        ));
+    }
     if !has_halt_flag {
         // The broadcast halt shares the mesh's failure. A node with no
         // second wire is a node that a partition leaves unhaltable for as
@@ -595,11 +670,23 @@ fn missing_production_requirements(
 /// decisions in memory. A production cell drains on a timer instead. The flush
 /// happens before the answer is written so the numbers reported are the ones
 /// already shipped, rather than a count the next crash would take back.
+/// What the pass loop runs with, present only on a node that runs passes.
+///
+/// The feed prices the pass; the requoter, when a policy was declared,
+/// reprices what rests. Paired in one value because the second is nothing
+/// without the first — `NodeConfig::from_env` refuses a requote policy on a
+/// node with no feed — and a signature that could carry a requoter beside
+/// no feed would be carrying a control nothing consults.
+struct PassLoop<'a> {
+    feed: &'a mut SimulatedFeed,
+    requoter: Option<&'a mut Requoter>,
+}
+
 fn serve(
     config: &NodeConfig,
     cell: &mut Cell,
     gateway: &mut NodeGateway,
-    mut feed: Option<&mut SimulatedFeed>,
+    mut pass_loop: Option<&mut PassLoop<'_>>,
     mirror: &mut StoreMirror,
     mut link: Option<&mut MeshLink>,
     mut installer: Option<&mut ArbitrageInstaller>,
@@ -686,11 +773,29 @@ fn serve(
                 // could learn. Only the simulated gateway is ever passed:
                 // `run_pass` is typed to it, and a live gateway was refused
                 // beside the feed at start-up.
-                if let (Some(feed), Some(simulated)) =
-                    (feed.as_deref_mut(), gateway.simulated_mut())
+                if let (Some(pass_loop), Some(simulated)) =
+                    (pass_loop.as_deref_mut(), gateway.simulated_mut())
                 {
-                    match run_pass(cell, simulated, feed, &mut stats, now) {
-                        Ok(PassOutcome::Ran { report, breaks, .. }) => {
+                    match run_pass(
+                        cell,
+                        simulated,
+                        &mut *pass_loop.feed,
+                        pass_loop.requoter.as_deref_mut(),
+                        &mut stats,
+                        now,
+                    ) {
+                        Ok(PassOutcome::Ran {
+                            report,
+                            requotes,
+                            breaks,
+                            ..
+                        }) => {
+                            // Every requote outcome, not only the failures:
+                            // an order that is no longer where the cell
+                            // sent it is a line the log has to carry.
+                            for requote in &requotes {
+                                eprintln!("qip-edge-node: requote: {}", requote.describe());
+                            }
                             for detail in &breaks {
                                 eprintln!("qip-edge-node: reconciliation break: {detail}");
                             }
@@ -721,7 +826,7 @@ fn serve(
                     config,
                     cell,
                     gateway,
-                    feed.as_deref(),
+                    pass_loop.as_deref().map(|pass_loop| &*pass_loop.feed),
                     &stats,
                     mirror,
                     health,
@@ -796,7 +901,7 @@ fn answer(
     // read identically from the order count alone.
     let pass = match feed {
         Some(feed) => format!(
-            r#"{{"feed":"{}","instruments":{},"instruments_omitted":{},"passes":{},"halted_turns":{},"refusals":{},"signals":{},"orders":{},"fills":{},"expired":{},"breaks":{}}}"#,
+            r#"{{"feed":"{}","instruments":{},"instruments_omitted":{},"passes":{},"halted_turns":{},"refusals":{},"signals":{},"orders":{},"fills":{},"expired":{},"repriced":{},"breaks":{}}}"#,
             SIMULATED_FEED,
             feed.tracked(),
             feed.omitted_total(),
@@ -807,6 +912,7 @@ fn answer(
             stats.orders,
             stats.fills,
             stats.expired,
+            stats.repriced,
             stats.breaks,
         ),
         None => "null".to_string(),
@@ -818,8 +924,12 @@ fn answer(
     let region_allocation_free = cell
         .region_allocation_free()
         .map_or_else(|| "null".to_string(), |free| format!("\"{free}\""));
+    // The share block beside the free balance: a node that opened unfunded
+    // and has no share yet reads `orders: 0` exactly as a quiet market does,
+    // and the block is what says which — see `qip_edge_node::share`.
+    let region_share = RegionShareStatus::of(cell).to_json();
     let body = format!(
-        r#"{{"cell":"{}","region":"{}","halted":{},"halt_flag":{halt_flag},"arbitrage_desk":{},"live_capable":{},"venues":{},"region_allocation_free":{region_allocation_free},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"pass":{pass},"mesh":{mesh},"started_at":{}}}"#,
+        r#"{{"cell":"{}","region":"{}","halted":{},"halt_flag":{halt_flag},"arbitrage_desk":{},"live_capable":{},"venues":{},"region_allocation_free":{region_allocation_free},"region_share":{region_share},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"pass":{pass},"mesh":{mesh},"started_at":{}}}"#,
         config.cell_id,
         config.region,
         cell.is_halted(),

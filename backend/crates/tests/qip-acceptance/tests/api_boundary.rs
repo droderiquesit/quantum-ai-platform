@@ -692,6 +692,16 @@ fn the_api_owns_no_field_typed_as_money_and_every_store_it_holds_is_named_here()
     // * `crate::mesh::MeshBackbone` — the spine's lanes: grants the platform
     //   signed, spooled until a cell acknowledges them. In transit, not owned.
     // * `Option<HealthReading>` — the last health pulse for the stream.
+    // * `crate::feed::ApiFeed` — the source `POST /cycle` senses: a tape's
+    //   cursor and clock, or a connector's runtime. Records in transit from
+    //   a source into the platform, never a figure the API keeps; the
+    //   platform holds what was observed.
+    // * `StatementFeed` — the custodian's statement file the root opened
+    //   (`QIP_WALLET_STATEMENT_PATH`): its path, the mtime and length last
+    //   read, and the parsed document as validated decimal *text*, never a
+    //   number (the field scan above holds that). Records in transit from a
+    //   file into `Platform::observe_statement`; the wallet the platform
+    //   assembles from them is the platform's, not the API's.
     //
     // A new store is a reviewed change: name it here with its reason.
     let known_stores: BTreeSet<&str> = [
@@ -702,6 +712,8 @@ fn the_api_owns_no_field_typed_as_money_and_every_store_it_holds_is_named_here()
         "BTreeMap<String, CellObservation>",
         "crate::mesh::MeshBackbone",
         "Option<HealthReading>",
+        "crate::feed::ApiFeed",
+        "StatementFeed",
     ]
     .into_iter()
     .collect();
@@ -818,7 +830,7 @@ fn every_mutating_route_is_one_of_three_and_each_raises_a_typed_intent() {
 }
 
 #[test]
-fn the_api_calls_no_platform_mutator_beyond_the_six_it_is_allowed() {
+fn the_api_calls_no_platform_mutator_beyond_the_seven_it_is_allowed() {
     // Enumerate every `&mut self` method the platform exposes, from the
     // kernel's source rather than from memory, so a mutator added to the
     // kernel tomorrow is refused here the day it is called from a route.
@@ -866,6 +878,21 @@ fn the_api_calls_no_platform_mutator_beyond_the_six_it_is_allowed() {
     //   supplies nothing to it but the cell name and the instant; the policy
     //   and the grant it is derived from are the platform's, so nothing a
     //   caller of the API sends can widen what a cell is permitted to price.
+    // * `observe` — SENSE, at the top of `POST /cycle`: the records of the
+    //   feed the composition root opened go into the platform before the
+    //   loop runs. The API supplies nothing to it that a caller sent — the
+    //   request carries no body the route reads, and the records come off a
+    //   tape file or a connector the root admitted through the licensing
+    //   gate at start-up — so it is the loop's own input, not a mutation a
+    //   client can shape.
+    // * `observe_statement` — the same class as `observe`: a custodian's
+    //   statement the composition root read from the file
+    //   `QIP_WALLET_STATEMENT_PATH` names, validated at start and re-read
+    //   before an admitted `POST /cycle` when the file has moved. No request
+    //   body reaches it — the route reads none — so what the wallet
+    //   reconciles against is a document a person put on the mount, never a
+    //   figure a caller sent, and the kernel keeps its own bound and asset
+    //   check on every holding.
     let allowed: BTreeSet<&str> = [
         "run_cycle",
         "autonomy_mut",
@@ -873,6 +900,8 @@ fn the_api_calls_no_platform_mutator_beyond_the_six_it_is_allowed() {
         "open_trial_book",
         "ingest_cell_report",
         "issue_cycle_whitelist",
+        "observe",
+        "observe_statement",
     ]
     .into_iter()
     .collect();

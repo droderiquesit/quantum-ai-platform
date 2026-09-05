@@ -28,7 +28,9 @@ the Envoy bootstrap in the same commit:
    the regulatory posture is legible and the terms are published, which is
    the same criterion applied to the other two.
 
-`api.frankfurter.app` stays as the FX reference-rate source it already is.
+Frankfurter (`api.frankfurter.dev` since the vendor retired
+`api.frankfurter.app` behind a redirect) stays as the FX reference-rate
+source it already is.
 It is not a substitute for any of the above: the Phase 2 gate is about the
 equities universe this platform sizes against, and a family surviving a
 holdout of FX reference rates answers the gate for FX and nothing else.

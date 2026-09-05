@@ -17,7 +17,7 @@ use crate::feasibility::{self, VenueModel};
 use crate::journal::{Decision, Journal, Mirror};
 use crate::mesh::{CellStateDelta, DeltaOrder, DeltaRefusal, StrategyUtilisation};
 use crate::policy::{VerifiedHalt, VerifiedPolicy};
-use crate::reservation::RegionAllocation;
+use crate::reservation::RegionTable;
 use crate::seam::CellLiquidity;
 use crate::telemetry::CellMetrics;
 use qip_arbitrage::scan::{Opportunity, RejectionStage};
@@ -322,6 +322,11 @@ impl OpenOrder {
 struct Working {
     order: OpenOrder,
     net: NetIntent,
+    /// What the region allocation committed for this order when it went out,
+    /// kept on the order so an expiry returns exactly that and not a number
+    /// recomputed from a different price. Zero for a cell with no allocation
+    /// and for a cycle leg, whose cycle holds once for every leg.
+    region_committed: Decimal,
 }
 
 /// How many orders the cell will hold open at once.
@@ -478,6 +483,21 @@ pub struct Cell {
     /// settlement because a position does not stop existing when the order
     /// that built it is agreed.
     positions: BTreeMap<String, Decimal>,
+    /// What each strategy holds from internal crosses, keyed by strategy,
+    /// venue and instrument, and the cash each has paid or received for it,
+    /// keyed by strategy. A cross is a trade between two of the cell's own
+    /// strategies at the recorded mid: the buyer's lot goes up and its cash
+    /// down by the notional, the seller's the other way round, and the two
+    /// cash legs sum to zero because nothing left the cell. Until these
+    /// existed a cross was booked — journal entry, both sides, price, size —
+    /// and no position or cash balance moved, so a reader of
+    /// `crossed_internally` in the chain assumed books that did not exist
+    /// (traceability F7). Bounded by the deployed strategies and the
+    /// instruments the cell holds books for; `positions` above stays the
+    /// venue-facing aggregate and a cross moves it by exactly nothing, which
+    /// is why the drop-copy reconciler never sees one.
+    strategy_positions: BTreeMap<String, Decimal>,
+    strategy_cash: BTreeMap<String, Decimal>,
     /// Every disagreement between this cell's fills and the venue's own
     /// account, kept so the centre hears about it in the state delta as well as
     /// in the journal.
@@ -509,8 +529,9 @@ pub struct Cell {
     /// registry nobody reads, which is what every test in the tree does. See
     /// [`crate::telemetry`] for why nothing here can block or fail the pass.
     metrics: CellMetrics,
-    /// The capital this whole cell may commit, if a composition root gave it
-    /// one, and every hold against it.
+    /// The capital this cell's region may commit, if a composition root gave
+    /// it a table, and every hold against it — this cell's and, when the
+    /// table is shared, its siblings'.
     ///
     /// `None` is the cell as it was before B12: every strategy bounded by its
     /// own signed envelope and nothing bounding their sum. It is not a
@@ -520,7 +541,7 @@ pub struct Cell {
     /// Given, never reached for, like the metric registry: a cell that chose
     /// its own amount would be deciding how much it may risk, which is the
     /// one thing ADR 0008 says it never does.
-    region_allocation: Option<RegionAllocation>,
+    region_allocation: Option<RegionTable>,
 }
 
 /// How many reconciliation breaks a cell keeps for reporting.
@@ -552,6 +573,8 @@ impl Cell {
             working: BTreeMap::new(),
             confirmed: Vec::new(),
             positions: BTreeMap::new(),
+            strategy_positions: BTreeMap::new(),
+            strategy_cash: BTreeMap::new(),
             breaks: Vec::new(),
             breaks_omitted: 0,
             order_sequence: 0,
@@ -595,15 +618,46 @@ impl Cell {
     ///
     /// See [`crate::reservation`] for what this is and is not — in particular
     /// that the amount is an operator's, not a signed grant from the centre.
-    pub fn with_region_allocation(mut self, amount: Decimal) -> Result<Self> {
-        self.region_allocation = Some(RegionAllocation::new(amount)?);
-        Ok(self)
+    pub fn with_region_allocation(self, amount: Decimal) -> Result<Self> {
+        Ok(self.with_region_table(RegionTable::new(amount)?))
+    }
+
+    /// Bound everything this cell commits by a share the centre has yet to
+    /// name, under an operator's ceiling (ADR 0039).
+    ///
+    /// The table opens funding nothing: every hold is refused under
+    /// `region_reservation` until a verified policy payload's grant manifest
+    /// names grants this cell holds, at which point [`Self::apply_policy`]
+    /// re-bases the table to their gross. `ceiling` is the most the table
+    /// will ever be bounded to whatever the centre names — the operator's
+    /// backstop, which can only narrow. Contrast [`Self::with_region_allocation`],
+    /// which funds the cell at the operator's number from the start: that is
+    /// the number nothing at the centre ever checked against a region's
+    /// grant, and two such cells under one grant could together spend it
+    /// twice.
+    pub fn with_unfunded_region(self, ceiling: Decimal) -> Result<Self> {
+        Ok(self.with_region_table(RegionTable::unfunded(ceiling)?))
+    }
+
+    /// Hold against a table this cell shares with every other cell of its
+    /// region — the blueprint's per-region reservation table (§26/§33).
+    ///
+    /// The root opens one [`RegionTable`] per region and hands a clone to
+    /// each cell it assembles there, so a second cell's proposal is refused
+    /// against the balance the first cell spent without either asking the
+    /// centre. Holds are filed under this cell's id, so two cells running the
+    /// same strategy on the same pass number do not collide, and one cell's
+    /// pass-scoped sweep cannot return a hold its sibling is mid-pass on.
+    #[must_use]
+    pub fn with_region_table(mut self, table: RegionTable) -> Self {
+        self.region_allocation = Some(table);
+        self
     }
 
     /// What the region allocation has left, or `None` if this cell holds no
     /// allocation. The two are different facts and a zero would conflate them.
     pub fn region_allocation_free(&self) -> Option<Decimal> {
-        self.region_allocation.as_ref().map(RegionAllocation::free)
+        self.region_allocation.as_ref().map(RegionTable::free)
     }
 
     /// Install the arbitrage desk this cell scans with.
@@ -781,6 +835,48 @@ impl Cell {
 
     fn position_key(venue: &VenueId, object_id: &ObjectId) -> String {
         format!("{}/{}", venue.as_str(), object_id.as_str())
+    }
+
+    /// The signed lot one strategy holds on one instrument at one venue from
+    /// internal crosses settled at this cell: bought positive, sold negative.
+    ///
+    /// Crosses only. A venue fill is attributed to its contributors at the
+    /// centre (`CentralPlane::ingest`) and is not booked here, so this is
+    /// not a strategy's whole position — it is the part that never reached a
+    /// venue and that no other record would otherwise hold.
+    pub fn strategy_position(
+        &self,
+        strategy: &StrategyId,
+        venue: &VenueId,
+        object_id: &ObjectId,
+    ) -> Decimal {
+        self.strategy_positions
+            .get(&Self::strategy_position_key(strategy, venue, object_id))
+            .copied()
+            .unwrap_or(Decimal::ZERO)
+    }
+
+    /// The cash one strategy has paid (negative) or received (positive) for
+    /// its crossed lots at this cell, at the mid each cross was journaled at.
+    /// Sums to zero across the strategies of every cross, because a cross
+    /// moves money between two of the cell's own books and nowhere else.
+    pub fn strategy_cash(&self, strategy: &StrategyId) -> Decimal {
+        self.strategy_cash
+            .get(strategy.as_str())
+            .copied()
+            .unwrap_or(Decimal::ZERO)
+    }
+
+    fn strategy_position_key(
+        strategy: &StrategyId,
+        venue: &VenueId,
+        object_id: &ObjectId,
+    ) -> String {
+        format!(
+            "{}/{}",
+            strategy.as_str(),
+            Self::position_key(venue, object_id)
+        )
     }
 
     /// Whether the cell is stopped, by any of its three halts.
@@ -1031,7 +1127,175 @@ impl Cell {
         // happened. Recording it before would publish a payload the cell might
         // still have refused.
         self.metrics.policy_applied(sequence);
+        // After the swap, so the share is applied from a payload the cell has
+        // already accepted whole and never from one it went on to refuse.
+        self.apply_region_share(sequence, now);
         Ok(())
+    }
+
+    /// Re-base the region table to this cell's share of its region's grant,
+    /// as the applied payload's grant manifest names it (ADR 0039).
+    ///
+    /// The share is not a number on the wire. The manifest names the
+    /// signatures of the grants the centre believes live for this cell, and
+    /// the share is the sum of `gross_limit` over the verified, deployed,
+    /// still-live envelopes among them — the one signed fact about each grant
+    /// the cell already holds, so the share and the envelopes are one claim
+    /// from one source rather than two that can disagree. The centre ships a
+    /// manifest only when that sum fits inside the cell's disjoint share of
+    /// the region's grant (`CentralPlane::region_shares`), so the sum here can
+    /// only be at or below the share the centre computed.
+    ///
+    /// Three stated cases. A produced manifest naming none of this cell's
+    /// grants is a share of nothing, and the table narrows to nothing: a
+    /// cell absent from the shares books nothing. An unproduced slot leaves
+    /// the table as it was — the centre said nothing about capital, which
+    /// cannot widen a table and, for a table opened unfunded, has nothing to
+    /// narrow. A cell with no table has nothing to re-base and records
+    /// nothing, exactly as it holds nothing on a pass.
+    fn apply_region_share(&mut self, sequence: u64, now: Timestamp) {
+        let Some((table, share, grants)) = self.derive_region_share(now) else {
+            return;
+        };
+        let outcome = table.rebase(&self.config.cell_id, share, sequence);
+        self.record_region_share(outcome, sequence, grants, now);
+    }
+
+    /// Sum the applied manifest again under its own sequence, because the
+    /// grants this cell holds have changed (ADR 0039).
+    ///
+    /// Called after a grant is deployed, renewed or withdrawn. The node
+    /// applies a payload before it deploys the plan that payload names, so
+    /// the first sum over the manifest finds no grant and the table narrows
+    /// to nothing; when the grant lands the same signed manifest is summed
+    /// once more, under the same sequence, and the table funds. A withdrawal
+    /// or a renewal under a new signature narrows by the same arithmetic,
+    /// which is the safe direction. Nothing here can widen past the payload:
+    /// only grants the manifest names are counted, and the centre ships a
+    /// manifest only when their gross fits the share it computed. A table no
+    /// payload has funded yet is left alone — a share arrives with a payload
+    /// and never from a grant by itself — and the ledger refuses the
+    /// re-derivation on its own if this check is ever wrong.
+    fn rederive_region_share(&mut self, now: Timestamp) {
+        let Some(sequence) = self.policy_sequence() else {
+            return;
+        };
+        if self.region_share_sequence() != Some(sequence) {
+            return;
+        }
+        let Some((table, share, grants)) = self.derive_region_share(now) else {
+            return;
+        };
+        let outcome = table.rederive(&self.config.cell_id, share, sequence);
+        self.record_region_share(outcome, sequence, grants, now);
+    }
+
+    /// The share the applied manifest names for this cell: the gross of the
+    /// verified, deployed, still-live envelopes among the grants it lists,
+    /// and how many there were. `None` when there is no table to re-base or
+    /// no produced manifest to sum.
+    fn derive_region_share(&mut self, now: Timestamp) -> Option<(RegionTable, Decimal, usize)> {
+        let table = self.region_allocation.clone()?;
+        let manifest = self
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.payload().capital_grants.value())?;
+        let mut share = Decimal::ZERO;
+        let mut grants = 0usize;
+        for deployed in self.deployed.values() {
+            let envelope = &deployed.envelope;
+            if !envelope.is_live(now)
+                || !manifest
+                    .live_grants
+                    .iter()
+                    .any(|named| named == envelope.signature())
+            {
+                continue;
+            }
+            match share.checked_add(envelope.gross_limit()) {
+                Some(sum) => share = sum,
+                None => {
+                    // A share the cell cannot compute funds nothing: the
+                    // table narrows to zero rather than to a number the cell
+                    // guessed at, and the reason is journaled beside it.
+                    self.journal.record(
+                        Decision::Refused {
+                            gate: "region_share".to_string(),
+                            reason: format!(
+                                "the grants named for this cell cannot be summed past {share}; \
+                                 the region share is taken as nothing"
+                            ),
+                        },
+                        now,
+                    );
+                    share = Decimal::ZERO;
+                    grants = 0;
+                    break;
+                }
+            }
+            grants += 1;
+        }
+        Some((table, share, grants))
+    }
+
+    /// Journal what a re-base or a re-derivation did, and chart the balance.
+    fn record_region_share(
+        &mut self,
+        outcome: Result<crate::reservation::Rebase>,
+        sequence: u64,
+        grants: usize,
+        now: Timestamp,
+    ) {
+        match outcome {
+            Ok(rebase) => {
+                self.journal.record(
+                    Decision::RegionShareApplied {
+                        sequence,
+                        grants,
+                        share: rebase.share.to_string(),
+                        bound: rebase.bound.to_string(),
+                        free: rebase.free.to_string(),
+                        deficit: rebase.deficit.to_string(),
+                    },
+                    now,
+                );
+                self.metrics.region_allocation(Some(rebase.free));
+            }
+            Err(error) => {
+                // The payload's own sequence check ran above, so this fires
+                // only when the ledger knows something the cell does not — a
+                // sibling re-based a table that was meant to be private, or a
+                // share the centre's plan could not have produced.
+                self.journal.record(
+                    Decision::Refused {
+                        gate: "region_share".to_string(),
+                        reason: error.message().to_string(),
+                    },
+                    now,
+                );
+            }
+        }
+    }
+
+    /// The bound the region table enforces now, or `None` if this cell holds
+    /// no table. Distinct from [`Self::region_allocation_free`]: the bound is
+    /// what the cell may commit in total, and free is what is left of it.
+    pub fn region_allocation_bound(&self) -> Option<Decimal> {
+        self.region_allocation.as_ref().map(RegionTable::bound)
+    }
+
+    /// The sequence of the last share the region table applied, if a table
+    /// is held and a share ever was.
+    pub fn region_share_sequence(&self) -> Option<u64> {
+        self.region_allocation
+            .as_ref()
+            .and_then(RegionTable::share_sequence)
+    }
+
+    /// The operator's ceiling on the region table, which no share can raise,
+    /// or `None` if this cell holds no table.
+    pub fn region_allocation_ceiling(&self) -> Option<Decimal> {
+        self.region_allocation.as_ref().map(RegionTable::ceiling)
     }
 
     /// Track an instrument at a venue.
@@ -1151,6 +1415,14 @@ impl Cell {
             )));
         }
 
+        // The grant's own clock, for the share: this method takes no
+        // timestamp, so `is_live` is judged at the instant the envelope was
+        // verified, which is the latest instant it knows and one the grant
+        // is live at by construction. A sibling grant that has expired since
+        // is counted until the next pass or payload — every order still
+        // checks its own envelope's window, and the centre named only grants
+        // live at its own clock, so the sum stays inside the centre's share.
+        let verified_at = envelope.verified_at();
         self.deployed.insert(
             envelope.strategy().as_str().to_string(),
             Deployed {
@@ -1162,6 +1434,10 @@ impl Cell {
                 pricing,
             },
         );
+        // A grant the applied manifest names is now held, so the share the
+        // manifest carries can be summed against it — see
+        // `rederive_region_share`.
+        self.rederive_region_share(verified_at);
         Ok(())
     }
 
@@ -1252,6 +1528,10 @@ impl Cell {
             },
             now,
         );
+        // A grant the cell no longer runs under no longer funds its share:
+        // the narrowing direction, applied at once rather than at the next
+        // payload.
+        self.rederive_region_share(now);
         Ok(deployed.envelope)
     }
 
@@ -1337,8 +1617,8 @@ impl Cell {
         // its region's capital for as long as the halt lasts. Journaled rather
         // than silent: a hold reaching here means a release site was missed,
         // and that is a defect an operator should be able to find afterwards.
-        let abandoned = match self.region_allocation.as_mut() {
-            Some(allocation) => allocation.sweep_before(self.pass),
+        let abandoned = match self.region_allocation.as_ref() {
+            Some(allocation) => allocation.sweep_before(&self.config.cell_id, self.pass),
             None => Vec::new(),
         };
         for (id, amount) in abandoned {
@@ -1356,7 +1636,7 @@ impl Cell {
         // Published before the halt check, so a halted cell still reports what
         // its region has left rather than going dark on the number.
         self.metrics
-            .region_allocation(self.region_allocation.as_ref().map(RegionAllocation::free));
+            .region_allocation(self.region_allocation.as_ref().map(RegionTable::free));
 
         self.record_halt();
 
@@ -1886,7 +2166,7 @@ impl Cell {
         // Beside the envelope charge and for the same reason it is here: the
         // region allocation and the envelopes are two claims about one order,
         // and two claims recorded in different places will disagree.
-        self.commit_region_holds(&net_intent.contributors);
+        let region_committed = self.commit_region_holds(&net_intent.contributors);
         self.record_sent(
             Working {
                 order: OpenOrder {
@@ -1903,6 +2183,7 @@ impl Cell {
                     closed: None,
                 },
                 net: net_intent.clone(),
+                region_committed,
             },
             now,
         );
@@ -2213,6 +2494,7 @@ impl Cell {
             .map(|working| working.order.order_id.clone())
             .collect();
         let mut withdrawn = Vec::new();
+        let mut venue_left_open = Vec::new();
         for order_id in due {
             let Some(working) = self.working.get(&order_id) else {
                 continue;
@@ -2233,6 +2515,7 @@ impl Cell {
                         now,
                     );
                     self.metrics.order_expired(&venue);
+                    venue_left_open.push((order_id.clone(), remaining));
                     withdrawn.push(order_id);
                 }
                 Err(error) => {
@@ -2251,7 +2534,69 @@ impl Cell {
         if !withdrawn.is_empty() {
             self.confirm_execution_reports(gateway, now);
         }
+        // Only after the last reports are in: an order the venue says it
+        // withdrew whole, on which no report ever named a fill, did not run,
+        // and the region's capital it committed goes back. Anything less —
+        // a partial fill on either channel — is a position, and the whole
+        // commit stays spent, which is the conservative reading.
+        for (order_id, remaining) in venue_left_open {
+            self.return_region_capital_for_unfilled(&order_id, remaining, now);
+        }
         withdrawn
+    }
+
+    /// Give a withdrawn order's committed region capital back, when nothing
+    /// of it filled.
+    ///
+    /// Without this a disconnected cell resting orders the market walks away
+    /// from spends its region on orders that never became positions, and its
+    /// second proposal is refused against capital nothing is holding — "bill
+    /// what ran, not what was planned". The venue's own answer to the cancel
+    /// and the cell's fill record must both say nothing filled; either alone
+    /// could be ahead of the other by one report.
+    fn return_region_capital_for_unfilled(
+        &mut self,
+        order_id: &str,
+        venue_remaining: Decimal,
+        now: Timestamp,
+    ) {
+        let Some(working) = self.working.get(order_id) else {
+            return;
+        };
+        let unfilled_everywhere =
+            working.order.filled.is_zero() && venue_remaining == working.order.quantity;
+        if !unfilled_everywhere || !working.region_committed.is_positive() {
+            return;
+        }
+        let amount = working.region_committed;
+        let outcome = match self.region_allocation.as_ref() {
+            None => return,
+            Some(allocation) => allocation.return_committed(amount),
+        };
+        match outcome {
+            Ok(()) => {
+                if let Some(working) = self.working.get_mut(order_id) {
+                    // Returned once. A closed order is never due again, and
+                    // this zero holds the line if that ever stopped being
+                    // true: the ledger's own bound would only catch a second
+                    // return while nothing else was committed.
+                    working.region_committed = Decimal::ZERO;
+                }
+            }
+            Err(error) => {
+                self.journal.record(
+                    Decision::Refused {
+                        gate: "region_reservation_return".to_string(),
+                        reason: format!(
+                            "order {order_id} expired unfilled and its {amount} could not be \
+                             returned to the region allocation: {}",
+                            error.message()
+                        ),
+                    },
+                    now,
+                );
+            }
+        }
     }
 
     // --- fills: the venue's facts ------------------------------------------
@@ -2922,6 +3267,10 @@ impl Cell {
                         closed: None,
                     },
                     net: leg_net,
+                    // The cycle holds once for all its legs and commits below
+                    // once every leg is out; a leg never rests, so nothing
+                    // here can expire and return capital.
+                    region_committed: Decimal::ZERO,
                 },
                 now,
             );
@@ -3180,6 +3529,48 @@ impl Cell {
             return None;
         };
 
+        // The record must settle itself. `book_cross` moves each side's lot
+        // and cash from the record alone — one name a side, the size, the
+        // mid — so a record that names two buyers or two sellers carries no
+        // per-strategy size to move, and splitting it evenly would be a
+        // guess dressed as a ledger. The centre refuses exactly this record
+        // for exactly this reason (`CentralPlane::ingest`); refusing it here
+        // means the two never disagree about a cross that one of them booked
+        // and the other could not settle. Refused, not narrowed to a pair:
+        // choosing which two of three strategies traded is another guess.
+        if bought.len() != 1 || sold.len() != 1 {
+            self.refuse(
+                report,
+                "internal_cross_attribution",
+                &format!(
+                    "crossing {crossed} on {} names {} buyer(s) and {} seller(s); the record \
+                     carries no per-strategy size, so the cross cannot be settled to each book \
+                     from the record alone and is refused rather than split by a guess",
+                    net_intent.object_id.as_str(),
+                    bought.len(),
+                    sold.len()
+                ),
+                now,
+            );
+            return None;
+        }
+        // The notional the settlement will move. Judged now, before the
+        // record exists, so that a cross the chain says happened can never be
+        // one whose cash leg could not be represented.
+        if crossed.checked_mul(price).is_none() {
+            self.refuse(
+                report,
+                "internal_cross_price",
+                &format!(
+                    "crossing {crossed} at {price} on {} has a notional the ledger cannot \
+                     represent, so the cross is refused rather than booked without its cash leg",
+                    net_intent.object_id.as_str()
+                ),
+                now,
+            );
+            return None;
+        }
+
         Some(InternalCross {
             object_id: net_intent.object_id.clone(),
             venue: net_intent.venue.clone(),
@@ -3209,8 +3600,106 @@ impl Cell {
         let quantity = crossed
             .as_ref()
             .map_or(Decimal::ZERO, |cross| cross.quantity);
+        if let Some(cross) = &crossed {
+            self.book_cross(cross, now);
+        }
         self.record_cross(crossed, now, report);
         self.observe_crossing(net_intent, quantity, now);
+    }
+
+    /// Move both sides' lots and cash by what the cross record says, and
+    /// nothing else.
+    ///
+    /// The record is the one source: the buyer named in it gains `quantity`
+    /// and pays `quantity × price`, the seller named in it loses `quantity`
+    /// and receives the same, at the price the chain is about to seal. No
+    /// contributor size, reference price or book read enters here — a
+    /// settlement worked out a second time from the intents could disagree
+    /// with the journal, and the journal is what a reader replays.
+    ///
+    /// Every arithmetic step is checked. A lot or cash balance that could
+    /// not be represented, or a record naming other than one strategy a side
+    /// — impossible from `cross_internally`, which refuses both before the
+    /// record exists — is a reconciliation break: the chain would hold a
+    /// cross the books do not, which is the disagreement `break_on` exists
+    /// to stop the cell on. `positions`, the venue-facing aggregate, is left
+    /// alone: the two lots sum to zero and the venue saw nothing.
+    fn book_cross(&mut self, cross: &InternalCross, now: Timestamp) {
+        let ([buyer], [seller]) = (cross.bought.as_slice(), cross.sold.as_slice()) else {
+            self.break_on(
+                format!(
+                    "a cross of {} {} at {} was booked naming {} buyer(s) and {} seller(s), and \
+                     the ledger cannot settle it to one book a side",
+                    cross.quantity,
+                    cross.object_id.as_str(),
+                    cross.price,
+                    cross.bought.len(),
+                    cross.sold.len()
+                ),
+                now,
+            );
+            return;
+        };
+        let Some(notional) = cross.quantity.checked_mul(cross.price) else {
+            self.break_on(
+                format!(
+                    "a cross of {} {} at {} was booked and its notional cannot be represented, \
+                     so the cash legs were not moved",
+                    cross.quantity,
+                    cross.object_id.as_str(),
+                    cross.price
+                ),
+                now,
+            );
+            return;
+        };
+        // Buyer first, then seller; equal and opposite on both legs. Every
+        // next balance is worked out before any is written, so a leg that
+        // cannot be represented leaves neither book moved. This once wrote
+        // leg by leg: a seller-side overflow was found after the buyer's lot
+        // and cash were already booked, and "equal and opposite" was true of
+        // the record and false of the books it was meant to describe.
+        let legs = [
+            (buyer.clone(), cross.quantity, -notional),
+            (seller.clone(), -cross.quantity, notional),
+        ];
+        let mut settled = Vec::with_capacity(legs.len());
+        for (strategy, lot, cash) in legs {
+            let position_key =
+                Self::strategy_position_key(&strategy, &cross.venue, &cross.object_id);
+            let held = self
+                .strategy_positions
+                .get(&position_key)
+                .copied()
+                .unwrap_or(Decimal::ZERO);
+            let balance = self
+                .strategy_cash
+                .get(strategy.as_str())
+                .copied()
+                .unwrap_or(Decimal::ZERO);
+            let (Some(next_held), Some(next_balance)) =
+                (held.checked_add(lot), balance.checked_add(cash))
+            else {
+                self.break_on(
+                    format!(
+                        "settling a cross of {} {} at {} to {} would overflow its lot or cash \
+                         balance, so neither side's book was moved",
+                        cross.quantity,
+                        cross.object_id.as_str(),
+                        cross.price,
+                        strategy.as_str()
+                    ),
+                    now,
+                );
+                return;
+            };
+            settled.push((position_key, strategy, next_held, next_balance));
+        }
+        for (position_key, strategy, next_held, next_balance) in settled {
+            self.strategy_positions.insert(position_key, next_held);
+            self.strategy_cash
+                .insert(strategy.as_str().to_string(), next_balance);
+        }
     }
 
     /// The instrument key the crossing window is kept by: what `net` groups
@@ -3429,9 +3918,9 @@ impl Cell {
         let pass = self.pass;
         // The borrow ends with the match, so the refusal path below can take
         // `&mut self` to journal why it refused.
-        let outcome = match self.region_allocation.as_mut() {
+        let outcome = match self.region_allocation.as_ref() {
             None => return true,
-            Some(allocation) => allocation.reserve(id, notional, pass),
+            Some(allocation) => allocation.reserve(&self.config.cell_id, id, notional, pass),
         };
         match outcome {
             Ok(()) => true,
@@ -3446,10 +3935,10 @@ impl Cell {
     /// becoming an order.
     fn release_region_hold_for(&mut self, strategy: &str) {
         let pass = self.pass;
-        if let Some(allocation) = self.region_allocation.as_mut() {
+        if let Some(allocation) = self.region_allocation.as_ref() {
             // The amount returns to the free balance inside the ledger; this
             // path has nothing to charge it against.
-            let _ = allocation.release(&region_hold_id(pass, strategy));
+            let _ = allocation.release(&self.config.cell_id, &region_hold_id(pass, strategy));
         }
     }
 
@@ -3465,7 +3954,7 @@ impl Cell {
         }
     }
 
-    /// Turn a net's holds into spend.
+    /// Turn a net's holds into spend, and say how much that was.
     ///
     /// The whole hold is committed, not the contributor's share of the sent
     /// order. A strategy whose intent partly cancelled inside the net
@@ -3474,32 +3963,48 @@ impl Cell {
     /// bound before netting buys: the alternative gives a strategy that
     /// offset against another its budget back to bid for again in the same
     /// pass.
-    fn commit_region_holds(&mut self, contributors: &[Contributor]) {
+    ///
+    /// The sum is kept on the order so that an expiry with nothing filled
+    /// returns exactly this and nothing recomputed.
+    fn commit_region_holds(&mut self, contributors: &[Contributor]) -> Decimal {
         let pass = self.pass;
-        if let Some(allocation) = self.region_allocation.as_mut() {
+        let mut committed = Decimal::ZERO;
+        if let Some(allocation) = self.region_allocation.as_ref() {
             for contributor in contributors {
                 // `None` is unreachable here: the key is derived from the same
                 // (pass, strategy) that took the hold, and the only thing that
                 // could remove it in between is the sweep, which runs at the
                 // top of a pass and cannot run inside one.
-                let _ = allocation.commit(&region_hold_id(pass, contributor.strategy.as_str()));
+                if let Some(amount) = allocation.commit(
+                    &self.config.cell_id,
+                    &region_hold_id(pass, contributor.strategy.as_str()),
+                ) {
+                    committed += amount;
+                }
             }
         }
+        committed
     }
 
     /// Give back a cycle's region hold, because the cycle is not going out.
     fn release_cycle_hold(&mut self, cycle_id: &str) {
         let pass = self.pass;
-        if let Some(allocation) = self.region_allocation.as_mut() {
-            let _ = allocation.release(&region_hold_id_for_cycle(pass, cycle_id));
+        if let Some(allocation) = self.region_allocation.as_ref() {
+            let _ = allocation.release(
+                &self.config.cell_id,
+                &region_hold_id_for_cycle(pass, cycle_id),
+            );
         }
     }
 
     /// Turn a cycle's region hold into spend, once every leg is out.
     fn commit_cycle_hold(&mut self, cycle_id: &str) {
         let pass = self.pass;
-        if let Some(allocation) = self.region_allocation.as_mut() {
-            let _ = allocation.commit(&region_hold_id_for_cycle(pass, cycle_id));
+        if let Some(allocation) = self.region_allocation.as_ref() {
+            let _ = allocation.commit(
+                &self.config.cell_id,
+                &region_hold_id_for_cycle(pass, cycle_id),
+            );
         }
     }
 
@@ -3706,6 +4211,12 @@ impl Cell {
             },
             now,
         );
+        // The grant under this name has a new signature. If the applied
+        // manifest names it the share widens to what the centre already
+        // checked; if it names only the old one the share narrows, until
+        // the next payload names the renewal. Either way the sum is of
+        // grants the centre signed, never of a number the cell chose.
+        self.rederive_region_share(now);
         Ok(())
     }
 
@@ -4368,6 +4879,71 @@ mod crossing_tests {
                 .any(|(gate, _)| gate == "internal_cross_price"),
             "the refusal did not name the pricing gate: {:?}",
             report.refusals
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_cross_whose_seller_leg_would_overflow_books_nothing_on_either_side() -> Result<()> {
+        // The seller's cash sits at the top of the representable range, so
+        // receiving the notional overflows. The buyer's leg is fine on its
+        // own — and that is the trap: booked leg by leg, the buyer would be
+        // long a lot and short the cash before the seller's overflow was
+        // found, and the two books would no longer sum to zero. Neither side
+        // may move, and the cell must halt on the disagreement.
+        let mut cell = cell_with_book()?;
+        let alpha = StrategyId::new("alpha");
+        let beta = StrategyId::new("beta");
+        cell.strategy_cash
+            .insert(beta.as_str().to_string(), Decimal::MAX);
+        let cross = InternalCross {
+            object_id: object(),
+            venue: venue(),
+            quantity: Decimal::parse("10").expect("a decimal literal"),
+            price: price(),
+            bought: vec![alpha.clone()],
+            sold: vec![beta.clone()],
+        };
+        // Premise: the seller's leg really cannot be represented, and the
+        // buyer's really can — so what follows is about atomicity and not
+        // about a cross that would have failed on the first leg.
+        let notional = cross
+            .quantity
+            .checked_mul(cross.price)
+            .expect("the fixture notional is representable");
+        assert!(
+            Decimal::MAX.checked_add(notional).is_none(),
+            "the premise failed: the seller's cash does not overflow"
+        );
+        assert!(
+            Decimal::ZERO.checked_add(cross.quantity).is_some()
+                && Decimal::ZERO.checked_add(-notional).is_some(),
+            "the premise failed: the buyer's leg overflows on its own"
+        );
+
+        cell.book_cross(&cross, at(10));
+
+        assert!(
+            cell.strategy_position(&alpha, &venue(), &object())
+                .is_zero(),
+            "the buyer's lot was booked although the seller's leg could not be"
+        );
+        assert!(
+            cell.strategy_cash(&alpha).is_zero(),
+            "the buyer's cash was moved although the seller's leg could not be"
+        );
+        assert!(
+            cell.strategy_position(&beta, &venue(), &object()).is_zero(),
+            "the seller's lot was moved on a leg that overflowed"
+        );
+        assert_eq!(
+            cell.strategy_cash(&beta),
+            Decimal::MAX,
+            "the seller's cash moved on a leg that overflowed"
+        );
+        assert!(
+            cell.is_halted(),
+            "a cross the books could not settle did not halt the cell"
         );
         Ok(())
     }

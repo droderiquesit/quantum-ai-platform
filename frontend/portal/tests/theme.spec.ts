@@ -5,7 +5,10 @@
  * the badge is how an operator knows which environment a number belongs to,
  * and the SIMULATED label is the only thing separating an illustration from a
  * fabrication. Both must be structural — present because the code cannot
- * render the page without them, not because someone remembered.
+ * render the page without them, not because someone remembered. Since the
+ * last illustrated pages started reading platform routes, the label's
+ * guarantee is held by there being nothing to label, and the third test
+ * guards that instead.
  */
 import { expect, test } from "@playwright/test";
 import { healthy, servePlatform } from "./support/platform";
@@ -45,14 +48,23 @@ test("the environment badge reports paper and is a report, not a control", async
   expect(tag, "the environment badge must not be an interactive control").not.toBe("button");
 });
 
-test("a simulated page cannot be read without its label", async ({ page }) => {
-  // The one rule that keeps illustration from becoming fabrication. If this
-  // fails, a screenshot of the predictions page is indistinguishable from a
-  // claim about real forecasts.
+test("no portal page renders the simulated-data banner now that every page reads a platform route", async ({
+  page,
+}) => {
+  // This test used to assert the opposite: that `/intelligence/predictions`
+  // carried the SIMULATED DATA banner, because it was a seeded illustration.
+  // The platform now serves `/predictions`, `/correlation` and `/backtests`,
+  // and the three pages that illustrated read them instead. The rule the
+  // banner enforced — an illustration is labelled or does not exist — now
+  // holds by there being no illustration, and this guards that a page does
+  // not quietly bring one back without the label.
   await servePlatform(page, healthy());
-  await page.goto("/intelligence/predictions");
-  const banner = page.getByTestId("simulated-banner").first();
-  await expect(banner).toBeVisible();
-  await expect(banner).toContainText("generated, not measured");
-  await expect(page.getByText("simulated data").first()).toBeVisible();
+  for (const path of ["/intelligence/predictions", "/intelligence/correlation", "/research/backtesting"]) {
+    await page.goto(path);
+    // Premise: the page rendered a panel, so an absent banner is not an
+    // absent page.
+    await expect(page.locator("section.panel").first()).toBeVisible();
+    await expect(page.getByTestId("simulated-banner"), `${path} shows a simulated banner`).toHaveCount(0);
+    await expect(page.getByText("simulated data"), `${path} carries the simulated label`).toHaveCount(0);
+  }
 });

@@ -1,0 +1,34 @@
+# The Config Connector operator, vendored — the Autopilot variant of the
+# manifest Google publishes in its release bundle.
+#
+# ADR 0036 said the operator would be the GKE addon, so that no `kubernetes`
+# or `helm` provider entered the Terraform. The API refused that on the first
+# apply of the control plane (infra.yml runs 34 and 35 on 2026-09-05):
+#
+#   addons {"config-connector"} are not supported for Autopilot clusters
+#
+# Autopilot is the property that keeps a `qip-*` image off the cluster
+# (ADR 0036 decision 1), so the addon is what gives way. This is the smallest
+# faithful alternative: the operator arrives by the same path Argo CD, Kargo
+# and cert-manager do — a byte-for-byte upstream manifest whose one image
+# each environment's overlay moves to the environment's own registry at the
+# digest infrastructure/egress/vendored-images.txt reviewed and vendor.yml
+# attested. The provider set is still `google` and `google-beta`, and the
+# `ConfigConnector` object under ../config-connector is unchanged: it is
+# applied after this, once the operator's CRD is established, exactly as it
+# was applied after the addon.
+#
+# What this does not vendor, and why it is written down: the operator installs
+# the `cnrm-system` controllers itself, from four `gcr.io/gke-release/cnrm/*`
+# images pinned inside the operator's own image (SOURCE.md names them and
+# their digests). No overlay can move those, so they are admitted only if
+# Google's global policy — `global_policy_evaluation_mode = "ENABLE"` in
+# modules/binaryauthorization — admits Google's own release registry. That
+# has not been observed; the first bootstrap's wait for the controller
+# manager is where it is found out, and an admission denial there names the
+# image. It is not to be answered with an exemption pattern written in
+# passing.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../upstream

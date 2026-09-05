@@ -1,5 +1,7 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { STREAM_CHANNELS, type StreamChannel } from "@/lib/api/endpoints";
+import { authRequired } from "@/lib/server/auth-gate";
+import { sessionFrom } from "@/lib/server/auth-http";
 import { API_VERSION_PREFIX, upstream, upstreamHeaders, type Upstream } from "@/lib/server/upstream";
 
 /**
@@ -28,7 +30,18 @@ function isChannel(value: string): value is StreamChannel {
   return (STREAM_CHANNELS as readonly string[]).includes(value);
 }
 
-export async function GET(request: Request, context: RouteContext): Promise<Response> {
+export async function GET(request: NextRequest, context: RouteContext): Promise<Response> {
+  // The same session boundary the REST gateway holds. This handler used to
+  // have none: with the gate on, `/api/gateway/orders` answered 401 to an
+  // anonymous caller while `/api/stream/orders` — the same data over time,
+  // forwarded with the same bearer token — answered it in full. A stream is
+  // read-only, so no CSRF pair is asked for; the session is.
+  if (authRequired() && !sessionFrom(request)) {
+    return NextResponse.json(
+      { error: "sign in to use this console", gateway: "unauthenticated" },
+      { status: 401, headers: { "x-qip-gateway": "upstream", "cache-control": "no-store" } },
+    );
+  }
   const { channel } = await context.params;
   if (!isChannel(channel)) {
     return NextResponse.json(

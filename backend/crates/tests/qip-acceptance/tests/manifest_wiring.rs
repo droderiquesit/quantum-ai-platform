@@ -67,6 +67,13 @@ const CATALOGUE: &str = "infrastructure/terraform/catalogue.tf";
 const NODE_STARTUP: &str =
     "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl";
 const ROOT_VARIABLES: &str = "infrastructure/terraform/variables.tf";
+/// The Config Connector manifests ADR 0036 deploys the catalogue through:
+/// one `RunService` per workload per environment under `envs/<env>/`. Each
+/// is the catalogue entry rendered for that environment, and each is walked
+/// here as a deployment of its own, because a variable the catalogue sets
+/// and a manifest omits is set by nothing the reconciler applies.
+const GITOPS_ENVS: &str = "infrastructure/gitops/envs";
+const ENVIRONMENTS: [&str; 4] = ["dev", "test", "stage", "prod"];
 
 // ---------------------------------------------------------------------------
 // Allowlist
@@ -269,13 +276,136 @@ fn deployments() -> Vec<(String, String, BTreeSet<String>)> {
         "the node's unit runs {node}, which is not a crate under crates/apps"
     );
     found.push(("node.env".to_string(), node, variables_the_node_sets()));
+    found.extend(run_service_deployments());
     assert!(
-        found.len() >= 4,
+        found.len() >= 4 + 3 * ENVIRONMENTS.len(),
         "only {} deployments were matched to a crate; the walk from a \
          deployment to the binary that builds it is finding nothing",
         found.len()
     );
     found
+}
+
+/// The `RunService` documents under one environment's directory, as
+/// `(file, document text)`. Line-based, like every other walk here: a
+/// document is the text between `---` separators, and it is a RunService
+/// when it carries a column-zero `kind: RunService`.
+fn run_service_documents(environment: &str) -> Vec<(String, String)> {
+    let directory = format!("{GITOPS_ENVS}/{environment}");
+    assert!(
+        repository_root().join(&directory).is_dir(),
+        "{directory} does not exist; ADR 0036 decision 4 puts one RunService per workload \
+         there, and until it lands this walk has no manifest to read"
+    );
+    let mut documents = Vec::new();
+    for extension in ["yaml", "yml"] {
+        for path in files_with_extension(&directory, extension) {
+            let content = std::fs::read_to_string(&path).expect("readable");
+            let display = path
+                .strip_prefix(repository_root())
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            for document in content.split("\n---") {
+                if document
+                    .lines()
+                    .any(|line| line.trim_end() == "kind: RunService")
+                {
+                    documents.push((display.clone(), document.to_string()));
+                }
+            }
+        }
+    }
+    documents
+}
+
+/// The `QIP_` variables a RunService sets: every `name: QIP_…` entry of a
+/// container's `env` list. Exact identifiers, for the reason
+/// `variables_an_entry_sets` gives.
+fn variables_a_run_service_sets(document: &str) -> BTreeSet<String> {
+    document
+        .lines()
+        .filter_map(|line| {
+            let entry = line.trim_start();
+            let entry = entry.strip_prefix("- ").unwrap_or(entry);
+            let value = entry.strip_prefix("name:")?.trim().trim_matches('"');
+            (value.starts_with("QIP_")
+                && value
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+            .then(|| value.to_string())
+        })
+        .collect()
+}
+
+/// Every catalogue workload's RunService in every environment, as a
+/// deployment: `(envs/<env>:<workload>, binary, variables)`.
+fn run_service_deployments() -> Vec<(String, String, BTreeSet<String>)> {
+    let catalogue = catalogue_workloads();
+    let mut found = Vec::new();
+    for environment in ENVIRONMENTS {
+        let documents = run_service_documents(environment);
+        for (name, body) in &catalogue {
+            let binary = catalogue_field(body, "binary");
+            let service = format!("qip-{environment}-{name}");
+            let matching: Vec<&(String, String)> = documents
+                .iter()
+                .filter(|(_, document)| {
+                    document
+                        .lines()
+                        .any(|line| line.trim_end() == format!("  name: {service}"))
+                })
+                .collect();
+            assert_eq!(
+                matching.len(),
+                1,
+                "{} RunService document(s) under {GITOPS_ENVS}/{environment} are named \
+                 `{service}`; the catalogue's {name} is deployed by exactly one",
+                matching.len()
+            );
+            let set = variables_a_run_service_sets(&matching[0].1);
+            assert!(
+                set.len() >= 3,
+                "{} sets only {set:?} for {binary}; the env list is not being read",
+                matching[0].0
+            );
+            found.push((format!("envs/{environment}:{name}"), binary, set));
+        }
+    }
+    found
+}
+
+/// The variables a catalogue entry sets only when a root variable is
+/// non-null — the keys inside a `var.x == null ? {} : {` arm of its `env`
+/// merge. A RunService is the entry rendered for one environment, and an
+/// environment whose tfvars leave that variable null renders none of them;
+/// that absence is the tfvars' reviewed decision, not a variable nothing
+/// sets, and it is admitted for a RunService alone.
+fn catalogue_conditional_variables() -> BTreeMap<String, BTreeSet<String>> {
+    let mut by_workload = BTreeMap::new();
+    for (name, body) in catalogue_workloads() {
+        let mut names = BTreeSet::new();
+        let mut inside = false;
+        for line in body.lines() {
+            if line.contains("== null ? {} : {") {
+                inside = true;
+                continue;
+            }
+            if inside && line.trim() == "}," {
+                inside = false;
+                continue;
+            }
+            if inside {
+                if let Some((key, _)) = line.split_once('=') {
+                    if key.trim().starts_with("QIP_") {
+                        names.insert(key.trim().to_string());
+                    }
+                }
+            }
+        }
+        by_workload.insert(name, names);
+    }
+    by_workload
 }
 
 // ---------------------------------------------------------------------------
@@ -745,6 +875,42 @@ const PER_INVESTIGATION_NOT_PER_ENVIRONMENT: &str = "A replay reads a recorded \
      standing property of an environment — a catalogue default would leave \
      every restart replaying the same file for ever.";
 
+/// A recorded tape, which is a demonstration's input and not a feed.
+const A_DEMONSTRATION_FIXTURE_NO_DEPLOYMENT_SHIPS: &str = "Optional, and \
+     unset selects the synthetic feed, which is what every environment runs. \
+     The tape is a recorded fixture — `data/datasets/loop-demonstration-tape.json` \
+     — played on its own clock so a demonstration of the loop is reproducible \
+     from one committed file; no deployment ships it, no image carries it, and \
+     a Cloud Run instance has no volume to mount it from, so a value here would \
+     be a configured path that resolves to nothing and the feed refuses it at \
+     start-up. It also contradicts a replay: each root refuses both set at once \
+     by name. A tape belongs on the command that runs a demonstration, never in \
+     the configuration of a workload meant to sense a market.";
+
+/// The API's own source selection, which no deployment makes yet.
+///
+/// The API's default is not the synthetic feed the brains fall back to: it
+/// is no source at all, said in the banner, because the API is the process an
+/// operator reads and generated prices there would be indistinguishable from
+/// a sensed market.
+const THE_API_SENSES_NOTHING_UNTIL_A_SOURCE_IS_CHOSEN: &str = "Optional, and \
+     unset means the API senses nothing and says so in its banner — not a \
+     synthetic exchange, because this is the process an operator reads and \
+     generated prices here would be indistinguishable from a sensed market. \
+     The tape is the same committed demonstration fixture the brains replay, \
+     played on its own clock; no deployment ships it, no image carries it, \
+     and a Cloud Run instance has no volume to mount it from, so a value here \
+     would be a configured path that resolves to nothing and the feed refuses \
+     it at start-up. The connector pair is the real path ADR 0034 decides, and \
+     it is admitted by the data finder's licensing catalogue before any socket \
+     opens; the catalogue sets it for the fast brain from \
+     `var.market_data_connector` and for nothing else, and extending that arm \
+     to the API is a catalogue change with its own plan evidence — the API's \
+     egress sidecar has never been applied, and the one FX source this build \
+     carries answers a 301 from the host its manifest names, so a value today \
+     would start a process whose feed refuses to open at boot. Each root \
+     refuses a tape and a connector set at once by name.";
+
 /// A number the tests and the probes are written against.
 const THE_PACE_THE_PROBES_ASSUME: &str = "The cadence, the budget and the \
      tolerance are one set of numbers: /ready returns 503 once cycles breach \
@@ -779,6 +945,19 @@ const NOT_AN_ORDER_ENTRY_DIAL: &str = "This aims order entry, and the \
      up against a real venue is the runbook's deliberate, per-node act, and \
      shadow mode's firewall is what refuses it until then.";
 
+/// The requote policy, which a deployment leaves unset on purpose.
+const REPRICING_IS_A_PER_NODE_DECISION_NOT_A_DEFAULT: &str = "Absent, a resting \
+     child order stays where the cell sent it until its time to live, and the \
+     node's production requirements say so. `QIP_REPRICE` is `<tick>:<ticks>:<bps>` \
+     — the instrument's price increment and two staleness thresholds — and the \
+     right values are a property of the venue and the instruments a particular \
+     node quotes, not of an environment: a one-cent tick written into every \
+     node's template would be wrong for every book that is not priced in cents, \
+     and the policy refuses a zero tick at start-up rather than at the first \
+     pass. Shadow mode sends nothing, so a requote there is a cancel and a \
+     replacement of an order no venue holds. Setting it is the runbook's \
+     per-node act when a node is brought up against a book whose tick is known.";
+
 /// A seed, whose default is derived and whose override is for reproduction.
 const A_SEED_IS_DERIVED_NOT_DEPLOYED: &str = "The seed is derived from the \
      node's own identity so that two cells do not retry in lockstep, and the \
@@ -811,7 +990,7 @@ const NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET: &str = "The drain cannot \
      the public internet, which is https. So a URL naming it is refused at \
      start-up with EX_CONFIG, and a URL naming anything else names something \
      that does not exist: the egress proxy's allowlist \
-     (`infrastructure/egress/envoy.yaml`, six hosts) does not carry the \
+     (`infrastructure/egress/envoy.yaml`, seven hosts) does not carry the \
      service's own run.app address, and `qip-fastbrain` has no proxy at all \
      because `catalogue.tf` refuses it one at plan time (ADR 0008: nothing on \
      the hot path may consult a model, and port 9102 is that route). \
@@ -823,7 +1002,69 @@ const NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET: &str = "The drain cannot \
      names, or a TLS hop this process may use; both are infrastructure work \
      with their own evidence, not a value added here as a side effect.";
 
+/// The hosted language model, built dark (ADR 0037).
+const NO_ENVIRONMENT_NAMES_A_MODEL_UNTIL_ITS_TERMS_ARE_READ: &str = "ADR 0037 \
+     accepts the Hugging Face adapter for the platform lane and applies none \
+     of it: \"no environment sets it until the providers' terms are read and \
+     the secret exists\". The deep brain reads the provider, the model and the \
+     loopback listener, and resolves QIP_HF_TOKEN through `qip_core::secret` \
+     with the `_FILE` indirection; with the provider unset the FallbackChain \
+     holds the deterministic model alone, which is what every deployed \
+     reasoning run narrates through today, and the banner says so. Setting the \
+     three on the deep brain is a person's act in the order the ADR gives -- \
+     read the terms of the providers the chosen model resolves to, create the \
+     secret in Secret Manager and mount it as a file (ADR 0024), then set the \
+     variables from root variables so an absent value still means templates \
+     -- and the egress listener already exists, dark, so that the first of \
+     those acts is reading terms rather than widening a proxy. The fast brain \
+     and the API read none of the four, and \
+     `only_the_deep_brain_reads_the_language_model_variables` refuses them \
+     there.";
+
+/// The wallet statement, which no custodian has issued to any environment.
+const NO_CUSTODIAN_HAS_ISSUED_A_STATEMENT: &str = "The API reads a JSON \
+     statement of what the desk's broker or custodian reported, observes it \
+     into the kernel at start and again before each admitted POST /cycle when \
+     the file changes, and LEARN reconciles the wallet against it; unset, the \
+     banner says there is no feed and /wallet answers `assembled: false`, \
+     which is the truthful answer for a process nothing has reported to. No \
+     environment can mount one honestly today. The catalogue's config_files \
+     convention mounts committed bytes, and a statement is a dated document \
+     from a counterparty: the kernel holds a statement fresh for one day, so a \
+     committed file would be a refused assembly on every cycle after the day \
+     it was written, charted as a wallet the desk never observed. Every \
+     environment trades on the in-process simulated venue (ADR 0003), which \
+     issues no statement, and no custodian relationship exists for the \
+     paper book. The entry ends when a custodian reports to an environment \
+     and a person mounts that day's statement as a Secret Manager file from a \
+     root variable, so an absent value still means no feed.";
+
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
+    (
+        "qip-api",
+        "QIP_WALLET_STATEMENT_PATH",
+        NO_CUSTODIAN_HAS_ISSUED_A_STATEMENT,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_LANGUAGE_MODEL_PROVIDER",
+        NO_ENVIRONMENT_NAMES_A_MODEL_UNTIL_ITS_TERMS_ARE_READ,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_LANGUAGE_MODEL",
+        NO_ENVIRONMENT_NAMES_A_MODEL_UNTIL_ITS_TERMS_ARE_READ,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_LANGUAGE_MODEL_BASE_URL",
+        NO_ENVIRONMENT_NAMES_A_MODEL_UNTIL_ITS_TERMS_ARE_READ,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_HF_TOKEN",
+        NO_ENVIRONMENT_NAMES_A_MODEL_UNTIL_ITS_TERMS_ARE_READ,
+    ),
     (
         "qip-api",
         "QIP_MESH_CELLS",
@@ -832,6 +1073,15 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     (
         "qip-api",
         "QIP_ARBITRAGE_POLICY_PATH",
+        THE_MESH_HAS_NO_PORT_ON_CLOUD_RUN,
+    ),
+    // The region membership (ADR 0039) is read only when the mesh is served,
+    // and the mesh has no port here; setting it on a deployment with no
+    // QIP_MESH_CELLS would file cells under regions for a centre that
+    // ships no payload to any of them.
+    (
+        "qip-api",
+        "QIP_MESH_REGIONS",
         THE_MESH_HAS_NO_PORT_ON_CLOUD_RUN,
     ),
     (
@@ -930,6 +1180,31 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         PER_INVESTIGATION_NOT_PER_ENVIRONMENT,
     ),
     (
+        "qip-fastbrain",
+        "QIP_FASTBRAIN_TAPE_PATH",
+        A_DEMONSTRATION_FIXTURE_NO_DEPLOYMENT_SHIPS,
+    ),
+    (
+        "qip-api",
+        "QIP_API_TAPE_PATH",
+        THE_API_SENSES_NOTHING_UNTIL_A_SOURCE_IS_CHOSEN,
+    ),
+    (
+        "qip-api",
+        "QIP_CONNECTOR_SOURCE",
+        THE_API_SENSES_NOTHING_UNTIL_A_SOURCE_IS_CHOSEN,
+    ),
+    (
+        "qip-api",
+        "QIP_CONNECTOR_BASE_URL",
+        THE_API_SENSES_NOTHING_UNTIL_A_SOURCE_IS_CHOSEN,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TAPE_PATH",
+        A_DEMONSTRATION_FIXTURE_NO_DEPLOYMENT_SHIPS,
+    ),
+    (
         "qip-deepbrain",
         "QIP_DEEPBRAIN_ARCHIVE_EVERY",
         THE_PACE_THE_PROBES_ASSUME,
@@ -1015,6 +1290,11 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         NOT_AN_ORDER_ENTRY_DIAL,
     ),
     (
+        "qip-edge-node",
+        "QIP_REPRICE",
+        REPRICING_IS_A_PER_NODE_DECISION_NOT_A_DEFAULT,
+    ),
+    (
         "qip-fastbrain",
         "QIP_MARKET_DATA_BASE_URL",
         CREDENTIAL_BEARING_AND_UNLICENSED,
@@ -1085,10 +1365,19 @@ fn every_variable_a_deployed_binary_reads_is_set_by_the_deployment_or_argued_to_
     let constants = variables_by_constant();
     let deployed = deployments();
 
+    let conditional = catalogue_conditional_variables();
     let mut set_by_the_deployment = 0usize;
     let mut argued_unset = 0usize;
+    let mut left_to_the_tfvars = 0usize;
     let mut unexplained: BTreeSet<String> = BTreeSet::new();
     for (place, binary, set) in &deployed {
+        // A RunService is the catalogue entry rendered for one environment;
+        // the variables the entry sets only when a root variable is non-null
+        // are absent where that environment's tfvars leave it null.
+        let rendered_from = place
+            .strip_prefix("envs/")
+            .and_then(|rest| rest.split_once(':'))
+            .map(|(_, workload)| workload.to_string());
         // The narrow read set: literals in the binary's own crate and the
         // literals of a type it constructs with `::from_env`. The constant
         // rule is deliberately excluded here — it is biased towards
@@ -1118,6 +1407,14 @@ fn every_variable_a_deployed_binary_reads_is_set_by_the_deployment_or_argued_to_
                 .any(|(crate_name, name, _)| crate_name == binary && name == variable)
             {
                 argued_unset += 1;
+                continue;
+            }
+            if rendered_from
+                .as_ref()
+                .and_then(|workload| conditional.get(workload))
+                .is_some_and(|names| names.contains(variable))
+            {
+                left_to_the_tfvars += 1;
                 continue;
             }
             unaccounted.insert(variable.clone());
@@ -1150,6 +1447,60 @@ fn every_variable_a_deployed_binary_reads_is_set_by_the_deployment_or_argued_to_
         "no variable was excused by READ_BUT_NOT_SET, so the allowlist arm is \
          never exercised and could have stopped matching"
     );
+    // The connector pair is conditional in the catalogue and no environment
+    // sets `market_data_connector` today, so every fast-brain RunService
+    // omits it and the arm has to have fired; if every environment comes to
+    // set the connector, this premise is the line to revisit.
+    assert!(
+        left_to_the_tfvars >= 1,
+        "no variable was left to the tfvars' decision through a conditional \
+         catalogue arm, so that rule is never exercised and could have \
+         stopped matching"
+    );
+}
+
+/// The variables that select a hosted language model (ADR 0037, decision 4).
+const LANGUAGE_MODEL_VARIABLES: [&str; 4] = [
+    "QIP_LANGUAGE_MODEL_PROVIDER",
+    "QIP_LANGUAGE_MODEL",
+    "QIP_LANGUAGE_MODEL_BASE_URL",
+    "QIP_HF_TOKEN",
+];
+
+#[test]
+fn only_the_deep_brain_reads_the_language_model_variables() {
+    // ADR 0008 keeps every model off the fast path and ADR 0032 gives the
+    // fast brain no proxy to reach one through; the API serves what the
+    // brains recorded. The failure this prevents is the quiet one: a
+    // convenience refactor moving the provider read into a shared settings
+    // type, after which the fast brain would construct an adapter it can
+    // reach nothing with — or, if a proxy ever appeared beside it, could.
+    // Refused here by name, on the source walk the rest of this file trusts.
+    let constants = variables_by_constant();
+
+    // Premise: the deep brain reads all four, or the walk has stopped seeing
+    // them and the refusals below would hold vacuously.
+    let deep = variables_read_by("qip-deepbrain", &constants).all();
+    for variable in LANGUAGE_MODEL_VARIABLES {
+        assert!(
+            deep.contains(variable),
+            "qip-deepbrain no longer reads {variable}; either ADR 0037's platform lane was \
+             removed, or the walk stopped resolving it and this test guards nothing"
+        );
+    }
+
+    for binary in ["qip-fastbrain", "qip-api"] {
+        let read = variables_read_by(binary, &constants).all();
+        for variable in LANGUAGE_MODEL_VARIABLES {
+            assert!(
+                !read.contains(variable),
+                "{binary} reads {variable}. Only the deep brain may construct a hosted \
+                 language model (ADR 0037): nothing on the fast path consults a model (ADR \
+                 0008) and the fast brain has no egress proxy by design (ADR 0032); the API \
+                 serves what the brains recorded."
+            );
+        }
+    }
 }
 
 #[test]

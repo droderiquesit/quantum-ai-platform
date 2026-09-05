@@ -1,17 +1,40 @@
 # Repository Inventory
 
+Counts below are measured, and each names the command that measures it so
+the next reader can recount rather than trust. Re-counted 2026-09-05 against
+the working tree above `b42214b`.
+
 ## Frontend
-**Status:** None exists. This is a pure Rust backend + Terraform infrastructure project.
-- No `package.json`, `next.config.*`, or `.tsx` files found outside test/doc directories.
-- No React, Next.js, or frontend framework present.
+
+**Status:** Next.js + TypeScript, in two applications with their own
+toolchains (`frontend/CLAUDE.md`). An earlier version of this section said no
+frontend existed; that was true of the tree it was written against and is
+not true now.
+
+- `frontend/portal/` — the authenticated console and installed PWA.
+  Navigation is data in `frontend/portal/src/lib/nav.ts`: 10 sections and 40
+  destinations (`grep -c '^    label: '` and `grep -c '^        href: '`).
+- `frontend/landing/` — the public landing application; not a workspace
+  member, deliberately (ADR 0015).
+- `frontend/packages/` — shared browser packages.
+
+### Cognition pages (added 2026-09-05)
+
+| Path | Reads | Test |
+|---|---|---|
+| `frontend/portal/src/app/(portal)/cognition/self-model/page.tsx` | `GET /api/v1/cognition/self-model` through `useSelfModel` (`src/lib/hooks/useCognition.ts:84`) | `tests/cognition-self-model.spec.ts` (2 tests) |
+| `frontend/portal/src/app/(portal)/cognition/precedents/page.tsx` | `GET /api/v1/cognition/precedents` through `usePrecedents` (`src/lib/hooks/useCognition.ts:92`) | `tests/cognition-precedents.spec.ts` (2 tests) |
+
+Both pages are read-only; the hook file declares no non-GET fetcher
+(`useCognition.ts:18-21`). Nav section "Cognition" at `src/lib/nav.ts:149`.
 
 ## Codebase Overview
-- **Total Crates:** 59 (libs, services, apps, agents, runtime, edge, quant)
+- **Total Crates:** 58 (`find backend/crates -name Cargo.toml | wc -l`)
 - **Directory Structure:**
   - `backend/crates/apps/`: qip-api, qip-cli, qip-deepbrain, qip-fastbrain, qip-edge-node, qip-web
-  - `backend/crates/libs/`: 18 library crates (storage, quantum, core, market, portfolio, etc.)
-  - `backend/crates/services/`: Market ingestion, data-finder, optimization, etc.
-  - `backend/crates/tests/`: qip-acceptance (179 tests across 13 files)
+  - `backend/crates/libs/`: library crates (storage, quantum, core, market, portfolio, etc.)
+  - `backend/crates/services/`: Market ingestion, data-finder, optimization, capital, capital-fabric, etc.
+  - `backend/crates/tests/`: qip-acceptance (304 tests across 20 files; see the test inventory below)
 
 ## False Completion Inventory
 
@@ -33,6 +56,9 @@ backend/crates/apps/qip-fastbrain/src/health.rs:431
 backend/crates/apps/qip-deepbrain/src/health.rs:460
 ```
 
+(The macro table and the line numbers above were not re-counted on
+2026-09-05.)
+
 ### Comment Markers
 - **TODO/FIXME/PLACEHOLDER:** 0 instances
 - **MOCK/STUB/demo:** 0 instances
@@ -49,8 +75,10 @@ itself into a deployment it has not earned.
 
 ## API Surface
 
-### HTTP Routes (36 endpoints)
-**Prefix:** `/api/v1`
+### HTTP Routes (44 route entries over 43 paths)
+**Prefix:** `/api/v1`. Source: `backend/crates/apps/qip-api/src/routes.rs`,
+`ROUTES` (`grep -c 'pattern: "'` gives 44; `/kill-switch` is declared twice,
+once per method).
 
 | Endpoint | Methods |
 |----------|---------|
@@ -66,7 +94,6 @@ itself into a deployment it has not earned.
 | `/kill-switch` | POST, DELETE |
 | `/autonomy` | GET |
 | `/system` | GET |
-| `/metrics` | GET |
 | `/regions` | GET |
 | `/markets` | GET |
 | `/assets` | GET |
@@ -80,9 +107,27 @@ itself into a deployment it has not earned.
 | `/data-sources` | GET |
 | `/training` | GET |
 | `/quantum` | GET |
+| `/predictions` | GET |
+| `/regimes` | GET |
+| `/correlation` | GET |
+| `/backtests` | GET |
+| `/news` | GET |
+| `/cognition/self-model` | GET — viewer role; `routes.rs:338`, dispatched at `:798`; shapes in `src/self_model_views.rs`, contract in `ROUTES-COGNITION.md`; `tests/self_model_routes.rs` (6 tests) |
+| `/cognition/precedents` | GET — viewer role; `routes.rs:347`, dispatched at `:809`; same files |
+| `/ledger/users` | GET — contract in `ROUTES-LEDGER.md` |
+| `/wallet` | GET — answers `assembled: false` with its reason; the kernel holds no wallet (`src/ledger_views.rs:332`) |
+| `/corridors` | GET — answers `held: false` for both registries (`src/ledger_views.rs:431`) |
+| `/transfer-gate` | GET |
+| `/stream/{market,signals,orders,positions,health}` | GET — server-sent events, `content-type: text/event-stream` (`src/stream.rs:286`) |
+
+Note: `/metrics` is not in `ROUTES`. It is matched as a GET arm at
+`routes.rs:754` (`SCRAPE_PATH` at `:44`, `scrape` at `:1278`) and answers the
+Prometheus exposition as text.
 
 **OpenAPI:** `backend/crates/apps/qip-api/src/openapi.rs` exists.
-**Streaming:** No WebSocket, SSE, or EventSource found.
+**Streaming:** server-sent events on the five `/stream/*` routes
+(`backend/crates/apps/qip-api/src/stream.rs`); no WebSocket. An earlier
+version of this line said no SSE existed.
 
 ## Data Connector Abstraction
 
@@ -122,20 +167,32 @@ itself into a deployment it has not earned.
 ## Test Inventory
 
 ### Test Files (backend/crates/tests/qip-acceptance/tests/)
+Counted 2026-09-05 with `grep -c '#\[test\]'` and `grep -c '#\[ignore'` per file.
+
 | File | #[test] | #[ignore] |
 |------|---------|-----------|
-| acceptance.rs | 12 | 0 |
-| architecture.rs | 18 | 0 |
+| acceptance.rs | 16 | 0 |
+| api_boundary.rs | 8 | 0 |
+| architecture.rs | 26 | 0 |
 | chaos.rs | 1 | 0 |
-| compliance_proof.rs | 4 | 0 |
-| documentation.rs | 21 | 0 |
+| compliance_proof.rs | 5 | 0 |
+| console_route.rs | 4 | 0 |
+| documentation.rs | 22 | 0 |
 | e2e.rs | 1 | 0 |
 | e2e_live.rs | 1 | 0 |
-| infrastructure.rs | 63 | 0 |
-| performance.rs | 9 | 0 |
+| egress.rs | 23 | 0 |
+| gitops.rs | 22 | 0 |
+| infrastructure.rs | 75 | 0 |
+| manifest_wiring.rs | 12 | 0 |
+| paper_boundary.rs | 5 | 0 |
+| performance.rs | 24 | 0 |
 | resilience.rs | 8 | 0 |
-| security.rs | 18 | 0 |
+| security.rs | 19 | 0 |
 | stress.rs | 16 | 0 |
+| terraform_contract.rs | 9 | 0 |
 | truth_loop.rs | 7 | 0 |
 
-**Total:** 179 tests, 0 ignored. All tests are active.
+**Total:** 304 tests, 0 ignored. All tests are active. Of `performance.rs`'s
+24, fourteen are the in-process execution measurements recorded in
+`docs/ops/execution-measurements.md` (`performance.rs:1172-1807`) and one
+(`:1898`) checks that document against the file.

@@ -3,12 +3,28 @@
 //! One request returns a whole rate table for one reference date:
 //!
 //! ```json
-//! {"amount":1.0,"base":"EUR","date":"2026-08-24",
-//!  "rates":{"GBP":0.84215,"JPY":171.94,"USD":1.0827}}
+//! {"amount":1.0,"base":"EUR","date":"2026-09-04",
+//!  "rates":{"GBP":0.85898,"JPY":181.59,"USD":1.1622}}
 //! ```
 //!
 //! Free, unauthenticated, no signup. The recorded body above is
 //! `fixtures/frankfurter-ecb-reference-rates.json`.
+//!
+//! # The host moved once, and the transport was right to notice
+//!
+//! The source was first wired as `api.frankfurter.app/latest`. On
+//! 2026-09-04 that host answered every request with a `301` to
+//! `https://api.frankfurter.dev/v1/latest`, and the old path on the new host
+//! answered `404`. `qip_transport::http` never follows a redirect — a
+//! redirect is a second destination nobody reviewed, and following one out
+//! of a proxy whose whole design is one host per listener would have defeated
+//! the listener — so the connector could not be opened at all, which is the
+//! correct outcome and the reason [`UPSTREAM_HOST`] exists: the host is named
+//! once in code, the manifest's `provider` must name the same one, and the
+//! acceptance suite holds the Envoy cluster and the Terraform allowlist to
+//! it. ADR 0034 requires the three to move in one commit; the constant is
+//! what makes forgetting one of them a compile-time or test-time failure
+//! rather than a `301` in production.
 //!
 //! # This is the connector that shows why three instants are not one
 //!
@@ -57,6 +73,17 @@ use serde_json::Value;
 pub const MANIFEST: &str = include_str!("manifests/frankfurter-ecb-reference-rates.json");
 
 /// A body recorded from the live endpoint, for tests and for the harness.
+///
+/// Provenance: fetched on 2026-09-04 at 22:55 UTC from
+/// `https://api.frankfurter.dev/v1/latest?base=EUR&symbols=USD,GBP,JPY`,
+/// over a TLS connection verified against the session's CA bundle, and
+/// recorded byte for byte — the `date` is the ECB reference date the vendor
+/// stamped, and the `latency_ms` is that fetch's wall time. The fixture's
+/// own JSON refuses unknown fields, which is why the note is here and not in
+/// it. The earlier recording, from `api.frankfurter.app/latest` on
+/// 2026-08-24, was re-taken when that host began redirecting; a fixture
+/// recorded from a host the connector no longer names is a contract test
+/// against a source that no longer exists.
 pub const FIXTURE: &str = include_str!("fixtures/frankfurter-ecb-reference-rates.json");
 
 /// The ECB's reference rates as a fan-out of macro observations.
@@ -73,6 +100,17 @@ impl FrankfurterRatesConnector {
     /// apart — the same discipline [`crate::connectors::CoinbaseTickerConnector::SOURCE_ID`]
     /// already keeps.
     pub const SOURCE_ID: &str = "frankfurter-ecb-reference-rates";
+
+    /// The vendor host the egress proxy dials for this source.
+    ///
+    /// Not a field the connector reads — the transport is pointed at the
+    /// proxy, never at the vendor — but the one place in code the host is
+    /// written, so that the manifest's `provider`, the Envoy cluster and the
+    /// Terraform allowlist can each be held to it by a test instead of by a
+    /// reviewer's memory. When the vendor moved from `api.frankfurter.app`
+    /// there were three files to change and nothing that named the
+    /// disagreement; see the module documentation.
+    pub const UPSTREAM_HOST: &str = "api.frankfurter.dev";
 
     /// The region every observation carries.
     ///
@@ -218,5 +256,49 @@ impl SourceConnector for FrankfurterRatesConnector {
             provenance,
             quality: DataQuality::clean(),
         })))
+    }
+}
+
+// The workspace denies `panic_in_result_fn` for production code; a test that
+// returns `Result` so it can use `?` on the manifest loader still has to
+// assert, and the abort is the reporting mechanism rather than a defect.
+#[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
+mod tests {
+    use super::*;
+
+    /// The manifest is the document a reviewer and the acceptance suite
+    /// read; the constant is what the code says. When the vendor moved
+    /// hosts, the manifest's `provider` was the only place in this crate the
+    /// old host appeared, and nothing compared it with anything. The token is
+    /// matched delimited — inside the parentheses the provider convention
+    /// uses — because `api.frankfurter.dev` is a substring of a longer name
+    /// that would pass a `contains`.
+    #[test]
+    fn the_shipped_manifest_names_the_same_upstream_host_as_the_code() -> Result<()> {
+        let manifest = FrankfurterRatesConnector::shipped_manifest()?;
+        // Premise: the constant is a bare hostname, not a URL or a path; a
+        // constant that carried a scheme or a slash would never appear inside
+        // the manifest's parentheses and the assertion below would fail for
+        // the wrong reason.
+        assert!(
+            !FrankfurterRatesConnector::UPSTREAM_HOST.contains('/')
+                && FrankfurterRatesConnector::UPSTREAM_HOST.contains('.'),
+            "UPSTREAM_HOST is {:?}, which is not a bare hostname",
+            FrankfurterRatesConnector::UPSTREAM_HOST
+        );
+        let named = format!("({})", FrankfurterRatesConnector::UPSTREAM_HOST);
+        assert!(
+            manifest.provider.contains(&named),
+            "the shipped manifest's provider is {:?} and does not name {named}; the host the \
+             proxy dials and the host the manifest documents have drifted apart",
+            manifest.provider
+        );
+        // And the endpoint is the versioned path the new host serves. The old
+        // `/latest` answers 404 there, which a health probe would report as
+        // an unreachable source rather than a wrong path.
+        assert_eq!(manifest.endpoint.path, "/v1/latest");
+        assert_eq!(manifest.endpoint.health_path(), "/v1/latest");
+        Ok(())
     }
 }

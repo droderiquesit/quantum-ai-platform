@@ -32,18 +32,29 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_contracts::capital::{CapitalEnvelope, Utilisation};
+use qip_contracts::intent::Intent;
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
+use qip_contracts::policy::PolicyPayload;
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
 use qip_contracts::{FeatureKey, FeatureValue, FeatureVector, Revision};
-use qip_core::error::Result;
-use qip_core::ids::ObjectId;
+use qip_core::error::{Error, Result};
+use qip_core::ids::{FillId, ObjectId, OrderId};
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Decimal, dec};
+use qip_edge::cell::{Cell, CellConfig, ExecutionReport, Placer, PricingPolicy};
+use qip_edge::dropcopy::DropCopyFill;
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
-use qip_execution_engine::oms::OrderManager;
-use qip_execution_engine::order::{Order, OrderType, Side};
+use qip_edge::feasibility::{self as edge_feasibility, Granularity, VenueModel};
+use qip_edge::journal::{Decision, Journal, MemoryMirror, ship};
+use qip_edge::policy::VerifiedPolicy;
+use qip_edge::reservation::RegionTable;
+use qip_execution_engine::broker::{SimulatedBroker, SimulationSettings};
+use qip_execution_engine::feasibility::{self as central_feasibility, VenueFeasibility};
+use qip_execution_engine::multileg::{LegGroup, Verdict};
+use qip_execution_engine::oms::{OrderManager, RefusalReason};
+use qip_execution_engine::order::{Fill, Order, OrderType, Side};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::features::{
     BookPressure, ExponentialMovingAverage, Microprice, Mid, RealisedVolatility, Spread,
@@ -53,7 +64,10 @@ use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_orderbook::venue::VenueState;
 use qip_risk::limits::{Limit, LimitKind, LimitSet, RiskState};
+use qip_risk_engine::autonomy::AutonomyController;
 use qip_risk_engine::pretrade::{PreTradeChecker, ProposedOrder};
+use qip_sequencing::arbitration::{ArbitrationEvent, LineArbiter};
+use qip_sequencing::tracker::{ReorderPolicy, SequenceEvent, Sequencer};
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
 use qip_strategy::ir::{Expr, Rule, StrategySpec, Type};
@@ -868,4 +882,1080 @@ fn the_cycle_cost_stops_growing_once_the_history_working_sets_reach_their_bounds
          is growing with uptime again"
     );
     Ok(())
+}
+
+// --- the execution capabilities ---------------------------------------------
+//
+// `docs/ops/execution-measurements.md` is written from what this section
+// prints. The traceability document scores every execution capability as
+// TESTED and none as MEASURED; these are the first numbers, and they are
+// in-process numbers on a shared container — a regression guard on the
+// complexity class of each seam, never a deployment figure. Nothing is
+// deployed (`execution_nodes = {}` in every environment), so there is no
+// deployment figure to have.
+//
+// Same three rules as the stages above: assert a ceiling, print the number,
+// name the profile. Every ceiling is one to two orders of magnitude above the
+// unoptimised figure, so only a change of complexity class trips it. Each
+// test asserts its premise — that the workload actually ran the number of
+// items it claims — before it reads a clock, so a test that measured nothing
+// cannot print a fast number for it.
+
+const EDGE_CELL: &str = "perf-cell-1";
+const EDGE_REGION: &str = "europe-west2";
+const EDGE_ENVELOPE_KEY: &[u8] = b"a-performance-envelope-key";
+const EDGE_POLICY_KEY: &[u8] = b"a-performance-policy-key";
+
+/// A book quoting 99 / 101 for `symbol`, so the mid is 100 and the touch on
+/// either side has a known size for the depth rule.
+fn edge_book(symbol: &str) -> Result<VenueState> {
+    let mut state = VenueState::aggregated(object(symbol), venue(), VenueStatus::Open);
+    for (index, (side, price, size)) in
+        [(BookSide::Bid, "99", "500"), (BookSide::Ask, "101", "400")]
+            .iter()
+            .enumerate()
+    {
+        let when = start().saturating_add(Duration::from_millis(index as i64));
+        state.apply(&MarketMessage::new(
+            object(symbol),
+            Origin::new(venue(), "feed-a", 0, index as u64),
+            MessageBody::LevelSet {
+                side: *side,
+                price: d(price),
+                quantity: d(size),
+                order_count: None,
+            },
+            when,
+            when,
+        ))?;
+    }
+    Ok(state)
+}
+
+/// A strategy whose one rule always holds, so every pass raises the same
+/// signal at the same size — the workload is then the pass, not the market.
+fn firing_strategy(
+    id: &str,
+    symbol: &str,
+    kind: SignalKind,
+    size: &str,
+) -> Result<(CompiledStrategy, Program)> {
+    let mut compiler = StrategyCompiler::new(FeatureCatalogue::new());
+    let spec = StrategySpec::new(StrategyId::new(id), object(symbol), Duration::from_secs(30))
+        .with_rule(Rule::new(
+            "always",
+            kind,
+            Expr::Flag(true),
+            Expr::Exact(d(size)),
+            Expr::Statistic(0.5),
+            10,
+        ));
+    let compiled = compiler.compile(&spec)?;
+    Ok((compiled, compiler.into_program()))
+}
+
+/// An envelope wide enough that the grant is never what refuses over a long
+/// loop: a hundred million gross, a hundred thousand per order.
+fn edge_envelope(strategy: &str) -> Result<VerifiedEnvelope> {
+    let build = |signature: &str| {
+        CapitalEnvelope::new(
+            StrategyId::new(strategy),
+            EDGE_CELL,
+            dec!("100000000"),
+            dec!("100000"),
+            dec!("50000"),
+            vec![venue()],
+            start(),
+            start().saturating_add(Duration::from_hours(1)),
+            "alice@example.com",
+            signature,
+        )
+    };
+    let unsigned = build("unsigned")?;
+    let signature = sign_payload(EDGE_ENVELOPE_KEY, &unsigned.signing_payload());
+    VerifiedEnvelope::verify(
+        build(&signature)?,
+        EDGE_ENVELOPE_KEY,
+        EDGE_CELL,
+        start().saturating_add(Duration::from_secs(1)),
+    )
+}
+
+/// A cell holding the ACME book and one always-firing strategy per entry,
+/// each priced as given.
+fn edge_cell(strategies: &[(&str, SignalKind, &str, PricingPolicy)]) -> Result<Cell> {
+    let config = CellConfig::new(EDGE_CELL, EDGE_REGION).with_venue(venue());
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?;
+    cell.track(edge_book("ACME")?);
+    for (id, kind, size, pricing) in strategies {
+        let (compiled, program) = firing_strategy(id, "ACME", *kind, size)?;
+        cell.deploy_with_pricing(compiled, program, edge_envelope(id)?, *pricing)?;
+    }
+    Ok(cell)
+}
+
+/// The paper venue these passes run against.
+///
+/// It is the venue, so what it reports on the order-entry channel is the
+/// venue's own answer: with `fills` set, every accepted order is reported
+/// filled in full at its limit on the next drain, which is what lets a
+/// thousand passes settle rather than pile up under `MAX_OPEN_ORDERS`.
+/// Without it, an order rests until the cell withdraws it, which is the
+/// expiry path. Either way it has a cancel path, so the cell lets an order
+/// rest at all.
+#[derive(Debug, Default)]
+struct PaperVenue {
+    fills: bool,
+    pending: Vec<ExecutionReport>,
+    resting: BTreeMap<String, Decimal>,
+    accepted: usize,
+    cancelled: usize,
+}
+
+impl Placer for PaperVenue {
+    fn is_simulated(&self) -> bool {
+        true
+    }
+
+    fn place(
+        &mut self,
+        order_id: &str,
+        _object_id: &ObjectId,
+        venue: &VenueId,
+        _side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+        at: Timestamp,
+    ) -> Result<()> {
+        self.accepted += 1;
+        if self.fills {
+            self.pending.push(ExecutionReport {
+                order_id: order_id.to_string(),
+                venue: venue.clone(),
+                quantity,
+                price,
+                at,
+            });
+        } else {
+            self.resting.insert(order_id.to_string(), quantity);
+        }
+        Ok(())
+    }
+
+    fn execution_reports(&mut self) -> Vec<ExecutionReport> {
+        std::mem::take(&mut self.pending)
+    }
+
+    fn can_cancel(&self) -> bool {
+        true
+    }
+
+    fn cancel(
+        &mut self,
+        order_id: &str,
+        _object_id: &ObjectId,
+        _venue: &VenueId,
+        _at: Timestamp,
+    ) -> Result<Decimal> {
+        let remaining = self
+            .resting
+            .remove(order_id)
+            .ok_or_else(|| Error::not_found(format!("no order {order_id} is resting")))?;
+        self.cancelled += 1;
+        Ok(remaining)
+    }
+}
+
+/// What a run of passes produced, and what the two timed seams cost.
+#[derive(Debug, Default)]
+struct PassTotals {
+    orders: usize,
+    contributors: usize,
+    fills: usize,
+    crosses: usize,
+    cancelled: usize,
+    refusals: usize,
+    /// `Cell::work` alone: confirm, expire, evaluate, gate, net, cross, send.
+    work: WallDuration,
+    /// The drop copy observed and reconciled, and closed orders settled.
+    reconcile: WallDuration,
+}
+
+/// Run `passes` passes `step` apart, reconciling the drop copy after each.
+///
+/// The drop copy is the venue's other channel; here it agrees with what the
+/// order-entry channel reported, so every pass's comparison is clean and
+/// every closed order is settled. A break would halt the cell, and a halted
+/// cell sends nothing, so the assertion is in the loop rather than after it:
+/// a hundred quiet passes after a halt would otherwise read as fast.
+fn run_passes(
+    cell: &mut Cell,
+    gateway: &mut PaperVenue,
+    passes: usize,
+    step: Duration,
+) -> Result<PassTotals> {
+    let mut totals = PassTotals::default();
+    let mut now = start().saturating_add(Duration::from_secs(2));
+    for pass in 0..passes {
+        let began = Instant::now();
+        let report = cell.work(now, gateway)?;
+        totals.work += began.elapsed();
+
+        let began = Instant::now();
+        for fill in &report.fills {
+            cell.observe_drop_copy(DropCopyFill {
+                order_id: fill.order_id.clone(),
+                venue: fill.venue.clone(),
+                quantity: fill.quantity,
+                price: fill.price,
+                at: now,
+            });
+        }
+        let breaks = cell.reconcile(now);
+        totals.reconcile += began.elapsed();
+
+        assert!(
+            breaks.is_empty(),
+            "pass {pass}: the drop copy disagreed with the order-entry channel: {breaks:?}"
+        );
+        assert!(!cell.is_halted(), "pass {pass}: the cell halted");
+        totals.orders += report.orders.len();
+        totals.contributors += report
+            .orders
+            .iter()
+            .map(|order| order.contributors.len())
+            .sum::<usize>();
+        totals.fills += report.fills.len();
+        totals.crosses += report.crosses.len();
+        totals.cancelled += report.cancelled.len();
+        totals.refusals += report.refusals.len();
+        now = now.saturating_add(step);
+    }
+    Ok(totals)
+}
+
+/// The risk state every central submission is judged against: ten million of
+/// equity, two positions, plenty of room. Constant across the loop because
+/// the manager does not move it — the kernel does, between cycles.
+fn central_state() -> RiskState {
+    RiskState {
+        equity: dec!("10000000"),
+        cash: dec!("10000000"),
+        gross_exposure: dec!("4000000"),
+        net_exposure: dec!("1000000"),
+        position_notionals: BTreeMap::from([
+            ("obj-ACME".to_string(), dec!("400000")),
+            ("obj-BOREAS".to_string(), dec!("600000")),
+        ]),
+        ..RiskState::default()
+    }
+}
+
+fn central_order(manager: &mut OrderManager, symbol: &str, quantity: Decimal) -> Order {
+    let order_id = manager.next_order_id("perf");
+    Order::new(
+        order_id,
+        object(symbol),
+        Side::Buy,
+        quantity,
+        OrderType::Market,
+        dec!("100"),
+        "prop-performance",
+        vec!["hyp-performance".to_string()],
+        "performance",
+        start(),
+    )
+}
+
+#[test]
+fn central_order_submission_costs_what_the_execution_measurements_say() -> Result<()> {
+    // The single path to a venue on the central plane: validate, the kill
+    // switch, the autonomy level, five pre-trade limits, the state machine,
+    // and the simulated venue's fill. Frictionless settings so the venue
+    // rejects nothing and fills everything: the workload is then the manager,
+    // not a coin the simulator flips.
+    const ORDERS: usize = 20_000;
+    let mut manager = OrderManager::new(PreTradeChecker::new(risk_limits()));
+    let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 0xC0DE);
+    let autonomy = AutonomyController::new();
+    let state = central_state();
+    let axes = BTreeMap::from([("sector".to_string(), "information_technology".to_string())]);
+
+    let mut accepted = 0usize;
+    let mut filled = 0usize;
+    let started = Instant::now();
+    for _ in 0..ORDERS {
+        let order = central_order(&mut manager, "ACME", dec!("1000"));
+        let result = manager.submit(
+            order,
+            &mut broker,
+            &autonomy,
+            &state,
+            axes.clone(),
+            Some("broker-a".to_string()),
+            start(),
+        );
+        if result.accepted {
+            accepted += 1;
+            filled += result.fills.len();
+        }
+    }
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        accepted,
+        ORDERS,
+        "the fixture was refused, so the submission path did not run: {:?}",
+        manager.refusals().first()
+    );
+    assert_eq!(
+        filled, ORDERS,
+        "the frictionless venue did not fill every order"
+    );
+    assert!(
+        !manager.has_live_fills(),
+        "a simulated venue produced a fill marked real"
+    );
+    report(
+        "central OMS submit (validate + 5 limits + simulated fill)",
+        ORDERS,
+        elapsed,
+        500.0,
+    );
+    Ok(())
+}
+
+#[test]
+fn central_instrument_feasibility_costs_what_the_execution_measurements_say() -> Result<()> {
+    // The grid installed through `with_instrument_feasibility`, judged where
+    // it sits in the submission path — ahead of the safety controls, so an
+    // order the venue cannot express spends nothing downstream. Half the
+    // orders are off-lot so the measurement covers both the refusal and the
+    // admission; a fixture that was all one or the other would time only
+    // the cheaper branch.
+    const ORDERS: usize = 20_000;
+    let grid = VenueFeasibility::new(dec!("1"), Some(dec!("0.01")), Decimal::ZERO, Decimal::ZERO)?;
+    let mut manager = OrderManager::new(PreTradeChecker::new(risk_limits()))
+        .with_instrument_feasibility("obj-ACME", grid);
+    let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 0xFEA5);
+    let autonomy = AutonomyController::new();
+    let state = central_state();
+
+    let mut admitted = 0usize;
+    let mut refused_on_lot = 0usize;
+    let started = Instant::now();
+    for index in 0..ORDERS {
+        let quantity = if index % 2 == 0 {
+            dec!("1000")
+        } else {
+            dec!("1000.5")
+        };
+        let order = central_order(&mut manager, "ACME", quantity);
+        let result = manager.submit(
+            order,
+            &mut broker,
+            &autonomy,
+            &state,
+            BTreeMap::new(),
+            None,
+            start(),
+        );
+        if result.accepted {
+            admitted += 1;
+        } else if result
+            .refusal
+            .as_ref()
+            .and_then(RefusalReason::feasibility_gate)
+            == Some(central_feasibility::GATE_LOT)
+        {
+            refused_on_lot += 1;
+        }
+    }
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        refused_on_lot,
+        ORDERS / 2,
+        "the off-lot half was not refused under the lot rule: {:?}",
+        manager.refusals().first()
+    );
+    assert_eq!(admitted, ORDERS / 2, "the on-lot half was not admitted");
+    report(
+        "central instrument feasibility (half off-lot)",
+        ORDERS,
+        elapsed,
+        500.0,
+    );
+    Ok(())
+}
+
+#[test]
+fn an_edge_work_pass_with_a_fill_and_its_drop_copy_costs_what_the_execution_measurements_say()
+-> Result<()> {
+    // One pass of the cell's loop, end to end, with one strategy that fires
+    // every pass: the venue's reports confirmed, the degradation table read,
+    // the strategy evaluated, the intent gated, the region hold taken, the
+    // net built, the order sent, the hold committed. Then the pass's other
+    // half, timed separately: the drop copy observed and reconciled against
+    // the confirmed fill, and the closed order settled. The region table is
+    // wired so the hold-and-commit path is inside the number.
+    const PASSES: usize = 2_000;
+    let opening = dec!("1000000000");
+    let table = RegionTable::new(opening)?;
+    let mut cell = edge_cell(&[("alpha", SignalKind::Enter, "100", PricingPolicy::Marketable)])?
+        .with_region_table(table.clone());
+    let mut gateway = PaperVenue {
+        fills: true,
+        ..PaperVenue::default()
+    };
+
+    let totals = run_passes(&mut cell, &mut gateway, PASSES, Duration::from_millis(1))?;
+
+    assert_eq!(totals.orders, PASSES, "not every pass sent its order");
+    assert_eq!(
+        gateway.accepted, PASSES,
+        "the venue did not see every order"
+    );
+    // The venue reports the fill on acceptance and the cell confirms it in
+    // the same pass — so every pass confirms its own fill, and after the
+    // reconcile that follows nothing is left open.
+    assert_eq!(
+        totals.fills, PASSES,
+        "the venue's acceptance-time fills were not all confirmed"
+    );
+    assert!(
+        cell.open_orders().is_empty(),
+        "settled orders were not retired: {} still open",
+        cell.open_orders().len()
+    );
+    assert!(
+        table.committed_total().is_positive() && table.free() < opening,
+        "no region hold was taken and committed on the order path"
+    );
+    assert_eq!(totals.refusals, 0, "a gate refused inside the loop");
+    report(
+        "edge work pass (1 strategy, marketable, region table)",
+        PASSES,
+        totals.work,
+        5_000.0,
+    );
+    report(
+        "edge drop-copy reconcile + settle (1 fill)",
+        PASSES,
+        totals.reconcile,
+        1_000.0,
+    );
+    Ok(())
+}
+
+#[test]
+fn netting_four_intents_into_one_order_costs_what_the_execution_measurements_say() -> Result<()> {
+    // Four strategies that agree, netted into one order carrying four
+    // contributors. The premise is the contributor count: a cell that sent
+    // four orders would be four times the venue traffic and read here as a
+    // slower pass, but the property under measurement is that it sent one.
+    const PASSES: usize = 1_000;
+    let mut cell = edge_cell(&[
+        ("alpha", SignalKind::Enter, "100", PricingPolicy::Marketable),
+        ("beta", SignalKind::Enter, "50", PricingPolicy::Marketable),
+        ("gamma", SignalKind::Enter, "30", PricingPolicy::Marketable),
+        ("delta", SignalKind::Enter, "20", PricingPolicy::Marketable),
+    ])?;
+    let mut gateway = PaperVenue {
+        fills: true,
+        ..PaperVenue::default()
+    };
+
+    let totals = run_passes(&mut cell, &mut gateway, PASSES, Duration::from_millis(1))?;
+
+    assert_eq!(
+        totals.orders, PASSES,
+        "four agreeing intents did not net to one order"
+    );
+    assert_eq!(
+        totals.contributors,
+        4 * PASSES,
+        "the net order does not carry all four contributors"
+    );
+    assert_eq!(totals.crosses, 0, "agreeing intents crossed");
+    assert_eq!(totals.refusals, 0, "a gate refused inside the loop");
+    report(
+        "edge netting (4 intents -> 1 order, per pass)",
+        PASSES,
+        totals.work,
+        10_000.0,
+    );
+    Ok(())
+}
+
+#[test]
+fn an_internal_cross_costs_what_the_execution_measurements_say() -> Result<()> {
+    // A hundred against forty, every pass: forty crosses inside the cell at
+    // the mid and sixty goes to the venue. Under the per-net cap (forty of a
+    // hundred and forty gross), so the cross is admitted on every pass and
+    // `book_cross` moves both strategies' lots and cash each time.
+    const PASSES: usize = 1_000;
+    let mut cell = edge_cell(&[
+        ("alpha", SignalKind::Enter, "100", PricingPolicy::Marketable),
+        ("beta", SignalKind::Exit, "40", PricingPolicy::Marketable),
+    ])?;
+    let mut gateway = PaperVenue {
+        fills: true,
+        ..PaperVenue::default()
+    };
+
+    let totals = run_passes(&mut cell, &mut gateway, PASSES, Duration::from_millis(1))?;
+
+    assert_eq!(
+        totals.crosses, PASSES,
+        "the offsetting portion did not cross every pass"
+    );
+    assert_eq!(
+        totals.orders, PASSES,
+        "the residual did not go to the venue every pass"
+    );
+    assert_eq!(totals.cancelled, 0, "a net cancelled to zero");
+    assert_eq!(totals.refusals, 0, "a gate refused inside the loop");
+    let alpha = cell.strategy_position(&StrategyId::new("alpha"), &venue(), &object("ACME"));
+    let beta = cell.strategy_position(&StrategyId::new("beta"), &venue(), &object("ACME"));
+    assert!(
+        alpha.is_positive() && beta.is_negative(),
+        "the cross moved no lots: alpha {alpha}, beta {beta}"
+    );
+    report(
+        "edge internal cross (net + book_cross + residual order, per pass)",
+        PASSES,
+        totals.work,
+        10_000.0,
+    );
+    Ok(())
+}
+
+#[test]
+fn a_resting_orders_expiry_costs_what_the_execution_measurements_say() -> Result<()> {
+    // An order rested at the mid for one second, and the next pass two
+    // seconds later withdrawing it: `withdraw_expired` through the venue's
+    // cancel, the region hold returned, the order closed and settled. The
+    // premise is the venue's cancel count — an order the cell forgot rather
+    // than withdrew would leave the venue holding it and read here as fast.
+    const PASSES: usize = 1_000;
+    let mut cell = edge_cell(&[(
+        "alpha",
+        SignalKind::Enter,
+        "100",
+        PricingPolicy::rest_at_mid(Duration::from_secs(1))?,
+    )])?;
+    let mut gateway = PaperVenue::default();
+
+    let totals = run_passes(&mut cell, &mut gateway, PASSES, Duration::from_secs(2))?;
+
+    assert_eq!(totals.orders, PASSES, "not every pass rested its order");
+    assert_eq!(
+        gateway.cancelled,
+        PASSES - 1,
+        "the venue was not asked to withdraw every expired order"
+    );
+    assert_eq!(totals.fills, 0, "a resting order filled on its own");
+    assert_eq!(
+        cell.open_orders().len(),
+        1,
+        "expired orders were not settled"
+    );
+    assert_eq!(totals.refusals, 0, "a gate refused inside the loop");
+    report(
+        "edge resting order expiry (rest, withdraw, settle, per pass)",
+        PASSES,
+        totals.work,
+        5_000.0,
+    );
+    Ok(())
+}
+
+#[test]
+fn the_edge_feasibility_gate_costs_what_the_execution_measurements_say() -> Result<()> {
+    // The pure gate the cell judges every intent by before netting, on its
+    // own: lot, tick, minimum, depth at the touch, fee floor. Half the intents
+    // are off-lot, so both the refusal and the admission are inside the
+    // number, and the premise counts each half under the rule that bound.
+    const INTENTS: usize = 200_000;
+    let model = VenueModel::new(
+        VenueClass::Exchange,
+        Granularity::new(dec!("1"), dec!("0.01"), Decimal::ZERO)?,
+        Decimal::ZERO,
+        None,
+    )?;
+    let intents: Vec<Intent> = (0..INTENTS)
+        .map(|index| {
+            Intent::new(
+                StrategyId::new("alpha"),
+                object("ACME"),
+                venue(),
+                if index % 2 == 0 {
+                    dec!("10")
+                } else {
+                    dec!("10.5")
+                },
+                dec!("100"),
+                start().saturating_add(Duration::from_secs(30)),
+            )
+        })
+        .collect::<Result<_>>()?;
+
+    let mut admitted = 0usize;
+    let mut refused_on_lot = 0usize;
+    let started = Instant::now();
+    for intent in &intents {
+        match edge_feasibility::assess(Some(&model), None, intent, Some(dec!("400"))) {
+            Ok(()) => admitted += 1,
+            Err(infeasible) if infeasible.gate == edge_feasibility::GATE_LOT => {
+                refused_on_lot += 1;
+            }
+            Err(infeasible) => panic!("refused under an unexpected rule: {infeasible:?}"),
+        }
+    }
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        refused_on_lot,
+        INTENTS / 2,
+        "the off-lot half was not refused"
+    );
+    assert_eq!(admitted, INTENTS / 2, "the on-lot half was not admitted");
+    report(
+        "edge feasibility gate (half off-lot)",
+        INTENTS,
+        elapsed,
+        20.0,
+    );
+    Ok(())
+}
+
+#[test]
+fn a_region_reservation_hold_and_commit_costs_what_the_execution_measurements_say() -> Result<()> {
+    // The per-region ledger on the order path: one hold taken before the
+    // order exists and committed when it goes out, through the mutex every
+    // cell in the region shares. The premise is the ledger's own arithmetic —
+    // what was committed is exactly what left the free balance.
+    const HOLDS: usize = 200_000;
+    let opening = dec!("1000000000");
+    let table = RegionTable::new(opening)?;
+    let amount = dec!("100");
+
+    let mut committed = 0usize;
+    let started = Instant::now();
+    for pass in 0..HOLDS {
+        table.reserve(EDGE_CELL, "perf-hold", amount, pass as u64)?;
+        if table.commit(EDGE_CELL, "perf-hold").is_some() {
+            committed += 1;
+        }
+    }
+    let elapsed = started.elapsed();
+
+    assert_eq!(committed, HOLDS, "a hold was taken and never committed");
+    let expected = amount * Decimal::from_int(HOLDS as i64);
+    assert_eq!(table.committed_total(), expected);
+    assert_eq!(table.free(), opening - expected);
+    assert_eq!(
+        table.held_total(),
+        Decimal::ZERO,
+        "a hold is still standing"
+    );
+    report(
+        "region reservation (reserve + commit)",
+        HOLDS,
+        elapsed,
+        20.0,
+    );
+    Ok(())
+}
+
+#[test]
+fn sequencing_a_contiguous_stream_costs_what_the_execution_measurements_say() -> Result<()> {
+    // The sequencer on the feed path: every message checked against the
+    // stream's position and released in order. Contiguous on purpose — the
+    // common case is the one every packet pays for, and a gap's cost is a
+    // property of the reorder policy rather than of the tracker.
+    const MESSAGES: usize = 200_000;
+    const BATCH: usize = 100;
+    let stream = level_stream("ACME", MESSAGES, 0x5E0);
+    let mut sequencer = Sequencer::new(ReorderPolicy::default());
+
+    let mut released = 0usize;
+    let mut events: Vec<SequenceEvent> = Vec::new();
+    let started = Instant::now();
+    for chunk in stream.chunks(BATCH) {
+        let batch = sequencer.accept(chunk.to_vec(), start());
+        released += batch.released.len();
+        events.extend(batch.events);
+    }
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        released, MESSAGES,
+        "the sequencer held back messages of a contiguous stream"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| matches!(event, SequenceEvent::StreamStarted { .. })),
+        "a contiguous stream produced a gap or a duplicate: {events:?}"
+    );
+    assert_eq!(events.len(), 1, "the stream started more than once");
+    report(
+        "sequencing (contiguous, batches of 100)",
+        MESSAGES,
+        elapsed,
+        20.0,
+    );
+    Ok(())
+}
+
+#[test]
+fn arbitrating_two_redundant_lines_costs_what_the_execution_measurements_say() -> Result<()> {
+    // Two lines carrying the same stream, the A line always first: every
+    // unit is published once from A and recognised as a duplicate from B.
+    // The premise is both counts, so a line the arbiter silently dropped —
+    // which would halve the work — cannot read as fast.
+    const MESSAGES: usize = 100_000;
+    const BATCH: usize = 100;
+    let stream = level_stream("ACME", MESSAGES, 0xA5B);
+    // The window must be wider than a batch: line B's copy of a unit arrives
+    // a whole batch after line A's, and a unit that has already left the
+    // window is a `Missed`, not a duplicate.
+    let mut arbiter = LineArbiter::new("feed-a", &["line-a", "line-b"], 4 * BATCH);
+
+    let mut released = 0usize;
+    let mut published = 0usize;
+    let mut duplicates = 0usize;
+    let started = Instant::now();
+    for chunk in stream.chunks(BATCH) {
+        for line in ["line-a", "line-b"] {
+            let outcome = arbiter.accept(line, chunk.to_vec(), start());
+            released += outcome.released.len();
+            for event in &outcome.events {
+                match event {
+                    ArbitrationEvent::Published { .. } => published += 1,
+                    ArbitrationEvent::Duplicate { .. } => duplicates += 1,
+                    other => panic!("two clean lines produced {other:?}"),
+                }
+            }
+        }
+    }
+    let elapsed = started.elapsed();
+
+    assert_eq!(released, MESSAGES, "the merged stream is not the stream");
+    assert_eq!(
+        published, MESSAGES,
+        "not every unit was published exactly once"
+    );
+    assert_eq!(
+        duplicates, MESSAGES,
+        "the second line's copies were not all recognised"
+    );
+    report(
+        "line arbitration (2 lines, per delivered unit)",
+        2 * MESSAGES,
+        elapsed,
+        20.0,
+    );
+    Ok(())
+}
+
+#[test]
+fn verifying_a_capital_envelope_costs_what_the_execution_measurements_say() -> Result<()> {
+    // The signature check every grant passes before a cell will deploy on it:
+    // the HMAC over the signing payload, the constant-time comparison, the
+    // cell and the validity window. The admission arithmetic behind it is the
+    // capital stage above; this is the trust root in front of it.
+    const ENVELOPES: usize = 20_000;
+    let envelope = {
+        let build = |signature: &str| {
+            CapitalEnvelope::new(
+                StrategyId::new("alpha"),
+                EDGE_CELL,
+                dec!("1000000"),
+                dec!("100000"),
+                dec!("50000"),
+                vec![venue()],
+                start(),
+                start().saturating_add(Duration::from_hours(1)),
+                "alice@example.com",
+                signature,
+            )
+        };
+        let unsigned = build("unsigned")?;
+        build(&sign_payload(
+            EDGE_ENVELOPE_KEY,
+            &unsigned.signing_payload(),
+        ))?
+    };
+    let now = start().saturating_add(Duration::from_secs(1));
+
+    let mut verified = 0usize;
+    let started = Instant::now();
+    for _ in 0..ENVELOPES {
+        if VerifiedEnvelope::verify(envelope.clone(), EDGE_ENVELOPE_KEY, EDGE_CELL, now).is_ok() {
+            verified += 1;
+        }
+    }
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        verified, ENVELOPES,
+        "a correctly signed envelope was refused"
+    );
+    assert!(
+        VerifiedEnvelope::verify(envelope, b"another-key", EDGE_CELL, now).is_err(),
+        "the check under measurement accepts any key"
+    );
+    report("capital envelope verify (HMAC)", ENVELOPES, elapsed, 500.0);
+    Ok(())
+}
+
+#[test]
+fn verifying_and_applying_a_policy_payload_costs_what_the_execution_measurements_say() -> Result<()>
+{
+    // The centre's payload arriving at the cell: the signature over the
+    // canonical serialisation, the anti-replay sequence, the halt barrier,
+    // the narrowing recorded, the chain entry sealed. One per sequence,
+    // strictly increasing, which is the only order the cell accepts.
+    const PAYLOADS: usize = 2_000;
+    let mut cell = edge_cell(&[])?;
+    let issued = start().saturating_add(Duration::from_secs(2));
+    let payloads: Vec<PolicyPayload> = (1..=PAYLOADS as u64)
+        .map(|sequence| {
+            PolicyPayload::unproduced(sequence, EDGE_CELL, issued).signed(EDGE_POLICY_KEY)
+        })
+        .collect::<Result<_>>()?;
+
+    let mut applied = 0usize;
+    let started = Instant::now();
+    for payload in payloads {
+        let verified = VerifiedPolicy::verify(payload, EDGE_POLICY_KEY, EDGE_CELL, issued)?;
+        cell.apply_policy(verified, issued)?;
+        applied += 1;
+    }
+    let elapsed = started.elapsed();
+
+    assert_eq!(applied, PAYLOADS);
+    assert_eq!(
+        cell.policy_sequence(),
+        Some(PAYLOADS as u64),
+        "the cell did not apply every payload in sequence"
+    );
+    report("policy payload verify + apply", PAYLOADS, elapsed, 2_000.0);
+    Ok(())
+}
+
+#[test]
+fn the_journal_chain_costs_what_the_execution_measurements_say() -> Result<()> {
+    // The hash chain under every decision: a record sealed onto the previous
+    // digest, the whole chain re-verified, and the unshipped tail handed to a
+    // mirror in one batch that names what it chains onto. Three numbers
+    // because they are three different costs on three different paths — the
+    // record is on the pass, the verify is what a replay pays, the ship is
+    // the one call that may block.
+    const RECORDS: usize = 50_000;
+    let decisions: Vec<Decision> = (0..RECORDS)
+        .map(|index| Decision::Refused {
+            gate: "performance".to_string(),
+            reason: format!("record {index} of a measured chain"),
+        })
+        .collect();
+    let mut journal = Journal::new();
+
+    let started = Instant::now();
+    for decision in decisions {
+        journal.record(decision, start());
+    }
+    let recording = started.elapsed();
+
+    let started = Instant::now();
+    let verified = journal.verify();
+    let verifying = started.elapsed();
+
+    let mut mirror = MemoryMirror::new();
+    let started = Instant::now();
+    let shipped = ship(&mut journal, &mut mirror, EDGE_CELL, Vec::new(), start())?;
+    let shipping = started.elapsed();
+
+    assert_eq!(journal.len(), RECORDS, "not every decision was recorded");
+    assert_eq!(
+        verified,
+        Ok(()),
+        "the chain the test just wrote does not verify"
+    );
+    assert_eq!(shipped, RECORDS, "the mirror did not receive every entry");
+    mirror.verify_continuity()?;
+    assert!(
+        journal.unshipped().is_empty(),
+        "entries were shipped and not marked"
+    );
+    report("journal record (chain digest)", RECORDS, recording, 200.0);
+    report("journal verify (per entry)", RECORDS, verifying, 200.0);
+    report(
+        "journal ship to mirror (per entry)",
+        RECORDS,
+        shipping,
+        50.0,
+    );
+    Ok(())
+}
+
+#[test]
+fn a_two_leg_group_completing_costs_what_the_execution_measurements_say() -> Result<()> {
+    // The multi-leg lifecycle: two orders assembled into a group, each leg
+    // filled in full, the group assessed and settled complete. Buy and sell
+    // of equal notional, so the leg risk between the fills is bounded by the
+    // group's own limit and the verdict is completion rather than an unwind.
+    const GROUPS: usize = 20_000;
+    let fill = |order: &Order, index: usize| Fill {
+        fill_id: FillId::from_string(format!("fill-{index}-{}", order.order_id.as_str())),
+        order_id: order.order_id.clone(),
+        at: start(),
+        quantity: order.quantity,
+        price: order.arrival_price,
+        costs: Decimal::ZERO,
+        venue: "simulated-venue".to_string(),
+        simulated: true,
+    };
+
+    let mut complete = 0usize;
+    let started = Instant::now();
+    for index in 0..GROUPS {
+        let leg = |symbol: &str, side: Side| {
+            Order::new(
+                OrderId::from_string(format!("leg-{index}-{symbol}")),
+                object(symbol),
+                side,
+                dec!("100"),
+                OrderType::Market,
+                dec!("100"),
+                "prop-performance",
+                vec!["hyp-performance".to_string()],
+                "performance",
+                start(),
+            )
+        };
+        let buy = leg("ACME", Side::Buy);
+        let sell = leg("BOREAS", Side::Sell);
+        let buy_fill = fill(&buy, index);
+        let sell_fill = fill(&sell, index);
+        let mut group = LegGroup::new(
+            format!("group-{index}"),
+            vec![buy, sell],
+            start().saturating_add(Duration::from_secs(60)),
+            dec!("1000000"),
+        )?;
+        group.record_fill(&buy_fill)?;
+        group.record_fill(&sell_fill)?;
+        let verdict = group.assess(start());
+        group.settle(&verdict, &[], start())?;
+        if verdict == Verdict::Complete {
+            complete += 1;
+        }
+    }
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        complete, GROUPS,
+        "a fully filled group was not judged complete"
+    );
+    report(
+        "multi-leg group (2 legs: assemble, fill, assess, settle)",
+        GROUPS,
+        elapsed,
+        200.0,
+    );
+    Ok(())
+}
+
+// --- the second honesty check ------------------------------------------------
+
+/// The test-name cell of every figure row in the execution measurements
+/// document, with its backticks stripped.
+fn measurement_rows(document: &str) -> Vec<String> {
+    document
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let cells: Vec<&str> = line.strip_prefix('|')?.split('|').collect();
+            let capability = cells.first()?.trim().to_lowercase();
+            if capability.is_empty()
+                || capability == "capability"
+                || capability.chars().all(|c| c == '-' || c == ':')
+            {
+                return None;
+            }
+            let test = cells.get(5)?.trim().trim_matches('`').to_string();
+            Some(test)
+        })
+        .collect()
+}
+
+#[test]
+fn the_execution_measurements_document_names_only_tests_this_file_holds_and_says_what_a_number_is_not()
+ {
+    // The document is the deliverable this section justifies, so it is
+    // checked rather than trusted, in both directions: every row names a
+    // test this file holds, and every measurement this file makes has a row.
+    // A row for a test that no longer exists is a figure nothing produces —
+    // exactly what the budgets document once did for a stage ADR 0029 had
+    // removed — and a measurement without a row is a number nobody can find.
+    let document = qip_acceptance::read("docs/ops/execution-measurements.md");
+    let source = qip_acceptance::read("backend/crates/tests/qip-acceptance/tests/performance.rs");
+    const SUFFIX: &str = "_costs_what_the_execution_measurements_say";
+
+    let measuring: Vec<&str> = source
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("fn "))
+        .filter_map(|rest| rest.split('(').next())
+        .filter(|name| name.ends_with(SUFFIX))
+        .collect();
+    assert!(
+        measuring.len() >= 10,
+        "this file holds only {} execution measurements; the section was cut down",
+        measuring.len()
+    );
+
+    let rows = measurement_rows(&document);
+    assert!(!rows.is_empty(), "the document has no figure rows");
+    for row in &rows {
+        assert!(
+            measuring.contains(&row.as_str()),
+            "docs/ops/execution-measurements.md publishes a row for `{row}`, which this file \
+             does not measure; a figure for a test nothing runs is a wish dressed as a \
+             measurement"
+        );
+    }
+    for name in &measuring {
+        assert!(
+            rows.iter().any(|row| row == name),
+            "docs/ops/execution-measurements.md has no row for `{name}`"
+        );
+    }
+
+    // And the caveats a reader has to meet before any number: the shape of
+    // the machine, the profile, and the two sentences that stop an in-process
+    // figure being read as a deployment figure.
+    let lowered = document.to_lowercase();
+    for required in [
+        "4 cores",
+        "release",
+        "not a deployment measurement",
+        "nothing is deployed",
+        "2026-09-05",
+    ] {
+        assert!(
+            lowered.contains(required),
+            "docs/ops/execution-measurements.md does not say \"{required}\""
+        );
+    }
+    for overclaim in ["tick-to-order", "wire-to-wire", "microseconds at the venue"] {
+        assert!(
+            !lowered.contains(overclaim),
+            "docs/ops/execution-measurements.md claims \"{overclaim}\""
+        );
+    }
 }

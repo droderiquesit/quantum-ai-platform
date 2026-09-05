@@ -1,0 +1,16 @@
+# Generated shape, reviewed content. One file per environment rather than a
+# kustomize base with replacements, so a reader — and the acceptance suite's
+# parity test, which reads these files without a kustomize binary — sees
+# every concrete value the running service must carry. The catalogue entry
+# in infrastructure/terraform/catalogue.tf is the source of truth for each
+# value here; a disagreement fails the build, not the sync (ADR 0036).
+# Who may call each service. Nothing, unless a member is named here: the
+# module's invoker binding left with the service (ADR 0036 decision 5), and
+# these are its manifest form.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qip-no-invokers
+data:
+  why: 'No invoker is named in this environment: no console identity exists until it is provisioned (ADR
+    0018), and OpenObserve is not deployed here (ADR 0028).'

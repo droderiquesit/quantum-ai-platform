@@ -1,0 +1,13 @@
+# Config Connector's one object. The operator itself is the vendored manifest
+# under ../config-connector-operator, which the bootstrap applies just before
+# this — nothing here installs it — and this is what turns it on: cluster
+# mode, acting as one Google identity for every namespace. This comment used
+# to say the operator was the GKE addon `modules/gitops-control-plane`
+# enables; the API refused that addon on an Autopilot cluster (infra.yml
+# runs 34 and 35, 2026-09-05). The overlay names the identity; the namespace
+# the RunService manifests land in is the overlay's too, because its project
+# annotation is the environment's.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - configconnector.yaml

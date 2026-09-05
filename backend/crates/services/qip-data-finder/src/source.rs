@@ -17,6 +17,7 @@ use crate::legal::LicensingPosture;
 use crate::probe::ProbeEvidence;
 use crate::quality::SourceCost;
 use crate::schema::SourceSchema;
+use crate::tier::SourceTier;
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_events::Topic;
@@ -185,6 +186,12 @@ impl SourceCandidate {
 pub struct Source {
     candidate: SourceCandidate,
     evidence: ProbeEvidence,
+    /// The web tier the finder placed this source in, once it has. `None`
+    /// until [`Self::with_tier`] records a classification, and never a
+    /// default: a source with no recorded tier is one nobody has classified,
+    /// which is a different fact from one on the surface web.
+    #[serde(default)]
+    tier: Option<SourceTier>,
 }
 
 impl Source {
@@ -193,7 +200,19 @@ impl Source {
         Self {
             candidate,
             evidence,
+            tier: None,
         }
+    }
+
+    /// Record the tier this source was classified into.
+    pub fn with_tier(mut self, tier: SourceTier) -> Self {
+        self.tier = Some(tier);
+        self
+    }
+
+    /// The tier the finder placed this source in, where it has been placed.
+    pub fn tier(&self) -> Option<SourceTier> {
+        self.tier
     }
 
     pub fn candidate(&self) -> &SourceCandidate {

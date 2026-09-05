@@ -93,6 +93,18 @@ there is no credential.** `scripts/model-gateway.mjs` now exists and fails
 closed without one. Everything else is in place; see §4 for the gate-by-gate
 position.
 
+**The provider is chosen: Hugging Face Inference Providers**, on the
+account holder's instruction of 2026-09-04 ("use huggingface for
+development"). The gateway carries it as the `huggingface` preset — base URL
+fixed to `https://router.huggingface.co`, credential read from
+`HF_TOKEN_FILE` (preferred) or `HF_TOKEN`, a Hugging Face token shape added
+to the payload screen — and `node --test scripts/model-gateway.test.mjs`
+holds all of that (eight tests, each mutation-verified). The router is a
+front for third-party inference providers chosen per model, so
+`node scripts/model-gateway.mjs --probe` prints, keylessly and sending
+nothing, which providers a model resolves to; gate 4 is answered per
+provider on that list, not once for the router.
+
 ## 4. Provider authorization gate
 
 No repository code, diff, path, log, test output, prompt containing source, or
@@ -135,6 +147,17 @@ run, they are simply all the same model.
 | 4 | Privacy | **met** | Decision made by the account holder: sharing this repository's source with an external provider is acceptable. Recorded here because a privacy decision that lives only in chat is one nobody can audit later. |
 | 5 | Expected cost | **pending** | Cannot be priced until a provider and plan are chosen. `ALGORIK_WORKER_MAX_CALLS` is mandatory and the gateway refuses to start without it. |
 | 6 | Data classification | **superseded, in part** | The account holder authorized sharing source, which is theirs to authorize. It does **not** extend to credentials: the gateway screens every payload and refuses — rather than scrubs — on any credential shape. Scrubbing would normalise sending files that need scrubbing. |
+
+### Gate status, 2026-09-04 — Hugging Face
+
+| # | Gate | State | Evidence |
+|---|---|---|---|
+| 1 | Availability | **met** | `node scripts/model-gateway.mjs --probe` with the `huggingface` preset, from this container through the session proxy: `reachable yes`, `catalogue 137 model(s) listed anonymously`, `Qwen/Qwen2.5-Coder-32B-Instruct resolves to: nscale, featherless-ai`. The earlier `api-inference.huggingface.co` probe found the legacy host; the router is the current one. A keyless POST to `/v1/chat/completions` answers 401 — reachable, refusing for want of a key, the same shape as DeepSeek's. |
+| 2 | Authorization | **met** | Account holder, in session, 2026-09-04, for this repository's source. |
+| 3 | Credentials | **NOT MET — still the only blocker** | No token is present. It must not be pasted into chat (see below). The two paths that keep it out of the transcript: (a) in a local checkout, write it to a file outside the repository and set `HF_TOKEN_FILE` to that path; (b) for a Claude Code on the web session, add `HF_TOKEN` to the environment's variables in the environment settings before starting the session, which is the environment-variable path the gateway accepts with its stated warning. Either way `./scripts/check-secrets.sh` must still say nothing found, and the token never appears in a committed file. |
+| 4 | Privacy | **per provider, not yet read** | The owner's decision to share source stands. The router forwards to a provider chosen per model; `--probe` names them. A model is used only after the terms of every provider it resolves to have been read. Not done for any model yet. |
+| 5 | Expected cost | **pending** | `/v1/models` publishes per-provider input/output prices; a ceiling is set with `ALGORIK_WORKER_MAX_CALLS` before the first call, and the ledger counts. |
+| 6 | Data classification | **as above** | The gateway refuses a credential-shaped payload; risk, execution, capital, compliance and edge sources do not leave at any price. |
 
 **No local runtime is available and none can be installed.** `ollama`, `vllm`
 and `llama.cpp` are all absent, and with 961 MB free there is no room for a

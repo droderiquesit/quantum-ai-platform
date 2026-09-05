@@ -91,7 +91,7 @@ fn print_help() {
 /// store on a bad configuration would make `qip cycle` report archived records
 /// that were never anywhere.
 fn storage() -> Result<StorageSettings> {
-    let settings = StorageSettings::from_env()?;
+    let settings = StorageSettings::from_env(&|name| std::env::var(name).ok())?;
     settings.preflight()?;
     Ok(settings)
 }

@@ -61,8 +61,11 @@ fn run() -> Result<()> {
 
     // Resolved and proven writable before anything else is built. Failing here
     // costs a restart; failing at the first archived cycle costs the record of
-    // everything that happened up to it.
-    let storage = StorageSettings::from_env()?;
+    // everything that happened up to it. The environment is passed in rather
+    // than read by the library: this is the composition root, the one place
+    // that may read it, and the managed-target credentials it resolves go
+    // through `qip_core::secret` so a deployment may mount them as files.
+    let storage = StorageSettings::from_env(&|name| std::env::var(name).ok())?;
     storage.preflight()?;
     let archive = Arc::new(ChainArchive::open(storage.key_value("event-log")?)?);
 
@@ -81,7 +84,29 @@ fn run() -> Result<()> {
 
     let mut config = PlatformConfig::default().with_live_ceiling(ceiling);
     config.central.arbitrage = arbitrage;
-    let context = qip_core::Context::new(clock.clone(), config.seed);
+
+    // The source `POST /cycle` senses, chosen before the platform exists
+    // because a tape owns the clock the platform must be assembled on. A
+    // connector is admitted by the data finder's licensing catalogue inside
+    // `ApiFeed::open`, before any socket is touched, and refused rather than
+    // opened when its posture is not evaluated — see `feed.rs` for why the
+    // absent case stays absent instead of falling back to generated prices.
+    let feed_settings = qip_api::feed::FeedSettings::from_env()
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let feed = qip_api::feed::ApiFeed::open(&feed_settings, config.seed, now)
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    // The clock the platform reasons on. A tape owns its own, and the
+    // platform must be assembled on it: opportunities expire at tape time,
+    // and a router asked for a latency budget measured from the wall clock
+    // against a deadline in 2025 would refuse every panel as already late.
+    // Everything operational — credentials, rate limits, the console's
+    // staleness, telemetry timestamps — stays on the wall clock, which is
+    // what an operator is on.
+    let platform_clock: Arc<dyn Clock> = match feed.as_ref().and_then(|feed| feed.owned_clock()) {
+        Some(tape_clock) => tape_clock,
+        None => clock.clone(),
+    };
+    let context = qip_core::Context::new(platform_clock, config.seed);
     // Cloned before the platform takes it: `Telemetry` holds `Arc`s over its
     // registry, tracer and logger, so the clone shares the same underlying
     // state rather than starting a second, disconnected one. The OpenObserve
@@ -114,6 +139,27 @@ fn run() -> Result<()> {
     let provenance = qip_api::trust::harden_central(&mut platform, envelope_key.as_deref())
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
+    // A tape must end before the roster's authorisation does, and the
+    // assembled organisation is asked directly. See
+    // `ApiFeed::refuse_tape_beyond_authorisation` for the run that showed why.
+    if let Some(feed) = &feed {
+        feed.refuse_tape_beyond_authorisation(&platform)
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    }
+    let feed_banner = feed.as_ref().map_or_else(
+        || {
+            format!(
+                "none ({} and {} are not set); POST /cycle senses nothing and reasons over what \
+                 the platform already holds, and no research route will show an instrument until \
+                 a source is chosen",
+                qip_api::feed::TAPE_PATH_VARIABLE,
+                qip_api::feed::CONNECTOR_SOURCE_VARIABLE
+            )
+        },
+        qip_api::feed::ApiFeed::describe,
+    );
+    let feed = feed.map(|feed| Arc::new(Mutex::new(feed)));
+
     // The durable trial book, on the same storage the event log archives to.
     // The factory the plane was built with charges holdout evaluations to an
     // in-process book, so until this call every restart forgot every
@@ -126,6 +172,15 @@ fn run() -> Result<()> {
     platform
         .open_trial_book(storage.key_value("trial-book")?, "trial-book")
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+
+    // The wallet statement, read and observed into the platform before
+    // anything is served, on the wall clock — a statement is a document a
+    // person dated. See `load_wallet_statement` for why unset is no feed and
+    // set-but-unreadable is a refusal to start. Observed here rather than in
+    // a route so that the very first cycle's LEARN stage reconciles it, and
+    // wrapped around the router below so each admitted `POST /cycle`
+    // re-reads a file that has changed.
+    let (statement_feed, statement_banner) = load_wallet_statement(&mut platform, now)?;
 
     // The mesh backbone, where the deployment names cells to serve. Absent
     // configuration means the routes are absent: no listener binds, and the
@@ -228,6 +283,9 @@ fn run() -> Result<()> {
     if let Some(mesh) = &mesh {
         api = api.with_mesh(mesh.clone());
     }
+    if let Some(feed) = &feed {
+        api = api.with_feed(feed.clone());
+    }
     let api = Arc::new(api);
     let console = Arc::new(Console::new(
         platform.clone(),
@@ -237,8 +295,22 @@ fn run() -> Result<()> {
         clock.clone(),
     ));
     let router = Router::new(api, web).with_console(console);
+    // With a statement feed, the router is wrapped so an admitted
+    // `POST /cycle` re-reads the file before the API runs the cycle. Without
+    // one the router is served bare: no code on the cycle path can re-read
+    // anything, which is the structural form of "no feed".
+    let handler: Arc<dyn qip_api::http::Handler> = match statement_feed {
+        Some(feed) => Arc::new(qip_api::statement::StatementRefresh::new(
+            router,
+            Arc::new(Mutex::new(feed)),
+            platform.clone(),
+            authenticator.clone(),
+            clock.clone(),
+        )),
+        None => Arc::new(router),
+    };
 
-    let server = Server::bind(&address, Arc::new(router), ServerLimits::default())?;
+    let server = Server::bind(&address, handler, ServerLimits::default())?;
     let bound = server.local_address()?;
 
     // The start-up banner. An operator should be able to read what this
@@ -285,7 +357,23 @@ fn run() -> Result<()> {
          clears one"
     );
     println!("  capital trust:    {}", provenance.describe());
+    println!("  feed:             {feed_banner}");
+    if let Some(feed) = &feed {
+        let Ok(feed) = feed.lock() else {
+            return Err(Error::invalid(
+                "the feed is in an inconsistent state before serving began",
+            ));
+        };
+        if let Some(tape_clock) = feed.owned_clock() {
+            println!(
+                "  platform clock:   tape time, at {} until the first POST /cycle; credentials, \
+                 rate limits and the console stay on the wall clock",
+                tape_clock.now().to_rfc3339()
+            );
+        }
+    }
     println!("  arbitrage desk:   {arbitrage_banner}");
+    println!("  wallet statement: {statement_banner}");
     match &mesh {
         Some(mesh) => {
             // The addresses come from the bound sockets rather than from the
@@ -453,6 +541,36 @@ fn load_arbitrage_policy() -> Result<(Option<ArbitragePolicy>, String)> {
     Ok((Some(policy), banner))
 }
 
+/// The wallet statement the deployment names, observed into `platform`, and
+/// the banner line that says what was read.
+///
+/// `QIP_WALLET_STATEMENT_PATH` unset is not a refusal: it is the operator
+/// saying no custodian has reported to this process, and the platform's
+/// answer is the honest one — nothing is observed, LEARN reconciles nothing,
+/// and `/wallet` answers `assembled: false`. Set and unreadable, or readable
+/// and not a statement, or dated in the future, or past the kernel's bound,
+/// is a refusal to start naming the field: a process that fell back to no
+/// feed because the file the operator pointed at was wrong would run
+/// healthy with the wallet silently unobserved, which is the state every
+/// deployment was in before this feed existed. Nothing is clamped — a
+/// statement of 257 holdings is refused, not truncated to 256.
+fn load_wallet_statement(
+    platform: &mut Platform,
+    now: qip_core::Timestamp,
+) -> Result<(Option<qip_api::statement::StatementFeed>, String)> {
+    let Some(feed) =
+        qip_api::statement::StatementFeed::from_env(&|name| std::env::var(name).ok(), now)
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?
+    else {
+        return Ok((None, qip_api::statement::absent_banner()));
+    };
+    feed.statement()
+        .observe_into(platform)
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let banner = feed.describe();
+    Ok((Some(feed), banner))
+}
+
 #[cfg(test)]
 mod tests {
     //! Two things this root pins. The operator page's example policy is one
@@ -590,7 +708,17 @@ mod tests {
         // the other mask. So the same axis is driven past 0.35 of equity and
         // must be refused by name.
         let equity = platform.risk_figures().equity();
-        let breaching_quantity = (equity * dec!("0.5")) / first.price;
+        // Whole lots of the catalogue's default lot of one: the central
+        // feasibility gate now sits ahead of every other control and refuses
+        // a fractional size by name, so an off-grid order would prove the
+        // wrong veto. The premise of this half is the sector cap, and half
+        // the book's equity floored to a whole share is still past it.
+        let breaching_quantity =
+            ((equity * dec!("0.5")) / first.price).floor_to_step(qip_core::Decimal::ONE);
+        assert!(
+            breaching_quantity.is_positive(),
+            "the premise: half the equity buys at least one whole share"
+        );
         let breach = platform.order_from(
             first.object_id.clone(),
             side,

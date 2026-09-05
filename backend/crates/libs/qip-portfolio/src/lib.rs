@@ -17,11 +17,13 @@
 //! lot a sale closes is an explicit choice rather than an artefact.
 
 pub mod exposure;
+pub mod lifecycle;
 pub mod lot;
 pub mod portfolio;
 pub mod position;
 
 pub use exposure::{Exposure, ExposureBreakdown};
+pub use lifecycle::PositionLifecycle;
 pub use lot::{Lot, LotMethod, RealisedTrade};
 pub use portfolio::{Portfolio, PortfolioSnapshot, Valuation};
 pub use position::{Position, PositionSide};

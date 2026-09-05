@@ -1,0 +1,7 @@
+# The upstream install manifest assumes its namespace exists; this is it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+  labels:
+    platform: qip

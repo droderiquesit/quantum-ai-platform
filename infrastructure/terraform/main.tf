@@ -8,10 +8,13 @@
 # real money on a network anyone can reach.
 #
 # The shape is the blueprint's (ADR 0022, ADR 0024): every warm binary on
-# Cloud Run, scaling to zero, from `catalogue.tf`; one dedicated Compute Engine
-# machine per region for the execution node, from `execution_nodes`; thirteen
-# trust zones with default deny between them, from `trust_zones`. There is no
-# Kubernetes here and nothing that reconciles one.
+# Cloud Run, scaling to zero, its identity from `catalogue.tf` and its
+# `RunService` manifest under `infrastructure/gitops/envs/`; one dedicated
+# Compute Engine machine per region for the execution node, from
+# `execution_nodes`; thirteen trust zones with default deny between them, from
+# `trust_zones`. The one Kubernetes cluster here (ADR 0036, behind
+# `gitops_enabled`) runs the three controllers that reconcile those manifests
+# and no trading binary.
 #
 # Nothing in this configuration enables live trading. The autonomy ceiling is
 # an application setting, deliberately not an infrastructure one, so that
@@ -133,6 +136,38 @@ locals {
     ],
     [local.private_google_apis],
   )
+
+  # GitHub, from the management zone, on 443 — the one thing outside the VPC
+  # the control plane's reconcilers reach (ADR 0036): Argo CD clones this
+  # repository and Kargo commits a promotion to it. The four blocks are the
+  # `web`, `api` and `git` ranges GitHub publishes at api.github.com/meta;
+  # the Azure-hosted single addresses in that list change too often to pin
+  # and are not needed for git over HTTPS.
+  #
+  # Split into /24s here rather than declared as /20s in the tfvars, because
+  # `modules/trust-zones` refuses an allowlist entry wider than a /24 and
+  # that refusal is worth keeping: a /20 typed by hand is the range that
+  # turns out to contain something else, and a /24 generated from a
+  # published /20 is the same coverage with the source named on every rule.
+  # Forty rules is the honest count of what "GitHub" is as addresses.
+  github_ranges = {
+    "140.82.112.0/20"  = 4
+    "143.55.64.0/20"   = 4
+    "185.199.108.0/22" = 2
+    "192.30.252.0/22"  = 2
+  }
+  github_egress = var.gitops_enabled ? merge([
+    for block, newbits in local.github_ranges : {
+      for index in range(pow(2, newbits)) :
+      "gh-${replace(split("/", cidrsubnet(block, newbits, index))[0], ".", "-")}" => {
+        zone    = "management"
+        cidr    = cidrsubnet(block, newbits, index)
+        port    = 443
+        purpose = "source-control"
+        note    = "GitHub, from the ${block} block api.github.com/meta publishes for web, api and git; Argo CD reads and Kargo writes this repository over HTTPS (ADR 0036)."
+      }
+    }
+  ]...) : {}
 }
 
 # The APIs everything else assumes.
@@ -163,6 +198,7 @@ module "services" {
   enable_spanner                 = var.enable_spanner
   enable_vertex_ai               = var.enable_vertex_ai
   enable_security_command_center = var.enable_security_command_center
+  enable_gitops                  = var.gitops_enabled
 
   # False. Disabling an API on destroy does not revoke access, it deletes the
   # resources under it — including ones this configuration never created. See
@@ -235,6 +271,19 @@ module "secrets" {
     # digest.
     "qip-openobserve-root-email",
     "qip-openobserve-root-password",
+    # The two GitHub App installations of ADR 0036 decision 3 — the read-only
+    # one Argo CD clones with and the write-scoped one Kargo commits with —
+    # each as one JSON payload holding the App id, the installation id and
+    # the private key. Created empty here, seeded out of band by a person who
+    # holds the App, and readable only by the one controller identity
+    # `modules/gitops-control-plane` grants; `infra.yml`'s bootstrap projects
+    # the payload into the controller's namespace as a Kubernetes Secret and
+    # never logs it. The private key is the one long-lived third-party
+    # credential this platform holds, and the ADR names its rotation as
+    # somebody's schedule rather than assuming one. Created in every
+    # environment for the same reason the venue credential is.
+    "qip-github-app-argocd",
+    "qip-github-app-kargo",
   ]
 
   # The venue credential is readable only by an environment that could use it,
@@ -318,7 +367,10 @@ module "trust_zones" {
 
   zones           = var.trust_zones
   permitted_paths = var.permitted_paths
-  external_egress = var.external_egress
+  # The tfvars' allowlist, plus GitHub from the management zone when the
+  # control plane exists. Merged here so the forty generated rules are a
+  # consequence of `gitops_enabled` and not forty lines somebody maintains.
+  external_egress = merge(var.external_egress, local.github_egress)
   public_ingress  = var.public_ingress
 
   # The identities in each zone are the catalogue's workloads placed there,
@@ -649,6 +701,115 @@ module "scc" {
   muted_findings                 = var.scc_muted_findings
 
   depends_on = [module.services]
+}
+
+# The GitOps control plane (ADR 0036): one Autopilot cluster in the
+# management zone running Config Connector, Argo CD and Kargo, and the three
+# identities they act as. Behind `gitops_enabled`, which is true in `dev`
+# alone today; the module itself is what holds the cluster private, Binary
+# Authorization on, etcd under the ring's key, and each identity to its one
+# job. What runs on it is under infrastructure/gitops/, applied by
+# infra.yml's bootstrap step after `up`.
+#
+# The two preconditions are the root's to check: the cluster lives in the
+# management zone's subnet, so that zone must be declared, and the endpoint
+# needs a /28 of its own. Both are refused by name rather than by a lookup
+# trace.
+resource "terraform_data" "gitops_is_placed" {
+  count = var.gitops_enabled ? 1 : 0
+  input = "gitops-control-plane"
+
+  lifecycle {
+    precondition {
+      condition     = contains(keys(var.trust_zones), "management")
+      error_message = "gitops_enabled is true but trust_zones does not declare \"management\"; the control-plane cluster has no subnet, no tag and no authorised network without it. Declare the zone's range in the tfvars alongside gitops_master_ipv4_cidr_block."
+    }
+
+    precondition {
+      condition     = var.gitops_master_ipv4_cidr_block != null
+      error_message = "gitops_enabled is true and gitops_master_ipv4_cidr_block is null. The control plane's private endpoint needs a /28 that overlaps no subnet; set it in the environment's tfvars."
+    }
+  }
+}
+
+module "gitops_control_plane" {
+  source = "./modules/gitops-control-plane"
+  count  = var.gitops_enabled ? 1 : 0
+
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services, terraform_data.gitops_is_placed]
+
+  project_id     = var.project_id
+  project_number = local.project_number
+  region         = var.region
+  environment    = var.environment
+  labels         = local.labels
+
+  network_id           = module.network.network_id
+  management_subnet_id = lookup(module.trust_zones.zone_subnets, "management", null)
+  # The whole-internet fallback is refused by the module's own validation, so
+  # an environment that enables the control plane without the zone fails on
+  # `gitops_is_placed` above and, if that were ever removed, here.
+  management_subnet_cidr = contains(keys(var.trust_zones), "management") ? var.trust_zones["management"].subnet_cidr : "0.0.0.0/0"
+  management_network_tag = lookup(module.trust_zones.zone_network_tags, "management", "qip-${var.environment}-tz-undeclared")
+  master_ipv4_cidr_block = var.gitops_master_ipv4_cidr_block
+
+  key_ring_id = module.secrets.key_ring_id
+
+  # The bootstrap applies as the account infra.yml already authenticates as.
+  infra_service_account = module.cicd.infra_service_account
+
+  registry_repository_name = module.registry.repository_name
+
+  argocd_app_secret_id = module.secrets.secret_ids["qip-github-app-argocd"]
+  kargo_app_secret_id  = module.secrets.secret_ids["qip-github-app-kargo"]
+}
+
+# The Cloud Run services leave Terraform's management without being
+# destroyed (ADR 0036 decision 5). Each `RunService` manifest under
+# infrastructure/gitops/envs/<env>/ names the same service by name, so Config
+# Connector acquires what these blocks release. `destroy = false` is the
+# whole of what makes this a release and not a teardown: an apply that
+# forgot it would plan four deletions that `deletion_protection` refuses,
+# and one that had the protection lowered first would delete the platform.
+#
+# Written against the module's *unkeyed* address, because Terraform refuses
+# an instance key in a `removed` block ("Module instance keys not allowed")
+# and refuses a `removed` block whose target is still declared, even at
+# `count = 0` ("Removed resource still exists") — which is why the resource
+# is gone from `modules/cloudrun` rather than gated there. They may be
+# deleted once every environment that ever held a service has applied them;
+# until then they are a no-op for an environment whose state holds none.
+removed {
+  from = module.cloud_run.google_cloud_run_v2_service.workload
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = module.cloud_run.google_cloud_run_v2_service_iam_member.invokers
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = module.openobserve.google_cloud_run_v2_service.workload
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = module.openobserve.google_cloud_run_v2_service_iam_member.invokers
+
+  lifecycle {
+    destroy = false
+  }
 }
 
 module "identity" {

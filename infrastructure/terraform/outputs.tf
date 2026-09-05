@@ -7,25 +7,52 @@
 output "cloud_run_services" {
   description = <<-EOT
     Every workload in the catalogue: its Cloud Run URL, its identity, the
-    trust zone it attaches through, whether it carries the egress proxy, and
+    trust zone it attaches through, whether it carries the egress proxy,
     whether a metrics collector is declared beside it — declared, which is
-    not scraped; `workload_metrics_exist` is the fact about ingestion.
+    not scraped; `workload_metrics_exist` is the fact about ingestion — and
+    the environment, secret paths and configuration paths its manifest must
+    carry, so the parity test reads them from one place.
 
-    The URL is internal — every service is `INGRESS_TRAFFIC_INTERNAL_ONLY` —
-    so a request arriving at it from the internet is refused before the
-    container sees it. It is what `deploy.yml` moves and what the console is
-    configured to call.
+    The URL is internal — every catalogue service is
+    `INGRESS_TRAFFIC_INTERNAL_ONLY` in its manifest — so a request arriving
+    at it from the internet is refused before the container sees it. It is
+    computed from Cloud Run's deterministic form rather than read back: the
+    service resource is Config Connector's (ADR 0036).
   EOT
 
   value = {
     for name, workload in module.cloud_run : name => {
-      uri               = workload.uri
-      service_account   = workload.service_account_email
-      trust_zone        = workload.trust_zone
-      has_egress_proxy  = workload.has_egress_proxy
-      metrics_collected = workload.metrics_collected
-      network_tags      = workload.network_tags
+      uri                 = workload.uri
+      service_account     = workload.service_account_email
+      trust_zone          = workload.trust_zone
+      has_egress_proxy    = workload.has_egress_proxy
+      metrics_collected   = workload.metrics_collected
+      network_tags        = workload.network_tags
+      environment         = workload.environment
+      secret_file_paths   = workload.secret_file_paths
+      config_file_paths   = workload.config_file_paths
+      config_files_bucket = workload.config_files_bucket
     }
+  }
+}
+
+output "gitops_control_plane" {
+  description = <<-EOT
+    The control-plane cluster and the three identities on it (ADR 0036), or
+    null where `gitops_enabled` is false.
+
+    `infra.yml`'s bootstrap derives the cluster name the same way the module
+    does and refuses to apply if the cluster is absent; the identities are
+    what the bootstrap writes into the controllers' service accounts.
+  EOT
+
+  value = length(module.gitops_control_plane) == 0 ? null : {
+    cluster_name    = module.gitops_control_plane[0].cluster_name
+    location        = module.gitops_control_plane[0].cluster_location
+    kcc_identity    = module.gitops_control_plane[0].kcc_service_account_email
+    argocd_identity = module.gitops_control_plane[0].argocd_service_account_email
+    kargo_identity  = module.gitops_control_plane[0].kargo_service_account_email
+    etcd_key        = module.gitops_control_plane[0].etcd_key_id
   }
 }
 

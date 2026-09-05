@@ -211,16 +211,20 @@ holdout of data the platform generated is not the gate."*
 
 ### A.1 A real vendor feed, reaching a deployed process
 
-Partly closed and unrecorded anywhere: `api.frankfurter.app` is now the sixth
-entry in `egress_allowed_upstreams`, a real Envoy cluster on 9105, with
+Partly closed and unrecorded anywhere: `api.frankfurter.dev` (the vendor
+moved off `api.frankfurter.app`, which now redirects; manifest, Envoy cluster
+and allowlist moved together on 2026-09-04) is now the sixth entry in
+`egress_allowed_upstreams`, a real Envoy cluster on 9105, with
 `FrankfurterRatesConnector` registered in the connector bridge. No scoring
 document mentions it.
 
 What is still missing:
 
-- **No request through that allowlist has been observed in a log.** The
-  connector is wired; nothing proves a response ever came back in a
-  deployment. First deliverable: one request, one response, quoted.
+- **No request through that allowlist has been observed in a deployment
+  log.** A session behind a loopback TLS bridge has fetched the live table
+  through the connector (`sense … released 3 observed 3`, 2026-09-04); nothing
+  proves a response ever came back in a deployment. First deliverable: one
+  request, one response, quoted from a deployed process's journal.
 - **Frankfurter is FX reference rates.** It is not an equities or crypto
   market-data feed, and the universe the platform sizes against is equities.
   A family surviving a holdout on FX rates answers the gate for FX and for

@@ -55,6 +55,12 @@ variable "enable_security_command_center" {
   default     = false
 }
 
+variable "enable_gitops" {
+  description = "Mirrors the root's gitops_enabled. Enables container.googleapis.com, gkehub.googleapis.com and connectgateway.googleapis.com, which the control-plane cluster and the bootstrap that reaches it need."
+  type        = bool
+  default     = false
+}
+
 variable "disable_services_on_destroy" {
   description = <<-EOT
     Whether `terraform destroy` turns these APIs back off.

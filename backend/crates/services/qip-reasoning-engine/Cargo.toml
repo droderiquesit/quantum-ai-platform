@@ -9,9 +9,16 @@ repository.workspace = true
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 qip-core.workspace = true
 qip-agents.workspace = true
 qip-world-model.workspace = true
+# The hosted language-model adapter (ADR 0037). `qip-ai` holds the port; the
+# adapter lives here because a library performs no I/O, and `qip-transport`
+# is the plaintext HTTP client every outbound adapter speaks through. Both
+# are in-tree crates under libs/: inward edges, not third-party dependencies.
+qip-ai.workspace = true
+qip-transport.workspace = true
 
 [lints]
 workspace = true

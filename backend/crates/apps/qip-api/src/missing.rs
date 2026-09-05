@@ -89,6 +89,45 @@ pub const NO_TRANSPORT_HEALTH: &str = "no transport reports its health to this \
 pub const NO_CLUSTER_HEALTH: &str = "no cluster membership or mesh health is \
     reported to this process. It runs as a single node and knows of no others.";
 
+/// No regime classifier keeps state in this process.
+///
+/// The kernel does label a routing decision with a market and volatility
+/// regime — `qip_cost_router::Conditions` is keyed on it — but the label is
+/// computed on demand from the surprise series when an opportunity is routed,
+/// carries no confidence, and is kept nowhere. Serving it per instrument would
+/// present a routing default (`quiet`/`normal` below the evidence floor) as a
+/// classification, and nothing in the cycle publishes `regime.changed`.
+pub const NO_REGIME_CLASSIFIER: &str = "no regime classifier runs in this \
+    process. The kernel labels each routing decision with a market and \
+    volatility regime computed on demand from its surprise series, with no \
+    confidence and no state kept between decisions, and the label below the \
+    evidence floor is a default rather than a finding. Nothing in the cycle \
+    publishes `regime.changed`: the topic is declared on /stream/signals so a \
+    subscriber's filter admits it, and the stream carries none until an \
+    UNDERSTAND-stage classifier records one to the event log. That classifier \
+    is what would produce this view.";
+
+/// No narrative adapter feeds this process.
+pub const NO_NARRATIVE_ADAPTER: &str = "no narrative adapter is configured \
+    in this process. The kernel absorbs a news item only when an ingestion \
+    adapter hands it one, and this composition attaches none — the API's \
+    SENSE stage reads no vendor feed — so there is no headline, no entity \
+    and no sentiment to show, not a quiet tape.";
+
+/// No calibration has been computed yet.
+pub const NO_CALIBRATION: &str = "no calibration has been computed. The LEARN \
+    stage grades a claim only once its horizon has passed and the platform's \
+    own series can settle it informatively; until one has, the platform has \
+    written down confidences and has not yet learned whether they held.";
+
+/// Too few instruments carry enough closes for a correlation to be estimated.
+pub const TOO_FEW_SERIES: &str = "fewer than two instruments have enough \
+    closes for a correlation to be estimated. A coefficient over a handful of \
+    prints is a number with no evidence behind it, so the view refuses below \
+    the stated minimum rather than reporting one; the instruments the platform \
+    has seen, and how many closes each holds, are listed so the shortfall is \
+    a fact rather than a blank.";
+
 /// The mesh backbone is not configured in this process.
 pub const MESH_NOT_SERVED: &str = "this process serves no mesh. QIP_MESH_CELLS \
     is not set, so no cell has an address to publish state deltas to or to poll \

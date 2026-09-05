@@ -92,31 +92,12 @@ impl BigQueryConfig {
         }
     }
 
-    /// Read the project, dataset and access from the environment.
+    /// Supply the endpoint and credential.
     ///
-    /// `QIP_BIGQUERY_PROJECT` and `QIP_BIGQUERY_DATASET`; the endpoint and
-    /// credential come from [`GcpAccess::from_env`]. Neither has a default:
-    /// the project is what a query is billed to and the dataset is what it
-    /// reads, and guessing either produces a bill or an answer that belongs to
-    /// somebody else.
-    pub fn from_env(clock: std::sync::Arc<dyn qip_core::Clock>) -> Result<Self> {
-        let read = |name: &str| -> Result<String> {
-            std::env::var(name)
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-                .ok_or_else(|| {
-                    Error::unavailable(format!(
-                        "no BigQuery {name}: set it. There is no default — the project is what a \
-                         query is billed to and the dataset is what it reads"
-                    ))
-                })
-        };
-        let project = read(super::PROJECT_VARIABLE)?;
-        let dataset = read(super::DATASET_VARIABLE)?;
-        Ok(Self::new(project, dataset).with_access(GcpAccess::from_env(clock)?))
-    }
-
+    /// A deployment's project, dataset and access are resolved by the
+    /// composition root through
+    /// [`crate::managed::ManagedSettings::big_query_config`]; this crate
+    /// reads no environment variable itself.
     pub fn with_access(mut self, access: GcpAccess) -> Self {
         self.access = access;
         self

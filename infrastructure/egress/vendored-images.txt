@@ -20,8 +20,17 @@
 # in the target environment's registry. The tag is for humans browsing the
 # registry; everything that matters references the digest.
 #
-# Two entries. Argo CD, Kargo, KEDA, cert-manager and redis were vendored for
-# the GKE runtime and left with it (ADR 0024); nothing else third-party runs.
+# Ten entries. Two run on Cloud Run: the Envoy egress proxy and
+# OpenObserve. Eight run on the control-plane cluster ADR 0036 brought back
+# — Argo CD and its Redis, Kargo, cert-manager's three, the Config Connector
+# operator, and the google-cloud-cli the post-sync proving hook runs —
+# vendored for the reason the first two are: the cluster evaluates the same
+# one-rule admission policy, so a controller image runs there only after
+# this file reviewed it and vendor.yml attested it. Argo CD, Kargo, KEDA,
+# cert-manager and redis were vendored once before, for the GKE runtime, and
+# left with it (ADR 0024); KEDA does not return, and Dex — which Argo CD's
+# install names — is not vendored because the bootstrap deletes it (no SSO
+# is configured; infrastructure/gitops/bootstrap/argocd/SOURCE.md).
 #
 # The third adoption is reviewed and REFUSED, not merely unreviewed: Google's
 # managed-Prometheus collector for Cloud Run (`cloud-run-gmp-sidecar`), which
@@ -138,3 +147,51 @@ docker.io/envoyproxy/envoy@sha256:574348fada8eb1130b448132287d76626dfb07525b1666
 # see the note above this file's second paragraph for the two decisions
 # still outstanding before it can be.
 docker.io/openobserve/openobserve@sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9e105491d58d29ac2739560b3b vendor/openobserve v0.92.2
+
+# --- The control-plane cluster's controllers (ADR 0036) ---------------------
+#
+# Each digest below was resolved on 2026-09-04 from the registry's own v2
+# API — the `docker-content-digest` header of the tag's manifest list — and
+# the version was chosen as the newest release the project published on that
+# day, by the means infrastructure/gitops/bootstrap/*/SOURCE.md record. Every
+# one is a multi-arch index, so vendor.yml signs the index and each platform
+# manifest under it. The overlays under infrastructure/gitops/bootstrap/
+# and infrastructure/gitops/envs/ name these images by the destination path
+# and this digest, and nothing else; a version bump is a new line here, a
+# new digest there, and a new SOURCE.md, in one commit.
+
+# Argo CD v3.5.2 (infrastructure/gitops/bootstrap/argocd/SOURCE.md).
+quay.io/argoproj/argocd@sha256:e2aadfae709d904e87f46ba4aa49601d827b3022db22cd4d03aae816a2e7097b vendor/argocd v3.5.2
+
+# Redis 8.2.3 on Alpine, the one Argo CD's install manifest names for its
+# cache; the same manifest names it by this tag.
+public.ecr.aws/docker/library/redis@sha256:08ad0b1d280850169a790dba1393ff7a90aef951fc19632cf4d3ce4f78e679ba vendor/redis 8.2.3-alpine
+
+# Kargo v1.11.4, one image for its five components
+# (infrastructure/gitops/bootstrap/kargo/SOURCE.md).
+ghcr.io/akuity/kargo@sha256:1413bdb63b1ad409c0a38a0ae5d6f4080e1fd3226aaf8344dfe0e5552921f533 vendor/kargo v1.11.4
+
+# cert-manager v1.21.1, for Kargo's webhook certificate and nothing else
+# (infrastructure/gitops/bootstrap/cert-manager/SOURCE.md and README.md).
+quay.io/jetstack/cert-manager-controller@sha256:416a2d76870d996460e62bd7f521bf14fa017be9e3e904aab92163a331fcb61a vendor/cert-manager-controller v1.21.1
+quay.io/jetstack/cert-manager-webhook@sha256:d8b3961b51c8c7320633f8208dc46bf88aa13804d0f7cbe48a096b2c523cee42 vendor/cert-manager-webhook v1.21.1
+quay.io/jetstack/cert-manager-cainjector@sha256:ccf6b919ec0500745a47a910118f834f9636d0aac1ff221245cd2557ed8c7c98 vendor/cert-manager-cainjector v1.21.1
+
+# The Config Connector operator 1.156.0, Autopilot variant
+# (infrastructure/gitops/bootstrap/config-connector-operator/SOURCE.md).
+# ADR 0036 had this as the GKE addon; the API refused the addon on an
+# Autopilot cluster (infra.yml runs 34 and 35, 2026-09-05), so the operator
+# is vendored like the other controllers. A single v2 manifest, not an
+# index, so vendor.yml signs exactly this digest. The four cnrm-system
+# images the operator itself installs from gcr.io/gke-release are not
+# lines here because no manifest in this tree names them; SOURCE.md records
+# their digests and what admits them.
+gcr.io/gke-release/cnrm/operator@sha256:ed4bd32055c435af80a33131ff8a92c9d75b22c29bf9de5e9c8c3a677db2156c vendor/config-connector-operator 1.156.0
+
+# Google Cloud CLI 583.0.0, slim, for the Argo CD post-sync hook that reads
+# each service's routed revision back and fails the sync unless it serves
+# the digest the manifest names (ADR 0036 decision 7;
+# infrastructure/gitops/envs/README.md). The newest `-slim` tag in the
+# registry's tag list on the day; it carries gcloud, python3 and curl and
+# no kubectl, which the hook does not need.
+gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:87eaf69da735ab8dfc1c640df1e85a467a4feedf2256d35dad368f970d9cd35f vendor/google-cloud-cli 583.0.0-slim

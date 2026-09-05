@@ -52,6 +52,23 @@ impl ClearedRoster {
     }
 }
 
+/// The shortest review interval on the whole roster — how long the
+/// organisation the platform convenes stays authorised after assembly.
+///
+/// The whole roster and not only the hosted agents, because the platform
+/// convenes every manifest the roster holds, and the first one to lapse is
+/// the first one the organisation loses. Read here so a tape can be checked
+/// against it at start-up: a manifest is stamped reviewed at assembly and
+/// `AgentHost::run` refuses it once tape time passes the interval, so a
+/// tape longer than this runs its remaining periods with every agent
+/// refused and nothing but a `failed` count to say so.
+pub fn shortest_review_interval(now: Timestamp) -> Option<Duration> {
+    manifests::roster(now)
+        .iter()
+        .map(|manifest| manifest.review_interval)
+        .min()
+}
+
 /// Clear the roster, or refuse.
 ///
 /// Every hosted agent is checked; the first failure stops the node. The three

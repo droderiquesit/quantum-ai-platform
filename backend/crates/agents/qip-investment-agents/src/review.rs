@@ -11,7 +11,7 @@
 
 use crate::desk::Desk;
 use crate::support::{FindingBuilder, computed, no_data};
-use qip_agents::finding::{AgentBrief, AgentFinding, Direction};
+use qip_agents::finding::{AgentBrief, AgentFinding, BriefPrecedent, Direction};
 use qip_agents::manifest::AgentManifest;
 use qip_agents::runtime::{Agent, AgentContext};
 use qip_core::error::Result;
@@ -144,12 +144,23 @@ impl Agent for AdversarialReviewer {
             }
         }
 
+        // --- what memory holds about situations like this one ---
+        // Cited, never counted. The precedent reaches this agent as a typed
+        // field, and the only thing done with it is to write its sentence
+        // into the narrative: not an objection, whose count sets the
+        // conviction below, and not an evidence entry, whose count sets the
+        // finding's diagnosticity in the reasoning engine. Either would let
+        // a statistic about the past move a confidence outside ADR 0005's
+        // arithmetic, which is the leak the typed channel exists to close.
+        let cited = brief.precedent.as_ref().map(BriefPrecedent::cite);
+
         if objections.is_empty() {
-            return Ok(no_data(
-                ctx,
-                brief.as_of,
-                format!("found no grounds to object to the treatment of {subject}"),
-            ));
+            let mut reason = format!("found no grounds to object to the treatment of {subject}");
+            if let Some(citation) = &cited {
+                reason.push_str("; ");
+                reason.push_str(citation);
+            }
+            return Ok(no_data(ctx, brief.as_of, reason));
         }
 
         // The reviewer always argues against. Its conviction is in the
@@ -157,6 +168,12 @@ impl Agent for AdversarialReviewer {
         // adversary that reported a positive view would be doing someone
         // else's job.
         let conviction = (objections.len() as f64 / 4.0).min(0.9);
+        let mut caveats = vec![
+            "an objection is a question, not a verdict; the control function decides".to_string(),
+        ];
+        if let Some(citation) = cited {
+            caveats.push(citation);
+        }
 
         FindingBuilder::new(
             ctx,
@@ -185,9 +202,7 @@ impl Agent for AdversarialReviewer {
             "the record the objection rests on turns out not to apply to this situation"
                 .to_string(),
         ])
-        .caveats(vec![
-            "an objection is a question, not a verdict; the control function decides".to_string(),
-        ])
+        .caveats(caveats)
         .build()
     }
 }

@@ -22,6 +22,10 @@ use qip_core::error::Result;
 use qip_financial::asset_class::AssetClass;
 use qip_numerics::stats;
 use qip_quant::signal;
+use qip_world_model::vocabulary::{
+    AltMetric, CREDIT_QUOTE_NEEDED, FUTURES_CURVE_NEEDED, MacroSeries, OPTION_QUOTE_NEEDED,
+    RATE_LEGS_NEEDED, names,
+};
 use std::sync::Arc;
 
 /// How much history a standardisation needs before it means anything.
@@ -45,18 +49,21 @@ impl MacroAnalyst {
     }
 }
 
-/// The macro features the analyst reads, and the sign each carries for a risk
+/// The macro series the analyst reads, and the sign each carries for a risk
 /// asset. Declared rather than inferred: a sign convention discovered from the
-/// data is a sign convention that flips when the sample changes.
-const MACRO_FEATURES: [(&str, f64); 4] = [
+/// data is a sign convention that flips when the sample changes. The names
+/// are the vocabulary's, so the series read here is the series the macro
+/// arm writes — for as long as this platform ran with a literal here, it was
+/// not.
+pub(crate) const MACRO_SERIES: [(MacroSeries, f64); 4] = [
     // A rising policy rate raises discount rates and hurts risk assets.
-    ("policy_rate", -1.0),
+    (MacroSeries::PolicyRate, -1.0),
     // Inflation above expectation forces tighter policy.
-    ("inflation_yoy", -1.0),
+    (MacroSeries::InflationYoy, -1.0),
     // Growth above expectation helps earnings.
-    ("growth_yoy", 1.0),
+    (MacroSeries::GrowthYoy, 1.0),
     // Wider credit spreads signal tightening financial conditions.
-    ("credit_spread_bps", -1.0),
+    (MacroSeries::CreditSpreadBps, -1.0),
 ];
 
 impl Agent for MacroAnalyst {
@@ -66,12 +73,15 @@ impl Agent for MacroAnalyst {
 
     fn accepts(&self, brief: &AgentBrief) -> bool {
         // Macro features are published with a lag measured in weeks; an
-        // intraday question is not one this agent can answer.
-        brief.horizon >= qip_core::Duration::from_days(5)
+        // intraday question is not one this agent can answer. And a macro
+        // view is keyed by an economy, which the analyst takes from the
+        // subject instrument — with nothing to be about there is no economy
+        // to read, and `"global"` is not one.
+        brief.horizon >= qip_core::Duration::from_days(5) && !brief.objects.is_empty()
     }
 
     fn analyse(&self, ctx: &mut AgentContext, brief: &AgentBrief) -> Result<AgentFinding> {
-        if !self.accepts(brief) {
+        if brief.horizon < qip_core::Duration::from_days(5) {
             return Ok(out_of_scope(
                 ctx,
                 brief.as_of,
@@ -81,22 +91,57 @@ impl Agent for MacroAnalyst {
                 ),
             ));
         }
+        let Some(subject) = brief.objects.first() else {
+            return Ok(out_of_scope(
+                ctx,
+                brief.as_of,
+                "a macro view needs an instrument to place in an economy",
+            ));
+        };
+
+        // The economy is the instrument's geography, the same ISO code the
+        // macro arm keys a release by. Read from the catalogue and never
+        // defaulted: a subject the catalogue does not place gets no macro
+        // view rather than some other economy's.
+        let economy = {
+            let market = self.desk.market.get(ctx)?;
+            market
+                .universe
+                .get(subject)
+                .map(|object| object.geography.trim().to_string())
+        };
+        let economy = match economy {
+            Some(economy) if !economy.is_empty() => economy,
+            _ => {
+                return Ok(no_data(
+                    ctx,
+                    brief.as_of,
+                    format!(
+                        "{} carries no geography in the universe, so there is no economy to \
+                         read the macro series for; a macro view is keyed by the instrument's \
+                         economy, never by a global series",
+                        subject.as_str()
+                    ),
+                ));
+            }
+        };
 
         let world = self.desk.world.get(ctx)?;
         let features = world.features();
 
         let mut readings = Vec::new();
         let mut missing = Vec::new();
-        for (name, sign) in MACRO_FEATURES {
+        for (series, sign) in MACRO_SERIES {
+            let name = series.feature();
             let history: Vec<f64> = features
-                .history(name, "global", brief.as_of)
+                .history(name, &economy, brief.as_of)
                 .iter()
                 .map(|v| v.value)
                 .collect();
             match z_score_of_last(&history, MINIMUM_HISTORY) {
                 Some(z) => readings.push((name, sign, z, history.len())),
                 None => missing.push(format!(
-                    "{name}: {} observations, {MINIMUM_HISTORY} needed",
+                    "{name}@{economy}: {} observations, {MINIMUM_HISTORY} needed",
                     history.len()
                 )),
             }
@@ -106,7 +151,10 @@ impl Agent for MacroAnalyst {
             return Ok(no_data(
                 ctx,
                 brief.as_of,
-                format!("no macro series had enough history: {}", missing.join("; ")),
+                format!(
+                    "no macro series for {economy} had enough history: {}",
+                    missing.join("; ")
+                ),
             ));
         }
 
@@ -134,12 +182,12 @@ impl Agent for MacroAnalyst {
             "macro_composite_z",
             composite,
             "sigma",
-            &MACRO_FEATURES.map(|(n, _)| n),
+            &MACRO_SERIES.map(|(series, _)| series.feature()),
         ))
         .evidence(
             readings
                 .iter()
-                .map(|(name, _, _, _)| format!("feature:{name}@global"))
+                .map(|(name, _, _, _)| format!("feature:{name}@{economy}"))
                 .collect(),
         )
         .falsifiers(vec![
@@ -337,17 +385,24 @@ impl Agent for CreditAnalyst {
         let world = self.desk.world.get(ctx)?;
         let features = world.features();
 
-        let history = features.history("credit_spread_bps", subject.as_str(), brief.as_of);
+        let history = features.history(names::CREDIT_SPREAD_BPS, subject.as_str(), brief.as_of);
         let spreads: Vec<f64> = history.iter().map(|v| v.value).collect();
         // The latest record is what the finding reports as the level, and it
         // is reported as observed from the store: the agent read it, it did
         // not produce it. `history` is at least `MINIMUM_HISTORY` long past
         // this check, so `last` cannot be empty.
+        //
+        // No absorb arm writes an issuer spread, so on any deployed platform
+        // this is the arm taken, and the finding says what record would
+        // change that rather than only that the series is empty.
         let Some(latest) = history.last().copied() else {
             return Ok(no_data(
                 ctx,
                 brief.as_of,
-                format!("no spread observations for {}", subject.as_str()),
+                format!(
+                    "no spread observations for {}; needs {CREDIT_QUOTE_NEEDED}",
+                    subject.as_str()
+                ),
             ));
         };
         if spreads.len() < MINIMUM_HISTORY {
@@ -380,7 +435,7 @@ impl Agent for CreditAnalyst {
         // Without it the agent reports the spread and says the translation is
         // missing, rather than assuming a duration.
         let duration = features.value_as_of(
-            "effective_duration",
+            names::EFFECTIVE_DURATION,
             subject.as_str(),
             brief.as_of,
             brief.as_of,
@@ -396,9 +451,9 @@ impl Agent for CreditAnalyst {
         )
         .fact(observed_feature(
             features,
-            "credit_spread_bps",
+            names::CREDIT_SPREAD_BPS,
             subject.as_str(),
-            "credit_spread_bps",
+            names::CREDIT_SPREAD_BPS,
             "bps",
             latest,
         ))
@@ -407,17 +462,18 @@ impl Agent for CreditAnalyst {
             "credit_spread_change_bps",
             change,
             "bps",
-            &["credit_spread_bps"],
+            &[names::CREDIT_SPREAD_BPS],
         ))
         .fact(computed(
             ctx,
             "credit_spread_z",
             z,
             "sigma",
-            &["credit_spread_bps"],
+            &[names::CREDIT_SPREAD_BPS],
         ))
         .evidence(vec![format!(
-            "feature:credit_spread_bps@{}",
+            "feature:{}@{}",
+            names::CREDIT_SPREAD_BPS,
             subject.as_str()
         )])
         .falsifiers(vec![
@@ -435,9 +491,9 @@ impl Agent for CreditAnalyst {
                     .direction(direction_from(-z, NOISE_DEAD_ZONE), conviction_from_z(z))
                     .fact(observed_feature(
                         features,
-                        "effective_duration",
+                        names::EFFECTIVE_DURATION,
                         subject.as_str(),
-                        "effective_duration",
+                        names::EFFECTIVE_DURATION,
                         "years",
                         duration,
                     ))
@@ -446,14 +502,16 @@ impl Agent for CreditAnalyst {
                         "price_impact_pct",
                         price_impact_pct,
                         "percent",
-                        &["effective_duration", "credit_spread_change_bps"],
+                        &[names::EFFECTIVE_DURATION, "credit_spread_change_bps"],
                     ));
             }
             _ => {
                 builder = builder
                     .direction(Direction::Neutral, 0.0)
                     .missing(vec![format!(
-                        "effective_duration for {}: without it a spread move cannot be translated into a price move",
+                        "{} for {}: without it a spread move cannot be translated into a price \
+                         move; needs {CREDIT_QUOTE_NEEDED}",
+                        names::EFFECTIVE_DURATION,
                         subject.as_str()
                     )]);
             }
@@ -500,7 +558,7 @@ impl Agent for DerivativesAnalyst {
             let features = world.features();
             features
                 .value_as_of(
-                    "implied_volatility",
+                    names::IMPLIED_VOLATILITY,
                     subject.as_str(),
                     brief.as_of,
                     brief.as_of,
@@ -508,9 +566,9 @@ impl Agent for DerivativesAnalyst {
                 .map(|value| {
                     observed_feature(
                         features,
-                        "implied_volatility",
+                        names::IMPLIED_VOLATILITY,
                         subject.as_str(),
-                        "implied_volatility",
+                        names::IMPLIED_VOLATILITY,
                         "ratio",
                         value,
                     )
@@ -531,7 +589,14 @@ impl Agent for DerivativesAnalyst {
         let (Some(implied_fact), Some(realised)) = (implied, realised) else {
             let mut missing = Vec::new();
             if implied_missing {
-                missing.push(format!("implied_volatility for {}", subject.as_str()));
+                // No absorb arm writes an implied volatility, so this is the
+                // arm every deployed platform takes; the finding names the
+                // record that would change that.
+                missing.push(format!(
+                    "{} for {}; needs {OPTION_QUOTE_NEEDED}",
+                    names::IMPLIED_VOLATILITY,
+                    subject.as_str()
+                ));
             }
             if realised.is_none() {
                 missing.push(format!(
@@ -582,17 +647,21 @@ impl Agent for DerivativesAnalyst {
             "variance_risk_premium",
             premium,
             "ratio",
-            &["implied_volatility", "realised_volatility"],
+            &[names::IMPLIED_VOLATILITY, "realised_volatility"],
         ))
         .fact(computed(
             ctx,
             "implied_to_realised_ratio",
             ratio,
             "ratio",
-            &["implied_volatility", "realised_volatility"],
+            &[names::IMPLIED_VOLATILITY, "realised_volatility"],
         ))
         .evidence(vec![
-            format!("feature:implied_volatility@{}", subject.as_str()),
+            format!(
+                "feature:{}@{}",
+                names::IMPLIED_VOLATILITY,
+                subject.as_str()
+            ),
             format!("bars:{}@{}", subject.as_str(), brief.as_of),
         ])
         .falsifiers(vec![
@@ -661,16 +730,20 @@ impl Agent for CommoditiesAnalyst {
                 .value_as_of(name, subject.as_str(), brief.as_of, brief.as_of)
                 .map(|value| observed_feature(features, name, subject.as_str(), name, unit, value))
         };
-        let front = read("front_month_price", "price");
-        let deferred = read("deferred_month_price", "price");
-        let months = read("deferred_tenor_months", "months");
+        let front = read(names::FRONT_MONTH_PRICE, "price");
+        let deferred = read(names::DEFERRED_MONTH_PRICE, "price");
+        let months = read(names::DEFERRED_TENOR_MONTHS, "months");
 
         let (Some(front), Some(deferred), Some(months)) = (front, deferred, months) else {
+            // No absorb arm writes a curve, so this is the arm every deployed
+            // platform takes; the finding names the record that would change
+            // that.
             return Ok(no_data(
                 ctx,
                 brief.as_of,
                 format!(
-                    "the curve for {} needs a front price, a deferred price and its tenor",
+                    "the curve for {} needs a front price, a deferred price and its tenor; \
+                     needs {FUTURES_CURVE_NEEDED}",
                     subject.as_str()
                 ),
             ));
@@ -711,7 +784,11 @@ impl Agent for CommoditiesAnalyst {
             "annualised_roll_yield",
             annualised_roll,
             "ratio",
-            &["front_month_price", "deferred_month_price", "deferred_tenor_months"],
+            &[
+                names::FRONT_MONTH_PRICE,
+                names::DEFERRED_MONTH_PRICE,
+                names::DEFERRED_TENOR_MONTHS,
+            ],
         ))
         .fact(front)
         .fact(deferred)
@@ -769,17 +846,21 @@ impl Agent for FxRatesAnalyst {
                     observed_feature(features, name, subject.as_str(), name, "ratio", value)
                 })
         };
-        let base_rate = read("base_rate");
-        let quote_rate = read("quote_rate");
-        let volatility = read("realised_volatility");
+        let base_rate = read(names::BASE_RATE);
+        let quote_rate = read(names::QUOTE_RATE);
+        let volatility = read(names::REALISED_VOLATILITY);
 
         let (base_present, quote_present) = (base_rate.is_some(), quote_rate.is_some());
         let (Some(base_fact), Some(quote_fact)) = (base_rate, quote_rate) else {
+            // No absorb arm writes a rate leg, so this is the arm every
+            // deployed platform takes; the finding names the record that
+            // would change that.
             return Ok(no_data(
                 ctx,
                 brief.as_of,
                 format!(
-                    "carry for {} needs both legs' rates; base {}, quote {}",
+                    "carry for {} needs both legs' rates; base {}, quote {}; needs \
+                     {RATE_LEGS_NEEDED}",
                     subject.as_str(),
                     if base_present { "present" } else { "missing" },
                     if quote_present { "present" } else { "missing" },
@@ -811,10 +892,12 @@ impl Agent for FxRatesAnalyst {
                 "rate_differential",
                 base_rate - quote_rate,
                 "ratio",
-                &["base_rate", "quote_rate"],
+                &[names::BASE_RATE, names::QUOTE_RATE],
             ))
             .missing(vec![format!(
-                "realised_volatility for {}: carry unadjusted for volatility is not a signal",
+                "{} for {}: carry unadjusted for volatility is not a signal; needs \
+                 {RATE_LEGS_NEEDED}",
+                names::REALISED_VOLATILITY,
                 subject.as_str()
             )])
             .build();
@@ -844,16 +927,24 @@ impl Agent for FxRatesAnalyst {
             "volatility_adjusted_carry",
             carry,
             "ratio",
-            &["base_rate", "quote_rate", "realised_volatility"],
+            &[
+                names::BASE_RATE,
+                names::QUOTE_RATE,
+                names::REALISED_VOLATILITY,
+            ],
         ))
         .fact(computed(
             ctx,
             "rate_differential",
             base_rate - quote_rate,
             "ratio",
-            &["base_rate", "quote_rate"],
+            &[names::BASE_RATE, names::QUOTE_RATE],
         ))
-        .evidence(vec![format!("feature:base_rate@{}", subject.as_str())])
+        .evidence(vec![format!(
+            "feature:{}@{}",
+            names::BASE_RATE,
+            subject.as_str()
+        )])
         .falsifiers(vec![
             "either central bank moves against the differential within the horizon".to_string(),
             "realised volatility rises enough to erase the risk-adjusted carry".to_string(),
@@ -897,12 +988,15 @@ impl AlternativeDataAnalyst {
     }
 }
 
-/// The alternative-data features the analyst reads, with the dataset each
-/// belongs to so the licence can be checked before the value is used.
-const ALT_FEATURES: [(&str, &str, f64); 3] = [
-    ("web_traffic_index", "web-traffic", 1.0),
-    ("card_spend_index", "card-spend", 1.0),
-    ("job_postings_index", "job-postings", 1.0),
+/// The alternative-data metrics the analyst reads, with the sign each carries
+/// for the subject. The metric and the dataset its licence is held under are
+/// the vocabulary's, so the series read here is the series the
+/// alternative-data arm writes — until it was, the kernel wrote
+/// `alt/{dataset}/{metric}` and this table read the bare metric.
+pub(crate) const ALT_METRICS: [(AltMetric, f64); 3] = [
+    (AltMetric::WebTrafficIndex, 1.0),
+    (AltMetric::CardSpendIndex, 1.0),
+    (AltMetric::JobPostingsIndex, 1.0),
 ];
 
 impl Agent for AlternativeDataAnalyst {
@@ -924,9 +1018,23 @@ impl Agent for AlternativeDataAnalyst {
         let mut readings = Vec::new();
         let mut missing = Vec::new();
         let mut unlicensed = Vec::new();
-        for (name, dataset, sign) in ALT_FEATURES {
+        for (metric, sign) in ALT_METRICS {
+            let (name, dataset) = (metric.feature(), metric.dataset());
             if !self.is_licensed(dataset) {
                 unlicensed.push(dataset);
+                continue;
+            }
+            // The licence is per dataset and the check above was by dataset,
+            // so the series under this name must be that dataset's: the
+            // definition's producer is the dataset the arm wrote it from,
+            // and a series produced by anything else is not read.
+            if let Some(definition) = features.definition(name)
+                && definition.producer != dataset
+            {
+                missing.push(format!(
+                    "{name}: the series is produced by `{}`, not the licensed `{dataset}`",
+                    definition.producer
+                ));
                 continue;
             }
             let history: Vec<f64> = features

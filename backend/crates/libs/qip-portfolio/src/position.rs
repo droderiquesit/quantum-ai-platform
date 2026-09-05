@@ -4,6 +4,7 @@ use qip_core::{Decimal, ObjectId, Timestamp};
 use qip_events::{EventBody, Topic};
 use serde::{Deserialize, Serialize};
 
+use crate::lifecycle::PositionLifecycle;
 use crate::lot::{Lot, LotMethod, RealisedTrade, close_lots_with};
 
 /// Which way a position points.
@@ -51,6 +52,13 @@ pub struct Position {
     pub lot_method: LotMethod,
     pub opened_at: Option<Timestamp>,
     pub updated_at: Timestamp,
+    /// What the desk is doing about the position, independent of the lot
+    /// ledger above. `Flagged`, `Unwinding` and `Orphaned` are reachable only
+    /// through [`PositionLifecycle::transition`] — nothing in this file
+    /// assigns them directly — so a caller outside this module cannot walk
+    /// the field into one of those states without going through a move the
+    /// table actually permits.
+    pub lifecycle: PositionLifecycle,
 }
 
 impl Position {
@@ -66,7 +74,19 @@ impl Position {
             lot_method: LotMethod::default(),
             opened_at: None,
             updated_at: at,
+            lifecycle: PositionLifecycle::Opened,
         }
+    }
+
+    /// Move the lifecycle field to `next`, refusing an illegal move.
+    ///
+    /// This is the only path by which `Flagged`, `Unwinding` or `Orphaned`
+    /// reach the field: `apply_fill` advances `Opened` -> `Held` -> `Closed`
+    /// on its own, through this same refusing transition, but never assigns
+    /// any of the other three.
+    pub fn move_lifecycle(&mut self, next: PositionLifecycle) -> qip_core::Result<()> {
+        self.lifecycle = self.lifecycle.transition(next)?;
+        Ok(())
     }
 
     pub fn with_multiplier(mut self, multiplier: Decimal) -> Self {
@@ -162,6 +182,26 @@ impl Position {
         }
         if self.opened_at.is_none() {
             self.opened_at = Some(at);
+            // A fully closed position also has `opened_at == None` (closing
+            // resets it below), so a confirmed lot arriving on a flat, closed
+            // record is a *new round trip on the same instrument* — the
+            // evolution engine and the simulated exchange re-enter a name
+            // through the record they already hold. That is not the
+            // walk-back the table refuses: the closed trades stay in
+            // `closed_trades`, and the record starts its lifecycle again from
+            // `Opened`, so the only edge taken is the table's own
+            // `Opened -> Held`. An earlier version left the field at `Closed`
+            // here and let the refusal stand; the position then held lots
+            // while reading as closed, and the close that followed tried
+            // `Closed -> Closed` and tripped the terminal guard in every
+            // suite that traded a name twice.
+            if self.lifecycle == PositionLifecycle::Closed {
+                self.lifecycle = PositionLifecycle::Opened;
+            }
+            // The first confirmed lot of a round trip moves Opened -> Held.
+            if let Err(refusal) = self.move_lifecycle(PositionLifecycle::Held) {
+                debug_assert!(false, "unexpected refusal moving to held: {refusal:?}");
+            }
         }
 
         let current = self.quantity();
@@ -214,6 +254,13 @@ impl Position {
 
         if self.is_flat() {
             self.opened_at = None;
+            // The last lot closed. Closed is reachable from every other
+            // state on the table, so this only fails if the position was
+            // already Closed — which cannot happen here, because a re-entry
+            // restarts the lifecycle above before any lot is pushed.
+            if let Err(refusal) = self.move_lifecycle(PositionLifecycle::Closed) {
+                debug_assert!(false, "unexpected refusal moving to closed: {refusal:?}");
+            }
         }
         cash_flow
     }
