@@ -21,11 +21,11 @@
 
 use qip_api::auth::{Authenticator, Credential, RateLimiter, Role};
 use qip_api::http::{Handler, Method, Request, Response};
-use qip_api::ledger_views::{
-    EVALUATED_AS_ROLE, GATE_NOTE, NO_CORRIDOR_REGISTRY, NO_DESTINATION_ALLOWLIST, NO_PRODUCTS,
-    NO_WALLET, POSTURE,
-};
+use qip_api::ledger_views::{EVALUATED_AS_ROLE, GATE_NOTE, NO_PRODUCTS, NO_WALLET, POSTURE};
 use qip_api::routes::{Api, ROUTES};
+use qip_capital::ledger::{
+    Jurisdiction, Mandate, MandateId, MandateTerms, PermittedFamilies, UserId,
+};
 use qip_contracts::intent::Contributor;
 use qip_contracts::message::BookSide;
 use qip_contracts::signal::StrategyId;
@@ -39,7 +39,7 @@ use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
 use qip_financial::universe::Universe;
 use qip_kernel::central::{CellReport, StrategyCandidate};
-use qip_kernel::config::PlatformConfig;
+use qip_kernel::config::{PlatformConfig, UserMandate};
 use qip_kernel::platform::Platform;
 use qip_lifecycle::trials::StrategyFamily;
 use qip_mesh::delta::DeltaOrder;
@@ -111,7 +111,28 @@ struct Rig {
 }
 
 fn rig() -> Result<Rig> {
-    let config = PlatformConfig::default();
+    rig_with(PlatformConfig::default())
+}
+
+/// A user mandate under the desk's: `capital` under management, every
+/// family, no floor, in the desk's currency.
+fn enrolment(user: &str, capital: Decimal) -> Result<UserMandate> {
+    Ok(UserMandate {
+        user: UserId::new(user)?,
+        id: MandateId::new(format!("mandate-{user}"))?,
+        mandate: Mandate::new(MandateTerms {
+            capital,
+            currency: qip_core::Currency::USD,
+            risk_tolerance: Decimal::ONE,
+            permitted_families: PermittedFamilies::Any,
+            liquidity_floor: Decimal::ZERO,
+            exploration_share: Decimal::ZERO,
+            jurisdiction: Jurisdiction::new("GB")?,
+        })?,
+    })
+}
+
+fn rig_with(config: PlatformConfig) -> Result<Rig> {
     let clock = Arc::new(ManualClock::new(start()));
     let context = Context::new(clock.clone(), config.seed);
     let platform = Platform::new(config, context, Telemetry::silent(), universe()?, limits())?;
@@ -638,21 +659,197 @@ fn an_entitlement_is_evaluated_per_registered_family_and_withdrawal_is_never_gra
     Ok(())
 }
 
+#[test]
+fn a_fill_across_two_enrolled_users_is_served_as_each_users_share_and_none_of_the_desks()
+-> Result<()> {
+    // The failure this guards: the route listing the desk alone with the
+    // whole fill while two users' mandates were enrolled, so the page could
+    // not show whose capital the strategy was trading. Premise first: both
+    // users are enrolled with capital at work at alpha, one to two, and the
+    // desk has no book.
+    let rig = rig_with(PlatformConfig::default().with_user_mandates(vec![
+        enrolment("alice", dec!("1000"))?,
+        enrolment("bob", dec!("1000"))?,
+    ]))?;
+    let alpha = StrategyId::new("alpha");
+    rig.with_platform(|platform| -> Result<()> {
+        platform.fund_user(&UserId::new("alice")?, &alpha, dec!("100"), start())?;
+        platform.fund_user(&UserId::new("bob")?, &alpha, dec!("200"), start())?;
+        Ok(())
+    })??;
+    let (text, before) = body_of(rig.get("/ledger/users"));
+    let users = before["users"].as_array().expect("a list");
+    assert_eq!(users.len(), 3, "{text}");
+    assert_eq!(
+        users
+            .iter()
+            .map(|user| user["user_id"].clone())
+            .collect::<Vec<_>>(),
+        vec![
+            serde_json::json!("alice"),
+            serde_json::json!("bob"),
+            serde_json::json!("desk")
+        ],
+        "in user-id order: {text}"
+    );
+    assert_eq!(
+        users[0]["balances"][0]["settled"],
+        serde_json::json!("100"),
+        "{text}"
+    );
+    assert_eq!(
+        users[1]["balances"][0]["settled"],
+        serde_json::json!("200"),
+        "{text}"
+    );
+    assert_eq!(users[2]["balances"], serde_json::json!([]), "{text}");
+    assert_eq!(before["fills_journalled"], serde_json::json!(0), "{text}");
+
+    let settled = rig.with_platform(|platform| -> Result<usize> {
+        let bought = platform.ingest_cell_report(
+            report("ord-1", BookSide::Ask, dec!("100"), dec!("50")),
+            start(),
+        )?;
+        let sold = platform.ingest_cell_report(
+            report("ord-2", BookSide::Bid, dec!("100"), dec!("60")),
+            start(),
+        )?;
+        Ok(bought.settlement.fills_settled + sold.settlement.fills_settled)
+    })??;
+    assert_eq!(settled, 2, "the premise is two settled fills");
+
+    // A thousand, one to two, in nine decimals: the truncated unit lands
+    // in the larger share, and the two sum to the fill exactly.
+    let (text, body) = body_of(rig.get("/ledger/users"));
+    assert_eq!(body["fills_journalled"], serde_json::json!(2), "{text}");
+    let users = body["users"].as_array().expect("a list");
+    let alice = &users[0]["balances"][0];
+    assert_eq!(alice["strategy"], serde_json::json!("alpha"), "{text}");
+    assert_eq!(
+        alice["settled"],
+        serde_json::json!("433.333333333"),
+        "{text}"
+    );
+    assert_eq!(alice["entries"], serde_json::json!(2), "{text}");
+    let bob = &users[1]["balances"][0];
+    assert_eq!(bob["settled"], serde_json::json!("866.666666667"), "{text}");
+    assert_eq!(bob["entries"], serde_json::json!(2), "{text}");
+    assert_eq!(
+        users[2]["balances"],
+        serde_json::json!([]),
+        "the desk was booked a share of a fill two users were entitled to: {text}"
+    );
+    Ok(())
+}
+
 // --- /wallet ----------------------------------------------------------------
 
 #[test]
-fn the_wallet_reports_that_none_is_assembled_and_fabricates_no_holding() -> Result<()> {
-    // The failure this guards: a wallet panel showing zero holdings and a
-    // clean reconciliation for an account nobody has observed.
+fn the_wallet_is_unassembled_until_a_statement_and_a_cycle_and_then_reconciles_the_desks_cash()
+-> Result<()> {
+    // The failure this guards, both ways: a wallet panel showing zero
+    // holdings and a clean reconciliation for an account nobody has
+    // observed; and, once one is observed, a panel reading a copy the API
+    // kept rather than the wallet the kernel's journal assembled. Premise
+    // first: nothing is assembled until a statement is handed in and a
+    // cycle's LEARN stage assembles against it.
     let rig = rig()?;
-    let (text, body) = body_of(rig.get("/wallet"));
-    assert_eq!(body["assembled"], serde_json::json!(false), "{text}");
-    assert_eq!(body["reason"], serde_json::json!(NO_WALLET), "{text}");
-    assert_eq!(body["as_of"], serde_json::Value::Null, "{text}");
-    assert_eq!(body["holdings"], serde_json::json!([]), "{text}");
+    let initial_equity = rig.with_platform(|platform| platform.config().initial_equity)?;
+    let (text, before) = body_of(rig.get("/wallet"));
+    assert_eq!(before["assembled"], serde_json::json!(false), "{text}");
+    assert_eq!(before["reason"], serde_json::json!(NO_WALLET), "{text}");
+    assert_eq!(before["as_of"], serde_json::Value::Null, "{text}");
+    assert_eq!(before["holdings"], serde_json::json!([]), "{text}");
     assert_eq!(
-        body["reconciliation"],
+        before["reconciliation"],
         serde_json::json!({"outcomes": [], "halted_venue_assets": 0}),
+        "{text}"
+    );
+
+    // Two statements: the desk's own cash at its venue, to the unit, and a
+    // balance at a venue the ledger books nothing at — which is a break the
+    // wallet exists to find, not a wallet that cannot break.
+    let cycle_at = start().saturating_add(Duration::from_secs(60));
+    rig.with_platform(|platform| -> Result<()> {
+        platform.observe_statement(
+            VenueId::new("simulated-venue"),
+            "USD",
+            initial_equity,
+            dec!("1"),
+            start(),
+        )?;
+        platform.observe_statement(
+            VenueId::new("custodian-x"),
+            "USD",
+            dec!("250"),
+            dec!("1"),
+            start(),
+        )?;
+        // A statement alone assembles nothing; the cycle does.
+        assert!(platform.fabric_state().wallet().is_none());
+        platform.run_cycle(cycle_at);
+        Ok(())
+    })??;
+
+    let (text, body) = body_of(rig.get("/wallet"));
+    assert_eq!(body["assembled"], serde_json::json!(true), "{text}");
+    assert_eq!(body["reason"], serde_json::Value::Null, "{text}");
+    assert_eq!(
+        body["as_of"],
+        serde_json::json!(cycle_at.to_rfc3339()),
+        "{text}"
+    );
+    let holdings = body["holdings"].as_array().expect("a list");
+    assert_eq!(holdings.len(), 2, "{text}");
+    // Venue-asset order: the custodian before the simulated venue.
+    assert_eq!(
+        holdings[0],
+        serde_json::json!({
+            "venue": "custodian-x",
+            "asset": "USD",
+            "observed_quantity": "250",
+            "observed_at": start().to_rfc3339(),
+            "provenance": "statement",
+            "ledger_expected": null
+        }),
+        "{text}"
+    );
+    assert_eq!(
+        holdings[1],
+        serde_json::json!({
+            "venue": "simulated-venue",
+            "asset": "USD",
+            "observed_quantity": initial_equity.to_string(),
+            "observed_at": start().to_rfc3339(),
+            "provenance": "statement",
+            "ledger_expected": initial_equity.to_string()
+        }),
+        "{text}"
+    );
+    assert!(holdings[1]["observed_quantity"].is_string(), "{text}");
+    let outcomes = body["reconciliation"]["outcomes"]
+        .as_array()
+        .expect("a list");
+    assert_eq!(outcomes.len(), 2, "{text}");
+    assert_eq!(outcomes[0]["outcome"], serde_json::json!("halt"), "{text}");
+    assert_eq!(
+        outcomes[0]["alert"]["cause"],
+        serde_json::json!("unrecorded_by_ledger"),
+        "{text}"
+    );
+    assert_eq!(
+        outcomes[1],
+        serde_json::json!({
+            "outcome": "reconciled",
+            "venue": "simulated-venue",
+            "asset": "USD",
+            "delta": "0"
+        }),
+        "{text}"
+    );
+    assert_eq!(
+        body["reconciliation"]["halted_venue_assets"],
+        serde_json::json!(1),
         "{text}"
     );
     Ok(())
@@ -661,19 +858,23 @@ fn the_wallet_reports_that_none_is_assembled_and_fabricates_no_holding() -> Resu
 // --- /corridors -------------------------------------------------------------
 
 #[test]
-fn the_corridor_and_destination_registries_are_reported_as_not_held() -> Result<()> {
-    // The failure this guards: an empty registry — which admits nothing and
-    // is a real state — rendered where the truth is that no registry exists.
+fn the_corridor_and_destination_registries_are_held_and_empty_until_a_command_proposes_one()
+-> Result<()> {
+    // The failure this guards: a registry that exists and admits nothing
+    // rendered as though no registry existed. Both are held from assembly
+    // by the kernel's fabric journal; the records are whatever commands
+    // through that journal proposed, and this process has proposed none.
+    // A proposal needs a fabric command, which this crate cannot name, so
+    // the populated shape is proven in the kernel's own `tests/ledger.rs`.
     let rig = rig()?;
+    // Premise: the journal holds no record at all.
+    assert_eq!(rig.with_platform(|platform| platform.fabric_records())?, 0);
     let (text, body) = body_of(rig.get("/corridors"));
-    for (key, reason) in [
-        ("corridors", NO_CORRIDOR_REGISTRY),
-        ("destinations", NO_DESTINATION_ALLOWLIST),
-    ] {
-        assert_eq!(body[key]["held"], serde_json::json!(false), "{key}: {text}");
+    for key in ["corridors", "destinations"] {
+        assert_eq!(body[key]["held"], serde_json::json!(true), "{key}: {text}");
         assert_eq!(
             body[key]["reason"],
-            serde_json::json!(reason),
+            serde_json::Value::Null,
             "{key}: {text}"
         );
         assert_eq!(body[key]["records"], serde_json::json!([]), "{key}: {text}");

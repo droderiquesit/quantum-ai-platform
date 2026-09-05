@@ -14,19 +14,22 @@
 //! * Nothing here names a capital or fabric type. The application layer may
 //!   not depend on `qip-capital` or `qip-capital-fabric` at all, so every
 //!   view is built by calling methods on what the kernel hands over — an
-//!   entitlement it evaluated, a mandate it holds — and the API cannot
-//!   construct a mandate, an entitlement, a corridor or an intent of its own.
+//!   entitlement it evaluated, a mandate it holds, the fabric state its
+//!   journal built — and the API cannot construct a mandate, an entitlement,
+//!   a corridor or an intent of its own. Where a value is an enum the API
+//!   cannot match on (a destination's status, a gate verdict), it is read
+//!   from the type's own serialisation, the way the withdrawal flag is.
 //! * The withdrawal capability's `granted` flag is read from the type's own
 //!   serialisation rather than written as a literal: the type has one arm,
 //!   `Refused`, and the flag is whether a `Granted` arm was serialised. A
 //!   literal `false` would survive the day someone added the arm the ADR
 //!   refuses; this reads `true` that day, and the test that pins it fires.
 //!
-//! What the process does not hold — a wallet, a corridor registry, a
-//! destination allowlist, a gate assessment — is stated with a flag and a
-//! reason, in the same way `crate::missing` states the rest. Those reasons
-//! live here rather than there only because this surface was added under a
-//! path constraint; they belong in `crate::missing` and read as its entries.
+//! What the process holds is read from the kernel's fabric journal: the
+//! wallet as last assembled, its reconciliation outcomes, every corridor and
+//! destination, and the last gate assessment. What it does not yet hold — a
+//! wallet, until a statement has been handed in and a cycle has run — is
+//! stated with a flag and a reason, the way `crate::missing` states the rest.
 
 use crate::json;
 use qip_core::time::Timestamp;
@@ -42,24 +45,13 @@ pub const POSTURE: &str = "PAPER TRADING";
 /// The ledger role every entitlement on this surface is evaluated under.
 pub const EVALUATED_AS_ROLE: &str = "viewer";
 
-/// Why `/wallet` has no wallet behind it.
-pub const NO_WALLET: &str = "no wallet is assembled in this process. A wallet is a read model \
-    over holdings observed through read-only channels, and the kernel observes no custodian, \
-    venue balance or chain address; until an observation source is wired in there is nothing \
-    to pair with the ledger, and a wallet showing zero would read as an empty account rather \
-    than an unobserved one.";
-
-/// Why `/corridors` lists no corridor.
-pub const NO_CORRIDOR_REGISTRY: &str = "no corridor registry is held in this process. A \
-    corridor is the signed record of where capital may go and under what caps; the kernel \
-    composes no treasury and has proposed, reviewed or signed none, so there is no corridor to \
-    list — not an empty registry that admits nothing, but no registry at all.";
-
-/// Why `/corridors` lists no destination.
-pub const NO_DESTINATION_ALLOWLIST: &str = "no destination allowlist is held in this process. \
-    A destination is proposed, verified by a person with the institution and signed before it \
-    is usable, and the kernel holds no allowlist for any of that to have happened in; there is \
-    no destination to list.";
+/// Why `/wallet` has no wallet behind it yet.
+pub const NO_WALLET: &str = "no wallet is assembled yet. A wallet is a read model over holdings \
+    observed through read-only channels paired with what the ledger booked, and the kernel \
+    observes no custodian, venue balance or chain address of its own; it assembles one in the \
+    LEARN stage of each cycle from the statements handed to it, and none has been handed in, \
+    or no cycle has run since. A wallet showing zero holdings would read as an empty account \
+    rather than an unobserved one.";
 
 /// Why a user has no entitlement rows.
 pub const NO_PRODUCTS: &str = "no product to evaluate against: an entitlement is decided per \
@@ -68,7 +60,9 @@ pub const NO_PRODUCTS: &str = "no product to evaluate against: an entitlement is
 /// What `/transfer-gate` says about itself.
 pub const GATE_NOTE: &str = "the gate is veto-only and has no transfer engine behind it: an \
     approval is a record that the seven checks passed, and nothing in this platform consumes \
-    one. No caller has yet assessed an intent.";
+    one. An intent reaches the gate only through the kernel's fabric journal, and every \
+    assessment is a record in the event log; last_assessment is the newest, or null when none \
+    has been made.";
 
 // --- /ledger/users ----------------------------------------------------------
 
@@ -193,7 +187,10 @@ pub struct LedgerUsersView {
 ///
 /// Every figure is read at request time; nothing is cached between calls,
 /// because a mandate that changed or a fill that landed is reflected on the
-/// next read rather than the next restart.
+/// next read rather than the next restart. Users are every holder in the
+/// kernel's registry — the desk and each mandate the configuration enrolled
+/// — in user-id order, and a user's balances are the books the kernel's
+/// pro-rata split and funding actually moved.
 pub fn ledger_users(platform: &Platform, now: Timestamp) -> Result<LedgerUsersView, String> {
     let ledger = platform.user_ledger();
     let products: Vec<String> = platform
@@ -289,9 +286,7 @@ pub fn ledger_users(platform: &Platform, now: Timestamp) -> Result<LedgerUsersVi
 
 // --- /wallet ----------------------------------------------------------------
 
-/// One observed holding paired with the ledger's expectation. Never built in
-/// this deployment; the shape is the contract a page renders once a wallet
-/// is assembled.
+/// One observed holding paired with the ledger's expectation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct HoldingView {
     pub venue: String,
@@ -299,13 +294,18 @@ pub struct HoldingView {
     pub observed_quantity: String,
     pub observed_at: String,
     pub provenance: String,
-    pub ledger_expected: String,
+    /// `ledger_balance - reserved + in_flight`, or `null` when the ledger
+    /// books nothing at this venue-asset — which reconciliation reports as
+    /// a halt, `unrecorded_by_ledger`, rather than as a zero expectation
+    /// somebody chose.
+    pub ledger_expected: Option<String>,
 }
 
 /// The reconciliation half of the wallet body.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ReconciliationView {
-    /// The fabric's own outcome records, tagged `outcome`.
+    /// The fabric's own outcome records, tagged `outcome`, in venue-asset
+    /// order.
     pub outcomes: Vec<serde_json::Value>,
     pub halted_venue_assets: usize,
 }
@@ -322,26 +322,75 @@ pub struct WalletView {
     pub reconciliation: ReconciliationView,
 }
 
-/// Build `/wallet` at `now`.
+/// Build `/wallet` at `now`, from the wallet the kernel's fabric journal
+/// last assembled.
 ///
-/// The kernel holds no wallet and this process observes no holding, so the
-/// body says so. It takes the platform anyway, rather than nothing, so the
-/// day the kernel grows a wallet accessor the route changes here and not in
-/// its signature — and so a test that passes a platform is exercising the
-/// same path a deployment does.
-pub fn wallet(_platform: &Platform, now: Timestamp) -> WalletView {
-    WalletView {
+/// `assembled` is whether the journal's state holds a wallet — it does once
+/// a statement has been handed to the kernel and a cycle's LEARN stage has
+/// assembled against it — and the holdings and outcomes are the journal's
+/// own, not a copy the API keeps. The one arithmetic here, the ledger's
+/// expectation, is the fabric's own checked sum called through the view the
+/// kernel holds; an overflow is a refusal in the body rather than a number.
+pub fn wallet(platform: &Platform, now: Timestamp) -> Result<WalletView, String> {
+    let state = platform.fabric_state();
+    let Some(assembled) = state.wallet() else {
+        return Ok(WalletView {
+            posture: POSTURE,
+            served_at: now.to_rfc3339(),
+            assembled: false,
+            reason: Some(NO_WALLET.to_string()),
+            as_of: None,
+            holdings: Vec::new(),
+            reconciliation: ReconciliationView {
+                outcomes: Vec::new(),
+                halted_venue_assets: 0,
+            },
+        });
+    };
+    let mut holdings = Vec::new();
+    for key in assembled.venue_assets() {
+        let Some(observation) = assembled.observation(key) else {
+            // `venue_assets` is the observed set, so this arm is unreachable
+            // through the wallet's own API; stated rather than unwrapped.
+            continue;
+        };
+        let ledger_expected = match assembled.ledger_view(key) {
+            Some(view) => Some(
+                view.expected()
+                    .map_err(|error| error.message().to_string())?
+                    .to_string(),
+            ),
+            None => None,
+        };
+        holdings.push(HoldingView {
+            venue: key.venue.to_string(),
+            asset: key.asset.to_string(),
+            observed_quantity: observation.observed.to_string(),
+            observed_at: observation.observed_at.to_rfc3339(),
+            provenance: observation.provenance.as_str().to_string(),
+            ledger_expected,
+        });
+    }
+    let mut outcomes = Vec::with_capacity(state.reconciliations().len());
+    let mut halted_venue_assets = 0;
+    for outcome in state.reconciliations().values() {
+        if outcome.is_halt() {
+            halted_venue_assets += 1;
+        }
+        outcomes.push(serde_json::to_value(outcome).map_err(|error| error.to_string())?);
+    }
+    Ok(WalletView {
         posture: POSTURE,
         served_at: now.to_rfc3339(),
-        assembled: false,
-        reason: Some(NO_WALLET.to_string()),
-        as_of: None,
-        holdings: Vec::new(),
+        assembled: true,
+        reason: None,
+        as_of: Some(assembled.as_of().to_rfc3339()),
+        holdings,
         reconciliation: ReconciliationView {
-            outcomes: Vec::new(),
-            halted_venue_assets: 0,
+            outcomes,
+            halted_venue_assets,
         },
-    }
+    })
 }
 
 // --- /corridors -------------------------------------------------------------
@@ -379,7 +428,7 @@ pub struct DestinationKeyView {
     pub address: String,
 }
 
-/// One corridor record. Never built in this deployment.
+/// One corridor record, as the journal built it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CorridorView {
     pub id: String,
@@ -398,7 +447,7 @@ pub struct CorridorView {
     pub activation_at: Option<String>,
 }
 
-/// One destination record. Never built in this deployment.
+/// One destination record, as the journal built it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct DestinationView {
     pub asset: String,
@@ -409,10 +458,11 @@ pub struct DestinationView {
     pub usable_from: Option<String>,
 }
 
-/// A registry the process may or may not hold.
+/// A registry the process holds.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RegistryView<T> {
     pub held: bool,
+    /// Kept for the contract; `null` now that both registries are held.
     pub reason: Option<String>,
     pub records: Vec<T>,
 }
@@ -426,23 +476,88 @@ pub struct CorridorsView {
     pub destinations: RegistryView<DestinationView>,
 }
 
-/// Build `/corridors` at `now`. Neither registry is held; see [`wallet`] for
-/// why the platform is still taken.
-pub fn corridors(_platform: &Platform, now: Timestamp) -> CorridorsView {
-    CorridorsView {
+/// Build `/corridors` at `now`, from the registries the kernel's fabric
+/// journal holds.
+///
+/// Both are held from assembly — an allowlist that permits nothing and a
+/// corridor map with nothing in it are real, safe states — and every record
+/// in them is one a command through the journal proposed, in id order. A
+/// destination's `usable_from` is read from its status's own serialisation
+/// (`{"signed": {"usable_from": ...}}`), because the API cannot name the
+/// status enum to match on it.
+pub fn corridors(platform: &Platform, now: Timestamp) -> Result<CorridorsView, String> {
+    let state = platform.fabric_state();
+    let mut corridors = Vec::with_capacity(state.corridors().len());
+    for (id, corridor) in state.corridors() {
+        let (proposed_by, proposed_at) = corridor.proposed();
+        let reviewed = corridor.reviewed();
+        let caps = corridor.caps();
+        let hours = caps.permitted_hours();
+        corridors.push(CorridorView {
+            id: id.as_str().to_string(),
+            source: LocationView {
+                region: corridor.source().region.as_str().to_string(),
+                currency: corridor.source().currency.to_string(),
+                venue: corridor.source().venue.to_string(),
+            },
+            source_class: corridor.source_class().as_str().to_string(),
+            kind: corridor.kind().as_str().to_string(),
+            destination: DestinationKeyView {
+                asset: corridor.destination().asset.as_str().to_string(),
+                address: corridor.destination().address.clone(),
+            },
+            caps: CorridorCapsView {
+                max_per_transfer: caps.max_per_transfer().to_string(),
+                max_per_hour: caps.max_per_hour().to_string(),
+                max_per_day: caps.max_per_day().to_string(),
+                max_cumulative: caps.max_cumulative().to_string(),
+                min_interval_seconds: caps.min_interval().as_millis() / 1000,
+                permitted_hours: PermittedHoursView {
+                    start: hours.start(),
+                    end: hours.end(),
+                },
+            },
+            purpose: corridor.purpose().to_string(),
+            stage: corridor.stage().as_str().to_string(),
+            proposed_by: proposed_by.as_str().to_string(),
+            proposed_at: proposed_at.to_rfc3339(),
+            reviewed_by: reviewed.map(|(by, _)| by.as_str().to_string()),
+            reviewed_at: reviewed.map(|(_, at)| at.to_rfc3339()),
+            signed: corridor.is_signed(),
+            activation_at: corridor.activation_at().map(Timestamp::to_rfc3339),
+        });
+    }
+    let mut destinations = Vec::with_capacity(state.destinations().len());
+    for (key, record) in state.destinations().iter() {
+        let status = serde_json::to_value(&record.status).map_err(|error| error.to_string())?;
+        let usable_from = status
+            .get("signed")
+            .and_then(|signed| signed.get("usable_from"))
+            .and_then(|at| at.as_str())
+            .map(str::to_string);
+        destinations.push(DestinationView {
+            asset: key.asset.as_str().to_string(),
+            address: key.address.clone(),
+            status: record.status.as_str().to_string(),
+            proposed_by: record.proposed_by.as_str().to_string(),
+            proposed_at: record.proposed_at.to_rfc3339(),
+            usable_from,
+        });
+    }
+    Ok(CorridorsView {
         posture: POSTURE,
         served_at: now.to_rfc3339(),
         corridors: RegistryView {
-            held: false,
-            reason: Some(NO_CORRIDOR_REGISTRY.to_string()),
-            records: Vec::new(),
+            held: true,
+            reason: None,
+            records: corridors,
         },
         destinations: RegistryView {
-            held: false,
-            reason: Some(NO_DESTINATION_ALLOWLIST.to_string()),
-            records: Vec::new(),
+            held: true,
+            reason: None,
+            records: destinations,
         },
-    }
+    })
 }
 
 // --- /transfer-gate ---------------------------------------------------------
@@ -457,14 +572,64 @@ pub struct GateCheckView {
     pub alerts: bool,
 }
 
-/// An assessment, were one ever recorded. None ever is in this process.
+/// The newest gate assessment the journal holds.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct AssessmentView {
+    pub corridor: String,
     pub assessed_at: String,
+    /// `"approved"` or `"vetoed"`.
     pub outcome: String,
+    /// The check that vetoed, or `null` for an approval.
     pub check: Option<String>,
     pub reason: Option<String>,
     pub alert: bool,
+}
+
+impl AssessmentView {
+    /// Read a verdict from its own serialisation: `{"admitted": {...}}` or
+    /// `{"vetoed": {"check", "reason", "alert", "assessed_at"}}`. Any other
+    /// tag is refused as a shape this reader does not understand.
+    fn from_serialised(corridor: String, verdict: &impl Serialize) -> Result<Self, String> {
+        let value = serde_json::to_value(verdict).map_err(|error| error.to_string())?;
+        let at_of = |arm: &serde_json::Value| {
+            arm.get("assessed_at")
+                .and_then(|at| at.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| format!("an assessment without an assessed_at: {value}"))
+        };
+        if let Some(admitted) = value.get("admitted") {
+            return Ok(Self {
+                corridor,
+                assessed_at: at_of(admitted)?,
+                outcome: "approved".to_string(),
+                check: None,
+                reason: None,
+                alert: false,
+            });
+        }
+        if let Some(vetoed) = value.get("vetoed") {
+            return Ok(Self {
+                corridor,
+                assessed_at: at_of(vetoed)?,
+                outcome: "vetoed".to_string(),
+                check: vetoed
+                    .get("check")
+                    .and_then(|check| check.as_str())
+                    .map(str::to_string),
+                reason: vetoed
+                    .get("reason")
+                    .and_then(|reason| reason.as_str())
+                    .map(str::to_string),
+                alert: vetoed
+                    .get("alert")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            });
+        }
+        Err(format!(
+            "a gate verdict serialised as neither admitted nor vetoed: {value}"
+        ))
+    }
 }
 
 /// The platform's kill switch, as the gate's seventh check would read it.
@@ -493,10 +658,11 @@ pub struct TransferGateView {
 /// Build `/transfer-gate` at `now`.
 ///
 /// The checks come from the kernel's pass-through of the fabric's own
-/// roster, the kill switch from the platform's controller. `last_assessment`
-/// is `None` because nothing in this process calls the gate; it is not a
-/// cache that happens to be empty.
-pub fn transfer_gate(platform: &Platform, now: Timestamp) -> TransferGateView {
+/// roster, the kill switch from the platform's controller, and
+/// `last_assessment` from the newest assessment the fabric journal holds —
+/// `None` while none has been made, which is a fact about the journal and
+/// not a cache that happens to be empty.
+pub fn transfer_gate(platform: &Platform, now: Timestamp) -> Result<TransferGateView, String> {
     let checks = Platform::transfer_gate_checks()
         .iter()
         .enumerate()
@@ -506,13 +672,20 @@ pub fn transfer_gate(platform: &Platform, now: Timestamp) -> TransferGateView {
             alerts: check.alerts(),
         })
         .collect();
+    let last_assessment = match platform.fabric_state().assessments().last() {
+        Some(assessment) => Some(AssessmentView::from_serialised(
+            assessment.corridor.as_str().to_string(),
+            &assessment.verdict,
+        )?),
+        None => None,
+    };
     let switch = platform.autonomy().kill_switch();
     let trip = switch.global_trip();
-    TransferGateView {
+    Ok(TransferGateView {
         posture: POSTURE,
         served_at: now.to_rfc3339(),
         checks,
-        last_assessment: None,
+        last_assessment,
         kill_switch: KillSwitchView {
             halted: switch.is_globally_tripped(),
             halted_scopes: switch
@@ -526,7 +699,7 @@ pub fn transfer_gate(platform: &Platform, now: Timestamp) -> TransferGateView {
         },
         executes: false,
         note: GATE_NOTE,
-    }
+    })
 }
 
 /// Serialise a view, or say in the body that serialisation failed.
@@ -545,5 +718,15 @@ pub fn render(view: &impl Serialize) -> (u16, String) {
                 json::string(&format!("the view did not serialise: {error}"))
             ),
         ),
+    }
+}
+
+/// A view that may refuse, rendered: the body on success, a 500 naming the
+/// refusal otherwise. Shared by the three treasury routes whose builders
+/// can refuse, so a refusal reads the same on each.
+pub fn render_fallible(view: Result<impl Serialize, String>) -> (u16, String) {
+    match view {
+        Ok(view) => render(&view),
+        Err(reason) => (500, format!(r#"{{"error":{}}}"#, json::string(&reason))),
     }
 }

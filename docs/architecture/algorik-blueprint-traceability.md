@@ -414,7 +414,7 @@ this repository has already been bitten by that nine times.
 | Episodic memory unavailable | Situational-recognition strategies pause; the rest continue | ALIGNED | `::episodic_loss_pauses_only_the_strategies_that_recognise_situations` |
 | Belief state stale beyond TTL | Fixed conservative multiplier; nothing halts | ALIGNED | `::a_belief_state_stale_beyond_its_ttl_falls_back_to_a_fixed_multiplier_and_halts_nothing` |
 | Counterfactual scoring down | No trading impact whatsoever | ALIGNED | `::losing_counterfactual_scoring_changes_no_trading_decision_whatsoever` |
-| Self-model stale | Exploration budget reverts to flat | PLANNED-FUTURE — Phase 9 | Was: "No self-model exists (`grep -rln "SelfModel"` returns nothing). Deliberately not represented". Re-scored 2026-09-05: a `SelfModel` exists (`qip-learning-engine/src/self_model.rs`; the Plane 2 re-score above), so the first sentence is history. The verdict does not move: `grep -n -i self_model backend/crates/libs/qip-contracts/src/degradation.rs` still returns nothing, and §13.2's exploration budget reads nothing from the model, so there is no budget to revert to flat. Still deliberately not represented |
+| Self-model stale | Exploration budget reverts to flat | PARTIAL | Re-scored 2026-09-05, twice. Earlier the same day: "a `SelfModel` exists but `grep -n -i self_model degradation.rs` returns nothing, and §13.2's exploration budget reads nothing from the model; deliberately not represented". Now represented: `Capability::SelfModel` is row 6 of the table, its freshness is `SelfModelFreshness::assess` over what `SelfModel::sample_facts` reports (fresh when every charged component has at least `MINIMUM_SAMPLE` outcomes and the newest grade is within `SELF_MODEL_HORIZON`; stale naming the thin component or the age; unavailable when nothing was ever absorbed), and `DegradationState::central_sizing_multiplier` compounds it — 0.75 stale, 0.5 unavailable — onto the shared multiplier. Proven by `contracts.rs::a_self_model_under_its_minimum_sample_narrows_central_sizing_by_the_stale_multiplier`, `::a_fresh_self_model_narrows_nothing`, `::an_empty_self_model_reads_as_unavailable_and_the_unavailable_multiplier_applies`, `::a_self_model_whose_newest_grade_is_past_the_horizon_is_stale_not_unavailable`, `::the_self_model_row_refuses_the_inputs_that_would_widen_it` and `self_model.rs::sample_facts_report_every_component_with_its_count_and_newest_grade_in_key_order`, each mutation-verified. Two honest limits. First, the consequence is sizing, not the exploration budget the row names: §13.2's budget still reads nothing from the model, so "reverts to flat" has nothing to revert. Second, no engine calls it yet — the kernel builds no `DegradationState` today, so the row is a typed contract until `platform.rs` observes `Capability::SelfModel` from `SelfModelFreshness::assess(self.self_model.sample_facts(), MINIMUM_SAMPLE, SELF_MODEL_HORIZON, now)?.freshness()` and sizes by `central_sizing_multiplier()`. The edge's `sizing_multiplier` deliberately excludes the row — a cell holds no self-model and its 0.375 floor must not move on a default nobody measured |
 | Valuation engine down | Illiquid assets frozen at last mark and flagged | PLANNED-FUTURE — Phase 14 | No term-structure, credit or vol-surface engine exists. Deliberately not represented |
 
 Two properties are held beyond the table itself, because both are the kind that
@@ -1490,21 +1490,32 @@ gain. Every re-base is journaled as `Decision::RegionShareApplied`
 `:1056`, `a_partitioned_cell_keeps_spending_within_its_last_share_until_its_envelopes_expire`
 `:1104`).
 
-**What is not, and why F6 stays PARTIAL.** `qip-api`'s `pending_policy`
-still produces the `capital_grants` slot from every live grant's signature
-(`qip-api/src/mesh.rs:667`) without calling `region_shares` — `grep -rn
-region_shares backend/crates/apps` returns nothing — so no deployed centre
-withholds a manifest or refuses a plan, and the partitioner has no production
-caller; `qip-edge-node::assemble` still opens the table funded at the
-operator's amount (`qip-edge-node/src/lib.rs:108`, `with_region_allocation`),
-not `unfunded`; membership is an argument and nothing outside a test
-constructs one (decision 3 of the ADR). The cross-process property this row
-has wanted since `2fd254f` is therefore **built at both ends and joined at
-neither in a deployment**. The §41.5 producer count is unchanged at three of
-twelve — `capital_grants` (`mesh.rs:667`), `risk_envelope` (`:669`) and
-`cycle_whitelist` (`:674`) — because the share travels inside a slot that was
-already produced. The §6.2 table is unchanged by this; its self-model row is
-corrected in place above.
+**What the three paragraphs above said was not, now is — re-scored the same
+day, after the wave's second and third slices.** `qip-api`'s `pending_policy`
+calls `CentralPlane::grant_manifests` when a membership is declared
+(`qip-api/src/mesh.rs`, `pending_policy`; `grep -rn grant_manifests
+backend/crates/apps` now returns the call), produces the slot from the
+centre's `ManifestDecision` and ships a withheld cell's slot unproduced with
+the reason beside the payload; `qip-edge-node::assemble` opens the table
+*unfunded* under `QIP_REGION_ALLOCATION` as a ceiling
+(`Cell::with_unfunded_region`) and funds it only from an applied share,
+re-deriving when the grant the share names is deployed; and
+`RegionMembership::parse` + `covering` construct the membership at the API
+root from `QIP_MESH_REGIONS`, refusing a served cell filed nowhere. Proven
+end to end at the API's seam by
+`qip-api/tests/mesh.rs::with_a_membership_declared_the_cycle_ships_the_cell_its_share_of_the_regions_grant`
+and at the node by
+`qip-edge-node/tests/pass.rs::a_second_node_under_the_same_regions_grant_cannot_exceed_it_with_the_first`.
+The cross-process property is **joined in code at both ends**; what keeps
+F6 short of TESTED-in-deployment is the same fact as every edge row —
+`execution_nodes = {}` and `QIP_MESH_CELLS` unset on Cloud Run, so no
+deployed centre ships any payload — and the one honest gap left in code:
+the payload a kernel produced applied by a `qip-edge` cell in a single
+`qip-acceptance` test, which the two halves prove separately today. The
+§41.5 producer count is unchanged at three of twelve, because the share
+travels inside a slot that was already produced. Undeclared membership is
+the status quo and says so in the cycle, naming the variable, rather than
+defaulting a share silently.
 
 ### Plane 7 — the ledger plane as records and refusals under ADR 0021 (§37, §38, §43.3)
 
@@ -1584,16 +1595,32 @@ true. Proven in `qip-capital-fabric/tests/journal.rs`:
 `a_journal_resumed_from_a_shared_log_rebuilds_its_state_and_chain_verifies_foreign_records`
 (`:637`), `the_journal_adopts_a_decision_only_after_the_log_has_it` (`:725`).
 
-**Verdict: PARTIAL, unchanged, and for reasons that are now narrower.** The
-kernel still books every settlement's attribution to the desk whole —
-`Platform::journal_to_desk` (`platform.rs:2194`, called from
-`ingest_cell_report` at `:2177`) — and calls neither `pro_rata_shares` nor
-`admit`; it constructs no `FabricJournal` and no `MandateRegistry` of its own
-beyond the desk's (`grep -n 'MandateRegistry\|InvestmentRequest\|pro_rata'
-backend/crates/runtime/qip-kernel/src/platform.rs` returns nothing). So the
-§43.4 chain runs to one user, the §37/§38 controls decide only in tests, and
-the fabric's journal has no writer in any binary. What moved is the shape of
-the gap: every ledger-plane element the blueprint names now exists as a
+**Verdict: PARTIAL, and re-scored the same day after the kernel took the
+records into the loop.** `Platform::journal_to_desk` is gone: every
+attributed fill is split across the users with settled cash at the strategy
+by `UserLedger::journal_pro_rata` and journaled as a `LedgerEntry::Booked`
+with a `ProRata` basis (shares, entitlement total, remainder and who took
+it), and the desk takes a fill whole only in two *journaled* cases — no
+mandate registered, or no user funded at that strategy — never silently
+(`qip-kernel/tests/ledger.rs`, four tests, eight mutations). User mandates
+come only from `PlatformConfig::user_mandates`, and a mandate the desk
+cannot cover stops assembly. The kernel constructs one `FabricJournal`,
+resumed from the platform's own event log at assembly and refusing a log
+that no longer starts at genesis when fabric records exist; wallet
+statements are observed and reconciled in LEARN and every corridor and gate
+decision is written to the platform's log and replayed from it. `/wallet`
+answers `assembled:true` once a statement and a cycle exist, `/corridors`
+`held:true` with the journal's records, and `/ledger/users` (analyst) the
+per-user bookings. What keeps the row PARTIAL: no deployed binary yet feeds
+`observe_statement`, so a deployed `/wallet` still answers `assembled:false`;
+`UserLedger::admit` has no eligibility registry to gate `fund_user`; and the
+twelfth capability is refused by ADR 0021 as before. The paragraph that
+follows is the state before this re-score, kept as the record of what moved:
+the kernel then booked every settlement's attribution to the desk whole and
+constructed no `FabricJournal` and no `MandateRegistry` beyond the desk's, so
+the §43.4 chain ran to one user, the §37/§38 controls decided only in tests,
+and the fabric's journal had no writer in any binary. What had moved by then
+was the shape of the gap: every ledger-plane element the blueprint names existed as a
 record that can be replayed or a refusal that names its limit, and none of
 them can move, sign or call out. That is the whole of what ADR 0021 permits,
 and it is what the row now says.

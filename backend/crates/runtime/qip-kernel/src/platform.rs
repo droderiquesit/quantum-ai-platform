@@ -49,9 +49,17 @@ use qip_ai::memory::{
     EpisodicMemory, FindingsSummary, PrecedentDigest, Recall, RegimeLabel, StanceDirection,
 };
 use qip_ai::retrieval::SearchIndex;
-use qip_capital::ledger::{AttributedFill, UserId, UserLedger};
+use qip_capital::ledger::{AttributedFill, UserId, UserLedger, UserShare};
 use qip_capital::reservation::ReservationLedger;
 use qip_capital::{AllocationLimits, CapitalAllocator, DrawdownSchedule};
+use qip_capital_fabric::journal::{
+    FabricCommand, FabricJournal, FabricRecord, FabricState, PRODUCER as FABRIC_PRODUCER,
+    WalletCommand,
+};
+use qip_capital_fabric::wallet::{
+    Asset, HoldingObservation, LedgerView, Provenance as HoldingProvenance, TolerancePolicy,
+    VenueAsset,
+};
 use qip_capital_fabric::{
     CapitalLocation, DemandForecast, DemandForecaster, DemandKind, DemandObservation, FundingCurve,
     FxRates, LocationBalance, PlanScore, PrePositioningPlan, PrePositioningPlanner,
@@ -171,10 +179,33 @@ pub struct Platform {
     /// the same window cannot pass against the same free balance — gap-matrix
     /// item 10, wired.
     reservations: ReservationLedger,
-    /// The per-user, per-strategy books (blueprint §43.3). Every attributed
-    /// fill the centre settles is journalled here to the desk user, so the
-    /// §43.4 chain terminates in a mandate rather than in a strategy lot.
+    /// The per-user, per-strategy books (blueprint §43.3), holding the
+    /// mandate registry: the desk's mandate as the ceiling and every user
+    /// mandate the configuration enrolled under it. Every attributed fill
+    /// the centre settles is booked here — split pro rata across the users
+    /// with capital at work at the strategy, or to the desk whole when no
+    /// user mandate is registered — so the §43.4 chain terminates in a
+    /// mandate rather than in a strategy lot.
     user_ledger: UserLedger,
+    /// The fabric journal: every wallet, corridor, destination and gate
+    /// decision as the command and its outcome, replayable. Its working
+    /// copy of the log is process-local; the platform's own event log
+    /// carries the same record ([`Platform::decide_fabric`]), and it is the
+    /// platform's log a replay reads. Held rather than rebuilt per query
+    /// because the state is what the records built, and a state rebuilt on
+    /// each read would be a second reading of the log that could disagree
+    /// with the one the cycle acted on.
+    fabric: FabricJournal,
+    /// Holdings observed through a statement, latest per venue-asset,
+    /// bounded by [`MAX_OBSERVED_VENUE_ASSETS`]. What the wallet is
+    /// assembled from; empty until a statement is handed in, and while
+    /// empty no wallet is assembled — a wallet showing zero holdings would
+    /// read as an empty account rather than an unobserved one.
+    holdings_observed: BTreeMap<VenueAsset, HoldingObservation>,
+    /// The reconciliation tolerance per observed asset, supplied with the
+    /// statement by whoever holds the rates; the wallet refuses to reconcile
+    /// an asset it has no tolerance for rather than guessing one.
+    wallet_tolerances: TolerancePolicy,
     attributor: Attributor,
     evaluator: ThesisEvaluator,
     feedback: FeedbackEngine,
@@ -534,6 +565,32 @@ const DESK_STRATEGY: &str = "central-desk";
 /// [`DESK_STRATEGY`], so the ledger's user set is bounded by the source
 /// until a mandate registry enrols anyone else.
 const DESK_USER: &str = "desk";
+
+/// The most venue-assets the platform keeps a statement about.
+///
+/// A statement names one balance at one venue, and an operator hands them
+/// in; the bound is what keeps the wallet's working set a working set rather
+/// than the unbounded history the retention rule forbids. A statement for a
+/// venue-asset already held replaces it; a statement for a new one past the
+/// bound is refused by name.
+const MAX_OBSERVED_VENUE_ASSETS: usize = 256;
+
+/// How old a statement may be when the wallet is assembled against it.
+///
+/// A custodian's, bank's or administrator's statement is a daily document,
+/// so a day is the bound a statement is judged fresh within; one older than
+/// that at assembly makes the wallet's assembly a refused, journalled
+/// decision rather than a reconciliation against yesterday's figure — the
+/// break the wallet would otherwise manufacture itself.
+const STATEMENT_FRESHNESS: Duration = Duration::from_days(1);
+
+/// The correlation the fabric journal's own working-copy records carry.
+///
+/// A literal, because the journal is constructed before any cycle has a
+/// correlation of its own and its working copy is not the record: the
+/// platform's event log holds each fabric record under the correlation the
+/// decision was made in, which is where a reader looks.
+const FABRIC_CORRELATION: &str = "capital-fabric-journal";
 
 /// The exposure buckets one instrument record vouches for.
 ///
@@ -1209,6 +1266,69 @@ impl UniverseAssembled {
     }
 }
 
+/// How an attributed fill reached the user books, on the record.
+///
+/// One variant per choice the kernel can make, so a reader of the log can
+/// group on the choice rather than parse a sentence for it: the desk booked
+/// whole, with why; a pro-rata split, with every share and where the
+/// rounding unit went; or a refusal, with the ledger's own reason and no
+/// book moved.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "basis", rename_all = "snake_case")]
+pub enum BookingBasis {
+    /// Booked to the desk whole.
+    DeskWhole { user: UserId, reason: String },
+    /// Split across users in proportion to what each had at work.
+    ProRata {
+        shares: Vec<UserShare>,
+        entitlement_total: Decimal,
+        remainder: Decimal,
+        remainder_to: UserId,
+    },
+    /// Not booked. The fill has happened and the strategy lot holds it; the
+    /// user books do not, and this record says so.
+    Refused { reason: String },
+}
+
+/// One entry the kernel made in the per-user ledger, as the event log keeps
+/// it: a funding of a user's book from their mandate, or the booking of an
+/// attributed fill under a [`BookingBasis`].
+///
+/// Journalled so the per-user books are reproducible from the log alone
+/// (`rules/10-product-direction.md`): a booking that lived only in the
+/// ledger's memory would be a second source of truth for who was attributed
+/// what, and the one that survives a restart would be the strategy lot,
+/// which does not know.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "entry", rename_all = "snake_case")]
+pub enum LedgerEntry {
+    /// [`UserLedger::fund`]: capital moved from a mandate into one book.
+    Funded {
+        user: UserId,
+        strategy: StrategyId,
+        currency: Currency,
+        amount: Decimal,
+    },
+    /// An attributed fill booked, or refused, under the stated basis.
+    Booked {
+        strategy: StrategyId,
+        source: String,
+        currency: Currency,
+        amount: Decimal,
+        basis: BookingBasis,
+    },
+}
+
+impl EventBody for LedgerEntry {
+    /// The last link of the attribution chain: what the centre's exact
+    /// attribution said a strategy realised, booked to whose capital it was.
+    /// The topic sits in the Learn group, which the log never evicts, so a
+    /// user's booking cannot be dropped from the working set to make room
+    /// for a tick.
+    const TOPIC: Topic = Topic::AttributionCompleted;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 impl EventBody for UniverseAssembled {
     // Reference data is what an instrument catalogue is. See the type's
     // comment for the retention consequence of the topic.
@@ -1638,6 +1758,24 @@ impl Platform {
             SettlementCalendar::weekday(SettlementConvention::T1)?,
         );
 
+        // The desk first, under a mandate sized to the book's opening equity
+        // — the ceiling — and then every user mandate the configuration
+        // names, each admitted against that ceiling. A refused enrolment
+        // stops assembly with the term named: a platform that opened a book
+        // under a mandate the registry refused would be promising capital
+        // the desk does not have.
+        let mut user_ledger =
+            UserLedger::with_desk(UserId::new(DESK_USER)?, initial_equity, Currency::USD)?;
+        for enrolment in &config.user_mandates {
+            user_ledger.enrol(
+                enrolment.user.clone(),
+                enrolment.id.clone(),
+                enrolment.mandate.clone(),
+                now,
+            )?;
+        }
+        let fabric = Self::resume_fabric(&event_log, config.seed)?;
+
         let mut platform = Self {
             central,
             insights: crate::central::insights::CellInsights::new(config.seed),
@@ -1702,14 +1840,10 @@ impl Platform {
             // pass; zero here is one honest cycle of refusals at worst.
             reservations: ReservationLedger::new(Decimal::ZERO)
                 .unwrap_or_else(|_| unreachable!("zero is not negative")),
-            // One user until users exist: the desk, under a mandate sized to
-            // the book's opening equity, so wiring the ledger changed nothing
-            // about what the platform already did.
-            user_ledger: UserLedger::with_desk(
-                UserId::new(DESK_USER)?,
-                config.initial_equity,
-                Currency::USD,
-            )?,
+            user_ledger,
+            fabric,
+            holdings_observed: BTreeMap::new(),
+            wallet_tolerances: TolerancePolicy::new(),
             attributor: Attributor::new(),
             evaluator: ThesisEvaluator::default(),
             feedback: FeedbackEngine::default(),
@@ -2179,13 +2313,13 @@ impl Platform {
         } = self;
         let ingestion = central.ingest(report, autonomy.kill_switch_mut(), now)?;
         self.charge_cell_fills(&ingestion.cell, &ingestion.settlement.absorbed);
-        self.journal_to_desk(&ingestion.settlement, now);
+        self.book_settlement(&ingestion.settlement, now);
         Ok(ingestion)
     }
 
     /// Book what the settlement's exact attribution said each strategy
-    /// realised into the desk user's per-strategy books (blueprint §43.4:
-    /// `Strategy → Mandate → User`).
+    /// realised into the per-user books (blueprint §43.4: `Strategy →
+    /// Mandate → User`), and journal how.
     ///
     /// Fed from the attribution and not from the report, so the user books
     /// carry only what the centre accepted and closed to the last unit (ADR
@@ -2193,21 +2327,30 @@ impl Platform {
     /// under other than exactly one strategy is recorded as a capture
     /// problem rather than split, because a split the attribution did not
     /// state would be a guess in the one record that must not carry one.
-    /// The fill has already happened, so a refusal here is a problem on the
-    /// record and not an error to the caller — the same reasoning as
-    /// [`Self::charge_cell_fills`].
-    fn journal_to_desk(&mut self, settlement: &crate::central::plane::Settlement, now: Timestamp) {
+    ///
+    /// Whose books: with no user mandate registered the desk is the only
+    /// holder and takes the fill whole. With users registered the fill is
+    /// split pro rata across the users with capital at work at the strategy
+    /// by [`UserLedger::journal_pro_rata`], every share and the rounding
+    /// unit's destination on the record; where no user has capital at work
+    /// at that strategy the strategy was trading the desk's capital and the
+    /// desk takes it whole, explicitly — the ledger's own stated path for
+    /// that case — under a basis that says so, so the desk-whole booking
+    /// that used to be the only one never survives silently. A split the
+    /// ledger refuses (overflow, a share nobody holds) books nothing and is
+    /// journalled as refused. The fill has already happened, so a refusal is
+    /// a problem on the record and not an error to the caller — the same
+    /// reasoning as [`Self::charge_cell_fills`].
+    fn book_settlement(&mut self, settlement: &crate::central::plane::Settlement, now: Timestamp) {
         let Some(attribution) = &settlement.attribution else {
             return;
         };
-        let Ok(desk) = UserId::new(DESK_USER) else {
-            return;
-        };
+        let desk = self.user_ledger.desk().clone();
         for position in &attribution.positions {
             let [strategy] = position.hypotheses.as_slice() else {
                 self.capture_problems.push(format!(
                     "the attributed position {} names {} strategies and was not journalled \
-                     to the desk's books; the ledger books exactly one per position",
+                     to the user books; the ledger books exactly one per position",
                     position.object_id,
                     position.hypotheses.len()
                 ));
@@ -2219,15 +2362,364 @@ impl Platform {
                 currency: Currency::USD,
                 amount: position.total,
             };
-            if let Err(error) = self.user_ledger.journal_to(&desk, &fill, now) {
+            let basis = self.book_fill(&desk, &fill, now);
+            if let BookingBasis::Refused { reason } = &basis {
                 self.capture_problems.push(format!(
-                    "the attributed position {} was settled and not journalled to the \
-                     desk's books: {}",
+                    "the attributed position {} was settled and not booked to any user: \
+                     {reason}",
+                    position.object_id
+                ));
+            }
+            let entry = LedgerEntry::Booked {
+                strategy: fill.strategy.clone(),
+                source: fill.source.clone(),
+                currency: fill.currency,
+                amount: fill.amount,
+                basis,
+            };
+            if let Err(error) = self.journal_record(entry, "kernel/ledger", now) {
+                self.capture_problems.push(format!(
+                    "the booking of the attributed position {} was made and not journalled: {}",
                     position.object_id,
                     error.message()
                 ));
             }
         }
+    }
+
+    /// Book one attributed fill and say on what basis. See
+    /// [`Self::book_settlement`] for the choice.
+    fn book_fill(&mut self, desk: &UserId, fill: &AttributedFill, now: Timestamp) -> BookingBasis {
+        let users_registered = self.user_ledger.mandates().keys().any(|user| user != desk);
+        let desk_whole =
+            |ledger: &mut UserLedger, reason: String| match ledger.journal_to(desk, fill, now) {
+                Ok(()) => BookingBasis::DeskWhole {
+                    user: desk.clone(),
+                    reason,
+                },
+                Err(error) => BookingBasis::Refused {
+                    reason: error.message().to_string(),
+                },
+            };
+        if !users_registered {
+            return desk_whole(
+                &mut self.user_ledger,
+                "no user mandate is registered; the desk is the only holder".to_string(),
+            );
+        }
+        if !self.has_entitlement_at(&fill.strategy, fill.currency) {
+            return desk_whole(
+                &mut self.user_ledger,
+                format!(
+                    "no user has {} at work at {}; the strategy was trading the desk's capital",
+                    fill.currency, fill.strategy
+                ),
+            );
+        }
+        match self.user_ledger.journal_pro_rata(fill, now) {
+            Ok(split) => BookingBasis::ProRata {
+                shares: split.shares,
+                entitlement_total: split.entitlement_total,
+                remainder: split.remainder,
+                remainder_to: split.remainder_to,
+            },
+            Err(error) => BookingBasis::Refused {
+                reason: error.message().to_string(),
+            },
+        }
+    }
+
+    /// Whether any user holds positive settled cash at the strategy in the
+    /// currency — the entitlement [`UserLedger::pro_rata_shares`] splits on.
+    /// Asked here, before the split, so the desk-whole fallback is a stated
+    /// choice rather than a reaction to the ledger's refusal message.
+    fn has_entitlement_at(&self, strategy: &StrategyId, currency: Currency) -> bool {
+        self.user_ledger
+            .books()
+            .iter()
+            .filter(|((_, at), _)| at == strategy)
+            .any(|(_, book)| {
+                book.cash(currency)
+                    .is_some_and(|cash| cash.settled().is_positive())
+            })
+    }
+
+    /// Move capital from a user's mandate into one strategy's book, and
+    /// journal it.
+    ///
+    /// The one way a user comes to have capital at work — and so a share of
+    /// what the strategy realises. Every refusal is [`UserLedger::fund`]'s:
+    /// no mandate, a non-positive amount, or a total past the mandate's
+    /// investable capital. [`UserLedger::admit`] is deliberately not called
+    /// first: it evaluates the product's eligibility in the user's
+    /// jurisdiction, and this process holds no eligibility registry, so it
+    /// would refuse every request — a gate that always refuses is not a
+    /// gate, and inventing an eligibility to pass it would be worse.
+    pub fn fund_user(
+        &mut self,
+        user: &UserId,
+        strategy: &StrategyId,
+        amount: Decimal,
+        now: Timestamp,
+    ) -> Result<()> {
+        let Some(mandate) = self.user_ledger.mandate(user) else {
+            return Err(Error::denied(format!(
+                "{user} holds no mandate; enrol one in the configuration before funding"
+            )));
+        };
+        let currency = mandate.currency();
+        self.user_ledger.fund(user, strategy, amount, now)?;
+        self.journal_record(
+            LedgerEntry::Funded {
+                user: user.clone(),
+                strategy: strategy.clone(),
+                currency,
+                amount,
+            },
+            "kernel/ledger",
+            now,
+        )
+    }
+
+    // --- the fabric journal ---------------------------------------------------
+
+    /// Resume the fabric journal from what the platform's log already holds.
+    ///
+    /// A fresh journal when the log holds no fabric record. Otherwise the
+    /// log is replayed — chain, hashes and every recorded outcome checked by
+    /// [`qip_capital_fabric::replay::replay`] — and each fabric command is
+    /// decided again into a fresh journal, which must arrive at the replayed
+    /// state or assembly is refused. Without this a process restarted on a
+    /// file-backed log would journal a corridor's proposal a second time,
+    /// and a replay from genesis would refuse that record as claiming an
+    /// outcome the control does not produce — the log the platform kept
+    /// would stop being one it could read.
+    ///
+    /// Refused, naming the alternative, when fabric records exist but the
+    /// in-memory log no longer starts at genesis: the log evicts replaceable
+    /// records at capacity, and a replay that stepped over the gap would
+    /// produce a state that reads as rebuilt from the log and is not.
+    fn resume_fabric(log: &EventLog, seed: u64) -> Result<FabricJournal> {
+        let correlation = CorrelationId::from_string(FABRIC_CORRELATION);
+        let mut fabric = FabricJournal::new(seed, correlation);
+        let fabric_records: Vec<FabricRecord> = log
+            .records()
+            .iter()
+            .filter(|record| Self::is_fabric_record(record))
+            .map(|record| record.event.decode::<FabricRecord>().map(|e| e.body))
+            .collect::<Result<_>>()?;
+        if fabric_records.is_empty() {
+            return Ok(fabric);
+        }
+        if log
+            .records()
+            .first()
+            .is_some_and(|first| first.sequence != 1)
+        {
+            return Err(Error::invalid(format!(
+                "the event log holds {} fabric record(s) but no longer starts at genesis, so \
+                 the fabric journal cannot be resumed from it; archive the log and start a \
+                 new one, or open it with a capacity that keeps every record",
+                fabric_records.len()
+            )));
+        }
+        let replayed = qip_capital_fabric::replay::replay(log.records())?;
+        for record in fabric_records {
+            fabric.decide(record.command)?;
+        }
+        if *fabric.state() != replayed.state {
+            return Err(Error::invalid(
+                "the fabric journal decided the log's commands again and arrived at a state the \
+                 log's replay does not hold; the log was written by something other than this \
+                 kernel's controls",
+            ));
+        }
+        Ok(fabric)
+    }
+
+    /// Whether a log record is one of the fabric's, by the same rule the
+    /// replay uses: the fabric topic and the fabric producer, both.
+    fn is_fabric_record(record: &qip_events::log::LogRecord) -> bool {
+        record.event.topic == FabricRecord::TOPIC
+            && record.event.lineage.producer == FABRIC_PRODUCER
+    }
+
+    /// Route one fabric command through the journal and the platform's log.
+    ///
+    /// The journal decides — executing on a scratch copy of the state,
+    /// writing its own record, then adopting — and the same record is then
+    /// appended to the platform's event log in the plain envelope form
+    /// [`qip_capital_fabric::replay::replay`] decodes, under the fabric
+    /// producer, and published to the cycle journal. A refusal by the
+    /// control is an `Outcome::Refused` inside an `Ok` record, because the
+    /// refusal is a decision and belongs in the log; an `Err` here is the
+    /// journal or the log refusing to take the record at all, and the
+    /// caller sees it as the failure it is.
+    ///
+    /// Public so an operator, a composition root or a test can propose a
+    /// destination or a corridor, step one through its life, or have the
+    /// gate assess an intent — each a record, none a movement: the gate's
+    /// admitted verdict carries no way to execute (ADR 0021), and nothing
+    /// in this process consumes one.
+    pub fn decide_fabric(
+        &mut self,
+        command: FabricCommand,
+        now: Timestamp,
+    ) -> Result<FabricRecord> {
+        let at = command.at();
+        let record = self.fabric.decide(command)?;
+        let correlation_id = self
+            .context
+            .ids()
+            .generate::<qip_core::lineage::CorrelationKind>(now);
+        let event_id = self.context.ids().generate::<EventKind>(now);
+        let lineage = Lineage::root(correlation_id, FABRIC_PRODUCER);
+        // The plain envelope, not the stream frame: the replay decodes the
+        // record straight out of the log's payload, and a frame wraps the
+        // payload in the stream envelope's wire form.
+        let plain =
+            qip_events::Envelope::new(event_id.clone(), at, now, lineage.clone(), record.clone());
+        self.event_log.append(&plain.erase()?)?;
+        let facts = EventFacts::derived(
+            SourceIdentity::new(
+                SourceId::new("qip-kernel"),
+                SourceType::Internal,
+                StreamRegion::new(HOME_REGION),
+            ),
+            Subject::unattributed(),
+            FabricRecord::TOPIC,
+        );
+        let sealed = StreamEnvelope::seal(event_id, lineage, record.clone(), at, now, facts)?;
+        self.journal.publish(sealed, now)?;
+        Ok(record)
+    }
+
+    /// Hand in a statement of one balance at one venue, with the tolerance
+    /// its reconciliation is judged against.
+    ///
+    /// The one observation channel this process can honestly attest. The
+    /// kernel holds no read-only API key, no watch-only address and no view
+    /// key — structurally: no field could hold one — so the only provenance
+    /// it can record is a statement a person handed it, and the provenance
+    /// is fixed here rather than taken from the caller. A statement for a
+    /// venue-asset already held replaces it; one for a new venue-asset past
+    /// [`MAX_OBSERVED_VENUE_ASSETS`] is refused. The tolerance is refused
+    /// unless strictly positive, by [`TolerancePolicy::with_tolerance`].
+    /// Nothing is assembled here: the wallet is assembled in the LEARN
+    /// stage, against the ledger as the cycle left it.
+    pub fn observe_statement(
+        &mut self,
+        venue: VenueId,
+        asset: &str,
+        observed: Decimal,
+        tolerance: Decimal,
+        observed_at: Timestamp,
+    ) -> Result<()> {
+        let asset = Asset::new(asset)?;
+        let key = VenueAsset {
+            venue: venue.clone(),
+            asset: asset.clone(),
+        };
+        if !self.holdings_observed.contains_key(&key)
+            && self.holdings_observed.len() >= MAX_OBSERVED_VENUE_ASSETS
+        {
+            return Err(Error::denied(format!(
+                "a statement for {key} would be the {}th venue-asset observed against a bound \
+                 of {MAX_OBSERVED_VENUE_ASSETS}; retire one before adding another",
+                self.holdings_observed.len() + 1
+            )));
+        }
+        self.wallet_tolerances = self
+            .wallet_tolerances
+            .clone()
+            .with_tolerance(asset.clone(), tolerance)?;
+        self.holdings_observed.insert(
+            key,
+            HoldingObservation::new(
+                venue,
+                asset,
+                observed,
+                observed_at,
+                HoldingProvenance::Statement,
+            ),
+        );
+        Ok(())
+    }
+
+    /// Assemble the wallet from every statement held and the ledger's view,
+    /// and reconcile it, through the fabric journal.
+    ///
+    /// Reached from the LEARN stage, after ACT has moved cash, so the
+    /// ledger view is the book the cycle left. Nothing is assembled while no
+    /// statement is held — a wallet of zero holdings reads as an empty
+    /// account rather than an unobserved one. The ledger's view is one
+    /// entry, the desk's cash at the broker's venue, with the capital
+    /// ledger's reservations against it; it is supplied only when a
+    /// statement names that venue-asset, because the wallet refuses a
+    /// ledger view nobody has observed. In-flight is zero and stated so:
+    /// this process instructs no transfer (ADR 0021), so nothing is ever in
+    /// flight towards its book. A stale statement makes the assembly a
+    /// refused record, which the journal keeps; reconciliation then finds
+    /// no wallet and is a refused record too. Both are decisions the log
+    /// shows rather than a stage failure.
+    fn reconcile_wallet(&mut self, now: Timestamp) -> Result<()> {
+        if self.holdings_observed.is_empty() {
+            return Ok(());
+        }
+        let observations: Vec<HoldingObservation> =
+            self.holdings_observed.values().cloned().collect();
+        let desk_venue = VenueId::new(self.broker.name());
+        let desk_key = VenueAsset {
+            venue: desk_venue.clone(),
+            asset: Asset::new(Currency::USD.to_string())?,
+        };
+        let ledger_views = if self.holdings_observed.contains_key(&desk_key) {
+            vec![LedgerView::new(
+                desk_venue,
+                desk_key.asset,
+                self.capital.cash,
+                self.reservations.reserved_total(),
+                Decimal::ZERO,
+            )?]
+        } else {
+            Vec::new()
+        };
+        self.decide_fabric(
+            FabricCommand::Wallet(WalletCommand::Assemble {
+                observations,
+                ledger_views,
+                freshness: STATEMENT_FRESHNESS,
+                now,
+            }),
+            now,
+        )?;
+        self.decide_fabric(
+            FabricCommand::Wallet(WalletCommand::Reconcile {
+                tolerances: self.wallet_tolerances.clone(),
+                at: now,
+            }),
+            now,
+        )?;
+        Ok(())
+    }
+
+    /// The fabric's state as the records built it — the wallet as last
+    /// assembled, the reconciliation outcomes, every corridor and
+    /// destination, every gate assessment. Read-only; the way in is
+    /// [`Platform::decide_fabric`].
+    pub fn fabric_state(&self) -> &FabricState {
+        self.fabric.state()
+    }
+
+    /// The fabric journal's own record count, for a caller checking that
+    /// the platform's log and the journal agree.
+    pub fn fabric_records(&self) -> usize {
+        self.fabric.records().len()
+    }
+
+    /// The statements held, latest per venue-asset.
+    pub fn holdings_observed(&self) -> &BTreeMap<VenueAsset, HoldingObservation> {
+        &self.holdings_observed
     }
 
     /// Charge one cell's absorbed fills into the running risk counters.
@@ -2458,8 +2950,9 @@ impl Platform {
     ///
     /// Passed through from the fabric so the API, which may not depend on
     /// the fabric, lists the checks the gate actually runs rather than a
-    /// copy that would drift the day an eighth was added. The gate itself
-    /// has no caller in this process — no intent is ever assessed — and this
+    /// copy that would drift the day an eighth was added. The gate runs
+    /// only when an intent is routed through [`Platform::decide_fabric`],
+    /// and its assessments are read from [`Platform::fabric_state`]; this
     /// returns the roster, not an assessment.
     pub fn transfer_gate_checks() -> &'static [qip_capital_fabric::gate::GateCheck; 7] {
         &qip_capital_fabric::gate::GateCheck::ALL
@@ -2531,6 +3024,19 @@ impl Platform {
     /// the decide stage read.
     pub fn equity(&self) -> Decimal {
         self.capital.equity()
+    }
+
+    /// The realised drawdown of the book from its running peak — the
+    /// figure the allocator sizes under.
+    ///
+    /// Exposed so the API's policy producer reads the same number the
+    /// allocator does: the region shares it ships and the envelopes the
+    /// centre issues then come from one drawdown, rather than from two
+    /// readings that could differ by a fill. A statistic, so `f64`; it
+    /// scales nothing here, and the crossing to money happens where the
+    /// allocator applies its schedule.
+    pub fn drawdown(&self) -> f64 {
+        self.capital.drawdown()
     }
 
     /// P&L realised by position-reducing fills, cumulative.
@@ -4407,6 +4913,45 @@ impl Platform {
     /// naming the count, not a guess: a covariance from a handful of points
     /// is a number wearing the costume of an estimate, and the mandate's risk
     /// bound would be enforced against the costume.
+    /// The §6.2 degradation table as the centre reads it at `now`, for the
+    /// central sizing path.
+    ///
+    /// Only the self-model row is measured, from
+    /// [`SelfModel::sample_facts`] against the engine's own minimum sample
+    /// and [`SELF_MODEL_HORIZON`]: a model that has never absorbed an
+    /// outcome reads unavailable, one thin or older than the horizon reads
+    /// stale, and each narrows by its own multiplier. The causal-graph and
+    /// belief-state rows start fresh here, deliberately and stated: at the
+    /// centre those are the live objects this process itself maintains and
+    /// ships, not a copy past a TTL, so the table has no shipped age to
+    /// judge them on — and observing them as unavailable would narrow every
+    /// proposal by a constant nobody computed. Measuring the centre's own
+    /// world-model staleness is remaining work, and until it exists the
+    /// row that can narrow here is the one that is measured. The edge
+    /// cell's table is untouched: a cell never holds a self-model, and its
+    /// floor is its own.
+    ///
+    /// Fallible on purpose: a record claiming outcomes with no newest
+    /// instant is the reporter's bug, and sizing as though the row were
+    /// fresh would hide it.
+    pub fn central_degradation(
+        &self,
+        now: Timestamp,
+    ) -> Result<qip_contracts::degradation::DegradationState> {
+        use qip_contracts::degradation::{
+            Capability, DegradationState, SELF_MODEL_HORIZON, SelfModelFreshness,
+        };
+        let mut state = DegradationState::fully_available();
+        let self_model = SelfModelFreshness::assess(
+            self.self_model.sample_facts(),
+            qip_learning_engine::self_model::MINIMUM_SAMPLE,
+            SELF_MODEL_HORIZON,
+            now,
+        )?;
+        state.observe(Capability::SelfModel, self_model.freshness());
+        Ok(state)
+    }
+
     fn construct_from(
         &mut self,
         theses: &[qip_portfolio_engine::construction::ApprovedThesis],
@@ -4464,12 +5009,24 @@ impl Platform {
         // This is the line that makes a second proposal unable to pass
         // against capital a first one already claimed.
         let free = self.reservations.free(now);
+        // Narrowed by §6.2 as the centre reads it — the self-model row
+        // measured from the learning engine's own record. A refused
+        // assessment refuses the construction: nothing is sized against a
+        // table that could not be read, rather than sized as though it read
+        // fresh.
+        let multiplier = self.central_degradation(now)?.central_sizing_multiplier();
+        let budget = free.checked_mul(multiplier).ok_or_else(|| {
+            Error::numeric(format!(
+                "the free budget {free} narrowed by the degradation multiplier {multiplier} \
+                 overflows; nothing is sized against a number that cannot be represented"
+            ))
+        })?;
 
         let outcome = self.constructor.construct(
             theses,
             &covariance,
             &current,
-            Money::new(free, Currency::USD),
+            Money::new(budget, Currency::USD),
             now,
             now,
             ProposalId::from_string(format!("prop-{}", self.cycle)),
@@ -5276,6 +5833,16 @@ impl Platform {
     fn stage_learn(&mut self, now: Timestamp) -> StageOutcome {
         self.cycle_calibration = None;
         self.cycle_counterfactuals = None;
+        // The wallet, against the book ACT left. A refusal by the control is
+        // a record the journal keeps; an error here is the journal or the
+        // log refusing the record, which is a problem on the cycle's record
+        // rather than a reason to skip scoring what resolved.
+        if let Err(error) = self.reconcile_wallet(now) {
+            self.capture_problems.push(format!(
+                "the wallet was not journalled this cycle: {}",
+                error.message()
+            ));
+        }
         let (outcome, by_hypothesis) = self.attribute(now);
         // What the platform did and what it declined, side by side. The tally
         // is the answer to the question a report of trades alone cannot
@@ -7577,10 +8144,24 @@ mod decide_tests {
         // The exact property: the second proposal was budgeted the equity
         // minus the first one's hold, not the equity. `proposal.equity` is
         // the budget `construct` was handed, so the assertion reads the seam
-        // directly rather than inferring it from sizes.
+        // directly rather than inferring it from sizes. The budget is the
+        // free balance narrowed by the central degradation table — this
+        // platform's self-model has never absorbed an outcome, so the table
+        // reads it unavailable — and the multiplier is read from the same
+        // table rather than restated, so the assertion stays about the
+        // reservation and not about the constant.
+        let multiplier = platform
+            .central_degradation(Timestamp::from_secs(1_760_000_160))
+            .expect("the table reads")
+            .central_sizing_multiplier();
+        assert!(
+            multiplier < Decimal::ONE,
+            "the premise: a never-absorbed self-model narrows, so the budget below is the \
+             narrowed free balance and not the free balance by coincidence"
+        );
         assert_eq!(
             second.equity.amount,
-            equity - first.traded_notional(),
+            (equity - first.traded_notional()) * multiplier,
             "the second proposal was sized against capital the first still \
              holds — the double-spend the reservation ledger exists to refuse"
         );
@@ -8333,6 +8914,174 @@ mod user_ledger_tests {
             platform.capture_problems.is_empty(),
             "nothing was left unjournalled: {:?}",
             platform.capture_problems
+        );
+    }
+}
+
+#[cfg(test)]
+mod central_sizing_tests {
+    //! §6.2 row 6 on the central path: the self-model's freshness narrows
+    //! the budget every proposal is sized against. A unit test because the
+    //! seam is `Platform::construct_from`, private on purpose, and the
+    //! budget it hands the constructor is readable off the proposal.
+
+    use super::*;
+    use qip_core::dec;
+    use qip_financial::universe::Universe;
+    use qip_observability::Telemetry;
+    use qip_portfolio_engine::construction::ApprovedThesis;
+    use qip_risk::limits::LimitSet;
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn platform() -> Platform {
+        let config = PlatformConfig::default().with_initial_equity(Decimal::from_int(200_000));
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    fn thesis(object: &str, conviction: f64) -> ApprovedThesis {
+        ApprovedThesis {
+            hypothesis_id: format!("HYP-{object}"),
+            object_id: qip_core::ObjectId::from_string(object),
+            conviction,
+            expected_return: 0.04 * conviction.signum(),
+            price: Decimal::from_int(100),
+        }
+    }
+
+    fn feed_history(platform: &mut Platform, object: &str, closes: usize) {
+        let series = platform
+            .price_history
+            .entry(object.to_string())
+            .or_default();
+        for index in 0..closes {
+            let wiggle = if index % 2 == 0 { 0.7 } else { -0.5 };
+            series.push(100.0 + index as f64 * 0.1 + wiggle);
+        }
+    }
+
+    /// Size one proposal and return the budget `construct` was handed and
+    /// the notional it traded.
+    fn size(platform: &mut Platform, now: Timestamp) -> (Decimal, Decimal) {
+        feed_history(platform, "AAPL", 30);
+        feed_history(platform, "MSFT", 30);
+        platform.pending_theses.push(thesis("AAPL", 0.6));
+        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.stage_decide(now);
+        let proposal = platform.proposals.last().expect("a proposal is recorded");
+        (proposal.equity.amount, proposal.traded_notional())
+    }
+
+    /// Grade `count` vindicated theses on one detector, so the self-model
+    /// carries a component at the minimum sample with a newest outcome at
+    /// `resolves_at`.
+    fn feed_self_model(platform: &mut Platform, count: usize, resolves_at: Timestamp) {
+        for n in 1..=count {
+            let id = format!("hyp-{n}");
+            let claim = ThesisClaim {
+                hypothesis_id: id.clone(),
+                class: "price_dislocation".to_string(),
+                subject: "obj-AAA".to_string(),
+                formed_at: start(),
+                resolves_at,
+                direction: 1.0,
+                expected_move_bps: 200.0,
+                falsifiers: vec!["it reverts".to_string()],
+                confidence: 0.7,
+                contributors: Vec::new(),
+            };
+            let outcome = ThesisOutcome {
+                hypothesis_id: id,
+                observed_at: resolves_at,
+                realised_move_bps: 180.0,
+                realised_pnl: 0.0,
+                falsifiers_triggered: Vec::new(),
+                mechanism_confirmed: None,
+            };
+            platform
+                .learn_from(&[claim], &[outcome], resolves_at)
+                .expect("a resolvable claim grades");
+        }
+    }
+
+    #[test]
+    fn a_never_absorbed_self_model_sizes_at_the_unavailable_multiplier_and_a_fed_one_sizes_wider() {
+        // The failure this guards: the centre sizing every proposal at full
+        // budget while its self-model — the record of which of its own
+        // components can be trusted — has never absorbed an outcome, so a
+        // platform with no evidence about itself sized exactly as one with
+        // a week of graded theses. Row 6 of §6.2 exists to narrow on that
+        // absence, and until this seam it narrowed nothing at the centre.
+        let now = Timestamp::from_secs(1_760_000_100);
+
+        // Premise: the fresh platform's self-model is empty and the table
+        // reads it unavailable — the reading the sizing below must follow.
+        let mut unfed = platform();
+        assert!(
+            unfed.self_model().is_empty(),
+            "the premise is an empty self-model"
+        );
+        let unfed_multiplier = unfed
+            .central_degradation(now)
+            .expect("the table reads")
+            .central_sizing_multiplier();
+        assert_eq!(unfed_multiplier, dec!("0.5"), "unavailable narrows by half");
+        // With no hold active the free balance `stage_decide` anchors is
+        // the whole equity.
+        let free_before = unfed.capital.equity();
+        let (unfed_budget, unfed_notional) = size(&mut unfed, now);
+        assert!(
+            unfed_notional.is_positive(),
+            "the premise failed: nothing was sized on the unfed platform"
+        );
+        assert_eq!(
+            unfed_budget,
+            free_before * unfed_multiplier,
+            "the unfed budget is the free balance at the unavailable multiplier"
+        );
+
+        // A platform whose self-model holds a component at the minimum
+        // sample, graded within the horizon of the sizing instant.
+        let mut fed = platform();
+        let resolves_at = start().saturating_add(Duration::from_days(5));
+        feed_self_model(
+            &mut fed,
+            qip_learning_engine::self_model::MINIMUM_SAMPLE,
+            resolves_at,
+        );
+        assert!(
+            !fed.self_model().is_empty(),
+            "the premise is a fed self-model"
+        );
+        let sized_at = resolves_at.saturating_add(Duration::from_secs(100));
+        let fed_multiplier = fed
+            .central_degradation(sized_at)
+            .expect("the table reads")
+            .central_sizing_multiplier();
+        assert_eq!(
+            fed_multiplier,
+            Decimal::ONE,
+            "a fresh self-model narrows nothing"
+        );
+        let fed_free = fed.capital.equity();
+        let (fed_budget, fed_notional) = size(&mut fed, sized_at);
+        assert_eq!(
+            fed_budget, fed_free,
+            "the fed budget is the whole free balance"
+        );
+        assert!(
+            fed_notional > unfed_notional,
+            "a fed self-model sized {fed_notional}, not wider than the unfed {unfed_notional}"
         );
     }
 }

@@ -59,6 +59,7 @@ use qip_edge_node::mesh::{MeshLink, MeshSettings, PEER_VARIABLE};
 use qip_edge_node::mirror::StoreMirror;
 use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
 use qip_edge_node::reprice::{REPRICE_VARIABLE, Requoter, parse_reprice};
+use qip_edge_node::share::RegionShareStatus;
 use qip_edge_node::strategies::{
     MARKETABLE, PLAN_VARIABLE, PRICING_VARIABLE, REST_AT_MID_PREFIX, StrategyInstaller,
     parse_pricing,
@@ -429,24 +430,34 @@ fn run() -> Result<()> {
     )?;
     let retained_sessions = mirror.retained_sessions()?;
 
-    // The allocation is printed as the cell holds it, not as configuration
-    // read it, so the banner is a claim about the cell and not about a
-    // variable — the two were allowed to differ for as long as no root
-    // installed the value it read.
+    // The table is printed as the cell holds it, not as configuration read
+    // it, so the banner is a claim about the cell and not about a variable —
+    // the two were allowed to differ for as long as no root installed the
+    // value it read. Both numbers, because they are different facts: the
+    // ceiling is the operator's and the bound is the centre's share, which
+    // is nothing until a payload names one (ADR 0039).
+    let share = RegionShareStatus::of(&cell);
     println!(
-        "qip-edge-node cell={} region={} venues={} region_allocation={} live_capable={} \
-         gateway={}({}) adapter={} reaches_a_socket={}",
+        "qip-edge-node cell={} region={} venues={} region_ceiling={} region_bound={} \
+         live_capable={} gateway={}({}) adapter={} reaches_a_socket={}",
         config.cell_id,
         config.region,
         config.venues.len(),
-        cell.region_allocation_free()
-            .map_or_else(|| "none".to_string(), |free| free.to_string()),
+        share
+            .ceiling
+            .map_or_else(|| "none".to_string(), |ceiling| ceiling.to_string()),
+        share
+            .bound
+            .map_or_else(|| "none".to_string(), |bound| bound.to_string()),
         ceiling.is_live(),
         gateway.class(),
         gateway.venue(),
         choice.selector(),
         gateway.reaches_a_socket()
     );
+    if let Some(why) = &share.why {
+        println!("qip-edge-node: region share: {why}");
+    }
 
     for line in config.storage.banner_lines(
         &["the cell's decision journal, chained within each session"],
@@ -913,8 +924,12 @@ fn answer(
     let region_allocation_free = cell
         .region_allocation_free()
         .map_or_else(|| "null".to_string(), |free| format!("\"{free}\""));
+    // The share block beside the free balance: a node that opened unfunded
+    // and has no share yet reads `orders: 0` exactly as a quiet market does,
+    // and the block is what says which — see `qip_edge_node::share`.
+    let region_share = RegionShareStatus::of(cell).to_json();
     let body = format!(
-        r#"{{"cell":"{}","region":"{}","halted":{},"halt_flag":{halt_flag},"arbitrage_desk":{},"live_capable":{},"venues":{},"region_allocation_free":{region_allocation_free},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"pass":{pass},"mesh":{mesh},"started_at":{}}}"#,
+        r#"{{"cell":"{}","region":"{}","halted":{},"halt_flag":{halt_flag},"arbitrage_desk":{},"live_capable":{},"venues":{},"region_allocation_free":{region_allocation_free},"region_share":{region_share},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"pass":{pass},"mesh":{mesh},"started_at":{}}}"#,
         config.cell_id,
         config.region,
         cell.is_halted(),

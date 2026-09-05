@@ -11,7 +11,7 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_contracts::capital::CapitalEnvelope;
-use qip_contracts::policy::{PlanDigest, PolicyPayload, Slot};
+use qip_contracts::policy::{GrantManifest, PlanDigest, PolicyPayload, Slot};
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::VenueId;
 use qip_core::error::Result;
@@ -126,6 +126,35 @@ fn policy(
     VerifiedPolicy::verify(payload.signed(KEY)?, KEY, CELL, issued_at)
 }
 
+/// [`policy`], with the `capital_grants` slot naming the grants for
+/// `strategies` — the payload as the centre ships it once the region's
+/// grant is partitioned (ADR 0039). The node applies this before the plan it
+/// names deploys anything, so the share it carries is summed again when the
+/// grant lands; a payload without the slot leaves the table unfunded, and
+/// the plan's strategy would then fire and be refused under
+/// `region_reservation`.
+fn funded_policy(
+    sequence: u64,
+    issued_at: Timestamp,
+    digest: &str,
+    strategies: &[&str],
+) -> Result<VerifiedPolicy> {
+    let mut payload = PolicyPayload::unproduced(sequence, CELL, issued_at);
+    payload.compiled_plan = Slot::produced(
+        PlanDigest {
+            digest: digest.to_string(),
+            strategies: strategies.len() as u64,
+        },
+        issued_at,
+    );
+    let mut live_grants = Vec::new();
+    for strategy in strategies {
+        live_grants.push(grant(strategy)?.signature().to_string());
+    }
+    payload.capital_grants = Slot::produced(GrantManifest { live_grants }, issued_at);
+    VerifiedPolicy::verify(payload.signed(KEY)?, KEY, CELL, issued_at)
+}
+
 fn node_with_feed() -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
     let config = CellConfig::new(CELL, REGION).with_venue(venue());
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
@@ -151,15 +180,22 @@ fn a_fresh_payload_naming_the_plan_deploys_it_and_the_next_pass_sends_an_order_t
     // deploys — then the pass loop raises the intent, gates it, nets it,
     // places it, and a later pass confirms what somebody else's flow filled.
     let dir = scratch("chain");
-    let (path, digest, count) = plan_file(&dir, &[spec(STRATEGY, "10")]);
+    let (path, digest, _count) = plan_file(&dir, &[spec(STRATEGY, "10")]);
     let (mut node, mut gateway, mut feed) = node_with_feed()?;
     let mut installer = StrategyInstaller::new(Some(path), Some(rest(60)?));
     installer.offer(grant(STRATEGY)?)?;
+    // The payload carries the region share as well as the plan, in the
+    // order the node's exchange applies them: payload first, deploy after.
     node.cell
-        .apply_policy(policy(1, t(10), &digest, count)?, t(10))?;
+        .apply_policy(funded_policy(1, t(10), &digest, &[STRATEGY])?, t(10))?;
     assert!(
         node.cell.deployed_strategies().is_empty(),
         "the premise is a cell running nothing until the installer acts"
+    );
+    assert_eq!(
+        node.cell.region_allocation_bound(),
+        Some(Decimal::ZERO),
+        "the premise is a share of nothing until the grant the manifest names is held"
     );
 
     let outcome = installer.install(&mut node.cell, t(10));
@@ -169,6 +205,15 @@ fn a_fresh_payload_naming_the_plan_deploys_it_and_the_next_pass_sends_an_order_t
         "the plan's strategy was not deployed: {}",
         outcome.describe()
     );
+    // The deployed grant is the one the manifest named, so the share the
+    // payload carried is now summed against it and the table funds — under
+    // the same sequence, without a second payload.
+    assert_eq!(
+        node.cell.region_allocation_bound(),
+        Some(dec!("1000000")),
+        "deploying the grant the manifest named did not fund the table"
+    );
+    assert_eq!(node.cell.region_share_sequence(), Some(1));
     assert!(outcome.refused.is_empty(), "{}", outcome.describe());
     assert_eq!(node.cell.deployed_strategies(), vec![STRATEGY]);
     assert_eq!(

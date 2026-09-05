@@ -358,49 +358,51 @@ pub const ROUTES: &[Route] = &[
     // half of the treasury and refuses the path by which capital leaves, so
     // there is no route here that could submit, approve, sign or move
     // anything, and `api_boundary.rs` pins the mutating set to the three
-    // above. What this process does not hold — a wallet, either registry, a
-    // gate assessment — is stated in the body, not zero-filled. The shapes
-    // are `crate::ledger_views` and `ROUTES-LEDGER.md`.
+    // above. Each body is read off the kernel's fabric journal — the wallet
+    // it last assembled, the registries it holds, the newest gate
+    // assessment — and what the journal does not yet hold (a wallet, before
+    // a statement and a cycle) is stated in the body, not zero-filled. The
+    // shapes are `crate::ledger_views` and `ROUTES-LEDGER.md`.
     //
     // `/ledger/users` is the one route of the four that requires an analyst.
     // Its body carries every enrolled user's mandate, balances and inflow
     // references, and the portal grants the viewer role to anyone who
     // completes self-registration on the public front door — so at viewer
     // the route would hand every user's capital to whoever could sign up.
-    // The other three carry no per-user datum (a wallet this process never
-    // assembles, registries it never holds, the gate's checks and the kill
-    // switch) and stay readable by a viewer.
+    // The other three carry no per-user datum (the desk's wallet, the
+    // registries, the gate's checks and the kill switch) and stay readable
+    // by a viewer.
     Route {
         method: Method::Get,
         pattern: "/ledger/users",
         required_role: Role::Analyst,
-        summary: "every enrolled user: mandate, per-strategy balances with expected inflows \
-                  kept apart, and the viewer-role entitlement evaluation, in which withdrawal \
-                  is never granted",
+        summary: "every user in the mandate registry: mandate, the per-strategy balances the \
+                  pro-rata booking moved with expected inflows kept apart, and the viewer-role \
+                  entitlement evaluation, in which withdrawal is never granted",
         success: 200,
     },
     Route {
         method: Method::Get,
         pattern: "/wallet",
         required_role: Role::Viewer,
-        summary: "the wallet read model and its reconciliation outcomes, or that none is \
-                  assembled in this process",
+        summary: "the wallet the fabric journal last assembled and its reconciliation \
+                  outcomes, or that none is assembled yet",
         success: 200,
     },
     Route {
         method: Method::Get,
         pattern: "/corridors",
         required_role: Role::Viewer,
-        summary: "the corridor registry and destination allowlist as records with stage and \
-                  caps, or that neither is held in this process",
+        summary: "the corridor registry and destination allowlist the fabric journal holds, \
+                  as records with stage and caps",
         success: 200,
     },
     Route {
         method: Method::Get,
         pattern: "/transfer-gate",
         required_role: Role::Viewer,
-        summary: "the transfer gate's seven checks in order, the last assessment (none has \
-                  ever been made here) and the kill switch its seventh check reads",
+        summary: "the transfer gate's seven checks in order, the newest assessment the \
+                  fabric journal holds (or null) and the kill switch its seventh check reads",
         success: 200,
     },
     // --- the live surface ---------------------------------------------------
@@ -816,29 +818,26 @@ impl Api {
             // that does not serialise answers 500 with the reason rather
             // than panicking under the lock every other route waits on.
             (Method::Get, "/ledger/users") => {
-                match crate::ledger_views::ledger_users(&platform, now) {
-                    Ok(view) => {
-                        let (status, body) = crate::ledger_views::render(&view);
-                        Response::json(status, body)
-                    }
-                    Err(reason) => {
-                        Response::json(500, format!(r#"{{"error":{}}}"#, json::string(&reason)))
-                    }
-                }
+                let (status, body) = crate::ledger_views::render_fallible(
+                    crate::ledger_views::ledger_users(&platform, now),
+                );
+                Response::json(status, body)
             }
             (Method::Get, "/wallet") => {
-                let (status, body) =
-                    crate::ledger_views::render(&crate::ledger_views::wallet(&platform, now));
+                let (status, body) = crate::ledger_views::render_fallible(
+                    crate::ledger_views::wallet(&platform, now),
+                );
                 Response::json(status, body)
             }
             (Method::Get, "/corridors") => {
-                let (status, body) =
-                    crate::ledger_views::render(&crate::ledger_views::corridors(&platform, now));
+                let (status, body) = crate::ledger_views::render_fallible(
+                    crate::ledger_views::corridors(&platform, now),
+                );
                 Response::json(status, body)
             }
             (Method::Get, "/transfer-gate") => {
-                let (status, body) = crate::ledger_views::render(
-                    &crate::ledger_views::transfer_gate(&platform, now),
+                let (status, body) = crate::ledger_views::render_fallible(
+                    crate::ledger_views::transfer_gate(&platform, now),
                 );
                 Response::json(status, body)
             }
@@ -953,15 +952,23 @@ impl Api {
                             // journaled here too, under the same lock, which
                             // is why the platform is borrowed mutably.
                             let cells: Vec<String> = mesh.cells().collect();
-                            let policy_pending =
-                                crate::mesh::pending_policy(&mut platform, cells.into_iter(), now);
+                            let policy_pending = crate::mesh::pending_policy(
+                                &mut platform,
+                                cells.into_iter(),
+                                mesh.regions(),
+                                now,
+                            );
                             let archived = self.archive_from(&platform);
                             drop(platform);
                             // Said on stderr as well as in the response: an
                             // operator asking why a desk never installs reads
                             // the answer where the policy was shipped from,
                             // whichever they reach first.
-                            for line in &policy_pending.whitelist {
+                            for line in policy_pending
+                                .whitelist
+                                .iter()
+                                .chain(policy_pending.shares.iter())
+                            {
                                 eprintln!("qip-api: {line}");
                             }
                             let dispatched = mesh.dispatch(pending, now);

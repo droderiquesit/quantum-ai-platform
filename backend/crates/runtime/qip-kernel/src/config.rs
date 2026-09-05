@@ -7,6 +7,7 @@
 //! what else is configured.
 
 use crate::central::CentralConfig;
+use qip_capital::ledger::{Mandate as LedgerMandate, MandateId, UserId};
 use qip_core::Decimal;
 use qip_core::error::Result;
 use qip_core::time::Duration;
@@ -143,6 +144,24 @@ impl EventLogDestination {
     }
 }
 
+/// One user's mandate, as the deployment enrols it beside the desk's.
+///
+/// Carried in configuration — the same committed source the desk's own
+/// mandate is sized from (`initial_equity`) — because a user mandate is a
+/// statement about whose capital the deployment manages, and the kernel has
+/// no other honest source for one: a mandate invented at runtime would be
+/// capital the platform promised to somebody nobody named. Every field is
+/// validated on the way in ([`UserId`], [`MandateId`] and the ledger's `Mandate` all
+/// refuse rather than correct), and the registry refuses the enrolment at
+/// assembly if the terms exceed the desk's, so a bad entry stops the process
+/// rather than opening a book under it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UserMandate {
+    pub user: UserId,
+    pub id: MandateId,
+    pub mandate: LedgerMandate,
+}
+
 /// How the platform is assembled.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlatformConfig {
@@ -216,6 +235,16 @@ pub struct PlatformConfig {
     /// exactly the behaviour it had.
     #[serde(default = "default_initial_equity")]
     pub initial_equity: Decimal,
+
+    /// The user mandates enrolled under the desk's ceiling at assembly.
+    ///
+    /// Empty by default, and empty means what it says: the per-user ledger
+    /// then holds the desk alone and books every settled fill to it whole.
+    /// Nothing here is inferred from anywhere else — see [`UserMandate`].
+    /// `#[serde(default)]` so a configuration stored before users existed
+    /// keeps deserialising, to the one-user ledger it always had.
+    #[serde(default)]
+    pub user_mandates: Vec<UserMandate>,
 
     /// How deep a chain observation has to be buried before the platform will
     /// read state derived from it.
@@ -311,6 +340,7 @@ impl Default for PlatformConfig {
             owner: default_owner(),
             data_user_agent: default_data_user_agent(),
             initial_equity: default_initial_equity(),
+            user_mandates: Vec::new(),
             chain_confirmations: default_chain_confirmations(),
             reasoning_confidence_bar: default_reasoning_confidence_bar(),
         }
@@ -384,6 +414,16 @@ impl PlatformConfig {
     /// State the equity the book starts with.
     pub fn with_initial_equity(mut self, equity: Decimal) -> Self {
         self.initial_equity = equity;
+        self
+    }
+
+    /// Enrol user mandates beside the desk's at assembly.
+    ///
+    /// Not validated here — each is validated where it is enrolled, against
+    /// the desk's mandate as the ceiling, and a refused enrolment stops
+    /// assembly with the term named.
+    pub fn with_user_mandates(mut self, mandates: Vec<UserMandate>) -> Self {
+        self.user_mandates = mandates;
         self
     }
 

@@ -4,16 +4,23 @@ The read-only treasury surface of `qip-api`. Four `GET` routes under
 `/api/v1`, all answering `200` with `content-type: application/json`.
 `/ledger/users` requires the `analyst` role; `/wallet`, `/corridors` and
 `/transfer-gate` require `viewer`. The split is by what the body carries:
-`/ledger/users` lists every enrolled user's mandate, balances and inflow
-references, and the portal grants `viewer` to anyone who completes
-self-registration, so at `viewer` the route would hand every user's capital to
-whoever could sign up. The other three describe the process — a wallet it never
-assembles, registries it never holds, the gate's checks and the kill switch —
-and carry no per-user datum. `POST`, `PUT`, `PATCH` and `DELETE` on any
-of them answer `405 {"error":"that method is not allowed here"}`. Nothing here
-submits, approves, signs or moves anything, and there is no route that could:
-ADR 0021 permits the deterministic half of the blueprint's treasury and refuses
-the path by which capital leaves the platform.
+`/ledger/users` lists every user in the mandate registry with their mandate,
+balances and inflow references, and the portal grants `viewer` to anyone who
+completes self-registration, so at `viewer` the route would hand every user's
+capital to whoever could sign up. The other three describe the process — the
+wallet the kernel's fabric journal last assembled, the registries it holds,
+the gate's checks and newest assessment, and the kill switch — and carry no
+per-user datum. `POST`, `PUT`, `PATCH` and `DELETE` on any of them answer
+`405 {"error":"that method is not allowed here"}`. Nothing here submits,
+approves, signs or moves anything, and there is no route that could: ADR 0021
+permits the deterministic half of the blueprint's treasury and refuses the
+path by which capital leaves the platform.
+
+Every body is read off the kernel at request time. The wallet, the corridors,
+the destinations and the gate assessment come from the kernel's fabric
+journal, whose every decision is also a record in the platform's event log;
+the users and balances come from the per-user ledger, which the kernel books
+from the centre's exact attribution. The API keeps no copy of any of it.
 
 The Rust shapes are in `src/ledger_views.rs`. This file is the same contract in
 prose, kept exact so a page can be built against it without reading Rust.
@@ -28,18 +35,26 @@ prose, kept exact so a page can be built against it without reading Rust.
   number. The platform's `Decimal` renders as its exact text; do not parse it
   into a float to display it.
 - Keys are stable `snake_case`. Lists are ordered deterministically (by user
-  id, then strategy id, then currency code) so two reads of the same state
-  render identically.
-- Absence is stated, never zero-filled: where the platform does not hold a
-  subsystem the body says so with a boolean and a `reason` string.
+  id, then strategy id, then currency code; by venue then asset; by corridor
+  or destination key) so two reads of the same state render identically.
+- Absence is stated, never zero-filled: where the platform does not yet hold a
+  thing the body says so with a boolean and a `reason` string.
 
 ## `GET /api/v1/ledger/users`
 
-**Role: `analyst`.** Every user enrolled in the per-user ledger with their
-mandate, their per-strategy balances and the entitlement evaluation for the
-viewer role. A `viewer` credential answers `403`; the entitlements in the body
-are still *evaluated as* the viewer role, which is a property of the
-evaluation, not of who may read it.
+**Role: `analyst`.** Every user in the per-user ledger's mandate registry —
+the desk, and each user mandate the deployment's configuration enrolled under
+it — with their mandate, their per-strategy balances and the entitlement
+evaluation for the viewer role. A `viewer` credential answers `403`; the
+entitlements in the body are still *evaluated as* the viewer role, which is a
+property of the evaluation, not of who may read it.
+
+Balances are what the kernel booked: a user's book at a strategy opens when
+the user's mandate funds it, and every fill the centre settles is then split
+across the users with capital at work at that strategy in proportion to what
+each has there, exactly, with the rounding unit assigned to the largest
+holder. With no user enrolled the desk takes each fill whole. Either way the
+event log carries the booking and its basis.
 
 ```json
 {
@@ -47,27 +62,27 @@ evaluation, not of who may read it.
   "served_at": "2025-10-09T08:53:20.000Z",
   "evaluated_as_role": "viewer",
   "products": ["research-tests"],
-  "fills_journalled": 0,
+  "fills_journalled": 2,
   "users": [
     {
-      "user_id": "desk",
+      "user_id": "alice",
       "mandate": {
-        "capital": "1000000",
+        "capital": "1000",
         "currency": "USD",
         "risk_tolerance": "1",
         "liquidity_floor": "0",
-        "investable": "1000000",
+        "investable": "1000",
         "exploration_share": "0",
-        "jurisdiction": "ZZ",
+        "jurisdiction": "GB",
         "permitted_families": { "any": true, "families": [] }
       },
       "balances": [
         {
-          "strategy": "AAA",
+          "strategy": "alpha",
           "currency": "USD",
-          "settled": "250.75",
+          "settled": "433.333333333",
           "reserved": "0",
-          "available": "250.75",
+          "available": "433.333333333",
           "expected_inflows_total": "0",
           "expected_inflows": [],
           "entries": 2,
@@ -79,13 +94,14 @@ evaluation, not of who may read it.
           "family": "research-tests",
           "role": "viewer",
           "evaluated_at": "2025-10-09T08:53:20.000Z",
-          "can_view": { "granted": true, "reason": "desk holds a mandate in ZZ" },
-          "can_invest": { "granted": false, "reason": "desk holds the viewer role, which does not invest" },
+          "can_view": { "granted": true, "reason": "alice holds a mandate in GB" },
+          "can_invest": { "granted": false, "reason": "alice holds the viewer role, which does not invest" },
           "can_withdraw": { "granted": false, "reason": "capital does not leave the platform: ADR 0021 refuses the signing and withdrawal half of the treasury and ADR 0023 keeps that in force; a withdrawal is a separate, later, separately approved decision" }
         }
       ],
       "entitlements_note": null
-    }
+    },
+    { "user_id": "desk", "mandate": { "capital": "10000000", "...": "..." }, "balances": [], "entitlements": [], "entitlements_note": null }
   ]
 }
 ```
@@ -96,8 +112,8 @@ Field by field:
 |---|---|---|
 | `evaluated_as_role` | `"viewer"` | The ledger role every entitlement was evaluated under. This surface is the viewer's; it never evaluates as an investor or the desk. |
 | `products` | `string[]` | The strategy families registered with the central factory, which are the products an entitlement is evaluated against. Empty on a fresh platform. |
-| `fills_journalled` | integer | Attributed fills the ledger has booked since assembly. |
-| `users[].user_id` | string | The ledger's user id. `"desk"` is the platform's own book. |
+| `fills_journalled` | integer | Attributed fills the ledger has booked since assembly, whichever basis each was booked under. |
+| `users[].user_id` | string | The ledger's user id. `"desk"` is the platform's own book and is always present; the rest are the configuration's enrolments, in id order. |
 | `users[].mandate.capital` | money string | Capital under management. |
 | `users[].mandate.currency` | string | ISO 4217 code. |
 | `users[].mandate.risk_tolerance` | decimal string in `[0, 1]` | Share of capital the user tolerates losing. |
@@ -106,8 +122,8 @@ Field by field:
 | `users[].mandate.exploration_share` | decimal string in `[0, 1]` | Share spendable on information gain. |
 | `users[].mandate.jurisdiction` | 2-letter string | ISO 3166 alpha-2; `"ZZ"` is the desk's own. |
 | `users[].mandate.permitted_families` | `{any: bool, families: string[]}` | `any: true` means every family; otherwise `families` lists the only ones. |
-| `users[].balances[]` | list | One row per `(strategy, currency)` book the user holds. Empty until a fill has been attributed to the user. |
-| `balances[].settled` | money string | Cash the ledger has said is here. |
+| `users[].balances[]` | list | One row per `(strategy, currency)` book the user holds. Empty until the user's mandate has funded a strategy or a fill has been attributed to the user. |
+| `balances[].settled` | money string | Cash the ledger has said is here: funded, plus the user's exact share of every fill since. |
 | `balances[].reserved` | money string | Settled cash held against an unresolved proposal. |
 | `balances[].available` | money string | `settled - reserved`. Expected inflows are **not** in this figure. |
 | `balances[].expected_inflows_total` | money string | Sum of declared, unposted inflows. Reported so it is visible; never added to anything. |
@@ -120,19 +136,37 @@ Field by field:
 
 ## `GET /api/v1/wallet`
 
-The wallet read model and its reconciliation outcomes. The kernel in this
-deployment holds no wallet, so the body reports that and fabricates no holding.
+The wallet the kernel's fabric journal last assembled, and its reconciliation
+outcomes. The kernel observes no custodian, venue balance or chain address of
+its own; it assembles a wallet in the LEARN stage of each cycle from the
+statements handed to it (provenance `statement`, the one channel the process
+can attest), pairing each with the ledger's view where the ledger books that
+venue-asset — the desk's cash at its venue, with reservations against it —
+and reconciling each against the tolerance supplied with the statement. Until
+a statement has been handed in and a cycle has run, the body reports that no
+wallet is assembled and fabricates no holding.
 
 ```json
 {
   "posture": "PAPER TRADING",
   "served_at": "2025-10-09T08:53:20.000Z",
-  "assembled": false,
-  "reason": "no wallet is assembled in this process. A wallet is a read model over holdings observed through read-only channels, and the kernel observes no custodian, venue balance or chain address; until an observation source is wired in there is nothing to pair with the ledger, and a wallet showing zero would read as an empty account rather than an unobserved one.",
-  "as_of": null,
-  "holdings": [],
+  "assembled": true,
+  "reason": null,
+  "as_of": "2025-10-09T08:53:20.000Z",
+  "holdings": [
+    {
+      "venue": "simulated-venue",
+      "asset": "USD",
+      "observed_quantity": "10000000",
+      "observed_at": "2025-10-09T08:52:20.000Z",
+      "provenance": "statement",
+      "ledger_expected": "10000000"
+    }
+  ],
   "reconciliation": {
-    "outcomes": [],
+    "outcomes": [
+      { "outcome": "reconciled", "venue": "simulated-venue", "asset": "USD", "delta": "0" }
+    ],
     "halted_venue_assets": 0
   }
 }
@@ -140,47 +174,74 @@ deployment holds no wallet, so the body reports that and fabricates no holding.
 
 | Key | Type | Meaning |
 |---|---|---|
-| `assembled` | bool | Whether a wallet exists in this process. `false` in every current deployment. |
+| `assembled` | bool | Whether the journal holds a wallet. `false` until a statement has been handed in and a cycle has assembled against it. |
 | `reason` | string or `null` | Why not, when `assembled` is `false`. |
-| `as_of` | timestamp or `null` | The instant the wallet was assembled at. |
-| `holdings[]` | list | Empty until `assembled` is `true`. When populated: `{venue, asset, observed_quantity, observed_at, provenance, ledger_expected}` with money as strings and `provenance` one of `read_only_api_key`, `watch_only_address`, `view_key`, `statement`. |
-| `reconciliation.outcomes[]` | list | Empty until `assembled` is `true`. When populated, each is the fabric's own record: `{"outcome": "reconciled", "venue", "asset", "delta"}` or `{"outcome": "halt", "venue", "asset", "delta", "alert": {...}}`. A halt instructs; nothing auto-corrects. |
+| `as_of` | timestamp or `null` | The instant the wallet was assembled at — the cycle's LEARN stage. |
+| `holdings[]` | list | One per observed venue-asset, in venue-then-asset order. `provenance` is one of `read_only_api_key`, `watch_only_address`, `view_key`, `statement`; this process only ever records `statement`. `ledger_expected` is `ledger_balance - reserved + in_flight` as a money string, or `null` where the ledger books nothing at that venue-asset. |
+| `reconciliation.outcomes[]` | list | The fabric's own record per venue-asset, in the same order: `{"outcome": "reconciled", "venue", "asset", "delta"}` or `{"outcome": "halt", "venue", "asset", "delta", "alert": {"cause": "delta_beyond_tolerance" \| "unrecorded_by_ledger", "expected", "observed", "delta", "tolerance", "observed_at", "provenance", "message", ...}}`. A halt instructs; nothing auto-corrects. |
 | `reconciliation.halted_venue_assets` | integer | Count of `outcomes` whose `outcome` is `"halt"`. |
 
 ## `GET /api/v1/corridors`
 
-The corridor registry and the destination allowlist, as records with lifecycle
-stage and caps. The kernel in this deployment holds neither registry.
+The corridor registry and the destination allowlist the kernel's fabric
+journal holds, as records with lifecycle stage and caps. Both are held from
+assembly — an allowlist that permits nothing is the safe default, not an
+absence — and every record is one a command through the journal proposed.
 
 ```json
 {
   "posture": "PAPER TRADING",
   "served_at": "2025-10-09T08:53:20.000Z",
   "corridors": {
-    "held": false,
-    "reason": "no corridor registry is held in this process. A corridor is the signed record of where capital may go and under what caps; the kernel composes no treasury and has proposed, reviewed or signed none, so there is no corridor to list — not an empty registry that admits nothing, but no registry at all.",
-    "records": []
+    "held": true,
+    "reason": null,
+    "records": [
+      {
+        "id": "treasury-sweep",
+        "source": { "region": "home", "currency": "USD", "venue": "simulated-venue" },
+        "source_class": "fiat_at_institution_of_record",
+        "kind": "institution_approval_flow",
+        "destination": { "asset": "USD", "address": "treasury-account" },
+        "caps": {
+          "max_per_transfer": "1000", "max_per_hour": "1000", "max_per_day": "5000",
+          "max_cumulative": "10000", "min_interval_seconds": 3600,
+          "permitted_hours": { "start": 0, "end": 24 }
+        },
+        "purpose": "sweep realised cash to the treasury account",
+        "stage": "proposed",
+        "proposed_by": "treasury-desk",
+        "proposed_at": "2025-10-09T08:53:20.000Z",
+        "reviewed_by": null,
+        "reviewed_at": null,
+        "signed": false,
+        "activation_at": null
+      }
+    ]
   },
   "destinations": {
-    "held": false,
-    "reason": "no destination allowlist is held in this process. ...",
-    "records": []
+    "held": true,
+    "reason": null,
+    "records": [
+      { "asset": "USD", "address": "treasury-account", "status": "proposed", "proposed_by": "treasury-desk", "proposed_at": "2025-10-09T08:53:20.000Z", "usable_from": null }
+    ]
   }
 }
 ```
 
 | Key | Type | Meaning |
 |---|---|---|
-| `corridors.held` / `destinations.held` | bool | Whether the process holds the registry. `false` in every current deployment. |
-| `corridors.records[]` | list | Empty until held. Record shape: `{id, source: {region, currency, venue}, source_class, kind, destination: {asset, address}, caps: {max_per_transfer, max_per_hour, max_per_day, max_cumulative, min_interval_seconds, permitted_hours: {start, end}}, purpose, stage, proposed_by, proposed_at, reviewed_by, reviewed_at, signed, activation_at}`. Money as strings; `stage` one of `proposed`, `reviewed`, `signed`, `time_delayed`, `active`, `suspended`, `revoked`. |
-| `destinations.records[]` | list | Empty until held. Record shape: `{asset, address, status, proposed_by, proposed_at, usable_from}` with `status` one of `proposed`, `verified`, `signed`, `revoked`. |
+| `corridors.held` / `destinations.held` | bool | Whether the process holds the registry. `true` from assembly. |
+| `corridors.reason` / `destinations.reason` | `null` | Kept for the contract; set only if a registry were ever not held. |
+| `corridors.records[]` | list | In corridor-id order. `stage` is one of `proposed`, `reviewed`, `signed`, `time_delayed`, `active`, `suspended`, `revoked`; `source_class` and `kind` are the fabric's custody-table labels. Money as strings. |
+| `destinations.records[]` | list | In key order. `status` is one of `proposed`, `verified`, `signed`, `revoked`; `usable_from` is set only while `signed`. |
 
 ## `GET /api/v1/transfer-gate`
 
 The seven deterministic checks of blueprint §37.3 in assessment order, the
-last assessment (there has never been one — the gate has no caller in this
-process), and the platform's kill switch, which is the state the gate's
-seventh check reads.
+newest assessment the fabric journal holds, and the platform's kill switch,
+which is the state the gate's seventh check reads. An intent reaches the gate
+only as a command through the kernel's fabric journal, so every assessment is
+a record in the event log; nothing in this process consumes an approval.
 
 ```json
 {
@@ -204,14 +265,14 @@ seventh check reads.
     "tripped_at": null
   },
   "executes": false,
-  "note": "the gate is veto-only and has no transfer engine behind it: an approval is a record that the seven checks passed, and nothing in this platform consumes one. No caller has yet assessed an intent."
+  "note": "the gate is veto-only and has no transfer engine behind it: ..."
 }
 ```
 
 | Key | Type | Meaning |
 |---|---|---|
 | `checks[]` | list of 7 | From the fabric's own `GateCheck::ALL`, in the order the gate runs them. `alerts` is whether §37.3 pairs a veto by that check with an alert to a person. |
-| `last_assessment` | `null` | Always `null` in this deployment. Were an assessment ever recorded it would be `{assessed_at, outcome: "approved" \| "vetoed", check, reason, alert}`. |
+| `last_assessment` | object or `null` | The newest assessment in the journal: `{corridor, assessed_at, outcome: "approved" \| "vetoed", check, reason, alert}`. `check` and `reason` are set for a veto and `null` for an approval. `null` while no intent has been assessed. |
 | `kill_switch.halted` | bool | The platform's global kill switch — the same fact `/risk` and `/system` serve. |
 | `kill_switch.halted_scopes` | string[] | Strategies or instruments halted individually. |
 | `kill_switch.tripped_by` / `reason` / `tripped_at` | string or `null` | Set only while halted. |
@@ -223,4 +284,6 @@ seventh check reads.
 Same as the rest of the API: `401` with `www-authenticate: Bearer` for a
 missing or unknown token, `403` below the route's role (`analyst` for
 `/ledger/users`, `viewer` for the other three), `429` over the rate limit,
-`405` for a method other than `GET`, `503` if the platform lock is poisoned.
+`405` for a method other than `GET`, `500` naming the reason if a view refuses
+to build (a ledger expectation that overflows, a verdict in a shape the reader
+does not know), `503` if the platform lock is poisoned.

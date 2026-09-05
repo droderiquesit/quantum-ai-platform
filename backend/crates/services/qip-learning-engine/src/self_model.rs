@@ -451,4 +451,24 @@ impl SelfModel {
     pub fn iter(&self) -> impl Iterator<Item = (&ComponentKey, &CapabilityEstimate)> {
         self.components.iter()
     }
+
+    /// The facts the degradation table needs about each component, in key
+    /// order: its key, its sample count and when its newest outcome was
+    /// graded.
+    ///
+    /// This is the shape `qip_contracts::SelfModelFreshness::assess` reads —
+    /// the §6.2 "self-model stale" row derives from exactly these three and
+    /// nothing else. The contracts crate is a lib this service depends on,
+    /// not the reverse, so the facts cross as plain values rather than as a
+    /// type it could name. Key order is what makes the first thin component
+    /// the table names the same one on every replay.
+    pub fn sample_facts(&self) -> impl Iterator<Item = (String, usize, Option<Timestamp>)> + '_ {
+        self.components.iter().map(|(key, estimate)| {
+            (
+                key.to_string(),
+                estimate.sample_count(),
+                estimate.last_updated(),
+            )
+        })
+    }
 }

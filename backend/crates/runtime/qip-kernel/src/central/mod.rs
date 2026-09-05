@@ -70,7 +70,7 @@ pub use plane::{
     CentralPlane, IssuedCapital, ReconciliationBreak, capital_subject,
 };
 pub use realised::{REALISED_SESSIONS, RealisedSeries, RealisedSession};
-pub use regions::{RegionMembership, RegionShare, RegionShares};
+pub use regions::{GrantManifests, ManifestDecision, RegionMembership, RegionShare, RegionShares};
 pub use whitelist::{
     ArbitragePolicy, WhitelistIssue, WhitelistOutcome, WhitelistedMarket, WhitelistedVenue,
 };

@@ -473,6 +473,17 @@ impl Corridor {
         self.signed.as_ref()
     }
 
+    /// Whether a signature record covers this corridor at all.
+    ///
+    /// A read, not a signature: the application layer's boundary suite pins
+    /// every `.signed(` call it contains to the two the centre makes (its
+    /// policy payload and its halt command), so a console view asking this
+    /// question asks it here rather than through [`Self::signed`], and the
+    /// suite keeps refusing a third signature without also refusing a read.
+    pub fn is_signed(&self) -> bool {
+        self.signed.is_some()
+    }
+
     /// The instant the current delay ends, if one is or was running.
     pub fn activation_at(&self) -> Option<Timestamp> {
         self.activation_at

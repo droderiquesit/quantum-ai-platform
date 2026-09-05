@@ -2364,3 +2364,120 @@ fn a_cells_manifest_names_only_grants_whose_gross_fits_its_share() -> Result<()>
     assert_eq!(expired.named_gross(), Decimal::ZERO);
     Ok(())
 }
+
+#[test]
+fn the_centres_manifests_for_a_regions_cells_never_together_exceed_its_grant_and_each_payload_carries_its_own()
+-> Result<()> {
+    // The producer's call, end to end at the centre: two cells of one
+    // region, each holding a grant this plane issued, and the manifests
+    // `grant_manifests` decides for them from the plan it sizes itself. What
+    // a cell will derive from its manifest is the gross of the grants it
+    // names, so the property is that the two manifests' gross sums to at
+    // most the region's grant — and that when it cannot, nothing ships.
+    use qip_contracts::policy::{PolicyPayload, Slot};
+    let mut plane = plane()?;
+    let first = strategy();
+    let second = StrategyId::new("central-momentum-2");
+    const SECOND_CELL: &str = "cell-lon-2";
+    register(&mut plane, &first, CELL)?;
+    register(&mut plane, &second, SECOND_CELL)?;
+    walk_to(&mut plane, &first, GateStage::Pilot)?;
+    walk_to(&mut plane, &second, GateStage::Pilot)?;
+    let first_envelope = issue(&mut plane, &first, CELL, start())?.envelope().clone();
+    let second_envelope = issue(&mut plane, &second, SECOND_CELL, start())?
+        .envelope()
+        .clone();
+    let plan = plane.allocate(0.0, start())?;
+    assert_eq!(
+        plan.for_cell(CELL),
+        first_envelope.gross_limit(),
+        "the premise: the first grant was issued against this plan's gross for its cell"
+    );
+    assert_eq!(
+        plan.for_cell(SECOND_CELL),
+        second_envelope.gross_limit(),
+        "the premise: the second grant was issued against this plan's gross for its cell"
+    );
+    let together = plan.for_cell(CELL) + plan.for_cell(SECOND_CELL);
+    assert!(
+        together.is_positive(),
+        "the premise: the plan allocates to both cells"
+    );
+    let region = "europe-west2";
+    let cells = [CELL, SECOND_CELL, "cell-nyc-9"];
+    let membership = qip_kernel::central::RegionMembership::parse(&format!(
+        "{region}={together}:{CELL},{SECOND_CELL}"
+    ))?;
+    assert!(
+        membership.covering(cells).is_err(),
+        "the premise: the third cell is in no region"
+    );
+
+    let manifests = plane.grant_manifests(cells, &membership, 0.0, start());
+    let mut named_gross = Decimal::ZERO;
+    for (cell, envelope) in [(CELL, &first_envelope), (SECOND_CELL, &second_envelope)] {
+        let share = match manifests.for_cell(cell) {
+            Some(qip_kernel::central::ManifestDecision::Ship(share)) => share,
+            other => panic!("{cell} was not shipped a share: {other:?}"),
+        };
+        assert_eq!(share.region(), region);
+        assert_eq!(
+            share.live_grants(),
+            &[envelope.signature().to_string()],
+            "{cell}'s manifest did not name exactly its own grant"
+        );
+        named_gross += share.named_gross();
+        // The slot as the producer places it: a produced manifest naming
+        // the grant, on a payload addressed to the cell.
+        let mut payload = PolicyPayload::unproduced(1, cell, start());
+        let manifest = manifests
+            .for_cell(cell)
+            .and_then(qip_kernel::central::ManifestDecision::manifest)
+            .unwrap_or_else(|| panic!("{cell}'s decision carries no manifest"));
+        payload.capital_grants = Slot::produced(manifest, start());
+        assert_eq!(
+            payload
+                .capital_grants
+                .value()
+                .map(|manifest| manifest.live_grants.clone()),
+            Some(vec![envelope.signature().to_string()]),
+            "{cell}'s payload does not carry its manifest"
+        );
+    }
+    assert!(
+        named_gross <= together,
+        "the manifests together name {named_gross} of grants against a grant of {together}"
+    );
+    match manifests.for_cell("cell-nyc-9") {
+        Some(qip_kernel::central::ManifestDecision::Withhold(reason)) => {
+            assert!(reason.contains("in no region"), "{reason}");
+        }
+        other => panic!("a cell in no region was decided as {other:?}"),
+    }
+
+    // A grant one unit short of what the plan allocates: the plan is
+    // refused whole and neither cell ships a manifest — not the first cell
+    // alone, not a scaled pair — with the refusal on each.
+    let short = qip_kernel::central::RegionMembership::parse(&format!(
+        "{region}={}:{CELL},{SECOND_CELL}",
+        together - Decimal::ONE
+    ))?;
+    let withheld = plane.grant_manifests(cells, &short, 0.0, start());
+    for cell in [CELL, SECOND_CELL] {
+        match withheld.for_cell(cell) {
+            Some(qip_kernel::central::ManifestDecision::Withhold(reason)) => assert!(
+                reason.contains("could not be partitioned") && reason.contains("past its grant"),
+                "{cell}'s withholding does not carry the refusal: {reason}"
+            ),
+            other => panic!("{cell} was shipped a share under a grant the plan exceeds: {other:?}"),
+        }
+        assert_eq!(
+            withheld
+                .for_cell(cell)
+                .and_then(qip_kernel::central::ManifestDecision::manifest),
+            None,
+            "{cell} was given a manifest under a refused plan"
+        );
+    }
+    Ok(())
+}

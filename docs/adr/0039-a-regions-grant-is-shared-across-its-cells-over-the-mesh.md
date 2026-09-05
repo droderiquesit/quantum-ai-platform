@@ -589,22 +589,95 @@ Applied, by crate:
   mutation-verified; the report of the applying session names each mutation
   and the assertion it tripped.
 
-Not applied, and why:
+**Second slice, 2026-09-05, in `qip-kernel`'s central plane, `qip-edge` and
+`qip-edge-node`.** Three of the gaps the first slice left are closed on the
+crates this slice may edit; the one that is not is named last.
 
+- **The producer's call exists at the centre.** `CentralPlane::grant_manifests(cells, membership, drawdown, now)`
+  (`central/plane.rs`) sizes the plan with the same `allocate` the
+  envelopes were issued against, partitions it, and answers every
+  configured cell with a `ManifestDecision` (`central/regions.rs`): `Ship`
+  the share's manifest, or `Withhold` with the reason. A plan the
+  partitioner refuses withholds every cell with the refusal; a cell absent
+  from the membership is withheld as "in no region", never given one by
+  default. `RegionMembership::parse` reads a membership from a committed
+  declaration — `region=grant:cell,cell;…` — and `RegionMembership::covering`
+  refuses, by name, a served cell the declaration does not file, for a
+  composition root to call at start. Proven by
+  `central.rs::the_centres_manifests_for_a_regions_cells_never_together_exceed_its_grant_and_each_payload_carries_its_own`
+  (two cells, one region, grants issued through the plane's own door; the
+  manifests' gross sums to at most the grant; a grant one unit short ships
+  nothing to either cell) and two unit tests beside the types.
+- **The node opens unfunded.** `qip_edge_node::assemble` calls the new
+  `Cell::with_unfunded_region(ceiling)`; `QIP_REGION_ALLOCATION` is the
+  ceiling and is documented as such in `allocation.rs`, the banner prints
+  `region_ceiling` and `region_bound` as two facts, and the health body
+  carries a `region_share` block (`qip_edge_node::share::RegionShareStatus`)
+  with `funded`, `bound`, `free`, `ceiling`, `sequence` and `why` — the
+  reason a node that places nothing places nothing, since from the order
+  count alone it reads like a quiet market. Proven in
+  `qip-edge-node/tests/pass.rs` by
+  `an_unfunded_node_sends_nothing_until_its_first_share_arrives_and_then_sends_within_it`,
+  `a_second_node_under_the_same_regions_grant_cannot_exceed_it_with_the_first`
+  (two `assemble` calls, one grant of one pass's worth, the second node
+  refused under `region_reservation`, the two together charged exactly the
+  grant, with the contrast that a second node shipped its own grant sends)
+  and `a_replayed_lower_sequence_payload_leaves_the_nodes_table_unchanged`.
+- **A share is re-derived when the grant it names lands.** The node's
+  exchange applies a payload before it deploys the plan that payload names
+  (`qip-edge-node/src/mesh.rs`, the policy poll precedes `strategies.install`),
+  so the first sum over the manifest found no grant and the table narrowed
+  to nothing until the next payload. `RegionAllocation::rederive` re-sums
+  under the sequence already applied — for the same owner, refusing any
+  other sequence and a table no share was applied to — and `Cell` calls it
+  after a deploy, a renewal and a withdrawal. It is not a second path to
+  the bound: the inputs are the applied signed payload and the signed
+  envelopes it names, and the centre ships a manifest only when their gross
+  fits the share it computed. Proven by
+  `reservation.rs::a_share_is_rederived_only_under_the_sequence_that_named_it`
+  and by the strategies chain test in `qip-edge-node/tests/strategies.rs`,
+  whose payload now carries the manifest and whose table reads zero until
+  the installer deploys the grant it names.
+
+**Third slice, the same day, in `qip-api`.** `pending_policy` now takes the
+membership and calls `platform.central().grant_manifests(cells, membership,
+platform.drawdown(), now)`: a shipped share produces the slot from
+`decision.manifest()`, a withheld one ships the slot unproduced, and every
+decision's `describe(cell)` line travels in the cycle response beside the
+whitelist lines (`PolicySummary::shares`) and on stderr. The membership is
+read at the API root from `QIP_MESH_REGIONS` (`region=grant:cell,cell;…`),
+parsed with `RegionMembership::parse` and checked with `covering` against
+`QIP_MESH_CELLS` before the backbone opens, so a served cell filed nowhere
+stops the process naming the cell. Left unset, every live grant ships to
+every cell as before — the one-cell-per-region shape — and each cycle says
+so beside the payload, naming the variable, rather than defaulting a share
+silently. Proven by `qip-api/tests/mesh.rs::with_a_membership_declared_the_cycle_ships_the_cell_its_share_of_the_regions_grant`
+(the cell's verified payload names exactly the grant the ladder issued),
+`without_a_membership_the_cycle_says_every_live_grant_shipped_and_names_the_variable`,
+and the settings test that refuses a membership missing a served cell; three
+mutations fired (the seam ignoring the membership, `covering` not consulted,
+the undeclared line no longer naming the variable), each restored
+byte-for-byte. `QIP_MESH_REGIONS` is argued unset for every Cloud Run
+deployment in the manifest-wiring suite for the reason `QIP_MESH_CELLS` is:
+the mesh has no port there.
+
+Still not applied, and why:
+
+- Which configuration carries the declaration is still the owner's third
+  decision: `QIP_MESH_REGIONS` is the API's own environment, chosen because
+  it sits beside `QIP_MESH_CELLS`, which it must cover; membership is not a
+  `CentralConfig` field and is not derived from treasury, and moving it is
+  a one-line change at the root once decided.
 - `qip-contracts` (the explicit field) and `qip-mesh` (nothing to do) —
-  see the deviation above.
-- `qip-api::pending_policy` still ships every live grant's signature without
-  consulting `region_shares`, so no deployed centre yet withholds a manifest
-  or refuses a plan; the partitioner has no production caller. Wiring it
-  needs `RegionMembership` from somewhere, which is decision 3.
-- `qip-edge-node::assemble` still opens `with_region_allocation(amount)`;
-  `QIP_REGION_ALLOCATION` still funds the cell rather than ceiling it.
-  Decision 2.
-- The delta carries neither `free` nor the bound; that is a `qip-mesh`
-  field.
+  see the deviation above. The delta carries neither `free` nor the bound.
 - The payload cadence (decision 4), the traceability F6 row, and
   `.claude/rules/domains/risk-and-execution.md` are untouched.
+- The cross-crate end-to-end test — a payload the kernel produced, applied
+  by a `qip-edge` cell — belongs in `qip-acceptance`, which this slice may
+  not edit; the two halves are each proven on their own side of the wire.
 
 The paper-trading boundary is unchanged: `Cell::new` remains the only
-constructor and takes no ceiling; a share is checked after the envelope,
-after autonomy, and after every other gate in `Cell::work`.
+constructor and takes no ceiling; `with_unfunded_region` is a builder over
+the region table and names no ceiling of any other kind; a share is checked
+after the envelope, after autonomy, and after every other gate in
+`Cell::work`.

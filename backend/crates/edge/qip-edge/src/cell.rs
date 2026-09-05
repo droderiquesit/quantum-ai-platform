@@ -622,6 +622,23 @@ impl Cell {
         Ok(self.with_region_table(RegionTable::new(amount)?))
     }
 
+    /// Bound everything this cell commits by a share the centre has yet to
+    /// name, under an operator's ceiling (ADR 0039).
+    ///
+    /// The table opens funding nothing: every hold is refused under
+    /// `region_reservation` until a verified policy payload's grant manifest
+    /// names grants this cell holds, at which point [`Self::apply_policy`]
+    /// re-bases the table to their gross. `ceiling` is the most the table
+    /// will ever be bounded to whatever the centre names — the operator's
+    /// backstop, which can only narrow. Contrast [`Self::with_region_allocation`],
+    /// which funds the cell at the operator's number from the start: that is
+    /// the number nothing at the centre ever checked against a region's
+    /// grant, and two such cells under one grant could together spend it
+    /// twice.
+    pub fn with_unfunded_region(self, ceiling: Decimal) -> Result<Self> {
+        Ok(self.with_region_table(RegionTable::unfunded(ceiling)?))
+    }
+
     /// Hold against a table this cell shares with every other cell of its
     /// region — the blueprint's per-region reservation table (§26/§33).
     ///
@@ -1137,16 +1154,52 @@ impl Cell {
     /// narrow. A cell with no table has nothing to re-base and records
     /// nothing, exactly as it holds nothing on a pass.
     fn apply_region_share(&mut self, sequence: u64, now: Timestamp) {
-        let Some(table) = self.region_allocation.clone() else {
+        let Some((table, share, grants)) = self.derive_region_share(now) else {
             return;
         };
-        let Some(manifest) = self
+        let outcome = table.rebase(&self.config.cell_id, share, sequence);
+        self.record_region_share(outcome, sequence, grants, now);
+    }
+
+    /// Sum the applied manifest again under its own sequence, because the
+    /// grants this cell holds have changed (ADR 0039).
+    ///
+    /// Called after a grant is deployed, renewed or withdrawn. The node
+    /// applies a payload before it deploys the plan that payload names, so
+    /// the first sum over the manifest finds no grant and the table narrows
+    /// to nothing; when the grant lands the same signed manifest is summed
+    /// once more, under the same sequence, and the table funds. A withdrawal
+    /// or a renewal under a new signature narrows by the same arithmetic,
+    /// which is the safe direction. Nothing here can widen past the payload:
+    /// only grants the manifest names are counted, and the centre ships a
+    /// manifest only when their gross fits the share it computed. A table no
+    /// payload has funded yet is left alone — a share arrives with a payload
+    /// and never from a grant by itself — and the ledger refuses the
+    /// re-derivation on its own if this check is ever wrong.
+    fn rederive_region_share(&mut self, now: Timestamp) {
+        let Some(sequence) = self.policy_sequence() else {
+            return;
+        };
+        if self.region_share_sequence() != Some(sequence) {
+            return;
+        }
+        let Some((table, share, grants)) = self.derive_region_share(now) else {
+            return;
+        };
+        let outcome = table.rederive(&self.config.cell_id, share, sequence);
+        self.record_region_share(outcome, sequence, grants, now);
+    }
+
+    /// The share the applied manifest names for this cell: the gross of the
+    /// verified, deployed, still-live envelopes among the grants it lists,
+    /// and how many there were. `None` when there is no table to re-base or
+    /// no produced manifest to sum.
+    fn derive_region_share(&mut self, now: Timestamp) -> Option<(RegionTable, Decimal, usize)> {
+        let table = self.region_allocation.clone()?;
+        let manifest = self
             .policy
             .as_ref()
-            .and_then(|policy| policy.payload().capital_grants.value())
-        else {
-            return;
-        };
+            .and_then(|policy| policy.payload().capital_grants.value())?;
         let mut share = Decimal::ZERO;
         let mut grants = 0usize;
         for deployed in self.deployed.values() {
@@ -1182,7 +1235,18 @@ impl Cell {
             }
             grants += 1;
         }
-        match table.rebase(&self.config.cell_id, share, sequence) {
+        Some((table, share, grants))
+    }
+
+    /// Journal what a re-base or a re-derivation did, and chart the balance.
+    fn record_region_share(
+        &mut self,
+        outcome: Result<crate::reservation::Rebase>,
+        sequence: u64,
+        grants: usize,
+        now: Timestamp,
+    ) {
+        match outcome {
             Ok(rebase) => {
                 self.journal.record(
                     Decision::RegionShareApplied {
@@ -1226,6 +1290,12 @@ impl Cell {
         self.region_allocation
             .as_ref()
             .and_then(RegionTable::share_sequence)
+    }
+
+    /// The operator's ceiling on the region table, which no share can raise,
+    /// or `None` if this cell holds no table.
+    pub fn region_allocation_ceiling(&self) -> Option<Decimal> {
+        self.region_allocation.as_ref().map(RegionTable::ceiling)
     }
 
     /// Track an instrument at a venue.
@@ -1345,6 +1415,14 @@ impl Cell {
             )));
         }
 
+        // The grant's own clock, for the share: this method takes no
+        // timestamp, so `is_live` is judged at the instant the envelope was
+        // verified, which is the latest instant it knows and one the grant
+        // is live at by construction. A sibling grant that has expired since
+        // is counted until the next pass or payload — every order still
+        // checks its own envelope's window, and the centre named only grants
+        // live at its own clock, so the sum stays inside the centre's share.
+        let verified_at = envelope.verified_at();
         self.deployed.insert(
             envelope.strategy().as_str().to_string(),
             Deployed {
@@ -1356,6 +1434,10 @@ impl Cell {
                 pricing,
             },
         );
+        // A grant the applied manifest names is now held, so the share the
+        // manifest carries can be summed against it — see
+        // `rederive_region_share`.
+        self.rederive_region_share(verified_at);
         Ok(())
     }
 
@@ -1446,6 +1528,10 @@ impl Cell {
             },
             now,
         );
+        // A grant the cell no longer runs under no longer funds its share:
+        // the narrowing direction, applied at once rather than at the next
+        // payload.
+        self.rederive_region_share(now);
         Ok(deployed.envelope)
     }
 
@@ -4125,6 +4211,12 @@ impl Cell {
             },
             now,
         );
+        // The grant under this name has a new signature. If the applied
+        // manifest names it the share widens to what the centre already
+        // checked; if it names only the old one the share narrows, until
+        // the next payload names the renewal. Either way the sum is of
+        // grants the centre signed, never of a number the cell chose.
+        self.rederive_region_share(now);
         Ok(())
     }
 

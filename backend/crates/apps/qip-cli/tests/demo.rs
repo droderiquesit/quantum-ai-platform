@@ -338,6 +338,7 @@ fn the_walk_no_longer_reports_the_delta_decode_the_api_composition_root_performs
         }],
         inbox_capacity: 16,
         spool_capacity: 16,
+        regions: None,
     };
     let mut backbone = MeshBackbone::open(
         &settings,

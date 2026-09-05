@@ -24,7 +24,7 @@ use super::dna::StrategyDna;
 use super::factory::StrategyFactory;
 use super::learning::CellOutcome;
 use super::realised::RealisedSeries;
-use super::regions::{RegionMembership, RegionShares, partition};
+use super::regions::{GrantManifests, RegionMembership, RegionShares, partition};
 use super::whitelist::{ArbitragePolicy, WhitelistIssue, WhitelistOutcome};
 use qip_capital::allocation::{
     Allocation, AllocationLimits, AllocationPlan, CapitalAllocator, DrawdownSchedule,
@@ -981,6 +981,31 @@ impl CentralPlane {
         now: Timestamp,
     ) -> Result<RegionShares> {
         partition(plan, membership, &self.envelopes, now)
+    }
+
+    /// The `capital_grants` slot for every configured cell's payload: each
+    /// cell's share of its region's grant, as a manifest of the grants this
+    /// plane holds issued to it, or the reason the slot ships unproduced
+    /// (ADR 0039).
+    ///
+    /// The plan is sized here, by the same [`Self::allocate`] the envelopes
+    /// were issued against, so the share and the envelopes are one number
+    /// from one source. `drawdown` is the statistic the allocator shrinks
+    /// under, as [`Self::issue`] takes it. A plan the partitioner refuses
+    /// withholds every cell with the refusal, and a cell absent from the
+    /// membership is withheld with that: no cell is ever shipped a manifest
+    /// the plan did not produce, and none is given a region by default.
+    pub fn grant_manifests<'a>(
+        &self,
+        cells: impl IntoIterator<Item = &'a str>,
+        membership: &RegionMembership,
+        drawdown: f64,
+        now: Timestamp,
+    ) -> GrantManifests {
+        let partitioned = self
+            .allocate(drawdown, now)
+            .and_then(|plan| self.region_shares(&plan, membership, now));
+        GrantManifests::decide(cells, partitioned)
     }
 
     /// Issue a grant.

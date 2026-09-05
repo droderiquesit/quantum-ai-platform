@@ -111,7 +111,7 @@ fn rig(inbox_capacity: usize) -> Result<Rig> {
 /// trust root is installed, as `main` orders it, so the plane
 /// `harden_central` rebuilds carries the policy too.
 fn rig_with(inbox_capacity: usize, config: PlatformConfig) -> Result<Rig> {
-    rig_full(inbox_capacity, config, None)
+    rig_full(inbox_capacity, config, None, None)
 }
 
 /// The same rig with the chain archive `main` wires through
@@ -121,6 +121,7 @@ fn rig_full(
     inbox_capacity: usize,
     config: PlatformConfig,
     archive: Option<Arc<ChainArchive>>,
+    regions: Option<RegionMembership>,
 ) -> Result<Rig> {
     let clock = Arc::new(ManualClock::new(start()));
     let context = Context::new(clock.clone(), config.seed);
@@ -142,6 +143,7 @@ fn rig_full(
         }],
         inbox_capacity,
         spool_capacity: 64,
+        regions,
     };
     let mesh = MeshBackbone::open(
         &settings,
@@ -854,7 +856,7 @@ use qip_compliance::approval::OperatorCredential;
 use qip_contracts::feature::FeatureKey;
 use qip_contracts::gate::GateStage;
 use qip_contracts::governance::Approval;
-use qip_contracts::policy::CycleWhitelist;
+use qip_contracts::policy::{CycleWhitelist, GrantManifest};
 use qip_contracts::signal::SignalKind;
 use qip_contracts::venue::VenueClass;
 use qip_core::dec;
@@ -862,8 +864,8 @@ use qip_core::rng::{Rng, Xoshiro256};
 use qip_events::{EventFilter, Topic};
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
 use qip_kernel::central::{
-    ArbitragePolicy, CentralConfig, CentralPlane, StrategyCandidate, WhitelistIssue,
-    WhitelistedMarket, WhitelistedVenue, capital_subject,
+    ArbitragePolicy, CentralConfig, CentralPlane, RegionMembership, StrategyCandidate,
+    WhitelistIssue, WhitelistedMarket, WhitelistedVenue, capital_subject,
 };
 use qip_lifecycle::evidence::{
     CrossValidationRun, FeatureTiming, HoldoutEvidence, KillCondition, LeakageAudit, PaperEvidence,
@@ -1177,6 +1179,105 @@ fn whitelist_lines(cycle: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn share_lines(cycle: &serde_json::Value) -> Vec<String> {
+    cycle["mesh"]["policy"]["shares"]
+        .as_array()
+        .map(|lines| {
+            lines
+                .iter()
+                .filter_map(|line| line.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The grant manifest the cell's own downlink verified, read the way the
+/// node reads it before deriving its region share.
+fn shipped_manifest(rig: &Rig, name: &str) -> Result<Option<GrantManifest>> {
+    let mut downlink = policy_downlink(rig, name)?;
+    let batch = downlink.poll(at(Duration::from_secs(5)))?;
+    let payload = batch
+        .verified
+        .first()
+        .ok_or_else(|| Error::not_found("a payload the cell verified"))?;
+    Ok(payload.payload().capital_grants.value().cloned())
+}
+
+/// ADR 0039 at the seam a deployment runs: with a membership declared, the
+/// `capital_grants` slot carries the centre's share of the region's grant
+/// for this cell — the grant the ladder issued, named by signature — and the
+/// cycle says so; a second cell under the same grant would be partitioned
+/// against the same plan, which the kernel's own suite proves. Until the
+/// seam called `grant_manifests`, no deployed centre withheld a manifest,
+/// whatever the membership said.
+#[test]
+fn with_a_membership_declared_the_cycle_ships_the_cell_its_share_of_the_regions_grant() -> Result<()>
+{
+    let membership = RegionMembership::parse(&format!("europe-west2=5000000:{CELL}"))?;
+    let rig = rig_full(
+        64,
+        config_with(arbitrage_policy(&[DESK_VENUE])),
+        None,
+        Some(membership),
+    )?;
+    let grant = {
+        let mut platform = rig
+            .platform
+            .lock()
+            .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+        grant_the_desk(platform.central_mut())?
+    };
+    // Premise: the grant is live, so a manifest that does not name it is
+    // the seam's omission and not the fixture's.
+    assert!(grant.is_live(at(Duration::from_secs(5))));
+
+    let cycle = run_cycle(&rig)?;
+    let lines = share_lines(&cycle);
+    assert_eq!(lines.len(), 1, "one cell, one share line: {cycle}");
+    assert!(
+        lines[0].contains(&format!("region share for {CELL}"))
+            && lines[0].contains("europe-west2")
+            && !lines[0].contains("not shipped"),
+        "the cycle does not account for the share it shipped: {}",
+        lines[0]
+    );
+
+    let manifest = shipped_manifest(&rig, "region-share")?
+        .ok_or_else(|| Error::not_found("a produced grant manifest"))?;
+    assert_eq!(
+        manifest.live_grants,
+        vec![grant.signature().to_string()],
+        "the share's manifest does not name exactly the grant the ladder issued"
+    );
+    Ok(())
+}
+
+/// The undeclared case says what it is. Every live grant shipping to every
+/// cell is the one-cell-per-region shape ADR 0039 grows out of; a deployment
+/// still in it reads that in the cycle rather than discovering it when two
+/// nodes under one grant each spend it.
+#[test]
+fn without_a_membership_the_cycle_says_every_live_grant_shipped_and_names_the_variable()
+-> Result<()> {
+    let rig = rig_with(64, config_with(arbitrage_policy(&[DESK_VENUE])))?;
+    {
+        let mut platform = rig
+            .platform
+            .lock()
+            .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+        grant_the_desk(platform.central_mut())?;
+    }
+    let cycle = run_cycle(&rig)?;
+    let lines = share_lines(&cycle);
+    assert_eq!(lines.len(), 1, "one cell, one share line: {cycle}");
+    assert!(
+        lines[0].contains("no QIP_MESH_REGIONS declared") && lines[0].contains("1 grant(s)"),
+        "the undeclared membership is not said out loud: {}",
+        lines[0]
+    );
+    Ok(())
+}
+
 /// Read the slot the way the node's installer does: the payload the cell's
 /// own downlink verified, and slot 8 on it.
 fn shipped_whitelist(rig: &Rig, name: &str) -> Result<Option<CycleWhitelist>> {
@@ -1310,7 +1411,7 @@ fn a_cycle_ships_the_desk_a_live_grant_funds_as_a_whitelist_the_cell_verifies() 
 #[test]
 fn the_whitelist_a_cycle_ships_is_in_the_archive_before_the_cycle_answers() -> Result<()> {
     let archive = Arc::new(ChainArchive::open(Arc::new(MemoryKeyValueStore::new()))?);
-    let rig = rig_full(64, PlatformConfig::default(), Some(archive.clone()))?;
+    let rig = rig_full(64, PlatformConfig::default(), Some(archive.clone()), None)?;
     // Premise: nothing has been archived before the cycle, so every record
     // found afterwards was handed over by the route.
     assert_eq!(archive.len()?, 0);

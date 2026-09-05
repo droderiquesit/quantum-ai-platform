@@ -547,8 +547,10 @@ variable "strategy_plan_path" {
 
 variable "region_allocation" {
   description = <<-EOT
-    The capital this node may hold in reservation across all its strategies,
-    written into `node.env` as `QIP_REGION_ALLOCATION`.
+    The ceiling on the capital this node may hold in reservation across all
+    its strategies, written into `node.env` as `QIP_REGION_ALLOCATION`. The
+    node opens unfunded under it and funds its region table only from the
+    share the centre ships (ADR 0039); the ceiling bounds the share.
 
     Required, with no default, because a default is a number nobody chose.
     `qip-edge-node` refuses to start without it (ADR 0008: a cell that has

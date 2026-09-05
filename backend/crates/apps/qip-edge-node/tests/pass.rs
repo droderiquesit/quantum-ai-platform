@@ -13,6 +13,7 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_contracts::capital::CapitalEnvelope;
+use qip_contracts::policy::{GrantManifest, PolicyPayload, Slot};
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::VenueId;
 use qip_core::error::Result;
@@ -20,14 +21,17 @@ use qip_core::ids::ObjectId;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Decimal, SystemClock, dec};
 use qip_edge::cell::PlacedOrder;
+use qip_edge::cell::WorkReport;
 use qip_edge::cell::{CellConfig, PolledHalt, PricingPolicy};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
+use qip_edge::policy::VerifiedPolicy;
 use qip_edge::telemetry::{CellMetrics, EDGE_FILLS_CONFIRMED, EDGE_ORDERS_REPRICED};
 use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SimulatedFeed};
 use qip_edge_node::gateway::SimulatedGateway;
 use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
 use qip_edge_node::reprice::{Requote, Requoter};
+use qip_edge_node::share::RegionShareStatus;
 use qip_edge_node::{NodeAssembly, assemble};
 use qip_execution_engine::order::Side;
 use qip_feature_dag::engine::FeatureEngine;
@@ -84,13 +88,25 @@ fn firing_strategy() -> Result<(CompiledStrategy, Program)> {
 }
 
 fn grant() -> Result<VerifiedEnvelope> {
+    grant_for(CELL, dec!("1000000"), dec!("100000"), dec!("50000"))
+}
+
+/// A signed grant for `STRATEGY` at `cell`, with the limits the test names.
+/// The signature is deterministic over the terms, so signing the same terms
+/// again yields the name the centre's manifest would carry.
+fn grant_for(
+    cell: &str,
+    gross: Decimal,
+    order: Decimal,
+    loss: Decimal,
+) -> Result<VerifiedEnvelope> {
     let build = |signature: &str| {
         CapitalEnvelope::new(
             StrategyId::new(STRATEGY),
-            CELL,
-            dec!("1000000"),
-            dec!("100000"),
-            dec!("50000"),
+            cell,
+            gross,
+            order,
+            loss,
             vec![venue()],
             t(0),
             t(3600),
@@ -100,14 +116,45 @@ fn grant() -> Result<VerifiedEnvelope> {
     };
     let unsigned = build("unsigned")?;
     let signed = build(&sign_payload(ENVELOPE_KEY, &unsigned.signing_payload()))?;
-    VerifiedEnvelope::verify(signed, ENVELOPE_KEY, CELL, t(1))
+    VerifiedEnvelope::verify(signed, ENVELOPE_KEY, cell, t(1))
+}
+
+/// A verified payload for `cell` whose `capital_grants` slot names `grants`
+/// — what the centre ships once it has partitioned the region's grant
+/// (ADR 0039), built and signed here independently of the centre.
+fn share_policy(
+    cell: &str,
+    sequence: u64,
+    issued_at: Timestamp,
+    grants: Vec<String>,
+) -> Result<VerifiedPolicy> {
+    let mut payload = PolicyPayload::unproduced(sequence, cell, issued_at);
+    payload.capital_grants = Slot::produced(
+        GrantManifest {
+            live_grants: grants,
+        },
+        issued_at,
+    );
+    VerifiedPolicy::verify(payload.signed(ENVELOPE_KEY)?, ENVELOPE_KEY, cell, issued_at)
+}
+
+fn refused_under<'a>(report: &'a WorkReport, gate: &str) -> Vec<&'a str> {
+    report
+        .refusals
+        .iter()
+        // Delimited equality, not `contains`: `region_reservation_abandoned`
+        // has `region_reservation` as a prefix.
+        .filter(|(recorded, _)| recorded == gate)
+        .map(|(_, reason)| reason.as_str())
+        .collect()
 }
 
 /// The node's pieces, assembled the way `main.rs` assembles them: one
 /// registry, the simulated gateway, the simulated feed attached to the cell,
-/// and one firing strategy deployed under a signed grant with the pricing
-/// the test names.
-fn node_with_feed(
+/// one firing strategy deployed under a signed grant with the pricing the
+/// test names — and **no share applied**, so the table is at nothing, as a
+/// node is until the centre's first payload reaches it.
+fn unfunded_node_with_feed(
     pricing: PricingPolicy,
 ) -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
     let config = CellConfig::new(CELL, REGION).with_venue(venue());
@@ -122,6 +169,19 @@ fn node_with_feed(
     let (compiled, program) = firing_strategy()?;
     node.cell
         .deploy_with_pricing(compiled, program, grant()?, pricing)?;
+    Ok((node, gateway, feed))
+}
+
+/// [`unfunded_node_with_feed`], then the share the centre would ship: a
+/// payload naming the one grant the cell holds, applied at `t(5)` under
+/// sequence 1, before any test's first pass at `t(10)`.
+fn node_with_feed(
+    pricing: PricingPolicy,
+) -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
+    let (mut node, gateway, feed) = unfunded_node_with_feed(pricing)?;
+    let named = grant()?.signature().to_string();
+    node.cell
+        .apply_policy(share_policy(CELL, 1, t(5), vec![named])?, t(5))?;
     Ok((node, gateway, feed))
 }
 
@@ -1155,6 +1215,370 @@ fn a_fresh_resting_child_is_not_repriced() -> Result<()> {
             .counter(EDGE_ORDERS_REPRICED, &by("venue", VENUE)),
         0,
         "the requote series moved for an order that was not repriced"
+    );
+    Ok(())
+}
+
+// --- ADR 0039: the node opens unfunded and funds only from a share ------------
+
+const SECOND_CELL: &str = "london-2";
+/// The gate literal `Cell::hold_region_capital` refuses under, matched by
+/// delimited equality: `region_reservation_abandoned` carries it as a prefix.
+const RESERVATION_GATE: &str = "region_reservation";
+
+/// A node for `cell`, assembled through `assemble` as `main.rs` does, with a
+/// two-sided book at the venue and the firing strategy deployed marketable
+/// under a grant of exactly `gross` — and no share applied.
+fn unfunded_node_for(
+    cell: &str,
+    gross: Decimal,
+) -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
+    let config = CellConfig::new(cell, REGION).with_venue(venue());
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let allocation = RegionCapital::read(Some("1000000000"))?;
+    let mut node = assemble(config, features, Arc::new(SystemClock), allocation)?;
+    let mut gateway = SimulatedGateway::new(venue(), 7, t(0))?;
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+    let feed = SimulatedFeed::new(venue());
+    feed.attach(&mut node.cell)?;
+    let (compiled, program) = firing_strategy()?;
+    node.cell.deploy_with_pricing(
+        compiled,
+        program,
+        grant_for(cell, gross, gross, gross)?,
+        PricingPolicy::Marketable,
+    )?;
+    Ok((node, gateway, feed))
+}
+
+/// One pass, and the report it produced.
+fn one_pass(
+    node: &mut NodeAssembly,
+    gateway: &mut SimulatedGateway,
+    feed: &mut SimulatedFeed,
+    stats: &mut PassStats,
+    now: Timestamp,
+) -> Result<WorkReport> {
+    match run_pass(&mut node.cell, gateway, feed, None, stats, now)? {
+        PassOutcome::Ran { report, .. } => Ok(report),
+        outcome => panic!("a running node reported its pass as halted: {outcome:?}"),
+    }
+}
+
+/// What the region table charges one marketable pass of the firing strategy,
+/// measured on a funded node rather than restated as a literal: the
+/// degradation floor scales every size, and a literal here would be a number
+/// this file believed and the cell did not.
+fn spent_by_one_marketable_pass() -> Result<Decimal> {
+    let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+    let report = one_pass(
+        &mut node,
+        &mut gateway,
+        &mut feed,
+        &mut PassStats::default(),
+        t(10),
+    )?;
+    assert_eq!(
+        report.orders.len(),
+        1,
+        "the probe premise failed: the funded pass placed no order: {:?}",
+        report.refusals
+    );
+    let bound = node
+        .cell
+        .region_allocation_bound()
+        .expect("a node assembled by this root holds a table");
+    let free = node
+        .cell
+        .region_allocation_free()
+        .expect("a node assembled by this root holds a table");
+    let spent = bound - free;
+    assert!(
+        spent.is_positive(),
+        "the probe premise failed: one pass charged nothing"
+    );
+    Ok(spent)
+}
+
+#[test]
+fn an_unfunded_node_sends_nothing_until_its_first_share_arrives_and_then_sends_within_it()
+-> Result<()> {
+    // The deployment's first minute: the node is up, the feed runs, the
+    // plan's strategy fires, and the centre has not yet shipped a payload.
+    // Before ADR 0039 the node sent at once against the operator's amount,
+    // which nothing had checked against the region's grant. Now it refuses,
+    // and its health body says why — from the order count alone an
+    // unfunded node reads exactly like a quiet market.
+    let (mut node, mut gateway, mut feed) = unfunded_node_with_feed(PricingPolicy::Marketable)?;
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+    assert_eq!(
+        node.cell.deployed_strategies(),
+        vec![STRATEGY],
+        "the premise is a node with a strategy to fire"
+    );
+    let before = RegionShareStatus::of(&node.cell);
+    assert!(!before.funded, "an unfunded node reported itself funded");
+    assert_eq!(before.bound, Some(Decimal::ZERO));
+    assert_eq!(before.ceiling, Some(dec!("1000000000")));
+    assert_eq!(before.sequence, None);
+    let why = before
+        .why
+        .as_deref()
+        .unwrap_or_else(|| panic!("an unfunded node's health body gives no reason"));
+    assert!(
+        why.contains("opened unfunded") && why.contains("policy payload"),
+        "the reason does not say what the node is waiting for: {why}"
+    );
+    let json = before.to_json();
+    assert!(
+        json.contains(r#""funded":false"#) && json.contains(&format!("\"why\":\"{why}\"")),
+        "the health block does not carry the state and the reason: {json}"
+    );
+
+    let mut stats = PassStats::default();
+    let refused = one_pass(&mut node, &mut gateway, &mut feed, &mut stats, t(10))?;
+    assert_eq!(
+        refused.signals.len(),
+        1,
+        "the premise failed: the strategy did not fire: {:?}",
+        refused.refusals
+    );
+    assert!(
+        refused.orders.is_empty(),
+        "an unfunded node sent an order: {:?}",
+        refused.orders
+    );
+    assert_eq!(
+        gateway.submitted_count(),
+        0,
+        "the venue saw an order from an unfunded node"
+    );
+    assert_eq!(
+        refused_under(&refused, RESERVATION_GATE).len(),
+        1,
+        "the unfunded node was not refused exactly once under `{RESERVATION_GATE}`: {:?}",
+        refused.refusals
+    );
+
+    // The centre's first payload names the grant the cell holds; the table
+    // funds to the grant's gross, under the operator's ceiling.
+    let named = grant()?.signature().to_string();
+    node.cell
+        .apply_policy(share_policy(CELL, 1, t(15), vec![named])?, t(15))?;
+    let after = RegionShareStatus::of(&node.cell);
+    assert!(after.funded, "the share did not fund the node: {after:?}");
+    assert_eq!(after.bound, Some(dec!("1000000")));
+    assert_eq!(after.sequence, Some(1));
+    assert_eq!(
+        after.why, None,
+        "a funded node still gives a reason for placing nothing"
+    );
+    assert!(after.to_json().contains(r#""funded":true"#));
+
+    let sent = one_pass(&mut node, &mut gateway, &mut feed, &mut stats, t(20))?;
+    assert_eq!(
+        sent.orders.len(),
+        1,
+        "the funded node did not send: {:?}",
+        sent.refusals
+    );
+    assert_eq!(gateway.submitted_count(), 1);
+    // Within it: what the table charged came out of the share, not the
+    // ceiling.
+    let free = node
+        .cell
+        .region_allocation_free()
+        .expect("a node assembled by this root holds a table");
+    assert!(
+        free < dec!("1000000") && free.is_positive(),
+        "the order was not charged against the share: free={free}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_second_node_under_the_same_regions_grant_cannot_exceed_it_with_the_first() -> Result<()> {
+    // Two nodes, two processes' worth of state — two `assemble` calls, two
+    // private tables — under one region whose grant is exactly one pass's
+    // worth. The centre partitions the grant before shipping: the whole of
+    // it to the first cell, nothing to the second, so the second's payload
+    // names no grant. Both nodes' strategies fire; only the first sends,
+    // and what the two send together is at most the grant.
+    let grant = spent_by_one_marketable_pass()?;
+    let (mut first, mut first_gateway, mut first_feed) = unfunded_node_for(CELL, grant)?;
+    let (mut second, mut second_gateway, mut second_feed) = unfunded_node_for(SECOND_CELL, grant)?;
+    let first_named = grant_for(CELL, grant, grant, grant)?
+        .signature()
+        .to_string();
+    first
+        .cell
+        .apply_policy(share_policy(CELL, 1, t(5), vec![first_named])?, t(5))?;
+    second
+        .cell
+        .apply_policy(share_policy(SECOND_CELL, 1, t(5), vec![])?, t(5))?;
+    assert_eq!(
+        first.cell.region_allocation_bound(),
+        Some(grant),
+        "the premise failed: the first node was not funded to the grant"
+    );
+    assert_eq!(
+        second.cell.region_allocation_bound(),
+        Some(Decimal::ZERO),
+        "the premise failed: the second node's share was not nothing"
+    );
+
+    // Contrast first: a second node whose payload names its own grant sends,
+    // so what refuses below is the partition and not the amount.
+    let (mut over, mut over_gateway, mut over_feed) = unfunded_node_for(SECOND_CELL, grant)?;
+    let over_named = grant_for(SECOND_CELL, grant, grant, grant)?
+        .signature()
+        .to_string();
+    over.cell
+        .apply_policy(share_policy(SECOND_CELL, 1, t(5), vec![over_named])?, t(5))?;
+    let over_report = one_pass(
+        &mut over,
+        &mut over_gateway,
+        &mut over_feed,
+        &mut PassStats::default(),
+        t(10),
+    )?;
+    assert_eq!(
+        over_report.orders.len(),
+        1,
+        "the contrast premise failed: the second node cannot send even under the whole grant: {:?}",
+        over_report.refusals
+    );
+
+    let mut stats = PassStats::default();
+    let first_report = one_pass(
+        &mut first,
+        &mut first_gateway,
+        &mut first_feed,
+        &mut stats,
+        t(10),
+    )?;
+    assert_eq!(
+        first_report.orders.len(),
+        1,
+        "the first node did not send within its share: {:?}",
+        first_report.refusals
+    );
+    let second_report = one_pass(
+        &mut second,
+        &mut second_gateway,
+        &mut second_feed,
+        &mut stats,
+        t(10),
+    )?;
+    assert_eq!(
+        second_report.signals.len(),
+        1,
+        "the premise failed: the second node's strategy did not fire: {:?}",
+        second_report.refusals
+    );
+    assert!(
+        second_report.orders.is_empty(),
+        "the second node sent against a grant the first node's share had exhausted: {:?}",
+        second_report.orders
+    );
+    assert_eq!(second_gateway.submitted_count(), 0);
+    assert_eq!(
+        refused_under(&second_report, RESERVATION_GATE).len(),
+        1,
+        "the second node was not refused exactly once under `{RESERVATION_GATE}`: {:?}",
+        second_report.refusals
+    );
+    let charged = |node: &NodeAssembly| -> Decimal {
+        let bound = node
+            .cell
+            .region_allocation_bound()
+            .expect("a node assembled by this root holds a table");
+        let free = node
+            .cell
+            .region_allocation_free()
+            .expect("a node assembled by this root holds a table");
+        bound - free
+    };
+    assert_eq!(
+        charged(&first) + charged(&second),
+        grant,
+        "the two nodes together committed more than the region's grant"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_replayed_lower_sequence_payload_leaves_the_nodes_table_unchanged() -> Result<()> {
+    // A captured payload played again after the centre has narrowed the
+    // cell. The node's mesh seam hands every verified payload to
+    // `Cell::apply_policy` in arrival order, so this is what a replay
+    // reaches; the table must stay where sequence 6 left it, the health
+    // body must say so, and the next pass must still refuse.
+    let (mut node, mut gateway, mut feed) = unfunded_node_with_feed(PricingPolicy::Marketable)?;
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+    let named = grant()?.signature().to_string();
+    let wide = share_policy(CELL, 5, t(5), vec![named])?;
+    node.cell.apply_policy(wide.clone(), t(5))?;
+    assert_eq!(
+        node.cell.region_allocation_bound(),
+        Some(dec!("1000000")),
+        "the premise failed: sequence 5 did not fund the table"
+    );
+    node.cell
+        .apply_policy(share_policy(CELL, 6, t(6), vec![])?, t(6))?;
+    assert_eq!(
+        node.cell.region_allocation_bound(),
+        Some(Decimal::ZERO),
+        "the premise failed: sequence 6 did not narrow the table"
+    );
+    let narrowed = RegionShareStatus::of(&node.cell);
+    let journal_before = node.cell.journal().len();
+
+    let replayed = node.cell.apply_policy(wide, t(7));
+    assert!(replayed.is_err(), "the replayed sequence 5 was applied");
+    assert_eq!(
+        RegionShareStatus::of(&node.cell),
+        narrowed,
+        "the replayed payload changed the table"
+    );
+    assert_eq!(
+        node.cell.journal().len(),
+        journal_before,
+        "the replayed payload was journaled as a decision"
+    );
+    assert_eq!(node.cell.region_share_sequence(), Some(6));
+    assert!(!narrowed.funded);
+    let why = narrowed
+        .why
+        .as_deref()
+        .unwrap_or_else(|| panic!("a narrowed node's health body gives no reason"));
+    assert!(
+        why.contains("sequence 6") && why.contains("named no grant"),
+        "the reason does not name the payload that narrowed the cell: {why}"
+    );
+
+    let report = one_pass(
+        &mut node,
+        &mut gateway,
+        &mut feed,
+        &mut PassStats::default(),
+        t(10),
+    )?;
+    assert!(
+        report.orders.is_empty(),
+        "the node sent after the replay: {:?}",
+        report.orders
+    );
+    assert_eq!(
+        refused_under(&report, RESERVATION_GATE).len(),
+        1,
+        "{:?}",
+        report.refusals
     );
     Ok(())
 }

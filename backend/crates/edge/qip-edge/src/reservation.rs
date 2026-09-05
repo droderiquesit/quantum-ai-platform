@@ -68,6 +68,15 @@
 //! view, and two cells re-basing one table would leave it at whichever cell
 //! spoke last rather than at either cell's share.
 //!
+//! One re-derivation is permitted *at* the applied sequence, by
+//! [`RegionAllocation::rederive`]: the payload that names a cell's grants
+//! arrives before the plan it names has deployed them, and a cell that could
+//! only sum its manifest once would fund nothing until the next payload. The
+//! re-derivation sums the same signed manifest against the grants the cell
+//! now holds; it cannot name a grant the manifest did not, and the centre
+//! ships a manifest only when its grants' gross fits the share it computed,
+//! so the result is bounded by the same number the payload was.
+//!
 //! # The clock is the pass, not the wall
 //!
 //! Holds are scoped to one pass of `Cell::work` of the cell that took them
@@ -260,16 +269,64 @@ impl RegionAllocation {
                 )));
             }
         }
+        Ok(self.apply_bound(owner, share, sequence))
+    }
+
+    /// Re-derive the share under the sequence already applied, for the same
+    /// owner.
+    ///
+    /// The one case [`Self::rebase`]'s strict ordering cannot serve: the
+    /// payload that names a cell's grants is applied *before* the plan it
+    /// also names deploys them, so the manifest is summed against an empty
+    /// set and the table narrows to nothing until the next payload. The
+    /// grant then arrives, verified, and the cell can sum the same signed
+    /// manifest again — same payload, same sequence, one more of the grants
+    /// it names now held. This is not a second path to the bound: the inputs
+    /// are the applied payload and the envelopes it names, both signed by
+    /// the centre, and the centre ships a manifest only when their gross fits
+    /// the share it computed. Refused, never applied, for any sequence other
+    /// than the one applied and for a table no share has been applied to —
+    /// a cell with no share has nothing to re-derive, and a different
+    /// sequence is [`Self::rebase`]'s business with its own ordering guard.
+    pub fn rederive(&mut self, owner: &str, share: Decimal, sequence: u64) -> Result<Rebase> {
+        if share.is_negative() {
+            return Err(Error::invalid(format!(
+                "a region share cannot be negative ({share}); the centre's plan has gone wrong \
+                 and the ledger is kept rather than corrected"
+            )));
+        }
+        let Some(applied) = &self.share else {
+            return Err(Error::denied(
+                "no region share has been applied to this table, so there is nothing to \
+                 re-derive; a share arrives with a policy payload and never from a grant alone",
+            ));
+        };
+        if applied.owner != owner {
+            return Err(Error::denied(format!(
+                "this region table's share is {}'s and cannot be re-derived by {owner}",
+                applied.owner
+            )));
+        }
+        if applied.sequence != sequence {
+            return Err(Error::denied(format!(
+                "region share sequence {sequence} is not the applied {}; a share is re-derived \
+                 only under the payload that named it",
+                applied.sequence
+            )));
+        }
+        Ok(self.apply_bound(owner, share, sequence))
+    }
+
+    /// The arithmetic shared by [`Self::rebase`] and [`Self::rederive`], past
+    /// their guards: the bound becomes `min(share, ceiling)` and `free` what
+    /// that leaves after everything spoken for, or zero with the deficit
+    /// stated.
+    fn apply_bound(&mut self, owner: &str, share: Decimal, sequence: u64) -> Rebase {
         let bound = share.min(self.ceiling);
-        let spoken_for = self
-            .held_total()
-            .checked_add(self.committed)
-            .ok_or_else(|| {
-                Error::numeric(
-                    "the region ledger's holds and commitments cannot be summed, so no share can \
-                     be applied against them",
-                )
-            })?;
+        // Both addends are bounded by the ceiling this table opened over —
+        // every hold was taken from `free`, every commitment from a hold —
+        // so the sum cannot exceed twice a `Decimal` the operator typed.
+        let spoken_for = self.held_total() + self.committed;
         let (free, deficit) = if spoken_for > bound {
             (Decimal::ZERO, spoken_for - bound)
         } else {
@@ -281,12 +338,12 @@ impl RegionAllocation {
             owner: owner.to_string(),
             sequence,
         });
-        Ok(Rebase {
+        Rebase {
             share,
             bound,
             free,
             deficit,
-        })
+        }
     }
 
     /// The sum of every live hold, whoever took it.
@@ -524,6 +581,11 @@ impl RegionTable {
     /// See [`RegionAllocation::rebase`].
     pub fn rebase(&self, owner: &str, share: Decimal, sequence: u64) -> Result<Rebase> {
         self.ledger().rebase(owner, share, sequence)
+    }
+
+    /// See [`RegionAllocation::rederive`].
+    pub fn rederive(&self, owner: &str, share: Decimal, sequence: u64) -> Result<Rebase> {
+        self.ledger().rederive(owner, share, sequence)
     }
 
     /// See [`RegionAllocation::reserve`].
@@ -844,6 +906,54 @@ mod tests {
         assert_eq!(allocation.bound(), dec!("100"));
         assert_eq!(allocation.free(), dec!("100"));
         assert_eq!(allocation.share_sequence(), Some(7));
+        Ok(())
+    }
+
+    #[test]
+    fn a_share_is_rederived_only_under_the_sequence_that_named_it() -> Result<()> {
+        // The node applies its payload before the plan it names deploys the
+        // grants the manifest names, so the first sum is nothing. The grant
+        // then lands and the same manifest is summed again under the same
+        // sequence — and under no other, or the re-derivation would be a
+        // second re-base path with no ordering guard.
+        let mut allocation = RegionAllocation::unfunded(dec!("5000"))?;
+        assert!(
+            allocation.rederive(CELL, dec!("100"), 3).is_err(),
+            "a table no share was applied to was re-derived from a grant alone"
+        );
+        assert_eq!(allocation.free(), Decimal::ZERO);
+        let first = allocation.rebase(CELL, Decimal::ZERO, 3)?;
+        assert_eq!(
+            first.bound,
+            Decimal::ZERO,
+            "the premise: sequence 3 named nothing"
+        );
+
+        let rederived = allocation.rederive(CELL, dec!("100"), 3)?;
+        assert_eq!(
+            rederived.bound,
+            dec!("100"),
+            "the same sequence did not fund the ledger"
+        );
+        assert_eq!(allocation.free(), dec!("100"));
+        assert_eq!(allocation.share_sequence(), Some(3));
+
+        for other in [2, 4] {
+            assert!(
+                allocation.rederive(CELL, dec!("4000"), other).is_err(),
+                "sequence {other} re-derived a share applied under sequence 3"
+            );
+        }
+        assert!(
+            allocation.rederive("london-2", dec!("4000"), 3).is_err(),
+            "a sibling re-derived this cell's share"
+        );
+        assert!(allocation.rederive(CELL, dec!("-1"), 3).is_err());
+        assert_eq!(
+            allocation.bound(),
+            dec!("100"),
+            "a refused re-derivation moved the bound"
+        );
         Ok(())
     }
 

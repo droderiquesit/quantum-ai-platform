@@ -291,6 +291,53 @@ fn origin_factors_name_only_measured_detectors_and_analysts_and_keep_the_lower_o
 }
 
 #[test]
+fn sample_facts_report_every_component_with_its_count_and_newest_grade_in_key_order() -> Result<()>
+{
+    // The failure this guards: the §6.2 self-model row derives from exactly
+    // these three facts, so a count off by one, a newest instant that was
+    // really the oldest, or a component left out would narrow — or fail to
+    // narrow — on a record the model does not hold. Key order is what makes
+    // the first thin component the table names the same on every replay.
+    let mut model = SelfModel::new();
+    let detector = ComponentKey::detector("volatility_shift")?;
+    let analyst = ComponentKey::analyst("macro-analyst")?;
+    model.record(analyst.clone(), outcome(3, true));
+    model.record(analyst.clone(), outcome(7, false));
+    for n in 0..MINIMUM_SAMPLE {
+        model.record(detector.clone(), outcome(n, true));
+    }
+    // Premise: two components with different counts and different newest
+    // instants, the analyst inserted first. `ComponentKey` orders by kind
+    // before id and `Detector` precedes `Analyst`, so key order puts the
+    // detector first — the opposite of insertion order, which is what makes
+    // the ordering assertion below about the key and not the sequence.
+    assert_eq!(model.len(), 2);
+    assert!(
+        detector < analyst,
+        "the premise is that key order is not insertion order"
+    );
+
+    let facts: Vec<(String, usize, Option<Timestamp>)> = model.sample_facts().collect();
+    assert_eq!(
+        facts,
+        vec![
+            (
+                "detector:volatility_shift".to_string(),
+                MINIMUM_SAMPLE,
+                Some(at(MINIMUM_SAMPLE - 1))
+            ),
+            ("analyst:macro-analyst".to_string(), 2, Some(at(7))),
+        ],
+        "the facts do not match the record: {facts:?}"
+    );
+    assert!(
+        SelfModel::new().sample_facts().next().is_none(),
+        "an empty model reported a component"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_component_key_refuses_an_empty_id_and_one_carrying_its_own_separator() -> Result<()> {
     // The failure this guards: an unnamed component pooling every unnamed
     // source, and a key whose id held the `kind:id` separator, which could

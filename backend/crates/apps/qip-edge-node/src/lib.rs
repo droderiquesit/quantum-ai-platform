@@ -17,7 +17,8 @@
 //! doing something nobody asked for — so each is exercised against the types
 //! the binary actually uses.
 
-/// The capital the whole cell may commit, as the deployment states it.
+/// The ceiling on the capital the whole cell may commit, as the deployment
+/// states it; the centre's share funds the cell up to it.
 pub mod allocation;
 /// The arbitrage desk, built from the payload's whitelist once capital arrives.
 pub mod arbitrage;
@@ -33,6 +34,8 @@ pub mod pass;
 /// Cancel-and-replace of a stale resting order, beneath the cell's placer
 /// seam — the caller `qip_routing::reprice` was written for.
 pub mod reprice;
+/// The cell's share of its region's grant, as the health body reports it.
+pub mod share;
 /// The strategies the payload's plan names, deployed under their grants.
 pub mod strategies;
 /// The node's own metric seam: the mesh link, rendered as a series.
@@ -87,12 +90,24 @@ impl NodeAssembly {
 /// rebuilt one level up. `qip-fastbrain` and `qip-deepbrain` take their
 /// registry handle the same way, before the telemetry is used anywhere else.
 ///
-/// The region allocation is a parameter rather than a later builder call for
+/// The region ceiling is a parameter rather than a later builder call for
 /// the same reason: `Cell::with_region_allocation` existed, was tested, and
 /// no composition root called it, so every node this binary built ran with
 /// no bound on the sum of its strategies. Taking a [`RegionCapital`] here —
 /// a type only [`RegionCapital::read`] can produce — means a node cannot be
 /// assembled without an amount the deployment stated and this crate checked.
+///
+/// The table opens **unfunded** under that amount (ADR 0039, option (a)):
+/// the cell places nothing until a verified policy payload's grant manifest
+/// names grants it holds, and the operator's amount is the most any share
+/// will ever fund it to. Opened funded, as every node was before, two nodes
+/// under one region's grant held two operator-typed amounts nothing summed,
+/// and could together spend the grant twice before the centre's first
+/// payload reached either — the double-spend window traceability F6 called
+/// operator discipline. Opened unfunded, a node that has never been granted
+/// to has nothing in advance, which is ADR 0008 read strictly; its health
+/// body says so, and the cost — a fresh node sends nothing until the centre
+/// ships it a share — is the ADR's stated price.
 pub fn assemble(
     config: CellConfig,
     features: FeatureEngine,
@@ -105,7 +120,7 @@ pub fn assemble(
     let metrics: Arc<Metrics> = Arc::clone(&telemetry.metrics);
     let cell = Cell::new(config, features)?
         .with_metrics(Arc::clone(&metrics))
-        .with_region_allocation(allocation.amount())?;
+        .with_unfunded_region(allocation.amount())?;
     let mesh_series = MeshSeries::new(metrics, &cell_id, &region);
     Ok(NodeAssembly {
         telemetry,

@@ -1052,6 +1052,15 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         "QIP_ARBITRAGE_POLICY_PATH",
         THE_MESH_HAS_NO_PORT_ON_CLOUD_RUN,
     ),
+    // The region membership (ADR 0039) is read only when the mesh is served,
+    // and the mesh has no port here; setting it on a deployment with no
+    // QIP_MESH_CELLS would file cells under regions for a centre that
+    // ships no payload to any of them.
+    (
+        "qip-api",
+        "QIP_MESH_REGIONS",
+        THE_MESH_HAS_NO_PORT_ON_CLOUD_RUN,
+    ),
     (
         "qip-api",
         "QIP_OPENOBSERVE_URL",

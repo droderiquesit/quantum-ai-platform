@@ -1567,6 +1567,7 @@ fn a_router_with_a_mesh_lends_it_to_the_page_and_the_page_says_no_delta_was_deco
         }],
         inbox_capacity: 8,
         spool_capacity: 8,
+        regions: None,
     };
     let mesh = MeshBackbone::open(
         &settings,
