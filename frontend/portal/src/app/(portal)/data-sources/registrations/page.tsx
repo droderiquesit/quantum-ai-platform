@@ -29,8 +29,20 @@ import { useResource } from "@/lib/hooks/useResource";
  * registered, the terms the operator is told to read, the deployment variable
  * the credential lives under and the command that puts it there — and, for a
  * source still pending, a control by which a signed-in operator records that
- * *they* registered, under terms *they* read. Approving here creates no
+ * a registration was made under terms they read. Approving here creates no
  * account and reads no venue: it is a record of a fact a person made true.
+ *
+ * What that record does *not* carry is which person. The gateway
+ * (`src/app/api/gateway/[...path]/route.ts`) authenticates to `qip-api` with
+ * one deployment bearer token for every browser session, and the sealed
+ * session's claims reach the platform nowhere — `src/lib/server/identity.ts`
+ * says so in as many words — so `principal.subject`, and therefore the
+ * journaled operator, is the console's credential subject (`operator@env`).
+ * This page therefore names no person as the attributed operator: the confirm
+ * step states what is actually recorded. The copy said "Approve registration
+ * as <name>" and "Confirm as <name>", which named an identity nothing
+ * downstream holds. See the 2026-09-05 amendment to ADR 0041 for the gap and
+ * the design that would close it.
  *
  * The control is refused before the platform is asked when the session does
  * not hold the operator role, with the reason beside it, and the platform's
@@ -105,7 +117,6 @@ export default function RegistrationsPage() {
                   <SourceCard
                     key={source.source_id}
                     source={source}
-                    operatorName={operatorName}
                     permission={permission}
                     onApprove={() => setConfirming(source)}
                   />
@@ -185,10 +196,12 @@ function RegistrationsHeader({
           </span>
           Nothing on this page reads a venue, creates an account or submits an order. It reads{" "}
           <span className="num">GET /registrations</span> and renders what the platform answered.
-          Its one control records that a named operator registered with a venue under terms they
-          read, and the platform will not create the account anonymously: a source that needs an
-          account stays refused until that record exists, and the record cannot be made without
-          the person.
+          Its one control records that a venue was registered under terms someone read, and the
+          platform will not create the account anonymously: a source that needs an account stays
+          refused until that record exists, and the record cannot be made without a person
+          clicking. The operator the platform journals is this console&apos;s own API credential,
+          identical for every session signed in here — the record names the deployment that acted,
+          not which person clicked.
         </p>
         {servedAt === null ? null : (
           <p className="mt-2">
@@ -216,12 +229,10 @@ const REQUIREMENT_LABEL: Record<string, string> = {
 
 function SourceCard({
   source,
-  operatorName,
   permission,
   onApprove,
 }: {
   source: RegistrationSource;
-  operatorName: string | null;
   permission: { readonly allowed: boolean; readonly reason: string };
   onApprove: () => void;
 }) {
@@ -338,7 +349,7 @@ function SourceCard({
               data-testid={`registration-approve-${source.source_id}`}
               title={permission.allowed ? undefined : permission.reason}
             >
-              Approve registration as {operatorName ?? "…"}
+              Approve registration
             </button>
             {permission.allowed ? null : (
               <span
@@ -408,9 +419,11 @@ function CopyCommand({ command, sourceId }: { command: string; sourceId: string 
 }
 
 /**
- * The confirm step. Two clicks and a statement, because what is recorded is
- * a fact about a person: that they read the terms and registered under the
- * company's identity. The terms reference and the variable name are prefilled
+ * The confirm step. Two clicks and a statement, because what is asserted is a
+ * fact about a person: that they read the terms and registered under the
+ * company's identity. What the platform *records* is narrower, and the dialog
+ * says which — the console's deployment credential, not the signed-in name.
+ * The terms reference and the variable name are prefilled
  * from the platform and editable, since the operator is the one who knows
  * which document they read; both are sent as the operator left them and the
  * platform is the one that refuses a blank or key-shaped value.
@@ -482,10 +495,30 @@ function ApproveDialog({
         </p>
         <p className="text-[11.5px] leading-relaxed text-[color:var(--color-ink-dim)]">
           Confirming sends <code className="num">POST /api/v1/registrations/{source.source_id}/approve</code>{" "}
-          with the terms reference and the variable name below. The platform records the operator
-          from its own credential, refuses a blank or key-shaped secret with a 400 naming the
-          field, and refuses a credential without the operator role with a 403; it creates no
-          account and reads nothing from the venue on the strength of this record.
+          with the terms reference and the variable name below. The platform refuses a blank or
+          key-shaped secret with a 400 naming the field, and refuses a credential without the
+          operator role with a 403; it creates no account and reads nothing from the venue on the
+          strength of this record.
+        </p>
+        {/*
+          The attribution gap, stated where the click is made rather than
+          discovered afterwards in the record. This console authenticates to
+          the platform with one deployment credential shared by every browser
+          session, and the platform has no way to verify a console session's
+          identity, so the subject it journals is that credential's — not the
+          person at the keyboard. Saying "Confirm as <name>" here named an
+          identity nothing downstream records. See the 2026-09-05 amendment to
+          ADR 0041.
+        */}
+        <p
+          className="text-[11.5px] leading-relaxed text-[color:var(--color-warn)]"
+          data-testid="registration-attribution"
+        >
+          What the platform records is this console&apos;s own API credential — a deployment
+          subject such as <span className="num">operator@env</span>, the same for every person who
+          signs in here — and not {operatorName}. That you are the one confirming is known only
+          from this console&apos;s sign-in record, which the platform&apos;s event log does not
+          hold. Confirm only if you personally read the terms and registered the account.
         </p>
         <div>
           <label className="field-label" htmlFor="registration-terms">
@@ -550,7 +583,7 @@ function ApproveDialog({
             disabled={busy}
             data-testid="registration-confirm"
           >
-            {busy ? "Recording…" : `Confirm as ${operatorName}`}
+            {busy ? "Recording…" : "Confirm approval"}
           </button>
         </div>
       </form>

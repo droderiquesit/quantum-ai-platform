@@ -14,8 +14,13 @@
  * the runbook lists as a person's act stays a person's act: the job refuses
  * to solve a captcha, to enter an identity document, tax id or date of
  * birth, to read a verification code, to tick a terms box the approval does
- * not name, or to fill a field the reviewed recipe does not list. Each of
- * those is a hand-back with a reason and a screenshot, never a retry.
+ * not name, or to fill a field the reviewed recipe does not list. It also
+ * hands back before typing anything if the page it is looking at is not on
+ * the origin the reviewed recipe names, or if a recipe selector matches more
+ * than one element on it. Each of those is a hand-back with a reason and a
+ * screenshot, never a retry — and the screenshot is taken only after every
+ * credential-bearing field has been blanked, so the file left behind is a
+ * picture of a form and not a copy of a password.
  *
  * ## Usage
  *
@@ -25,9 +30,12 @@
  * The identity file lives outside the repository and holds exactly the five
  * fields a signup form is allowed to receive. The approval record is the
  * platform's `RegistrationRecord` exported as JSON plus the Secret Manager
- * slot names the credentials go to. The password is generated in memory and
- * reaches disk nowhere: it goes to `gcloud secrets versions add` on stdin, as
- * does any API key the venue shows, and neither is ever printed.
+ * slot names the credentials go to and the Google Cloud `project` they are
+ * written in — named there rather than taken from `gcloud config`, because a
+ * project the approval did not name is one nobody reviewed. The password is
+ * generated in memory and reaches disk nowhere: it goes to `gcloud secrets
+ * versions add` on stdin, as does any API key the venue shows, and neither is
+ * ever printed, made an argument, or left in a screenshot.
  *
  * ## Exit codes
  *
@@ -77,6 +85,16 @@ const RECIPE_KEYS = [
 const APPROVAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const APPROVAL_FUTURE_SKEW_MS = 5 * 60 * 1000;
 const SLOT_SHAPE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,254}$/;
+/** A Google Cloud project id: 6-30 characters, lowercase, digits and hyphens, no trailing hyphen. */
+const PROJECT_SHAPE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+
+/**
+ * The fields whose value is a credential, and the selectors that always hold
+ * one whatever the recipe calls them. Used to blank a page before it is
+ * photographed.
+ */
+const SECRET_FIELDS = ["password", "password_confirm"];
+const ALWAYS_SECRET_SELECTORS = ["input[type='password']"];
 
 /**
  * Value shapes that mean the identity file carries something a signup form
@@ -101,6 +119,37 @@ export function screenValue(text) {
 // ---------------------------------------------------------------------------
 // Recipes
 // ---------------------------------------------------------------------------
+
+/**
+ * Why a recipe's selector is too broad to be a reviewed selector, or null.
+ *
+ * A recipe's selectors decide two things: what gets filled, and — through the
+ * `knownAs` an inventory reports — which fields the judge treats as reviewed.
+ * The second is what makes breadth dangerous. `input` as a selector, or
+ * `input[type='checkbox']` on the terms step, makes *every* field on the page
+ * one the recipe "lists", so the two residue stops — a consent box the
+ * approval does not cover, and a field nobody reviewed — find nothing left to
+ * stop on. A hard stop a recipe can pre-empt is not a hard stop, so a
+ * selector must be anchored to a value the reviewer chose: an id, or an
+ * attribute equal to something.
+ *
+ * This is the static half. It cannot know how many elements a selector will
+ * match on the venue's real page, so `ambiguousSelectors` decides that at the
+ * moment the page exists, and `judge` refuses to let an ambiguous selector
+ * vouch for a field whatever order the job asks in.
+ */
+export function selectorProblem(selector) {
+  if (typeof selector !== "string" || selector.trim() === "") return "is empty";
+  const s = selector.trim();
+  if (s.includes(",")) return "is a selector list; a step names one element, and a list is a way to name several without saying so";
+  if (s.includes("*")) return "uses '*', which matches elements nobody reviewed";
+  if (s.includes(":")) return "uses a pseudo-class; a step names an element by id or by an attribute's value, not by the page's shape";
+  // An anchor is an id, or an attribute compared to a value. `input[name]`
+  // and `.field` are not anchors: they name a kind of element, not one.
+  const anchored = /#[A-Za-z0-9_-]/.test(s) || /\[[A-Za-z_:-][A-Za-z0-9_.:-]*\s*[~^$*|]?=\s*("[^"]+"|'[^']+'|[^\]\s]+)\]/.test(s);
+  if (!anchored) return "is not anchored to an id or to an attribute's value, so it names a kind of element rather than one element";
+  return null;
+}
 
 /** Every reason a recipe is not one this job will run. Empty means it is. */
 export function recipeProblems(recipe, venueId) {
@@ -141,7 +190,11 @@ export function recipeProblems(recipe, venueId) {
       if (keys.length) problems.push(`step ${index} carries keys a step may not: ${keys.join(", ")}`);
       if (typeof step.selector !== "string" || step.selector.trim() === "") problems.push(`step ${index} has no selector`);
       else if (seen.has(step.selector)) problems.push(`step ${index} repeats selector '${step.selector}'`);
-      else seen.add(step.selector);
+      else {
+        seen.add(step.selector);
+        const broad = selectorProblem(step.selector);
+        if (broad) problems.push(`step ${index}'s selector '${step.selector}' ${broad}`);
+      }
       if (!RECIPE_FIELDS.includes(step.field)) problems.push(`step ${index} fills '${step.field}', which is not one of ${RECIPE_FIELDS.join(", ")}`);
       if (step.field === "accept_terms" && (typeof step.terms !== "string" || step.terms.trim() === "")) {
         problems.push(`step ${index} ticks a terms box but does not cite which terms; the approval record must name the same reference`);
@@ -150,6 +203,10 @@ export function recipeProblems(recipe, venueId) {
     });
   }
   if (typeof recipe.submit !== "string" || recipe.submit.trim() === "") problems.push("the recipe must name the submit control's selector");
+  else {
+    const broad = selectorProblem(recipe.submit);
+    if (broad) problems.push(`the submit selector '${recipe.submit}' ${broad}`);
+  }
   if (!["success", "email_verification"].includes(recipe.after_submit)) {
     problems.push("the recipe must say what follows submit: 'success' or 'email_verification' (a hard stop the job hands back at)");
   }
@@ -158,6 +215,15 @@ export function recipeProblems(recipe, venueId) {
       problems.push("a recipe whose submit leads to success must give 'success.selector'");
     } else if (recipe.success.api_key_selector !== undefined && typeof recipe.success.api_key_selector !== "string") {
       problems.push("'success.api_key_selector' must be a selector string when present");
+    } else {
+      for (const [name, selector] of [["success.selector", recipe.success.selector], ["success.api_key_selector", recipe.success.api_key_selector]]) {
+        if (selector === undefined) continue;
+        const broad = selectorProblem(selector);
+        // A broad api_key_selector reads whatever the page happens to show
+        // into a secret slot; a broad success selector calls a page a success
+        // because something on it matched.
+        if (broad) problems.push(`'${name}' is '${selector}', which ${broad}`);
+      }
     }
   } else if (recipe.success !== undefined && recipe.success !== null) {
     problems.push("a recipe that stops at email verification cannot also describe a success page it never reaches");
@@ -257,6 +323,15 @@ export function approvalProblems(approval, recipe, now = Date.now()) {
   else if (approval.source_id !== recipe.source_id) problems.push(`'source_id' is '${approval.source_id}' but the ${recipe.venue} recipe registers '${recipe.source_id}'`);
   if (text("operator") === "") problems.push("'operator' is blank; a signup nobody approved is the anonymous one the platform refuses");
   if (text("terms") === "") problems.push("'terms' is blank; the approval must cite the terms the operator read");
+  // Without a project named here, `gcloud` writes to whatever the operator's
+  // ambient configuration last pointed at — a project chosen by a previous
+  // command rather than by the approval. A password in the wrong project is
+  // one nobody looks for and one somebody else can read.
+  if (text("project") === "") {
+    problems.push("'project' is blank; the approval must name the Google Cloud project the secrets are written to, because gcloud's ambient configuration is not a decision anyone reviewed");
+  } else if (!PROJECT_SHAPE.test(text("project"))) {
+    problems.push("'project' is not a Google Cloud project id (6-30 characters, lowercase letters, digits and hyphens, starting with a letter and not ending in a hyphen)");
+  }
   const readAt = Date.parse(text("terms_read_at"));
   if (text("terms_read_at") === "" || Number.isNaN(readAt)) {
     problems.push("'terms_read_at' is missing or not an RFC 3339 instant");
@@ -265,7 +340,7 @@ export function approvalProblems(approval, recipe, now = Date.now()) {
   } else if (readAt - now > APPROVAL_FUTURE_SKEW_MS) {
     problems.push("'terms_read_at' is in the future");
   }
-  for (const key of ["operator", "terms", "source_id"]) {
+  for (const key of ["operator", "terms", "source_id", "project"]) {
     const shapes = typeof approval[key] === "string" ? screenValue(approval[key]) : [];
     if (shapes.length) problems.push(`'${key}' looks like ${shapes.join(", ")}; an approval record names things and holds no value`);
   }
@@ -346,15 +421,30 @@ export function findGcloud(pathVariable = process.env.PATH ?? "") {
 }
 
 /**
- * `gcloud secrets versions add <slot> --data-file=-`, value on stdin.
+ * `gcloud secrets versions add <slot> --data-file=- --project=<project>`,
+ * value on stdin.
  *
  * stdout is discarded and stderr is kept only for the failure message;
  * neither is where the value could appear, but the argument list is the
- * place it must never be — an argument is in `ps` for every user.
+ * place it must never be — an argument is in `ps` for every user. That is
+ * also why the slot and the project are screened against a shape here rather
+ * than trusted from the approval that has already screened them: this is the
+ * one function that builds the argument list, so this is where a name that
+ * carries a shell metacharacter, a flag, or anything else nobody reviewed is
+ * refused. Refused, not sanitised: a name quietly corrected is a name the
+ * secret is written under and nobody is looking for.
+ *
+ * The project is named rather than left to `gcloud config`, because the
+ * ambient configuration is whatever the operator's last unrelated command set
+ * it to and a credential written to the wrong project is one that cannot be
+ * found and can be read by the wrong people.
  */
-export function writeSecret(gcloud, slot, value, spawn = spawnSync) {
-  if (!SLOT_SHAPE.test(slot)) return { ok: false, reason: `slot '${slot}' is not a Secret Manager secret name` };
-  const result = spawn(gcloud, ["secrets", "versions", "add", slot, "--data-file=-"], {
+export function writeSecret(gcloud, project, slot, value, spawn = spawnSync) {
+  if (typeof slot !== "string" || !SLOT_SHAPE.test(slot)) return { ok: false, reason: `slot '${slot}' is not a Secret Manager secret name` };
+  if (typeof project !== "string" || !PROJECT_SHAPE.test(project)) {
+    return { ok: false, reason: `'${project}' is not a Google Cloud project id; the approval record names the project the secret is written to and nothing here guesses it` };
+  }
+  const result = spawn(gcloud, ["secrets", "versions", "add", slot, "--data-file=-", `--project=${project}`], {
     input: value,
     stdio: ["pipe", "ignore", "pipe"],
     timeout: 60_000,
@@ -435,9 +525,73 @@ export function inventoryScript(knownSelectors) {
     }
     const captcha = [];
     for (const s of captchaSelectors) { if (document.querySelector(s)) captcha.push(s); }
+    // A recipe selector that matches more than one element vouches for every
+    // one of them. The judge refuses to let it vouch for any.
+    const ambiguous = known.filter((s) => {
+      try { return document.querySelectorAll(s).length > 1; } catch { return false; }
+    });
     const text = squash(document.body ? document.body.innerText : "").slice(0, 20000);
-    return { url: location.href, title: document.title, text, fields, captcha };
+    return { url: location.href, title: document.title, text, fields, captcha, ambiguous };
   })()`;
+}
+
+/**
+ * Why the page in front of the browser is not the venue's own signup page, or
+ * null.
+ *
+ * The recipe is the reviewed artefact and its `signup_url` is the origin an
+ * operator approved typing into. What the browser is actually showing after a
+ * navigation is the venue's decision: a redirect to an identity provider, to
+ * a partner's onboarding host, or to whatever answered a hijacked name. Any
+ * of those is a page nobody reviewed, and the company's legal name, address
+ * and a fresh password are not typed into a page nobody reviewed. Compared
+ * before the first field is filled, because afterwards is too late.
+ *
+ * The comparison is on the whole origin — scheme, host and port — so an
+ * http downgrade of the same host is as much a hand-back as a different host.
+ */
+export function originRefusal(liveUrl, recipe) {
+  let expected;
+  try {
+    expected = new URL(recipe.signup_url);
+  } catch {
+    return `the recipe's signup_url is not a URL, so no origin can be compared against the page`;
+  }
+  let live;
+  try {
+    live = new URL(String(liveUrl ?? ""));
+  } catch {
+    return `the browser reports its location as '${String(liveUrl ?? "")}', which is not a URL; nothing is typed into a page whose origin cannot be established`;
+  }
+  // `about:`, `data:` and `blob:` URLs have no origin to compare — the
+  // browser reports "null" — so they are refused as an origin nobody can
+  // establish rather than reported as a venue that moved.
+  if (live.origin === "null" || live.origin === "") {
+    return `the browser reports its location as '${live.href}', which has no origin to compare against ${expected.origin}; nothing is typed into a page whose origin cannot be established`;
+  }
+  if (live.origin === expected.origin) return null;
+  return (
+    `the page is at ${live.origin} but the ${recipe.venue} recipe names ${expected.origin}; ` +
+    "a redirect to another origin is a hand-back, not a page to type the company's identity into. If the venue has genuinely moved its signup, " +
+    "the recipe is reviewed and changed, not followed"
+  );
+}
+
+/**
+ * The recipe selectors that match more than one element on the page in front
+ * of the browser.
+ *
+ * The static screen in `recipeProblems` refuses a selector that names a kind
+ * of element; this is the half that only the page can answer. An anchored
+ * selector can still match twice — two elements carrying the same id, two
+ * inputs with the same name — and a selector matching twice does not say
+ * which element the reviewer meant. The job fills the element a person chose
+ * or none.
+ */
+export function ambiguousSelectors(inventory, recipe) {
+  const ambiguous = Array.isArray(inventory.ambiguous) ? inventory.ambiguous : [];
+  const steps = Array.isArray(recipe.steps) ? recipe.steps : [];
+  return [...steps.map((s) => s.selector), recipe.submit].filter((s) => ambiguous.includes(s));
 }
 
 /**
@@ -470,14 +624,23 @@ export function judge(inventory, recipe) {
     return { kind: "verification_code", reason: "the page says to check e-mail or enter a code and offers no field the recipe knows; the job reads no mail, so that step is the operator's" };
   }
   const steps = Array.isArray(recipe.steps) ? recipe.steps : [];
+  // A selector matching several elements vouches for elements nobody chose,
+  // so it vouches for none of them. Both stops below ask which fields the
+  // recipe lists, and a broad selector would otherwise answer "all of them"
+  // and empty both. `perform` refuses such a recipe outright before it gets
+  // here (`ambiguousSelectors`); this is the same rule held structurally, so
+  // that the residue stops cannot be emptied by a selector however the job
+  // reaches them.
+  const ambiguous = Array.isArray(inventory.ambiguous) ? inventory.ambiguous : [];
+  const vouched = (f) => (Array.isArray(f.knownAs) ? f.knownAs : []).filter((s) => !ambiguous.includes(s));
   for (const f of inventory.fields) {
     if (f.type !== "checkbox") continue;
-    const step = steps.find((s) => f.knownAs.includes(s.selector));
+    const step = steps.find((s) => vouched(f).includes(s.selector));
     if (!step || step.field !== "accept_terms") {
       return { kind: "unapproved_consent", reason: `the form has a consent box the approval does not cover (${describe(f)}); the job ticks nothing the operator has not read` };
     }
   }
-  const unexpected = inventory.fields.filter((f) => f.knownAs.length === 0);
+  const unexpected = inventory.fields.filter((f) => vouched(f).length === 0);
   if (unexpected.length) {
     return { kind: "unexpected_field", reason: `the form has ${unexpected.length} field(s) the recipe does not list: ${unexpected.map(describe).join("; ")}. A field nobody reviewed is not filled; extend the recipe if it should be` };
   }
@@ -505,6 +668,64 @@ function fillScript(selector, value, kind) {
     el.dispatchEvent(new Event("change", { bubbles: true }));
     return el.value === value ? "ok" : "value did not take";
   })(${JSON.stringify(selector)}, ${JSON.stringify(value)}, ${JSON.stringify(kind)})`;
+}
+
+/**
+ * Blank every element that could be holding a credential, and say whether any
+ * is still holding one.
+ *
+ * A hand-back leaves a screenshot, and a screenshot is a file. If the form
+ * still holds the password this job generated — and after the fill loop it
+ * does — then that PNG is the credential, written to disk in a directory
+ * whose whole point was that it is not a place credentials go. A password
+ * field renders as dots today and as text the moment a venue ships a
+ * show-password control or a recipe names a text input, so the fix is
+ * removing the value rather than trusting how it is drawn.
+ *
+ * Returns `{ blanked, remaining }`. `remaining` is the honest half: if the
+ * page will not let go of a value, the caller takes no photograph at all.
+ */
+export function maskScript(selectors) {
+  return `((selectors) => {
+    let blanked = 0;
+    let remaining = 0;
+    const held = (el) => {
+      const value = "value" in el && typeof el.value === "string" ? el.value : "";
+      const text = (el.textContent || "");
+      return (value + text).trim().length > 0;
+    };
+    for (const selector of selectors) {
+      let elements = [];
+      try { elements = [...document.querySelectorAll(selector)]; } catch { continue; }
+      for (const el of elements) {
+        try {
+          if ("value" in el) {
+            const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+            const setter = Object.getOwnPropertyDescriptor(proto, "value");
+            if (setter && setter.set) setter.set.call(el, ""); else el.value = "";
+            el.setAttribute("value", "");
+          }
+          if (el.children.length === 0) el.textContent = "";
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          blanked += 1;
+        } catch { /* counted as remaining below */ }
+        if (held(el)) remaining += 1;
+      }
+    }
+    // The focus ring and caret sit on the field that was filled last; moving
+    // them keeps two captures of the same masked page identical, which is how
+    // the test proves the value is gone rather than merely redrawn.
+    try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch { /* nothing focused */ }
+    return { blanked: blanked, remaining: remaining };
+  })(${JSON.stringify(selectors)})`;
+}
+
+/** Every selector on this page that could be holding a credential the job knows about. */
+export function secretSelectors(recipe) {
+  const steps = Array.isArray(recipe.steps) ? recipe.steps : [];
+  const fromSteps = steps.filter((s) => SECRET_FIELDS.includes(s.field)).map((s) => s.selector);
+  const key = recipe.success?.api_key_selector;
+  return [...new Set([...fromSteps, ...ALWAYS_SECRET_SELECTORS, ...(key === undefined ? [] : [key])])];
 }
 
 function clickScript(selector) {
@@ -597,10 +818,24 @@ export async function perform({
   const knownSelectors = [...recipe.steps.map((s) => s.selector), recipe.submit];
   let submitted = false;
 
+  const maskable = secretSelectors(recipe);
+
   async function handBack(kind, reason) {
     let screenshot = null;
     try {
-      screenshot = await browser.screenshot(screenshotPath(kind));
+      // Blank the credential-bearing fields before the shutter, not after.
+      // A capture the job cannot prove is clean is a capture it does not
+      // take: an operator with no screenshot reads the reason and opens the
+      // page themselves, which is worse than a hand-back and much better than
+      // a password in a PNG.
+      const masked = await browser.evaluate(maskScript(maskable));
+      if (!masked.ready) {
+        log("no screenshot: the page had no document to blank, and a page this job cannot blank is one it does not photograph");
+      } else if (masked.value?.remaining) {
+        log(`no screenshot: ${masked.value.remaining} field(s) still held a value after blanking, and the capture would have been the credential`);
+      } else {
+        screenshot = await browser.screenshot(screenshotPath(kind));
+      }
     } catch (cause) {
       log(`screenshot failed: ${cause.message}`);
     }
@@ -609,7 +844,7 @@ export async function perform({
     // losing it would leave an account nobody can enter, which is worse than
     // a secret version nobody needs.
     if (submitted && !wrote.includes(approval.secret_slots.password)) {
-      const written = writeSecret(gcloud, approval.secret_slots.password, password);
+      const written = writeSecret(gcloud, approval.project, approval.secret_slots.password, password);
       if (written.ok) wrote.push(approval.secret_slots.password);
       else reason += `. And the password could not be stored (${written.reason}); the account, if the venue created it, cannot be entered and must be recovered by the operator`;
     }
@@ -626,6 +861,20 @@ export async function perform({
 
     const inventory = await browser.evaluate(inventoryScript(knownSelectors));
     if (!inventory.ready) return await handBack("venue_failed", "the signup page had no document to inspect after loading");
+    // Before the judge and long before the first keystroke: is this even the
+    // venue's own page? `Page.navigate` reports success for a redirect, so
+    // the URL the browser ended on is the only evidence of where the typing
+    // would go.
+    const offOrigin = originRefusal(inventory.value.url, recipe);
+    if (offOrigin) return await handBack("origin_changed", offOrigin);
+    const ambiguous = ambiguousSelectors(inventory.value, recipe);
+    if (ambiguous.length) {
+      return await handBack(
+        "ambiguous_selector",
+        `the page has more than one element matching ${ambiguous.map((s) => `'${s}'`).join(", ")}, so the recipe does not say which one it means. ` +
+          "The job fills the element a reviewer chose or none: narrow the selector against the page the venue actually served, and review it",
+      );
+    }
     const stop = judge(inventory.value, recipe);
     if (stop) return await handBack(stop.kind, stop.reason);
 
@@ -655,6 +904,16 @@ export async function perform({
       await sleep(250);
       const after = await browser.evaluate(inventoryScript(knownSelectors));
       if (!after.ready) continue;
+      // A venue that answers a submission by sending the browser somewhere
+      // else has ended the reviewed part of the run. Nothing is typed there
+      // and nothing is read from there — an API key harvested off an origin
+      // nobody reviewed is a value from an unknown page written into Secret
+      // Manager. The password is stored on the way out because the account
+      // may now exist.
+      const wentOff = originRefusal(after.value.url, recipe);
+      if (wentOff) {
+        return await handBack("origin_changed", `${wentOff}. The form was submitted, so the venue may have created the account; what follows is the operator's`);
+      }
       // The same form, still there with nothing else: the venue has not
       // answered yet, or answered with a message the inventory cannot see.
       const stillTheForm = after.value.url === inventory.value.url && after.value.fields.every((f) => f.knownAs.length > 0) && after.value.fields.length === inventory.value.fields.length;
@@ -667,7 +926,7 @@ export async function perform({
         const done = await browser.evaluate(successScript(recipe.success));
         if (done.ready && done.value?.reached) {
           const slots = approval.secret_slots;
-          const wrotePassword = writeSecret(gcloud, slots.password, password);
+          const wrotePassword = writeSecret(gcloud, approval.project, slots.password, password);
           if (!wrotePassword.ok) {
             await browser.close();
             return { code: EXIT.secret_write_failed, outcome: "secret_write_failed", submitted, wrote, reason: `the venue accepted the signup but the password could not be stored: ${wrotePassword.reason}` };
@@ -679,7 +938,7 @@ export async function perform({
               await browser.close();
               return { code: EXIT.venue_failed, outcome: "venue_failed", submitted, wrote, reason: `the success page showed no API key at '${recipe.success.api_key_selector}'; the password is stored and the key is the operator's to create in the dashboard` };
             }
-            const wroteKey = writeSecret(gcloud, slots.api_key, apiKey);
+            const wroteKey = writeSecret(gcloud, approval.project, slots.api_key, apiKey);
             if (!wroteKey.ok) {
               await browser.close();
               return { code: EXIT.secret_write_failed, outcome: "secret_write_failed", submitted, wrote, reason: `the API key the venue showed could not be stored: ${wroteKey.reason}` };

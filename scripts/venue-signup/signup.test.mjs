@@ -14,11 +14,13 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createHash, randomBytes } from "node:crypto";
+import { inflateSync } from "node:zlib";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   EXIT,
+  ambiguousSelectors,
   approvalProblems,
   findGcloud,
   generatePassword,
@@ -28,10 +30,12 @@ import {
   loadIdentity,
   loadRecipe,
   main,
+  originRefusal,
   perform,
   recipeProblems,
+  writeSecret,
 } from "./signup.mjs";
-import { chromiumArguments, launchRefusal } from "./browser.mjs";
+import { childEnvironment, chromiumArguments, launch, launchRefusal } from "./browser.mjs";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -48,6 +52,7 @@ const identity = {
   country: "GB",
 };
 const TERMS = "https://venue.test/terms";
+const PROJECT = "mock-venue-project";
 const posted = [];
 let apiKeyShown = "";
 let baseUrl = "";
@@ -60,17 +65,34 @@ function page(variant) {
     tax: '<label for="tin">Tax identification number</label><input id="tin" name="tax_id">',
     extra: '<label for="ref">Referral code</label><input id="ref" name="referral_code">',
     verify: "",
+    // Two elements answering to '#name'. The DOM permits it and venues ship
+    // it; a recipe selector that matches both says which element it means to
+    // nobody.
+    twins: '<label for="name">Trading name</label><input id="name" name="trading_name">',
+    // A second consent box beside the approved one. If a recipe's terms
+    // selector were broad enough to match it, this box would be ticked
+    // without anyone having read what it says.
+    consent: '<label><input type="checkbox" name="marketing" class="consent"> Send me offers</label>',
+    // The password rendered as text rather than dots: what a venue's
+    // show-password control produces, and what makes a screenshot legible.
+    visible: "",
   }[variant];
+  // The 'visible' variant has no submit control, so the run reaches its
+  // hand-back with every field filled — the moment a screenshot would
+  // otherwise carry the password.
+  const passwordType = variant === "visible" ? "text" : "password";
+  const submit = variant === "visible" ? "" : '<button type="submit">Create account</button>';
+  const termsClass = variant === "consent" ? ' class="consent"' : "";
   return `<!doctype html><html><head><title>Sign up</title></head><body>
 <h1>Open an account</h1>
 <form method="post" action="/submit?variant=${variant}">
   <label for="name">Full name</label><input id="name" name="name">
   <label for="email">E-mail</label><input id="email" name="email" type="email">
-  <label for="password">Password</label><input id="password" name="password" type="password">
-  <label for="confirm">Confirm password</label><input id="confirm" name="confirm" type="password">
+  <label for="password">Password</label><input id="password" name="password" type="${passwordType}">
+  <label for="confirm">Confirm password</label><input id="confirm" name="confirm" type="${passwordType}">
   ${extra}
-  <label><input type="checkbox" name="terms"> I accept the terms</label>
-  <button type="submit">Create account</button>
+  <label><input type="checkbox" name="terms"${termsClass}> I accept the terms</label>
+  ${submit}
 </form></body></html>`;
 }
 
@@ -81,13 +103,25 @@ before(async () => {
     [
       "#!/bin/sh",
       '# A stand-in for gcloud: records the slot and a digest of stdin, never the value.',
+      '# It refuses the arguments it is not given, so a write that stopped naming',
+      '# --project — and would land in whatever the ambient config points at —',
+      '# fails every test that writes a secret rather than passing quietly.',
       'if [ "$1 $2 $3" != "secrets versions add" ] || [ "$5" != "--data-file=-" ]; then echo "unexpected arguments: $*" >&2; exit 9; fi',
+      `if [ "$6" != "--project=${PROJECT}" ]; then echo "no project named: $*" >&2; exit 9; fi`,
+      'if [ -n "$7" ]; then echo "unexpected trailing arguments: $*" >&2; exit 9; fi',
       'sha256sum | cut -d" " -f1 > "$(dirname "$0")/$4.sha256"',
     ].join("\n"),
   );
   chmodSync(fakeGcloud, 0o755);
   server = createServer((req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
+    // The venue sends the browser to another origin. 'localhost' and
+    // '127.0.0.1' are one machine and two origins, which is exactly the
+    // distinction the job has to make.
+    if (req.method === "GET" && url.pathname === "/signup" && url.searchParams.get("variant") === "offsite") {
+      res.writeHead(302, { location: `http://localhost:${server.address().port}/signup?variant=clean` }).end();
+      return;
+    }
     if (req.method === "GET" && url.pathname === "/signup") {
       res.writeHead(200, { "content-type": "text/html" });
       res.end(page(url.searchParams.get("variant") ?? "clean"));
@@ -149,9 +183,81 @@ function approval(overrides = {}) {
     operator: "d.roderiques",
     terms_read_at: new Date().toISOString(),
     terms: TERMS,
+    project: PROJECT,
     secret_slots: { password: "mock-venue-password", api_key: "mock-venue-api-key" },
     ...overrides,
   };
+}
+
+/**
+ * The number of dark pixels in a PNG: how much ink the page drew.
+ *
+ * The screenshot test needs to assert on what the captured artefact shows,
+ * not on whether the job called something. Byte equality cannot do it — two
+ * captures of an unchanged page differ, because the viewport settles a few
+ * pixels either way and the encoder follows — so the PNG is decoded here with
+ * `node:zlib` (no dependency is added for this, and none may be) and its dark
+ * pixels counted. Thirty-two characters of password drawn into a field is
+ * ~1,500 of them; a field the value was removed from draws none.
+ */
+function ink(png) {
+  let at = 8;
+  let width = 0;
+  let height = 0;
+  let depth = 0;
+  let colour = 0;
+  let interlace = 0;
+  const parts = [];
+  while (at + 8 <= png.length) {
+    const length = png.readUInt32BE(at);
+    const type = png.toString("ascii", at + 4, at + 8);
+    const body = png.subarray(at + 8, at + 8 + length);
+    if (type === "IHDR") {
+      width = body.readUInt32BE(0);
+      height = body.readUInt32BE(4);
+      depth = body[8];
+      colour = body[9];
+      interlace = body[12];
+    } else if (type === "IDAT") parts.push(body);
+    else if (type === "IEND") break;
+    at += 12 + length;
+  }
+  assert.ok(depth === 8 && [2, 6].includes(colour) && interlace === 0, `unexpected PNG shape: depth ${depth}, colour type ${colour}, interlace ${interlace}`);
+  const channels = colour === 6 ? 4 : 3;
+  const raw = inflateSync(Buffer.concat(parts));
+  const stride = width * channels;
+  const image = Buffer.alloc(height * stride);
+  let dark = 0;
+  for (let y = 0; y < height; y += 1) {
+    const filter = raw[y * (stride + 1)];
+    const line = raw.subarray(y * (stride + 1) + 1, y * (stride + 1) + 1 + stride);
+    const row = image.subarray(y * stride, (y + 1) * stride);
+    const prior = y === 0 ? Buffer.alloc(stride) : image.subarray((y - 1) * stride, y * stride);
+    for (let x = 0; x < stride; x += 1) {
+      const a = x >= channels ? row[x - channels] : 0;
+      const b = prior[x];
+      const c = x >= channels ? prior[x - channels] : 0;
+      const v = line[x];
+      let value;
+      if (filter === 0) value = v;
+      else if (filter === 1) value = v + a;
+      else if (filter === 2) value = v + b;
+      else if (filter === 3) value = v + ((a + b) >> 1);
+      else {
+        const p = a + b - c;
+        const pa = Math.abs(p - a);
+        const pb = Math.abs(p - b);
+        const pc = Math.abs(p - c);
+        value = v + (pa <= pb && pa <= pc ? a : pb <= pc ? b : c);
+      }
+      row[x] = value & 0xff;
+    }
+    for (let x = 0; x < width; x += 1) {
+      const luminance = 0.299 * row[x * channels] + 0.587 * row[x * channels + 1] + 0.114 * row[x * channels + 2];
+      if (luminance < 200) dark += 1;
+    }
+  }
+  return dark;
 }
 
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
@@ -258,9 +364,218 @@ test("a verification-code prompt after submit is handed back with the password a
   assert.ok(existsSync(result.screenshot));
 });
 
+test("a recipe selector that matches two elements is a hand-back, and a broad consent selector cannot tick a box nobody read", async () => {
+  // The stops this job exists for are evaluated against what the recipe says
+  // it knows. A selector matching several elements says it knows all of them,
+  // which would leave the two residue stops — a consent box the approval does
+  // not cover, and a field nobody reviewed — with nothing to stop on. A hard
+  // stop a recipe can pre-empt is not a hard stop.
+  posted.length = 0;
+  const twins = await run(recipe("twins"));
+  assert.equal(twins.result.code, EXIT.hard_stop, JSON.stringify(twins.result));
+  assert.equal(twins.result.outcome, "ambiguous_selector");
+  assert.match(twins.result.reason, /'#name'/);
+  assert.equal(posted.length, 0, "nothing was submitted");
+  assert.deepEqual(twins.result.wrote, []);
+
+  // The same, reached the other way: a terms selector broad enough to cover
+  // the marketing box beside it. It is refused rather than used, so the
+  // second box is never ticked.
+  posted.length = 0;
+  const broadTerms = recipe("consent", {
+    steps: [
+      { selector: "#name", field: "legal_name" },
+      { selector: "#email", field: "contact_email" },
+      { selector: "#password", field: "password" },
+      { selector: "#confirm", field: "password_confirm" },
+      { selector: "[class='consent']", field: "accept_terms", terms: TERMS },
+    ],
+  });
+  const consent = await run(broadTerms);
+  assert.equal(consent.result.outcome, "ambiguous_selector", JSON.stringify(consent.result));
+  assert.match(consent.result.reason, /\[class='consent'\]/);
+  assert.equal(posted.length, 0, "a form with an unread consent box was submitted");
+
+  // And the static half: a selector naming a kind of element rather than one.
+  const bare = recipeProblems({ ...recipe("clean"), steps: [{ selector: "input", field: "legal_name" }] }, "mock");
+  assert.ok(bare.some((p) => p.includes("'input' is not anchored")), JSON.stringify(bare));
+  const list = recipeProblems({ ...recipe("clean"), submit: "#a, #b" }, "mock");
+  assert.ok(list.some((p) => p.includes("is a selector list")), JSON.stringify(list));
+  assert.equal(recipeProblems(recipe("clean"), "mock").length, 0, "premise: an anchored recipe is still accepted");
+
+  // The same rule held a second time inside the judge, so that the residue
+  // stops cannot be emptied by a broad selector however the job reaches them.
+  // The terms step's own selector vouches for the marketing box here; being
+  // ambiguous, it vouches for neither.
+  const terms = broadTerms.steps.find((s) => s.field === "accept_terms").selector;
+  const box = { tag: "input", type: "checkbox", name: "marketing", id: "", autocomplete: "", inputmode: "", placeholder: "", label: "Send me offers", knownAs: [terms] };
+  assert.equal(judge({ captcha: [], text: "", fields: [box], ambiguous: [] }, broadTerms), null, "premise: while it vouches, the box is not stopped on");
+  assert.equal(judge({ captcha: [], text: "", fields: [box], ambiguous: [terms] }, broadTerms)?.kind, "unapproved_consent");
+  const stray = { ...box, type: "text", name: "referral" };
+  assert.equal(judge({ captcha: [], text: "", fields: [stray], ambiguous: [terms] }, broadTerms)?.kind, "unexpected_field");
+  assert.deepEqual(ambiguousSelectors({ ambiguous: [terms] }, broadTerms), [terms], "the multiplicity gate names the step's selector");
+  assert.deepEqual(ambiguousSelectors({ ambiguous: ["#nothing-of-ours"] }, broadTerms), [], "a selector the recipe does not use is not the recipe's problem");
+});
+
+test("a redirect to another origin is a hand-back before a single field is filled", async () => {
+  // Page.navigate reports success for a redirect, so where the browser ended
+  // up is the only evidence of where the typing would go. localhost and
+  // 127.0.0.1 are one machine and two origins.
+  posted.length = 0;
+  const { result } = await run(recipe("offsite"));
+  assert.equal(result.code, EXIT.hard_stop, JSON.stringify(result));
+  assert.equal(result.outcome, "origin_changed");
+  assert.match(result.reason, /http:\/\/localhost:\d+/);
+  assert.match(result.reason, /a redirect to another origin is a hand-back/);
+  assert.equal(posted.length, 0, "the company's identity was typed into a page nobody reviewed");
+  assert.deepEqual(result.wrote, []);
+
+  const r = recipe("clean");
+  assert.equal(originRefusal(r.signup_url, r), null, "premise: the recipe's own page is accepted");
+  assert.equal(originRefusal(`${baseUrl}/somewhere-else`, r), null, "a different path on the same origin is the same origin");
+  // An http downgrade of the same host is a different origin, and a page with
+  // no origin at all is one nobody can compare.
+  assert.match(originRefusal("http://venue.test/signup", { ...r, signup_url: "https://venue.test/signup" }), /the page is at http:\/\/venue\.test but the mock recipe names https:\/\/venue\.test/);
+  assert.match(originRefusal("about:blank", r), /no origin to compare/);
+  assert.match(originRefusal("", r), /cannot be established/);
+});
+
+test("the hand-back screenshot does not carry the password that was typed into the form", async () => {
+  // The job screenshots when it hands back, and after the fill loop the form
+  // holds a password this job generated. A capture of that page is the
+  // credential, written to a directory whose whole point is that credentials
+  // do not go there. The 'visible' variant renders the password as text, as a
+  // venue's show-password control does, and has no submit control, so the run
+  // hands back with every field filled.
+  const shot = async () => {
+    const { result } = await run(recipe("visible", { submit: "button[type='submit']", after_submit: "email_verification", success: undefined }), approval({ secret_slots: { password: "mock-venue-password" } }));
+    assert.equal(result.outcome, "venue_failed", JSON.stringify(result));
+    assert.ok(result.screenshot && existsSync(result.screenshot), `screenshot at ${result.screenshot}`);
+    const png = readFileSync(result.screenshot);
+    assert.ok(png.subarray(1, 4).equals(Buffer.from("PNG")), "the artefact is a PNG");
+    return ink(png);
+  };
+
+  // Two references from the same page, captured the same way: what it looks
+  // like with the passwords typed in, and what it looks like with the fields
+  // empty. A PNG's byte length is not stable across captures — the viewport
+  // settles a few pixels either way — so the measure is the artefact's dark
+  // pixels, which count the characters actually drawn.
+  const browser = await launch({ env: process.env });
+  let inkFilled;
+  let inkEmpty;
+  try {
+    await browser.navigate(`${baseUrl}/signup?variant=visible`, 20_000);
+    const capture = async (value, name) => {
+      await browser.evaluate(
+        `(() => {
+          document.querySelector("#name").value = ${JSON.stringify(identity.legal_name)};
+          document.querySelector("#email").value = ${JSON.stringify(identity.contact_email)};
+          const box = document.querySelector("input[name='terms']"); if (!box.checked) box.click();
+          for (const id of ["#password", "#confirm"]) document.querySelector(id).value = ${JSON.stringify(value)};
+          document.activeElement.blur();
+          return "ok";
+        })()`,
+      );
+      return ink(readFileSync(await browser.screenshot(join(scratch, name))));
+    };
+    inkFilled = await capture(`Aa1!${"q".repeat(28)}`, "reference-filled.png");
+    inkEmpty = await capture("", "reference-empty.png");
+    assert.ok(inkFilled > inkEmpty, `premise: a capture of this page shows what the password field holds (${inkFilled} vs ${inkEmpty} dark pixels)`);
+  } finally {
+    await browser.close();
+  }
+
+  // The artefact the job actually left behind, twice, with two different
+  // generated passwords: as many dark pixels as a form with nothing in those
+  // fields, and fewer than one with a password in them. The password was not
+  // photographed.
+  const first = await shot();
+  const second = await shot();
+  assert.equal(first, inkEmpty, `the hand-back capture drew more than an empty form (${first} vs ${inkEmpty} dark pixels): the password was in the picture`);
+  assert.equal(second, inkEmpty, "the second hand-back capture carried its password");
+  assert.ok(first < inkFilled, "the hand-back capture drew as much as a filled form");
+});
+
 // ---------------------------------------------------------------------------
 // Refusals that need no browser
 // ---------------------------------------------------------------------------
+
+test("a secret write names its project and refuses a slot or project it cannot vouch for, and puts neither the value nor a flag on the command line", () => {
+  const calls = [];
+  const spawn = (bin, args, options) => {
+    calls.push({ bin, args, options });
+    return { status: 0, stderr: "" };
+  };
+  // Assembled rather than written out: a quoted run of this length after
+  // `secret =` is what the repository's secret scan is looking for, and a
+  // fixture that trips the scan costs every later reader the time to work out
+  // that it is nothing. Same remedy as `key_shaped()` in
+  // qip-data-finder's registration.rs (e71c397).
+  const secret = ["not", "a", "real", "value", "just", "a", "test", "string"].join("-");
+  const written = writeSecret("/bin/gcloud", PROJECT, "mock-venue-password", secret, spawn);
+  assert.equal(written.ok, true, JSON.stringify(written));
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].args, ["secrets", "versions", "add", "mock-venue-password", "--data-file=-", `--project=${PROJECT}`]);
+  assert.equal(calls[0].options.input, secret, "the value goes on stdin");
+  assert.ok(!calls[0].args.some((a) => a.includes(secret)), "the value reached the command line, where ps shows it to every process on the host");
+
+  // A name the approval let through would still be an argument, so the shape
+  // is enforced here, at the one place the argument list is built. Refused,
+  // never trimmed into something acceptable.
+  for (const slot of ["../../etc/passwd", "--data-file=/etc/passwd", "slot name", "-leading-dash", ""]) {
+    const bad = writeSecret("/bin/gcloud", PROJECT, slot, secret, spawn);
+    assert.equal(bad.ok, false, `slot ${JSON.stringify(slot)} was accepted`);
+    assert.match(bad.reason, /is not a Secret Manager secret name/);
+  }
+  for (const project of ["", "Mock-Venue", "shrt", "trailing-", "--project=other", undefined]) {
+    const bad = writeSecret("/bin/gcloud", project, "mock-venue-password", secret, spawn);
+    assert.equal(bad.ok, false, `project ${JSON.stringify(project)} was accepted`);
+    assert.match(bad.reason, /is not a Google Cloud project id/);
+  }
+  assert.equal(calls.length, 1, "a refused name still ran gcloud");
+
+  // And the approval is where the project is named at all: without one, the
+  // write would land in whatever the operator's ambient gcloud config points
+  // at, which is not a decision anyone reviewed.
+  const r = recipe("clean");
+  const { project, ...noProject } = approval();
+  assert.equal(typeof project, "string", "premise: the fixture approval names a project");
+  assert.ok(approvalProblems(noProject, r).some((p) => p.includes("'project' is blank")), JSON.stringify(approvalProblems(noProject, r)));
+  assert.ok(approvalProblems(approval({ project: "Not A Project" }), r).some((p) => p.includes("not a Google Cloud project id")));
+  assert.deepEqual(approvalProblems(approval(), r), [], "premise: the fixture approval is otherwise accepted");
+});
+
+test("the browser is given the variables it needs and not the environment it was launched from", () => {
+  // Everything in the launching process's environment is readable by anything
+  // that gets code execution in the browser rendering a venue's page, and by
+  // every process of the same user through /proc/<pid>/environ. A signup form
+  // has no business near a cloud credential path or another tool's token.
+  const child = childEnvironment(
+    {
+      PATH: "/usr/bin",
+      HTTPS_PROXY: "http://proxy.test:3128",
+      NO_PROXY: "localhost",
+      LANG: "en_GB.UTF-8",
+      HOME: "/home/operator",
+      GOOGLE_APPLICATION_CREDENTIALS: "/home/operator/.config/gcloud/adc.json",
+      COMPANY_IDENTITY_FILE: "/run/company/identity.json",
+      AWS_SECRET_ACCESS_KEY: "not-a-real-value",
+      NODE_TLS_REJECT_UNAUTHORIZED: "1",
+    },
+    "/tmp/profile-x",
+  );
+  assert.deepEqual(Object.keys(child).sort(), ["HOME", "HTTPS_PROXY", "LANG", "NO_PROXY", "PATH"].sort(), JSON.stringify(child));
+  assert.equal(child.HOME, "/tmp/profile-x", "the profile is the browser's home, so what it writes is what is deleted");
+  assert.equal(child.HTTPS_PROXY, "http://proxy.test:3128", "the egress proxy is still honoured");
+  assert.equal(child.NODE_TLS_REJECT_UNAUTHORIZED, undefined);
+  for (const [key, value] of Object.entries({ GOOGLE_APPLICATION_CREDENTIALS: "adc.json", COMPANY_IDENTITY_FILE: "identity.json", AWS_SECRET_ACCESS_KEY: "not-a-real-value" })) {
+    assert.equal(child[key], undefined, `${key} reached the browser`);
+    assert.ok(!JSON.stringify(child).includes(value), `${key}'s value reached the browser`);
+  }
+  // Empty is not a value: an unset proxy stays unset rather than becoming "".
+  assert.equal(childEnvironment({ PATH: "/usr/bin", HTTPS_PROXY: "" }, "/p").HTTPS_PROXY, undefined);
+});
 
 test("a missing, blank, or expired approval is refused, and a fresh one is accepted", () => {
   const r = recipe("clean");

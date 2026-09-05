@@ -119,7 +119,12 @@ and only the typing moves.
    is journaled with the authenticated subject.** `POST
    /api/v1/registrations/{source}/approve` requires the `operator` role,
    builds an `OperatorIdentity` from the sealed session exactly as `DELETE
-   /kill-switch` does, and raises `Platform::approve_registration`. That
+   /kill-switch` does, and raises `Platform::approve_registration`.
+   *(The clause "from the sealed session" is wrong as deployed, and the
+   heading's "the authenticated subject" is narrower than it reads: the
+   subject is the API bearer credential's, which for a console approval is
+   one deployment identity shared by every session. See the amendment of
+   2026-09-05 below.)* That
    refuses a credential older than fifteen minutes — the same freshness an
    eligibility decision requires, because a session token from this morning
    is not evidence that the person named on the record is at the keyboard
@@ -306,3 +311,151 @@ venue as an execution target: the credential it governs is a read-only
 market-data key, and ADR 0034's closing warning is repeated here because
 Alpaca is the place it is most likely to be tested by accident — a data
 credential must never become an order credential.
+
+## Amendment of 2026-09-05: the click is attributed to a deployment, not a person
+
+This record's title and its decision 3 claim more than the tree delivers. The
+claim was checked against the code and it does not hold: **a venue
+registration made through the console is journaled under the console's own
+deployment credential, identical for every human who signs in, and the event
+log therefore names which deployment acted and not which person clicked.**
+Naming the gap is the amendment; nothing about the refusal of anonymous
+registration changes, and no authentication is weakened to make this true.
+
+### What was found, and where
+
+- **The console forwards one deployment credential for every session.**
+  `frontend/portal/src/app/api/gateway/[...path]/route.ts` calls
+  `upstreamHeaders(target, …)`, and
+  `frontend/portal/src/lib/server/upstream.ts:64-68` is the whole of it:
+  `if (target.token) headers.set("authorization", `Bearer ${target.token}`)`,
+  where the token is `QIP_API_TOKEN` read once per request out of the
+  deployment's mounted secret. The gateway verifies the session cookie's
+  signature and the CSRF pair before forwarding — the browser is
+  authenticated *to the console* — and then forwards none of it.
+- **The console's own source already said so.**
+  `frontend/portal/src/lib/server/identity.ts:75`, on the sealed claim set:
+  "the platform authenticates the console by its own `viewer` token, and
+  nothing in this claim set reaches `qip-api`."
+- **The API's subjects are per role, not per person.**
+  `backend/crates/apps/qip-api/src/main.rs:268` builds every credential with
+  the subject `format!("{}@env", role.as_str())`. So `principal.subject` on
+  the approve route resolves to `operator@env` — for every caller holding the
+  operator token, console or `curl`.
+- **The kernel and the route are not at fault.** `routes.rs` builds the
+  `OperatorIdentity` from `principal.subject` and `principal.issued_at` and
+  refuses to read a name from the body; `Platform::approve_registration`
+  takes the operator from that identity alone. They faithfully record the
+  only identity they are given. The gap is that no better one is offered.
+- **The console said otherwise on the button.** The confirm step read
+  "Approve registration as <name>" and "Confirm as <name>", where the name
+  came from `useSessionIdentity` — a value the browser holds, never sent, and
+  never recorded. The record it produced said `operator@env`, which the
+  card then displayed as "registered by operator@env".
+
+### What is recorded, and what is not
+
+**Recorded, and replayable from the log alone:** that an approval happened,
+which source it names, the terms citation and the instant, the deployment
+subject the credential carries (`operator@env`), and that the credential was
+no older than fifteen minutes when it was used.
+
+**Not recorded anywhere the platform can replay:** which human clicked. That
+fact exists only in the console's own sign-in records and its request logs,
+which are not the hash-chained event log and are not correlated to the
+approval. A second person holding a console session with the operator role
+produces a byte-identical attribution.
+
+**Consequently:** the `operator` field of a `RegistrationStanding` must be
+read as *which credential approved*, not as *who approved*. ADR 0041's
+"attributed click" is true of the platform's boundary — no anonymous or
+automated path exists, and a person must click — and false of the person: the
+attribution stops at the deployment.
+
+### Why the gap was not closed instead
+
+Carrying the end-user subject was the preferred outcome and it is not
+reachable today without weakening something.
+
+- **Forwarding the subject as a header** — the gateway adding, say, an
+  operator header from the sealed claims — would have the API record a name
+  it cannot verify. Anything that can reach the API with the operator token
+  could then set that header to any string, and the log would hold a claim
+  wearing an identity's clothes. That is strictly worse than the present gap,
+  which at least does not lie about who acted. It is refused for the same
+  reason this record's own "alternatives rejected" refuses taking the name
+  from the body.
+- **Verifying the console's sealed cookie at the API** needs a key both
+  processes hold and a claim schema both agree on. Neither exists: the seal
+  is HMAC'd with `configuredSessionSecret()`, a console-only secret, and
+  `qip-api` has no cookie parsing, no session concept and no route that
+  accepts one.
+- **Verifying an Identity Platform ID token at the API** needs RSA signature
+  verification against Google's rotating JWKS — an outbound HTTPS path no
+  deployed process has (ADR 0024, nothing applied) and public-key crypto the
+  workspace does not have and may not hand-roll (ADR 0009, two dependencies).
+
+### The design that would close it
+
+Stated concretely enough to be implemented, and needing its own ADR because
+it creates a trust relationship between two processes that have none.
+
+1. **A shared assertion key.** One Secret Manager slot, projected as a file
+   to both the console (`QIP_OPERATOR_ASSERTION_KEY_FILE`, read through the
+   existing `_FILE` indirection in `src/lib/server/secret.ts`) and to
+   `qip-api` (through `qip_core::secret::from_environment`, in `main.rs`
+   only). Rotation is one secret rolled in one place, as the mesh envelope
+   key already is.
+2. **The gateway mints a per-request assertion.** For the approve route only,
+   the gateway HMACs a compact, canonical byte string over `{subject, issued
+   at, authenticated at, method, path, body hash}` where `subject` is the
+   sealed session's `userId` and `authenticated at` is its `authenticatedAt`
+   — and sends it in a request header beside, never instead of, the bearer
+   token. Node's `createHmac` is already imported by
+   `src/lib/server/identity.ts`; no npm package is added.
+3. **The API verifies before it believes.** `qip-api` recomputes the MAC with
+   `qip_core::hmac_sha256` — already in the tree, no crate added — compares
+   in constant time, refuses a mismatch, a missing header, an assertion whose
+   path or body hash is not this request's, or one issued outside a short
+   window. Only then does it build the `OperatorIdentity` from the asserted
+   subject, prefixed to keep the two kinds of identity distinguishable in the
+   log (`console:<userId>`), with `authenticated_at` taken from the
+   assertion's own claim so the kernel's fifteen-minute freshness gate
+   measures the person's sign-in rather than the deployment token's issue.
+   With no assertion present the route behaves exactly as it does today and
+   records `operator@env` — a `curl` with the operator token is still a
+   legitimate caller, and it is honestly attributed as one.
+4. **What this buys and what it does not.** It makes the console's claim
+   about the clicker verifiable by the API, and it makes forging one require
+   the assertion key rather than the ability to set a header. It does not
+   make the console's session store trustworthy to a third party: the API is
+   trusting the console's authentication of the human, which is the same
+   trust it already places in the console's holding of the operator token.
+   Saying that out loud is part of the ADR this design needs.
+
+### Applied by this amendment
+
+- `frontend/portal/src/app/(portal)/data-sources/registrations/page.tsx` —
+  the button is "Approve registration" and the confirm control is "Confirm
+  approval"; neither names a person. The dialog states what is recorded, in
+  the `registration-attribution` paragraph, before the click. The page's
+  declaration paragraph no longer says the control records that a *named*
+  operator registered.
+- `backend/crates/apps/qip-api/ROUTES-REGISTRATIONS.md` — the `operator`
+  field is documented as the subject of the credential the approval arrived
+  on, with the console's case named; the sentence claiming the identity is
+  built "from the session" is corrected.
+- `frontend/portal/tests/registrations-page.spec.ts` — the copy assertions
+  follow, and one test asserts the attribution paragraph names the deployment
+  subject and not the signed-in name.
+- Decision 3 above carries an inline pointer to this amendment.
+
+Nothing else changed. No route, no handler, no kernel path and no credential
+was touched; `docs/operations/registering-a-venue.md` is being edited
+elsewhere in this session and its attribution sentences are left for that
+work, which is a known remaining inconsistency rather than a closed one. The
+paper-trading boundary is untouched: Terraform's refusal of the three live
+ceilings, `AutonomyLevel::deployable` at every composition root, and the
+`qip-edge` `Cell` and `qip-cost-router` `Determinism` types stand exactly as
+ADR 0003 and 0021 left them, and nothing here creates, enables or eases an
+order path.

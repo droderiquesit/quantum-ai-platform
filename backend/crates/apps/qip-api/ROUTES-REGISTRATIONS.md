@@ -121,10 +121,13 @@ Per source:
 
 - `{ "standing": "keyless" }` — no registration needed.
 - `{ "standing": "registered", "operator", "terms_read_at", "secret" }` — a
-  named person registered. `operator` is the authenticated subject who
-  approved (or the operator named in the deployment's committed
-  configuration); `terms_read_at` the instant they read the terms; `secret`
-  the deployment variable the credential is read under. Never the value.
+  registration exists. `operator` is the **authenticated subject of the
+  credential the approval arrived on** (or the operator named in the
+  deployment's committed configuration) — for an approval made through the
+  console that is the console's deployment credential, `operator@env`, and
+  not the person who clicked; see the 2026-09-05 amendment to ADR 0041.
+  `terms_read_at` is the instant the platform answered; `secret` the
+  deployment variable the credential is read under. Never the value.
 - `{ "standing": "pending", "who_must_register", "reason" }` — refused
   until somebody registers. `who_must_register` is the deployment's
   configured owner; `reason` is the registry's own refusal, verbatim, the
@@ -160,11 +163,22 @@ Request body — both fields required, both refused blank:
 | `terms` | The URL or document name of the terms the operator read. Blank is refused: "the terms" without a citation is a claim nobody can re-read. |
 | `secret` | The deployment variable the manifest reads the credential under — the list's `secret_slot`. Screened by the manifest's own shape rule (`SecretRef`): a name starts with `A-Z` and continues in `A-Z`, `0-9` and `_`, so a pasted key cannot be written here. |
 
-The operator on the record is the **authenticated principal's subject**.
-The body names nobody and cannot: the route builds an `OperatorIdentity`
-from the session exactly as `DELETE /kill-switch` does, and the kernel takes
-the record's operator from that identity. `terms_read_at` is the instant the
-platform answered.
+The operator on the record is the **authenticated principal's subject** —
+that is, the subject of the bearer credential this request presented. The
+body names nobody and cannot: the route builds an `OperatorIdentity` from the
+authenticated principal exactly as `DELETE /kill-switch` does, and the kernel
+takes the record's operator from that identity. `terms_read_at` is the
+instant the platform answered.
+
+**What that subject is, and is not.** Credentials are configured per *role*,
+not per person (`main.rs` builds each one with the subject
+`<role>@env`), and the console holds exactly one of them for every browser
+session: its gateway attaches one deployment bearer token and forwards no
+end-user identity, because the sealed console session is signed with a key
+this API does not hold and cannot verify. So an approval made through the
+console records `operator@env` — which deployment acted, not which person.
+Do not read the `operator` field as a personal attribution. The gap, and the
+design that would close it, are the 2026-09-05 amendment to ADR 0041.
 
 Success — `200`, the source's standing after the record was journalled and
 adopted:
