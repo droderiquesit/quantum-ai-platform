@@ -72,6 +72,29 @@ fn desk_statement(quantity: Decimal) -> String {
     )
 }
 
+/// A statement whose one holding carries its tolerance under `key`.
+///
+/// Two spellings of that key are the same length, which is what lets a test
+/// replace the file's contents without moving its fingerprint.
+fn keyed_statement(key: &str, quantity: Decimal) -> String {
+    format!(
+        r#"{{"as_of": "{}", "venue": "{DESK_VENUE}",
+            "holdings": [{{"asset": "USD", "quantity": "{quantity}", "{key}": "1"}}]}}"#,
+        dated().to_rfc3339()
+    )
+}
+
+/// Move the file's modification time to `when`, so a change is visible
+/// however coarse the filesystem's timestamps are.
+fn touch(path: &str, when: std::time::SystemTime) {
+    let file = std::fs::File::options()
+        .write(true)
+        .open(path)
+        .expect("the fixture opens for writing");
+    file.set_modified(when)
+        .expect("the modification time moves");
+}
+
 struct Rig {
     api: Api,
     platform: Arc<Mutex<Platform>>,
@@ -438,11 +461,15 @@ fn a_malformed_or_future_dated_statement_is_refused_naming_the_field() {
             "holdings[0].tolerance",
         ),
         (
+            // The row, not the key: a key is text whoever wrote the document
+            // chose, so quoting it back publishes a piece of the document.
+            // `no_refusal_of_a_statement_quotes_a_value_the_file_carried`
+            // holds the other half — that the key itself does not appear.
             "an unknown key",
             format!(
                 r#"{{"as_of": "{past}", "venue": "v", "tolerance": "1", "holdings": [{{"asset": "USD", "quantity": "1", "tolerence": "2"}}]}}"#
             ),
-            "\"tolerence\"",
+            "holdings[0]",
         ),
         (
             "a duplicated asset",
@@ -508,6 +535,342 @@ fn a_malformed_or_future_dated_statement_is_refused_naming_the_field() {
         "the root's refusal names neither the variable nor the field: {message}"
     );
     let _ = std::fs::remove_dir_all(&directory);
+}
+
+// --- a refusal never publishes the document ---------------------------------
+
+/// A value no custodian would state, put in a fixture so its appearance in a
+/// refusal is unambiguous. Anything a refusal echoes is echoed to the caller
+/// of the route, to stderr, and to whichever ticket the line is pasted into.
+const SENTINEL_QUANTITY: &str = "8675309.1234567";
+const SENTINEL_ASSET: &str = "SENTINELASSET";
+const SENTINEL_TEXT: &str = "SENTINELTEXT";
+const SENTINEL_KEY: &str = "tolerence";
+
+#[test]
+fn no_refusal_of_a_statement_quotes_a_value_the_file_carried() {
+    // A statement is a custodian's document about the desk's money. Every
+    // refusal names the field, the row or the position and stops there —
+    // the rule `ledger_views` already follows for an unknown body key. Each
+    // case below carries a value nothing else could produce, and the test
+    // asserts both halves: the refusal locates the fault, *and* the value is
+    // absent. Naming the field alone would pass with the value beside it.
+    let now = start();
+    let past = dated().to_rfc3339();
+    let future = now.saturating_add(Duration::from_secs(60)).to_rfc3339();
+    // label, document, the field the refusal must name, what it must not say
+    let cases: Vec<(&str, String, &str, Vec<String>)> = vec![
+        (
+            "an as_of that will not parse",
+            format!(
+                r#"{{"as_of": "{SENTINEL_TEXT}", "venue": "v", "tolerance": "1", "holdings": [{{"asset": "USD", "quantity": "1"}}]}}"#
+            ),
+            "as_of",
+            vec![SENTINEL_TEXT.to_string()],
+        ),
+        (
+            "an as_of in the future",
+            format!(
+                r#"{{"as_of": "{future}", "venue": "v", "tolerance": "1", "holdings": [{{"asset": "USD", "quantity": "1"}}]}}"#
+            ),
+            "as_of",
+            vec![future.clone()],
+        ),
+        (
+            "an as_of that is not a string",
+            r#"{"as_of": 8675309, "venue": "v", "tolerance": "1", "holdings": [{"asset": "USD", "quantity": "1"}]}"#
+                .to_string(),
+            "as_of",
+            vec!["8675309".to_string()],
+        ),
+        (
+            "a venue that is not a string",
+            format!(
+                r#"{{"as_of": "{past}", "venue": 8675309, "tolerance": "1", "holdings": [{{"asset": "USD", "quantity": "1"}}]}}"#
+            ),
+            "venue",
+            vec!["8675309".to_string()],
+        ),
+        (
+            "a quantity written as a JSON number",
+            format!(
+                r#"{{"as_of": "{past}", "venue": "v", "tolerance": "1", "holdings": [{{"asset": "USD", "quantity": {SENTINEL_QUANTITY}}}]}}"#
+            ),
+            "holdings[0].quantity",
+            vec![SENTINEL_QUANTITY.to_string()],
+        ),
+        (
+            "a quantity that is not a decimal",
+            format!(
+                r#"{{"as_of": "{past}", "venue": "v", "tolerance": "1", "holdings": [{{"asset": "USD", "quantity": "{SENTINEL_TEXT}"}}]}}"#
+            ),
+            "holdings[0].quantity",
+            vec![SENTINEL_TEXT.to_string()],
+        ),
+        (
+            "a tolerance that is not positive",
+            format!(
+                r#"{{"as_of": "{past}", "venue": "v", "tolerance": "-{SENTINEL_QUANTITY}", "holdings": [{{"asset": "USD", "quantity": "1"}}]}}"#
+            ),
+            "tolerance",
+            vec![SENTINEL_QUANTITY.to_string()],
+        ),
+        (
+            "a holding tolerance that is not positive",
+            format!(
+                r#"{{"as_of": "{past}", "venue": "v", "holdings": [{{"asset": "USD", "quantity": "1", "tolerance": "-{SENTINEL_QUANTITY}"}}]}}"#
+            ),
+            "holdings[0].tolerance",
+            vec![SENTINEL_QUANTITY.to_string()],
+        ),
+        (
+            "a misspelt key",
+            format!(
+                r#"{{"as_of": "{past}", "venue": "v", "tolerance": "1", "holdings": [{{"asset": "USD", "quantity": "1", "{SENTINEL_KEY}": "2"}}]}}"#
+            ),
+            "holdings[0]",
+            vec![SENTINEL_KEY.to_string()],
+        ),
+        (
+            "an asset stated twice",
+            format!(
+                r#"{{"as_of": "{past}", "venue": "v", "tolerance": "1", "holdings": [{{"asset": "{SENTINEL_ASSET}", "quantity": "1"}}, {{"asset": "{SENTINEL_ASSET}", "quantity": "2"}}]}}"#
+            ),
+            "holdings[1].asset",
+            vec![SENTINEL_ASSET.to_string()],
+        ),
+        (
+            "a document that is not JSON at all",
+            format!(r#"{{"as_of": "{past}", "venue": "{SENTINEL_TEXT}" "#),
+            "line",
+            vec![SENTINEL_TEXT.to_string()],
+        ),
+    ];
+
+    for (label, text, field, forbidden) in cases {
+        // Premise, and the one that matters: the value really is in the
+        // document. Asserting its absence from a message when it was never
+        // in the file would pass for ever and guard nothing.
+        for value in &forbidden {
+            assert!(
+                text.contains(value.as_str()),
+                "{label}: the fixture does not carry {value}, so its absence proves nothing"
+            );
+        }
+        let message = match Statement::parse(&text, now) {
+            Ok(_) => panic!("{label} was accepted"),
+            Err(error) => error.message().to_string(),
+        };
+        assert!(
+            names(&message, field),
+            "{label}: the refusal does not name {field}: {message}"
+        );
+        for value in &forbidden {
+            assert!(
+                !message.contains(value.as_str()),
+                "{label}: the refusal quotes a value the file carried: {message}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_cycle_refused_by_a_broken_statement_does_not_publish_the_file_into_the_response() -> Result<()>
+{
+    // The 503 reaches whoever can call the route, and the same line goes to
+    // stderr. Premise first: the cycle ran while the file was good, so the
+    // refusal below is of the replacement and not of the route.
+    let directory = fixture_dir("no-echo");
+    let rig = rig()?;
+    let equity = rig.initial_equity()?;
+    let path = write_fixture(&directory, &desk_statement(equity));
+    let (handler, _platform) = rig.with_feed(&path)?;
+    assert_eq!(
+        handler
+            .handle(&request(Method::Post, "/cycle", ANALYST_TOKEN))
+            .status,
+        202
+    );
+
+    let broken = format!(
+        r#"{{"as_of": "{}", "venue": "{DESK_VENUE}", "tolerance": "1",
+            "holdings": [{{"asset": "{SENTINEL_ASSET}", "quantity": {SENTINEL_QUANTITY}}}]}}"#,
+        dated().to_rfc3339()
+    );
+    // Premise: the file carries both values, so their absence below is the
+    // refusal's doing.
+    assert!(broken.contains(SENTINEL_ASSET) && broken.contains(SENTINEL_QUANTITY));
+    write_fixture(&directory, &broken);
+    touch(
+        &path,
+        std::time::SystemTime::now() + std::time::Duration::from_secs(2),
+    );
+
+    let response = handler.handle(&request(Method::Post, "/cycle", ANALYST_TOKEN));
+    assert_eq!(response.status, 503);
+    let (text, body) = body_of(response);
+    let message = body["error"].as_str().expect("an error message");
+    assert!(
+        names(message, STATEMENT_PATH_VARIABLE) && names(message, "holdings[0].quantity"),
+        "the refusal does not locate the fault: {text}"
+    );
+    assert!(
+        !text.contains(SENTINEL_QUANTITY),
+        "the refusal published a figure the statement carried: {text}"
+    );
+    assert!(
+        !text.contains(SENTINEL_ASSET),
+        "the refusal published an asset the statement carried: {text}"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
+// --- a broken file is refused, and cheaply --------------------------------
+
+#[test]
+fn a_statement_file_that_stays_broken_is_refused_without_being_read_again_and_a_fix_needs_no_restart()
+-> Result<()> {
+    // A broken file refuses every cycle — that is not softened. What must not
+    // happen is re-reading and re-parsing the same bytes to reach the same
+    // answer. The proof is indirect and exact: after the refusal, the file is
+    // put back to something that parses *without moving its modification time
+    // or its length*, and the cycle is refused all the same. Only a feed that
+    // did not read the file can answer that way. Then the timestamp moves and
+    // the fix is picked up with no restart, which is the defect a cache that
+    // never re-checked would introduce.
+    let directory = fixture_dir("broken-cache");
+    let rig = rig()?;
+    let equity = rig.initial_equity()?;
+    let path = write_fixture(&directory, &desk_statement(equity));
+    let (handler, _platform) = rig.with_feed(&path)?;
+    assert_eq!(
+        handler
+            .handle(&request(Method::Post, "/cycle", ANALYST_TOKEN))
+            .status,
+        202
+    );
+
+    // The two documents differ by one letter inside a key, so they are the
+    // same length by construction — asserted, because the whole test rests
+    // on the fingerprint being identical.
+    let later = equity - Decimal::from_int(5);
+    let good = keyed_statement("tolerance", later);
+    let bad = keyed_statement(SENTINEL_KEY, later);
+    assert_eq!(
+        good.len(),
+        bad.len(),
+        "the two documents are not the same length"
+    );
+
+    let frozen = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+    write_fixture(&directory, &bad);
+    touch(&path, frozen);
+    let response = handler.handle(&request(Method::Post, "/cycle", ANALYST_TOKEN));
+    assert_eq!(response.status, 503);
+    let (_, body) = body_of(response);
+    let first = body["error"]
+        .as_str()
+        .expect("an error message")
+        .to_string();
+
+    // The file now parses. Nothing else about it moved.
+    write_fixture(&directory, &good);
+    touch(&path, frozen);
+    assert!(
+        Statement::parse(&good, start()).is_ok(),
+        "the premise fails: the replacement does not parse"
+    );
+    let metadata = std::fs::metadata(&path).expect("the fixture is there");
+    assert_eq!(metadata.len() as usize, bad.len(), "the length moved");
+    assert_eq!(
+        metadata.modified().expect("a modification time"),
+        frozen,
+        "the modification time moved"
+    );
+
+    let response = handler.handle(&request(Method::Post, "/cycle", ANALYST_TOKEN));
+    assert_eq!(
+        response.status, 503,
+        "the feed read a file whose fingerprint had not moved"
+    );
+    let (text, body) = body_of(response);
+    assert_eq!(
+        body["error"].as_str().expect("an error message"),
+        first,
+        "the second refusal is not the one the feed already gave: {text}"
+    );
+
+    // The operator's fix, seen: the same bytes, a moved timestamp.
+    touch(&path, frozen + std::time::Duration::from_secs(2));
+    let response = handler.handle(&request(Method::Post, "/cycle", ANALYST_TOKEN));
+    assert_eq!(
+        response.status,
+        202,
+        "{}",
+        String::from_utf8_lossy(&response.body)
+    );
+    let (text, wallet_body) = wallet(&handler);
+    assert_eq!(
+        wallet_body["holdings"][0]["observed_quantity"],
+        serde_json::json!(later.to_string()),
+        "the fixed file did not reach the wallet: {text}"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
+// --- the platform is not held across the disk -------------------------------
+
+#[test]
+fn a_broken_statement_refuses_the_cycle_without_waiting_for_the_platform_lock() -> Result<()> {
+    // The re-read is a filesystem call. Holding the kernel's lock across it
+    // made every other request — every `/wallet`, every stream poll — wait on
+    // a disk that had nothing to do with them, and made a refusal that never
+    // needs the platform at all queue behind whatever held it. Here the test
+    // holds the platform and the refusal must still be answered.
+    let directory = fixture_dir("lock");
+    let rig = rig()?;
+    let equity = rig.initial_equity()?;
+    let path = write_fixture(&directory, &desk_statement(equity));
+    let (handler, platform) = rig.with_feed(&path)?;
+    // Premise: with the file good and the platform free, the cycle is served.
+    assert_eq!(
+        handler
+            .handle(&request(Method::Post, "/cycle", ANALYST_TOKEN))
+            .status,
+        202
+    );
+    write_fixture(&directory, "{ this is not a statement");
+    touch(
+        &path,
+        std::time::SystemTime::now() + std::time::Duration::from_secs(2),
+    );
+
+    let held = platform
+        .lock()
+        .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let answered = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let response = handler.handle(&request(Method::Post, "/cycle", ANALYST_TOKEN));
+            let _ = sender.send(response.status);
+        });
+        let answered = receiver.recv_timeout(std::time::Duration::from_secs(10));
+        // Released whatever happened, so a failure is a failed assertion and
+        // never a suite that hangs.
+        drop(held);
+        answered
+    });
+    let status = answered.map_err(|_| {
+        Error::invalid(
+            "the cycle was not refused while the platform lock was held; the statement re-read \
+             is waiting on the platform",
+        )
+    })?;
+    assert_eq!(status, 503);
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
 }
 
 // --- no feed ------------------------------------------------------------------

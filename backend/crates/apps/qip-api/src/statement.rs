@@ -42,7 +42,19 @@
 //! stage reconcile the new figures. A named file that has stopped reading or
 //! parsing refuses the cycle, in the same way a feed that fails to answer
 //! does: a cycle over yesterday's statement with a note attached would
-//! reconcile a balance the desk has already corrected.
+//! reconcile a balance the desk has already corrected. A file that stays
+//! broken keeps refusing every cycle, from the refusal it already gave and
+//! without being read again, until it moves — the modification time and
+//! length are checked every time, so the fix an operator makes is picked up
+//! on the next cycle and needs no restart.
+//!
+//! **No refusal quotes the file.** Every message names the field, the row or
+//! the position and stops there, and that includes the refusals the kernel
+//! raises when a holding is handed to it. A statement is a custodian's
+//! document about the desk's money; a 503 body reaches whoever can call the
+//! route, the stderr of the process, and whichever ticket the line is pasted
+//! into. `ledger_views` refuses an unknown body key by position for the same
+//! reason.
 //!
 //! Absent variable: no feed, the banner says so, and `/wallet` keeps
 //! answering `assembled: false` — honestly, because nothing was observed.
@@ -117,23 +129,37 @@ impl Statement {
     /// desk should see rather than a balance the LEARN stage would reconcile
     /// as fresh for a day longer than it is. Every refusal names the field.
     pub fn parse(text: &str, now: Timestamp) -> Result<Self> {
-        let document: serde_json::Value = serde_json::from_str(text)
-            .map_err(|error| Error::invalid(format!("the file is not JSON: {error}")))?;
+        let document: serde_json::Value = serde_json::from_str(text).map_err(|error| {
+            // Position and class, never `error` itself: a `serde_json` syntax
+            // error quotes the bytes it stopped on, and those bytes are the
+            // custodian's document. See the refusal rule on this module.
+            let class = match error.classify() {
+                serde_json::error::Category::Io => "the file could not be read",
+                serde_json::error::Category::Syntax => "a syntax error",
+                serde_json::error::Category::Data => "a value of the wrong shape",
+                serde_json::error::Category::Eof => "an unexpected end of input",
+            };
+            Error::invalid(format!(
+                "the file is not JSON: {class} at line {} column {}",
+                error.line(),
+                error.column()
+            ))
+        })?;
         let object = object_of(&document, "the statement")?;
         refuse_unknown_keys(object, &STATEMENT_KEYS, "the statement")?;
 
         let as_of_text = string_field(object, "as_of", "as_of")?;
         let as_of = Timestamp::parse_rfc3339(as_of_text).ok_or_else(|| {
-            Error::invalid(format!(
-                "as_of is {as_of_text:?}, which is not an RFC 3339 instant such as \
-                 2026-09-05T06:00:00Z"
-            ))
+            Error::invalid(
+                "as_of is not an RFC 3339 instant such as 2026-09-05T06:00:00Z; write it in \
+                 that form",
+            )
         })?;
         if as_of > now {
             return Err(Error::invalid(format!(
-                "as_of is {} and now is {}; a statement dated in the future is a clock or \
-                 a typo, and the wallet would carry it as fresh for longer than it is",
-                as_of.to_rfc3339(),
+                "as_of is later than now, which is {}; a statement dated in the future is a \
+                 clock or a typo, and the wallet would carry it as fresh for longer than it \
+                 is. Correct as_of to the instant the custodian stated",
                 now.to_rfc3339()
             )));
         }
@@ -151,10 +177,10 @@ impl Statement {
             Some(value) => {
                 let tolerance = decimal_of(value, "tolerance")?;
                 if !tolerance.is_positive() {
-                    return Err(Error::invalid(format!(
-                        "tolerance is {tolerance}; a tolerance is the largest gap \
-                         reconciliation accepts and must be strictly positive"
-                    )));
+                    return Err(Error::invalid(
+                        "tolerance is not strictly positive; a tolerance is the largest gap \
+                         reconciliation accepts, so write one above zero",
+                    ));
                 }
                 Some(decimal_text_of(value, "tolerance")?)
             }
@@ -194,14 +220,14 @@ impl Statement {
                      together"
                 )));
             }
-            if holdings
+            if let Some(first) = holdings
                 .iter()
-                .any(|seen: &StatementHolding| seen.asset == asset)
+                .position(|seen: &StatementHolding| seen.asset == asset)
             {
                 return Err(Error::invalid(format!(
-                    "{at}.asset is {asset:?}, which an earlier holding already states; two \
-                     claims about one balance will disagree and the later one would win \
-                     silently"
+                    "{at}.asset names the same asset as holdings[{first}].asset; two claims \
+                     about one balance will disagree and the later one would win silently, so \
+                     state the balance once"
                 )));
             }
             let quantity_value = holding.get("quantity").ok_or_else(|| {
@@ -214,8 +240,8 @@ impl Statement {
                     let tolerance = decimal_of(value, &format!("{at}.tolerance"))?;
                     if !tolerance.is_positive() {
                         return Err(Error::invalid(format!(
-                            "{at}.tolerance is {tolerance}; a tolerance is the largest gap \
-                             reconciliation accepts and must be strictly positive"
+                            "{at}.tolerance is not strictly positive; a tolerance is the \
+                             largest gap reconciliation accepts, so write one above zero"
                         )));
                     }
                     text
@@ -246,34 +272,52 @@ impl Statement {
     /// and reconciles against them.
     ///
     /// The kernel is the judge of the asset name and of its venue-asset
-    /// bound; a refusal from it stops the caller with the kernel's own
-    /// message. Holdings before the refused one have been observed and the
-    /// rest have not — the kernel offers no transaction — which is why the
-    /// root refuses to start on it and the middleware refuses the cycle and
-    /// re-applies the whole file at the next change.
+    /// bound; a refusal from it stops the caller, restated by position and
+    /// carrying the kernel's class rather than its message, because the
+    /// kernel names the asset and the venue-asset it refused and both are
+    /// the document's. Holdings before the refused one have been observed and
+    /// the rest have not — the kernel offers no transaction — which is why
+    /// the root refuses to start on it and the middleware refuses the cycle
+    /// and re-applies the whole file at the next change.
     pub fn observe_into(&self, platform: &mut Platform) -> Result<()> {
-        for holding in &self.holdings {
+        for (index, holding) in self.holdings.iter().enumerate() {
+            let at = format!("holdings[{index}]");
             // Parsed here, at the hand-over, from the text the parser already
-            // validated; a failure is a defect in that validation, named.
+            // validated; a failure is a defect in that validation, named by
+            // position. This is the crossing from validated decimal text to
+            // `Decimal`: the API holds no field typed as money, so the number
+            // exists only between here and `observe_statement`.
             let quantity = Decimal::parse(&holding.quantity).ok_or_else(|| {
                 Error::invalid(format!(
-                    "{}.quantity {:?} passed validation and does not parse",
-                    holding.asset, holding.quantity
+                    "{at}.quantity passed validation and does not parse; the parser and this \
+                     hand-over disagree, which is a defect in this module"
                 ))
             })?;
             let tolerance = Decimal::parse(&holding.tolerance).ok_or_else(|| {
                 Error::invalid(format!(
-                    "{}.tolerance {:?} passed validation and does not parse",
-                    holding.asset, holding.tolerance
+                    "{at}.tolerance passed validation and does not parse; the parser and this \
+                     hand-over disagree, which is a defect in this module"
                 ))
             })?;
-            platform.observe_statement(
-                self.venue.clone(),
-                &holding.asset,
-                quantity,
-                tolerance,
-                self.as_of,
-            )?;
+            platform
+                .observe_statement(
+                    self.venue.clone(),
+                    &holding.asset,
+                    quantity,
+                    tolerance,
+                    self.as_of,
+                )
+                .map_err(|error| {
+                    restate(
+                        &error,
+                        format!(
+                            "{at} was refused when it was observed ({}); the kernel judges the \
+                             asset name and the venue-asset bound, so check that holding and \
+                             the statement's venue against them",
+                            error.code()
+                        ),
+                    )
+                })?;
         }
         Ok(())
     }
@@ -309,13 +353,24 @@ impl Fingerprint {
     }
 }
 
-/// The statement file this process re-reads, and the statement it last
-/// applied.
+/// The statement file this process re-reads, the statement it last applied,
+/// and the refusal it last gave.
 #[derive(Debug)]
 pub struct StatementFeed {
     path: String,
     fingerprint: Fingerprint,
     statement: Statement,
+    /// The fingerprint of a file this feed already read and refused, with the
+    /// refusal it gave.
+    ///
+    /// A broken file refuses every admitted cycle — that is the point, and it
+    /// is not softened — but re-reading and re-parsing the same bytes to
+    /// reach the same refusal spends the request's time on work whose answer
+    /// is already known. The fingerprint is still taken every time, so an
+    /// operator who fixes the file is picked up on the next cycle without a
+    /// restart; only the read and the parse are skipped, and only while the
+    /// file has not moved.
+    refused: Option<(Fingerprint, Error)>,
 }
 
 impl StatementFeed {
@@ -340,6 +395,7 @@ impl StatementFeed {
             path: path.to_string(),
             fingerprint,
             statement,
+            refused: None,
         })
     }
 
@@ -360,15 +416,43 @@ impl StatementFeed {
     /// changed into something the parser refuses, is an error and the held
     /// statement is left as it was — the caller refuses the cycle rather
     /// than reconciling against a statement the desk has since withdrawn.
+    ///
+    /// A file that has already been refused at this fingerprint is refused
+    /// again from the refusal it gave, without being read or parsed a second
+    /// time. The refusal is identical, so nothing is hidden; what changes is
+    /// that the twentieth cycle over a file nobody has fixed costs a `stat`
+    /// rather than a read and a parse. The fingerprint is taken on every
+    /// call, so the moment the file moves it is read again — a cache that
+    /// stopped looking would be a worse defect than the one it replaced.
     pub fn refresh(&mut self, now: Timestamp) -> Result<Option<&Statement>> {
         let fingerprint = Fingerprint::of(&self.path)?;
+        if let Some((refused, error)) = &self.refused
+            && *refused == fingerprint
+        {
+            return Err(error.clone());
+        }
         if fingerprint == self.fingerprint {
+            // Back to the bytes that last read cleanly: whatever was refused
+            // in between described a file that is no longer there.
+            self.refused = None;
             return Ok(None);
         }
-        let (fingerprint, statement) = read(&self.path, now)?;
-        self.fingerprint = fingerprint;
-        self.statement = statement;
-        Ok(Some(&self.statement))
+        // The fingerprint is taken before the read, so a file replaced
+        // between the two is remembered under the fingerprint it no longer
+        // has. That corrects itself: the next `stat` disagrees with the
+        // remembered one and the file is read again.
+        match parse_file(&self.path, now) {
+            Ok(statement) => {
+                self.fingerprint = fingerprint;
+                self.statement = statement;
+                self.refused = None;
+                Ok(Some(&self.statement))
+            }
+            Err(error) => {
+                self.refused = Some((fingerprint, error.clone()));
+                Err(error)
+            }
+        }
     }
 
     /// The banner line: where the statement is from and what it says.
@@ -399,6 +483,12 @@ pub fn absent_banner() -> String {
 /// Read and validate the file, refusing it by name.
 fn read(path: &str, now: Timestamp) -> Result<(Fingerprint, Statement)> {
     let fingerprint = Fingerprint::of(path)?;
+    let statement = parse_file(path, now)?;
+    Ok((fingerprint, statement))
+}
+
+/// Read and validate the file's contents, refusing it by name.
+fn parse_file(path: &str, now: Timestamp) -> Result<Statement> {
     let text = std::fs::read_to_string(path).map_err(|error| {
         Error::io(format!(
             "{STATEMENT_PATH_VARIABLE} names {path}, which cannot be read: {error}. Unset it \
@@ -406,13 +496,37 @@ fn read(path: &str, now: Timestamp) -> Result<(Fingerprint, Statement)> {
              off"
         ))
     })?;
-    let statement = Statement::parse(&text, now).map_err(|error| {
-        Error::invalid(format!(
-            "{STATEMENT_PATH_VARIABLE} names {path}, which is not a wallet statement: {}",
-            error.message()
-        ))
-    })?;
-    Ok((fingerprint, statement))
+    Statement::parse(&text, now).map_err(|error| {
+        // `error.message()` is the parser's, which names fields, rows and
+        // positions and never a value the file carried; `path` is the
+        // operator's mount point, not the document.
+        restate(
+            &error,
+            format!(
+                "{STATEMENT_PATH_VARIABLE} names {path}, which is not a wallet statement: {}",
+                error.message()
+            ),
+        )
+    })
+}
+
+/// `error`'s class carrying `message` instead of `error`'s own message.
+///
+/// A refusal is answered on the class as well as the text — a bound is
+/// `denied` and a malformed field is `invalid` — so a refusal restated
+/// without the document's values must not also collapse to one class.
+fn restate(error: &Error, message: String) -> Error {
+    match error {
+        Error::Invalid(_) => Error::invalid(message),
+        Error::NotFound(_) => Error::not_found(message),
+        Error::Denied(_) => Error::denied(message),
+        Error::Numeric(_) => Error::numeric(message),
+        Error::Schema(_) => Error::schema(message),
+        Error::Io(_) => Error::io(message),
+        Error::Unavailable(_) => Error::unavailable(message),
+        Error::Guard(_) => Error::guard(message),
+        Error::Timeout(_) => Error::timeout(message),
+    }
 }
 
 fn object_of<'a>(
@@ -429,13 +543,16 @@ fn refuse_unknown_keys(
     known: &[&str],
     at: &str,
 ) -> Result<()> {
-    for key in object.keys() {
-        if !known.contains(&key.as_str()) {
-            return Err(Error::invalid(format!(
-                "{at} carries the key {key:?}, which is not one of {known:?}; a key nothing \
-                 reads is a value the desk believes is in force and is not"
-            )));
-        }
+    if let Some(position) = object.keys().position(|key| !known.contains(&key.as_str())) {
+        // By position, never quoted, exactly as `ledger_views` refuses an
+        // unknown body key: a key is written by whoever wrote the document,
+        // so echoing it publishes a piece of that document. `known` is a
+        // source-file literal and is safe to name.
+        return Err(Error::invalid(format!(
+            "{at} carries a key at position {} that is not one of {known:?}; a key nothing \
+             reads is a value the desk believes is in force and is not",
+            position + 1
+        )));
     }
     Ok(())
 }
@@ -450,7 +567,7 @@ fn string_field<'a>(
         .ok_or_else(|| Error::invalid(format!("{at} is missing")))?;
     value
         .as_str()
-        .ok_or_else(|| Error::invalid(format!("{at} is {value}, which is not a string")))
+        .ok_or_else(|| Error::invalid(format!("{at} is not a string; write it as one")))
 }
 
 /// The exact text of a decimal from a JSON string, validated as a decimal
@@ -464,13 +581,16 @@ fn decimal_text_of(value: &serde_json::Value, at: &str) -> Result<String> {
 fn decimal_of(value: &serde_json::Value, at: &str) -> Result<Decimal> {
     let Some(text) = value.as_str() else {
         return Err(Error::invalid(format!(
-            "{at} is {value}, which is not a string; write decimals as strings such as \
-             \"0.1\", because a JSON number is read as a float and a balance the custodian \
-             stated as 0.1 would be recorded as something else"
+            "{at} is not a string; write decimals as strings such as \"0.1\", because a JSON \
+             number is read as a float and a balance the custodian stated as 0.1 would be \
+             recorded as something else"
         )));
     };
-    Decimal::parse(text)
-        .ok_or_else(|| Error::invalid(format!("{at} is {text:?}, which is not a decimal")))
+    Decimal::parse(text).ok_or_else(|| {
+        Error::invalid(format!(
+            "{at} is not a decimal; write digits with an optional sign and a single point"
+        ))
+    })
 }
 
 /// The handler that re-reads the statement before an admitted `POST /cycle`.
@@ -483,8 +603,22 @@ fn decimal_of(value: &serde_json::Value, at: &str) -> Result<Decimal> {
 /// is then refused by the API exactly as before. The rate limiter is not
 /// consulted here, so the caller's allowance is spent once, by the API.
 ///
-/// Lock order is the platform's rule — platform first, then the feed — so
-/// this cannot deadlock against a cycle already holding the platform.
+/// Lock order is feed, then platform, and this is the only site that holds
+/// both, so nothing can take them the other way round and deadlock. It is
+/// this way round because the file read happens under the feed lock alone:
+/// holding the platform across a filesystem call made every other request —
+/// every `/wallet`, every stream poll, every read of the overview — wait on
+/// a disk that had nothing to do with them.
+///
+/// What the feed lock still holds is the ordering: one refresh at a time,
+/// and the statement each read is observed before the next is read, so two
+/// cycles racing cannot apply an older file after a newer one. The platform
+/// lock is taken once the parsed statement is in hand and all of its
+/// holdings are observed under that one hold. Between the read and that
+/// hold another request's cycle may run against the previously observed
+/// statement, which was already true before — the wrapper released the
+/// platform before calling the inner cycle handler, so the observation and
+/// the cycle were never one critical section.
 pub struct StatementRefresh<H> {
     inner: H,
     feed: Arc<Mutex<StatementFeed>>,
@@ -535,18 +669,21 @@ impl<H: Handler> StatementRefresh<H> {
     /// the cycle is answered with.
     fn refresh(&self) -> Result<()> {
         let now = self.clock.now();
-        let mut platform = self
-            .platform
-            .lock()
-            .map_err(|_| Error::invalid("the platform is in an inconsistent state"))?;
         let mut feed = self
             .feed
             .lock()
             .map_err(|_| Error::invalid("the statement feed is in an inconsistent state"))?;
-        if let Some(statement) = feed.refresh(now)? {
-            statement.observe_into(&mut platform)?;
-        }
-        Ok(())
+        // The read is here, under the feed lock and no other. A refusal
+        // returns without ever touching the platform lock, so a broken file
+        // cannot make the cycle route queue behind whatever holds it.
+        let Some(statement) = feed.refresh(now)? else {
+            return Ok(());
+        };
+        let mut platform = self
+            .platform
+            .lock()
+            .map_err(|_| Error::invalid("the platform is in an inconsistent state"))?;
+        statement.observe_into(&mut platform)
     }
 }
 

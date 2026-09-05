@@ -10,14 +10,31 @@ The request that produced this page was for a scraper that self-registers
 for exchange and venue APIs, anonymously. That is refused, and not as a
 matter of taste:
 
-- Automated signup circumvents the venue's terms and its identity checks,
-  which are the venue's way of knowing who is bound by what. A licence
+- An anonymous registration circumvents the venue's terms and its identity
+  checks, which are the venue's way of knowing who is bound by what. A licence
   nobody read is one nobody can be held to, and an account nobody owns is one
   nobody can be asked about.
 - This platform's rules put licensing posture *before* use
   (`.claude/rules/domains/data-and-streaming.md`) and put reading a vendor's
   terms on the owner (ADR 0034, ADR 0040 — "a record cannot read them on the
   owner's behalf").
+
+A later instruction asked for a different arrangement and it was accepted, in
+the narrow form ADR 0041 records: sign the company up **under the company's
+own identity**, and only where a named operator has already approved that
+venue's terms. `scripts/venue-signup/` is that job, and "The signup job"
+below is what it does. It does not reopen either bullet above — the agreement
+is still the operator's, recorded before the job runs, and only the typing
+moved — so keep two things apart while reading the rest of this page:
+
+- **Anonymous registration is refused, structurally.** No deployed process
+  here opens an account, no flag enables one, and no type in the tree can
+  express a registration with nobody's name on it.
+- **Attributed, approved registration is what the job types**, on the
+  operator's own machine, from a reviewed recipe, under an approval naming
+  the operator and the terms they read. It stops at every step where the
+  venue is asking whether a person is present. Those steps are listed under
+  "What may be automated, and what may not", and none of them has moved.
 
 The refusal is in the code, not only here. `RegistrationRecord` in
 `backend/crates/services/qip-data-finder/src/registration.rs` has one
@@ -40,7 +57,7 @@ and ADR 0034. The requirement is a floor: raise it when the terms say more.
 | `coinbase-spot-ticker` | `keyless` | Manifest `auth: none`; "free, unauthenticated, no signup" |
 | `frankfurter-ecb-reference-rates` | `keyless` | Manifest `auth: none`; "free, unauthenticated, no signup" |
 | `alpaca-daily-bars` | `account` | Manifest reads `QIP_ALPACA_API_KEY_ID` and `QIP_ALPACA_API_SECRET_KEY`; "an account is required". Whether opening it involves identity verification is not stated anywhere in this repository — when you read the terms, raise this to `account_with_identity_verification` if it does |
-| `kalshi-markets` | `account` | Manifest reads an unauthenticated endpoint, but Kalshi is a CFTC-regulated market whose API terms are unread (ADR 0034); whether an anonymous reader is permitted is what the terms would say, so the default is the restrictive one until you read them |
+| `kalshi-markets` | `account` | Manifest reads an unauthenticated endpoint, but Kalshi is a CFTC-regulated market whose API terms are unread (ADR 0034); whether an anonymous reader is permitted is what the terms would say, so the default is the restrictive one until you read them. The signup job's `kalshi.json` recipe separately declares `identity_verification_required: true` and refuses before a browser opens; that declaration is the recipe's, and the registry's requirement is still `account` until the terms say otherwise |
 
 The two `account` rows are also refused by the licensing gate for a separate
 reason — their terms are unread — and that refusal comes first. Read the
@@ -55,10 +72,15 @@ registration question arise.
    instant you read it: both go in the record. If the terms forbid either
    usage, stop; the catalogue entry records that and the source stays
    refused.
-2. **Register under your own identity.** Your name, your organisation, your
-   e-mail. If the venue asks for identity verification, that is you doing it,
-   with your documents. Nothing in this repository will do this step, and a
-   request to automate it is refused.
+2. **Register under an identity the venue can hold to its terms** — the
+   company's, with you as the operator who approved it. If the venue asks for
+   identity verification, that is you doing it, with your documents; nothing
+   here will do that step. The mechanical part of the form — the five company
+   identity fields, a generated password, and the one terms box your approval
+   names — can be typed by `scripts/venue-signup/signup.mjs` under an approval
+   no older than twenty-four hours; see "The signup job" below for where it
+   stops and hands back. A run with a blank `operator` on the approval is
+   refused, because that is the anonymous registration this page refuses.
 3. **Create the API key in the venue's dashboard.** Give it the narrowest
    scope the venue offers — read-only market data where that exists. Never
    a trading scope: this platform never submits a live order (ADR 0003), and
@@ -71,19 +93,29 @@ registration question arise.
    `<VARIABLE>_FILE` — for Alpaca, `QIP_ALPACA_API_SECRET_KEY_FILE` and
    `QIP_ALPACA_API_KEY_ID_FILE`. The value never goes in an environment
    variable, a manifest, a config file, a commit, or a chat.
-5. **Record the registration in the platform's config.** A
-   `RegistrationRecord` with:
-   - `source_id` — the manifest's `source_id`;
-   - `operator` — you, in a form the venue and the audit trail both
-     recognise;
-   - `terms_read_at` — the instant from step 1;
+5. **Record the registration against your authenticated identity.** The
+   platform's own path is `POST /api/v1/registrations/:source/approve` — the
+   portal's data-sources registrations page raises it for you. It
+   takes the `terms` you read and the `secret` variable name, takes the
+   operator from the sealed session rather than from the body, refuses a
+   credential older than fifteen minutes, and journals the record to the
+   event log before the registry adopts it. The contract is
+   `backend/crates/apps/qip-api/ROUTES-REGISTRATIONS.md`. The record it
+   writes is a `RegistrationRecord` with:
+   - `source_id` — the manifest's `source_id`, from the path;
+   - `operator` — you: the authenticated principal's subject, taken from the
+     session. The request body names nobody and cannot;
+   - `terms_read_at` — the instant the platform answered, which is why the
+     route refuses a stale credential: it is evidence you were at the
+     keyboard, not that a token was issued this morning;
    - `terms` — the URL or document name from step 1;
    - `secret` — the *variable name* the manifest reads the credential from
      (`QIP_ALPACA_API_SECRET_KEY`), never the value. The type refuses
      anything that is not a `SCREAMING_SNAKE_CASE` variable name, so a pasted
      key is refused at load without being echoed.
 
-   In JSON, the shape a config file carries:
+   In JSON, the shape a config file would carry — the record itself, not the
+   approval route's body, which is `terms` and `secret` and nothing else:
 
    ```json
    {
@@ -95,10 +127,20 @@ registration question arise.
    }
    ```
 
-   The composition roots do not yet read this file; today a root passes the
-   registry to `admission::admit_registered`. Until a root does, the
-   shipped registry records nobody and the `account` sources stay refused —
-   which is the correct state for a registration nobody has made.
+   `qip-api` will read such a file when `QIP_VENUE_REGISTRATIONS_PATH` names
+   one — it is read before the configuration is built, so the feed's
+   admission gate is asked the same registry — but no environment sets it:
+   Terraform's `venue_registrations_file` is null everywhere, and
+   `infrastructure/environments/dev/terraform.tfvars` says why in a comment
+   beside the commented-out line. A named file that does not parse, or that
+   registers nobody, stops the process rather than starting with a registry
+   that grants nothing. So today the approval route and the event log are the
+   only way a record exists, and until somebody approves, the registry
+   records nobody and the `account` sources stay refused — which is the
+   correct state for a registration nobody has made. Note also that an
+   approval does not re-open a connector:
+   the feed's admission gate runs once, at start, so a source approved now is
+   admitted onto the feed at the next start.
 6. **Check what the platform now says.** The admission banner names the
    licence, the usages, and `registered by <operator> under <terms> read at
    <instant>, credential named <variable>`. If it says `keyless` for a source
@@ -130,13 +172,40 @@ yours. The script runs on your machine under your session cookie; it does not
 run in this platform, and no credential it handles ever reaches a
 repository file.
 
+**May be automated, under a named operator's approval:** the mechanical part
+of the signup form itself — typing the company's five identity fields, a
+password generated in memory, and the single terms checkbox whose reference
+the approval names — by `scripts/venue-signup/signup.mjs` on your machine
+(ADR 0041). What makes this admissible is the approval, and only the
+approval: a named operator, the terms they read, and when, no older than
+twenty-four hours, for the source the recipe registers. Take the approval
+away and what is left is the anonymous registration the top of this page
+refuses, which is why the job reads the approval before it opens a browser
+and stops on a blank `operator`, a mismatched `source_id`, a stale or absent
+`terms_read_at`, or a `terms` reference that is not the one the recipe's
+consent box cites.
+
 **May not be automated, by anyone, for anyone:**
 
-- Signup. The account is a person's agreement with the venue.
+- The agreement. The account is a person's agreement with the venue; the job
+  types a form, and the approval record is where the person who agreed is
+  named. A run with no approval is not a faster signup, it is a different and
+  refused thing.
 - CAPTCHAs and bot checks. They exist to tell that a person is present; a
-  script that defeats one is a statement that none was.
-- Identity verification. Your documents, your face, your consent.
-- Accepting terms. Reading them is the whole point of step 1.
+  script that defeats one is a statement that none was. The job hands back at
+  one; it never solves, works around or retries.
+- Identity verification. Your documents, your face, your consent. A document
+  upload, selfie, date-of-birth or tax-identifier field is a hand-back, and a
+  recipe declaring `identity_verification_required: true` — `kalshi.json`
+  does — is refused before a browser is opened at all.
+- Accepting terms you have not read. Reading them is the whole point of step
+  1. The job ticks exactly the one box whose reference the approval names;
+  any other consent box on the page is a hard stop.
+- Verification codes and second factors. The job reads no mail and polls
+  nothing, so the code is yours.
+- Filling a field nobody reviewed. A field the page has and the reviewed
+  recipe does not list is a hand-back naming it, never a guess at what to
+  type.
 - Creating accounts under names, e-mails or identities that are not yours,
   or rotating through them to evade a rate limit or a ban.
 
@@ -149,8 +218,9 @@ step is yours, and the platform waits.
 company's own identity, after a named operator has approved that venue's
 terms, and stops at every step the list above says is a person's. It is
 dev tooling for the operator's machine; nothing in `backend/` or `frontend/`
-imports it. It does not change what may be automated: the approval record
-is the person's agreement, and the job is the typing.
+imports it, and the platform does not depend on it existing. It does not move
+the line the list above draws: the approval record is the person's agreement,
+and the job is the typing (ADR 0041).
 
 ```
 COMPANY_IDENTITY_FILE=/run/company/identity.json \
@@ -162,19 +232,31 @@ node --test scripts/venue-signup/signup.test.mjs
 `scripts/venue-signup/recipes/<id>.json` — committed, reviewed data listing
 the signup URL and the form as `{selector, field}` pairs, with no secret in
 it; a key a recipe may not carry is refused, and so is a plaintext URL
-anywhere but loopback. `COMPANY_IDENTITY_FILE` is a JSON file outside the
-repository holding exactly `legal_name`, `contact_email`, `phone`, `address`
+anywhere but loopback. Every selector in a recipe must be anchored to an id
+or to an attribute's value: a selector list, a `*`, a pseudo-class, or a
+bare `input[name]`-style shape is refused, because a broad selector makes
+every field on the page one the recipe "lists" and quietly empties the two
+hard stops that ask which fields nobody reviewed. `COMPANY_IDENTITY_FILE` is
+a JSON file outside the repository holding exactly `legal_name`, `contact_email`, `phone`, `address`
 and `country` (ISO 3166-1 alpha-2); a sixth field is refused by name, and a
 value shaped like a credential or a tax id (the model gateway's screen plus
 SSN, EIN, NINO and nine-digit shapes) is refused without being echoed.
-`--approval <path>` is the platform's registration record exported as JSON
-plus the Secret Manager slot names: `source_id` (must match the recipe),
-`operator` (blank is the anonymous registration this page refuses),
-`terms_read_at` (refused if absent, unparseable, in the future, or older
+`--approval <path>` is a registration record's fields as JSON plus the Secret
+Manager slot names. It is a file you write before the account exists, and it
+is not the platform's record: the approval route in step 5 states a
+registration that is already complete, credential and all, whereas this file
+states that you read the terms and are about to register. The job neither
+calls that route nor reads what it wrote. Its fields: `source_id` (must
+match the recipe), `operator` (blank is the anonymous registration this page
+refuses), `terms_read_at` (refused if absent, unparseable, in the future, or older
 than 24 hours), `terms` (must equal the reference the recipe's terms
-checkbox cites, or the box is not ticked and the run stops), and
+checkbox cites, or the box is not ticked and the run stops),
 `secret_slots.password` with `secret_slots.api_key` when the recipe reads a
-key on success.
+key on success, and `project` — the Google Cloud project the secrets are
+written in, named on the approval and shape-checked, because `gcloud`'s
+ambient configuration is whatever an unrelated command last set and a
+credential written to a project nobody chose is one nobody can find and
+somebody else can read.
 
 **What it does.** Refuses before a browser exists if `gcloud` is not on
 PATH, if `NODE_TLS_REJECT_UNAUTHORIZED=0` is set, or if the recipe declares
@@ -183,20 +265,31 @@ the account must be opened by a person). Otherwise it opens the page,
 inventories every visible field, and only if every field is one the recipe
 lists fills them from the identity file with a 32-character password from
 the CSPRNG held only in memory, ticks the one terms box the approval names,
-and submits. On success the password, and any API key the page shows, go to
-`gcloud secrets versions add <slot> --data-file=-` on stdin — never to disk,
-never to stdout, never to an argument. Its stdout is one JSON line naming
-the outcome and the slots written; the values appear nowhere.
+and submits. Before the first keystroke it also checks that the page the
+browser actually ended on is on the origin the recipe names — `Page.navigate`
+reports success for a redirect, so the landing URL is the only evidence of
+where the typing would go — and it checks the same again after submit. On
+success the password, and any API key the page shows, go to
+`gcloud secrets versions add <slot> --data-file=- --project=<project>` on
+stdin — never to disk, never to stdout, never to an argument. Its stdout is
+one JSON line naming the outcome and the slots written; the values appear
+nowhere.
 
 **Hard stops.** A captcha or bot challenge of any kind; an identity-document
 upload, selfie, tax-id, SSN or date-of-birth field; a verification or
 second-factor code prompt; a consent box the approval does not cover; any
-field the recipe does not list. Each is exit 70 with a named reason and a
+field the recipe does not list; a page on an origin the recipe does not name,
+before typing or after submit; and a recipe selector that matches more than
+one element on the page the venue actually served, which is a hand-back
+rather than a choice between them. Each is exit 70 with a named reason and a
 screenshot under `VENUE_SIGNUP_SCRATCH_DIR` (default
-`$TMPDIR/venue-signup/`). None is solved, worked around or retried. Treat
-the screenshot as identity data: it shows what was typed, with password
-fields masked by the browser. If the stop comes after submit — `alpaca.json`
-declares e-mail verification as exactly that — the password is written to
+`$TMPDIR/venue-signup/`). None is solved, worked around or retried. The
+screenshot is taken only after every credential-bearing field has been
+blanked and the page has confirmed it let the values go; if anything still
+holds one, no screenshot is taken at all and the reason says so, because a
+PNG of a filled form is a copy of the password whatever the browser drew.
+Treat the file as identity data even so. If the stop comes after submit —
+`alpaca.json` declares e-mail verification as exactly that — the password is written to
 its slot first, because the venue may have created the account and losing
 the password would leave one nobody can enter; the verification is yours.
 Exit codes: 64 usage, 65 recipe, 66 identity, 67 approval, 69 prerequisite,
@@ -204,28 +297,53 @@ Exit codes: 64 usage, 65 recipe, 66 identity, 67 approval, 69 prerequisite,
 secret could not be stored (the reason says which, and what to recover).
 
 **What it cannot do, and why.** It cannot read your mail, so an e-mail
-verification ends every run that reaches one, and for Alpaca that is every
-run: the account exists, the password is in its slot, and the code is
-yours. It cannot open a Kalshi account at all, because that means the
-venue's identity verification — your documents, your face — and it refuses
-before a browser opens. It cannot tell a venue a person is present, so a
+verification ends every run that reaches one, and for Alpaca the recipe
+declares that as the stop: the password is written to its slot first and the
+code is yours, because whether the venue created the account is something
+only the venue and your inbox know. It cannot open a Kalshi account at all,
+because that means the venue's identity verification — your documents, your
+face — and it refuses before a browser opens. It cannot tell a venue a person is present, so a
 captcha is a hand-back even when it is a trivially "solvable" one; a script
 that defeats one is a statement that nobody was there. It cannot create the
 API key Alpaca issues from the dashboard after signup — that is step 3, with
-the read-only scope, by you. It has never been run against a real venue:
-the two recipes are reviewed data whose selectors were written from the
-public forms and not exercised against them, and the first real run should
-be watched, knowing that a field the page has and the recipe does not is a
-hand-back rather than a guess. It drives Chromium over the DevTools
+the read-only scope, by you. It drives Chromium over the DevTools
 protocol with plain Node rather than Playwright, because Playwright is not
 resolvable from this repository and a browser-automation dependency for one
 job is not worth the supply chain; the browser is the one Playwright's
 bundle provides at `/opt/pw-browsers/chromium` (override with
 `VENUE_SIGNUP_CHROMIUM`), launched with `--remote-debugging-pipe` so no port
-is opened for anything else to attach to. It honours `HTTPS_PROXY` and
+is opened for anything else to attach to, into a throwaway profile that is
+deleted afterwards, and with a named list of environment variables rather
+than yours — a signup form is a page from the internet, and a credential path
+or a token some other tool exported is not something the process rendering it
+needs. It honours `HTTPS_PROXY` and
 `NO_PROXY` as the rest of the repository does, and if the egress proxy's
 certificate is not in the system store it fails on TLS — the fix is the CA,
 never `--ignore-certificate-errors`, which it does not pass. Run as root it
 drops Chromium's own sandbox (`--no-sandbox`) and says so; do not run it as
 root. Nothing here reads the registration record the platform holds or
 writes one: after a successful run, step 5 is still yours.
+
+**What has not happened, which matters more than what the job can do.** The
+job has never been run against a real venue. Neither recipe has been
+exercised against the venue it names: `alpaca.json`'s selectors were written
+from the public signup form and not tested against it, and `kalshi.json`
+lists no steps at all because it declares identity verification and stops
+there. So the first run of Alpaca's recipe is a review to be watched,
+knowing that a field the page has and the recipe does not is a hand-back
+rather than a guess.
+
+Neither venue host is in the egress allowlist.
+`infrastructure/egress/envoy.yaml` declares seven upstreams — two Google
+APIs, one Vertex region, two IBM Quantum endpoints, one FX vendor and one
+model router — and its own note on what is deliberately absent begins "No
+venue and no broker". Nothing in a deployment therefore has a route to
+Alpaca or to Kalshi, for signup or for data; nothing is applied in any case.
+The job is unaffected only because it runs on the operator's own machine and
+not in a deployment.
+
+Per ADR 0041, no Secret Manager version holds a venue credential and no
+registration record exists for any source; no environment sets
+`venue_registrations_file`, which this page's step 5 says the same way. Both
+`account` sources therefore stand refused today, which is the correct state
+for a registration nobody has made.

@@ -23,6 +23,8 @@
  * - A proxy setting it cannot honour. `HTTPS_PROXY` becomes Chromium's
  *   `--proxy-server` and `NO_PROXY` its bypass list, matching how every other
  *   tool in this repository leaves the machine.
+ * - The operator's whole environment. The child is given the named variables
+ *   in `CHILD_ENVIRONMENT_KEYS` and nothing else; see `childEnvironment`.
  */
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -77,6 +79,75 @@ export function chromiumArguments({ env = process.env, profileDir, uid = process
 }
 
 /**
+ * Delete the throwaway profile, allowing for a Chromium that is still writing
+ * to it as it dies.
+ *
+ * A single `rmSync` raced the browser's own shutdown and failed with
+ * ENOTEMPTY, which surfaced to the operator as "the browser session failed" on
+ * a run that had in fact succeeded. The profile holds the session cookie for
+ * the account just opened, so failing to remove it is reported rather than
+ * ignored.
+ */
+export async function removeProfile(profileDir, attempts = 10, waitMs = 50) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      rmSync(profileDir, { recursive: true, force: true });
+      return true;
+    } catch (cause) {
+      if (attempt >= attempts) throw new Error(`the browser profile at ${profileDir} could not be deleted: ${cause.message}`);
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+  }
+}
+
+/**
+ * The environment variables the browser is given, and the only ones.
+ *
+ * `PATH` because Chromium execs its own helpers; the locale and timezone
+ * because a form's date and number controls render by them and a page the
+ * operator screenshots should look like the one they would see; the proxy
+ * variables because leaving this machine goes through the egress proxy and
+ * Chromium reads them for the requests `--proxy-server` does not cover.
+ */
+export const CHILD_ENVIRONMENT_KEYS = [
+  "PATH",
+  "LANG",
+  "LANGUAGE",
+  "LC_ALL",
+  "TZ",
+  "HTTP_PROXY",
+  "http_proxy",
+  "HTTPS_PROXY",
+  "https_proxy",
+  "NO_PROXY",
+  "no_proxy",
+];
+
+/**
+ * The child's environment: the allowlist above, plus `HOME` pointed at the
+ * throwaway profile.
+ *
+ * The whole of the operator's environment used to be handed to the browser.
+ * A signup form is a page from the internet running scripts, and everything
+ * in the environment of the process that renders it — a cloud credential
+ * path, a session token some other tool exported, an API key for an unrelated
+ * service — is reachable by anything that gets code execution in that process
+ * and is present in `/proc/<pid>/environ` for every process of the same user.
+ * None of it is anything Chromium needs to type a company address into a form.
+ */
+export function childEnvironment(env = process.env, profileDir) {
+  const child = {};
+  for (const key of CHILD_ENVIRONMENT_KEYS) {
+    const value = env[key];
+    if (typeof value === "string" && value !== "") child[key] = value;
+  }
+  // Last, and not from the allowlist: the profile is the browser's home, so a
+  // crashed run leaves its droppings in the directory that is deleted.
+  child.HOME = profileDir;
+  return child;
+}
+
+/**
  * Launch Chromium and attach to its first page.
  *
  * Every protocol call carries a deadline; a browser that stops answering is
@@ -104,7 +175,7 @@ export async function launch({
       // stderr are read and discarded: Chromium's D-Bus complaints would
       // otherwise bury the one line the operator needs.
       stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
-      env: { ...env, HOME: profileDir },
+      env: childEnvironment(env, profileDir),
     });
   } catch (cause) {
     rmSync(profileDir, { recursive: true, force: true });
@@ -209,7 +280,7 @@ export async function launch({
       // Already gone; the kill below is the backstop either way.
     }
     if (!exited) child.kill("SIGKILL");
-    rmSync(profileDir, { recursive: true, force: true });
+    await removeProfile(profileDir);
   }
 
   /** Navigate and wait for the load event, or fail with the navigation error text. */

@@ -159,7 +159,7 @@ async function serveSession(page: Page, roles: readonly string[], displayName = 
   });
 }
 
-test("a pending source renders the approve button naming the operator, the terms to read, the secret slot and the add-secret command", async ({
+test("a pending source renders an approve button that names no person, the terms to read, the secret slot and the add-secret command", async ({
   page,
 }) => {
   const writes: string[] = [];
@@ -186,7 +186,13 @@ test("a pending source renders the approve button naming the operator, the terms
   const button = page.getByTestId("registration-approve-alpaca-daily-bars");
   await expect(button).toBeVisible();
   await expect(button).toBeEnabled();
-  await expect(button).toHaveText("Approve registration as Dana Ops");
+  // The control names no person. It once read "Approve registration as Dana
+  // Ops", which named the console's signed-in user as the operator; the
+  // platform records its own deployment credential's subject and always did,
+  // so the copy named an identity nothing downstream holds (ADR 0041,
+  // amendment of 2026-09-05).
+  await expect(button).toHaveText("Approve registration");
+  await expect(button).not.toContainText("Dana Ops");
   await expect(page.getByTestId("registration-approve-reason-alpaca-daily-bars")).toHaveCount(0);
 
   const terms = page.getByTestId("registration-terms-alpaca-daily-bars");
@@ -266,7 +272,17 @@ test("approving posts the terms and the variable name, and the card re-renders a
   );
   await expect(page.getByTestId("registration-terms")).toHaveValue(ALPACA_TERMS);
   await expect(page.getByTestId("registration-secret")).toHaveValue(ALPACA_SLOT);
-  await expect(page.getByTestId("registration-confirm")).toHaveText("Confirm as Dana Ops");
+  await expect(page.getByTestId("registration-confirm")).toHaveText("Confirm approval");
+  // The confirm step states what the platform will actually attribute, before
+  // the click rather than after it: the console's own deployment credential,
+  // named, and explicitly not the signed-in person. The premise is asserted
+  // first — the paragraph exists and the session's name is on the page — so
+  // this cannot pass by matching an empty locator.
+  const attribution = page.getByTestId("registration-attribution");
+  await expect(attribution).toBeVisible();
+  await expect(page.getByTestId("registrations-session")).toContainText("Dana Ops");
+  await expect(attribution).toContainText(PLATFORM_OPERATOR);
+  await expect(attribution).toContainText("not Dana Ops");
   await page.getByTestId("registration-confirm").click();
 
   await expect(dialog).toBeHidden();

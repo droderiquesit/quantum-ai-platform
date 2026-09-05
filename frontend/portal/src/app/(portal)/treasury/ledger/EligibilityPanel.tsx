@@ -13,13 +13,32 @@ import {
  * The one control on the treasury surface: an operator's eligibility decision
  * about one user.
  *
- * What it records is a finding about a person — that a named operator checked
- * this user's identity, on a date, against a document, in a jurisdiction, and
- * that the finding lapses on a date. It moves no money. There is no
- * instrument, side, quantity or price in its body, and no field about capital
- * leaving the platform: `Eligibility` in `qip-capital` omits `can_withdraw`
- * rather than always answering `false`, because a field is a value a transfer
- * path could one day read (ADR 0021, ADR 0023), and this form adds none.
+ * What it records is a finding about a person — that an operator checked this
+ * user's identity, on a date, against a document, in a jurisdiction, and that
+ * the finding lapses on a date. It moves no money. There is no instrument,
+ * side, quantity or price in its body, and no field about capital leaving the
+ * platform: `Eligibility` in `qip-capital` omits `can_withdraw` rather than
+ * always answering `false`, because a field is a value a transfer path could
+ * one day read (ADR 0021, ADR 0023), and this form adds none.
+ *
+ * **Which operator is not part of that record.** The gateway
+ * (`src/app/api/gateway/[...path]/route.ts`) authenticates to `qip-api` with
+ * one deployment bearer token for every browser session — `upstreamHeaders`
+ * in `src/lib/server/upstream.ts` is the whole of it — and the sealed
+ * session's claims reach the platform nowhere, as `SessionClaims` in
+ * `src/lib/server/identity.ts` says in as many words. `qip-api` builds every
+ * credential's subject as `format!("{}@env", role.as_str())` in its `main.rs`,
+ * and `routes.rs` hands that same `principal.subject` to
+ * `Platform::decide_eligibility`. So the journaled decider is `operator@env`:
+ * a deployment, identical for every human who signs in here. This panel
+ * therefore names no person as the attributed decider. The copy read "Decide
+ * eligibility as <name>" and "Confirm as <name>", and the attestation opened
+ * "I, <name>, verified…"; each named an identity nothing downstream holds.
+ * See the 2026-09-05 amendment to ADR 0041 for the same gap on the venue
+ * registrations surface, the reasoning, and the design that would close it.
+ * The signed-in name is still *displayed*, because who is at the keyboard is
+ * a true fact about this console — it is simply not a fact the platform
+ * records.
  *
  * Two things are deliberate about the shape of the control.
  *
@@ -29,13 +48,15 @@ import {
  * a disabled `<fieldset>` in that case; a disabled control is not a control,
  * and forcing a click on it opens nothing.
  *
- * And the confirm step states the attestation in the first person, because
- * what is being recorded is a claim by a person and not a form submission.
- * The document reference is required before the confirm can be pressed: an
- * eligibility whose evidence nobody named is a check nobody can repeat. Every
- * other refusal is the platform's — an expiry that is not after the
- * verification, a jurisdiction that is not the mandate's, a blank timestamp —
- * and each comes back as a 400 naming the field, rendered as it came.
+ * And the confirm step states the attestation in the first person — without a
+ * name — because what is being recorded is a claim by whoever is at this
+ * keyboard and not a form submission, while the name that would make it an
+ * attribution is one the platform never receives. The document reference is
+ * required before the confirm can be pressed: an eligibility whose evidence
+ * nobody named is a check nobody can repeat. Every other refusal is the
+ * platform's — an expiry that is not after the verification, a jurisdiction
+ * that is not the mandate's, a blank timestamp — and each comes back as a 400
+ * naming the field, rendered as it came.
  */
 
 /** `yyyy-mm-dd` from a date input, or the empty string. */
@@ -86,21 +107,27 @@ export function EligibilityPanel({
   const [reviewing, setReviewing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<ApiOutcome<LedgerUser> | null>(null);
-  const [recorded, setRecorded] = useState<{ operator: string; verdict: string } | null>(null);
+  // What the platform answered, and who was signed in when it was asked —
+  // two separate facts, and the result line keeps them separate. The name is
+  // this console's own knowledge and was never sent: the body below carries
+  // no operator field, and the route would refuse one it did not read.
+  const [recorded, setRecorded] = useState<{ signedInAs: string; verdict: string } | null>(null);
 
   const id = user.user_id;
   const documented = documentRef.trim().length > 0;
 
+  // First person and no name: the sentence is what the person at this
+  // keyboard asserts, and the platform records none of the name. "I, <name>,
+  // verified…" read as the recorded attribution and there is no such record.
   const attestation = useMemo(() => {
-    const who = operatorName ?? "…";
     const evidence = documentRef.trim().length > 0 ? documentRef.trim() : NO_DOCUMENT;
     if (decision === "revoked") {
-      return `I, ${who}, revoke this user's eligibility on the record ${evidence}; the ledger keeps the revoked record rather than removing it, so "never verified" and "verified and then revoked" stay different answers.`;
+      return `I revoke this user's eligibility on the record ${evidence}; the ledger keeps the revoked record rather than removing it, so "never verified" and "verified and then revoked" stay different answers.`;
     }
     const verified = verifiedOn.length === 0 ? NO_DATE : verifiedOn;
     const expires = expiresOn.length === 0 ? NO_DATE : expiresOn;
-    return `I, ${who}, verified this user's identity on ${verified} against ${evidence}; expires ${expires}`;
-  }, [operatorName, decision, documentRef, verifiedOn, expiresOn]);
+    return `I verified this user's identity on ${verified} against ${evidence}; expires ${expires}`;
+  }, [decision, documentRef, verifiedOn, expiresOn]);
 
   const body = useMemo<EligibilityDecisionBody>(
     () =>
@@ -128,7 +155,7 @@ export function EligibilityPanel({
         if (response.outcome.kind === "ok") {
           const row = response.outcome.data;
           setRecorded({
-            operator: operatorName,
+            signedInAs: operatorName,
             verdict: row.eligibility?.eligible === true ? "eligible" : (row.eligibility?.refused ?? "not eligible"),
           });
           setReviewing(false);
@@ -256,8 +283,8 @@ export function EligibilityPanel({
             data-testid={`eligibility-review-${id}`}
             title={permission.allowed ? undefined : permission.reason}
           >
-            Decide eligibility{operatorName === null ? "" : ` as ${operatorName}`}
-          </button>
+            Decide eligibility
+</button>
           {permission.allowed && !documented ? (
             <span
               className="text-[11px] leading-snug text-[color:var(--color-ink-faint)]"
@@ -284,9 +311,10 @@ export function EligibilityPanel({
           className="mt-1 text-[11px] leading-snug text-[color:var(--color-ink-dim)]"
           data-testid={`eligibility-result-${id}`}
         >
-          Sent as <span className="num">{recorded.operator}</span> — the platform attributes the
-          decision to its own credential&rsquo;s subject, which may name someone else. The platform
-          answered: <span className="num">{recorded.verdict}</span>.
+          Decided while signed in as <span className="num">{recorded.signedInAs}</span>, which this
+          console knows and the platform was not told: the record attributes the decision to this
+          console&rsquo;s own credential subject, the same for every person who signs in here. The
+          platform answered: <span className="num">{recorded.verdict}</span>.
         </p>
       )}
 
@@ -309,7 +337,10 @@ export function EligibilityPanel({
  * The confirm step.
  *
  * Two clicks and a sentence in the first person, because the record is a
- * claim by a person rather than the output of a form. The refusals are shown
+ * claim by a person rather than the output of a form — and a paragraph, before
+ * the click rather than discovered afterwards in the record, saying that the
+ * person the platform will name is this console's deployment credential and
+ * not the one signing. The refusals are shown
  * as they came: the gateway's own 405 is distinguished from the platform's
  * 403, a 400 is repeated verbatim because it names the field to correct, and
  * a 409 means the operator identity has aged out of the kernel's fifteen
@@ -365,6 +396,26 @@ function ConfirmDialog({
           refuses an operator identity older than fifteen minutes with a 409. The decision moves no
           capital and names no instrument; it states who was verified, when, where and against what.
         </p>
+        {/*
+          The attribution gap, stated where the click is made. This console
+          authenticates to the platform with one deployment credential shared
+          by every browser session, and the platform has no way to verify a
+          console session's identity, so the subject it journals is that
+          credential's — not the person at the keyboard. Saying "Confirm as
+          <name>" here named an identity nothing downstream records. The venue
+          registrations dialog carries the same paragraph for the same reason;
+          see the 2026-09-05 amendment to ADR 0041.
+        */}
+        <p
+          className="text-[11.5px] leading-relaxed text-[color:var(--color-warn)]"
+          data-testid="eligibility-attribution"
+        >
+          What the platform records is this console&apos;s own API credential — a deployment
+          subject such as <span className="num">operator@env</span>, the same for every person who
+          signs in here — and not {operatorName}. That you are the one deciding is known only from
+          this console&apos;s sign-in record, which the platform&apos;s event log does not hold.
+          Confirm only if you personally checked this identity against the document named above.
+        </p>
         {refusal === null ? null : (
           <p
             role="alert"
@@ -389,7 +440,7 @@ function ConfirmDialog({
             disabled={busy}
             data-testid="eligibility-confirm"
           >
-            {busy ? "Recording…" : `Confirm as ${operatorName}`}
+            {busy ? "Recording…" : "Confirm decision"}
           </button>
         </div>
       </form>

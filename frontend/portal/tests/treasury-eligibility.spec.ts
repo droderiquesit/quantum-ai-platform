@@ -15,10 +15,11 @@
  *   attestation the operator confirms naming the document, the date and the
  *   expiry in the first person;
  * * a decision that posts and leaves the row saying what it said before, or
- *   that shows the session's name as if the platform had recorded it —
- *   asserted by the row re-rendering from the platform's answer, and by the
- *   result line saying the name was what this console *sent* while the
- *   platform attributes the record to its own credential;
+ *   that names the session's person as the decider the platform recorded —
+ *   asserted by the row re-rendering from the platform's answer, by the
+ *   controls and the attestation naming no person, by the confirm step
+ *   stating the deployment subject before the click, and by the result line
+ *   saying the name is this console's knowledge and was not sent;
  * * a viewer offered a control the platform would refuse, with no reason —
  *   asserted by the disabled panel, the reason beside it, and nothing posted;
  * * a 400, a 403 or a 409 swallowed or paraphrased — asserted by each
@@ -32,6 +33,16 @@
  * for character. They are not captured from a running process: no deployment
  * has enrolled a user or served the decision route.
  *
+ * The attribution the panel states is checked against the platform rather
+ * than assumed: `upstreamHeaders` in `src/lib/server/upstream.ts` sends one
+ * deployment bearer token and forwards nothing of the sealed session,
+ * `SessionClaims` in `src/lib/server/identity.ts` says the claim set reaches
+ * `qip-api` nowhere, `qip-api`'s `main.rs` builds every subject as
+ * `format!("{}@env", role.as_str())`, and `routes.rs` hands that same
+ * `principal.subject` to `Platform::decide_eligibility`. The record therefore
+ * names a deployment. See the 2026-09-05 amendment to ADR 0041, which
+ * established the identical gap on the venue registrations surface.
+ *
  * The API is stubbed at the browser boundary, so the application code under
  * test is the code a deployment runs. What that cannot prove is the gateway:
  * `declaresWrite` in `src/lib/api/endpoints.ts` does not yet name this path,
@@ -42,6 +53,13 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 import { healthy, servePlatform } from "./support/platform";
+
+/**
+ * The subject `qip-api` builds for a credential holding the operator role —
+ * a deployment, not a person. Named here because it is what the confirm step
+ * must say, and it is a role name and a deployment word: no account.
+ */
+const PLATFORM_OPERATOR = "operator@env";
 
 const WITHDRAWAL_REFUSED =
   "capital does not leave the platform: ADR 0021 refuses the signing and withdrawal half of the treasury and ADR 0023 keeps that in force; a withdrawal is a separate, later, separately approved decision";
@@ -272,7 +290,7 @@ test("each user row carries the ledger's verdict, and a refused row carries the 
   expect(writes).toEqual([]);
 });
 
-test("granting posts the attested terms and re-renders the row as eligible, naming the operator this console sent it as", async ({
+test("granting posts the attested terms and re-renders the row as eligible, naming no person as the decider the platform recorded", async ({
   page,
 }) => {
   const posted: unknown[] = [];
@@ -300,16 +318,34 @@ test("granting posts the attested terms and re-renders the row as eligible, nami
   await page.getByTestId("eligibility-document-desk").fill("passport GBR-99, checked in person");
 
   await expect(review).toBeEnabled();
-  await expect(review).toHaveText("Decide eligibility as Dana Ops");
+  // The control names no person. It once read "Decide eligibility as Dana
+  // Ops", which named the console's signed-in user as the decider; the
+  // platform records its own deployment credential's subject and always did,
+  // so the copy named an identity nothing downstream holds (ADR 0041,
+  // amendment of 2026-09-05).
+  await expect(review).toHaveText("Decide eligibility");
+  await expect(review).not.toContainText("Dana Ops");
   await review.click();
 
   const dialog = page.getByTestId("eligibility-dialog");
   await expect(dialog).toBeVisible();
   await expect(dialog).not.toContainText(/withdraw/i);
+  // First person, and no name: the attestation opened "I, Dana Ops, verified"
+  // and read as the attribution on the record, which does not exist.
   await expect(page.getByTestId("eligibility-attestation")).toHaveText(
-    "I, Dana Ops, verified this user's identity on 2026-03-02 against passport GBR-99, checked in person; expires 2027-03-02",
+    "I verified this user's identity on 2026-03-02 against passport GBR-99, checked in person; expires 2027-03-02",
   );
-  await expect(page.getByTestId("eligibility-confirm")).toHaveText("Confirm as Dana Ops");
+  await expect(page.getByTestId("eligibility-confirm")).toHaveText("Confirm decision");
+  // The confirm step states what the platform will actually attribute, before
+  // the click rather than after it: the console's own deployment credential,
+  // named, and explicitly not the signed-in person. The premise is asserted
+  // first — the paragraph exists and the session's name is on the page — so
+  // this cannot pass by matching an empty locator.
+  const attribution = page.getByTestId("eligibility-attribution");
+  await expect(attribution).toBeVisible();
+  await expect(page.getByTestId("ledger-session")).toContainText("Dana Ops");
+  await expect(attribution).toContainText(PLATFORM_OPERATOR);
+  await expect(attribution).toContainText("not Dana Ops");
   await page.getByTestId("eligibility-confirm").click();
 
   await expect(dialog).toBeHidden();
@@ -317,15 +353,23 @@ test("granting posts the attested terms and re-renders the row as eligible, nami
   await expect(page.getByTestId("eligibility-verdict-desk")).toHaveText("eligible");
   await expect(page.getByTestId("eligibility-terms-desk")).toContainText("expires 2027-03-02");
 
-  // The name is what this console *sent*; the platform attributes the record
-  // to its own credential's subject, and the page does not claim otherwise.
+  // The name is this console's own knowledge of who was signed in, and it was
+  // never sent: the record attributes the decision to the console's
+  // credential subject. The line once read "Sent as Dana Ops", which claimed
+  // a name had crossed the wire when no field on the body carries one.
   const result = page.getByTestId("eligibility-result-desk");
-  await expect(result).toContainText("Sent as Dana Ops");
-  await expect(result).toContainText("attributes the decision to its own credential");
+  await expect(result).toContainText("Decided while signed in as Dana Ops");
+  await expect(result).not.toContainText("Sent as Dana Ops");
+  await expect(result).toContainText("the platform was not told");
+  await expect(result).toContainText("attributes the decision to this console");
   await expect(result).toContainText("eligible");
 
   // Alice was not touched by a decision about the desk.
   await expect(page.getByTestId("eligibility-verdict-alice")).toHaveText("eligible");
+  // Exhaustive on purpose: the body is the whole body, so a key carrying the
+  // signed-in name would fail here. The console sends no operator field, and
+  // `EligibilityRequest::parse` in `qip-api`'s `ledger_views.rs` refuses any
+  // key outside its `GRANTED_FIELDS`/`REVOKED_FIELDS` lists in any case.
   expect(posted).toEqual([
     {
       user: "desk",
@@ -358,9 +402,13 @@ test("revoking re-renders the row as refused with the ledger's revoked token and
   await page.getByTestId("eligibility-document-alice").fill("case NOTE-2026-14, identity no longer evidenced");
 
   await page.getByTestId("eligibility-review-alice").click();
+  // First person, no name — a revocation is attributed to the same deployment
+  // subject a grant is.
   await expect(page.getByTestId("eligibility-attestation")).toContainText(
-    "I, Dana Ops, revoke this user's eligibility on the record case NOTE-2026-14, identity no longer evidenced",
+    "I revoke this user's eligibility on the record case NOTE-2026-14, identity no longer evidenced",
   );
+  await expect(page.getByTestId("eligibility-attestation")).not.toContainText("Dana Ops");
+  await expect(page.getByTestId("eligibility-attribution")).toContainText(PLATFORM_OPERATOR);
   await page.getByTestId("eligibility-confirm").click();
 
   await expect(page.getByTestId("eligibility-dialog")).toBeHidden();
