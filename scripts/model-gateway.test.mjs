@@ -7,7 +7,32 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PROVIDERS, configure, probe, screenPayload } from "./model-gateway.mjs";
+import { PROVIDERS, completionText, configure, probe, screenPayload } from "./model-gateway.mjs";
+
+test("an empty completion is a refusal naming the finish reason, not an empty success", () => {
+  // Premise: a non-empty completion is accepted as-is.
+  assert.deepEqual(completionText({ choices: [{ message: { content: "x" } }] }), { ok: true, text: "x" });
+  const out = completionText({
+    choices: [{ finish_reason: "length", message: { content: "", reasoning: "…" } }],
+    usage: { completion_tokens: 6000 },
+  });
+  assert.equal(out.ok, false);
+  assert.ok(out.reason.includes("length") && out.reason.includes("6000"), out.reason);
+});
+
+test("an extra body is merged but may not override the model, messages or budget", () => {
+  const good = configure(
+    { ALGORIK_WORKER_PROVIDER: "huggingface", ALGORIK_WORKER_MODEL: "m", HF_TOKEN: "hf_x", ...budget, ALGORIK_WORKER_EXTRA_BODY: '{"chat_template_kwargs":{"enable_thinking":false}}' },
+    () => "",
+  );
+  assert.deepEqual(good.extraBody, { chat_template_kwargs: { enable_thinking: false } });
+  assert.deepEqual(good.problems, []);
+  const bad = configure(
+    { ALGORIK_WORKER_PROVIDER: "huggingface", ALGORIK_WORKER_MODEL: "m", HF_TOKEN: "hf_x", ...budget, ALGORIK_WORKER_EXTRA_BODY: '{"model":"other"}' },
+    () => "",
+  );
+  assert.ok(bad.problems.some((p) => p.includes("may not set model")), JSON.stringify(bad.problems));
+});
 
 const budget = { ALGORIK_WORKER_MAX_CALLS: "5" };
 

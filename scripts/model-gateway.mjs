@@ -166,7 +166,56 @@ export function configure(env = process.env, readFile = (path) => readFileSync(p
   }
   const maxTokens = Number(env.ALGORIK_WORKER_MAX_TOKENS ?? 4000);
 
-  return { provider: providerName ?? "custom", baseUrl, model, apiKey, maxCalls, maxTokens, problems };
+  // Provider-specific request fields, merged into the body as given. The
+  // case that needed it: a reasoning model spends its whole output budget on
+  // a hidden `reasoning` field and returns an empty `content`, and the switch
+  // that stops it (`chat_template_kwargs.enable_thinking=false`) is not in
+  // the OpenAI shape. Only object-valued JSON is accepted; `model`,
+  // `messages` and `max_tokens` cannot be overridden, so the ledger's record
+  // of what ran stays true.
+  let extraBody = {};
+  const extraRaw = env.ALGORIK_WORKER_EXTRA_BODY?.trim();
+  if (extraRaw) {
+    try {
+      const parsed = JSON.parse(extraRaw);
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        problems.push("ALGORIK_WORKER_EXTRA_BODY must be a JSON object");
+      } else if (["model", "messages", "max_tokens"].some((key) => key in parsed)) {
+        problems.push("ALGORIK_WORKER_EXTRA_BODY may not set model, messages or max_tokens");
+      } else {
+        extraBody = parsed;
+      }
+    } catch {
+      problems.push("ALGORIK_WORKER_EXTRA_BODY is not valid JSON");
+    }
+  }
+
+  return { provider: providerName ?? "custom", baseUrl, model, apiKey, maxCalls, maxTokens, extraBody, problems };
+}
+
+/**
+ * The completion text, or the reason there is none.
+ *
+ * An empty `content` with `finish_reason: "length"` is a worker that spent
+ * its budget and produced nothing — the first batch on a reasoning model did
+ * exactly that, and the gateway reported exit 0 with an empty file, which a
+ * caller read as a finished task. So an empty completion is a refusal here,
+ * naming the finish reason and the tokens spent.
+ */
+export function completionText(body) {
+  const choice = body.choices?.[0];
+  const text = choice?.message?.content ?? "";
+  if (text.trim() === "") {
+    const reason = choice?.finish_reason ?? "unknown";
+    const spentTokens = body.usage?.completion_tokens ?? "?";
+    return {
+      ok: false,
+      reason: `the provider returned no content (finish_reason ${reason}, ${spentTokens} completion tokens spent, ${
+        choice?.message?.reasoning ? "a reasoning field was present" : "no reasoning field"
+      })`,
+    };
+  }
+  return { ok: true, text };
 }
 
 /**
@@ -279,6 +328,7 @@ async function run(config, taskPath) {
       "content-type": "application/json",
     },
     body: JSON.stringify({
+      ...config.extraBody,
       model: config.model,
       max_tokens: config.maxTokens,
       messages: [
@@ -299,8 +349,26 @@ async function run(config, taskPath) {
     return 5;
   }
   const body = await response.json();
-  const text = body.choices?.[0]?.message?.content ?? "";
   const usage = body.usage ?? {};
+  const completion = completionText(body);
+  if (!completion.ok) {
+    // Still billed: the tokens were spent whether or not anything came back.
+    appendFileSync(
+      LEDGER,
+      `${JSON.stringify({
+        at: new Date().toISOString(),
+        task: task.task.slice(0, 120),
+        model: config.model,
+        prompt_tokens: usage.prompt_tokens ?? null,
+        completion_tokens: usage.completion_tokens ?? null,
+        ms: Date.now() - started,
+        empty: true,
+      })}\n`,
+    );
+    console.error(`refused: ${completion.reason}`);
+    return 6;
+  }
+  const text = completion.text;
 
   // The ledger is the budget's source of truth: counting in memory loses the
   // count on every crash, and a budget that resets on failure is not a budget.
