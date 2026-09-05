@@ -93,7 +93,7 @@ they cross different boundaries:
    recorded on the hypothesis as narrative; no field of it is read as a
    number.
 
-## Cost
+## What it costs
 
 - A third-party model now sees the evidence the platform reasons over, per
   instrument, per cycle, at the model's price. The router's `/v1/models`
