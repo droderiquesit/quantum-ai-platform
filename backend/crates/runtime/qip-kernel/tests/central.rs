@@ -2271,3 +2271,96 @@ fn the_learn_stage_retires_a_strategy_whose_cells_realised_sustained_decay_and_j
     assert_eq!(journaled_reviews(&platform)?.last(), Some(&None));
     Ok(())
 }
+
+// --- ADR 0039: the share a cell's grant manifest carries -----------------------
+
+#[test]
+fn a_cells_manifest_names_only_grants_whose_gross_fits_its_share() -> Result<()> {
+    // The half of ADR 0039 the plan-only suite cannot reach: the manifest a
+    // cell is shipped names the grants the centre holds live for it, and is
+    // withheld — not trimmed, not shipped anyway — when those grants already
+    // sum past the cell's share under the current plan. A manifest that
+    // named them regardless would have the cell derive a share the
+    // partitioner never produced.
+    let mut plane = plane()?;
+    let id = strategy();
+    register(&mut plane, &id, CELL)?;
+    walk_to(&mut plane, &id, GateStage::Pilot)?;
+    let issued = issue(&mut plane, &id, CELL, start())?;
+    let envelope = issued.envelope().clone();
+    let plan = plane.allocate(0.0, start())?;
+    assert_eq!(
+        plan.for_cell(CELL),
+        envelope.gross_limit(),
+        "the premise: the envelope was issued against this plan's gross for the cell"
+    );
+    let region = "europe-west2".to_string();
+    let membership = qip_kernel::central::RegionMembership::new(
+        BTreeMap::from([(region.clone(), plan.for_cell(CELL))]),
+        BTreeMap::from([(CELL.to_string(), region.clone())]),
+    )?;
+
+    let shares = plane.region_shares(&plan, &membership, start())?;
+    let share = shares
+        .for_cell(CELL)
+        .unwrap_or_else(|| panic!("the cell was withheld a share: {:?}", shares.withheld()));
+    assert_eq!(share.region(), region);
+    assert_eq!(share.amount(), plan.for_cell(CELL));
+    assert_eq!(
+        share.live_grants(),
+        &[envelope.signature().to_string()],
+        "the manifest did not name exactly the issued grant"
+    );
+    assert_eq!(share.named_gross(), envelope.gross_limit());
+    assert!(share.named_gross() <= share.amount());
+    assert_eq!(share.manifest().live_grants, share.live_grants());
+
+    // A narrower plan — the allocator under a drawdown, say — gives the cell
+    // less than its live grant already admits. The cell is withheld, with
+    // the reason, rather than shipped a manifest naming a grant its share
+    // cannot cover.
+    let narrower = qip_capital::allocation::AllocationPlan {
+        allocations: plan
+            .allocations
+            .iter()
+            .cloned()
+            .map(|mut allocation| {
+                allocation.notional -= Decimal::ONE;
+                allocation
+            })
+            .collect(),
+        ..plan.clone()
+    };
+    assert!(
+        narrower.for_cell(CELL) < envelope.gross_limit(),
+        "the premise: the narrower plan is below the live grant"
+    );
+    let withheld = plane.region_shares(&narrower, &membership, start())?;
+    assert!(
+        withheld.for_cell(CELL).is_none(),
+        "a manifest was shipped naming grants past the cell's share: {:?}",
+        withheld.for_cell(CELL)
+    );
+    let reason = withheld
+        .withheld()
+        .get(CELL)
+        .unwrap_or_else(|| panic!("the cell was neither shared nor withheld with a reason"));
+    assert!(
+        reason.contains("past its share") && reason.contains("renewed"),
+        "the reason did not say what to do instead: {reason}"
+    );
+    // And once the grant has expired it no longer counts against the share:
+    // the cell is shipped an empty manifest, which its table reads as
+    // nothing, rather than being withheld forever on a dead grant.
+    let later = envelope.expires_at();
+    let after = plane.region_shares(&narrower, &membership, later)?;
+    let expired = after.for_cell(CELL).unwrap_or_else(|| {
+        panic!(
+            "the cell was withheld on an expired grant: {:?}",
+            after.withheld()
+        )
+    });
+    assert!(expired.live_grants().is_empty());
+    assert_eq!(expired.named_gross(), Decimal::ZERO);
+    Ok(())
+}

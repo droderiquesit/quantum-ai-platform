@@ -8,10 +8,19 @@ What runs on the control-plane cluster, as vendored manifests, and the order
 | 1 | `cert-manager/` | cert-manager v1.21.1, three images | Kargo's webhook certificate is a cert-manager `Certificate`; the CRDs must exist before the render that names one is applied |
 | 2 | `argocd/` | Argo CD v3.5.2, two images (Dex deleted) | Independent of the others; before Kargo because Kargo's `argocd-update` step needs the `Application` CRD |
 | 3 | `kargo/` | Kargo v1.11.4 rendered from its chart, one image | After cert-manager and Argo CD |
-| 4 | `config-connector/` | The `ConfigConnector` object and the `qip-run` namespace | After the addon has installed the operator, which the cluster's creation does; the object names the identity |
-| 5 | the two App-key Secrets | Projected from Secret Manager by the step, never from this tree | After the namespaces they land in exist |
-| 6 | `../argocd/overlays/<env>` | The project and the Application | After Argo CD's CRDs |
-| 7 | `../kargo/overlays/<env>` | The project, then everything in it | Applied twice with a wait between: Kargo creates the project's namespace |
+| 4 | `config-connector-operator/` | The Config Connector operator 1.156.0, Autopilot variant, one image | ADR 0036 had this as the GKE addon; the API refused the addon on an Autopilot cluster (infra.yml runs 34 and 35, 2026-09-05), so the operator is vendored like the three above. The step waits for its StatefulSet and for the `ConfigConnector` CRD to be established, because the next row names that kind |
+| 5 | `config-connector/` | The `ConfigConnector` object and the `qip-run` namespace | After the operator's CRD exists; the object names the identity, and the step waits for the controller manager the operator installs |
+| 6 | the two App-key Secrets | Projected from Secret Manager by the step, never from this tree | After the namespaces they land in exist |
+| 7 | `../argocd/overlays/<env>` | The project and the Application | After Argo CD's CRDs |
+| 8 | `../kargo/overlays/<env>` | The project, then everything in it | Applied twice with a wait between: Kargo creates the project's namespace |
+
+One thing the operator row does not vendor, so a reader does not assume it
+did: the operator installs the `cnrm-system` controllers itself from four
+`gcr.io/gke-release/cnrm/*` images pinned inside its own image, which no
+overlay can move. `config-connector-operator/SOURCE.md` names them and their
+digests, and says what admits them — Google's global policy, which
+`modules/binaryauthorization` enables and which has not been observed to
+admit that registry. The wait in row 5 is where that is found out.
 
 Each `upstream/` file is the bytes the project published, unedited, with a
 `SOURCE.md` beside it recording the URL, the sha256, the version resolution

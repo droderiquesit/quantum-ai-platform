@@ -156,6 +156,26 @@ pub enum Decision {
     /// the usual answer, and the answer belongs in the chain, not in the
     /// node's log.
     StrategyWithdrawn { strategy: String },
+    /// The region table was re-based to this cell's share of its region's
+    /// grant, as a verified policy payload's grant manifest named it
+    /// (ADR 0039).
+    ///
+    /// Recorded because it is the moment the cell's total authority changed,
+    /// which has the same standing as [`Self::CapitalRenewed`] for one
+    /// strategy. `grants` is how many verified envelopes the manifest named
+    /// and the cell counted; `deficit` is non-zero when the share fell below
+    /// what the cell had already held or committed, which zeroes `free` and
+    /// un-sends nothing — a stated ledger state, and the reason the cell was
+    /// then refused under `region_reservation` until its orders settled.
+    /// Decimals as strings, as everywhere in this enum.
+    RegionShareApplied {
+        sequence: u64,
+        grants: usize,
+        share: String,
+        bound: String,
+        free: String,
+        deficit: String,
+    },
 }
 
 impl Decision {
@@ -177,6 +197,7 @@ impl Decision {
             Self::CrossedInternally { .. } => "crossed_internally",
             Self::CycleCommitted { .. } => "cycle_committed",
             Self::StrategyWithdrawn { .. } => "strategy_withdrawn",
+            Self::RegionShareApplied { .. } => "region_share_applied",
         }
     }
 }

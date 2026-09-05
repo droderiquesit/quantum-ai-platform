@@ -165,9 +165,11 @@ dependencies = [
  "qip-capital",
  "qip-contracts",
  "qip-core",
+ "qip-events",
  "qip-financial",
  "qip-numerics",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

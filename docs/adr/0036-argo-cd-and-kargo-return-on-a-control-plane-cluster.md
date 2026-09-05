@@ -59,7 +59,12 @@ still in force.
    endpoint, Workload Identity on. Three things run on it: Config Connector
    (installed as the GKE addon, so the Terraform provider set stays
    `google`/`google-beta` and gains no `kubernetes`, `helm` or `kubectl`
-   provider), Argo CD, and Kargo. The cluster is Terraform's — `modules/control-plane`
+   provider — *amended 2026-09-05: the API refused the addon on Autopilot
+   in `infra.yml` runs 34 and 35, so the operator is vendored and
+   digest-pinned under `gitops/bootstrap/config-connector-operator` and
+   applied by the bootstrap step, which keeps the provider set unchanged
+   and moves the install onto the same path Argo CD and Kargo take*),
+   Argo CD, and Kargo. The cluster is Terraform's — `modules/control-plane`
    or an equivalent under `infrastructure/terraform/modules/` — beside the
    foundation it already owns. **No trading binary ever runs as a Pod.** The
    acceptance suite's refusal of a Kubernetes workload whose image is a

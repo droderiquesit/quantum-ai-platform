@@ -29,28 +29,41 @@
 //!   not yet seen. [`CashBalance::available`] excludes them and every
 //!   reservation, so a deposit that was announced and never arrived cannot be
 //!   spent.
+//! * [`MandateRegistry`] — the mandates, keyed by [`UserId`] and each under
+//!   a [`MandateId`] of its own, admitted against the desk's mandate as a
+//!   ceiling term by term and in aggregate. An id seen twice, or a mandate
+//!   that promises more than the desk has, is refused with the term named.
+//! * [`InvestmentRequest`] and [`InvestmentDecision`] — a user asking for
+//!   capital to be put to work, admitted or refused by
+//!   [`UserLedger::admit`] before anything downstream exists, the refusal
+//!   naming the [`RefusedLimit`] that fired.
 //! * [`UserLedger`] — the books, keyed `(UserId, StrategyId)` in a
 //!   [`BTreeMap`](std::collections::BTreeMap) so a report of them is the same
 //!   on every machine. Fills reach it as [`AttributedFill`]s — what the
 //!   centre's exact attribution said a strategy realised — and are split
 //!   across users by [`UserShare`]s that must sum to the fill exactly, or
 //!   the whole fill is refused and no book moves.
+//!   [`UserLedger::pro_rata_shares`] produces such a split from what each
+//!   user has at work, as a [`ProRataSplit`] that names where the rounding
+//!   remainder went.
 //!
 //! Nothing here reads a clock; every entry point takes the
 //! [`qip_core::Timestamp`] it is reasoning about, like the rest of the crate.
+//! Nothing here moves capital off the platform: the withdrawal arm is a
+//! type with one variant, and no function here submits, transfers or signs
+//! anything (ADR 0021, ADR 0023).
 //!
 //! # Where the chain now ends
 //!
 //! ```
-//! use qip_capital::ledger::{AttributedFill, Mandate, UserId, UserLedger, UserShare};
+//! use qip_capital::ledger::{AttributedFill, UserId, UserLedger, UserShare};
 //! use qip_contracts::signal::StrategyId;
 //! use qip_core::{Currency, Timestamp, dec};
 //!
 //! # fn main() -> qip_core::error::Result<()> {
 //! let now = Timestamp::from_secs(1_700_000_000);
-//! let alice = UserId::new("alice")?;
-//! let mut ledger = UserLedger::new();
-//! ledger.enrol(alice.clone(), Mandate::desk(dec!("1000000"), Currency::USD)?)?;
+//! let desk = UserId::new("desk")?;
+//! let mut ledger = UserLedger::with_desk(desk.clone(), dec!("1000000"), Currency::USD)?;
 //!
 //! // The centre's attribution said `momentum-v3` realised 250 on a fill.
 //! let fill = AttributedFill {
@@ -59,10 +72,10 @@
 //!     currency: Currency::USD,
 //!     amount: dec!("250"),
 //! };
-//! ledger.journal(&fill, &[UserShare { user: alice.clone(), amount: dec!("250") }], now)?;
+//! ledger.journal(&fill, &[UserShare { user: desk.clone(), amount: dec!("250") }], now)?;
 //!
 //! let balance = ledger
-//!     .balance(&alice, &StrategyId::new("momentum-v3"), Currency::USD)
+//!     .balance(&desk, &StrategyId::new("momentum-v3"), Currency::USD)
 //!     .expect("the fill opened a book");
 //! assert_eq!(balance.available(), dec!("250"));
 //! # Ok(())
@@ -74,9 +87,13 @@ mod cash;
 mod entitlement;
 mod identity;
 mod mandate;
+mod registry;
+mod request;
 
-pub use book::{AttributedFill, LedgerKey, StrategyBook, UserLedger, UserShare};
+pub use book::{AttributedFill, LedgerKey, ProRataSplit, StrategyBook, UserLedger, UserShare};
 pub use cash::{CashBalance, ExpectedInflow};
 pub use entitlement::{Capability, Entitlement, ProductEligibility, Role, WithdrawalEntitlement};
-pub use identity::{Jurisdiction, MAX_USER_ID_LENGTH, UserId};
+pub use identity::{Jurisdiction, MAX_MANDATE_ID_LENGTH, MAX_USER_ID_LENGTH, MandateId, UserId};
 pub use mandate::{Mandate, MandateTerms, PermittedFamilies};
+pub use registry::{DESK_MANDATE_ID, MandateRegistry, RegisteredMandate, RegistryRecord};
+pub use request::{InvestmentDecision, InvestmentOutcome, InvestmentRequest, RefusedLimit};

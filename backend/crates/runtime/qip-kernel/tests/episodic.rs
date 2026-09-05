@@ -280,3 +280,102 @@ fn the_kernel_records_precedents_on_a_hypothesis_once_prior_episodes_resolved_an
     assert_eq!(claim.confidence, third.confidence);
     Ok(())
 }
+
+#[test]
+fn the_panel_is_briefed_on_the_recalled_precedent_through_the_typed_field_and_only_when_one_was_recalled()
+-> Result<()> {
+    // The failure this guards: a precedent recorded beside the hypothesis
+    // but never shown to the panel is memory nobody consults, and a
+    // precedent shown as prose in `context` is memory the reviewer's lesson
+    // matcher would count. The brief every agent ran under is in the audit
+    // trail, so this reads the brief the panel actually received rather
+    // than what the stage says it sent.
+    use qip_investment_agents::ids;
+
+    let probe = {
+        let mut platform = fresh()?;
+        platform.observe(bars("AAA", 120));
+        platform.run_cycle(start());
+        platform.predictions()[0].proposition.resolves_at
+    };
+    let t2 = probe.saturating_add(Duration::from_mins(1));
+    let t3 = t2.saturating_add(Duration::from_secs(1));
+    let (with_memory, _) = three_cycles(t2, t3)?;
+
+    let audit = with_memory.organisation().audit();
+    let reviews = audit.for_agent(ids::ADVERSARIAL);
+    assert_eq!(
+        reviews.len(),
+        3,
+        "premise: the reviewer ran once per REASON"
+    );
+    for earlier in &reviews[..2] {
+        assert!(
+            earlier.brief.precedent.is_none(),
+            "a REASON that ran before anything resolved was briefed on a precedent"
+        );
+    }
+    let briefed = reviews[2]
+        .brief
+        .precedent
+        .as_ref()
+        .expect("the third REASON recalled a precedent and the panel was not briefed on it");
+    let recorded = &with_memory.precedents()[2];
+    assert_eq!(
+        briefed.digest(),
+        &recorded.digest,
+        "the panel was briefed on a different digest from the one recorded beside the hypothesis"
+    );
+    assert_eq!(
+        briefed.similarity(),
+        recorded.nearest[0].similarity,
+        "the brief's similarity is not the nearest episode's"
+    );
+    assert_eq!(briefed.prior_outcome(), recorded.nearest[0].agreed);
+    assert_eq!(
+        briefed.age(),
+        t3.since(recorded.nearest[0].known_at),
+        "the brief's age is not measured from the nearest episode's known_at"
+    );
+    assert!(
+        briefed.age().as_nanos() > 0,
+        "the precedent must be knowable strictly before the question"
+    );
+    // The channel is the typed field and nothing else: the free-text
+    // context the lesson matcher reads carries no precedent block.
+    assert!(
+        !reviews[2].brief.context.contains("precedent"),
+        "the precedent reached the free-text context: {}",
+        reviews[2].brief.context
+    );
+    // And the reviewer cited it in narrative, which is what the channel is
+    // for.
+    let finding = reviews[2]
+        .finding
+        .as_ref()
+        .expect("the reviewer produced a finding");
+    assert!(
+        finding.claim.contains("precedent:")
+            || finding.caveats.iter().any(|c| c.contains("precedent:")),
+        "the reviewer did not cite the precedent it was briefed on: {}",
+        finding.claim
+    );
+
+    // The control: the resolving cycle and the next share the clock reading,
+    // so nothing is knowable before the question and no brief carries one.
+    let (without_memory, _) = three_cycles(t3, t3)?;
+    let control = without_memory
+        .organisation()
+        .audit()
+        .for_agent(ids::ADVERSARIAL);
+    assert_eq!(
+        control.len(),
+        3,
+        "premise: the control reviewer ran three times"
+    );
+    assert!(
+        control.iter().all(|run| run.brief.precedent.is_none()),
+        "a brief carried a precedent that was not knowable before the question"
+    );
+    Ok(())
+}

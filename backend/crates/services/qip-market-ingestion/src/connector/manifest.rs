@@ -294,6 +294,34 @@ pub struct SecretRef {
     variable: String,
 }
 
+/// The class of a character that broke the variable-name rule, named so a
+/// refusal can say *what kind* of thing was pasted without repeating it.
+///
+/// The classes are coarse on purpose: "a lowercase letter" tells an operator
+/// they wrote `sk-live-…` where a name belongs and tells a log reader
+/// nothing, where the letter itself would be the first character of the
+/// key.
+fn character_class(c: char) -> &'static str {
+    if c.is_ascii_lowercase() {
+        "a lowercase letter"
+    } else if c.is_ascii_digit() {
+        // Only ever offending in first position, where a letter is required.
+        "a digit"
+    } else if c == '_' {
+        "an underscore"
+    } else if c.is_ascii_whitespace() {
+        "whitespace"
+    } else if c.is_ascii_punctuation() {
+        "punctuation other than _"
+    } else if c.is_ascii_control() {
+        "a control character"
+    } else if c.is_ascii() {
+        "a character outside A-Z, 0-9 and _"
+    } else {
+        "a non-ASCII character"
+    }
+}
+
 impl SecretRef {
     /// The shortest name that is plausibly a variable and not a key fragment.
     const MIN_LENGTH: usize = 4;
@@ -309,25 +337,44 @@ impl SecretRef {
         &self.variable
     }
 
+    /// Refuse anything that is not a deployment variable name — without
+    /// echoing it.
+    ///
+    /// The value being refused is, in the case this rule exists for, a
+    /// pasted credential. An error that quoted it would write the key to
+    /// stderr, the health detail and whichever support ticket the failure
+    /// line is copied into — the same places the rule is meant to keep it
+    /// out of. So the refusal describes the shape of what was rejected (its
+    /// length and the class of the first character that broke the rule)
+    /// and never its text. That is enough for an operator to see they pasted
+    /// a value, and nothing for a log reader to use.
     pub fn validate(&self) -> Result<()> {
         let variable = self.variable.trim();
-        if variable.len() < Self::MIN_LENGTH {
+        let length = variable.chars().count();
+        if length < Self::MIN_LENGTH {
             return Err(Error::invalid(format!(
-                "the secret reference {variable:?} is too short to be a deployment variable name"
+                "the secret reference is {length} character(s) long, too short to be a \
+                 deployment variable name (at least {} are needed)",
+                Self::MIN_LENGTH
             )));
         }
-        let first_is_letter = variable
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_uppercase());
-        let rest_is_name = variable
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
-        if !first_is_letter || !rest_is_name {
+        // The first character must be A-Z; the rest may also be 0-9 or _.
+        let offending = variable.chars().enumerate().find(|&(index, c)| {
+            if index == 0 {
+                !c.is_ascii_uppercase()
+            } else {
+                !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+            }
+        });
+        if let Some((index, c)) = offending {
             return Err(Error::invalid(format!(
-                "{variable:?} is not a deployment variable name. A manifest names the variable \
-                 the credential is read from and never carries the credential itself; only \
-                 A-Z, 0-9 and _ are accepted, so a pasted key cannot be written here"
+                "the secret reference ({length} characters) has {} at position {}, so it is \
+                 not a deployment variable name. A manifest names the variable the credential \
+                 is read from and never carries the credential itself; a name starts with A-Z \
+                 and continues in A-Z, 0-9 and _, so a pasted key cannot be written here. The \
+                 value is not repeated in this message in case it is one",
+                character_class(c),
+                index + 1
             )));
         }
         Ok(())

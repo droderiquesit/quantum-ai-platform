@@ -14,10 +14,12 @@
 //!
 //! * **Bitemporal, with no leakage.** Every episode carries `at` (when the
 //!   situation was true) and `known_at` (when its outcome became knowable).
-//!   [`EpisodicMemory::recall`] takes the caller's `now` and returns only
-//!   episodes whose `known_at` is strictly before it. A backtest replaying
-//!   Monday cannot see Tuesday's resolution, because there is no read path
-//!   that ignores `known_at`.
+//!   [`EpisodicMemory::recall`] and [`EpisodicMemory::episodes`] both take
+//!   the caller's `now` and return only episodes whose `known_at` is
+//!   strictly before it. A backtest replaying Monday cannot see Tuesday's
+//!   resolution, because there is no read path that ignores `known_at` —
+//!   the plain iterator once did, and was the one exception to this
+//!   sentence until it was made to take `now` too.
 //! * **Bounded and deterministic.** Capacity is fixed at construction and
 //!   eviction is oldest-first by `known_at`; the index examines at most a
 //!   fixed number of candidates per query; and the locality-sensitive hash

@@ -16,7 +16,7 @@ deploy.yml  →  Artifact Registry, by digest, attested
 
 | Path | What |
 |---|---|
-| `bootstrap/` | The three controllers as vendored, digest-pinned manifests, and Config Connector's one object; applied by `infra.yml` in order — `bootstrap/README.md` |
+| `bootstrap/` | The three controllers and the Config Connector operator as vendored, digest-pinned manifests, and Config Connector's one object; applied by `infra.yml` in order — `bootstrap/README.md` |
 | `envs/<env>/` | One `RunService` per catalogue workload (and OpenObserve where it is deployed), the invoker bindings, the proving hook, and the `kustomization.yaml` whose `images` block is the record of what the environment serves — `envs/README.md` |
 | `argocd/` | The `qip` project and one `Application` per environment: automated for `dev`, manual for the rest |
 | `kargo/` | The project, its promotion policy, the promotion task, the warehouse and the four stages — `kargo/README.md` |
@@ -42,7 +42,7 @@ Storage volumes — `modules/cloudrun` created them that way and the running
 (`run.cnrm.cloud.google.com/v1beta1`, read on 2026-09-04) lists
 `secret`, `emptyDir` and `cloudSqlInstance` volumes and no `gcs`. The
 manifests here carry the `gcs` volumes anyway, exactly as the services run,
-and every Application syncs with `Validate=true`: if the addon's schema
+and every Application syncs with `Validate=true`: if the operator's schema
 does not admit the field, the sync is refused with a validation error and
 nothing is stripped from the running service. If it does admit it, the
 first sync acquires the service unchanged. What must not happen is the

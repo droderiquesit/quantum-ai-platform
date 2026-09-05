@@ -23,7 +23,7 @@ Rules: `.claude/rules/domains/infrastructure.md`.
 | `terraform/modules/trust-zones` | The thirteen zones, default deny in both directions; the management zone may reach GitHub and nothing else outside the VPC |
 | `environments/<env>/terraform.tfvars` | dev, test, stage, prod — the only per-environment inputs. There is no `images.tfvars` any more: what an environment serves is `gitops/envs/<env>/kustomization.yaml` |
 | `gitops/` | ADR 0036's delivery path: vendored controller manifests under `bootstrap/`, one `RunService` per catalogue workload under `envs/<env>/`, the Argo CD project and Applications, the Kargo chain — `gitops/README.md` |
-| `egress/` | The one Envoy bootstrap and the vendored-images list the pipeline mirrors and attests — nine images now, seven of them the control plane's |
+| `egress/` | The one Envoy bootstrap and the vendored-images list the pipeline mirrors and attests — ten images now, eight of them the control plane's |
 | `docker/` | Image definitions |
 
 There is one Kubernetes cluster here, and it runs controllers. ADR 0024

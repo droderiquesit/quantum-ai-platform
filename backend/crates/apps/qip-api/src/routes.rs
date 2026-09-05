@@ -324,20 +324,56 @@ pub const ROUTES: &[Route] = &[
         summary: "narrative items the platform absorbed, where an adapter feeds it",
         success: 200,
     },
+    // --- the cognition read surface ------------------------------------------
+    //
+    // What the LEARN stage has measured of the platform's own components and
+    // the precedent REASON recorded beside each hypothesis. Read-only at the
+    // viewer role: a self-estimate is portfolio reasoning, not liveness, and
+    // a monitor credential holds no authority over it. An accuracy appears
+    // only where the engine computed one; below its minimum sample the body
+    // says `null`, never a number. The shapes are `crate::self_model_views`
+    // and `ROUTES-COGNITION.md`.
+    Route {
+        method: Method::Get,
+        pattern: "/cognition/self-model",
+        required_role: Role::Viewer,
+        summary: "every component the platform has graded (detector, analyst, rung or \
+                  strategy) with its sample count and, where the sample reaches the stated \
+                  minimum, the engine's estimated accuracy",
+        success: 200,
+    },
+    Route {
+        method: Method::Get,
+        pattern: "/cognition/precedents",
+        required_role: Role::Viewer,
+        summary: "the precedent recorded beside each hypothesis: the nearest resolved \
+                  episodes REASON recalled and how their outcomes sat against the claim, \
+                  oldest first",
+        success: 200,
+    },
     // --- the treasury read surface -------------------------------------------
     //
     // The blueprint's per-account entitlements and wallet, corridor and
-    // transfer-gate views, read-only at the viewer role. ADR 0021 permits the
-    // deterministic half of the treasury and refuses the path by which
-    // capital leaves, so there is no route here that could submit, approve,
-    // sign or move anything, and `api_boundary.rs` pins the mutating set to
-    // the three above. What this process does not hold — a wallet, either
-    // registry, a gate assessment — is stated in the body, not zero-filled.
-    // The shapes are `crate::ledger_views` and `ROUTES-LEDGER.md`.
+    // transfer-gate views, read-only. ADR 0021 permits the deterministic
+    // half of the treasury and refuses the path by which capital leaves, so
+    // there is no route here that could submit, approve, sign or move
+    // anything, and `api_boundary.rs` pins the mutating set to the three
+    // above. What this process does not hold — a wallet, either registry, a
+    // gate assessment — is stated in the body, not zero-filled. The shapes
+    // are `crate::ledger_views` and `ROUTES-LEDGER.md`.
+    //
+    // `/ledger/users` is the one route of the four that requires an analyst.
+    // Its body carries every enrolled user's mandate, balances and inflow
+    // references, and the portal grants the viewer role to anyone who
+    // completes self-registration on the public front door — so at viewer
+    // the route would hand every user's capital to whoever could sign up.
+    // The other three carry no per-user datum (a wallet this process never
+    // assembles, registries it never holds, the gate's checks and the kill
+    // switch) and stay readable by a viewer.
     Route {
         method: Method::Get,
         pattern: "/ledger/users",
-        required_role: Role::Viewer,
+        required_role: Role::Analyst,
         summary: "every enrolled user: mandate, per-strategy balances with expected inflows \
                   kept apart, and the viewer-role entitlement evaluation, in which withdrawal \
                   is never granted",
@@ -754,6 +790,27 @@ impl Api {
                 200,
                 unavailable("news", crate::missing::NO_NARRATIVE_ADAPTER),
             ),
+            // The cognition read surface, rendered the same way as the
+            // treasury below. The self-model view is the one that can refuse
+            // — its stated minimum sample is checked against the engine's
+            // behaviour on every row — and a refusal is a 500 naming the
+            // drift, not a body a page would misexplain.
+            (Method::Get, "/cognition/self-model") => {
+                match crate::self_model_views::self_model(&platform) {
+                    Ok(view) => {
+                        let (status, body) = crate::ledger_views::render(&view);
+                        Response::json(status, body)
+                    }
+                    Err(reason) => {
+                        Response::json(500, format!(r#"{{"error":{}}}"#, json::string(&reason)))
+                    }
+                }
+            }
+            (Method::Get, "/cognition/precedents") => {
+                let (status, body) =
+                    crate::ledger_views::render(&crate::self_model_views::precedents(&platform));
+                Response::json(status, body)
+            }
             // The treasury read surface. Each body is a `Serialize` view
             // built from what the platform holds at this instant; a view
             // that does not serialise answers 500 with the reason rather

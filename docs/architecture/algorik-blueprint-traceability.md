@@ -157,7 +157,9 @@ at current scale, and process proliferation was rejected.
   and `::the_reason_factor_scales_an_origin_only_with_a_sufficient_sample_and_is_recorded_on_the_hypothesis`,
   and `platform.rs::self_model_tests` for the LEARN→REASON handover, every
   test mutation-verified. `Platform::self_model()` is exposed for the API and
-  not yet served by a route. Still open on this row: the rung and strategy
+  not yet served by a route — *history as of 2026-09-05: it is served at
+  `GET /api/v1/cognition/self-model`; see "Re-score 2026-09-05" at the foot of
+  this file*. Still open on this row: the rung and strategy
   kinds are unfed — the routing record is per cycle, not per hypothesis, and
   a strategy session has no stated confidence to grade — and §13.2's
   exploration budget reads nothing from the model.
@@ -209,7 +211,9 @@ at current scale, and process proliferation was rejected.
   substring-matches against, so a block there could change which objections
   are raised and, through them, the confidence; the language-model context
   block the blueprint describes waits on a channel that is not also a
-  matching key. The route by which precedent could later bear on confidence
+  matching key — *history as of 2026-09-05: that channel is
+  `AgentBrief::precedent`, a typed field; see "Re-score 2026-09-05" at the
+  foot of this file*. The route by which precedent could later bear on confidence
   is ADR 0005's evidence-weighted update — a digest entering as an
   `Evidence` item with a stated diagnosticity, subject to the same origin
   factors and review as every other item — and never a multiplier applied
@@ -410,7 +414,7 @@ this repository has already been bitten by that nine times.
 | Episodic memory unavailable | Situational-recognition strategies pause; the rest continue | ALIGNED | `::episodic_loss_pauses_only_the_strategies_that_recognise_situations` |
 | Belief state stale beyond TTL | Fixed conservative multiplier; nothing halts | ALIGNED | `::a_belief_state_stale_beyond_its_ttl_falls_back_to_a_fixed_multiplier_and_halts_nothing` |
 | Counterfactual scoring down | No trading impact whatsoever | ALIGNED | `::losing_counterfactual_scoring_changes_no_trading_decision_whatsoever` |
-| Self-model stale | Exploration budget reverts to flat | PLANNED-FUTURE — Phase 9 | No self-model exists (`grep -rln "SelfModel"` returns nothing). Deliberately not represented |
+| Self-model stale | Exploration budget reverts to flat | PLANNED-FUTURE — Phase 9 | Was: "No self-model exists (`grep -rln "SelfModel"` returns nothing). Deliberately not represented". Re-scored 2026-09-05: a `SelfModel` exists (`qip-learning-engine/src/self_model.rs`; the Plane 2 re-score above), so the first sentence is history. The verdict does not move: `grep -n -i self_model backend/crates/libs/qip-contracts/src/degradation.rs` still returns nothing, and §13.2's exploration budget reads nothing from the model, so there is no budget to revert to flat. Still deliberately not represented |
 | Valuation engine down | Illiquid assets frozen at last mark and flagged | PLANNED-FUTURE — Phase 14 | No term-structure, credit or vol-surface engine exists. Deliberately not represented |
 
 Two properties are held beyond the table itself, because both are the kind that
@@ -1324,3 +1328,272 @@ reprices nothing by the placement of the call after the halt check, and
 that property is held by the code's order rather than by a test of its own.
 Nothing here quotes two sides, skews for inventory, or creates a market;
 the §29.3 gate has nothing to gate yet.
+
+## Re-score 2026-09-05 — the working tree above `b42214b`
+
+Appended rather than folded in, per this file's convention. Every claim below
+was checked by reading the named file at the named line in the uncommitted
+working tree of this date; the one gate run for this section is
+`cargo test -p qip-acceptance --test documentation`, and no other test named
+here was run by the session that wrote it. Where a paragraph says a test was
+mutation-verified, that is the applying session's statement (in ADR 0039's
+"Applied" section or the commit that landed the test), not this one's.
+
+### The execution plane is MEASURED in-process — and nothing is deployed
+
+Until this date every execution row above read "TESTED, MEASURED nowhere".
+[`docs/ops/execution-measurements.md`](../ops/execution-measurements.md) is
+the first set of figures: fourteen per-operation costs printed by the section
+of `backend/crates/tests/qip-acceptance/tests/performance.rs` headed "the
+execution capabilities" (`:1172-1807`), each behind a test that asserts its
+premise before it reads a clock, and each pinned by
+`performance.rs::the_execution_measurements_document_names_only_tests_this_file_holds_and_says_what_a_number_is_not`
+(`:1898`), which refuses a row naming a test the file does not hold and an
+edit that drops the document's caveats.
+
+What the number is, in that document's own words, and repeated here because a
+figure quoted without it is not a figure: **measured in-process, not in
+deployment; nothing is deployed.** Release profile, a shared 4-core Linux
+container, one thread, no venue, no network, no node, and
+`execution_nodes = {}` in every environment. None of the rows says anything
+about latency to a venue.
+
+The rows this moves, from "TESTED, MEASURED nowhere" to **TESTED and MEASURED
+in-process (not in deployment)**:
+
+- **§2.2 Feasibility precedes profitability** (table row above): the edge
+  gate at 0.31 µs/op over 200,000 intents, refusing exactly the off-lot half
+  (`the_edge_feasibility_gate_costs_what_the_execution_measurements_say`,
+  `:1476`); the central grid at 3.58 µs/op
+  (`central_instrument_feasibility_costs_what_the_execution_measurements_say`,
+  `:1230`). The row's other reason for PARTIAL — the central pre-trade path in
+  `qip-execution-engine` has no feasibility step of its own beyond the
+  instrument grid — is unchanged.
+- **Plane 6 Execution** (table row and bullet): one `Cell::work` pass with its
+  fill confirmed and its drop copy reconciled at 20.98 µs and 1.51 µs
+  (`an_edge_work_pass_with_a_fill_and_its_drop_copy_costs_what_the_execution_measurements_say`,
+  `:1294`); netting four intents to one order at 35.35 µs/pass (`:1353`); an
+  internal cross booked and journaled at 27.50 µs/pass (`:1393`); a resting
+  order's expiry through the venue cancel at 17.98 µs/pass (`:1436`);
+  sequencing at 0.60 µs/message (`:1574`); line arbitration at 0.65 µs/unit
+  (`:1615`); the journal chain at 2.62 µs/entry recorded, 1.90 verified,
+  0.27 shipped (`:1752`); a two-leg group completing at 1.75 µs (`:1807`);
+  central OMS submission through five pre-trade limits at 3.41 µs/op
+  (`:1172`).
+- **LAYER 4/7, §41.5**: verifying and applying a policy payload, sealing a
+  chain entry each, at 23.26 µs/op
+  (`verifying_and_applying_a_policy_payload_costs_what_the_execution_measurements_say`,
+  `:1717`); verifying a capital envelope at 3.04 µs/op (`:1666`). The second
+  halt wire (`ff86473`) is **not** among the fourteen and stays TESTED only.
+- **F6**: a region reservation hold-and-commit pair at 0.14 µs/op through the
+  shared mutex, one thread, one cell
+  (`a_region_reservation_hold_and_commit_costs_what_the_execution_measurements_say`,
+  `:1535`). Contention is not measured.
+
+What stays "MEASURED nowhere", by that document's own "could not be measured"
+list: `qip-routing` (`qip-acceptance` does not depend on it), the node's pass
+loop (`qip-edge-node::run_pass`, an application crate), `Cell::scan_cycles`
+(no whitelist producer feeds an installed desk in the suite),
+`CentralPlane::ingest` as a seam of its own, and anything with a wire on it.
+**LAYER 6/7's verdict does not move**: the node the module boots is still
+TESTED in `qip-edge-node/tests/pass.rs` and measured on no machine, because
+none exists.
+
+### Plane 2 — the cognition read surface, and the typed precedent channel
+
+**Served.** The Plane 2 sentence "exposed for the API and not yet served by a
+route" is history. `qip-api/src/routes.rs` declares
+`GET /cognition/self-model` (`:338`) and `GET /cognition/precedents` (`:347`)
+at `Role::Viewer` and dispatches them at `:798` and `:809` through
+`qip-api/src/self_model_views.rs` (`self_model` at `:82`, `precedents` at
+`:132`), whose module comment states the two structural properties: the
+application layer names no learning-engine type, and `accuracy` and
+`calibrated` are both read off one call to the engine's own `estimate`, so
+the body cannot show a number the engine declined to compute. The stated
+`MINIMUM_SAMPLE` (`:39`) is a copy the route checks against every row and
+answers 500 on drift rather than serving. The contract is
+`backend/crates/apps/qip-api/ROUTES-COGNITION.md`. Proven in
+`qip-api/tests/self_model_routes.rs`:
+`every_cognition_route_is_a_viewer_get_that_answers_json_with_the_documented_keys`
+(`:258`), `an_empty_platform_serves_empty_lists_and_still_states_the_minimum_sample`
+(`:300`), `a_monitor_credential_is_refused_and_no_method_but_get_reaches_a_cognition_path`
+(`:330`), `a_component_below_the_minimum_sample_reports_no_accuracy_and_is_not_calibrated`
+(`:367`), `the_minimum_sample_the_body_states_is_the_count_at_which_the_engine_starts_reporting`
+(`:430`), `a_precedent_reason_recorded_is_served_as_the_kernel_holds_it_and_in_its_order`
+(`:479`). The console renders both, read-only, under a new "Cognition" nav
+section (`frontend/portal/src/lib/nav.ts:149`): pages at
+`frontend/portal/src/app/(portal)/cognition/{self-model,precedents}/page.tsx`
+over `frontend/portal/src/lib/hooks/useCognition.ts` (`useSelfModel` at `:84`,
+`usePrecedents` at `:92`), with Playwright coverage in
+`frontend/portal/tests/cognition-self-model.spec.ts` and
+`cognition-precedents.spec.ts` (two tests each, among them "the self-model
+page renders rows as received, says a refused estimate is refused, and holds
+no control that acts"). The frontend gates were not run by this session.
+
+**The precedent reaches the panel through a type, not through `context`.**
+The sentence "waits on a channel that is not also a matching key" is history:
+`qip_agents::finding::BriefPrecedent` (`qip-agents/src/finding.rs:203`) holds
+the `PrecedentDigest`, the nearest episode's cosine similarity, its outcome
+against the claim and its age, with private fields; `BriefPrecedent::new`
+refuses an age at or below zero (the point-in-time boundary the store already
+refuses) and a similarity outside `[-1, 1]`; `AgentBrief::precedent` (`:314`)
+is the field and `with_precedent` (`:353`) sets it and touches nothing else —
+in particular not `context`. The kernel builds it in `brief_precedent`
+(`qip-kernel/src/platform.rs:760`) and attaches it at `:3981`; a precedent the
+brief refuses is reported as a stage problem and the panel is convened
+without it. Proven by
+`qip-agents/tests/agents.rs::a_precedent_attached_to_a_brief_leaves_the_context_the_lesson_matcher_reads_untouched`
+(`:1061`) and `::a_precedent_knowable_at_or_after_the_question_is_refused_rather_than_briefed`
+(`:1101`);
+`qip-investment-agents/tests/organisation.rs::two_briefs_identical_except_for_the_precedent_produce_identical_convictions_and_confidence`
+(`:1647`) — the control that says the panel can cite it and cannot count it;
+and `qip-kernel/tests/episodic.rs::the_panel_is_briefed_on_the_recalled_precedent_through_the_typed_field_and_only_when_one_was_recalled`
+(`:285`). What this does not change: the confidence arithmetic reads nothing
+from the field, by the same argument as before, and the only text the type
+yields is `BriefPrecedent::cite`, a sentence and not a record id.
+
+### §41.5, F6 and the region grant — ADR 0039's first phase, by reference
+
+ADR 0039's new "Applied" section is the record and this paragraph defers to
+it on every point; what follows is the scorecard's reading of the same tree.
+
+**What is applied.** `qip-kernel/src/central/regions.rs`: `RegionMembership`
+(validated at construction — a non-positive grant, a cell filed under an
+ungranted region and a blank name are each refused, `:70-98`), `RegionShare`
+(`:125`, `manifest()` at `:160`), `RegionShares` (`:172`) and `partition`
+(`:217`), which **refuses, never scales**, a plan whose cells' shares would
+exceed a region's grant, and withholds a manifest — with the reason — from any
+cell whose live grants already sum past its share; the entry point is
+`CentralPlane::region_shares` (`central/plane.rs:977`). At the cell,
+`qip-edge/src/reservation.rs` gives `RegionAllocation` (`:112`) and
+`RegionTable` (`:465`) an `unfunded(ceiling)` constructor (`:176`, `:480`)
+that opens at nothing, and `rebase(owner, share, sequence)` (`:234`, `:525`)
+that bounds at `min(share, ceiling)`, refuses a sequence at or below the last
+applied and a second owner, and reports a `Rebase` (`:141`) whose `deficit`
+is non-zero rather than letting `free` go negative. `Cell::apply_policy`
+calls `apply_region_share` (`cell.rs:1139`) after the swap; the share is the
+sum of `gross_limit` over the verified, live envelopes the payload's
+`capital_grants` manifest names — one fact from one source, and the deviation
+from the ADR's explicit `region_share` field, which `qip-contracts` did not
+gain. Every re-base is journaled as `Decision::RegionShareApplied`
+(`qip-edge/src/journal.rs:171`). Tests, as the ADR names them:
+`qip-kernel/tests/region_shares.rs` (`a_regions_shares_are_disjoint_and_sum_to_at_most_its_grant`
+`:80`, `a_plan_whose_cells_exceed_a_regions_grant_is_refused_not_scaled` `:130`,
+`a_cell_in_no_region_receives_no_share` `:165`,
+`a_membership_that_files_a_cell_under_an_ungranted_region_is_refused` `:210`);
+`qip-kernel/tests/central.rs::a_cells_manifest_names_only_grants_whose_gross_fits_its_share`
+(`:2278`); `qip-edge/tests/region_table.rs`
+(`two_cells_in_two_processes_under_disjoint_shares_cannot_together_exceed_the_regions_grant`
+`:814`, `a_replayed_lower_sequence_cannot_widen_a_cells_share` `:928`,
+`a_cell_absent_from_the_shares_books_nothing` `:977`,
+`a_share_below_what_the_cell_already_committed_narrows_free_to_zero_and_journals_the_deficit`
+`:1056`, `a_partitioned_cell_keeps_spending_within_its_last_share_until_its_envelopes_expire`
+`:1104`).
+
+**What is not, and why F6 stays PARTIAL.** `qip-api`'s `pending_policy`
+still produces the `capital_grants` slot from every live grant's signature
+(`qip-api/src/mesh.rs:667`) without calling `region_shares` — `grep -rn
+region_shares backend/crates/apps` returns nothing — so no deployed centre
+withholds a manifest or refuses a plan, and the partitioner has no production
+caller; `qip-edge-node::assemble` still opens the table funded at the
+operator's amount (`qip-edge-node/src/lib.rs:108`, `with_region_allocation`),
+not `unfunded`; membership is an argument and nothing outside a test
+constructs one (decision 3 of the ADR). The cross-process property this row
+has wanted since `2fd254f` is therefore **built at both ends and joined at
+neither in a deployment**. The §41.5 producer count is unchanged at three of
+twelve — `capital_grants` (`mesh.rs:667`), `risk_envelope` (`:669`) and
+`cycle_whitelist` (`:674`) — because the share travels inside a slot that was
+already produced. The §6.2 table is unchanged by this; its self-model row is
+corrected in place above.
+
+### Plane 7 — the ledger plane as records and refusals under ADR 0021 (§37, §38, §43.3)
+
+**A correction first.** The Plane 7 table row and bullet above say "no wallet,
+no corridor, no transfer gate, no destination registry, no custody engine —
+`grep` for each returns nothing". That was already history at `5546a24`,
+before this wave: `qip-capital-fabric/src/{corridor,destination,gate,wallet,custody}.rs`
+hold the §37.1 corridor lifecycle (`Corridor`, `CorridorCaps` `:125`,
+`PermittedHours` `:64`), the §38.4 destination registry
+(`DestinationRegistry` `:249`, `DestinationStatus` `:186`), the §37.3
+transfer gate (`TransferIntent` `:90`, `StatedPurpose` `:48`,
+`TransferHistory` `:158`), the §38.1/§38.3 wallet read model
+(`HoldingObservation` `:158`, `LedgerView` `:206`, `TolerancePolicy` `:284`)
+and the §37.4 custody policy (`CustodyPolicy` `:238`, `permits` at `:347`),
+proven in `qip-capital-fabric/tests/corridor_and_gate.rs` (twenty-seven
+tests, among them
+`an_intent_that_satisfies_every_check_is_approved_naming_all_seven_in_order`,
+`a_tripped_kill_switch_vetoes_everything`,
+`the_proposer_cannot_review_their_own_corridor`,
+`a_destination_is_unusable_until_twenty_four_hours_after_its_signature_and_usable_on_the_instant`)
+and `tests/wallet.rs`
+(`a_delta_at_tolerance_halts_exactly_that_venue_asset_and_no_other`). Every
+one is a record or a refusal: the gate's admitted arm is
+`qip_capital_fabric::gate::Approved`, which carries no way to execute, and
+`security.rs::no_signing_or_withdrawal_path_exists_for_capital_to_leave_the_platform`
+(`:1014`) still holds the ADR 0021 line. The API serves them read-only under
+`backend/crates/apps/qip-api/ROUTES-LEDGER.md` (`/ledger/users`, `/wallet`,
+`/corridors`, `/transfer-gate`), and what `/wallet` and `/corridors` say today
+is that nothing is held: `ledger_views::wallet` (`qip-api/src/ledger_views.rs:332`)
+answers `assembled: false` with its reason and `corridors` (`:431`) answers
+`held: false` for both registries, because the kernel constructs none of
+these controls — `grep -rln 'TransferGate\|DestinationRegistry\|CustodyPolicy'
+backend/crates/apps backend/crates/runtime` returns only `ledger_views.rs`.
+
+**What this wave adds, in `qip-capital`'s ledger (§43.3).** `MandateRegistry`
+(`qip-capital/src/ledger/registry.rs:59`): every user mandate admitted against
+the desk's own mandate as a ceiling, term by term and in aggregate, each under
+a `MandateId` of its own, an id seen twice refused with the holder named, and
+a stored registry replayed through `register` on deserialisation so a record
+that has gone bad is refused on the way back in. `InvestmentRequest`,
+`InvestmentDecision` and `RefusedLimit` (`ledger/request.rs:33`, `:75`,
+`:45`): a request admitted or refused by `UserLedger::admit` (`:119`) before
+anything downstream exists, the refusal a variant a test can name, and the
+decision serialisable but deliberately not deserialisable. `ProRataSplit`
+(`ledger/book.rs:66`) from `UserLedger::pro_rata_shares` (`:378`): a fill
+split across users by what each has at work, naming where the rounding
+remainder went (`ledger/mod.rs`, the `pro_rata_shares` bullet), and
+`journal_pro_rata` (`:452`) booking it. Proven in `qip-capital/tests/user_ledger.rs`:
+`a_mandate_id_registered_twice_is_refused_naming_its_holder_and_nothing_is_recorded`,
+`a_mandate_that_promises_more_than_the_desk_carries_is_refused_by_the_term_that_exceeds_it`,
+`user_mandates_cannot_together_promise_more_capital_than_the_desk_holds`,
+`a_stored_registry_that_has_gone_bad_is_refused_on_the_way_back_in`,
+`an_investment_request_is_admitted_or_refused_by_the_named_limit_before_anything_is_funded`,
+`the_same_request_against_the_same_books_gets_the_same_decision`,
+`a_pro_rata_split_reconciles_to_the_fill_exactly_and_the_remainder_is_recorded_not_dropped`,
+`a_pro_rata_split_follows_the_entitlements_and_the_largest_holder_takes_the_remainder`,
+`a_fill_with_no_capital_at_work_behind_it_is_not_split_and_nothing_is_booked`.
+
+**And in `qip-capital-fabric`: the control half is now reproducible from the
+log alone.** `FabricJournal` (`qip-capital-fabric/src/journal.rs:682`;
+`resume` at `:712`, `decide` at `:732`) writes every destination, corridor,
+wallet and gate decision to the hash-chained event log as the `FabricCommand`
+(`:376`) and its `Outcome` — refusals included — under
+`Topic::ComplianceEvaluated` (`:442`) with producer `capital-fabric` (`:80`),
+executing on a scratch copy and adopting the state only after the log has the
+record. `replay` (`src/replay.rs:70`) rebuilds `FabricState` by re-running
+each command and refuses, naming the position, a record out of sequence,
+altered, undecodable, or whose recorded outcome disagrees with what the
+control computes — a chain that verifies is not taken as a record that was
+true. Proven in `qip-capital-fabric/tests/journal.rs`:
+`a_state_rebuilt_from_the_journal_equals_the_live_state_after_a_mixed_sequence`
+(`:365`), `a_tampered_record_is_refused_naming_its_position` (`:409`),
+`a_record_out_of_sequence_is_refused_naming_its_position` (`:441`),
+`a_record_whose_recorded_outcome_disagrees_with_the_control_is_refused_even_when_the_chain_verifies`
+(`:465`), `replay_is_deterministic_across_two_runs_and_two_journals` (`:513`),
+`the_journals_chain_rule_agrees_with_the_event_logs_own` (`:550`),
+`a_journal_resumed_from_a_shared_log_rebuilds_its_state_and_chain_verifies_foreign_records`
+(`:637`), `the_journal_adopts_a_decision_only_after_the_log_has_it` (`:725`).
+
+**Verdict: PARTIAL, unchanged, and for reasons that are now narrower.** The
+kernel still books every settlement's attribution to the desk whole —
+`Platform::journal_to_desk` (`platform.rs:2194`, called from
+`ingest_cell_report` at `:2177`) — and calls neither `pro_rata_shares` nor
+`admit`; it constructs no `FabricJournal` and no `MandateRegistry` of its own
+beyond the desk's (`grep -n 'MandateRegistry\|InvestmentRequest\|pro_rata'
+backend/crates/runtime/qip-kernel/src/platform.rs` returns nothing). So the
+§43.4 chain runs to one user, the §37/§38 controls decide only in tests, and
+the fabric's journal has no writer in any binary. What moved is the shape of
+the gap: every ledger-plane element the blueprint names now exists as a
+record that can be replayed or a refusal that names its limit, and none of
+them can move, sign or call out. That is the whole of what ADR 0021 permits,
+and it is what the row now says.

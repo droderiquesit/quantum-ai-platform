@@ -281,10 +281,14 @@ pub struct Hypothesis {
     pub confidence: f64,
     /// The full update, so the confidence can be audited step by step.
     pub belief: BeliefUpdate,
-    /// The self-model factor each evidence origin's weight was scaled by,
-    /// for exactly the origins present in the evidence and only where the
-    /// self-model had a sufficient sample to say. An absent origin was left
-    /// at full weight.
+    /// The self-model factor each evidence origin's supporting weight was
+    /// scaled by, for exactly the origins present in the evidence and only
+    /// where the self-model had a sufficient sample to say. An absent origin
+    /// was left at full weight, and an origin's contrary evidence is never
+    /// scaled (see `strengths`), so a factor recorded here for an origin
+    /// that only dissented was recorded and had no effect — kept anyway,
+    /// because what a replay must reproduce is the rule and its inputs, not
+    /// a guess at which inputs turned out to matter.
     ///
     /// Recorded on the hypothesis rather than looked up at replay time
     /// because the self-model moves every cycle: a replay that read today's
@@ -573,16 +577,36 @@ fn validate_factors(factors: &BTreeMap<String, f64>) -> Result<()> {
     Ok(())
 }
 
-/// The evidence as the belief updater sees it, each item's weight scaled by
-/// its origin's self-model factor where one was recorded.
+/// The evidence as the belief updater sees it, each *supporting* item's
+/// weight scaled by its origin's self-model factor where one was recorded.
+///
+/// Contrary evidence is never discounted. A factor is an origin's measured
+/// accuracy, and applying it to a dissent as well as to a claim would let a
+/// poorly-calibrated dissenter be talked down: an analyst measured at 0.15
+/// would have its objection cut to fifteen percent, the posterior would
+/// *rise* relative to the unweighted computation, and a hypothesis could
+/// cross the action bar because the voice against it had a bad record. The
+/// self-model exists so that being wrong costs a component influence over
+/// what the platform believes; it must not buy a hypothesis the benefit of
+/// its critics' doubt. So the conservative reading: a factor can only ever
+/// lower a posterior, and the worst a discounted origin can do to a thesis
+/// it opposes is oppose it at full weight.
 fn strengths(evidence: &EvidenceSet, factors: &BTreeMap<String, f64>) -> Vec<EvidenceStrength> {
     evidence
         .iter()
         .filter(|e| e.stance != Stance::Contextual)
-        .map(|e| EvidenceStrength {
-            id: e.evidence_id.as_str().to_string(),
-            signed_weight: e.signed_weight() * factors.get(&e.origin).copied().unwrap_or(1.0),
-            origin: e.origin.clone(),
+        .map(|e| {
+            let signed_weight = e.signed_weight();
+            let factor = if signed_weight > 0.0 {
+                factors.get(&e.origin).copied().unwrap_or(1.0)
+            } else {
+                1.0
+            };
+            EvidenceStrength {
+                id: e.evidence_id.as_str().to_string(),
+                signed_weight: signed_weight * factor,
+                origin: e.origin.clone(),
+            }
         })
         .collect()
 }

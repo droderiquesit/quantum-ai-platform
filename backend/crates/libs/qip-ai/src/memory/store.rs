@@ -219,9 +219,19 @@ impl EpisodicMemory {
         self.ids.contains_key(episode_id)
     }
 
-    /// Every episode, oldest-known first.
-    pub fn episodes(&self) -> impl Iterator<Item = &Episode> {
-        self.stored.values().map(|stored| &stored.episode)
+    /// Every episode knowable at `now`, oldest-known first.
+    ///
+    /// Takes the caller's `now` for the same reason [`Self::recall`] does:
+    /// an accessor that returned every episode regardless of `known_at` was
+    /// a read path that ignored it, which the module doc promised did not
+    /// exist — and a backtest iterating it would have read Tuesday's
+    /// resolution while replaying Monday. Strictly before, as `recall`: an
+    /// episode whose `known_at` equals `now` is not yet knowable.
+    pub fn episodes(&self, now: Timestamp) -> impl Iterator<Item = &Episode> {
+        self.stored
+            .iter()
+            .filter(move |(slot, _)| slot.known_at < now)
+            .map(|(_, stored)| &stored.episode)
     }
 
     /// The bucket an embedding hashes to in each table, in table order.

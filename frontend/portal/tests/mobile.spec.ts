@@ -101,7 +101,7 @@ test.describe("the phone layout", () => {
     page,
   }) => {
     // The installed app's thumb navigation. Four primary destinations plus
-    // Menu — a strip carrying all thirty-four would carry none reachably.
+    // Menu — a strip carrying all forty would carry none reachably.
     await servePlatform(page, healthy());
     await page.goto("/");
     const bar = page.getByTestId("mobile-tab-bar");

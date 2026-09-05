@@ -54,6 +54,7 @@ use std::sync::{Arc, Mutex};
 
 // --- fixtures ---------------------------------------------------------------
 
+const ANALYST_TOKEN: &str = "analyst-token";
 const VIEWER_TOKEN: &str = "viewer-token";
 const MONITOR_TOKEN: &str = "monitor-token";
 const CELL: &str = "cell-lon-1";
@@ -61,6 +62,20 @@ const INSTRUMENT: &str = "obj-AAA";
 
 /// The four paths under test, as the route table spells them.
 const TREASURY_PATHS: [&str; 4] = ["/ledger/users", "/wallet", "/corridors", "/transfer-gate"];
+
+/// The role each path requires, as `ROUTES-LEDGER.md` states it.
+///
+/// `/ledger/users` is the one that carries a per-user datum — every user's
+/// mandate, balances and inflow references — and the portal hands the
+/// viewer role to anyone who completes self-registration, so it is the one
+/// held above viewer. The other three describe the process, not a user.
+fn required_role_of(path: &str) -> Role {
+    match path {
+        "/ledger/users" => Role::Analyst,
+        "/wallet" | "/corridors" | "/transfer-gate" => Role::Viewer,
+        other => panic!("{other} is not a treasury path"),
+    }
+}
 
 fn start() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
@@ -102,6 +117,13 @@ fn rig() -> Result<Rig> {
     let platform = Platform::new(config, context, Telemetry::silent(), universe()?, limits())?;
     let platform = Arc::new(Mutex::new(platform));
     let authenticator = Arc::new(Authenticator::new(vec![
+        Credential::from_token(
+            "analyst@example.com",
+            Role::Analyst,
+            ANALYST_TOKEN.to_string(),
+            start(),
+            start().saturating_add(Duration::from_days(30)),
+        ),
         Credential::from_token(
             "viewer@example.com",
             Role::Viewer,
@@ -146,8 +168,9 @@ impl Rig {
         })
     }
 
+    /// Read a path as an analyst, which every treasury route admits.
     fn get(&self, path: &str) -> Response {
-        self.call(Method::Get, path, VIEWER_TOKEN)
+        self.call(Method::Get, path, ANALYST_TOKEN)
     }
 }
 
@@ -268,21 +291,21 @@ fn documented_keys(path: &str) -> &'static [&'static str] {
 // --- the surface as a whole -------------------------------------------------
 
 #[test]
-fn every_treasury_route_answers_a_viewer_with_the_documented_keys_and_the_posture_literal()
+fn every_treasury_route_answers_its_role_with_the_documented_keys_and_the_posture_literal()
 -> Result<()> {
     // The failure this guards: a page built against ROUTES-LEDGER.md renders
     // blank because a key was renamed on one side, or a body reaches the
-    // browser without the posture a viewer must see.
+    // browser without the posture a reader must see.
     let rig = rig()?;
     for path in TREASURY_PATHS {
-        // Premise: the path is in the route table at the viewer role, as a
-        // GET, so what is answered below is the route and not a 404.
+        // Premise: the path is in the route table at the documented role, as
+        // a GET, so what is answered below is the route and not a 404.
         let route = ROUTES
             .iter()
             .find(|route| route.pattern == path)
             .unwrap_or_else(|| panic!("{path} is not in ROUTES"));
         assert_eq!(route.method, Method::Get, "{path}");
-        assert_eq!(route.required_role, Role::Viewer, "{path}");
+        assert_eq!(route.required_role, required_role_of(path), "{path}");
         assert_eq!(route.success, 200, "{path}");
 
         let response = rig.get(path);
@@ -346,6 +369,63 @@ fn no_method_but_get_reaches_any_treasury_path() -> Result<()> {
             assert_eq!(route.method, Method::Get, "{}", route.pattern);
         }
     }
+    Ok(())
+}
+
+#[test]
+fn a_viewer_reads_the_process_level_views_but_not_every_users_ledger() -> Result<()> {
+    // The failure this guards, found in review: the portal grants the viewer
+    // role to anyone who completes self-registration on the public front
+    // door, and `/ledger/users` carries every enrolled user's mandate,
+    // balances and inflow references. At viewer, whoever could sign up could
+    // read every user's capital. An analyst is desk staff; a viewer is not
+    // necessarily anyone.
+    let rig = rig()?;
+    // Premise, both ways: the viewer token is a live credential that the
+    // three process-level views admit, and the analyst token reads the
+    // same three — so the 403 below is the role, not the token.
+    for path in ["/wallet", "/corridors", "/transfer-gate"] {
+        assert_eq!(
+            rig.call(Method::Get, path, VIEWER_TOKEN).status,
+            200,
+            "a viewer was refused {path}, which carries no per-user datum"
+        );
+        assert_eq!(
+            rig.call(Method::Get, path, ANALYST_TOKEN).status,
+            200,
+            "{path}"
+        );
+    }
+    // Premise: the route serves the per-user body to an analyst, so the
+    // refusal is not a route that answers nobody.
+    let (text, body) = body_of(rig.call(Method::Get, "/ledger/users", ANALYST_TOKEN));
+    assert_eq!(
+        body["users"][0]["user_id"],
+        serde_json::json!("desk"),
+        "{text}"
+    );
+    assert!(
+        body["users"][0]["mandate"]["capital"].is_string(),
+        "the premise is a body carrying a user's capital: {text}"
+    );
+
+    let refused = rig.call(Method::Get, "/ledger/users", VIEWER_TOKEN);
+    assert_eq!(
+        refused.status, 403,
+        "a viewer read every user's mandate and balances"
+    );
+    let (text, body) = body_of(refused);
+    // The refusal names the role required and nothing about any user.
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("analyst")),
+        "the refusal does not name the role required: {text}"
+    );
+    assert!(
+        !text.contains("desk") && !text.contains("mandate") && !text.contains("capital"),
+        "the refusal leaked a user datum: {text}"
+    );
     Ok(())
 }
 

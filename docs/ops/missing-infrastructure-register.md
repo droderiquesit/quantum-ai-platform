@@ -745,6 +745,80 @@ Authorization was evaluated on its revision, which secrets have a version,
 whether any execution node exists, or whether anything has scraped. Each of
 those is one `GET` with a real token and none of them was made.
 
+## Applied by ADR 0040's record: infra.yml `dev` `up`, runs 34 and 35
+
+ADR 0040 says the dispatch's run URL and terminal status are recorded here,
+beside what the apply produced. Two dispatches, both on commit `e1711fb`,
+both on 2026-09-05, both **failure**:
+
+| Run | URL | Dispatched | Plan | Terminal status |
+|---|---|---|---|---|
+| 34 | https://github.com/droderiquesit/quantum-ai-platform/actions/runs/33944963018 | 04:35Z | 83 to add | failure — 82 created, the cluster refused |
+| 35 | https://github.com/droderiquesit/quantum-ai-platform/actions/runs/33946596091 | 05:12Z | 1 to add, 0 to change, 0 to destroy | failure — the same cluster, the same refusal |
+
+**What run 34 created.** State went from 163 to 234 resources: 82 of the 83
+the plan named. The six Cloud Run objects the root's `removed` blocks
+release under ADR 0036 left state undestroyed, as intended; every identity,
+key, grant, zone and bucket of `modules/gitops-control-plane` except the
+cluster now exists in `algorik-dev`. Run 35's plan, read before its
+dispatch, was the one remaining resource.
+
+**What both refused.** `module.gitops_control_plane[0].google_container_cluster.control_plane`
+(`modules/gitops-control-plane/main.tf`, the `resource "google_container_cluster"`
+block), with one `googleapi: Error 400` carrying two messages:
+
+    addons {"config-connector"} are not supported for Autopilot clusters
+    generic::permission_denied: Permission 'gkehub.memberships.create' denied
+      on 'projects/algorik-dev/locations/us-east4/memberships/qip-dev-control-plane'
+
+The first is a contradiction inside ADR 0036 itself — decision 1 wants
+Autopilot and "installed as the GKE addon" in the same sentence, and the
+API admits one of the two. The second is the register of missing
+permissions gaining an entry: neither `roles/gkehub.gatewayEditor` nor
+`roles/gkehub.viewer`, the two the module grants the infrastructure
+account, carries the permission the cluster's `fleet` block needs at
+create time.
+
+**The fix, in this commit, awaiting re-dispatch.** Autopilot stays, because
+it is the property that keeps a `qip-*` image off the cluster; the addon
+goes. Config Connector's operator is now a vendored, digest-pinned manifest
+under `infrastructure/gitops/bootstrap/config-connector-operator/`
+(1.156.0, the Autopilot variant; `SOURCE.md` there records the bundle, the
+hashes and the image digest), one more line in
+`infrastructure/egress/vendored-images.txt` for `vendor.yml` to mirror and
+attest, and one more step in `infra.yml`'s bootstrap between Kargo and the
+`ConfigConnector` object, which waits for the operator's CRD before naming
+it. The permission is one custom role,
+`qipGitopsFleetRegistrar_<env>` — `gkehub.memberships.create`, `.get`,
+`.delete` and nothing else — bound to the infrastructure account in the same
+module, with the cluster's `depends_on` naming the binding. Not
+`roles/gkehub.editor`, which carries every feature and scope in the fleet
+API to close one permission.
+
+**What the next `up` still has to prove, and where it will say so.** Three
+things this commit asserts and no run has observed. First, that the create
+succeeds at all with a binding made seconds earlier: IAM propagation can
+refuse a fresh grant, and a second dispatch is the remedy, not a wider
+role. Second, that `vendor.yml` has mirrored and attested the operator image
+before the bootstrap pulls it — the list change triggers that workflow into
+`dev` on push, and the bootstrap's `rollout status` on the operator's
+StatefulSet is where an unattested image shows as a Pod that never starts.
+Third, and the one this commit could not settle from here: the operator
+installs the four `cnrm-system` controllers from `gcr.io/gke-release/cnrm/*`
+images pinned inside its own image, which no overlay moves; they are
+admitted only if Google's global policy, which `modules/binaryauthorization`
+enables, admits that registry, and neither the public documentation nor an
+anonymous read of the policy would say. The bootstrap's
+`kubectl -n cnrm-system wait` is where that is answered, and a denial there
+is a decision about `exempt_image_patterns` for a person, recorded in
+`bootstrap/config-connector-operator/SOURCE.md` rather than left to be
+rediscovered.
+
+Neither the cluster nor any controller was observed running. Every claim
+above about `algorik-dev` is read off the two runs' logs as reported to
+this record, and the resource count is the workflow's own `what exists now`
+step.
+
 ## The paper-trading boundary
 
 Intact and untouched by this audit. Nothing here changes

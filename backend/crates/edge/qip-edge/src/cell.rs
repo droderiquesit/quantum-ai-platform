@@ -1110,7 +1110,122 @@ impl Cell {
         // happened. Recording it before would publish a payload the cell might
         // still have refused.
         self.metrics.policy_applied(sequence);
+        // After the swap, so the share is applied from a payload the cell has
+        // already accepted whole and never from one it went on to refuse.
+        self.apply_region_share(sequence, now);
         Ok(())
+    }
+
+    /// Re-base the region table to this cell's share of its region's grant,
+    /// as the applied payload's grant manifest names it (ADR 0039).
+    ///
+    /// The share is not a number on the wire. The manifest names the
+    /// signatures of the grants the centre believes live for this cell, and
+    /// the share is the sum of `gross_limit` over the verified, deployed,
+    /// still-live envelopes among them — the one signed fact about each grant
+    /// the cell already holds, so the share and the envelopes are one claim
+    /// from one source rather than two that can disagree. The centre ships a
+    /// manifest only when that sum fits inside the cell's disjoint share of
+    /// the region's grant (`CentralPlane::region_shares`), so the sum here can
+    /// only be at or below the share the centre computed.
+    ///
+    /// Three stated cases. A produced manifest naming none of this cell's
+    /// grants is a share of nothing, and the table narrows to nothing: a
+    /// cell absent from the shares books nothing. An unproduced slot leaves
+    /// the table as it was — the centre said nothing about capital, which
+    /// cannot widen a table and, for a table opened unfunded, has nothing to
+    /// narrow. A cell with no table has nothing to re-base and records
+    /// nothing, exactly as it holds nothing on a pass.
+    fn apply_region_share(&mut self, sequence: u64, now: Timestamp) {
+        let Some(table) = self.region_allocation.clone() else {
+            return;
+        };
+        let Some(manifest) = self
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.payload().capital_grants.value())
+        else {
+            return;
+        };
+        let mut share = Decimal::ZERO;
+        let mut grants = 0usize;
+        for deployed in self.deployed.values() {
+            let envelope = &deployed.envelope;
+            if !envelope.is_live(now)
+                || !manifest
+                    .live_grants
+                    .iter()
+                    .any(|named| named == envelope.signature())
+            {
+                continue;
+            }
+            match share.checked_add(envelope.gross_limit()) {
+                Some(sum) => share = sum,
+                None => {
+                    // A share the cell cannot compute funds nothing: the
+                    // table narrows to zero rather than to a number the cell
+                    // guessed at, and the reason is journaled beside it.
+                    self.journal.record(
+                        Decision::Refused {
+                            gate: "region_share".to_string(),
+                            reason: format!(
+                                "the grants named for this cell cannot be summed past {share}; \
+                                 the region share is taken as nothing"
+                            ),
+                        },
+                        now,
+                    );
+                    share = Decimal::ZERO;
+                    grants = 0;
+                    break;
+                }
+            }
+            grants += 1;
+        }
+        match table.rebase(&self.config.cell_id, share, sequence) {
+            Ok(rebase) => {
+                self.journal.record(
+                    Decision::RegionShareApplied {
+                        sequence,
+                        grants,
+                        share: rebase.share.to_string(),
+                        bound: rebase.bound.to_string(),
+                        free: rebase.free.to_string(),
+                        deficit: rebase.deficit.to_string(),
+                    },
+                    now,
+                );
+                self.metrics.region_allocation(Some(rebase.free));
+            }
+            Err(error) => {
+                // The payload's own sequence check ran above, so this fires
+                // only when the ledger knows something the cell does not — a
+                // sibling re-based a table that was meant to be private, or a
+                // share the centre's plan could not have produced.
+                self.journal.record(
+                    Decision::Refused {
+                        gate: "region_share".to_string(),
+                        reason: error.message().to_string(),
+                    },
+                    now,
+                );
+            }
+        }
+    }
+
+    /// The bound the region table enforces now, or `None` if this cell holds
+    /// no table. Distinct from [`Self::region_allocation_free`]: the bound is
+    /// what the cell may commit in total, and free is what is left of it.
+    pub fn region_allocation_bound(&self) -> Option<Decimal> {
+        self.region_allocation.as_ref().map(RegionTable::bound)
+    }
+
+    /// The sequence of the last share the region table applied, if a table
+    /// is held and a share ever was.
+    pub fn region_share_sequence(&self) -> Option<u64> {
+        self.region_allocation
+            .as_ref()
+            .and_then(RegionTable::share_sequence)
     }
 
     /// Track an instrument at a venue.

@@ -371,7 +371,8 @@ jobs:
       # After `up`, and only where the tfvars say `gitops_enabled = true`:
       # reach the control-plane cluster and apply infrastructure/gitops/
       # bootstrap/ in the order its README gives — cert-manager, Argo CD,
-      # Kargo, Config Connector's one object — then the two App-key Secrets,
+      # Kargo, the Config Connector operator, then Config Connector's one
+      # object — then the two App-key Secrets,
       # then the environment's Argo CD project and Application and its Kargo
       # chain. A cluster that is absent is refused, never created: the
       # cluster is Terraform's, and a bootstrap that found none has been
@@ -448,14 +449,27 @@ jobs:
           apply "${gitops}/bootstrap/kargo/overlays/${ENVIRONMENT}"
           kubectl -n kargo rollout status deployment/kargo-api --timeout=300s
           kubectl -n kargo rollout status deployment/kargo-controller --timeout=300s
-          # 4. Config Connector's one object, and the namespace the manifests
-          #    land in; then wait for the controller the addon installed to
-          #    pick up the identity.
+          # 4. The Config Connector operator, vendored, and its CRDs. Run 34
+          #    found the addon refused on Autopilot (`addons
+          #    {"config-connector"} are not supported for Autopilot
+          #    clusters`), so the operator arrives here like the three
+          #    controllers above it. Its `ConfigConnector` CRD must be
+          #    established before the object below names it, or the apply
+          #    fails on a kind the API server does not know yet.
+          apply "${gitops}/bootstrap/config-connector-operator/overlays/${ENVIRONMENT}"
+          kubectl -n configconnector-operator-system rollout status statefulset/configconnector-operator --timeout=300s
+          kubectl wait --for=condition=Established crd/configconnectors.core.cnrm.cloud.google.com --timeout=300s
+          # 5. Config Connector's one object, and the namespace the manifests
+          #    land in; then wait for the controller the operator installs to
+          #    pick up the identity. The four cnrm-system images are the
+          #    operator's own, from gcr.io/gke-release, and this wait is
+          #    where an admission policy that does not admit them says so —
+          #    bootstrap/config-connector-operator/SOURCE.md.
           apply "${gitops}/bootstrap/config-connector/overlays/${ENVIRONMENT}"
           kubectl -n cnrm-system wait --for=condition=Ready pod \
             -l cnrm.cloud.google.com/component=cnrm-controller-manager --timeout=300s
 
-          # 5. The two credentials, from Secret Manager, as Kubernetes
+          # 6. The two credentials, from Secret Manager, as Kubernetes
           #    Secrets. Kargo's lands in the project's namespace, so the
           #    project goes first and is waited for.
           kubectl apply --server-side --force-conflicts --field-manager=qip-bootstrap \
@@ -505,9 +519,9 @@ jobs:
           rm -f "${scratch}"/*.json
           echo "projected the two App credentials into argocd/qip-repository and qip/qip-repository; neither value was printed."
 
-          # 6. The Argo CD project and this environment's Application.
+          # 7. The Argo CD project and this environment's Application.
           apply "${gitops}/argocd/overlays/${ENVIRONMENT}"
-          # 7. The Kargo chain, into the namespace the project created.
+          # 8. The Kargo chain, into the namespace the project created.
           apply "${gitops}/kargo/overlays/${ENVIRONMENT}"
           echo "bootstrapped ${cluster}; Argo CD reconciles ${gitops}/envs/${ENVIRONMENT} from here on."
 

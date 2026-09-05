@@ -33,6 +33,8 @@ const P: Record<string, string[]> = {
   activity: ["M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"],
   "scan-line": ["M3 7V5a2 2 0 0 1 2-2h2", "M17 3h2a2 2 0 0 1 2 2v2", "M21 17v2a2 2 0 0 1-2 2h-2", "M7 21H5a2 2 0 0 1-2-2v-2", "M7 12h10"],
   plug: ["M12 22v-5", "M9 8V2", "M15 8V2", "M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"],
+  brain: ["M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z", "M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z", "M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4", "M17.599 6.5a3 3 0 0 0 .399-1.375", "M6.003 5.125A3 3 0 0 0 6.401 6.5", "M3.477 10.896a4 4 0 0 1 .585-.396", "M19.938 10.5a4 4 0 0 1 .585.396", "M6 18a4 4 0 0 1-1.967-.516", "M19.967 17.484A4 4 0 0 1 18 18"],
+  history: ["M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", "M3 3v5h5", "M12 7v5l4 2"],
 };
 
 export type IconName = keyof typeof P & string;
@@ -66,7 +68,9 @@ export const SECTION_ICON: Record<string, IconName> = {
   "Command Center": "layout-dashboard",
   Intelligence: "sparkles",
   "Strategies & Research": "line-chart",
+  Cognition: "brain",
   "Portfolio & Capital": "wallet",
+  Treasury: "wallet",
   "Risk & Compliance": "shield-check",
   "Trading & Execution": "activity",
   "Data & Operations": "waypoints",
@@ -94,6 +98,14 @@ export const ITEM_ICON: Record<string, IconName> = {
   "/capital": "pie-chart",
   "/portfolio/positions": "table-2",
   "/portfolio/pnl": "line-chart",
+  // The treasury section shipped without entries here and every item fell
+  // back to the dashboard glyph, so four different pages wore the same icon.
+  "/treasury/ledger": "table-2",
+  "/treasury/wallet": "wallet",
+  "/treasury/corridors": "waypoints",
+  "/treasury/transfer-gate": "shield-check",
+  "/cognition/self-model": "brain",
+  "/cognition/precedents": "history",
   "/risk": "shield-check",
   "/risk/limits": "shield-check",
   "/risk/audit": "scan-line",

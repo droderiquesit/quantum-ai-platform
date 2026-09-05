@@ -11,12 +11,15 @@
 
 use qip_agents::budget::Budget;
 use qip_agents::capability::Capability;
-use qip_agents::finding::{AgentBrief, Direction, FindingStatus, NumericProvenance};
+use qip_agents::finding::{
+    AgentBrief, BriefPrecedent, Direction, FindingStatus, NumericProvenance,
+};
 use qip_agents::governance::Severity;
 use qip_agents::manifest::AgentRole;
 use qip_agents::memory::{Episode, EpisodeOutcome, ResearchMemory};
 use qip_agents::runtime::{AgentHost, RunStatus};
 use qip_ai::language::DeterministicModel;
+use qip_ai::memory::PrecedentDigest;
 use qip_ai::retrieval::{Document, SearchIndex};
 use qip_core::error::Result;
 use qip_core::ids::{AgentRunId, ObjectId, PortfolioId};
@@ -1620,5 +1623,136 @@ fn the_organisation_feeds_the_reasoning_engine() -> Result<()> {
             fact.validate()?;
         }
     }
+    Ok(())
+}
+
+// --- precedent: cited, never counted ----------------------------------------
+
+fn precedent() -> BriefPrecedent {
+    BriefPrecedent::new(
+        PrecedentDigest {
+            nearest: 4,
+            resolved: 3,
+            agreeing: 1,
+            agreement: Some(1.0 / 3.0),
+        },
+        0.91,
+        Some(false),
+        Duration::from_days(9),
+    )
+    .expect("a valid precedent")
+}
+
+#[test]
+fn two_briefs_identical_except_for_the_precedent_produce_identical_convictions_and_confidence()
+-> Result<()> {
+    // The leak this guards: a precedent that reached the panel as prose in
+    // `context` would be substring-matched by the reviewer's lesson matcher
+    // and could raise an objection, and an objection is a quarter of a
+    // conviction. The typed field lets the panel cite the precedent and
+    // nothing more, so every number the panel reports — and the confidence
+    // the reasoning engine computes from those numbers — must be the same
+    // with the precedent as without it, bit for bit.
+    use qip_reasoning_engine::engine::{ReasoningEngine, SynthesisInput};
+    use qip_reasoning_engine::evidence::EvidenceSet;
+    use qip_reasoning_engine::hypothesis::{CausalChain, CausalStep, Claim};
+    use qip_reasoning_engine::redteam::ReviewPolicy;
+    use qip_world_model::causal::Mechanism;
+
+    let plain = brief().with_context("credit spreads widened 40bp over the month");
+    let briefed = plain.clone().with_precedent(precedent());
+    assert_ne!(plain, briefed, "premise: the briefs differ");
+    assert_eq!(
+        plain.context, briefed.context,
+        "premise: they differ only in the typed field"
+    );
+
+    let without = organisation(populated_desk())?.dispatch(&plain, now(), &lineage());
+    let with = organisation(populated_desk())?.dispatch(&briefed, now(), &lineage());
+    assert!(
+        !with.findings.is_empty(),
+        "premise: the organisation produced findings"
+    );
+    let cites = |report: &qip_investment_agents::OrganisationReport| {
+        report
+            .findings
+            .iter()
+            .filter(|f| {
+                f.claim.contains("precedent:") || f.caveats.iter().any(|c| c.contains("precedent:"))
+            })
+            .map(|f| f.agent_id.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        cites(&with),
+        vec![ids::ADVERSARIAL.to_string()],
+        "premise: the reviewer cited the precedent in its narrative"
+    );
+    assert!(
+        cites(&without).is_empty(),
+        "a brief with no precedent produced a citation of one"
+    );
+
+    assert_eq!(with.findings.len(), without.findings.len());
+    for (a, b) in with.findings.iter().zip(&without.findings) {
+        assert_eq!(a.agent_id, b.agent_id);
+        assert_eq!(a.status, b.status, "{}", a.agent_id);
+        assert_eq!(a.direction, b.direction, "{}", a.agent_id);
+        assert!(
+            a.conviction.to_bits() == b.conviction.to_bits(),
+            "{} reported conviction {} with a precedent and {} without",
+            a.agent_id,
+            a.conviction,
+            b.conviction
+        );
+        assert_eq!(a.facts, b.facts, "{}", a.agent_id);
+        assert_eq!(
+            a.evidence, b.evidence,
+            "{} cited the precedent as evidence, which the engine counts",
+            a.agent_id
+        );
+    }
+
+    let synthesis = |findings: Vec<qip_agents::finding::AgentFinding>| SynthesisInput {
+        hypothesis_id: qip_core::ids::HypothesisId::from_string("hyp-precedent"),
+        opportunity_id: None,
+        as_of: now(),
+        now: now(),
+        class: "funding-cost-pass-through".to_string(),
+        claim: Claim::Overvalued,
+        statement: "ACME's guidance does not reflect its floating-rate funding".to_string(),
+        subjects: vec![object("ACME")],
+        chain: CausalChain::new(vec![CausalStep::new(
+            "policy-rate",
+            object("ACME").as_str(),
+            Mechanism::CreditConditions,
+            "gross margin compresses",
+            Duration::from_days(20),
+            0.80,
+        )]),
+        findings,
+        direct_evidence: EvidenceSet::from_items(Vec::new()),
+        prior: 0.25,
+        falsifiers: vec!["the next quarterly report shows flat gross margin".to_string()],
+        leading_alternative: "the market has priced the margin path".to_string(),
+        horizon: Duration::from_days(60),
+        market_priced_in: None,
+        models: Vec::new(),
+    };
+    let mut engine = ReasoningEngine::new(ReviewPolicy::default());
+    let reasoned_with = engine.reason(synthesis(with.findings.clone()))?;
+    let mut engine = ReasoningEngine::new(ReviewPolicy::default());
+    let reasoned_without = engine.reason(synthesis(without.findings.clone()))?;
+    assert!(
+        reasoned_with.hypothesis.confidence > 0.0,
+        "premise: the findings produced a confidence"
+    );
+    assert!(
+        reasoned_with.hypothesis.effective_confidence().to_bits()
+            == reasoned_without.hypothesis.effective_confidence().to_bits(),
+        "the precedent moved the confidence: {} with, {} without",
+        reasoned_with.hypothesis.effective_confidence(),
+        reasoned_without.hypothesis.effective_confidence()
+    );
     Ok(())
 }

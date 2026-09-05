@@ -33,18 +33,40 @@
 //! could would be able to widen its own bound. Taking the dependency would
 //! mean deleting the test that makes ADR 0008's safety argument true.
 //!
-//! # What this is not
+//! # Whose number this is
 //!
-//! It is not the centre's authority, and a comment claiming otherwise would
-//! be the most damaging sentence in this file. Nothing on any wire the cell
-//! receives carries a region allocation: a `CapitalEnvelope` is keyed on
-//! (strategy, cell), and the policy payload's twelve slots carry no
-//! per-region amount. The number here is one a composition root is *given* by
-//! its operator. That makes it a local backstop — it can only narrow what the
-//! signed envelopes already allow, never widen it — and a cell nobody hands
-//! one to behaves exactly as every cell does today. Making it the centre's
-//! number needs a signed field on the wire and a producer at the centre, in
-//! two crates this one may not edit.
+//! Two numbers, and it matters which is which. The **ceiling** is the
+//! operator's: the amount a composition root opens the table over, the most
+//! this process will ever accept, a local backstop that can only narrow. The
+//! **bound** is the centre's: the cell's disjoint share of its region's grant
+//! (ADR 0039), applied by [`RegionAllocation::rebase`] from the grant
+//! manifest of a signed policy payload and never wider than the ceiling. A
+//! table opened by [`RegionAllocation::new`] starts bounded at its ceiling —
+//! the shape every deployed node has today; one opened by
+//! [`RegionAllocation::unfunded`] starts bounded at nothing and sends nothing
+//! until the centre has named a share for it, which is "capital granted in
+//! advance" read strictly.
+//!
+//! Before the bound existed the ceiling was the only number, and two nodes
+//! under one regional grant held two operator-typed amounts nothing summed —
+//! traceability F6's "operator discipline, not a structural guarantee". The
+//! share closes that from the centre's side: it is computed from the
+//! allocation plan, checked against the region's grant before anything ships,
+//! and carried in the payload's `capital_grants` slot by naming the signed
+//! envelopes it consists of, so the cell sums a fact it has already verified
+//! rather than trusting a second claim about it.
+//!
+//! # A share is a cell's own, and only rises with the sequence
+//!
+//! A re-base is refused at or below the sequence last applied: a replayed
+//! older payload carrying a wider share is exactly the widening ADR 0008
+//! forbids, and refusing it here — as well as in `Cell::apply_policy` — keeps
+//! the guarantee on the ledger rather than on one caller remembering to
+//! check. A re-base is also refused from a second owner. The shared-table
+//! shape (`Cell::with_region_table` handed to two cells) predates shares and
+//! still works for cells nobody re-bases; but a share is one cell's disjoint
+//! view, and two cells re-basing one table would leave it at whichever cell
+//! spoke last rather than at either cell's share.
 //!
 //! # The clock is the pass, not the wall
 //!
@@ -91,32 +113,180 @@ pub struct RegionAllocation {
     free: Decimal,
     holds: BTreeMap<HoldKey, Hold>,
     committed: Decimal,
+    /// The operator's number: the most this ledger will ever be bounded to.
+    /// See the module doc for why it is not the centre's.
+    ceiling: Decimal,
+    /// The effective bound: `held + committed + free` when no share has
+    /// narrowed it below what is already spoken for. Never above `ceiling`.
+    bound: Decimal,
+    /// The sequence of the last share applied, and the cell that applied it.
+    /// `None` until [`Self::rebase`] has run once.
+    share: Option<AppliedShare>,
+}
+
+/// Who last re-based the ledger and with which payload sequence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AppliedShare {
+    owner: String,
+    sequence: u64,
+}
+
+/// What a re-base did to the ledger, for the journal.
+///
+/// `deficit` is what the share fell short of what the cell had already held
+/// or committed. It is a stated ledger state, not an error: the input was a
+/// valid share and the cell cannot un-send an order, so `free` is zero and the
+/// shortfall is named rather than clamped away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rebase {
+    /// The share as the centre named it, before the ceiling.
+    pub share: Decimal,
+    /// The bound the ledger now enforces: the share, or the ceiling if lower.
+    pub bound: Decimal,
+    /// Capital no hold is standing on, after the re-base.
+    pub free: Decimal,
+    /// By how much what was already spoken for exceeds the new bound; zero
+    /// when it does not.
+    pub deficit: Decimal,
 }
 
 impl RegionAllocation {
-    /// Open an allocation over an amount.
+    /// Open an allocation over an amount, bounded at it from the start.
     ///
     /// Zero is permitted and means a region that sends nothing, which is the
     /// correct reading of "this region has no capital". A negative amount is
     /// refused rather than floored: it means the caller's own accounting has
     /// already gone wrong, and a floor would bury that.
+    ///
+    /// The amount is also the ceiling: a share the centre later names can
+    /// narrow this ledger and never widen it past what the operator typed.
     pub fn new(free: Decimal) -> Result<Self> {
-        if free.is_negative() {
+        Self::opened(free, free)
+    }
+
+    /// Open an allocation that funds nothing until the centre names a share.
+    ///
+    /// The ADR 0039 shape: `free` is zero, the ceiling is the operator's
+    /// backstop, and the first [`Self::rebase`] is what lets the cell send. A
+    /// cell opened this way and never granted to refuses every hold under
+    /// `region_reservation`, which is the honest reading of "capital granted
+    /// in advance" — a cell nobody has granted to has nothing in advance.
+    /// Contrast [`Self::new`], which is every deployed node today and the
+    /// owner's second decision in the ADR.
+    pub fn unfunded(ceiling: Decimal) -> Result<Self> {
+        Self::opened(Decimal::ZERO, ceiling)
+    }
+
+    fn opened(bound: Decimal, ceiling: Decimal) -> Result<Self> {
+        if ceiling.is_negative() {
             return Err(Error::invalid(format!(
-                "a region allocation cannot open over a negative amount ({free}); give the cell \
-                 the amount its region was actually allocated, or none at all"
+                "a region allocation cannot open over a negative amount ({ceiling}); give the \
+                 cell the amount its region was actually allocated, or none at all"
             )));
         }
         Ok(Self {
-            free,
+            free: bound,
             holds: BTreeMap::new(),
             committed: Decimal::ZERO,
+            ceiling,
+            bound,
+            share: None,
         })
     }
 
     /// Capital no hold is standing on.
     pub fn free(&self) -> Decimal {
         self.free
+    }
+
+    /// The bound the ledger enforces now: the last share applied, capped by
+    /// the ceiling, or the opening amount if none has been.
+    pub fn bound(&self) -> Decimal {
+        self.bound
+    }
+
+    /// The operator's ceiling, which no share can raise.
+    pub fn ceiling(&self) -> Decimal {
+        self.ceiling
+    }
+
+    /// The sequence of the last share applied, if any was.
+    pub fn share_sequence(&self) -> Option<u64> {
+        self.share.as_ref().map(|share| share.sequence)
+    }
+
+    /// Re-base the ledger to the share the centre named for `owner`, under
+    /// the payload sequence it arrived with.
+    ///
+    /// Three refusals, each named rather than corrected. A negative share is
+    /// the centre's accounting gone wrong and is refused like a negative
+    /// opening amount. A sequence at or below the last applied is a replay
+    /// and is refused, not clamped: an older payload with a wider share is
+    /// the widening the sequence discipline exists to stop, and the ledger
+    /// keeps the guard itself so it does not depend on one caller checking.
+    /// A second owner is refused: a share is one cell's disjoint view, and a
+    /// table two cells both re-based would sit at whichever spoke last.
+    ///
+    /// The bound becomes `min(share, ceiling)`; `free` becomes what that
+    /// leaves after every live hold and everything committed, or zero with
+    /// the deficit stated when it leaves less than nothing. Nothing held or
+    /// committed is touched — the cell cannot un-send an order.
+    pub fn rebase(&mut self, owner: &str, share: Decimal, sequence: u64) -> Result<Rebase> {
+        if owner.trim().is_empty() {
+            return Err(Error::invalid(
+                "a region share needs an owner, or nothing can tell one cell's share from a \
+                 sibling's",
+            ));
+        }
+        if share.is_negative() {
+            return Err(Error::invalid(format!(
+                "a region share cannot be negative ({share}); the centre's plan has gone wrong \
+                 and the ledger is kept rather than corrected"
+            )));
+        }
+        if let Some(applied) = &self.share {
+            if applied.owner != owner {
+                return Err(Error::denied(format!(
+                    "this region table was re-based by {} and cannot be re-based by {owner}; a \
+                     share is one cell's own, so a sibling must hold its own table",
+                    applied.owner
+                )));
+            }
+            if sequence <= applied.sequence {
+                return Err(Error::denied(format!(
+                    "region share sequence {sequence} is not newer than the applied {}; an old \
+                     payload cannot re-base this cell's share",
+                    applied.sequence
+                )));
+            }
+        }
+        let bound = share.min(self.ceiling);
+        let spoken_for = self
+            .held_total()
+            .checked_add(self.committed)
+            .ok_or_else(|| {
+                Error::numeric(
+                    "the region ledger's holds and commitments cannot be summed, so no share can \
+                     be applied against them",
+                )
+            })?;
+        let (free, deficit) = if spoken_for > bound {
+            (Decimal::ZERO, spoken_for - bound)
+        } else {
+            (bound - spoken_for, Decimal::ZERO)
+        };
+        self.bound = bound;
+        self.free = free;
+        self.share = Some(AppliedShare {
+            owner: owner.to_string(),
+            sequence,
+        });
+        Ok(Rebase {
+            share,
+            bound,
+            free,
+            deficit,
+        })
     }
 
     /// The sum of every live hold, whoever took it.
@@ -305,6 +475,14 @@ impl RegionTable {
         })
     }
 
+    /// Open a table that funds nothing until a share is applied. See
+    /// [`RegionAllocation::unfunded`].
+    pub fn unfunded(ceiling: Decimal) -> Result<Self> {
+        Ok(Self {
+            inner: Arc::new(Mutex::new(RegionAllocation::unfunded(ceiling)?)),
+        })
+    }
+
     fn ledger(&self) -> MutexGuard<'_, RegionAllocation> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -326,6 +504,26 @@ impl RegionTable {
 
     pub fn committed_total(&self) -> Decimal {
         self.ledger().committed_total()
+    }
+
+    /// See [`RegionAllocation::bound`].
+    pub fn bound(&self) -> Decimal {
+        self.ledger().bound()
+    }
+
+    /// See [`RegionAllocation::ceiling`].
+    pub fn ceiling(&self) -> Decimal {
+        self.ledger().ceiling()
+    }
+
+    /// See [`RegionAllocation::share_sequence`].
+    pub fn share_sequence(&self) -> Option<u64> {
+        self.ledger().share_sequence()
+    }
+
+    /// See [`RegionAllocation::rebase`].
+    pub fn rebase(&self, owner: &str, share: Decimal, sequence: u64) -> Result<Rebase> {
+        self.ledger().rebase(owner, share, sequence)
     }
 
     /// See [`RegionAllocation::reserve`].
@@ -602,6 +800,117 @@ mod tests {
         // The free balance moved once, not twice: the second hold took nothing.
         assert_eq!(allocation.free(), dec!("600"));
         assert_eq!(allocation.held_total(), dec!("400"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_share_at_or_below_the_applied_sequence_is_refused_not_clamped() -> Result<()> {
+        // The ledger's own guard, independent of `Cell::apply_policy`'s: an
+        // older payload with a wider share must not re-widen a cell the
+        // centre has narrowed, whoever forgot to check the sequence first.
+        let mut allocation = RegionAllocation::unfunded(dec!("5000"))?;
+        assert_eq!(
+            allocation.free(),
+            Decimal::ZERO,
+            "the premise: unfunded opens at nothing"
+        );
+        let first = allocation.rebase(CELL, dec!("3000"), 6)?;
+        assert_eq!(first.bound, dec!("3000"));
+        assert_eq!(
+            allocation.free(),
+            dec!("3000"),
+            "the premise: sequence 6 funded the ledger"
+        );
+        let narrowed = allocation.rebase(CELL, dec!("100"), 7)?;
+        assert_eq!(
+            narrowed.bound,
+            dec!("100"),
+            "the premise: sequence 7 narrowed it"
+        );
+
+        for replay in [7, 6, 1] {
+            let refused = allocation.rebase(CELL, dec!("4000"), replay);
+            let error = match refused {
+                Ok(rebase) => panic!("sequence {replay} re-based the ledger to {}", rebase.bound),
+                Err(error) => error,
+            };
+            assert!(
+                error.message().contains("not newer than the applied 7"),
+                "the refusal did not name the applied sequence: {}",
+                error.message()
+            );
+        }
+        // Nothing moved: refused, not clamped to the applied share.
+        assert_eq!(allocation.bound(), dec!("100"));
+        assert_eq!(allocation.free(), dec!("100"));
+        assert_eq!(allocation.share_sequence(), Some(7));
+        Ok(())
+    }
+
+    #[test]
+    fn a_share_never_rises_past_the_ceiling_and_a_second_owner_cannot_rebase() -> Result<()> {
+        // The ceiling is the operator's backstop: a share wider than it is
+        // applied at the ceiling. And a share is one cell's own, so a table
+        // two cells share cannot be re-based by both.
+        let mut allocation = RegionAllocation::unfunded(dec!("500"))?;
+        let rebase = allocation.rebase("london-1", dec!("9000"), 1)?;
+        assert_eq!(
+            rebase.share,
+            dec!("9000"),
+            "the premise: the share was the wide one"
+        );
+        assert_eq!(
+            rebase.bound,
+            dec!("500"),
+            "the share rose past the operator's ceiling"
+        );
+        assert_eq!(allocation.free(), dec!("500"));
+        let sibling = allocation.rebase("london-2", dec!("100"), 2);
+        assert!(
+            sibling.is_err(),
+            "a second cell re-based a table that was the first cell's private view"
+        );
+        assert_eq!(
+            allocation.bound(),
+            dec!("500"),
+            "the sibling's refused re-base moved the bound"
+        );
+        assert!(allocation.rebase(CELL, dec!("-1"), 3).is_err());
+        assert!(allocation.rebase("", dec!("1"), 3).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn a_share_below_what_is_spoken_for_zeroes_free_and_states_the_deficit() -> Result<()> {
+        let mut allocation = RegionAllocation::new(dec!("1000"))?;
+        allocation.reserve(CELL, "held", dec!("300"), 1)?;
+        allocation.reserve(CELL, "sent", dec!("400"), 1)?;
+        assert_eq!(allocation.commit(CELL, "sent"), Some(dec!("400")));
+        assert_eq!(
+            allocation.free(),
+            dec!("300"),
+            "the premise: 700 is spoken for"
+        );
+
+        let rebase = allocation.rebase(CELL, dec!("500"), 1)?;
+        assert_eq!(
+            rebase.free,
+            Decimal::ZERO,
+            "free was not zeroed under a deficit"
+        );
+        assert_eq!(
+            rebase.deficit,
+            dec!("200"),
+            "the deficit was not the shortfall"
+        );
+        assert!(!allocation.free().is_negative(), "free went negative");
+        // Nothing held or committed moved: the cell cannot un-send.
+        assert_eq!(allocation.held_total(), dec!("300"));
+        assert_eq!(allocation.committed_total(), dec!("400"));
+        // And a share that covers what is spoken for has no deficit.
+        let covered = allocation.rebase(CELL, dec!("900"), 2)?;
+        assert_eq!(covered.deficit, Decimal::ZERO);
+        assert_eq!(covered.free, dec!("200"));
         Ok(())
     }
 

@@ -1,8 +1,15 @@
 # Ledger, wallet, corridor and transfer-gate routes
 
 The read-only treasury surface of `qip-api`. Four `GET` routes under
-`/api/v1`, all at the `viewer` role, all answering `200` with
-`content-type: application/json`. `POST`, `PUT`, `PATCH` and `DELETE` on any
+`/api/v1`, all answering `200` with `content-type: application/json`.
+`/ledger/users` requires the `analyst` role; `/wallet`, `/corridors` and
+`/transfer-gate` require `viewer`. The split is by what the body carries:
+`/ledger/users` lists every enrolled user's mandate, balances and inflow
+references, and the portal grants `viewer` to anyone who completes
+self-registration, so at `viewer` the route would hand every user's capital to
+whoever could sign up. The other three describe the process — a wallet it never
+assembles, registries it never holds, the gate's checks and the kill switch —
+and carry no per-user datum. `POST`, `PUT`, `PATCH` and `DELETE` on any
 of them answer `405 {"error":"that method is not allowed here"}`. Nothing here
 submits, approves, signs or moves anything, and there is no route that could:
 ADR 0021 permits the deterministic half of the blueprint's treasury and refuses
@@ -28,8 +35,11 @@ prose, kept exact so a page can be built against it without reading Rust.
 
 ## `GET /api/v1/ledger/users`
 
-Every user enrolled in the per-user ledger with their mandate, their
-per-strategy balances and the entitlement evaluation for the viewer role.
+**Role: `analyst`.** Every user enrolled in the per-user ledger with their
+mandate, their per-strategy balances and the entitlement evaluation for the
+viewer role. A `viewer` credential answers `403`; the entitlements in the body
+are still *evaluated as* the viewer role, which is a property of the
+evaluation, not of who may read it.
 
 ```json
 {
@@ -211,6 +221,6 @@ seventh check reads.
 ## Errors
 
 Same as the rest of the API: `401` with `www-authenticate: Bearer` for a
-missing or unknown token, `403` below the viewer role, `429` over the rate
-limit, `405` for a method other than `GET`, `503` if the platform lock is
-poisoned.
+missing or unknown token, `403` below the route's role (`analyst` for
+`/ledger/users`, `viewer` for the other three), `429` over the rate limit,
+`405` for a method other than `GET`, `503` if the platform lock is poisoned.

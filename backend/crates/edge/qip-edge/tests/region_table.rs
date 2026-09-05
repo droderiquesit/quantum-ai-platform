@@ -19,6 +19,7 @@
 
 use qip_contracts::capital::CapitalEnvelope;
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
+use qip_contracts::policy::{GrantManifest, PolicyPayload, Slot};
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
@@ -26,6 +27,7 @@ use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::cell::{Cell, CellConfig, ExecutionReport, Placer, PricingPolicy, WorkReport};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::Decision;
+use qip_edge::policy::VerifiedPolicy;
 use qip_edge::reservation::RegionTable;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
@@ -727,6 +729,444 @@ fn a_net_that_cancelled_releases_its_holds_once_and_the_next_passs_sweep_finds_n
         abandoned_entries(&cell),
         0,
         "the sweep found a hold that phase three had already released"
+    );
+    Ok(())
+}
+
+// --- ADR 0039: the cell's share of its region's grant ------------------------
+
+/// An envelope sized exactly: `gross` in total, and per order, and to lose.
+/// The share the cell derives from a manifest naming this envelope is `gross`.
+fn envelope_of(
+    cell: &str,
+    strategy: &str,
+    gross: Decimal,
+    expires: Timestamp,
+) -> Result<VerifiedEnvelope> {
+    let build = |signature: &str| {
+        CapitalEnvelope::new(
+            StrategyId::new(strategy),
+            cell,
+            gross,
+            gross,
+            gross,
+            vec![venue()],
+            t(0),
+            expires,
+            "alice@example.com",
+            signature,
+        )
+    };
+    let unsigned = build("unsigned")?;
+    let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
+    VerifiedEnvelope::verify(build(&signature)?, ENVELOPE_KEY, cell, t(1))
+}
+
+/// A cell of `cell_id` over its own table opened `unfunded`, holding one
+/// always-firing `Enter` strategy under `envelope` — the deployment's shape:
+/// one cell, one process, one private table.
+fn unfunded_cell(cell_id: &str, envelope: VerifiedEnvelope) -> Result<(Cell, RegionTable)> {
+    unfunded_cell_under(cell_id, envelope, dec!("100000000"))
+}
+
+/// As [`unfunded_cell`], with the operator's ceiling stated: the most the
+/// table will ever be bounded to, whatever share the centre names.
+fn unfunded_cell_under(
+    cell_id: &str,
+    envelope: VerifiedEnvelope,
+    ceiling: Decimal,
+) -> Result<(Cell, RegionTable)> {
+    let table = RegionTable::unfunded(ceiling)?;
+    let config = CellConfig::new(cell_id, REGION).with_venue(venue());
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?.with_region_table(table.clone());
+    cell.track(book()?);
+    let (compiled, program) = firing_strategy("alpha", SignalKind::Enter, "100")?;
+    cell.deploy_with_pricing(compiled, program, envelope, PricingPolicy::Marketable)?;
+    Ok((cell, table))
+}
+
+/// A verified payload for `cell` whose `capital_grants` slot is produced and
+/// names `grants` — or unproduced, when `None`.
+fn share_policy(
+    cell: &str,
+    sequence: u64,
+    issued_at: Timestamp,
+    grants: Option<Vec<String>>,
+) -> Result<VerifiedPolicy> {
+    let mut payload = PolicyPayload::unproduced(sequence, cell, issued_at);
+    if let Some(live_grants) = grants {
+        payload.capital_grants = Slot::produced(GrantManifest { live_grants }, issued_at);
+    }
+    VerifiedPolicy::verify(payload.signed(ENVELOPE_KEY)?, ENVELOPE_KEY, cell, issued_at)
+}
+
+fn share_entries(cell: &Cell) -> Vec<&Decision> {
+    cell.journal()
+        .entries()
+        .iter()
+        .map(|entry| &entry.decision)
+        .filter(|decision| matches!(decision, Decision::RegionShareApplied { .. }))
+        .collect()
+}
+
+#[test]
+fn two_cells_in_two_processes_under_disjoint_shares_cannot_together_exceed_the_regions_grant()
+-> Result<()> {
+    // The deployment's shape, which the shared-table test above cannot
+    // reach: two cells over two *separate* tables, each re-based from its
+    // own signed payload. The region's grant is one order's worth. The
+    // centre shared all of it to the first cell and nothing to the second,
+    // so the second's manifest names no grant of its own.
+    let grant = one_pass_holds(PricingPolicy::Marketable)?;
+    let (mut first, first_table) = unfunded_cell(
+        FIRST_CELL,
+        envelope_of(FIRST_CELL, "alpha", grant, t(3600))?,
+    )?;
+    let (mut second, second_table) = unfunded_cell(
+        SECOND_CELL,
+        envelope_of(SECOND_CELL, "alpha", grant, t(3600))?,
+    )?;
+    assert!(
+        !first_table.shares_with(&second_table),
+        "the premise failed: the two cells share a table, which is not the deployment's shape"
+    );
+    // The signature is deterministic over the envelope's fields, so signing
+    // the same terms again names the grant the first cell holds.
+    let first_signature = envelope_of(FIRST_CELL, "alpha", grant, t(3600))?
+        .signature()
+        .to_string();
+    first.apply_policy(
+        share_policy(FIRST_CELL, 1, t(10), Some(vec![first_signature]))?,
+        t(10),
+    )?;
+    second.apply_policy(share_policy(SECOND_CELL, 1, t(10), Some(vec![]))?, t(10))?;
+    assert_eq!(
+        first.region_allocation_bound(),
+        Some(grant),
+        "the premise failed: the first cell's table was not re-based to its share"
+    );
+    assert_eq!(
+        second.region_allocation_bound(),
+        Some(Decimal::ZERO),
+        "the premise failed: the second cell's table was not re-based to nothing"
+    );
+
+    // Contrast, first: shares that together exceed the grant let both send,
+    // so what refuses below is the partition and not the amount.
+    let (mut over_first, _) = unfunded_cell(
+        FIRST_CELL,
+        envelope_of(FIRST_CELL, "alpha", grant, t(3600))?,
+    )?;
+    let (mut over_second, _) = unfunded_cell(
+        SECOND_CELL,
+        envelope_of(SECOND_CELL, "alpha", grant, t(3600))?,
+    )?;
+    let over_first_signature = envelope_of(FIRST_CELL, "alpha", grant, t(3600))?
+        .signature()
+        .to_string();
+    let over_second_signature = envelope_of(SECOND_CELL, "alpha", grant, t(3600))?
+        .signature()
+        .to_string();
+    over_first.apply_policy(
+        share_policy(FIRST_CELL, 1, t(10), Some(vec![over_first_signature]))?,
+        t(10),
+    )?;
+    over_second.apply_policy(
+        share_policy(SECOND_CELL, 1, t(10), Some(vec![over_second_signature]))?,
+        t(10),
+    )?;
+    let mut gateway = VenueGateway::default();
+    assert_eq!(
+        over_first.work(t(50), &mut gateway)?.orders.len(),
+        1,
+        "the contrast premise failed: the first cell cannot send even under a share of the whole grant"
+    );
+    assert_eq!(
+        over_second.work(t(50), &mut gateway)?.orders.len(),
+        1,
+        "the contrast premise failed: the second cell cannot send even under a share of the whole grant"
+    );
+
+    // The property: under disjoint shares, what the two cells send together
+    // is at most the grant.
+    let first_report = first.work(t(50), &mut gateway)?;
+    assert_eq!(
+        first_report.orders.len(),
+        1,
+        "the first cell did not send within its share: {:?}",
+        first_report.refusals
+    );
+    let second_report = second.work(t(50), &mut gateway)?;
+    assert_eq!(
+        second_report.signals.len(),
+        1,
+        "the premise failed: the second cell's strategy did not propose: {:?}",
+        second_report.refusals
+    );
+    assert!(
+        second_report.orders.is_empty(),
+        "the second cell sent against a region whose grant the first cell's share had \
+         exhausted: {:?}",
+        second_report.orders
+    );
+    assert_eq!(
+        refused_under(&second_report, GATE).len(),
+        1,
+        "the second cell was not refused exactly once under `{GATE}`: {:?}",
+        second_report.refusals
+    );
+    let sent_together = first_table.committed_total() + second_table.committed_total();
+    assert_eq!(
+        sent_together, grant,
+        "the two cells together committed more than the grant"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_replayed_lower_sequence_cannot_widen_a_cells_share() -> Result<()> {
+    // The un-widenable property: a wide share under sequence 5, narrowed to
+    // nothing by sequence 6, and sequence 5 played again. Without the
+    // discipline a captured payload re-widens a cell the centre has just
+    // narrowed, which is the replay ADR 0008 exists to make impossible.
+    let grant = one_pass_holds(PricingPolicy::Marketable)?;
+    let envelope = envelope_of(FIRST_CELL, "alpha", grant, t(3600))?;
+    let signature = envelope.signature().to_string();
+    let (mut cell, table) = unfunded_cell(FIRST_CELL, envelope)?;
+    let wide = share_policy(FIRST_CELL, 5, t(10), Some(vec![signature]))?;
+    cell.apply_policy(wide.clone(), t(10))?;
+    assert_eq!(
+        cell.region_allocation_bound(),
+        Some(grant),
+        "the premise failed: sequence 5 did not widen the table"
+    );
+    cell.apply_policy(share_policy(FIRST_CELL, 6, t(20), Some(vec![]))?, t(20))?;
+    assert_eq!(
+        cell.region_allocation_bound(),
+        Some(Decimal::ZERO),
+        "the premise failed: sequence 6 did not narrow the table"
+    );
+
+    let refused = cell.apply_policy(wide, t(30));
+    assert!(refused.is_err(), "the replayed sequence 5 was applied");
+    assert_eq!(
+        cell.region_allocation_bound(),
+        Some(Decimal::ZERO),
+        "the replayed payload re-widened the cell's share"
+    );
+    assert_eq!(cell.region_share_sequence(), Some(6));
+    assert_eq!(table.share_sequence(), Some(6));
+    let mut gateway = VenueGateway::default();
+    let report = cell.work(t(50), &mut gateway)?;
+    assert!(
+        report.orders.is_empty(),
+        "the cell sent after the replay: {:?}",
+        report.orders
+    );
+    assert_eq!(
+        refused_under(&report, GATE).len(),
+        1,
+        "{:?}",
+        report.refusals
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cell_absent_from_the_shares_books_nothing() -> Result<()> {
+    let grant = one_pass_holds(PricingPolicy::Marketable)?;
+    // Contrast first: the same cell, named in the shares, sends.
+    let named = envelope_of(FIRST_CELL, "alpha", grant, t(3600))?;
+    let named_signature = named.signature().to_string();
+    let (mut funded, _) = unfunded_cell(FIRST_CELL, named)?;
+    funded.apply_policy(
+        share_policy(FIRST_CELL, 1, t(10), Some(vec![named_signature]))?,
+        t(10),
+    )?;
+    let mut gateway = VenueGateway::default();
+    assert_eq!(
+        funded.work(t(50), &mut gateway)?.orders.len(),
+        1,
+        "the contrast premise failed: a cell named in the shares cannot send"
+    );
+
+    // Never granted to at all: an unfunded table and no payload.
+    let (mut never, _) = unfunded_cell(
+        FIRST_CELL,
+        envelope_of(FIRST_CELL, "alpha", grant, t(3600))?,
+    )?;
+    let report = never.work(t(50), &mut gateway)?;
+    assert_eq!(
+        report.signals.len(),
+        1,
+        "the premise failed: the strategy did not propose: {:?}",
+        report.refusals
+    );
+    assert!(
+        report.orders.is_empty(),
+        "a cell nobody granted to sent: {:?}",
+        report.orders
+    );
+    assert_eq!(
+        refused_under(&report, GATE).len(),
+        1,
+        "{:?}",
+        report.refusals
+    );
+
+    // Granted to, but the manifest names a sibling's grant and none of this
+    // cell's: a share of nothing.
+    let (mut absent, table) = unfunded_cell(
+        FIRST_CELL,
+        envelope_of(FIRST_CELL, "alpha", grant, t(3600))?,
+    )?;
+    let siblings = envelope_of(SECOND_CELL, "alpha", grant, t(3600))?
+        .signature()
+        .to_string();
+    absent.apply_policy(
+        share_policy(FIRST_CELL, 1, t(10), Some(vec![siblings]))?,
+        t(10),
+    )?;
+    assert_eq!(absent.region_allocation_bound(), Some(Decimal::ZERO));
+    let report = absent.work(t(50), &mut gateway)?;
+    assert!(
+        report.orders.is_empty(),
+        "a cell absent from the shares sent: {:?}",
+        report.orders
+    );
+    assert_eq!(
+        refused_under(&report, GATE).len(),
+        1,
+        "{:?}",
+        report.refusals
+    );
+    assert_eq!(table.committed_total(), Decimal::ZERO);
+    let entries = share_entries(&absent);
+    assert_eq!(entries.len(), 1, "the share was not journaled exactly once");
+    assert!(
+        matches!(entries[0], Decision::RegionShareApplied { grants: 0, .. }),
+        "the journal did not record that no grant of this cell's was named: {:?}",
+        entries[0]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_share_below_what_the_cell_already_committed_narrows_free_to_zero_and_journals_the_deficit()
+-> Result<()> {
+    let grant = one_pass_holds(PricingPolicy::Marketable)?;
+    let envelope = envelope_of(FIRST_CELL, "alpha", grant, t(3600))?;
+    let signature = envelope.signature().to_string();
+    let (mut cell, table) = unfunded_cell(FIRST_CELL, envelope)?;
+    cell.apply_policy(
+        share_policy(FIRST_CELL, 1, t(10), Some(vec![signature]))?,
+        t(10),
+    )?;
+    let mut gateway = VenueGateway::default();
+    assert_eq!(
+        cell.work(t(50), &mut gateway)?.orders.len(),
+        1,
+        "the premise failed: the cell did not send"
+    );
+    assert_eq!(
+        table.committed_total(),
+        grant,
+        "the premise failed: the order did not commit the share"
+    );
+
+    // The centre narrows the cell to nothing while its order is out.
+    cell.apply_policy(share_policy(FIRST_CELL, 2, t(60), Some(vec![]))?, t(60))?;
+    assert_eq!(
+        table.free(),
+        Decimal::ZERO,
+        "free went somewhere other than zero under a deficit"
+    );
+    assert!(!table.free().is_negative());
+    assert_eq!(table.committed_total(), grant, "narrowing un-sent an order");
+    let entries = share_entries(&cell);
+    assert_eq!(entries.len(), 2);
+    match entries[1] {
+        Decision::RegionShareApplied { deficit, free, .. } => {
+            assert_eq!(
+                deficit,
+                &grant.to_string(),
+                "the deficit was not journaled as the shortfall"
+            );
+            assert_eq!(free, "0");
+        }
+        other => panic!("not a share entry: {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_partitioned_cell_keeps_spending_within_its_last_share_until_its_envelopes_expire() -> Result<()>
+{
+    // The ADR 0008 conformance test. One payload, then silence: the cell
+    // sends within its share, refuses past it, keeps the share when the
+    // slot goes stale, and stops only when its envelope expires on its own
+    // clock. A second expiry on the share would double the partition
+    // failure mode without bounding anything the envelope does not.
+    let one = one_pass_holds(PricingPolicy::Marketable)?;
+    // The envelope admits three orders; the operator's ceiling bounds the
+    // share at two, so the region gate — not the envelope — is what refuses
+    // the third. The share the centre named is the envelope's gross; the
+    // bound is `min(share, ceiling)`.
+    let share = one + one;
+    let envelope = envelope_of(FIRST_CELL, "alpha", one + one + one, t(7200))?;
+    let signature = envelope.signature().to_string();
+    let (mut cell, table) = unfunded_cell_under(FIRST_CELL, envelope, share)?;
+    cell.apply_policy(
+        share_policy(FIRST_CELL, 1, t(10), Some(vec![signature]))?,
+        t(10),
+    )?;
+    assert_eq!(
+        cell.region_allocation_bound(),
+        Some(share),
+        "the premise failed: the share was not applied"
+    );
+    let mut gateway = VenueGateway::default();
+    assert_eq!(
+        cell.work(t(50), &mut gateway)?.orders.len(),
+        1,
+        "the first pass did not send"
+    );
+    // The grant manifest's slot is stale past an hour; the envelope is not.
+    let stale = cell.work(t(3700), &mut gateway)?;
+    assert_eq!(
+        stale.orders.len(),
+        1,
+        "the cell stopped spending within its share when the slot went stale: {:?}",
+        stale.refusals
+    );
+    // Within the share, not necessarily to the unit: the envelope's own
+    // utilisation may trim the second order, which is the envelope bounding
+    // and not the share.
+    assert!(
+        table.committed_total() > one && table.committed_total() <= share,
+        "two passes committed {} against a share of {share}",
+        table.committed_total()
+    );
+    let past = cell.work(t(3800), &mut gateway)?;
+    assert!(
+        past.orders.is_empty(),
+        "the cell sent past its share: {:?}",
+        past.orders
+    );
+    assert_eq!(refused_under(&past, GATE).len(), 1, "{:?}", past.refusals);
+    assert_eq!(
+        cell.region_allocation_bound(),
+        Some(share),
+        "the share was zeroed on staleness"
+    );
+    // The envelope's own clock is what stops the cell.
+    let expired = cell.work(t(7300), &mut gateway)?;
+    assert!(expired.orders.is_empty());
+    assert!(
+        !refused_under(&expired, "envelope_expiry").is_empty(),
+        "the expired envelope was not what refused: {:?}",
+        expired.refusals
     );
     Ok(())
 }

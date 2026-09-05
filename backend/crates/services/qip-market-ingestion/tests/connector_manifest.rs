@@ -52,6 +52,106 @@ fn a_pasted_key_written_where_a_variable_name_belongs_is_refused() -> Result<()>
 }
 
 #[test]
+fn a_refused_secret_reference_is_described_by_shape_and_never_echoed() -> Result<()> {
+    // The failure this guards, found in review: the refusal that exists so a
+    // pasted key never lands in git or a support ticket used to quote the
+    // pasted value in its own message — so the key went to stderr, the
+    // health detail and the ticket anyway, by the hand of the check meant
+    // to stop it. A refusal may say how long the value was and what kind of
+    // character broke the rule, and nothing else about it.
+    //
+    // The shape is a secret's, not a real one: a live-looking prefix, then
+    // digits and letters. It is never a substring of any part of the message.
+    let pasted = "sk-live-9f2ab41c7d0e5b63";
+    // A key that starts with an uppercase letter reaches the character-class
+    // branch rather than the first-letter branch, so both are exercised.
+    let capitalised = "AKIA9F2AB41C7D0E5B63/example";
+
+    // The direct constructor: premise first, it refuses both.
+    for value in [pasted, capitalised] {
+        let error = SecretRef::new(value).expect_err("a pasted key was accepted as a name");
+        let message = error.message();
+        assert!(
+            !message.contains(value),
+            "the refusal echoed the pasted value: {message}"
+        );
+        // Not even a fragment long enough to be useful: the hex tail is the
+        // part a truncating log would keep.
+        assert!(
+            !message.contains("9f2ab41c") && !message.contains("9F2AB41C"),
+            "the refusal echoed part of the pasted value: {message}"
+        );
+        assert!(
+            message.contains(&format!("{} characters", value.chars().count())),
+            "the refusal does not state the length: {message}"
+        );
+    }
+    let lowercase = SecretRef::new(pasted)
+        .expect_err("refused above")
+        .message()
+        .to_string();
+    assert!(
+        lowercase.contains("a lowercase letter"),
+        "the refusal does not name the character class: {lowercase}"
+    );
+    let slash = SecretRef::new(capitalised)
+        .expect_err("refused above")
+        .message()
+        .to_string();
+    assert!(
+        slash.contains("punctuation other than _"),
+        "the refusal does not name the character class: {slash}"
+    );
+    // A value that is all name characters but starts with a digit is refused
+    // on the first position, and the class is the digit's — not "a character
+    // outside A-Z, 0-9 and _", which a digit is not.
+    let leading_digit = SecretRef::new("9F2AB41C_KEY")
+        .expect_err("a leading digit was accepted")
+        .message()
+        .to_string();
+    assert!(
+        leading_digit.contains("a digit at position 1") && !leading_digit.contains("9F2AB41C"),
+        "{leading_digit}"
+    );
+
+    // The two manifest slots that reach `validate` through deserialisation,
+    // where no constructor stood in the way: the primary secret and the
+    // companion's. Each is refused, and each refusal is silent about the
+    // value.
+    let primary = manifest_json("test-source", 0, "1.0").replace(
+        r#""auth": { "scheme": "none" }"#,
+        &format!(
+            r#""auth": {{ "scheme": "header", "header": "x-api-key", "secret": {{ "variable": "{pasted}" }} }}"#
+        ),
+    );
+    let companion = manifest_json("test-source", 0, "1.0").replace(
+        r#""auth": { "scheme": "none" }"#,
+        &format!(
+            r#""auth": {{ "scheme": "header", "header": "apca-api-secret-key", "secret": {{ "variable": "QIP_TEST_SECRET_KEY" }}, "companion": {{ "header": "apca-api-key-id", "secret": {{ "variable": "{pasted}" }} }} }}"#
+        ),
+    );
+    for (slot, text) in [("primary", primary), ("companion", companion)] {
+        assert!(
+            text.contains(pasted),
+            "premise: the {slot} manifest carries the pasted value"
+        );
+        let Err(error) = SourceManifest::from_json(&text) else {
+            panic!("a manifest with a pasted {slot} key was accepted");
+        };
+        let message = error.message();
+        assert!(
+            !message.contains(pasted) && !message.contains("9f2ab41c"),
+            "the {slot} refusal echoed the pasted value: {message}"
+        );
+        assert!(
+            message.contains("a lowercase letter"),
+            "the {slot} refusal does not say what was wrong: {message}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn an_open_endpoint_may_not_quietly_name_a_credential() -> Result<()> {
     let spec = AuthSpec {
         scheme: AuthScheme::None,

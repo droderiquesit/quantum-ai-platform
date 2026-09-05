@@ -55,6 +55,7 @@ pub mod learning;
 pub mod models;
 pub mod plane;
 pub mod realised;
+pub mod regions;
 pub mod whitelist;
 
 pub use dna::{DnaPayload, StrategyDna};
@@ -69,6 +70,7 @@ pub use plane::{
     CentralPlane, IssuedCapital, ReconciliationBreak, capital_subject,
 };
 pub use realised::{REALISED_SESSIONS, RealisedSeries, RealisedSession};
+pub use regions::{RegionMembership, RegionShare, RegionShares};
 pub use whitelist::{
     ArbitragePolicy, WhitelistIssue, WhitelistOutcome, WhitelistedMarket, WhitelistedVenue,
 };

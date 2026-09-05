@@ -63,7 +63,7 @@
 //! stub awaiting an engine — a gate that refuses is the control, and the
 //! control is the half worth having.
 //!
-//! # Determinism
+//! # Determinism, and the log as the only record
 //!
 //! Nothing here reads a wall clock or draws a random number. Every entry point
 //! takes the [`qip_core::Timestamp`] it is reasoning about, and the single
@@ -71,6 +71,13 @@
 //! backtests — takes a seeded [`qip_core::Xoshiro256`] as an argument. The
 //! planner itself is entirely deterministic, so a replay reproduces the same
 //! transfers and the same refusals.
+//!
+//! [`journal`] makes that replay real for the control half: every
+//! destination, corridor, wallet and gate decision is written to the
+//! hash-chained event log as the command and its outcome, and [`replay`]
+//! rebuilds the state from those records alone — re-running each command and
+//! refusing, by position, a record that is out of sequence, altered, or
+//! claims an outcome the control does not produce.
 //!
 //! # Deciding one transfer
 //!
@@ -152,8 +159,10 @@ pub mod destination;
 pub mod evaluate;
 pub mod forecast;
 pub mod gate;
+pub mod journal;
 pub mod location;
 pub mod plan;
+pub mod replay;
 pub mod settlement;
 pub mod transfer;
 pub mod wallet;

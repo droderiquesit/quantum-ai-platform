@@ -747,6 +747,40 @@ impl RecordedPrediction {
 /// set, not the first five found.
 const PRECEDENT_K: usize = 5;
 
+/// The precedent as the panel is briefed on it, from what REASON recalled.
+///
+/// `None` where nothing was recalled: an empty brief field is "no
+/// precedent", which is not the same statement as a digest of zeros. The
+/// direction the digest is taken against is the claim the anomaly implies,
+/// the same one the recall query carried, so the panel reads the agreement
+/// share the record beside the hypothesis will show. The age is measured
+/// from the nearest episode's `known_at`, which the store guarantees is
+/// strictly before `now`; `BriefPrecedent::new` refuses anything else, and
+/// that refusal reaching a caller means the store's rule was bypassed.
+fn brief_precedent(
+    query: &EpisodeQuery,
+    recall: &Recall,
+    now: Timestamp,
+) -> Result<Option<qip_agents::finding::BriefPrecedent>> {
+    let Some(nearest) = recall.nearest.first() else {
+        return Ok(None);
+    };
+    let direction = query.claim.as_ref().map_or(0.0, |claim| claim.direction);
+    let digest = PrecedentDigest::of(&recall.nearest, direction);
+    let prior_outcome = nearest
+        .episode
+        .outcome
+        .as_ref()
+        .and_then(|outcome| outcome.agrees_with(direction));
+    qip_agents::finding::BriefPrecedent::new(
+        digest,
+        nearest.similarity,
+        prior_outcome,
+        now.since(nearest.episode.known_at),
+    )
+    .map(Some)
+}
+
 /// The precedent recorded beside a hypothesis: the resolved episodes nearest
 /// to the situation when REASON asked, and how their outcomes sat against
 /// the claim's direction.
@@ -1109,6 +1143,11 @@ pub struct LearningOutcome {
     /// The calibration and lessons over the whole window, or `None` where
     /// nothing in the window was informative.
     pub report: Option<FeedbackReport>,
+    /// Theses that were graded and joined the window but could not be
+    /// charged to a component — a class the self-model cannot key, a
+    /// confidence it cannot score — one line each, so the self-model's
+    /// silence about them is visible rather than the whole pass aborting.
+    pub problems: Vec<String>,
 }
 
 /// The universe a platform was assembled from — the first record on its
@@ -2548,15 +2587,36 @@ impl Platform {
         // stage the factors the record now supports. Replaced whole every
         // time, so an origin whose window rolled below the minimum sample
         // loses its factor rather than keeping a stale one.
+        //
+        // An evaluation the self-model cannot charge — a class that is empty
+        // or carries the key separator, a confidence outside `[0, 1]` — is
+        // skipped with a problem line and the rest are charged. It used to
+        // abort the pass with `?`, which threw away every other thesis that
+        // resolved this cycle, the calibration over the window and the
+        // factors REASON was owed, because one class string was malformed;
+        // and it aborted after the evaluations had already joined the
+        // window, so the window and the self-model disagreed about what had
+        // been graded.
         let roster: Vec<String> = self
             .organisation
             .roster()
             .iter()
             .map(|manifest| manifest.id.clone())
             .collect();
+        let mut problems = Vec::new();
         for evaluation in &evaluations {
-            let components = Self::components_of(evaluation, &roster)?;
-            self.self_model.absorb(evaluation, &components)?;
+            let charged = match Self::components_of(evaluation, &roster) {
+                Ok(components) => self.self_model.absorb(evaluation, &components),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = charged {
+                problems.push(format!(
+                    "thesis {} (class {:?}) was graded but charged to no component: {}",
+                    evaluation.hypothesis_id,
+                    evaluation.class,
+                    error.message()
+                ));
+            }
         }
         self.reasoning
             .set_origin_factors(self.self_model.origin_factors());
@@ -2593,6 +2653,7 @@ impl Platform {
             evaluations,
             skipped,
             report,
+            problems,
         })
     }
 
@@ -3918,14 +3979,16 @@ impl Platform {
 
         // Precedent: the nearest resolved episodes memory holds for this
         // situation, as known before `now`. Recorded beside the hypothesis
-        // as evidence context, and deliberately *not* written into the
-        // brief: `brief.context` is the string the reviewer's lesson matcher
-        // substring-matches against, so a precedent block there could
-        // change which objections are raised and, through them, the
-        // confidence — the one thing this record must not do. Nothing here
-        // reaches the confidence arithmetic; see `HypothesisPrecedent`.
+        // as evidence context, and handed to the panel through the brief's
+        // *typed* field only — never through `brief.context`, which is the
+        // string the reviewer's lesson matcher substring-matches against. A
+        // precedent block written there could change which objections are
+        // raised and, through their count, the confidence, which is the one
+        // thing this record must not do. `BriefPrecedent` cannot be passed
+        // where a `&str` is, so the panel can cite it and cannot count it;
+        // see `HypothesisPrecedent` and `qip_agents::finding::BriefPrecedent`.
         let precedent = self.recall_precedent(&opportunity, now);
-        let brief = qip_agents::finding::AgentBrief::new(
+        let mut brief = qip_agents::finding::AgentBrief::new(
             opportunity.headline.clone(),
             now,
             opportunity.horizon,
@@ -3933,6 +3996,24 @@ impl Platform {
         .with_context(opportunity.historical_context.clone())
         .about_objects(opportunity.affected_objects.clone())
         .about_entities(opportunity.affected_entities.clone());
+        // A precedent the brief refuses is a kernel bug — the store already
+        // filters to `known_at < now` — so it is reported as a problem and
+        // the panel is convened without it, rather than with a precedent
+        // that fails the point-in-time rule.
+        let mut briefing_problem = None;
+        match precedent
+            .as_ref()
+            .map(|(query, recall)| brief_precedent(query, recall, now))
+        {
+            Some(Ok(Some(briefed))) => brief = brief.with_precedent(briefed),
+            Some(Ok(None)) | None => {}
+            Some(Err(error)) => {
+                briefing_problem = Some(format!(
+                    "the recalled precedent could not be briefed to the panel: {}",
+                    error.message()
+                ));
+            }
+        }
 
         let report = self.organisation.dispatch(&brief, now, lineage);
         self.telemetry
@@ -3958,6 +4039,7 @@ impl Platform {
                 None => format!("{agent} failed"),
             })
             .collect();
+        problems.extend(briefing_problem);
         if !report.failed.is_empty() {
             self.telemetry.metrics.increment(
                 names::AGENT_FAILURES,
@@ -5466,6 +5548,11 @@ impl Platform {
         }
 
         let learned = self.learn_from(&claims, &outcomes, now)?;
+        // A thesis graded but charged to nobody is a stage problem, not a
+        // stage failure: the pass went on without it, and the outcome says so
+        // through the same drain every other LEARN-time problem reaches.
+        self.capture_problems
+            .extend(learned.problems.iter().cloned());
         let mut summary = format!(
             "{} thesis(es) resolved, {} graded",
             scored.len(),
@@ -8422,5 +8509,92 @@ mod self_model_tests {
             2,
             "an origin nobody measured was handed a factor: {handed:?}"
         );
+    }
+
+    #[test]
+    fn a_thesis_the_self_model_cannot_key_is_skipped_with_a_problem_and_the_rest_are_charged() {
+        // The failure this guards, found in review: `learn_from` charged
+        // each graded thesis with `?`, so one whose class the self-model
+        // could not key aborted the whole calibration pass — every other
+        // thesis resolved that cycle went uncharged, the window and the
+        // self-model disagreed about what had been graded, and the stage
+        // reported a failure rather than which thesis was the problem.
+        let mut platform = platform();
+        assert!(
+            platform.self_model().is_empty(),
+            "the premise is an empty self-model"
+        );
+        let resolves_at = start().saturating_add(Duration::from_days(5));
+        let claim = |id: &str, class: &str| ThesisClaim {
+            hypothesis_id: id.to_string(),
+            class: class.to_string(),
+            subject: "obj-AAA".to_string(),
+            formed_at: start(),
+            resolves_at,
+            direction: 1.0,
+            expected_move_bps: 200.0,
+            confidence: 0.7,
+            falsifiers: vec!["it reverts".to_string()],
+            contributors: Vec::new(),
+        };
+        let outcome = |id: &str| ThesisOutcome {
+            hypothesis_id: id.to_string(),
+            observed_at: resolves_at,
+            realised_move_bps: 180.0,
+            realised_pnl: 0.0,
+            falsifiers_triggered: Vec::new(),
+            mechanism_confirmed: None,
+        };
+        // Premise: the bad class is one `ComponentKey` refuses — it carries
+        // the serialised key's separator — and the good one is accepted.
+        let unkeyable = "price:dislocation";
+        assert!(ComponentKey::detector(unkeyable).is_err());
+        assert!(ComponentKey::detector("price_dislocation").is_ok());
+
+        // The unkeyable thesis first, so a pass that aborted on it would
+        // leave the good one uncharged.
+        let learned = platform
+            .learn_from(
+                &[
+                    claim("hyp-bad", unkeyable),
+                    claim("hyp-good", "price_dislocation"),
+                ],
+                &[outcome("hyp-bad"), outcome("hyp-good")],
+                resolves_at,
+            )
+            .expect("one unkeyable thesis must not abort the pass");
+        assert_eq!(
+            learned.evaluations.len(),
+            2,
+            "the premise is two graded theses: {:?}",
+            learned.skipped
+        );
+        assert_eq!(
+            learned.problems.len(),
+            1,
+            "one problem for the one unkeyable thesis: {:?}",
+            learned.problems
+        );
+        assert!(
+            learned.problems[0].contains("hyp-bad")
+                && learned.problems[0].contains("charged to no component"),
+            "the problem does not name the thesis it skipped: {}",
+            learned.problems[0]
+        );
+        assert!(
+            !learned.problems[0].contains("hyp-good"),
+            "the problem names a thesis that was charged: {}",
+            learned.problems[0]
+        );
+        // The good thesis was charged and the bad one was not.
+        let charged: Vec<String> = platform
+            .self_model()
+            .iter()
+            .map(|(key, _)| key.to_string())
+            .collect();
+        assert_eq!(charged, vec!["detector:price_dislocation".to_string()]);
+        // And the window still holds both, as it did before the fix — the
+        // self-model's silence about one is stated, not hidden.
+        assert_eq!(platform.evaluations.len(), 2);
     }
 }

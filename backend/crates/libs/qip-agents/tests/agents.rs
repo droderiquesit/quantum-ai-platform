@@ -7,13 +7,15 @@
 use qip_agents::budget::{Budget, BudgetLedger, BudgetLine};
 use qip_agents::capability::{Capability, CapabilitySet};
 use qip_agents::finding::{
-    AgentBrief, AgentFinding, Direction, FindingStatus, NumericFact, NumericProvenance,
+    AgentBrief, AgentFinding, BriefPrecedent, Direction, FindingStatus, NumericFact,
+    NumericProvenance,
 };
 use qip_agents::governance::{Roster, Severity};
 use qip_agents::manifest::{AgentManifest, AgentRole, EscalationPolicy};
 use qip_agents::memory::{Episode, EpisodeOutcome, Lesson, PromotionPolicy, ResearchMemory};
 use qip_agents::runtime::{Agent, AgentContext, AgentHost, Gated, RunStatus, Upstream};
 use qip_ai::language::{DeterministicModel, ModelRequest};
+use qip_ai::memory::PrecedentDigest;
 use qip_core::error::{Error, Result};
 use qip_core::ids::{AgentRunId, LessonId};
 use qip_core::lineage::{CorrelationId, Lineage};
@@ -1036,4 +1038,91 @@ fn an_upstream_does_not_relax_the_gate_it_feeds() {
     assert_eq!(denied.len(), 1, "the refusal left no audit entry");
     assert_eq!(denied[0].capability, Capability::ReadPortfolio);
     assert_eq!(denied[0].facility, "portfolio");
+}
+
+// --- precedent ---------------------------------------------------------------
+
+fn precedent() -> BriefPrecedent {
+    BriefPrecedent::new(
+        PrecedentDigest {
+            nearest: 3,
+            resolved: 2,
+            agreeing: 1,
+            agreement: Some(0.5),
+        },
+        0.93,
+        Some(false),
+        Duration::from_days(12),
+    )
+    .expect("a valid precedent")
+}
+
+#[test]
+fn a_precedent_attached_to_a_brief_leaves_the_context_the_lesson_matcher_reads_untouched() {
+    // The leak this guards: `AgentBrief::context` is the string the
+    // adversarial reviewer's lesson matcher substring-matches, so a
+    // precedent folded into it as prose would change which lessons apply,
+    // and through the objection count, a conviction. The typed channel
+    // exists so that cannot happen; this proves attaching a precedent
+    // writes the typed field and nothing else.
+    let plain = brief()
+        .with_context("credit spreads widened 40bp over the month")
+        .asking(vec!["is the move idiosyncratic".to_string()]);
+    let briefed = plain.clone().with_precedent(precedent());
+
+    assert!(
+        briefed.precedent.is_some(),
+        "premise: the precedent was attached"
+    );
+    assert!(
+        plain.precedent.is_none(),
+        "premise: the control carries none"
+    );
+    let citation = precedent().cite();
+    assert!(
+        citation.contains("3 nearest episode(s)") && citation.contains("went against the claim"),
+        "premise: the citation names the digest and the prior outcome: {citation}"
+    );
+
+    assert_eq!(
+        briefed.context, plain.context,
+        "attaching a precedent changed the substring-matched context"
+    );
+    assert_eq!(briefed.question, plain.question);
+    assert_eq!(briefed.questions, plain.questions);
+    assert!(
+        !briefed.context.contains("precedent"),
+        "the precedent reached the free-text context: {}",
+        briefed.context
+    );
+}
+
+#[test]
+fn a_precedent_knowable_at_or_after_the_question_is_refused_rather_than_briefed() {
+    // The store refuses `known_at >= now` at recall. A caller that builds a
+    // precedent with a zero or negative age has gone around the store, and
+    // the brief must say so rather than carry a record the panel would read
+    // as knowledge it did not yet have.
+    let digest = PrecedentDigest {
+        nearest: 1,
+        resolved: 1,
+        agreeing: 1,
+        agreement: Some(1.0),
+    };
+    assert!(
+        BriefPrecedent::new(digest.clone(), 0.5, Some(true), Duration::from_secs(1)).is_ok(),
+        "premise: one second of age is knowledge"
+    );
+    for age in [Duration::ZERO, Duration::from_secs(-1)] {
+        let refused = BriefPrecedent::new(digest.clone(), 0.5, Some(true), age)
+            .expect_err("an age at or before the question must be refused");
+        assert!(
+            refused.message().contains("not yet knowledge"),
+            "the refusal must name the point-in-time rule: {}",
+            refused.message()
+        );
+    }
+    let not_a_cosine = BriefPrecedent::new(digest, 1.5, Some(true), Duration::from_secs(1))
+        .expect_err("a similarity outside [-1, 1] is not a cosine");
+    assert!(not_a_cosine.message().contains("[-1, 1]"));
 }

@@ -18,9 +18,17 @@
 #     Binary Authorization policy the Cloud Run services are — the project
 #     policy, one rule, no exemptions. A controller image runs here only
 #     after `vendor.yml` mirrored and attested it.
-#   * Config Connector installed as the GKE addon rather than by a Helm or
-#     Kubernetes provider, so the provider set stays `google`/`google-beta`
-#     and `scripts/check-terraform-providers.sh` has nothing new to refuse.
+#   * Config Connector installed by the bootstrap, as a vendored operator
+#     manifest under infrastructure/gitops/bootstrap/config-connector-operator,
+#     rather than by a Helm or Kubernetes provider — so the provider set
+#     stays `google`/`google-beta` and `scripts/check-terraform-providers.sh`
+#     has nothing new to refuse. ADR 0036 wrote "installed as the GKE
+#     addon"; the API refused that on the first apply of this module
+#     (infra.yml runs 34 and 35, 2026-09-05: `addons {"config-connector"}
+#     are not supported for Autopilot clusters`), and Autopilot is the
+#     property that keeps a `qip-*` image off the cluster, so the addon is
+#     what gave way. This header used to repeat the ADR's sentence; it was
+#     false for as long as this module existed.
 #   * etcd encrypted with a key in the environment's own ring, because the
 #     cluster holds the two GitHub App private keys as Kubernetes Secrets
 #     (decision 3), and a Secret at rest in an etcd Google encrypts with a
@@ -112,8 +120,16 @@ resource "google_kms_crypto_key_iam_member" "gke_uses_etcd_key" {
 
 resource "google_container_cluster" "control_plane" {
   # The key grant before the cluster that needs it: Terraform infers no
-  # dependency from a key *name* in `database_encryption`.
-  depends_on = [google_kms_crypto_key_iam_member.gke_uses_etcd_key]
+  # dependency from a key *name* in `database_encryption`. The fleet grant
+  # for the same reason: the `fleet` block below registers a membership as
+  # the caller, and Terraform infers nothing from that either. Both are
+  # consumed by the one create call, so both must exist before it — and
+  # IAM propagation being what it is, a binding created seconds before the
+  # call can still be refused; a second `up` then finds it held.
+  depends_on = [
+    google_kms_crypto_key_iam_member.gke_uses_etcd_key,
+    google_project_iam_member.infra_registers_fleet,
+  ]
 
   project  = var.project_id
   name     = local.name
@@ -179,15 +195,16 @@ resource "google_container_cluster" "control_plane" {
     evaluation_mode = "PROJECT_SINGLETON_POLICY_ENFORCE"
   }
 
-  # Config Connector as the addon. This is what keeps a `kubernetes` or
-  # `helm` provider out of the tree: Google installs the operator, the
-  # bootstrap applies one `ConfigConnector` object naming the identity, and
-  # every `RunService` under infrastructure/gitops/envs/ is reconciled by it.
-  addons_config {
-    config_connector_config {
-      enabled = true
-    }
-  }
+  # No `addons_config` for Config Connector. There was one — `enabled = true`
+  # under `config_connector_config` — and the API refused the whole create
+  # with it: `addons {"config-connector"} are not supported for Autopilot
+  # clusters` (infra.yml runs 34 and 35, 2026-09-05). The operator is a
+  # vendored manifest the bootstrap applies (infrastructure/gitops/bootstrap/
+  # config-connector-operator), then the one `ConfigConnector` object naming
+  # the identity, and every `RunService` under infrastructure/gitops/envs/ is
+  # reconciled by it. Nothing about the provider set changed: the operator
+  # is `kubectl apply` of reviewed bytes, like the three controllers beside
+  # it, and not a `kubernetes` or `helm` provider.
 
   # etcd under the platform's key. See the header.
   database_encryption {
@@ -500,5 +517,45 @@ resource "google_project_iam_member" "infra_reaches_gateway" {
 
   project = var.project_id
   role    = each.value
+  member  = "serviceAccount:${var.infra_service_account}"
+}
+
+# --- registering the cluster with the fleet ------------------------------------
+#
+# The cluster's `fleet` block registers a membership at create time, as the
+# caller — the infrastructure account — and neither role above carries the
+# permission that needs. infra.yml run 34 (2026-09-05, the first apply of
+# this module) created 82 of its 83 resources and refused the cluster with
+#
+#   generic::permission_denied: Permission 'gkehub.memberships.create'
+#   denied on 'projects/algorik-dev/locations/us-east4/memberships/
+#   qip-dev-control-plane'
+#
+# and run 35, planning only the cluster, refused it the same way. The
+# predefined roles that carry the permission are `gkehub.editor` and
+# `gkehub.admin`, which also carry every feature, scope and binding in the
+# fleet API; this custom role carries the one permission the create needs,
+# the read that refreshes it, and the delete that the cluster's own removal
+# — a deliberate two-step by a person, `deletion_protection` above — issues
+# when GKE unregisters it. Nothing about fleet features, scopes or other
+# clusters' memberships. Same discipline as the bootstrap role above and the
+# workflow's self-grant loop: the one missing permission, named for the run
+# that found it.
+resource "google_project_iam_custom_role" "fleet_registrar" {
+  project     = var.project_id
+  role_id     = "qipGitopsFleetRegistrar_${var.environment}"
+  title       = "qip GitOps fleet registrar (${var.environment})"
+  description = "Register the control-plane cluster with the project's fleet and unregister it. No features, no scopes, nothing about another membership."
+
+  permissions = [
+    "gkehub.memberships.create",
+    "gkehub.memberships.get",
+    "gkehub.memberships.delete",
+  ]
+}
+
+resource "google_project_iam_member" "infra_registers_fleet" {
+  project = var.project_id
+  role    = google_project_iam_custom_role.fleet_registrar.id
   member  = "serviceAccount:${var.infra_service_account}"
 }

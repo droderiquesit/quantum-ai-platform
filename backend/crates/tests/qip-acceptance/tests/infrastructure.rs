@@ -5358,4 +5358,286 @@ fn every_deployment_exclusion_is_recorded_as_a_decision() {
     }
 }
 
+// --- the control plane: Config Connector's installation and the fleet ------
+
+const CONTROL_PLANE_MODULE: &str = "infrastructure/terraform/modules/gitops-control-plane/main.tf";
+const CONFIG_CONNECTOR_OPERATOR: &str = "infrastructure/gitops/bootstrap/config-connector-operator";
+const CONFIG_CONNECTOR_OBJECT: &str = "infrastructure/gitops/bootstrap/config-connector";
+const OPERATOR_IMAGE: &str = "gcr.io/gke-release/cnrm/operator";
+const OPERATOR_DESTINATION: &str = "vendor/config-connector-operator";
+const CONFIG_CONNECTOR_CRD: &str = "configconnectors.core.cnrm.cloud.google.com";
+
+#[test]
+fn config_connector_arrives_by_the_bootstrap_as_a_vendored_operator_and_not_as_the_autopilot_addon()
+{
+    // infra.yml runs 34 and 35 (2026-09-05) refused the control-plane
+    // cluster with `addons {"config-connector"} are not supported for
+    // Autopilot clusters`. Autopilot is the property that keeps a `qip-*`
+    // image off the cluster, so the addon is what gave way, and Config
+    // Connector's operator now arrives the way Argo CD, Kargo and
+    // cert-manager do: a vendored upstream manifest whose one image every
+    // environment's overlay moves to its own registry at the digest the
+    // vendored list reviewed. Four things, each one edit from gone: the
+    // addon block does not come back; the operator manifest is in the tree
+    // and names the kind the bootstrap's next step applies; every overlay
+    // moves its image to a digest the vendored list carries; and the
+    // bootstrap applies the operator, waits for that kind's CRD, and only
+    // then applies the object — a ConfigConnector applied before its CRD is
+    // established fails on a kind the API server does not know.
+    let module = without_comments(&read(CONTROL_PLANE_MODULE));
+    assert!(
+        module.contains("resource \"google_container_cluster\"")
+            && sets(&module, "enable_autopilot", "true"),
+        "{CONTROL_PLANE_MODULE} no longer declares an Autopilot cluster; what this test asserts \
+         about its addons guards nothing"
+    );
+    assert!(
+        !module.contains("config_connector_config"),
+        "{CONTROL_PLANE_MODULE} enables the Config Connector addon again; the API refuses it on \
+         an Autopilot cluster (runs 34 and 35), and the operator is the vendored manifest under \
+         {CONFIG_CONNECTOR_OPERATOR}"
+    );
+
+    // The operator manifest: upstream bytes naming the image by tag (the
+    // overlay is what pins it) and the CRD the object step depends on.
+    let upstream = read(&format!(
+        "{CONFIG_CONNECTOR_OPERATOR}/upstream/autopilot-configconnector-operator.yaml"
+    ));
+    assert!(
+        upstream.contains("kind: StatefulSet")
+            && upstream
+                .lines()
+                .any(|line| line.trim() == format!("image: {OPERATOR_IMAGE}:1.156.0")),
+        "{CONFIG_CONNECTOR_OPERATOR}/upstream does not run {OPERATOR_IMAGE} in a StatefulSet; \
+         the file is not the operator manifest SOURCE.md describes"
+    );
+    assert!(
+        upstream
+            .lines()
+            .any(|line| line.trim() == format!("name: {CONFIG_CONNECTOR_CRD}")),
+        "{CONFIG_CONNECTOR_OPERATOR}/upstream declares no CRD named {CONFIG_CONNECTOR_CRD}; the \
+         ConfigConnector object the bootstrap applies next then has no kind"
+    );
+    assert!(
+        upstream.contains("--local-repo=/configconnector-operator/autopilot-channels"),
+        "{CONFIG_CONNECTOR_OPERATOR}/upstream is not the Autopilot variant of the operator; the \
+         standard one is what the addon refusal was about"
+    );
+
+    // The vendored line, and every overlay moving the image to it.
+    let vendored_digest = read("infrastructure/egress/vendored-images.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| line.split_whitespace().collect::<Vec<_>>())
+        .find(|fields| fields.len() == 3 && fields[1] == OPERATOR_DESTINATION)
+        .and_then(|fields| {
+            fields[0]
+                .split_once('@')
+                .map(|(_, digest)| digest.to_string())
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "infrastructure/egress/vendored-images.txt has no line whose destination is \
+                 {OPERATOR_DESTINATION}; nothing mirrors, scans or attests the operator"
+            )
+        });
+    assert!(
+        vendored_digest.starts_with("sha256:") && vendored_digest.len() == 71,
+        "the vendored operator line's digest `{vendored_digest}` is not a sha256"
+    );
+    let mut overlays = 0usize;
+    for environment in ["dev", "test", "stage", "prod"] {
+        let overlay = read(&format!(
+            "{CONFIG_CONNECTOR_OPERATOR}/overlays/{environment}/kustomization.yaml"
+        ));
+        let lines: Vec<String> = overlay.lines().map(collapsed).collect();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == &format!("- name: {OPERATOR_IMAGE}")),
+            "{environment}'s operator overlay has no `images:` entry for {OPERATOR_IMAGE}; the \
+             Pod pulls the upstream tag, which nothing attested"
+        );
+        assert!(
+            lines.iter().any(|line| {
+                line.starts_with("newName: ")
+                    && line.contains(&format!("/qip-{environment}/{OPERATOR_DESTINATION}"))
+            }),
+            "{environment}'s operator overlay does not move the image to {environment}'s own \
+             registry at {OPERATOR_DESTINATION}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == &format!("digest: {vendored_digest}")),
+            "{environment}'s operator overlay pins a digest other than the vendored line's \
+             {vendored_digest}; the reviewed bytes and the deployed bytes then differ"
+        );
+        assert!(
+            !lines.iter().any(|line| line.starts_with("newTag: ")),
+            "{environment}'s operator overlay moves the image to a tag; the admission policy \
+             names bytes"
+        );
+        overlays += 1;
+    }
+    assert_eq!(overlays, 4, "four environments, four overlays");
+
+    // The bootstrap's order: operator, the CRD established, then the object.
+    let infra = read(".github/workflows/infra.yml");
+    let bootstrap = job_steps(&infra)
+        .into_iter()
+        .find(|step| step.contains("bootstrap the GitOps controllers"))
+        .expect("infra.yml has the bootstrap step");
+    let commands: String = bootstrap
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let operator = commands
+        .find(&format!("{CONFIG_CONNECTOR_OPERATOR}/overlays/"))
+        .or_else(|| commands.find("/bootstrap/config-connector-operator/overlays/"))
+        .expect(
+            "the bootstrap applies the operator overlay; nothing else installs Config Connector",
+        );
+    let established = commands
+        .find(&format!("kubectl wait --for=condition=Established crd/{CONFIG_CONNECTOR_CRD}"))
+        .expect("the bootstrap waits for the ConfigConnector CRD to be established before it names the kind");
+    let object = commands
+        .find("/bootstrap/config-connector/overlays/")
+        .expect("the bootstrap applies the ConfigConnector object");
+    assert!(
+        operator < established && established < object,
+        "the bootstrap applies the operator at {operator}, waits for its CRD at {established} \
+         and applies the object at {object}; any other order applies a ConfigConnector to an \
+         API server that does not know the kind"
+    );
+    assert!(
+        commands.contains("rollout status statefulset/configconnector-operator"),
+        "the bootstrap does not wait for the operator's StatefulSet; an unattested operator \
+         image then reads as a CRD wait that timed out"
+    );
+    // And the object directory still carries only the object and its
+    // namespace — the operator is not copied in beside it, where one apply
+    // would race the CRD.
+    assert!(
+        !read(&format!(
+            "{CONFIG_CONNECTOR_OBJECT}/base/kustomization.yaml"
+        ))
+        .contains("upstream"),
+        "{CONFIG_CONNECTOR_OBJECT}/base pulls an upstream install in; the object and its CRD \
+         then arrive in one apply, which fails on the kind"
+    );
+}
+
+#[test]
+fn the_infrastructure_account_may_register_the_cluster_with_the_fleet_and_holds_nothing_wider_for_it()
+ {
+    // Run 34 created 82 of 83 resources and refused the cluster with
+    // `Permission 'gkehub.memberships.create' denied on .../memberships/
+    // qip-dev-control-plane`; run 35, planning only the cluster, refused it
+    // the same way. The grant that closes it is one custom role carrying
+    // the create, the read and the delete of a membership — not
+    // `roles/gkehub.editor`, which carries every feature and scope in the
+    // fleet API — bound in the control-plane module, and named in the
+    // cluster's `depends_on`, because Terraform infers no dependency from a
+    // `fleet` block.
+    let module = without_comments(&read(CONTROL_PLANE_MODULE));
+    let role = module
+        .split("resource \"google_project_iam_custom_role\" \"fleet_registrar\"")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect("the control-plane module declares the fleet_registrar custom role");
+    let permissions: Vec<String> = role
+        .lines()
+        .map(collapsed)
+        .filter_map(|line| {
+            line.strip_prefix('"')
+                .and_then(|rest| rest.strip_suffix("\","))
+                .map(str::to_string)
+        })
+        .collect();
+    assert_eq!(
+        permissions,
+        [
+            "gkehub.memberships.create",
+            "gkehub.memberships.get",
+            "gkehub.memberships.delete",
+        ],
+        "the fleet registrar role carries {permissions:?}; the create is what run 34 was \
+         refused, the get is the refresh, the delete is the cluster's own removal, and \
+         anything else is a widening to be argued"
+    );
+    let binding = module
+        .split("resource \"google_project_iam_member\" \"infra_registers_fleet\"")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect("the control-plane module binds the fleet registrar role");
+    assert!(
+        sets(
+            binding,
+            "role",
+            "google_project_iam_custom_role.fleet_registrar.id"
+        ) && sets(
+            binding,
+            "member",
+            "\"serviceAccount:${var.infra_service_account}\""
+        ),
+        "the fleet binding does not give the custom role to the infrastructure account: \
+         {binding}"
+    );
+    let cluster = module
+        .split("resource \"google_container_cluster\"")
+        .nth(1)
+        .and_then(|rest| rest.split("\nresource ").next())
+        .expect("the module declares a cluster");
+    let depends_on = cluster
+        .split("depends_on = [")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .expect("the cluster declares depends_on");
+    assert!(
+        depends_on
+            .lines()
+            .map(collapsed)
+            .any(|line| line == "google_project_iam_member.infra_registers_fleet,"),
+        "the cluster's depends_on does not name the fleet binding; the create then races the \
+         grant it needs"
+    );
+    assert!(
+        cluster.contains("fleet {"),
+        "the cluster no longer registers with a fleet; the grant this test pins is then for \
+         nothing, and the Connect gateway has no membership to route through"
+    );
+
+    // Nothing wider, anywhere Terraform or the workflow grants: the two
+    // predefined roles that would also close the error are refused by name,
+    // as delimited tokens.
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for wide in ["roles/gkehub.editor", "roles/gkehub.admin"] {
+            assert!(
+                !content.contains(&format!("\"{wide}\"")),
+                "{} grants {wide}, which carries every feature and scope in the fleet API to \
+                 close one membership permission",
+                path.display()
+            );
+        }
+    }
+    let workflow = read(".github/workflows/infra.yml")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for wide in ["roles/gkehub.editor", "roles/gkehub.admin"] {
+        for delimiter in [' ', ';', '\n', '"'] {
+            assert!(
+                !workflow.contains(&format!("{wide}{delimiter}")),
+                "infra.yml self-grants {wide}; the one missing permission is a custom role in \
+                 the control-plane module"
+            );
+        }
+    }
+}
+
 // --- the safety property that outranks all of this --------------------------

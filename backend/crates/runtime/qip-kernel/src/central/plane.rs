@@ -24,6 +24,7 @@ use super::dna::StrategyDna;
 use super::factory::StrategyFactory;
 use super::learning::CellOutcome;
 use super::realised::RealisedSeries;
+use super::regions::{RegionMembership, RegionShares, partition};
 use super::whitelist::{ArbitragePolicy, WhitelistIssue, WhitelistOutcome};
 use qip_capital::allocation::{
     Allocation, AllocationLimits, AllocationPlan, CapitalAllocator, DrawdownSchedule,
@@ -962,6 +963,24 @@ impl CentralPlane {
             .filter_map(|strategy| self.proposals.get(strategy).cloned())
             .collect();
         self.allocator.allocate(&proposals, drawdown, now)
+    }
+
+    /// Partition a plan into disjoint per-cell shares of each region's grant
+    /// (ADR 0039), against the grants this plane holds issued.
+    ///
+    /// Refuses a plan whose cells' shares would together exceed a region's
+    /// grant, and withholds a manifest from any cell whose live grants
+    /// already sum past its share — see [`super::regions`] for why each is a
+    /// refusal rather than a correction. Membership is an argument rather
+    /// than configuration because where it comes from is the ADR's third
+    /// owner decision, still open.
+    pub fn region_shares(
+        &self,
+        plan: &AllocationPlan,
+        membership: &RegionMembership,
+        now: Timestamp,
+    ) -> Result<RegionShares> {
+        partition(plan, membership, &self.envelopes, now)
     }
 
     /// Issue a grant.

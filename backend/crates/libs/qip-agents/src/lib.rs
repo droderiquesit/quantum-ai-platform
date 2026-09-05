@@ -35,7 +35,8 @@ pub mod runtime;
 pub use budget::{Budget, BudgetLedger, BudgetLine, Spend};
 pub use capability::{Capability, CapabilitySet};
 pub use finding::{
-    AgentBrief, AgentFinding, Direction, FindingStatus, NumericFact, NumericProvenance,
+    AgentBrief, AgentFinding, BriefPrecedent, Direction, FindingStatus, NumericFact,
+    NumericProvenance,
 };
 pub use governance::{AuditTrail, GovernanceFinding, Roster, Severity};
 pub use manifest::{AgentManifest, AgentRole, EscalationPolicy};

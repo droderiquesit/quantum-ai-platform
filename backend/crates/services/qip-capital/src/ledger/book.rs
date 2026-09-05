@@ -14,10 +14,20 @@
 //! must sum to the fill's amount exactly, every user must hold a mandate,
 //! and no user may appear twice. Any of those failing refuses the fill whole
 //! — no book moves — because a fill half-booked is a fill nobody can find.
+//!
+//! [`UserLedger::pro_rata_shares`] produces such a split from the books
+//! themselves: each user's part is in proportion to what they have at work
+//! at the strategy, computed in integer arithmetic truncated toward zero,
+//! and whatever the truncation leaves — at most one unit in the ninth
+//! decimal per user — goes to the largest holder and is written into the
+//! [`ProRataSplit`] as the `remainder`, so the shares sum to the fill by
+//! construction and the unit that was moved is on the record rather than
+//! in nobody's book.
 
 use super::cash::CashBalance;
-use super::identity::UserId;
+use super::identity::{MandateId, UserId};
 use super::mandate::Mandate;
+use super::registry::MandateRegistry;
 use qip_contracts::signal::StrategyId;
 use qip_core::error::{Error, Result};
 use qip_core::{Currency, Decimal, Timestamp};
@@ -43,6 +53,24 @@ pub struct AttributedFill {
 pub struct UserShare {
     pub user: UserId,
     pub amount: Decimal,
+}
+
+/// A fill split across users in proportion to what each has at work, with
+/// the rounding remainder named rather than dropped.
+///
+/// `shares` sum to the fill exactly; `remainder` is the part of that sum
+/// that truncation had left over and `remainder_to` is who received it —
+/// the user with the largest entitlement, and the smaller `UserId` between
+/// equals, so two machines splitting one fill agree on the unit.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProRataSplit {
+    /// In `UserId` order.
+    pub shares: Vec<UserShare>,
+    /// What every user had at work at the strategy, summed: the basis of
+    /// every share.
+    pub entitlement_total: Decimal,
+    pub remainder: Decimal,
+    pub remainder_to: UserId,
 }
 
 /// The key a book lives under. Ordered, so a report of every book comes out
@@ -96,9 +124,13 @@ impl StrategyBook {
 }
 
 /// Per-user, per-strategy money state.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+///
+/// There is no empty ledger: one is opened with the desk, because the desk's
+/// mandate is the ceiling every other mandate is admitted under and a ledger
+/// with no ceiling would admit anything.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UserLedger {
-    mandates: BTreeMap<UserId, Mandate>,
+    registry: MandateRegistry,
     books: BTreeMap<LedgerKey, StrategyBook>,
     /// Fills journalled across every book, for the same reason each book
     /// counts its own.
@@ -106,38 +138,53 @@ pub struct UserLedger {
 }
 
 impl UserLedger {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// A ledger with one user — the desk — under [`Mandate::desk`].
+    /// A ledger with one user — the desk — under [`Mandate::desk`],
+    /// registered at the epoch: the desk is the holder that exists before
+    /// any registration has a time.
     pub fn with_desk(user: UserId, capital: Decimal, currency: Currency) -> Result<Self> {
-        let mut ledger = Self::new();
-        ledger.enrol(user, Mandate::desk(capital, currency)?)?;
-        Ok(ledger)
+        Self::opened_by(
+            user,
+            Mandate::desk(capital, currency)?,
+            Timestamp::from_secs(0),
+        )
     }
 
-    /// Give a user a mandate. Refuses a user who already has one: a
-    /// mandate replaced in place is a mandate whose old terms nobody can
-    /// recover, and the terms a fill was booked under are part of the
-    /// attribution.
-    pub fn enrol(&mut self, user: UserId, mandate: Mandate) -> Result<()> {
-        if self.mandates.contains_key(&user) {
-            return Err(Error::invalid(format!(
-                "{user} already holds a mandate; a mandate is not replaced in place — \
-                 record a new one under the change that supersedes it"
-            )));
-        }
-        self.mandates.insert(user, mandate);
-        Ok(())
+    /// A ledger whose desk holds the given mandate as the ceiling.
+    pub fn opened_by(desk: UserId, mandate: Mandate, at: Timestamp) -> Result<Self> {
+        Ok(Self {
+            registry: MandateRegistry::new(desk, mandate, at)?,
+            books: BTreeMap::new(),
+            fills_journalled: 0,
+        })
+    }
+
+    /// Give a user a mandate, under the desk's ceiling. Every refusal is
+    /// [`MandateRegistry::register`]'s: an id seen before, a user who
+    /// already holds one, or a term the desk's mandate does not carry.
+    pub fn enrol(
+        &mut self,
+        user: UserId,
+        id: MandateId,
+        mandate: Mandate,
+        at: Timestamp,
+    ) -> Result<()> {
+        self.registry.register(user, id, mandate, at)
+    }
+
+    pub fn registry(&self) -> &MandateRegistry {
+        &self.registry
+    }
+
+    pub fn desk(&self) -> &UserId {
+        self.registry.desk()
     }
 
     pub fn mandate(&self, user: &UserId) -> Option<&Mandate> {
-        self.mandates.get(user)
+        self.registry.mandate(user)
     }
 
     pub fn mandates(&self) -> &BTreeMap<UserId, Mandate> {
-        &self.mandates
+        self.registry.mandates()
     }
 
     pub fn books(&self) -> &BTreeMap<LedgerKey, StrategyBook> {
@@ -164,13 +211,25 @@ impl UserLedger {
 
     /// Everything a user has funded into strategies, in the mandate's
     /// currency, across every book.
-    fn funded_total(&self, user: &UserId, currency: Currency) -> Decimal {
+    pub(super) fn funded_total(&self, user: &UserId, currency: Currency) -> Decimal {
         self.books
             .iter()
             .filter(|((owner, _), _)| owner == user)
             .filter_map(|(_, book)| book.cash(currency))
             .map(CashBalance::settled)
             .sum()
+    }
+
+    /// What a user has settled at one strategy in one currency; zero for a
+    /// book that does not exist.
+    pub(super) fn funded_at(
+        &self,
+        user: &UserId,
+        strategy: &StrategyId,
+        currency: Currency,
+    ) -> Decimal {
+        self.balance(user, strategy, currency)
+            .map_or(Decimal::ZERO, CashBalance::settled)
     }
 
     /// Move capital from a user's mandate into one strategy's book.
@@ -187,7 +246,7 @@ impl UserLedger {
         amount: Decimal,
         at: Timestamp,
     ) -> Result<()> {
-        let Some(mandate) = self.mandates.get(user) else {
+        let Some(mandate) = self.registry.mandate(user) else {
             return Err(Error::denied(format!(
                 "{user} holds no mandate; enrol one before funding a strategy"
             )));
@@ -240,7 +299,7 @@ impl UserLedger {
             )));
         }
         for (index, share) in shares.iter().enumerate() {
-            if !self.mandates.contains_key(&share.user) {
+            if self.registry.mandate(&share.user).is_none() {
                 return Err(Error::denied(format!(
                     "the attributed fill on {} names {}, who holds no mandate; nothing was \
                      booked",
@@ -301,6 +360,105 @@ impl UserLedger {
         )
     }
 
+    /// Split an attributed fill across the users with capital at work at
+    /// its strategy, in proportion to what each has there, exactly.
+    ///
+    /// Each share is `fill × entitlement ÷ total` in integer arithmetic on
+    /// the raw units, truncated toward zero, so no share is rounded up past
+    /// its proportion. The truncations leave a remainder of at most one raw
+    /// unit per user; it is assigned whole to the largest entitlement
+    /// (smaller `UserId` between equals) and recorded in the split, so the
+    /// shares sum to the fill by construction and the moved unit is on the
+    /// record. Users whose settled cash at the strategy is not positive
+    /// hold no entitlement and take no share — a negative book is a loss
+    /// owed, not a claim on the next gain. Refused when nobody has capital
+    /// at the strategy: a fill with no entitlement behind it is booked to
+    /// the desk explicitly through [`Self::journal_to`], never silently.
+    /// Refused on overflow rather than approximated.
+    pub fn pro_rata_shares(&self, fill: &AttributedFill) -> Result<ProRataSplit> {
+        let entitlements: Vec<(UserId, Decimal)> = self
+            .books
+            .iter()
+            .filter(|((_, strategy), _)| *strategy == fill.strategy)
+            .filter_map(|((user, _), book)| {
+                book.cash(fill.currency)
+                    .map(CashBalance::settled)
+                    .filter(|settled| settled.is_positive())
+                    .map(|settled| (user.clone(), settled))
+            })
+            .collect();
+        if entitlements.is_empty() {
+            return Err(Error::denied(format!(
+                "no user has {} at work at {}, so the attributed fill on {} has no \
+                 entitlement to split across; book it to the desk explicitly",
+                fill.currency, fill.strategy, fill.source
+            )));
+        }
+        let entitlement_total: Decimal = entitlements.iter().map(|(_, held)| *held).sum();
+        let overflow = || {
+            Error::numeric(format!(
+                "splitting {} {} on {} across {} entitlements totalling {entitlement_total} \
+                 overflows the ledger's arithmetic; the fill is refused rather than \
+                 approximated",
+                fill.amount,
+                fill.currency,
+                fill.source,
+                entitlements.len()
+            ))
+        };
+        let mut shares = Vec::with_capacity(entitlements.len());
+        let mut allotted = Decimal::ZERO;
+        for (user, held) in &entitlements {
+            // Integer division truncates toward zero, in the raw units of
+            // the fixed-point representation; every rounding that happens
+            // here is downward in magnitude and named in the remainder.
+            let scaled = fill
+                .amount
+                .raw()
+                .checked_mul(held.raw())
+                .ok_or_else(overflow)?;
+            let amount = Decimal::from_raw(scaled / entitlement_total.raw());
+            allotted = allotted.checked_add(amount).ok_or_else(overflow)?;
+            shares.push(UserShare {
+                user: user.clone(),
+                amount,
+            });
+        }
+        let remainder = fill.amount.checked_sub(allotted).ok_or_else(overflow)?;
+        // The largest entitlement; `entitlements` is in `UserId` order, and
+        // `max_by` returns the last maximum, so the comparison is reversed to
+        // land on the first — the smaller id — between equals.
+        let remainder_to = entitlements
+            .iter()
+            .rev()
+            .max_by(|(_, a), (_, b)| a.cmp(b))
+            .map(|(user, _)| user.clone())
+            .ok_or_else(|| {
+                Error::invalid("an entitlement list proven non-empty has no largest entry")
+            })?;
+        if let Some(share) = shares.iter_mut().find(|share| share.user == remainder_to) {
+            share.amount = share.amount.checked_add(remainder).ok_or_else(overflow)?;
+        }
+        Ok(ProRataSplit {
+            shares,
+            entitlement_total,
+            remainder,
+            remainder_to,
+        })
+    }
+
+    /// Split an attributed fill pro rata and book it, returning the split
+    /// so the remainder's destination is on the record with the entry.
+    pub fn journal_pro_rata(
+        &mut self,
+        fill: &AttributedFill,
+        at: Timestamp,
+    ) -> Result<ProRataSplit> {
+        let split = self.pro_rata_shares(fill)?;
+        self.journal(fill, &split.shares, at)?;
+        Ok(split)
+    }
+
     /// Record a deposit the user says they have sent, against one
     /// strategy's book. Not available until [`Self::post_inflow`].
     pub fn expect_inflow(
@@ -311,7 +469,7 @@ impl UserLedger {
         amount: Decimal,
         declared_at: Timestamp,
     ) -> Result<()> {
-        let Some(mandate) = self.mandates.get(user) else {
+        let Some(mandate) = self.registry.mandate(user) else {
             return Err(Error::denied(format!(
                 "{user} holds no mandate; enrol one before declaring an inflow"
             )));
@@ -332,7 +490,7 @@ impl UserLedger {
         reference: &str,
         at: Timestamp,
     ) -> Result<Decimal> {
-        let Some(mandate) = self.mandates.get(user) else {
+        let Some(mandate) = self.registry.mandate(user) else {
             return Err(Error::denied(format!(
                 "{user} holds no mandate, so no inflow can be posted to them"
             )));

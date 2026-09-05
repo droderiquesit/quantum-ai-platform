@@ -3650,13 +3650,16 @@ fn terraform_releases_the_services_without_destroying_them_and_gates_the_control
 }
 
 #[test]
-fn the_control_plane_cluster_is_private_autopilot_with_config_connector_and_no_wildcard_network() {
+fn the_control_plane_cluster_is_private_autopilot_without_the_addon_and_no_wildcard_network() {
     // ADR 0036 decision 1: private nodes, private endpoint, no public
-    // endpoint, Workload Identity on, Config Connector as the addon. A
-    // master authorized network of 0.0.0.0/0 is a public endpoint under
-    // another name, and the identity that can reach this API server can
-    // change what Config Connector applies to every Cloud Run service in
-    // the environment.
+    // endpoint, Workload Identity on. Config Connector is NOT the GKE addon:
+    // `infra.yml` runs 34 and 35 (2026-09-05) were refused with `addons
+    // {"config-connector"} are not supported for Autopilot clusters`, so it
+    // arrives as a vendored operator the bootstrap applies, and
+    // `infrastructure.rs` asserts that path. A master authorized network of
+    // 0.0.0.0/0 is a public endpoint under another name, and the identity
+    // that can reach this API server can change what Config Connector
+    // applies to every Cloud Run service in the environment.
     let (module, text) = control_plane_module();
     let cluster = text
         .split("resource \"google_container_cluster\"")
@@ -3681,9 +3684,10 @@ fn the_control_plane_cluster_is_private_autopilot_with_config_connector_and_no_w
         "modules/{module}'s nodes have public addresses"
     );
     assert!(
-        cluster.contains("config_connector_config {") && sets("enabled", "true"),
-        "modules/{module}'s cluster does not enable the Config Connector addon; nothing then \
-         applies a RunService"
+        !cluster.contains("config_connector_config"),
+        "modules/{module}'s cluster declares the Config Connector addon again; the API refuses \
+         it on Autopilot (infra.yml runs 34 and 35) and the operator is vendored under \
+         gitops/bootstrap/config-connector-operator instead"
     );
     assert!(
         cluster.contains("workload_identity_config {"),

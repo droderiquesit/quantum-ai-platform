@@ -524,3 +524,87 @@ service on the runtime, no crate on an app, and the edge crate's dependency
 set is the same set it has today. The two ends of the wire still agree on
 nothing but the vocabulary in `qip-contracts`, which `spine.rs:70-78` names
 as the whole of the contract, deliberately.
+
+## Applied
+
+**Partially, on 2026-09-05, in `qip-edge` and `qip-kernel`'s central plane
+only.** The status line above is the owner's to move; this section records
+what is in the tree and what is not, so the two are not confused.
+
+What is applied is the part of option (a) that needs none of the four
+decisions above, with one deviation from the shape described, stated first
+because it is the thing a reader would otherwise be misled by.
+
+**The share is carried by reference, not as a number.** `qip-contracts` was
+not edited, so `GrantManifest` gains no `region_share` field. Instead the
+`capital_grants` slot carries what it already carried — the signatures of
+the grants the centre believes live for the cell — and the cell's share is
+the sum of `gross_limit` over the verified, deployed, still-live envelopes
+the manifest names (`Cell::apply_region_share`, `cell.rs`). The centre
+guarantees that sum never exceeds the share it computed: `partition`
+(`qip-kernel/src/central/regions.rs`) withholds a manifest from any cell
+whose live grants already sum past `plan.for_cell(cell)`, with the reason,
+rather than naming them anyway. So the share and the envelopes are one fact
+from one source (`CLAUDE.md` principle 6), and the reason the manifest
+refused to be "a delivery path" — a second claim about a fact the envelope
+channel carries — does not arise, because nothing is delivered twice. What
+this loses against the explicit field: the cell's share can never be
+*narrower* than its envelopes' sum by the centre's say-so alone; narrowing
+below that needs the envelopes renewed smaller, which is the allocator's
+existing path. Rule 2 of the option (a) cell design — a share naming another
+region — has no counterpart, because nothing on the wire names a region;
+the payload is already per cell and `apply_policy` already refuses a
+payload for another cell. The owner may still add the explicit field under
+its own commit; `RegionAllocation::rebase` takes an amount and would not
+change.
+
+Applied, by crate:
+
+- `qip-kernel` (runtime): `central/regions.rs` — `RegionMembership` (cell to
+  region, region to *G*; validated, `BTreeMap` throughout), `RegionShare`
+  (region, amount, the grants named, their gross) with `manifest()`,
+  `RegionShares` (shares and withheld cells, each with why), and
+  `partition`, which refuses — never scales — a plan whose cells' shares
+  would exceed a region's *G*, withholds a cell in no region, and gives a
+  cell in a region but absent from the plan a stated share of zero.
+  `CentralPlane::region_shares(&plan, &membership, now)` is the entry point.
+  Membership is an argument, not `CentralConfig`: decision 3 is untouched.
+- `qip-edge` (edge): `RegionAllocation` gains a ceiling (the operator's
+  amount), an effective bound, and the applied share's owner and sequence;
+  `RegionAllocation::unfunded(ceiling)` and `RegionTable::unfunded` open at
+  nothing; `rebase(owner, share, sequence)` sets the bound to
+  `min(share, ceiling)`, refuses a sequence at or below the last applied,
+  refuses a second owner, and reports a deficit rather than letting `free`
+  go negative. `Cell::apply_policy` re-bases after the swap when the slot is
+  produced; an unproduced slot leaves the table as it was, which is why a
+  node opened at its operator amount today (decision 2) behaves exactly as
+  before. `Decision::RegionShareApplied` journals every re-base; refusals
+  journal under the `region_share` gate. `VerifiedEnvelope::signature` and
+  `::gross_limit` are exposed for the sum.
+- Tests: `qip-kernel/tests/region_shares.rs` (the three named above, plus
+  the membership validator), `central.rs::a_cells_manifest_names_only_grants_whose_gross_fits_its_share`,
+  `qip-edge/tests/region_table.rs` (the disjoint-shares test, the replay
+  test, the absent-cell test, the deficit test, the ADR 0008 conformance
+  test) and three unit tests beside `RegionAllocation`. Each was
+  mutation-verified; the report of the applying session names each mutation
+  and the assertion it tripped.
+
+Not applied, and why:
+
+- `qip-contracts` (the explicit field) and `qip-mesh` (nothing to do) —
+  see the deviation above.
+- `qip-api::pending_policy` still ships every live grant's signature without
+  consulting `region_shares`, so no deployed centre yet withholds a manifest
+  or refuses a plan; the partitioner has no production caller. Wiring it
+  needs `RegionMembership` from somewhere, which is decision 3.
+- `qip-edge-node::assemble` still opens `with_region_allocation(amount)`;
+  `QIP_REGION_ALLOCATION` still funds the cell rather than ceiling it.
+  Decision 2.
+- The delta carries neither `free` nor the bound; that is a `qip-mesh`
+  field.
+- The payload cadence (decision 4), the traceability F6 row, and
+  `.claude/rules/domains/risk-and-execution.md` are untouched.
+
+The paper-trading boundary is unchanged: `Cell::new` remains the only
+constructor and takes no ceiling; a share is checked after the envelope,
+after autonomy, and after every other gate in `Cell::work`.

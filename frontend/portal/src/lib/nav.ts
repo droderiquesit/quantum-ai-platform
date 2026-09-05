@@ -141,6 +141,31 @@ export const NAV: readonly NavGroup[] = [
     ],
   },
   {
+    // The platform's account of itself, read-only. The self-model is what it
+    // has measured its own origins to be worth and the precedents are what
+    // its memory last recalled; both are recorded on the hypothesis for
+    // replay, and a section that offered to grade, re-weight or recall would
+    // be a second cognition that could disagree with the one in the log.
+    label: "Cognition",
+    items: [
+      {
+        href: "/cognition/self-model",
+        label: "Self-model",
+        mark: "SM",
+        description:
+          "Measured accuracy per detector, analyst, rung and strategy family, and the sample below which the platform refuses an estimate",
+        reads: ["/cognition/self-model"],
+      },
+      {
+        href: "/cognition/precedents",
+        label: "Precedents",
+        mark: "PC",
+        description: "The episodes the memory last recalled, every field as it came",
+        reads: ["/cognition/precedents"],
+      },
+    ],
+  },
+  {
     label: "Strategies & Research",
     items: [
       {

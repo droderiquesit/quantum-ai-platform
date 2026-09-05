@@ -90,6 +90,22 @@ impl VerifiedEnvelope {
         self.verified_at
     }
 
+    /// The signature the centre's grant manifest names this grant by.
+    ///
+    /// The cell's share of its region (ADR 0039) is the sum of the grants
+    /// the manifest names that the cell has verified, so the match is on the
+    /// signature — the one field that names exactly this grant and no
+    /// re-issue of it — and not on the strategy.
+    pub fn signature(&self) -> &str {
+        self.inner.signature()
+    }
+
+    /// The gross this grant admits in total: the number the region share is
+    /// summed from.
+    pub fn gross_limit(&self) -> Decimal {
+        self.inner.gross_limit()
+    }
+
     /// Whether the grant is still inside its window.
     ///
     /// Checked again at every use rather than once at verification: expiry is

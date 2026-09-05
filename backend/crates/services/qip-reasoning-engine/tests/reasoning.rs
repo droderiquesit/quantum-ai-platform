@@ -477,6 +477,90 @@ fn confidence_is_computed_from_evidence_not_asserted() {
 }
 
 #[test]
+fn a_poorly_calibrated_dissenter_is_not_discounted_so_a_factor_never_raises_a_posterior() {
+    // The failure this guards, found in review: the self-model factor was
+    // applied to every item from a measured origin, contrary evidence
+    // included. An analyst measured at 0.15 accuracy had its objection cut
+    // to fifteen percent, so the posterior rose relative to the unweighted
+    // computation, and a thesis could cross the action bar because the
+    // voice against it had a bad record. A factor may only ever lower a
+    // posterior: it is applied to support, never to dissent.
+    let mut contested = well_supported();
+    contested.push(evidence(
+        "e4",
+        EvidenceKind::Computation,
+        Stance::Contradicts,
+        "dissenter",
+        0.9,
+        0.8,
+    ));
+    let unweighted = Hypothesis::form(draft(contested.clone(), sound_chain())).unwrap();
+    // Premise: the dissent is load-bearing — it contributes a negative
+    // log-likelihood ratio and holds the confidence below what the support
+    // alone would give.
+    let llr = |hypothesis: &Hypothesis, id: &str| -> f64 {
+        hypothesis
+            .belief
+            .contributions
+            .iter()
+            .find(|c| c.evidence_id == id)
+            .map(|c| c.log_likelihood_ratio)
+            .unwrap_or_else(|| panic!("{id} contributed nothing"))
+    };
+    assert!(llr(&unweighted, "e4") < 0.0, "the premise is a dissent");
+    let uncontested = Hypothesis::form(draft(well_supported(), sound_chain())).unwrap();
+    assert!(
+        unweighted.confidence < uncontested.confidence,
+        "the premise is a dissent that moves the confidence"
+    );
+
+    // A factor on the dissenter alone: the record says it is usually wrong.
+    let mut factors = std::collections::BTreeMap::new();
+    factors.insert("dissenter".to_string(), 0.15);
+    let weighted =
+        Hypothesis::form_with_factors(draft(contested.clone(), sound_chain()), &factors).unwrap();
+    assert_eq!(
+        weighted.origin_factors.get("dissenter"),
+        Some(&0.15),
+        "premise: the factor was recorded on the hypothesis"
+    );
+    // The dissent is not discounted: same contribution, same posterior, same
+    // confidence as the unweighted computation. Not merely "not higher" —
+    // equal, because a factor that lowered a dissent's weight by any amount
+    // would raise the posterior by some amount.
+    assert!(
+        (llr(&weighted, "e4") - llr(&unweighted, "e4")).abs() < 1e-12,
+        "the dissent was discounted: {} vs {}",
+        llr(&weighted, "e4"),
+        llr(&unweighted, "e4")
+    );
+    assert!(
+        (weighted.belief.posterior - unweighted.belief.posterior).abs() < 1e-12,
+        "a factor on a dissenter moved the posterior: {} vs {}",
+        weighted.belief.posterior,
+        unweighted.belief.posterior
+    );
+    assert!(
+        weighted.confidence <= unweighted.confidence,
+        "a factor raised a confidence: {} vs {}",
+        weighted.confidence,
+        unweighted.confidence
+    );
+
+    // And the same factor on a supporter is applied — so the equality above
+    // is the rule and not a factor that reaches nothing.
+    let mut factors = std::collections::BTreeMap::new();
+    factors.insert("sec-edgar".to_string(), 0.15);
+    let support_discounted =
+        Hypothesis::form_with_factors(draft(contested, sound_chain()), &factors).unwrap();
+    assert!(
+        support_discounted.belief.posterior < unweighted.belief.posterior,
+        "a factor on a supporter did not lower the posterior"
+    );
+    assert!(llr(&support_discounted, "e1") < llr(&unweighted, "e1"));
+}
+
+#[test]
 fn adding_evidence_is_the_only_way_confidence_moves() {
     let mut hypothesis = Hypothesis::form(draft(well_supported(), sound_chain())).unwrap();
     let before = hypothesis.confidence;

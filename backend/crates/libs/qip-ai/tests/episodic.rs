@@ -130,6 +130,69 @@ fn an_episode_is_not_recalled_before_its_known_at() {
 }
 
 #[test]
+fn the_plain_iterator_hides_an_episode_whose_known_at_has_not_passed() {
+    // The failure this guards, found in review: `episodes()` returned every
+    // stored episode regardless of `known_at`, while the module doc said no
+    // read path ignored it. `recall` was honest and the iterator beside it
+    // was not, so anything that walked memory rather than querying it — a
+    // digest, a report, a future backtest — would have read Tuesday's
+    // resolution on Monday. The iterator now takes `now` and applies the
+    // same strict rule as `recall`.
+    let mut memory = EpisodicMemory::new(16, 16).expect("non-zero bounds");
+    let day = Duration::from_days(1);
+    let old = episode("ep-old", "obj-AAA", "trending", start(), 120.0);
+    let new = episode(
+        "ep-new",
+        "obj-AAA",
+        "trending",
+        start().saturating_add(day * 10),
+        80.0,
+    );
+    let (old_known, new_known) = (old.known_at, new.known_at);
+    assert!(
+        old_known < new_known,
+        "the fixture orders the two by known_at"
+    );
+    memory.remember(old).expect("valid");
+    memory.remember(new).expect("valid");
+    assert_eq!(memory.len(), 2, "premise: the memory holds both episodes");
+    // Premise: with everything knowable, the iterator yields both — so the
+    // absence below is the filter and not an empty store.
+    let all: Vec<&str> = memory
+        .episodes(Timestamp::MAX)
+        .map(|e| e.episode_id.as_str())
+        .collect();
+    assert_eq!(all, vec!["ep-old", "ep-new"]);
+
+    // Strictly before: at the instant of the newer episode's `known_at` it
+    // is not yet knowable, and a nanosecond later it is.
+    for (label, now) in [
+        (
+            "a minute before",
+            new_known.saturating_sub(Duration::from_mins(1)),
+        ),
+        ("at the instant of", new_known),
+    ] {
+        let visible: Vec<&str> = memory
+            .episodes(now)
+            .map(|e| e.episode_id.as_str())
+            .collect();
+        assert_eq!(
+            visible,
+            vec!["ep-old"],
+            "the iterator yielded an episode {label} its known_at"
+        );
+    }
+    let visible: Vec<&str> = memory
+        .episodes(new_known.saturating_add(Duration::from_nanos(1)))
+        .map(|e| e.episode_id.as_str())
+        .collect();
+    assert_eq!(visible, vec!["ep-old", "ep-new"]);
+    // And before either was knowable, nothing at all.
+    assert_eq!(memory.episodes(old_known).count(), 0);
+}
+
+#[test]
 fn a_record_knowable_before_it_was_true_is_refused_not_corrected() {
     // The other half of the leakage guard: an episode whose `known_at`
     // precedes its `at` would be retrievable for a situation that had not
@@ -232,7 +295,7 @@ fn lsh_recall_returns_the_exact_nearest_of_the_candidates_and_never_more_than_th
     assert_eq!(memory.len(), 21, "premise: every episode was kept");
     let twin_buckets = memory.buckets_of(&twin.embedding());
     let sharing = memory
-        .episodes()
+        .episodes(Timestamp::MAX)
         .filter(|e| e.episode_id != "ep-twin")
         .filter(|e| memory.buckets_of(&e.embedding())[0] == twin_buckets[0])
         .count();
@@ -356,7 +419,7 @@ fn two_constructions_from_the_same_episodes_recall_identically() {
         "premise: the query recalls something"
     );
     assert_eq!(a, b, "two constructions recalled differently");
-    for stored in first.episodes() {
+    for stored in first.episodes(Timestamp::MAX) {
         let (x, y) = (
             first.buckets_of(&stored.embedding()),
             second.buckets_of(&stored.embedding()),

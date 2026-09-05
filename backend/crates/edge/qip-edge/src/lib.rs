@@ -53,6 +53,6 @@ pub use mesh::{
     UplinkConfig, UplinkStats,
 };
 pub use policy::{VerifiedHalt, VerifiedPolicy};
-pub use reservation::{RegionAllocation, RegionTable};
+pub use reservation::{Rebase, RegionAllocation, RegionTable};
 pub use seam::{CellLiquidity, value_kind, value_type};
 pub use telemetry::CellMetrics;
