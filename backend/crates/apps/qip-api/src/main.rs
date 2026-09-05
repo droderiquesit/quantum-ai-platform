@@ -654,7 +654,17 @@ mod tests {
         // the other mask. So the same axis is driven past 0.35 of equity and
         // must be refused by name.
         let equity = platform.risk_figures().equity();
-        let breaching_quantity = (equity * dec!("0.5")) / first.price;
+        // Whole lots of the catalogue's default lot of one: the central
+        // feasibility gate now sits ahead of every other control and refuses
+        // a fractional size by name, so an off-grid order would prove the
+        // wrong veto. The premise of this half is the sector cap, and half
+        // the book's equity floored to a whole share is still past it.
+        let breaching_quantity =
+            ((equity * dec!("0.5")) / first.price).floor_to_step(qip_core::Decimal::ONE);
+        assert!(
+            breaching_quantity.is_positive(),
+            "the premise: half the equity buys at least one whole share"
+        );
         let breach = platform.order_from(
             first.object_id.clone(),
             side,
