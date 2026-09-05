@@ -89,6 +89,10 @@ fn limits() -> LimitSet {
 struct Rig {
     api: Api,
     platform: Arc<Mutex<Platform>>,
+    /// Held so a test can move the clock past the credential window. The
+    /// freshness gate is a comparison against the session's issue instant, so
+    /// nothing can exercise it without a clock the test can advance.
+    clock: Arc<ManualClock>,
 }
 
 fn rig() -> Result<Rig> {
@@ -115,8 +119,9 @@ fn rig() -> Result<Rig> {
     ]));
     let rate_limiter = Arc::new(RateLimiter::new(Duration::from_secs(60), 1000));
     Ok(Rig {
-        api: Api::new(platform.clone(), authenticator, rate_limiter, clock),
+        api: Api::new(platform.clone(), authenticator, rate_limiter, clock.clone()),
         platform,
+        clock,
     })
 }
 
@@ -517,5 +522,72 @@ fn the_feed_refuses_an_account_source_nobody_registered_and_admits_it_on_the_own
             error.message()
         ),
     }
+    Ok(())
+}
+
+/// A session older than the kernel's credential window cannot approve.
+///
+/// This is the gate that could not fire. The route built its
+/// `OperatorIdentity` with `authenticated_at = now`, so
+/// `is_fresh(now, REGISTRATION_CREDENTIAL_AGE)` measured the age of the
+/// identity it had just stamped and got zero every time. Fifteen minutes was
+/// enforced by a comparison whose two sides were the same value. Nothing
+/// caught it because every test approved at the instant the rig issued the
+/// token, where a correct implementation and a broken one agree.
+///
+/// So this test asserts both halves, which is what distinguishes a working
+/// gate from one that refuses everything: the same operator, the same body
+/// and the same source are refused once the session has aged past the window
+/// and accepted while it is inside it.
+#[test]
+fn a_session_older_than_the_credential_window_cannot_approve_a_registration() -> Result<()> {
+    let aged = rig()?;
+    // Premise: the source really is pending, so a refusal below is the
+    // freshness gate rather than a source that was never approvable.
+    assert!(
+        aged.standing()?.is_err(),
+        "the source is not pending before the approval, so this test would pass whatever the \
+         gate did"
+    );
+
+    // One second past the window. The credential itself is good for thirty
+    // days, so what expires here is the operator's *authentication*, not the
+    // token — the two are different clocks and only one of them is the gate.
+    aged.clock.advance(Duration::from_secs(15 * 60 + 1));
+    let stale = aged.approve(OPERATOR_TOKEN, &good_body());
+    let stale_text = String::from_utf8_lossy(&stale.body).to_string();
+    assert_ne!(
+        stale.status, 200,
+        "a session {} past the fifteen-minute window approved a registration: {stale_text}",
+        "one second"
+    );
+    // The refusal says what to do instead, and the registry did not move.
+    // A refusal names what to do instead. Matched on the delimited window
+    // the kernel prints rather than on "15", which is a substring of far too
+    // much, and on the remedy rather than on the complaint.
+    assert!(
+        stale_text.contains("900.000s ago"),
+        "the refusal does not name the window the operator has fallen outside: {stale_text}"
+    );
+    assert!(
+        stale_text.contains("re-authenticate"),
+        "the refusal does not say what to do instead: {stale_text}"
+    );
+    assert!(
+        aged.standing()?.is_err(),
+        "the registry adopted a record from a session the gate refused: {stale_text}"
+    );
+
+    // And the other half: a fresh session is still admitted. A gate that
+    // refused every approval would pass every assertion above.
+    let inside_the_window = rig()?;
+    let accepted = inside_the_window.approve(OPERATOR_TOKEN, &good_body());
+    assert_eq!(
+        accepted.status,
+        200,
+        "a session inside the window was refused, so the gate refuses everything rather than \
+         refusing stale credentials: {}",
+        String::from_utf8_lossy(&accepted.body)
+    );
     Ok(())
 }

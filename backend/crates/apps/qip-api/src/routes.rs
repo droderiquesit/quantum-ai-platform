@@ -1105,10 +1105,19 @@ impl Api {
                 // clearing the kill switch establishes one; the kernel takes
                 // the record's operator from this identity and from nothing
                 // the body says.
+                //
+                // `authenticated_at` is when the session was issued, never
+                // `now`. Passing `now` here made `is_fresh(now,
+                // REGISTRATION_CREDENTIAL_AGE)` compute an age of zero on
+                // every call, so the kernel's fifteen-minute gate was a
+                // control that could not fire — the `MaxExpectedShortfall`
+                // shape the risk rules name by example. The remedy for a
+                // session older than the window is that the operator signs in
+                // again, not that the window grows to fit the session.
                 let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
                     principal.subject.clone(),
                     "api-bearer-token",
-                    now,
+                    principal.issued_at,
                 );
                 match platform.approve_registration(
                     source_id,
@@ -1326,11 +1335,16 @@ impl Api {
             }
             (Method::Delete, "/kill-switch") => {
                 // Clearing a halt needs an operator identity, which is what
-                // the Operator role on this route establishes.
+                // the Operator role on this route establishes. As on the two
+                // routes above, `authenticated_at` is when the session was
+                // issued and not `now`: an identity that claims to have
+                // authenticated at the instant it is used is fresh by
+                // construction, and any caller downstream that asks how old
+                // this credential is gets the answer zero forever.
                 let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
                     principal.subject.clone(),
                     "api-bearer-token",
-                    now,
+                    principal.issued_at,
                 );
                 match platform
                     .autonomy_mut()
