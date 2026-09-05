@@ -14,6 +14,7 @@ use crate::coverage::UpdateFrequency;
 use crate::decision::{
     DecisionOutcome, LifecycleStage, Reasoning, RegisteredSource, RegistrationDecision,
 };
+use crate::endpoint::AccessMechanism;
 use crate::health::{HealthObservation, SourceHealth};
 use crate::legal::{HostRules, LegalAssessment, Legality, RateLimit, SourcePolicy};
 use crate::probe::{ProbeEvidence, SourceProbe};
@@ -22,6 +23,10 @@ use crate::robots::PathVerdict;
 use crate::schema::{SchemaDrift, SourceSchema};
 use crate::scoring::{Routing, SourceScores};
 use crate::source::{Source, SourceCandidate, SourceLineage};
+use crate::tier::{
+    AccessMode, BulkCadence, CredentialReference, DeepWebAdapter, DiscoveryEnclave, Interface,
+    RenderingBudget, SourceTier, TierEvidence,
+};
 use qip_contracts::governance::Usage;
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Hasher256, Rng, Timestamp, Xoshiro256};
@@ -37,6 +42,15 @@ pub struct FinderConfig {
     default_rate_limit: Option<RateLimit>,
     seed: u64,
     owner: String,
+    /// The credential the deployment projects as a file for each host that
+    /// needs one, by name. Absent for a host means the `registered` and
+    /// `licensed` modes are refused for it, not that one is invented.
+    #[serde(default)]
+    credential_references: BTreeMap<String, CredentialReference>,
+    /// Where rendered and bulk fetches run. Absent means those modes are
+    /// refused, because there is nowhere for them to run safely.
+    #[serde(default)]
+    enclave: Option<DiscoveryEnclave>,
 }
 
 impl FinderConfig {
@@ -71,12 +85,42 @@ impl FinderConfig {
             default_rate_limit: None,
             seed,
             owner,
+            credential_references: BTreeMap::new(),
+            enclave: None,
         })
     }
 
     pub fn with_host_rules(mut self, rules: HostRules) -> Self {
         self.host_rules = rules;
         self
+    }
+
+    /// Name the credential the deployment projects as a file for `host`.
+    ///
+    /// The name, never the value: a [`CredentialReference`] cannot be built
+    /// from anything that looks like one.
+    pub fn with_credential_reference(
+        mut self,
+        host: impl Into<String>,
+        reference: CredentialReference,
+    ) -> Self {
+        self.credential_references
+            .insert(host.into().to_ascii_lowercase(), reference);
+        self
+    }
+
+    /// Name the enclave rendered and bulk fetches run in.
+    pub fn with_discovery_enclave(mut self, enclave: DiscoveryEnclave) -> Self {
+        self.enclave = Some(enclave);
+        self
+    }
+
+    pub fn credential_reference_for(&self, host: &str) -> Option<&CredentialReference> {
+        self.credential_references.get(&host.to_ascii_lowercase())
+    }
+
+    pub fn discovery_enclave(&self) -> Option<&DiscoveryEnclave> {
+        self.enclave.as_ref()
     }
 
     /// The request budget applied where a source states none of its own.
@@ -177,6 +221,22 @@ impl DataFinder {
     /// Monthly spend at which cost efficiency reaches zero.
     pub const COST_CEILING_PER_MONTH: i64 = 10_000;
 
+    /// Pages an hour a rendered source may cost, and the time one page may
+    /// take. Sixty an hour is one a minute — a human reader's pace, which is
+    /// the pace a publisher's rate limiter was written for.
+    pub const RENDERING_PAGES_PER_HOUR: u32 = 60;
+    pub const RENDERING_MAX_TIME: Duration = Duration::from_secs(30);
+
+    /// How long a bulk extract may be kept after its facts are taken.
+    ///
+    /// A week covers a re-extraction after a schema fix without the extract
+    /// becoming a second copy of the source.
+    pub const BULK_EXTRACT_RETENTION: Duration = Duration::from_days(7);
+
+    /// The request budget an open query interface is enumerated under when
+    /// neither the source nor the configuration states one.
+    pub const OPEN_QUERY_REQUESTS_PER_MINUTE: u32 = 30;
+
     pub fn new(config: FinderConfig) -> Self {
         Self {
             config,
@@ -251,6 +311,65 @@ impl DataFinder {
             ),
         );
 
+        // The tier is asked about before any request is made, on what the
+        // candidate's own description supports. It usually cannot be settled
+        // yet — surface web is a finding about reachability the probe has to
+        // make — and that is recorded as not yet classifiable rather than
+        // guessed. The one tier decidable here is the one that must be: a
+        // hidden-service host is refused without ever being contacted,
+        // because contacting it is the thing the dark-web rule forbids.
+        match SourceTier::classify(&TierEvidence::from_candidate(&candidate)) {
+            Ok(SourceTier::DarkWeb) => {
+                let adapter = DeepWebAdapter::new(
+                    &id,
+                    candidate.endpoint().host(),
+                    SourceTier::DarkWeb,
+                    AccessMode::Api,
+                )?;
+                let refusal = match adapter.admissible(candidate.declared_licensing(), None) {
+                    Ok(()) => {
+                        return Err(Error::denied(format!(
+                            "`{id}` is on the dark web and an access mode was found admissible \
+                             for it; that cannot be, and the finder stops rather than route it"
+                        )));
+                    }
+                    Err(error) => error.message().to_string(),
+                };
+                reasoning.record(
+                    LifecycleStage::Classify,
+                    format!("tier {}: {refusal}", SourceTier::DarkWeb.as_str()),
+                );
+                reasoning.record(
+                    LifecycleStage::Probe,
+                    "not probed: a hidden service is never contacted for signal",
+                );
+                reasoning.record(
+                    LifecycleStage::Route,
+                    format!(
+                        "rejected on tier {}: monitoring-only, no access mode admissible",
+                        SourceTier::DarkWeb.as_str()
+                    ),
+                );
+                return RegistrationDecision::new(
+                    id,
+                    DecisionOutcome::Rejected { reason: refusal },
+                    reasoning,
+                    now,
+                );
+            }
+            Ok(tier) => reasoning.record(
+                LifecycleStage::Classify,
+                format!(
+                    "tier {} from the candidate's own description",
+                    tier.as_str()
+                ),
+            ),
+            Err(error) => reasoning.record(
+                LifecycleStage::Classify,
+                format!("tier not yet classifiable before the probe: {error}"),
+            ),
+        }
+
         // The host check runs before the probe, and a refusal stops here.
         // Deferring it until after the fetch would mean a denylisted host had
         // already been contacted, which is the one outcome a denylist exists
@@ -319,6 +438,34 @@ impl DataFinder {
         );
 
         let source = Source::from_evidence(candidate, evidence);
+
+        // With the probe's answers in hand the tier can be settled, and if
+        // it still cannot be, nothing is decided: a source nobody can place
+        // is deferred, as a probe failure is, rather than rejected as if
+        // something about it had been found wanting.
+        let tier = match SourceTier::classify(&TierEvidence::from_source(&source)) {
+            Ok(tier) => tier,
+            Err(error) => {
+                reasoning.record(
+                    LifecycleStage::Classify,
+                    format!("tier not classifiable after the probe: {error}"),
+                );
+                return RegistrationDecision::new(
+                    id,
+                    DecisionOutcome::Deferred {
+                        reason: error.to_string(),
+                    },
+                    reasoning,
+                    now,
+                );
+            }
+        };
+        reasoning.record(
+            LifecycleStage::Classify,
+            format!("tier {} on the probe's evidence", tier.as_str()),
+        );
+        let source = source.with_tier(tier);
+
         let robots_verdict = self.robots_legality(&source);
         let licensing_verdict = source
             .licensing()
@@ -351,6 +498,29 @@ impl DataFinder {
                 now,
             )
             .map(|decision| decision.with_legality(legality).with_scores(scores));
+        }
+
+        // Routing by tier, after routing by legality and score: a source the
+        // score would collect is still refused when the way it has to be
+        // reached is not one this deployment can reach it by. The refusal
+        // carries the tier and the mode so a reviewer can see which rule
+        // fired without re-deriving it.
+        match self.route_by_tier(&source, tier) {
+            Ok(finding) => reasoning.record(LifecycleStage::Route, finding),
+            Err(error) => {
+                let reason = error.message().to_string();
+                reasoning.record(
+                    LifecycleStage::Route,
+                    format!("rejected on tier {}: {reason}", tier.as_str()),
+                );
+                return RegistrationDecision::new(
+                    id,
+                    DecisionOutcome::Rejected { reason },
+                    reasoning,
+                    now,
+                )
+                .map(|decision| decision.with_legality(legality).with_scores(scores));
+            }
         }
 
         let policy = self.policy_for(&source);
@@ -465,6 +635,137 @@ impl DataFinder {
                 source.endpoint().host(),
                 verdict.describe()
             )),
+        }
+    }
+
+    /// Decide whether the source can be reached the way its tier requires,
+    /// returning the finding for the record or the refusal.
+    ///
+    /// A surface-web API is the case every source before this tier existed
+    /// fell into, and it is left exactly as it was: no adapter, no enclave,
+    /// the finding recorded and nothing else changed. Every other combination
+    /// builds a [`DeepWebAdapter`] and asks it whether the deployment can run
+    /// it.
+    fn route_by_tier(&self, source: &Source, tier: SourceTier) -> Result<String> {
+        let mode = self.access_mode_for(source, tier)?;
+        if tier == SourceTier::SurfaceWeb && mode == AccessMode::Api {
+            return Ok(format!(
+                "tier {} via access mode {}: reached directly, no deep-web adapter needed",
+                tier.as_str(),
+                mode.as_str()
+            ));
+        }
+        let adapter = DeepWebAdapter::new(source.id(), source.endpoint().host(), tier, mode)?;
+        adapter.admissible(source.licensing(), self.config.enclave.as_ref())?;
+        Ok(format!(
+            "tier {} via access mode {}{}{}",
+            tier.as_str(),
+            adapter.mode().as_str(),
+            match adapter.mode().credential() {
+                Some(credential) => format!(
+                    ", credential `{}` projected as a file by the deployment",
+                    credential.name()
+                ),
+                None => String::new(),
+            },
+            match (adapter.mode().needs_enclave(), &self.config.enclave) {
+                (true, Some(enclave)) => format!(", inside {}", enclave.describe()),
+                _ => String::new(),
+            }
+        ))
+    }
+
+    /// The access mode a source has to be reached by, from its mechanism,
+    /// its cost and what the deployment names for its host.
+    ///
+    /// A mode that needs something the deployment has not provided is not
+    /// built with a placeholder; the refusal names what to provide.
+    fn access_mode_for(&self, source: &Source, tier: SourceTier) -> Result<AccessMode> {
+        let endpoint = source.endpoint();
+        let mechanism = endpoint.mechanism();
+        if let AccessMechanism::BulkFile {
+            published_every, ..
+        } = mechanism
+        {
+            return Ok(AccessMode::Bulk {
+                cadence: BulkCadence::new(*published_every, Self::BULK_EXTRACT_RETENTION)?,
+            });
+        }
+        if Interface::of(mechanism) == Interface::ExtractedPage {
+            // A query string in the endpoint's own path is a parameterised
+            // interface; a bare path is a page whose content the extractor
+            // has to render.
+            if endpoint.path().contains('?') {
+                let rate_limit = match self.config.default_rate_limit {
+                    Some(limit) => limit,
+                    None => RateLimit::new(
+                        Self::OPEN_QUERY_REQUESTS_PER_MINUTE,
+                        Duration::from_mins(1),
+                    )?,
+                };
+                return Ok(AccessMode::OpenQuery { rate_limit });
+            }
+            return Ok(AccessMode::Rendered {
+                budget: RenderingBudget::new(
+                    Self::RENDERING_PAGES_PER_HOUR,
+                    Self::RENDERING_MAX_TIME,
+                )?,
+            });
+        }
+        if let Some(need) = mechanism.poll_plan().credential_required {
+            let credential = self
+                .config
+                .credential_reference_for(endpoint.host())
+                .cloned()
+                .ok_or_else(|| {
+                    Error::denied(format!(
+                        "`{}` needs {need}, and no credential reference is named for `{}`; \
+                         name the secret the deployment projects as a file with \
+                         `FinderConfig::with_credential_reference`. A credential is never \
+                         invented and never carried by value",
+                        source.id(),
+                        endpoint.host()
+                    ))
+                })?;
+            let paid =
+                !source.cost().monthly_fee().is_zero() || !source.cost().per_request().is_zero();
+            if !paid {
+                return Ok(AccessMode::Registered { credential });
+            }
+            let licence = source
+                .licensing()
+                .license()
+                .map(|license| license.identifier().to_string())
+                .ok_or_else(|| {
+                    Error::denied(format!(
+                        "`{}` is a paid subscription and its licensing posture declares no \
+                         licence; a licensed source is reached only under terms that have \
+                         been read",
+                        source.id()
+                    ))
+                })?;
+            return Ok(AccessMode::Licensed {
+                credential,
+                licence,
+            });
+        }
+        // Machine-readable and unauthenticated by its own description. On
+        // the surface web that is an API; on the deep web it means the probe
+        // was turned away, so the source wants a credential the candidate
+        // did not declare, and the finder will not guess which.
+        match tier {
+            SourceTier::SurfaceWeb => Ok(AccessMode::Api),
+            SourceTier::DeepWeb => Err(Error::denied(format!(
+                "`{}` declares no credential and the probe was refused without one (HTTP {}); \
+                 the source is gated in fact. Declare its authentication requirement and name \
+                 a credential reference rather than letting the finder guess",
+                source.id(),
+                source.evidence().head().status
+            ))),
+            SourceTier::DarkWeb => Err(Error::denied(format!(
+                "`{}` is on the dark web, which admits no access mode",
+                source.id()
+            ))),
         }
     }
 

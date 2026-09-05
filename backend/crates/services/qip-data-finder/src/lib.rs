@@ -33,6 +33,12 @@
 //!   [`legal::LegalAssessment`] and refuses one that did not permit
 //!   collection. A catalogue entry therefore cannot exist for a source whose
 //!   licence was not read.
+//! * **A source's web tier is classified, never assumed, and the dark web
+//!   has no fetch path.** [`tier::SourceTier::classify`] refuses on
+//!   insufficient evidence rather than defaulting to the surface web;
+//!   [`tier::DeepWebAdapter::admissible`] refuses every access mode for the
+//!   dark web by name, and refuses the rendered and bulk modes without a
+//!   named [`tier::DiscoveryEnclave`].
 //!
 //! Everything else — rate limits, denylists, drift severity — is advisory in
 //! the sense that a caller could compute the same numbers differently. The
@@ -62,6 +68,7 @@ pub mod robots;
 pub mod schema;
 pub mod scoring;
 pub mod source;
+pub mod tier;
 
 pub use admission::{CatalogueEntry, LicensingDecision, admit, admit_from};
 pub use coverage::{CoverageGap, CoverageMatch, SourceCoverage, SourceRegion, UpdateFrequency};
@@ -88,3 +95,7 @@ pub use robots::{PathVerdict, RobotsGroup, RobotsPolicy, RobotsRule};
 pub use schema::{DriftSeverity, FieldRetype, FieldType, SchemaDrift, SourceSchema};
 pub use scoring::{Routing, RoutingClass, SourceScores};
 pub use source::{Source, SourceCandidate, SourceIdentity, SourceLineage};
+pub use tier::{
+    AccessMode, BulkCadence, CredentialReference, DeepWebAdapter, DefensiveMonitoring,
+    DiscoveryEnclave, Interface, RenderingBudget, RobotsPosture, SourceTier, TierEvidence,
+};
