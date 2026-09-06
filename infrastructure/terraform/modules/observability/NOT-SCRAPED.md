@@ -107,10 +107,15 @@ What is not:
 
 - **No digest is pinned, and the adoption is REFUSED rather than pending.**
   `metrics_collector_image_digest` is null in every environment
-  (`environments/dev/terraform.tfvars:250` is the only mention and it is
-  commented out; that line was cited as `:142` here until 2026-09-06, when
-  `grep -rn metrics_collector_image_digest environments/*/terraform.tfvars`
-  was actually run rather than copied). The gate is the one the Envoy proxy had to satisfy first:
+  (`environments/dev/terraform.tfvars:262` is the only mention and it is
+  commented out; run
+  `grep -rn metrics_collector_image_digest infrastructure/environments/*/terraform.tfvars`
+  rather than trusting the number — **this citation has now been wrong twice**,
+  at `:142` and then at `:250`, and it was `:250` for less than a day. Both
+  times the fix was to re-run the command; the second time the command was
+  written down and the output was not re-read. A line number in a file other
+  people are editing is the least durable thing this document can carry).
+  The gate is the one the Envoy proxy had to satisfy first:
   Binary Authorization admits only what the platform's attestor signed, so
   the sidecar must be mirrored by digest through
   `infrastructure/egress/vendored-images.txt` and `vendor.yml` before any

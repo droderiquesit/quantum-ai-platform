@@ -286,7 +286,7 @@ at current scale, and process proliferation was rejected.
   `::the_quarterly_count_replays_from_the_store_and_a_lowered_one_is_refused`.
   §20.1's trial accounting is ALIGNED in code; what it has never counted is a
   real run. *Gap:* corridor policy
-  has no owner because corridors do not exist (Phase 12). *Separate service justified?* Cadence differs from the hot
+  has no owner. **Two corrections here, 2026-09-06.** "Corridors do not exist" is stale: the §37.1 corridor lifecycle has existed as records since `5546a24` — `qip-capital-fabric/src/corridor.rs` (`CorridorCaps:125`, `Corridor:357`), and see the Plane 7 correction below, which already withdrew the same claim where it appears in the Plane 7 bullet. What is true is that nothing in `backend/crates/apps` or `backend/crates/runtime` *constructs* a corridor policy — `grep -rln 'TransferGate\|DestinationRegistry\|CustodyPolicy' backend/crates/apps backend/crates/runtime` returns only `ledger_views.rs`, which reads. And the "(Phase 12)" is a **blueprint phase**, not a date: ADR 0021's refusal of the signing half has no expiry, and ADR 0023's step 10 sequences the rest as "a separate decision, separately approved". *Separate service justified?* Cadence differs from the hot
   path and it already runs in its own binary, `qip-deepbrain`. Satisfied.
 
 - **[PLANE 5/7 — Optimisation]** *Ownership:* `qip-optimization-engine`,
@@ -371,8 +371,21 @@ at current scale, and process proliferation was rejected.
   14); issuance requires two signatures and a fresh credential
   (`qip-compliance/src/approval.rs`). *Degradation:* the log is append-only and
   hash-chained. *Tests:* `truth_loop.rs`, `compliance_proof.rs`.
-  *Gaps:* **no wallet, corridor, transfer gate, destination registry or custody
-  engine** — Phase 12, bounded by ADR 0021 and enforced by
+  *Gaps:* ~~**no wallet, corridor, transfer gate, destination registry or custody
+  engine**~~ — **struck 2026-09-06, and struck rather than deleted so the reader
+  can see what the claim was.** All five exist as records in
+  `qip-capital-fabric/src/{corridor,destination,gate,wallet,custody}.rs` and have
+  since `5546a24`; the "Plane 7 — the ledger plane as records and refusals under
+  ADR 0021" section below opens with the same correction and the full citation
+  list, and this line is where a reader meets the claim first. What remains true
+  is that **nothing in `backend/crates/apps` or `backend/crates/runtime`
+  constructs any of them** (`grep -rln
+  'TransferGate\|DestinationRegistry\|CustodyPolicy' backend/crates/apps
+  backend/crates/runtime` returns only `ledger_views.rs`, which reads), so the
+  gap is a *caller*, not a type. The custody **engine** — enforcement rather than
+  policy — is refused outright, and the refusal carries no date: ADR 0021 attaches
+  no phase to it, and the blueprint phase 12 that this line used to name belongs
+  to ADR 0023's step 10, "a separate decision, separately approved". Enforced by
   `security.rs::no_signing_or_withdrawal_path_exists_for_capital_to_leave_the_platform`.
   Capital reservation is unbuilt, so two concurrent proposals can pass against
   one balance.
@@ -441,6 +454,36 @@ as fully available, the pause gate removed, and the multiplier pinned to one
 each fail named tests.
 
 ## The seven layers (§40.5, §41, §45, §46, §47, §48)
+
+> **§48 is named in this heading and scored nowhere in this document. Recorded
+> here 2026-09-06 because a heading that lists a section is read as coverage of
+> it, and coverage is the one thing a traceability matrix is for.** Check it in
+> one line: `grep -n '§48' docs/architecture/algorik-blueprint-traceability.md`
+> returned seven lines on 2026-09-06 — the heading above and six lines of this
+> note — and nothing else: no row, no score, no verdict for OpenTofu, Cloud
+> Build or Cloud Deploy. If it ever returns a line that is neither, the rows
+> have landed and this note should go. The three rows that do
+> score §48's toolchain live in
+> [`deployed-vs-blueprint.md`](deployed-vs-blueprint.md) at `:246` (OpenTofu and
+> rule 77 — TOOL-SUBSTITUTED, properties met), `:247` (Cloud Build — PARTIAL; it
+> builds the two browser surfaces and not the four Rust images) and `:248`
+> (Cloud Deploy — ABSENT, and the guarantee not reproduced by ADR 0036's path
+> either). They are **not** copied here on purpose:
+> [ADR 0049](../adr/0049-the-blueprint-s-section-48-toolchain-is-scored-as-three-rows-and-adopting-any-of-it-is-a-separate-decision.md)
+> wrote them for this matrix and recorded that pasting them in without
+> re-scoring the surrounding layer table is a half-edit — the layer bullets
+> below are `[LAYER n/7]`-shaped and the §48 rows are requirement-shaped, and
+> merging the two shapes is the matrix owner's edit. Until that happens the
+> honest statement is the one above: named, not scored, scored elsewhere.
+>
+> Two things this note is careful **not** to do. It does not score §48 here by
+> implication — a pointer is not a verdict. And it does not invent a
+> requirement id: the §48 work is tracked as ADR 0049's rows 1–3 and by nothing
+> else. The repository's F-series (`docs/ops/missing-infrastructure-register.md:788-799`)
+> runs **F1 to F8** and no further — `grep -rnoEw 'F[0-9]+' docs/ infrastructure/ .claude/`
+> returns nothing above F8 — so a row here citing an F-number above F8 would be
+> pointing at a requirement nobody can find, which reads as coverage and is
+> worse than a missing row.
 
 `[LAYER n/7 — Name] Current | Keep | Change | Remove | Defer | Verification`
 
@@ -1864,7 +1907,18 @@ a statement, so a deployed `/wallet` still answers `assembled:false`; the
 manifest-wiring suite carries the reason, which is that a statement is a dated
 counterparty document and every environment trades a venue that issues none.
 The twelfth capability, custody as an enforced boundary rather than a policy
-record, is refused by ADR 0021 until Phase 12, exactly as before.
+record, is refused by ADR 0021 — **and the refusal has no expiry.** This
+sentence read "until Phase 12" until 2026-09-06 and that was wrong in the one
+direction that matters: ADR 0021 attaches no phase to anything it refuses, and
+its own "What would make this wrong" names the only thing that lifts it, which
+is an owner's recorded decision superseding ADR 0003 and amending
+`../../.claude/rules/01-security-and-safety.md`. The 12 belongs to a different
+record and a different column — ADR 0023's step 10
+(`../adr/0023-real-trading-is-the-destination-and-the-opening-is-gated.md:97`),
+whose final column is the *blueprint phase* the work sits in and whose evidence
+column says "Per ADR 0021, which this record does not supersede: a separate
+decision, separately approved". Read as a date it says the control lapses on a
+schedule. It does not.
 
 ### Experience — the console gains a write, and it is not one that can trade
 

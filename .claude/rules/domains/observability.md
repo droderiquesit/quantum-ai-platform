@@ -14,12 +14,18 @@ each false in one direction — one said nothing wrote to `Telemetry`, the next
 said the edge plane could not emit — and agents who believed either were told
 a closed gap was still open.
 
-`qip-kernel`'s `Platform` records in `platform.rs` — at least sixteen sites
-as of `6fb5fed`, counted with
-`grep -c 'metrics\.\(count\|gauge\|increment\|observe[a-z_]*\)(' backend/crates/runtime/qip-kernel/src/platform.rs`;
-recount before quoting a number, because an earlier version of this file
-carried a count from a version of the file that no longer existed. What is
-recorded matters more than how many times: cycles and per-stage runs,
+`qip-kernel`'s `Platform` records in `platform.rs` — **do not quote a figure
+from this file; run the command**:
+`grep -c 'metrics\.\(count\|gauge\|increment\|observe[a-z_]*\)(' backend/crates/runtime/qip-kernel/src/platform.rs`.
+This paragraph said "at least sixteen sites as of `6fb5fed`" until 2026-09-06.
+That was a floor, not a measurement, and it was read as a measurement; it had
+drifted to double without ever becoming false, which is the failure mode a
+floor has and a count does not — a number nobody could catch being wrong. The
+figure is deliberately not restated here. On 2026-09-06 the same command
+printed `32` and then, about twenty minutes later on the same checkout,
+`34`, because a parallel lane was mid-rewrite of `platform.rs`. A number
+written down in this file is a number measured on somebody else's
+half-finished edit. What is recorded matters more than how many times: cycles and per-stage runs,
 durations and problems; the kill-switch gauge; limit breaches; permission
 denials; orders submitted, refused, filled and the live-fill alarm. All three central binaries construct the `Telemetry` the
 cycle writes to and serve its snapshot: `qip-api` from `routes.rs` (`scrape`),
@@ -41,7 +47,11 @@ still answers the JSON health body. The series and what each is keyed on:
 
 - `qip_edge_halted{source}` — a gauge per halt discipline (`kill_switch`,
   `policy`, and since `ff86473` `polled`, §46.2's second wire — the flag
-  `qip-edge-node` polls on its own filesystem; `qip-edge/src/telemetry.rs:172-193`),
+  `qip-edge-node` polls on its own filesystem; `qip-edge/src/telemetry.rs:294-314`
+  writes the three `source` arms and `:191-194` describes the gauge — this
+  bullet cited `:172-193` until 2026-09-06, which by then landed on the
+  descriptor block and not on the writer. Locate both with
+  `grep -n 'fn halt(\|names::EDGE_HALTED' backend/crates/edge/qip-edge/src/telemetry.rs`),
   written wherever any halt can change and at wiring time, so a cell halted
   before its first pass still reports halted.
 - `qip_edge_capability_freshness{capability}` and `qip_edge_sizing_multiplier`
@@ -88,8 +98,13 @@ the event and asserts the series moved, and each was mutation-verified.
 
 Two honest limits on the edge half. First, `qip-edge-node` runs `Cell::work`
 only when `QIP_VENUE_FEED=simulated` (`6340610`; `run_pass` at
-`qip-edge-node/src/pass.rs:118`, called from `main.rs:586`; the execution
-node's template writes the line at `startup.sh.tftpl:174`, and any other
+`qip-edge-node/src/pass.rs:106`, called from `main.rs:779` — recount with
+`grep -n 'fn run_pass' backend/crates/apps/qip-edge-node/src/pass.rs` and
+`grep -n 'run_pass(' backend/crates/apps/qip-edge-node/src/main.rs`; these
+read `:118` and `:586` until 2026-09-06; the execution
+node's template writes the line at `startup.sh.tftpl:174`
+(`grep -n QIP_VENUE_FEED infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl`,
+verified 2026-09-06), and any other
 value stops the process naming ADR 0003), so the pass-time series —
 freshness, refusals, signals, orders, netting, crosses, and
 `qip_edge_work_passes_total`, `qip_edge_fills_confirmed_total` and
@@ -103,29 +118,48 @@ a scrape's exposition is rendered on the thread that flushes the journal — the
 same thread that already renders the JSON body, and not the order path.
 
 **A central-plane reconciliation break is now recorded too.**
-`CentralPlane::record_halt` (`central/plane.rs:1398`, reached from `ingest`
-and so from `Platform::ingest_cell_report`) counts
+`CentralPlane::record_halt` in `central/plane.rs`, reached from `ingest` and
+so from `Platform::ingest_cell_report` — **located by symbol, not by line, and
+that is deliberate**: this read `plane.rs:1398` until 2026-09-06, by which
+time the function had moved some two hundred lines and the citation pointed
+at unrelated code. Find it with
+`grep -n 'fn record_halt\|self.record_halt(' backend/crates/runtime/qip-kernel/src/central/plane.rs`.
+It counts
 `qip_central_reconciliation_breaks_total` by the direction of the gap —
 `cell_over_venue`, `venue_over_cell`, `detail_only`, and since `3c2b789`
 `unsent_fill`, a fill a cell reported on an order the centre never saw sent
 or beyond the quantity it saw sent — and `qip_central_cell_halts_total` by
 cause, on the outcome rather than the report, so a refused report charts no
 halt. The `unsent_fill` direction is the centre's own finding rather than the
-cell's, merged with the report's breaks before the halt (`plane.rs:1066`). The
+cell's, raised where `settle` pushes a `BreakOrigin::UnsentFill` and merged
+with the report's breaks before the halt, where `ingest` builds its `breaks`
+vector (`grep -n 'let breaks: Vec<ReconciliationBreak>\|BreakOrigin::UnsentFill' backend/crates/runtime/qip-kernel/src/central/plane.rs`;
+this cited `plane.rs:1066` until 2026-09-06 and that line was in a different
+function by then). The
 `qip_central_` prefix keeps it distinct from the edge's own break counter,
 which records what the cell found rather than what the centre acted on.
 Beside it, since `9e45dc0`, `qip_central_orders_sent_total`
-(`qip-observability/src/metrics.rs:711`; recorded at `plane.rs:1187`) counts
+(the `CENTRAL_ORDERS_SENT` constant in `qip-observability/src/metrics.rs`,
+recorded in `CentralPlane::settle`; this said `metrics.rs:711` and
+`plane.rs:1187` until 2026-09-06 and both were wrong by well over a hundred
+lines. Locate both with
+`grep -n 'CENTRAL_ORDERS_SENT\|CENTRAL_FILLS_ATTRIBUTED' backend/crates/libs/qip-observability/src/metrics.rs backend/crates/runtime/qip-kernel/src/central/plane.rs`)
+counts
 the orders a cell reported sent and `qip_central_fills_attributed_total`
 counts the fill shares the centre booked, so that what was sent and what
 filled are two series — for one slice the centre billed every sent order as a
 fill, and there was no series in which the two claims could disagree. Two
 facts that once had no production caller now have one, in the LEARN stage:
 `Platform::learn_from`, which produces the belief calibration, is called from
-`calibrate_resolved` (`platform.rs:4086`, reached from `stage_learn` at
-`:3965`; `04738ee`), and `Platform::evaluate_alternatives`, which scores
-counterfactuals, is called from `score_declined` (`platform.rs:5107`, reached
-from `stage_learn` at `:3982`; `b9e2242`). Recount with
+`calibrate_resolved` (`platform.rs:7749`, reached from `stage_learn` at
+`:7477`; `04738ee`), and `Platform::evaluate_alternatives`, which scores
+counterfactuals, is called from `score_declined` (`platform.rs:9032`, reached
+from `stage_learn` at `:7494`; `b9e2242`). **All four of those numbers were
+wrong until 2026-09-06** — they read `:4086`, `:3965`, `:5107`, `:3982`, from
+a `platform.rs` roughly half the length of the present one, and every one of
+them landed in unrelated code. The paragraph carried its own recount command
+and the command was not run, which is the specific way a citation rots in this
+repository: it is quoted forward because it is quoted forward. Recount with
 `grep -n "learn_from\|evaluate_alternatives" backend/crates/runtime/qip-kernel/src/platform.rs`
 before quoting either line.
 
@@ -165,7 +199,9 @@ and `EDGE_RECONCILIATION_BREAKS` in `edge/qip-edge/src/telemetry.rs` outside
 `tests/`. A registered constant nothing calls would satisfy the acceptance
 test and still page nobody, so check the caller, not the name. Since
 `cd16f79` the `edge_halted` policy's documentation names the `polled` source
-beside `kill_switch` and `policy` (`main.tf:200`), so an operator paged on
+beside `kill_switch` and `policy` (`main.tf:206`, inside the `documentation`
+block that opens at `:201`; this said `:200` until 2026-09-06, which is the
+blank line above the block), so an operator paged on
 the third source is not reading text that says it does not exist. What
 collects
 is the runtime's business (ADR 0024) and `modules/observability/NOT-SCRAPED.md`
@@ -198,9 +234,13 @@ clear it with a scanner exception.
 One correction of fact this file used to get wrong by inheritance:
 `NOT-SCRAPED.md` said "nothing has been applied", and `dev` has been —
 `module.observability` is instantiated unconditionally at
-`terraform/main.tf:400`, so it was in `infra.yml`'s `up`. With the gate
-false, `count = 0` on all seven, so that apply created no policy. The gate
-has run, not merely been declared. This changes nothing about ingestion.
+`terraform/main.tf:461` (`grep -n 'module "observability"' infrastructure/terraform/main.tf`;
+this read `:400` until 2026-09-06), so it was in `infra.yml`'s `up`. With the
+gate false, `count = 0` on all **seven policies that existed at that apply** —
+there are nine now, and the sentence is kept in the past tense on purpose so
+that a reader does not take it for a present count — so that apply created no
+policy. The gate has run, not merely been declared. This changes nothing about
+ingestion.
 
 Do not describe this platform as observable. That still holds, on today's
 evidence: nothing has been shown to scrape any process, no Cloud Run service
