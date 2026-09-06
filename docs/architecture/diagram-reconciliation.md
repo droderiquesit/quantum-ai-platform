@@ -14,6 +14,28 @@
 > runtime and names the reason (`catalogue.tf:21-27`). The rows are left as
 > scored at `9854ec7`, for the reason the note below gives.
 >
+> **Second correction, 2026-09-06 — row G.2's recommended action names a role
+> that no longer exists, and an action item is worse than a stale score,
+> because a maintainer can carry it out.** G.2 ends "Add a `GET /compliance`
+> route behind the Approver role". `Role::Approver` was **retired at
+> `665c506`**, in the binary and the deployment at once: the enum arm, the
+> composition root's tuple, the Terraform secret container and catalogue mount,
+> the blocks across the four rendered `RunService` manifests, the bootstrap
+> seeding loop and the credentials document. It was removed rather than wired
+> because **no route ever required it** — `grep -c 'required_role:
+> Role::Approver'` over `qip-api/src/routes.rs` was `0` — and the only approval
+> the API exposes, `POST /registrations/:source/approve`, already requires
+> `Operator`, which is strictly stronger. The roles today are
+> Monitor · Viewer · Analyst · Operator
+> (`sed -n '/pub enum Role/,/^}/p' backend/crates/apps/qip-api/src/auth.rs`).
+> **Anyone acting on G.2 should read "behind the `Operator` role"**, and should
+> not re-mint the credential to satisfy the sentence: re-adding a role because a
+> superseded document asks for one is how a bearer token that authorises nothing
+> gets mounted into every environment, which is the exact defect `665c506`
+> removed. The row itself is left as scored at `9854ec7`, for the reason the
+> note below gives; only the reader's instruction is corrected, and it is
+> corrected here rather than in the row.
+>
 > **This scores a superseded reference.** ADR 0022 makes the Algorik Master
 > Blueprint v10.1-4 the architecture of record; the live scorecard is
 > [`algorik-blueprint-traceability.md`](algorik-blueprint-traceability.md).

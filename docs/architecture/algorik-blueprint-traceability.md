@@ -29,6 +29,14 @@ blueprint requires it at or before the phase this repository has reached) ·
 PLANNED-FUTURE (the blueprint puts it in a later phase; it is backlog, not a
 gap) · UNVERIFIED · NOT-APPLICABLE.
 
+One qualifier was added 2026-09-06, when the §48 rows landed:
+**TOOL-SUBSTITUTED** — the blueprint names a tool, a different tool is used, and
+every property the blueprint bought with the named one is met. It is a
+qualifier on PARTIAL and never a status of its own, because the tool is
+genuinely absent and a reader looking for it will not find it. It is recorded
+here rather than minted silently in a row: a status word that appears in one
+table and no vocabulary is how a scorecard grows a private language.
+
 ## Where the platform actually sits on the blueprint's roadmap
 
 The honest answer is that capability and phase have come apart, and the four
@@ -455,35 +463,46 @@ each fail named tests.
 
 ## The seven layers (§40.5, §41, §45, §46, §47, §48)
 
-> **§48 is named in this heading and scored nowhere in this document. Recorded
-> here 2026-09-06 because a heading that lists a section is read as coverage of
-> it, and coverage is the one thing a traceability matrix is for.** Check it in
-> one line: `grep -n '§48' docs/architecture/algorik-blueprint-traceability.md`
-> returned seven lines on 2026-09-06 — the heading above and six lines of this
-> note — and nothing else: no row, no score, no verdict for OpenTofu, Cloud
-> Build or Cloud Deploy. If it ever returns a line that is neither, the rows
-> have landed and this note should go. The three rows that do
-> score §48's toolchain live in
-> [`deployed-vs-blueprint.md`](deployed-vs-blueprint.md) at `:246` (OpenTofu and
-> rule 77 — TOOL-SUBSTITUTED, properties met), `:247` (Cloud Build — PARTIAL; it
-> builds the two browser surfaces and not the four Rust images) and `:248`
-> (Cloud Deploy — ABSENT, and the guarantee not reproduced by ADR 0036's path
-> either). They are **not** copied here on purpose:
-> [ADR 0049](../adr/0049-the-blueprint-s-section-48-toolchain-is-scored-as-three-rows-and-adopting-any-of-it-is-a-separate-decision.md)
-> wrote them for this matrix and recorded that pasting them in without
-> re-scoring the surrounding layer table is a half-edit — the layer bullets
-> below are `[LAYER n/7]`-shaped and the §48 rows are requirement-shaped, and
-> merging the two shapes is the matrix owner's edit. Until that happens the
-> honest statement is the one above: named, not scored, scored elsewhere.
+> **§48 is scored below, from 2026-09-06. It was named in this heading and
+> scored nowhere for as long as this section has existed, and that is recorded
+> rather than quietly repaired**, because a heading that lists a section is read
+> as coverage of it, and coverage is the one thing a traceability matrix is for.
+> The state before this edit, in one line:
+> `grep -c '§48' docs/architecture/algorik-blueprint-traceability.md` printed
+> **7** — the heading above and six lines of the note this replaces — no row, no
+> score, no verdict for OpenTofu, Cloud Build or Cloud Deploy. **That count is
+> not the check now, and must not be used as one**: the check is the table
+> "§48 — the delivery and infrastructure toolchain" after the layer bullets
+> below, which is where the three rows are.
 >
-> Two things this note is careful **not** to do. It does not score §48 here by
-> implication — a pointer is not a verdict. And it does not invent a
-> requirement id: the §48 work is tracked as ADR 0049's rows 1–3 and by nothing
-> else. The repository's F-series (`docs/ops/missing-infrastructure-register.md:788-799`)
+> The rows are ADR 0049's rows 1–3, and they are written here rather than
+> pointed at:
+> [ADR 0049](../adr/0049-the-blueprint-s-section-48-toolchain-is-scored-as-three-rows-and-adopting-any-of-it-is-a-separate-decision.md)
+> drafted them *for this matrix* and recorded that pasting them in without
+> re-scoring the surrounding layer table is a half-edit — the layer bullets
+> below are `[LAYER n/7]`-shaped and the §48 rows are requirement-shaped. The
+> re-score is done and **its limits are stated under the table**: which layer
+> bullet each row lands in, which cells moved, and which cells this pass could
+> not verify and therefore left alone rather than restamping.
+>
+> The same three rows also sit in
+> [`deployed-vs-blueprint.md`](deployed-vs-blueprint.md)'s "What the blueprint
+> requires" table — locate them with
+> `grep -n 'ADR 0049 row' docs/architecture/deployed-vs-blueprint.md`, which
+> found all three on 2026-09-06. That is a **deliberate duplicate and it will
+> drift**: that document scores the runtime as it stood at `bcad2d3` and this
+> one is the live scorecard, so when the two disagree about §48 this table is
+> the current one and that one is the record of what was found then. ADR 0049
+> charges "three rows to keep current" as the cost of the split; this is where
+> the charge lands.
+>
+> One thing this note still refuses to do: **invent a requirement id.** The §48
+> work is tracked as ADR 0049's rows 1–3 and by nothing else. The repository's
+> F-series in [`../ops/missing-infrastructure-register.md`](../ops/missing-infrastructure-register.md)
 > runs **F1 to F8** and no further — `grep -rnoEw 'F[0-9]+' docs/ infrastructure/ .claude/`
-> returns nothing above F8 — so a row here citing an F-number above F8 would be
-> pointing at a requirement nobody can find, which reads as coverage and is
-> worse than a missing row.
+> found 75 references on 2026-09-06 and none above F8 — so a row here citing an
+> F-number above F8 would point at a requirement nobody can find, which reads as
+> coverage and is worse than a missing row.
 
 `[LAYER n/7 — Name] Current | Keep | Change | Remove | Defer | Verification`
 
@@ -492,8 +511,65 @@ each fail named tests.
 - **[LAYER 3/7 — Application and API]** *Current:* `qip-api` composes reads and holds no independent financial state. *Keep.* *Change:* none. *Remove:* none. *Defer:* the typed-intent surface (§40.9). An `Intent` type now exists (`libs/qip-contracts/src/intent.rs`) but it is the *execution* vocabulary, produced and consumed inside one cell; application APIs still raise no intents, they read. The gap is the API surface, not the type. *Verification:* `documentation.rs::every_documented_endpoint_exists`; and since `827a40e` the boundary itself is executable — `api_boundary.rs::the_application_layer_depends_on_no_execution_venue_capital_or_edge_crate` from `cargo metadata`, `::the_api_uses_only_the_centre_half_of_the_mesh_and_none_of_its_service_clients` from the sources, with the centre's two signatures pinned by exact expression so a third `.signed(` fails until reviewed.
 - **[LAYER 4/7 — Domain contracts and control fabric]** *Current:* `qip-contracts` sits at the bottom of everything sharing it; `qip-transport`/`qip-mesh` carry the fabric. *Keep.* *Change:* none this pass. *Remove:* none. *Defer:* re-scored at `296e187` — this row used to defer the **signed twelve-item payload (§41.5)** as the largest non-future structural gap. The payload landed (PR #3, `61f9392`, `0c91cfa`): the centre ships it signed, the cell verifies, applies it atomically, narrows on stale slots and halts on the signed command; the truth pass's flow 3 is PARTIAL rather than missing. What is still deferred is the *producers* — two of twelve slots have one, and slot 11 (feasibility constraints) has its first consumer at the cell (`95a4932`) and no producer at the centre. Re-scored at `e04815e`: three of twelve — slot 8, the cycle whitelist, is produced by the kernel from an operator policy and the desk's live grant and shipped by the API (`5396679`, `91d20f5`; `central/plane.rs:612`, `qip-api/src/mesh.rs:663`), empty with its reason when `QIP_ARBITRAGE_POLICY_PATH` is unset. The second, independent halt wire this row deferred landed at `ff86473` (re-scored at `584c96b`): a flag polled on the execution node's own filesystem, sharing nothing with `qip-transport`, TESTED at the cell and the node (`qip-edge-node/tests/halt.rs`; `qip-edge/tests/telemetry.rs::a_polled_halt_moves_its_own_gauge_refuses_the_pass_under_its_own_gate_and_no_payload_releases_it`) and MEASURED nowhere, because no node runs. *Verification:* `spine.rs`, `qip-api/tests/mesh.rs`, `qip-contracts/tests/contracts.rs`; `manifest_wiring.rs`, retargeted at the catalogue at `81dd1cd`.
 - **[LAYER 5/7 — Data and state]** *Current:* bitemporal records; bounded retention; event log hash-chained; `qip-data-finder` evaluates licensing before use. *Keep.* *Change:* none. *Remove:* none. *Defer:* BigQuery derived series and content-hash manifests for external history. *Verification:* `absorption.rs`, `resilience.rs`, `truth_loop.rs`.
-- **[LAYER 6/7 — Cloud and network]** *Current, re-scored at `296e187`:* the root module wires the blueprint runtime — `catalogue.tf` instantiates `modules/cloudrun` once per deployable in its §46.1 zone with the egress sidecar where a workload carries one, `execution_node` per region from `execution_nodes` (empty in every environment), `trust_zones` binding workloads to zones default-deny both ways, and `egress_proxy` publishing the bootstrap (`808ca32`, `c924191`; seventeen `module` blocks in `main.tf`, count `grep -c '^module "' infrastructure/terraform/main.tf`). The GKE cluster, edge-cell and console-ingress modules, the Helm chart, the raw manifests and the Argo CD stack are deleted (`808ca32`, `67b3e92`, `7d79161`); `deploy.yml` moves each Cloud Run service by digest and fails unless the serving revision carries the attested image (`b85684f`). *What this row said before:* GKE + Argo CD + Kargo + Helm + KEDA as a transitional runtime, to be removed only at ADR 0020 step 5 with recorded approval. *What authorised the change:* the owner's instruction — create the new infrastructure while devouring the old — taken by `808ca32` as approval **for the code and not for an apply**. *Keep:* the wired modules. *Change:* nothing further without a plan. *Remove:* nothing further. *Defer:* the apply, and every observation that depends on one. Re-scored at `e04815e` for §41.4: the node the module boots is configured to run passes — `startup.sh.tftpl:174` writes `QIP_VENUE_FEED=simulated` and the binary's loop runs `Cell::work` on it (`6340610`) — TESTED in `qip-edge-node/tests/pass.rs` and MEASURED nowhere, since `execution_nodes = {}` everywhere. *Verification:* `terraform fmt -check`, `validate` and a plan **NOT RUN — no `terraform` binary exists in this environment**, so every precondition in the new modules is asserted and unexercised; `infrastructure.rs` passed 67 at `808ca32` and `b85684f`, could not pass between `7d79161` and `81dd1cd` because it read the deleted manifests, and passed 59 once `81dd1cd` retargeted it at the runtime that exists — a text scanner's verdict, never a provider's. This layer is CONFIGURED at best and not MEASURED: nothing was applied, and no process has ever been shown to run on either runtime.
-- **[LAYER 7/7 — Security, observability, delivery, reliability]** *Current:* three paper layers intact and re-verified by path this pass; two kill-switch wires at the cell since `ff86473` (§46.2), TESTED at the cell and the node in all three release directions since `6a515bb`, the `edge_halted` alert's text naming the polled source since `cd16f79` (`modules/observability/main.tf:200`), and not MEASURED; WIF only; CSI-projected secrets; Binary Authorization; telemetry emitted at the seams. *Keep.* *Change:* none. *Remove:* none. *Defer:* OpenTelemetry spans with cross-plane correlation (§47) — the current surface is a Prometheus-style metric registry, not spans. This row used to say policy-freshness, belief-calibration and reconciliation signals had nothing to emit; at `296e187` all three do — `qip_edge_policy_sequence` and `qip_edge_capability_freshness` at the cell, `qip_belief_brier_score` (`04738ee`) and `qip_central_reconciliation_breaks_total` (`de5d042`) at the centre, the kernel's fourteen newer series spelled in `qip-observability/src/metrics.rs` (`296e187`). What none of them has is a collector that has ingested one or an alert that names one. *Verification:* `security.rs`, `compliance_proof.rs`, `api_boundary.rs`; `egress.rs` and `infrastructure.rs`, both retargeted at `81dd1cd` (14 and 59 passed, per its message) after five commits in which they read manifest paths `7d79161` had deleted.
+- **[LAYER 6/7 — Cloud and network]** *Current, re-scored at `296e187`:* the root module wires the blueprint runtime — `catalogue.tf` instantiates `modules/cloudrun` once per deployable in its §46.1 zone with the egress sidecar where a workload carries one, `execution_node` per region from `execution_nodes` (empty in every environment), `trust_zones` binding workloads to zones default-deny both ways, and `egress_proxy` publishing the bootstrap (`808ca32`, `c924191`; seventeen `module` blocks in `main.tf`, count `grep -c '^module "' infrastructure/terraform/main.tf`). The GKE cluster, edge-cell and console-ingress modules, the Helm chart, the raw manifests and the Argo CD stack are deleted (`808ca32`, `67b3e92`, `7d79161`); `deploy.yml` moves each Cloud Run service by digest and fails unless the serving revision carries the attested image (`b85684f`). *What this row said before:* GKE + Argo CD + Kargo + Helm + KEDA as a transitional runtime, to be removed only at ADR 0020 step 5 with recorded approval. *What authorised the change:* the owner's instruction — create the new infrastructure while devouring the old — taken by `808ca32` as approval **for the code and not for an apply**. *Keep:* the wired modules. *Change:* nothing further without a plan. *Remove:* nothing further. *Defer:* the apply, and every observation that depends on one. Re-scored at `e04815e` for §41.4: the node the module boots is configured to run passes — `startup.sh.tftpl:174` writes `QIP_VENUE_FEED=simulated` and the binary's loop runs `Cell::work` on it (`6340610`) — TESTED in `qip-edge-node/tests/pass.rs` and MEASURED nowhere, since `execution_nodes = {}` everywhere. *Verification:* `terraform fmt -check`, `validate` and a plan **NOT RUN — no `terraform` binary exists in this environment**, so every precondition in the new modules is asserted and unexercised; `infrastructure.rs` passed 67 at `808ca32` and `b85684f`, could not pass between `7d79161` and `81dd1cd` because it read the deleted manifests, and passed 59 once `81dd1cd` retargeted it at the runtime that exists — a text scanner's verdict, never a provider's. This layer is CONFIGURED at best and not MEASURED: nothing was applied, and no process has ever been shown to run on either runtime. **Re-scored 2026-09-06 for §48's "Infrastructure" band only — row 1 of the §48 table below.** The tool that emits every resource named in this bullet is Terraform 1.9.8, not the OpenTofu §48 and rule 77 name; each property the blueprint buys with that tool is met, and the substitution is scored as PARTIAL — TOOL-SUBSTITUTED rather than left implicit in the word "Terraform", which is how a departure from the architecture of record becomes invisible by familiarity. **Nothing else in this bullet was re-verified in that pass**, including the two sentences immediately above about what has and has not been applied; they are the `296e187`/`e04815e` score and a reader should treat them as of that date rather than as re-confirmed here.
+- **[LAYER 7/7 — Security, observability, delivery, reliability]** *Current:* three paper layers intact and re-verified by path this pass; two kill-switch wires at the cell since `ff86473` (§46.2), TESTED at the cell and the node in all three release directions since `6a515bb`, the `edge_halted` alert's text naming the polled source since `cd16f79` (`modules/observability/main.tf:200`), and not MEASURED; WIF only; CSI-projected secrets; Binary Authorization; telemetry emitted at the seams. *Keep.* *Change:* none. *Remove:* none. *Defer:* OpenTelemetry spans with cross-plane correlation (§47) — the current surface is a Prometheus-style metric registry, not spans. This row used to say policy-freshness, belief-calibration and reconciliation signals had nothing to emit; at `296e187` all three do — `qip_edge_policy_sequence` and `qip_edge_capability_freshness` at the cell, `qip_belief_brier_score` (`04738ee`) and `qip_central_reconciliation_breaks_total` (`de5d042`) at the centre, the kernel's fourteen newer series spelled in `qip-observability/src/metrics.rs` (`296e187`). What none of them has is a collector that has ingested one or an alert that names one. *Verification:* `security.rs`, `compliance_proof.rs`, `api_boundary.rs`; `egress.rs` and `infrastructure.rs`, both retargeted at `81dd1cd` (14 and 59 passed, per its message) after five commits in which they read manifest paths `7d79161` had deleted. **Delivery re-scored 2026-09-06, and this bullet carried the word "delivery" in its own title while scoring none of it** — rows 2 and 3 of the §48 table below now do: Cloud Build is PARTIAL (it builds the two browser surfaces and not the four Rust images), and Cloud Deploy is MISSING-CURRENT with its guarantee — gradual rollout with automatic rollback on an error rate — **not reproduced by the substitute either**, because nothing in this repository produces an error rate to roll back on. Read that beside the *Defer* clause above: the two are the same gap seen from two directions, and the delivery half is blocked on the observability half rather than on a decision. **Not re-verified in that pass:** the three paper layers, the two kill-switch wires, WIF, CSI-projected secrets and Binary Authorization, all of which are this bullet's earlier score and carry their own dates.
+
+### §48 — the delivery and infrastructure toolchain
+
+**Written 2026-09-06.** These are ADR 0049's rows 1–3, in this document's own
+status vocabulary. Every command below was run on that date and its output is
+quoted; **re-run them rather than trusting the verdict**, because a toolchain
+row goes stale silently — nothing fails when Cloud Build stops building the
+frontends, and ADR 0049 names that as the cost it charges for scoring them at
+all.
+
+There is no Phase column, unlike every other table in this document: §48 is a
+stage table in the blueprint (`Stage | Gate`), it carries no phase for any of
+its nine bands, and inventing one would be the same failure as inventing a
+requirement id.
+
+| Blueprint element (§48) | Required invariant | Implementation | Status | Evidence | Minimal action |
+|---|---|---|---|---|---|
+| §48 "Infrastructure"; rule 77 | OpenTofu. Plan reviewed before apply. State in Cloud Storage with locking. Emits GCP and IBM resources only | Terraform 1.9.8 with `hashicorp/google` and `hashicorp/google-beta`, both `~> 6.12` — the set `.claude/rules/domains/infrastructure.md` approves | **PARTIAL — TOOL-SUBSTITUTED, properties met** | The tool is not the named one: `grep -rn '1\.9\.8' .github/workflows/*.yml` returns two lines, `ci.yml` and `infra.yml`, each `terraform_version: "1.9.8"`; the root's `terraform` block declares `required_version = ">= 1.9.0"` and the two `hashicorp/*` providers. Each property is met. *Plan reviewed before apply* — `infra.yml`'s split plan/up/down, plus the guard hook that refuses an unreviewed apply. *State in Cloud Storage with locking* — `backend "gcs"` with `prefix = "qip/state"` in the same block. *GCP resources only* — `grep -rn '^provider "' infrastructure/terraform/*.tf` returns exactly two lines, `google` and `google-beta`, and nothing else; no IBM resource is emitted because the IBM integration is an API call and not a provisioned resource, so that half of the invariant is satisfied vacuously and is marked so rather than counted as compliance | **None, and none authorised.** Adopting OpenTofu is ADR 0049 part two, which takes no decision and states the cost: the migration alters no behaviour and touches `infra.yml`'s pin, the guard hook's command matching, `make infra`, the `infrastructure` suite, the provider lock and every runbook. A change that alters nothing and touches every gate is the kind that gets half-done |
+| §48 "Build and test"; Cloud Build | Cloud Build compiles and tests every path, with replay against captured market data | Split by workload: Cloud Build for the two browser surfaces, GitHub Actions for the four Rust images | **PARTIAL** | §48's builder does run here. `grep -n 'gcloud builds submit' scripts/deploy-frontends.sh` returns two invocations — the portal from `frontend/` and the landing from `frontend/landing/` — each signing its digest with the pipeline's own attestor and key version and reading the routed revision back. The four Rust images are built by GitHub Actions: `deploy.yml`'s image matrix names `qip-api`, `qip-fastbrain`, `qip-deepbrain`, `qip-edge-node`. **This element was scored ABSENT elsewhere in this repository while the same row's evidence column described Cloud Build building two services** — a score that reads as "the platform does not use Cloud Build", which is false in the direction that hides a live dependency on a Google service in the two workloads that face the internet. The replay-against-captured-data half of the invariant is **not scored here** and is not claimed | None required by this row. Moving the Rust images to Cloud Build would move the build off the runner that holds the Workload Identity Federation identity and performs the attestation — it moves *who signs*, which is a security-boundary change wearing a tooling change's clothes (ADR 0049 part two) |
+| §48 "Deploy — services"; Cloud Deploy | Cloud Deploy with gradual rollout and **automatic rollback on error rate** | None. ADR 0036's Kargo/Argo CD path promotes by commit with a post-sync proof gate | **MISSING-CURRENT — and the property is NOT REPRODUCED by the declared substitute either** | Tool absent: `grep -rniE 'cloud ?deploy' infrastructure/ .github/ --exclude-dir=.terraform` returned exactly one line on 2026-09-06, and it is a CRD group name inside a vendored Config Connector operator manifest — a string, not a use. (The command is written without alternation on purpose: an unescaped vertical bar inside a table cell splits the cell and shifts every column after it, which this repository's scorecards have already had happen to a row — so the greps quoted in these cells use `-E` with optional characters instead.) The **guarantee** is the part that matters and it is not reproduced. The substitute's post-sync hook asks whether the revision is Ready and whether the routed revision runs the attested digest, and fails the sync when the answer is no — a proof gate *before* traffic, which is a different thing from a rollback *after* it; `deploy.yml`'s deploy job records the handover in its own comment ("What this job did until ADR 0036 … belongs to the reconciler now", and "Read-only. This job no longer commits anything"), locatable with `grep -n 'ADR 0036' .github/workflows/deploy.yml`. **Rolling back on an error rate needs an error rate, and none exists:** `grep -rniE 'error.?rate' infrastructure/ --exclude-dir=.terraform` returned nothing on 2026-09-06 — the `--exclude-dir` is load-bearing, because without it the vendored provider binaries under `.terraform/` match and the command appears to contradict the sentence it is here to prove — and `workload_metrics_exist` is `default = false` in `infrastructure/terraform/variables.tf` and commented out in the one environment file that mentions it at all (`grep -rn workload_metrics_exist infrastructure/environments/*/terraform.tfvars` returns exactly one line, `dev`'s, commented). So no series exists for any policy to read | **None available in this repository.** Not blocked on a decision — blocked on ingestion, which is blocked upstream on a collector image that fails the platform's own scanner. Do not clear it with a scanner exception |
+
+**MISSING-CURRENT is used for row 3 with a stated strain.** This document
+defines it as "the blueprint requires it at or before the phase this repository
+has reached", and §48 carries no phase, so "at or before" is read as "now".
+ADR 0049's own words for the same row are "ABSENT, property NOT REPRODUCED,
+substitute declared and not running", in `deployed-vs-blueprint.md`'s
+WIRED/UNWIRED/ABSENT vocabulary. Neither score was changed in translation; the
+mapping is written down here so a reader who finds both can see that.
+
+**What this edit re-scored, and what it did not.** ADR 0049 records that
+writing these rows without re-scoring the surrounding layer table is a
+half-edit. The re-score is:
+
+- **Row 1 lands in [LAYER 6/7 — Cloud and network]**, whose bullet is re-scored
+  above for §48's Infrastructure band and for nothing else. Its statements about
+  what has and has not been applied are the `296e187`/`e04815e` score and were
+  **not** re-verified; treat them as of those commits.
+- **Rows 2 and 3 land in [LAYER 7/7 — Security, observability, delivery,
+  reliability]**, whose bullet is re-scored above for the delivery band. That
+  bullet carried "delivery" in its own title and scored none of it until this
+  edit. Its security and observability clauses were **not** re-verified.
+- **The other five layer bullets are untouched and no §48 row lands in them.**
+  A layer with no §48 row is not a layer that passed §48; it is a layer §48 does
+  not describe.
+
+**Six of §48's nine bands are still unscored in this document, and they are
+named rather than left to be inferred.** The blueprint's §48 table has nine:
+Build and test · Static analysis · Gate fixtures · Path and family simulation ·
+Attestation · Infrastructure · Deploy — services · Deploy — node · Admission.
+ADR 0049 wrote three, and three are what landed. **Static analysis, Gate
+fixtures, Path and family simulation, Attestation, Deploy — node and Admission
+are UNVERIFIED here** — not absent, not aligned; unscored. Several are scored
+in [`deployed-vs-blueprint.md`](deployed-vs-blueprint.md) against a runtime that
+no longer exists, which is a different question from the one this matrix asks,
+and "Gate fixtures" in particular states a **total coverage** requirement over
+the risk-gate and transfer-gate crates that no reading of the tree in this pass
+established. Scoring them needs a coverage measurement nobody has run.
 
 ## Corrections this pass makes to existing documents
 

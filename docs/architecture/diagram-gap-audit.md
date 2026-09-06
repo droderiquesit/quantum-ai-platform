@@ -27,6 +27,28 @@
 > full re-score is tracked work — so a row still describing a fill,
 > attribution or capital-demand outcome as reachable "only by tests" should
 > be treated as unverified rather than as re-confirmed.
+>
+> **Third correction, 2026-09-06 — the RBAC is four roles, not five.** The Zero
+> Trust row below reads "5-role RBAC (`qip-api/src/auth.rs` —
+> Monitor/Viewer/Analyst/Approver/Operator)". `Role::Approver` was **retired at
+> `665c506`**, in the binary and the deployment at once — the enum arm, the
+> composition root's tuple, the Terraform secret container and catalogue mount,
+> the blocks across the four rendered `RunService` manifests, the bootstrap
+> seeding loop and the credentials document. It was removed rather than wired
+> because no route ever required it (`grep -c 'required_role: Role::Approver'`
+> over `qip-api/src/routes.rs` was `0`), and the only approval this API exposes,
+> `POST /registrations/:source/approve`, already requires `Operator`, which is
+> **strictly stronger** — wiring Approver to it would have weakened a live
+> control to give a dead credential something to do. The set today is
+> Monitor · Viewer · Analyst · Operator: check with
+> `sed -n '/pub enum Role/,/^}/p' backend/crates/apps/qip-api/src/auth.rs`, and
+> `grep -n 'QIP_TOKEN_' backend/crates/apps/qip-api/src/main.rs` shows four
+> tokens minted and `QIP_TOKEN_APPROVER` kept only as a named refusal that stops
+> a process still setting it. **The row is left as scored**, per this document's
+> standing rule, because it is the record of what the audit found on 2026-08-24;
+> the count is corrected here, where a reader meets it before the row. Do not
+> read this as licence to re-add the role: `OperatorIdentity::with_second_approver`
+> is a *different* concept — the live-trading second person — and is untouched.
 
 Workspace state at audit time: `./scripts/count-tests.sh` reports **2,862 passed, 0 failed** ("the suite is green").
 Prior audit (`docs/architecture/current-state-audit.md`) was measured at 2,086 tests — it is stale and was treated

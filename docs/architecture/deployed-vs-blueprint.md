@@ -51,6 +51,29 @@
 > and creates nothing, and `boot_image` has no value in any environment. A
 > pipeline exists; an image does not, and step C5's node step still cannot be
 > performed.
+>
+> **Third correction, 2026-09-06 — step C4's `qip-api` row says "five tokens"
+> and there are four.** That row maps the chart's secrets onto the `cloudrun`
+> module's `secret_mounts`, and it reads "five tokens + envelope key → the six
+> `_FILE` variables". `Role::Approver` was **retired at `665c506`**, in the
+> binary and the deployment at once — the enum arm, the composition root's
+> tuple, the Terraform secret container and the catalogue mount, the blocks
+> across the four rendered `RunService` manifests, the bootstrap seeding loop
+> and the credentials document. It was removed rather than wired because no
+> route ever required it (`grep -c 'required_role: Role::Approver'` over
+> `qip-api/src/routes.rs` was `0`) and the only approval the API exposes,
+> `POST /registrations/:source/approve`, already requires `Operator`, which is
+> strictly stronger. **The mapping a migration engineer should carry forward is
+> therefore four tokens + envelope key → five `_FILE` variables**, the four
+> being Monitor, Viewer, Analyst and Operator: check with
+> `grep -n 'QIP_TOKEN_' backend/crates/apps/qip-api/src/main.rs`, which shows
+> the four minted and `QIP_TOKEN_APPROVER` retained only as a named refusal
+> that stops a process still setting it. That refusal is the thing to notice —
+> a deployment carrying the fifth mount now **fails to start** rather than
+> mounting a credential nothing reads, so following the row as written is not a
+> harmless over-provision. The row is left as scored, like every other row here,
+> because it is the record of what the chart declared at `bcad2d3`; the file it
+> cites (`api.yaml`) no longer exists either, per the first correction above.
 
 
 **Scope.** The runtime this repository would produce if its committed
