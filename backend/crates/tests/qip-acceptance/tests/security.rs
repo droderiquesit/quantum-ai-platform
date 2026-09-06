@@ -742,6 +742,67 @@ fn looks_like_a_token(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "+/=_-".contains(c))
 }
 
+/// A credential recognisable by its own shape, rather than by the name
+/// somebody happened to assign it to.
+///
+/// `looks_like_a_token` above is only ever asked about the right-hand side of
+/// one of seven key names. A credential pasted as `default = "hf_…"` in a
+/// tfvars file, or as a bare item in a YAML list, has no such key and walks
+/// straight through: the key is `default`, or there is no key at all. That
+/// gap is not hypothetical — a Hugging Face user access token belonging to
+/// this project was exposed outside the repository, and the only thing that
+/// stops the same class of mistake reaching a commit is a check that reads
+/// the value.
+///
+/// Deliberately narrow, in keeping with the note this file already carries.
+/// Every prefix below is issued by one vendor and carries a fixed minimum
+/// length, and for the two token families the run stops at the first `_` or
+/// `-`, so a word in prose cannot reach the minimum: the test fixture
+/// `hf_test_token_that_must_never_be_printed` yields a run of four. Three
+/// vendors, because these are the three this repository has a reason to hold
+/// — Hugging Face is the platform's only model vendor (ADR 0037), GitHub is
+/// the one host outside the VPC the management zone may reach, and Google is
+/// the cloud. A vendor the platform does not integrate with is left to the
+/// key-name check rather than guessed at here.
+///
+/// `separators` is true only for the Google key, whose documented alphabet
+/// includes `_` and `-`. Widening the other two would let an underscored
+/// identifier reach the minimum length and turn this into the wall of false
+/// positives the note warns about.
+const VENDOR_TOKEN_SHAPES: [(&str, usize, bool, &str); 7] = [
+    ("hf_", 34, false, "a Hugging Face access token"),
+    ("ghp_", 36, false, "a GitHub personal access token"),
+    ("gho_", 36, false, "a GitHub OAuth token"),
+    ("ghu_", 36, false, "a GitHub user-to-server token"),
+    ("ghs_", 36, false, "a GitHub server-to-server token"),
+    ("ghr_", 36, false, "a GitHub refresh token"),
+    ("AIza", 35, true, "a Google API key"),
+];
+
+/// What `line` carries, if it carries a value shaped like a vendor token.
+fn vendor_token(line: &str) -> Option<&'static str> {
+    for (prefix, minimum, separators, what) in VENDOR_TOKEN_SHAPES {
+        // Every occurrence, not just the first: a line holding a harmless
+        // `hf_` word before a real token would otherwise report clean on the
+        // strength of the word.
+        let mut rest = line;
+        while let Some(index) = rest.find(prefix) {
+            let tail = &rest[index + prefix.len()..];
+            let run = tail
+                .chars()
+                .take_while(|c| {
+                    c.is_ascii_alphanumeric() || (separators && (*c == '_' || *c == '-'))
+                })
+                .count();
+            if run >= minimum {
+                return Some(what);
+            }
+            rest = tail;
+        }
+    }
+    None
+}
+
 /// Every committed file a deployment reads and a person edits by hand.
 fn committed_configuration() -> Vec<PathBuf> {
     let mut found = Vec::new();
@@ -785,6 +846,9 @@ fn no_secret_value_appears_in_any_committed_configuration() {
             }
             if line.contains(r#""type": "service_account""#) {
                 report("a service-account key", &mut findings);
+            }
+            if let Some(what) = vendor_token(line) {
+                report(what, &mut findings);
             }
             if let Some(rest) = line.split_once("AKIA").map(|(_, rest)| rest)
                 && rest.len() >= 16
@@ -852,6 +916,55 @@ fn no_secret_value_appears_in_any_committed_configuration() {
 }
 
 #[test]
+fn the_vendor_token_detector_fires_on_a_real_shape_and_not_on_prose() {
+    // The half of a scanner that is usually missing. The repository is
+    // expected to contain none of these values, so the scan above passes
+    // identically whether `vendor_token` works or is a function that returns
+    // `None` — which is the `MaxExpectedShortfall` shape
+    // `.claude/rules/domains/risk-and-execution.md` names by example: a
+    // control that reads as protection and cannot fire. The only way to know
+    // this one can fire is to fire it.
+    //
+    // The values below are keyboard runs, not credentials. They are the right
+    // length and the right alphabet and name nothing.
+    let fires: [(String, &str); 3] = [
+        (format!("hf_{}", "a".repeat(34)), "Hugging Face"),
+        (format!("ghp_{}", "b".repeat(36)), "GitHub"),
+        (format!("AIza{}", "c".repeat(35)), "Google"),
+    ];
+    for (value, vendor) in &fires {
+        let found = vendor_token(&format!("  default = \"{value}\""));
+        assert!(
+            found.is_some_and(|what| what.contains(vendor)),
+            "a {vendor} token assigned to a key this suite does not know went undetected; \
+             that is exactly the shape the key-name check cannot see"
+        );
+    }
+
+    // And the other direction, because a detector that flags everything is
+    // the wall of false positives people learn to skip. Each of these is a
+    // near miss: the right prefix and the wrong shape.
+    for admitted in [
+        // The reasoning-engine test fixture. Underscores stop the run at
+        // four characters, which is why the alphabet excludes them.
+        "const TEST_TOKEN: &str = \"hf_test_token_that_must_never_be_printed\";",
+        // Right prefix, one character short of the minimum.
+        &format!("hf_{}", "a".repeat(33)),
+        &format!("ghp_{}", "b".repeat(35)),
+        &format!("AIza{}", "c".repeat(34)),
+        // Prose that happens to contain the prefixes.
+        "the huggingface router is reached through the egress proxy",
+        "ghp_ is the prefix a personal access token carries",
+    ] {
+        assert_eq!(
+            vendor_token(admitted),
+            None,
+            "the detector flagged a line carrying no credential: {admitted}"
+        );
+    }
+}
+
+#[test]
 fn the_infrastructure_suite_still_owns_the_terraform_and_manifest_scans() {
     // Composition rather than duplication. The scan above covers the workflow,
     // tfvars and ops files; the Terraform state hazard and the Kubernetes
@@ -873,6 +986,44 @@ fn the_infrastructure_suite_still_owns_the_terraform_and_manifest_scans() {
     // And the CI gate the credentials document names as the enforcement point.
     let scanner = read("scripts/check-secrets.sh");
     assert!(scanner.contains("PRIVATE KEY-----") && scanner.contains("service_account"));
+
+    // The two scanners exist to catch the same mistake in two places — this
+    // suite reads the configuration files, the shell gate reads every tracked
+    // file — and a prefix taught to one and not the other is a gap wearing a
+    // pair of scanners. The shell spells each prefix out rather than folding
+    // the GitHub family into a character class, for exactly this assertion.
+    //
+    // Matched against the gate's *pattern* lines and not against the file, and
+    // that distinction is the whole test. The first version of this assertion
+    // was `scanner.contains(prefix)`, which passed with the `hf_` pattern
+    // deleted — because the comment two lines above it explains the gap using
+    // the words `default = "hf_…"`. A scanner with no Hugging Face pattern and
+    // a paragraph about Hugging Face read as a scanner that had one. That is
+    // the substring trap `.claude/rules/architecture/01-testing-strategy.md`
+    // names by example, caught here by the mutation it was written for.
+    let declares = |prefix: &str| {
+        scanner.lines().any(|line| {
+            let line = line.trim();
+            line.starts_with('\'') && line.ends_with('\'') && line.contains(prefix)
+        })
+    };
+    // Premise first: the gate must have quoted patterns at all, or every
+    // assertion below is about an empty set.
+    assert!(
+        scanner
+            .lines()
+            .filter(|line| line.trim().starts_with('\''))
+            .count()
+            >= 4,
+        "scripts/check-secrets.sh has no quoted patterns; the walk is not reaching them"
+    );
+    for (prefix, _, _, what) in VENDOR_TOKEN_SHAPES {
+        assert!(
+            declares(prefix),
+            "no pattern in scripts/check-secrets.sh matches the `{prefix}` shape ({what}) that \
+             `vendor_token` in this suite refuses; the commit gate is the weaker of the two"
+        );
+    }
 }
 
 // --- the weak spots this model puts its name to -----------------------------
