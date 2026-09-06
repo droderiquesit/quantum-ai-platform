@@ -23,10 +23,23 @@ The receiver is declared; ingestion is not a fact.
 Two, not three — this file said three until someone counted. Exactly two
 policies in `main.tf` query a `qip_edge_*` series, and
 `grep -n 'query *= *"[^"]*qip_edge' main.tf` returns
-`edge_halted` and `edge_reconciliation_break` and nothing else;
-`central_reconciliation_break` reads the centre's own counter and is one of
-the five below. Three edge plus five central is eight, and
-`grep -c '^resource "google_monitoring_alert_policy"' main.tf` says seven.
+
+```
+193:      query               = "max by (cell, source) (qip_edge_halted) > 0"
+233:      query               = "increase(qip_edge_reconciliation_breaks_total[5m]) > 0"
+```
+
+and nothing else; `central_reconciliation_break` reads the centre's own
+counter and is one of the seven below. Three edge plus five central came to
+eight against a file that declared seven, which is how the miscount was
+caught.
+
+Recounted 2026-09-06, after the two liquidity policies below were added:
+`grep -c '^resource "google_monitoring_alert_policy"' main.tf` prints `9`,
+and the edge-query grep still returns exactly the two lines above. Two edge
+plus seven central is nine. **Run the commands; do not increment.** This
+file has already been wrong once by adding one to a number it read rather
+than counting the file.
 
 The receiver labels each sample `cell: <node_id>` and `region: <region>`
 from the template's `static_configs`, which is what
@@ -156,20 +169,94 @@ What is not:
   apply.
 
   What it produced is the useful part: with `workload_metrics_exist` false,
-  `count = 0` on all seven policies, so the apply created no alert policy at
-  all. The gate has therefore actually run rather than merely being
-  declared. What has never been applied is a *sidecar* — no environment
-  pins a collector digest, so no revision has ever carried one.
+  `count = 0` on every policy — seven at the time of that apply, nine now —
+  so the apply created no alert policy at all. The gate has therefore
+  actually run rather than merely being declared. What has never been
+  applied is a *sidecar* — no environment pins a collector digest, so no
+  revision has ever carried one.
 
   Recorded, not observed by me: I read this from the tree and the register,
   not from a plan or an apply log.
 - **Nothing has been observed.** No `prometheus.googleapis.com/qip_*`
   descriptor exists in any project.
 
-So today the five central-plane policies — kill switch, live fill, persistent
-breach, permission violation, central reconciliation break — still name
-series nothing carries to Cloud Monitoring. That is the honest state:
-emitted, scrapable, collector declared, not scraped.
+So today the seven central-plane policies — kill switch, live fill, persistent
+breach, permission violation, central reconciliation break, and the two added
+2026-09-06 below — still name series nothing carries to Cloud Monitoring. That
+is the honest state: emitted, scrapable, collector declared, not scraped.
+
+## The two liquidity policies, added 2026-09-06 and evaluated by nothing
+
+`risk_figure_unevaluated` and `sign_off_withheld_on_liquidity` in `main.tf`
+watch the two series that carry the liquidity floor's refusal, both of which
+reached their present shape in `5ccaea9`, when that floor was made to fail
+closed:
+
+- `qip_risk_figures_unevaluated{figure}` — a gauge, written on **both** arms of
+  the read in `Platform::stage_act`, `0` while the figure is being computed and
+  `1` while it is not. Both arms because a gauge written only when something is
+  wrong never falls back, and an operator could not then tell a control that is
+  running from one that has not run since the process started. The series is
+  new in `5ccaea9`
+  (`git log -S'RISK_FIGURES_UNEVALUATED: &str' -- …/metrics.rs`).
+- `qip_proposals_unsigned_total{control}` — counted where ACT withholds
+  sign-off. The policy queries `control="liquidity-read"` only. The series is
+  **not** new: the constant dates to the tree reorganisation `0217831`, and
+  what `5ccaea9` added is that third label value
+  (`git log -S'"liquidity-read"' -- …/platform.rs`). Said precisely because
+  "both series were added by one commit" is the kind of tidy sentence this
+  file has had to correct before.
+
+Both have a production caller and not merely a registered constant, which is
+the check this domain gets wrong most often: `stage_act` writes them, and
+`run_cycle` calls `stage_act` on every cycle. Read the caller —
+`grep -n 'RISK_FIGURES_UNEVALUATED\|PROPOSALS_UNSIGNED'` over
+`backend/crates/runtime/qip-kernel/src/platform.rs` returns the two recording
+sites in `stage_act` above the crate's `#[cfg(test)]` boundary, plus the
+`describe` for the counter and the tests that drive both.
+
+What is unusual about these two, and what the documentation on each says in its
+first line: **they fire when a safety control worked.** The platform stopped
+trading a book it could not price. An operator who reads either as a trading
+fault will look for the wrong problem.
+
+Why two policies for one failure. The gauge is the state and is blind to an
+intermittent read — a figure that fails on one cycle in ten never holds the
+gauge high for fifteen continuous minutes, and the desk has still refused to
+trade on every one of those cycles. The counter sees exactly that, and is also
+the sharper statement, because `control` is assigned in priority order:
+`liquidity-read` means the risk monitor permitted new risk and compliance was
+enforced, so the unreadable book was the *whole* reason nothing was signed.
+
+The thresholds are stated in time on both, and one of them had to be changed
+during review for a reason worth recording. The counter policy was first
+written as "more than two in an hour", which is a quarter of the deep brain's
+decisions — and a rounding error of the fast brain's. Both binaries call
+`run_cycle`, and so both write these series, but the deep brain cycles on the
+committed `cycle_interval_seconds` of 300 while `qip-fastbrain`'s own clock
+defaults to 100 milliseconds
+(`backend/crates/apps/qip-fastbrain/src/config.rs:30`). A count threshold
+therefore means two different things depending on which process is refusing,
+and neither is the thing an operator wants to know. Both policies now discriminate
+on duration, which is the same quantity on every writer: fifteen continuous
+minutes for the gauge, and for the counter a withheld sign-off somewhere in
+each of two consecutive half-hour lookbacks. Argue a threshold here against
+the *slowest* writer and check it still says something on the fastest.
+
+`control="compliance"` has no alert policy. That is a gap, named here rather
+than closed by widening the liquidity query into something no single runbook
+answers. `control="risk-monitor"` deliberately has none either: the kill-switch
+and persistent-breach policies already page on that incident, and a second page
+for one incident is how an alert layer gets muted.
+
+**Neither policy is evaluated, and neither will be until this whole file
+changes.** They are gated on `workload_metrics_exist` exactly as the seven
+before them, that variable is `false` in every environment, and nothing
+collects either series: the central plane runs on Cloud Run, whose collector is
+refused above rather than pending, and the node's receiver waits on a node no
+environment declares. A book whose liquidity cannot be read therefore still
+pages nobody today. These policies are the wiring, and the wiring is not the
+alarm.
 
 ## What would change this file
 

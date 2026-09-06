@@ -2340,7 +2340,15 @@ fn every_metric_an_alert_policy_queries_is_one_the_platform_emits() {
 /// A second copy of the policy list on purpose: a test that read the list
 /// out of the policies it checks would agree with every deletion. Adding a
 /// series that pages is therefore two edits and a reviewer who sees both.
-const SERIES_THAT_MUST_PAGE: [(&str, &str); 7] = [
+///
+/// The last two entries are the odd ones and belong here for the same reason
+/// as the rest. They do not report a failure; they report a control refusing,
+/// which means the platform has stopped trading a book it could not price. A
+/// desk that is flat because a safety control fired is still a desk that is
+/// flat, and nobody chose it — so it is worth waking someone for, and a
+/// policy deleted as "it only fires when things are working" is the deletion
+/// this list exists to make somebody argue for.
+const SERIES_THAT_MUST_PAGE: [(&str, &str); 9] = [
     (
         "qip_kill_switch_tripped",
         "the platform has halted and no order will be sent until an operator clears it",
@@ -2368,6 +2376,16 @@ const SERIES_THAT_MUST_PAGE: [(&str, &str); 7] = [
     (
         "qip_central_reconciliation_breaks_total",
         "the central plane acted on a report whose exposure disagrees with the envelope it granted",
+    ),
+    (
+        "qip_risk_figures_unevaluated",
+        "a risk figure could not be computed, so the limits reading it recorded nothing and the \
+         platform withheld sign-off rather than trade on a control that did not run",
+    ),
+    (
+        "qip_proposals_unsigned_total",
+        "ACT signed nothing off, and the label says which control withheld; on liquidity-read it \
+         means the book could not be priced and the desk is flat without having chosen to be",
     ),
 ];
 
