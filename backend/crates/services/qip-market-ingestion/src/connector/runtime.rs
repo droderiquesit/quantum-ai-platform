@@ -682,20 +682,43 @@ impl ConnectorRuntime {
         self.stats.quarantined = self.stats.quarantined.saturating_add(1);
     }
 
-    /// Lifecycle: **checkpoint**. The cursor, bound to the source and schema
-    /// it means something under.
+    /// Lifecycle: **checkpoint**. The cursor and a bounded tail of the dedup
+    /// window, bound to the source and schema they mean something under.
+    ///
+    /// The window travels with the cursor because for two of the four shipped
+    /// sources the cursor decides nothing: `FrankfurterRatesConnector::decode`
+    /// re-decodes the whole table every poll and the Coinbase ticker re-serves
+    /// its last print until a new one happens. For those, the dedup window *is*
+    /// the resume position, and a checkpoint that carried only a cursor
+    /// restored a connector to a state in which everything it already had
+    /// looked new.
     pub fn checkpoint(&self, at: Timestamp) -> Checkpoint {
         Checkpoint::new(&self.manifest, self.cursor.clone(), at)
+            .carrying(&self.dedup.recent(Checkpoint::CARRIED_FINGERPRINTS))
     }
 
-    /// Lifecycle: **resume**. Restore a cursor, or refuse it.
+    /// Lifecycle: **resume**. Restore a cursor and the carried window, or
+    /// refuse them.
+    ///
+    /// Returns how many fingerprints were taken. Zero after a resume from a
+    /// checkpoint that carried some means the window was already in use, which
+    /// [`DedupWindow::restore`] refuses rather than reports — so a zero here is
+    /// a checkpoint that genuinely carried nothing, and it is worth a log line
+    /// on a restart, because the next poll will republish the source's window.
     pub fn resume(
         &mut self,
         connector: &mut dyn SourceConnector,
         checkpoint: &Checkpoint,
-    ) -> Result<()> {
-        self.cursor = connector.resume(checkpoint)?;
-        Ok(())
+    ) -> Result<usize> {
+        // The cursor's own gates first — the wrong source's checkpoint, or one
+        // from an incompatible schema. A window restored from a checkpoint that
+        // then turned out to belong to another source would be another source's
+        // fingerprints in this one's window, silently suppressing real records.
+        let cursor = connector.resume(checkpoint)?;
+        let carried = checkpoint.carried()?;
+        let taken = self.dedup.restore(carried)?;
+        self.cursor = cursor;
+        Ok(taken)
     }
 
     /// Lifecycle: **shutdown**.

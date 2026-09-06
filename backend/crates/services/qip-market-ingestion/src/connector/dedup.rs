@@ -33,6 +33,26 @@
 //! evicts the oldest, so a duplicate older than the window is admitted again.
 //! That is the honest trade and it is why the bus deduplicates too: past this
 //! window, `qip_events::EventBody::idempotency_key` is the next line.
+//!
+//! # Why the window survives the process
+//!
+//! Every sentence above is about one process. A deployment that streams for a
+//! week is not one process: it is a revision rollout, an eviction, a restart
+//! after an out-of-memory kill, and a window that lives only in memory is empty
+//! after each of them. The sources this platform reads make that immediately
+//! visible — `FrankfurterRatesConnector::decode` ignores the cursor entirely
+//! and re-decodes the whole rate table on every poll, so the *only* thing
+//! standing between a restart and the same three reference rates being
+//! published a second time as new observations is this window. It held across a
+//! re-poll and not across a restart.
+//!
+//! [`DedupWindow::recent`] hands a bounded tail of the window to a checkpoint
+//! and [`DedupWindow::restore`] takes it back. The carry is bounded and
+//! ordinarily far smaller than the capacity, so the honest statement is
+//! narrower than the in-process one: a redelivery within the carry is
+//! recognised across a restart, and one older than it is admitted again exactly
+//! as it would be after an eviction. A bound that is stated is a bound an
+//! operator can size; a window silently emptied by a restart is not.
 
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
@@ -74,6 +94,35 @@ impl EventFingerprint {
             material.push_str(part);
         }
         Self(sha256_hex(material.as_bytes()))
+    }
+
+    /// The number of characters [`Self::of`] produces: SHA-256 in lower-case
+    /// hex.
+    const HEX_LEN: usize = 64;
+
+    /// A fingerprint read back from a checkpoint, or a refusal.
+    ///
+    /// Validated rather than trusted. A checkpoint is a file on a durable
+    /// store, and a value that reached this window without being a fingerprint
+    /// — a truncation, a stray key, a hand edit — would occupy a slot in a
+    /// bounded window and match nothing, quietly shrinking the very window a
+    /// restart is relying on. Refusing names the file to look at; accepting
+    /// would degrade dedup by an amount nobody could see.
+    pub fn from_hex(text: &str) -> Result<Self> {
+        if text.len() != Self::HEX_LEN
+            || !text
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(Error::invalid(format!(
+                "{text:?} is not an event fingerprint: {} lower-case hex characters are expected \
+                 and {} were given. A checkpoint carrying anything else has been truncated or \
+                 edited, and restoring from it would silently shrink the dedup window",
+                Self::HEX_LEN,
+                text.len()
+            )));
+        }
+        Ok(Self(text.to_string()))
     }
 
     pub fn as_str(&self) -> &str {
@@ -187,5 +236,74 @@ impl DedupWindow {
     /// Whether the fingerprint is in the window, without recording it.
     pub fn contains(&self, fingerprint: &EventFingerprint) -> bool {
         self.seen.contains(fingerprint)
+    }
+
+    /// The most recently admitted fingerprints, oldest first, at most `limit`.
+    ///
+    /// The tail rather than the head: a restart is about to re-read the newest
+    /// page of an at-least-once source, so the fingerprints worth carrying are
+    /// the ones that page will contain. `limit` is the caller's bound and is
+    /// what keeps a checkpoint a fixed size whatever the window's capacity is.
+    pub fn recent(&self, limit: usize) -> Vec<EventFingerprint> {
+        let skip = self.order.len().saturating_sub(limit);
+        self.order.iter().skip(skip).cloned().collect()
+    }
+
+    /// The newest fingerprint admitted, if any.
+    ///
+    /// What a checkpoint records as the boundary event, so a resume can tell a
+    /// redelivery of it from a genuinely new record.
+    pub fn newest(&self) -> Option<&EventFingerprint> {
+        self.order.back()
+    }
+
+    /// Seed an unused window from a checkpoint's carry, oldest first.
+    ///
+    /// Returns how many were taken, which is not always how many were given:
+    /// a carry longer than the capacity fills the window with its newest and
+    /// the surplus is counted as evicted, because the alternative — growing
+    /// past the capacity — is the unbounded working set this window exists to
+    /// refuse.
+    ///
+    /// Refuses a window that has already observed something. Restoring over a
+    /// running window would evict fingerprints from *this* session to make room
+    /// for older ones from the last, which is a dedup window that gets worse
+    /// the longer it runs; and there is no legitimate caller, because a resume
+    /// happens before the first poll or not at all.
+    pub fn restore(
+        &mut self,
+        carried: impl IntoIterator<Item = EventFingerprint>,
+    ) -> Result<usize> {
+        if self.admitted != 0 || self.duplicates != 0 {
+            return Err(Error::invalid(format!(
+                "this dedup window has already observed {} fingerprint(s), so it cannot be \
+                 restored from a checkpoint: the carry would evict what this session has seen to \
+                 make room for what the last one saw. Resume before the first poll, or not at all",
+                self.admitted.saturating_add(self.duplicates)
+            )));
+        }
+        let mut taken: usize = 0;
+        for fingerprint in carried {
+            if self.observe(&fingerprint).is_new() {
+                taken = taken.saturating_add(1);
+            }
+        }
+        // The carry is not this session's traffic. Zeroing the counters keeps
+        // `admitted` meaning "events this process took in", which is what the
+        // ledger's duplicate ratio divides by; leaving them would make the
+        // first poll after a restart report a batch it never fetched.
+        self.admitted = 0;
+        self.duplicates = 0;
+        Ok(taken)
+    }
+
+    /// Fingerprints held right now that were not admitted by this session.
+    ///
+    /// Zero once the carry has been evicted, which is how a deployment sees
+    /// that its restart protection has aged out rather than inferring it.
+    pub fn carried(&self) -> usize {
+        self.order
+            .len()
+            .saturating_sub(usize::try_from(self.admitted).unwrap_or(usize::MAX))
     }
 }

@@ -97,16 +97,44 @@
 //! and the stage records nothing. The seam is wired and the thing upstream of
 //! it is not yet fed.
 //!
-//! [`horizons`] still has none, and is further from one than [`families`] was.
-//! [`CapitalPools`] requires the total split four ways and refuses a split
-//! that does not sum exactly; the platform tracks one book — equity, the
-//! active reservations, and the unfunded commitments that
-//! `Platform::deployable_capital` nets off — and no division into inventory,
-//! deployable, unreserved and reserved exists to read. [`family_horizons`]
-//! requires a [`Horizon`] per strategy, and nothing records one;
+//! [`horizons`] now has one too, and it is a narrower one than [`families`]'.
+//! `qip_lifecycle::horizon::HorizonAssurance` — attached to a
+//! `LifecycleLedger` by whoever composes it — is consulted by
+//! `LifecycleLedger::record_promotion` before a strategy may take a rung that
+//! holds capital, and reaches this crate at
+//! [`HorizonRegister::settle`]/[`HorizonRegister::settle_despite`],
+//! [`FamilyBudget::from_money`], [`reconcile`] and
+//! [`HorizonReconciliation::into_plan`]. That path is production code:
+//! `qip-kernel`'s `central::factory` calls `qip_lifecycle::attempt_promotion`,
+//! which calls `record_promotion`.
+//!
+//! **Two honest limits on that, because the row this closes is one a previous
+//! scorecard got wrong in the optimistic direction.** First, the assurance is
+//! optional in the same way `TrialBook` was before `aa66c5d`: a ledger with
+//! none attached promotes exactly as it did before, and no composition root
+//! attaches one yet, so in a deployment the gate is wired and unfed. Second,
+//! [`family_horizons`] and [`family_horizons_settled`] still have no caller
+//! outside tests — the lifecycle seam reconciles one budget per strategy
+//! rather than per correlation family, because [`FamilyAssignment`] has no
+//! constructor but [`FamilyClustering::cluster`] and the lifecycle crate holds
+//! no correlation matrix. The blueprint's "horizon × family" cross is
+//! therefore reconciled on the horizon axis and not yet on the family one.
+//!
+//! What did *not* exist before and does now is the seam where two claims about
+//! one strategy's horizon disagree: [`HorizonRegister`] takes claims that name
+//! their [`HorizonSource`], reports a [`HorizonDispute`] rather than letting
+//! the last writer win, refuses to settle while one stands, and — where a desk
+//! decides anyway — records the decision and the overruled claims in
+//! [`SettledHorizons`] so nothing downstream can read the result as agreement.
+//! [`CapitalPools`] still requires the total split four ways and still refuses
+//! a split that does not sum exactly, and the four figures are the operator's
+//! to state: the platform tracks one book — equity, the active reservations,
+//! and the unfunded commitments that `Platform::deployable_capital` nets off —
+//! and no division into inventory, deployable, unreserved and reserved is
+//! derived anywhere. Nothing here infers one, because
 //! `qip_financial::ladder::LiquidationHorizon` is a property of an instrument
-//! rung rather than of a strategy, and mapping its seven rungs onto these
-//! four buckets would assert a strategy attribute nobody measured.
+//! rung rather than of a strategy, and mapping its seven rungs onto these four
+//! buckets would assert a strategy attribute nobody measured.
 //!
 //! Both stages are complete, refusing, tested units. No family has been
 //! evaluated on data from a deployment and none is claimed to have been — in
@@ -128,8 +156,9 @@ pub use families::{
     StressCorrelation, StressWindow,
 };
 pub use horizons::{
-    CapitalPools, FamilyBudget, Horizon, HorizonPosition, HorizonReconciliation, ReconciledPlan,
-    family_horizons, reconcile,
+    CapitalPools, FamilyBudget, Horizon, HorizonDispute, HorizonPosition, HorizonReconciliation,
+    HorizonRegister, HorizonSource, ReconciledPlan, SettledHorizons, family_horizons,
+    family_horizons_settled, reconcile,
 };
 pub use problem::{Objective, PortfolioConstraint, PortfolioProblem, QuboEncoding};
 pub use router::{ComputeRouter, RoutingDecision, RoutingPolicy, Solver, SolverRun};

@@ -21,8 +21,10 @@
 //!   costs a day of missed opportunity and a missed one costs the book.
 
 use crate::band::{BandVerdict, HoldoutBand};
+use crate::corridor::{CorridorPolicy, CorridorSubject};
 use crate::evidence::StrategyEvidence;
 use crate::gates::Admission;
+use crate::horizon::{HorizonAssurance, HorizonVerdict};
 use crate::trials::TrialBook;
 use qip_contracts::gate::{GateOutcome, GateStage, Promotion};
 use qip_contracts::governance::Approval;
@@ -127,6 +129,18 @@ pub struct LedgerEntry {
     /// performance is held inside of, from the evidence that admitted it.
     #[serde(default)]
     pub band: Option<HoldoutBand>,
+    /// Which capital pool funded this rung, and what the platform's own
+    /// sources disagreed about at the moment it was taken. Present on every
+    /// admission to a rung that holds capital where the ledger carries a
+    /// [`HorizonAssurance`], and on nothing else.
+    ///
+    /// `serde(default)` so a record written before this field existed still
+    /// loads. A promotion taken over an unresolved horizon disagreement is
+    /// indistinguishable afterwards from one taken on agreement unless the
+    /// record says which it was, and a post-mortem that cannot tell them apart
+    /// draws the wrong lesson from whichever went wrong.
+    #[serde(default)]
+    pub horizon: Option<HorizonVerdict>,
 }
 
 impl LedgerEntry {
@@ -152,6 +166,22 @@ pub struct LifecycleLedger {
     /// book refuses every promotion to holdout, because without it the
     /// lifetime trial count is unknown and unknown is not zero.
     trials: Option<TrialBook>,
+    /// Which capital pool funds each rung that holds capital, and the
+    /// disagreements between the platform's own sources about it. Optional for
+    /// the same reason as the trial book — a ledger exists before its
+    /// composition root can hand anything in — and with the trial book's
+    /// consequence rather than the registry's, but scoped: a ledger with none
+    /// promotes exactly as it did before this field existed, and one that has
+    /// been given an assurance refuses every promotion to a capital-holding
+    /// rung the assurance will not admit. See `crate::horizon` for the honest
+    /// limit that no composition root attaches one yet.
+    horizons: Option<HorizonAssurance>,
+    /// The corridors this desk has declared, and the policy last emitted for
+    /// them. Re-derived on every recorded move, so the policy is never older
+    /// than the standings it is derived from — a stale corridor cap is one
+    /// that keeps funding a strategy the ledger has already retired.
+    corridors: Vec<CorridorSubject>,
+    corridor_policy: Option<CorridorPolicy>,
 }
 
 impl LifecycleLedger {
@@ -177,6 +207,68 @@ impl LifecycleLedger {
 
     pub fn trial_book_mut(&mut self) -> Option<&mut TrialBook> {
         self.trials.as_mut()
+    }
+
+    /// Hold every promotion to a capital-holding rung to the §23.4 pools from
+    /// now on.
+    pub fn with_horizons(mut self, assurance: HorizonAssurance) -> Self {
+        self.attach_horizons(assurance);
+        self
+    }
+
+    /// As [`Self::with_horizons`], for a ledger that already exists.
+    pub fn attach_horizons(&mut self, assurance: HorizonAssurance) {
+        self.horizons = Some(assurance);
+    }
+
+    pub fn horizons(&self) -> Option<&HorizonAssurance> {
+        self.horizons.as_ref()
+    }
+
+    /// Declare the corridors whose policy this ledger sets, and emit it once
+    /// against the standings as they are now.
+    ///
+    /// Emitting immediately rather than waiting for the next promotion matters:
+    /// a desk that declares a corridor funding a strategy that was retired last
+    /// week must not be told the corridor is open until something unrelated
+    /// happens to move the ledger.
+    pub fn declare_corridors(
+        &mut self,
+        subjects: Vec<CorridorSubject>,
+        now: Timestamp,
+    ) -> Result<&CorridorPolicy> {
+        let policy = crate::corridor::emit(self, &subjects, now)?;
+        self.corridors = subjects;
+        self.corridor_policy = Some(policy);
+        self.corridor_policy
+            .as_ref()
+            .ok_or_else(|| Error::invalid("the corridor policy was not retained after emission"))
+    }
+
+    /// The corridor policy as it stands. `None` until corridors are declared —
+    /// the capability's subject, without which there is nothing to rule on.
+    pub fn corridor_policy(&self) -> Option<&CorridorPolicy> {
+        self.corridor_policy.as_ref()
+    }
+
+    pub fn corridors(&self) -> &[CorridorSubject] {
+        &self.corridors
+    }
+
+    /// Re-derive the corridor policy after a standing changed.
+    ///
+    /// Deliberately infallible at the call sites that recorded the move: the
+    /// subjects were validated when they were declared, and a re-emission that
+    /// refused would leave the ledger holding a policy older than the standing
+    /// it describes while the move itself had already been recorded. If it
+    /// somehow cannot be re-derived the previous policy is dropped rather than
+    /// kept, because a stale corridor cap is the one failure this re-emission
+    /// exists to prevent.
+    fn reemit_corridor_policy(&mut self, now: Timestamp) {
+        if self.corridors.is_empty() {
+            return;
+        }
+        self.corridor_policy = crate::corridor::emit(self, &self.corridors.clone(), now).ok();
     }
 
     /// Count moves into `metrics` from now on.
@@ -349,6 +441,16 @@ impl LifecycleLedger {
             _ => {}
         }
 
+        // Which pool funds this rung, and what the platform's own sources
+        // disagreed about at the moment it was taken. Checked here rather than
+        // in `attempt_promotion` so a caller that builds its own gate and
+        // records directly cannot route around it — the same reason the rung,
+        // the retirement and the band are checked here.
+        let horizon = match (&self.horizons, promotion.to().holds_capital()) {
+            (Some(assurance), true) => Some(assurance.admit(self, strategy)?),
+            _ => None,
+        };
+
         let record = Promotion {
             from: promotion.from(),
             to: promotion.to(),
@@ -374,8 +476,10 @@ impl LifecycleLedger {
                 outcome: Some(outcome),
                 approval: promotion.approval().cloned(),
                 band,
+                horizon,
             });
         self.record_move(names::STRATEGY_PROMOTIONS, record.from, record.to);
+        self.reemit_corridor_policy(record.at);
         Ok(record)
     }
 
@@ -434,8 +538,14 @@ impl LifecycleLedger {
                 outcome: None,
                 approval: None,
                 band: None,
+                // A demotion passes no gate, so it reconciles no horizon. The
+                // pool it stops drawing on is a fact about the promotions that
+                // remain, and the corridor re-emission below is where that
+                // becomes consequential.
+                horizon: None,
             });
         self.record_move(names::STRATEGY_DEMOTIONS, record.from, record.to);
+        self.reemit_corridor_policy(record.at);
         Ok(record)
     }
 

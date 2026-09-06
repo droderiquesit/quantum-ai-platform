@@ -22,9 +22,21 @@
 //! | health | [`SourceConnector::health_request`] | liveness from the heartbeat; no rate-limit token spent |
 //! | fetch | [`SourceConnector::fetch_request`], [`SourceConnector::decode`] | admission, bounded jittered backoff, schema and version gates |
 //! | map | [`SourceConnector::map`] | fingerprint, dedup, knowable-time withholding, envelope, quarantine |
-//! | checkpoint | [`SourceConnector::advance`] | the cursor, bound to source and schema |
-//! | resume | [`SourceConnector::resume`] | refuses another source's or another schema's cursor |
+//! | checkpoint | [`SourceConnector::advance`] | the cursor and a bounded tail of the dedup window, bound to source and schema |
+//! | resume | [`SourceConnector::resume`] | refuses another source's or another schema's cursor; restores the carried window |
 //! | shutdown | [`SourceConnector::shutdown`] | marks the runtime disconnected |
+//!
+//! # A restart is part of the lifecycle, not an interruption of it
+//!
+//! Two of the four shipped sources have no cursor worth resuming from —
+//! Frankfurter re-decodes its whole table every poll and the Coinbase ticker
+//! re-serves its last print — so for them the dedup window *is* the resume
+//! position. It used to live only in memory, and a restarted process therefore
+//! republished everything it already held as new observations. The checkpoint
+//! carries a bounded tail of it now; [`checkpoint::Checkpoint::CARRIED_FINGERPRINTS`]
+//! is the bound and [`journal::StreamJournal`] is where a deployment keeps the
+//! checkpoint, beside a record of what the stream has actually done across
+//! every process that carried it.
 //!
 //! # The two disciplines a connector author cannot opt out of
 //!
@@ -62,6 +74,7 @@ pub mod emulator;
 pub mod envelope;
 pub mod harness;
 pub mod heartbeat;
+pub mod journal;
 pub mod manifest;
 pub mod quarantine;
 pub mod ratelimit;
@@ -76,6 +89,7 @@ pub use emulator::{RecordedExchange, SourceEmulator};
 pub use envelope::{MarketEventEnvelope, RawEvent};
 pub use harness::{ContractCheck, ContractHarness, ContractReport};
 pub use heartbeat::{FeedHeartbeat, Liveness};
+pub use journal::{InstantSpan, StreamJournal, StreamLedger};
 pub use manifest::{
     AssetClass, AuthScheme, AuthSpec, EndpointSpec, FieldKind, FieldSpec, Protocol, RateLimitSpec,
     Region, RetrySpec, SchemaContract, SchemaVersion, SecretRef, SourceManifest,

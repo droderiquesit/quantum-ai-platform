@@ -29,6 +29,27 @@
 //!   `qip_risk_engine::autonomy` and rests on the same asymmetry: a false
 //!   demotion costs a day of missed opportunity, a missed one costs the book.
 //!
+//! Two further commitments, added when the Intelligence layer's own scorecard
+//! row named them missing. Both are records and refusals; neither moves,
+//! signs or calls anything out, and ADR 0021 bounds the half that would:
+//!
+//! * **A rung that holds capital names the pool that funds it.**
+//!   [`horizon::HorizonAssurance`], when a composition root attaches one, has
+//!   the candidate measured against every strategy already drawing on a pool —
+//!   through the [`horizon::HorizonReconciler`] port, because this crate holds
+//!   a veto over capital and must not reach the solver the pool arithmetic
+//!   lives beside — and refuses a promotion that would push a §23.4 horizon
+//!   past its pool rather than trimming it.
+//!   Where two of the platform's own sources disagree about a strategy's
+//!   horizon it refuses; where a desk decides over the disagreement anyway,
+//!   the overruled claims and the stated reason are written onto the
+//!   [`ledger::LedgerEntry`], so the record says which of the two it was.
+//! * **Intelligence sets corridor policy.** [`corridor::emit`] derives each
+//!   declared corridor's cap from the weakest rung any strategy it funds is
+//!   standing on, and the ledger re-emits it on every recorded move. A
+//!   corridor funding a strategy that has been retired carries nothing, and
+//!   says which strategy and which rung decided that.
+//!
 //! Nothing here reads a clock or draws a random number. Every entry point
 //! takes the instant it is reasoning about as a [`qip_core::Timestamp`], so a
 //! replay of the same events produces the same ledger.
@@ -65,14 +86,19 @@
 //! ```
 
 pub mod band;
+pub mod corridor;
 pub mod demotion;
 pub mod evidence;
 pub mod gates;
+pub mod horizon;
 pub mod ledger;
 pub mod scoring;
 pub mod trials;
 
 pub use band::{BandMethod, BandVerdict, HoldoutBand};
+pub use corridor::{
+    CorridorPolicy, CorridorRoute, CorridorRuling, CorridorStanding, CorridorSubject,
+};
 pub use demotion::{
     DemotionMonitor, DemotionPolicy, DemotionTrigger, LiveObservation, PilotBaseline,
 };
@@ -84,6 +110,10 @@ pub use evidence::{
 pub use gates::{
     Admission, Gate, HoldoutGate, HoldoutPolicy, PaperGate, PaperPolicy, PilotGate, PilotPolicy,
     ScaledGate, ScaledPolicy, ShadowGate, ShadowPolicy, gate_for,
+};
+pub use horizon::{
+    HorizonAssurance, HorizonBucket, HorizonDisagreement, HorizonFunding, HorizonReconciler,
+    HorizonStanding, HorizonVerdict,
 };
 pub use ledger::{AuthorisedPromotion, LedgerEntry, LifecycleLedger, attempt_promotion};
 pub use trials::{

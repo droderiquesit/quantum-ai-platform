@@ -552,6 +552,7 @@ dependencies = [
  "qip-observability",
  "qip-orderbook",
  "qip-sequencing",
+ "qip-storage",
  "qip-transport",
  "serde",
  "serde_json",

@@ -39,6 +39,18 @@
 //! offers. [`admit`] and [`admit_from`] consult the shipped registry, which
 //! records nobody; [`admit_registered`] and [`admit_from_registered`] take
 //! the owner's.
+//!
+//! # Before use, and for as long as it is used
+//!
+//! Each of the four functions above answers **at an instant**, because
+//! `LicensingPosture::legality_for` takes one and consults the licence's own
+//! effective and expiry dates. Called once at start-up, they satisfy the rule
+//! exactly: the evaluation precedes the socket. That is sufficient for a
+//! process whose life is a cycle and insufficient for one asked to stream for a
+//! week, where a licence can lapse between the start-up that admitted it and
+//! the poll that uses it. [`StandingAdmission`] is the same gate held open —
+//! the whole of it, re-asked at the instant of each poll — and it exists
+//! because a control consulted once is a control that cannot fire.
 
 use qip_contracts::governance::Usage;
 use qip_core::Timestamp;
@@ -326,6 +338,198 @@ pub fn admit_from_registered(
         registration,
         decided_at: now,
     })
+}
+
+/// The licensing gate held open for as long as a source is being polled.
+///
+/// # Why an admission is not a decision taken once
+///
+/// [`admit`] answers *at an instant*: `legality_for(usage, now)` consults the
+/// licence's own effective and expiry instants, so its answer is true of `now`
+/// and of nothing else. Every composition root calls it once, at start-up,
+/// before opening the connector — which is exactly what the rule demands and
+/// is sufficient for a process that lives for a poll.
+///
+/// It stops being sufficient the moment a process is expected to stream for a
+/// week. A licence that expires on the third day of a seven-day run has a gate
+/// that already knows it expired and is never asked again; the feed keeps
+/// polling, and the records keep arriving stamped with a class the terms no
+/// longer grant. No catalogue entry in this build carries an expiry today, so
+/// nothing is presently mis-serving — which is the whole reason to close it
+/// now rather than after the first entry that does. `SourceLicense::expiring_at`
+/// exists, `legality_for` honours it, and `an_expired_licence_stops_granting_what_it_used_to`
+/// in `tests/legality.rs` proves the mechanism works. A mechanism that works
+/// and is consulted once is a control that cannot fire.
+///
+/// So this type asks the whole gate again — the catalogue, the class
+/// agreement, both usages, and the registration — every time the caller is
+/// about to use the source, and refuses when any of them has stopped saying
+/// yes. It holds no cached verdict on purpose: a cache is a second claim about
+/// one licence, and the point of re-asking is that the first claim may have
+/// gone stale.
+#[derive(Debug)]
+pub struct StandingAdmission {
+    /// The catalogue, held rather than rebuilt.
+    ///
+    /// Not a cached verdict — a cached *input*. The entries are code: a change
+    /// to a licence is a change to [`catalogue`], reviewed and redeployed, and
+    /// cannot happen inside a running process. What moves between one check
+    /// and the next is `now`, and that is exactly what is re-evaluated. Holding
+    /// the answer would be the mistake; holding the question is not.
+    entries: Vec<CatalogueEntry>,
+    source_id: String,
+    manifest_class: LicensingClass,
+    registrations: RegistrationRegistry,
+    opened_at: Timestamp,
+    /// The furthest instant the gate has been asked about, whatever it
+    /// answered. See [`StandingAdmission::check`] for why the answer must not
+    /// govern it.
+    horizon: Timestamp,
+    /// The last instant at which this source was licensed.
+    last_granted: Timestamp,
+    checks: u64,
+}
+
+impl StandingAdmission {
+    /// Run the gate for the first time and keep it open, or refuse.
+    ///
+    /// The first check is the admission the rule requires *before* the source
+    /// is used: this returns an error, and no `StandingAdmission` exists, when
+    /// the source is not admissible. A caller therefore cannot hold one of
+    /// these for a source that was never admitted.
+    pub fn open(
+        registrations: RegistrationRegistry,
+        source_id: &str,
+        manifest_class: LicensingClass,
+        now: Timestamp,
+    ) -> Result<(Self, LicensingDecision)> {
+        Self::over(catalogue()?, registrations, source_id, manifest_class, now)
+    }
+
+    /// The same, against a caller-supplied catalogue.
+    ///
+    /// Split from [`Self::open`] for the reason [`admit_from`] is split from
+    /// [`admit`]: the arm worth testing is a licence that expires *between* two
+    /// checks, and no entry in the real catalogue expires — so exercising it
+    /// through [`catalogue`] would mean putting an expiry into the shipped
+    /// evaluation of a real vendor's terms to satisfy a test.
+    pub fn over(
+        entries: Vec<CatalogueEntry>,
+        registrations: RegistrationRegistry,
+        source_id: &str,
+        manifest_class: LicensingClass,
+        now: Timestamp,
+    ) -> Result<(Self, LicensingDecision)> {
+        let decision =
+            admit_from_registered(&entries, &registrations, source_id, manifest_class, now)?;
+        Ok((
+            Self {
+                entries,
+                source_id: source_id.to_string(),
+                manifest_class,
+                registrations,
+                opened_at: now,
+                horizon: now,
+                last_granted: now,
+                checks: 1,
+            },
+            decision,
+        ))
+    }
+
+    /// Ask the gate again, at the instant the caller is about to poll.
+    ///
+    /// Refuses an instant earlier than any this gate has already been asked
+    /// about. A poll loop's horizon only moves forward, so a backwards instant
+    /// is either a clock that has stepped or a caller replaying — and in both
+    /// cases the licence question would be answered about a moment that has
+    /// passed, which is the one way to make an expired licence keep granting.
+    /// Refused rather than clamped: a clamped instant would answer the question
+    /// the caller did not ask and say nothing about it.
+    ///
+    /// # Why the horizon moves on a refusal too
+    ///
+    /// It did not, in the first version of this type, and the test written to
+    /// prove the guard is what found it. With the horizon advanced only on a
+    /// grant, a caller whose poll at `T` was refused for expiry could ask again
+    /// about the admission instant and be granted — the guard was intact
+    /// against a clock stepping back and useless against the only case in which
+    /// anyone would want to step it back. So the horizon is the furthest
+    /// instant the gate has been *asked* about, and [`Self::last_granted`] is
+    /// the last instant it said yes. Two facts, because a gate that refused at
+    /// noon and last granted at eleven is a different state from one that has
+    /// not been asked since eleven, and one field cannot say which.
+    pub fn check(&mut self, now: Timestamp) -> Result<LicensingDecision> {
+        if now < self.horizon {
+            return Err(Error::invalid(format!(
+                "the licensing gate for `{}` has been asked about {} and is now being asked about \
+                 {}, which is earlier. A licence question answered about a past instant is how an \
+                 expired licence keeps granting; move the caller's horizon forward, or re-open \
+                 the admission at the instant it means",
+                self.source_id,
+                self.horizon.to_rfc3339(),
+                now.to_rfc3339()
+            )));
+        }
+        // Before the verdict, and deliberately: a refused question has still
+        // been asked, and letting the horizon depend on the answer is what made
+        // the guard escapable.
+        self.horizon = now;
+        let decision = admit_from_registered(
+            &self.entries,
+            &self.registrations,
+            &self.source_id,
+            self.manifest_class,
+            now,
+        )?;
+        self.last_granted = now;
+        self.checks = self.checks.saturating_add(1);
+        Ok(decision)
+    }
+
+    pub fn source_id(&self) -> &str {
+        &self.source_id
+    }
+
+    /// How many times the gate has answered yes, including the admission.
+    ///
+    /// A refusal does not increment it: a consultation that ended in a refusal
+    /// is not a moment at which this source was licensed, and a counter that
+    /// rose on refusals would let a feed refused on every poll read as a feed
+    /// checked on every poll.
+    ///
+    /// The number that distinguishes a gate consulted on every poll from one
+    /// consulted at start-up. An operator comparing it against the ledger's
+    /// poll count is checking the claim this type makes, rather than believing
+    /// it.
+    pub const fn checks(&self) -> u64 {
+        self.checks
+    }
+
+    pub const fn opened_at(&self) -> Timestamp {
+        self.opened_at
+    }
+
+    /// The furthest instant the gate has been asked about, granted or refused.
+    pub const fn horizon(&self) -> Timestamp {
+        self.horizon
+    }
+
+    /// The last instant at which this source was licensed.
+    pub const fn last_granted(&self) -> Timestamp {
+        self.last_granted
+    }
+
+    pub fn describe(&self) -> String {
+        format!(
+            "licensing for `{}`: opened {}, {} check(s), last granted at {}, asked to {}",
+            self.source_id,
+            self.opened_at.to_rfc3339(),
+            self.checks,
+            self.last_granted.to_rfc3339(),
+            self.horizon.to_rfc3339()
+        )
+    }
 }
 
 // The workspace denies `panic_in_result_fn` for production code, where an

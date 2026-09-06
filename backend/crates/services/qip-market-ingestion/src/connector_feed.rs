@@ -231,13 +231,31 @@ impl ConnectorFeed {
         self.runtime.shutdown(self.connector.as_mut(), at)
     }
 
-    /// The cursor a restart would resume from.
+    /// The cursor a restart would resume from, and the dedup window it would
+    /// resume with.
     ///
     /// Exposed for the same reason: [`ConnectorRuntime::checkpoint`] is public
     /// and was unreachable through this bridge, so a restarted node had no
     /// cursor to resume from and would re-poll the manifest's whole window.
     pub fn checkpoint(&self, at: Timestamp) -> Checkpoint {
         self.runtime.checkpoint(at)
+    }
+
+    /// Restore the position and the dedup window the last process left.
+    ///
+    /// Returns the fingerprints taken. Call it before the first
+    /// [`DataAdapter::poll`]: [`crate::connector::DedupWindow::restore`]
+    /// refuses a window that has already observed something, so a resume after
+    /// a poll is an error rather than a partial restore, and the error names
+    /// what to do instead.
+    ///
+    /// This is the half of the restart story `checkpoint` could not tell on its
+    /// own. Taking a checkpoint was reachable through this bridge and applying
+    /// one was not, so a composition root could write a resume position it had
+    /// no way to use — the same shape as a limit that cannot fire, one seam
+    /// earlier.
+    pub fn resume(&mut self, checkpoint: &Checkpoint) -> Result<usize> {
+        self.runtime.resume(self.connector.as_mut(), checkpoint)
     }
 }
 
