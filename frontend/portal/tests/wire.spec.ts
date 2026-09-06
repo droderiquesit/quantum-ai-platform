@@ -29,6 +29,18 @@
  *   claim has to be rewritten to match, which is the outcome that was missing
  *   the first time.
  *
+ * The registration half of that last point has since inverted, and the file is
+ * more useful for it. The platform split `GET /registrations` by authority —
+ * the credential slots moved to `GET /registrations/slots` at `Role::Operator`
+ * — so the slot name and the `gcloud` line are now absent from the viewer's
+ * body, and this suite asserts the absence on the response rather than the
+ * screen. That is the same argument in the other direction: a DOM test cannot
+ * tell "the console does not render it" from "the console was never sent it",
+ * so only a wire test can say which of the two closed the gap. The stub
+ * refuses `/registrations/slots` with the platform's own 403, because the
+ * console's credential is the viewer token (ADR 0018) and a stub that served
+ * it would be testing an entitlement this console does not have.
+ *
  * The fixture bodies are in `tests/support/upstream-stub.mjs`.
  */
 import { expect, test } from "@playwright/test";
@@ -171,35 +183,79 @@ test("a browser on /topology holds no cell address on any response it received",
   expect(mesh!.body).toContain(REDACTED);
 });
 
-test("the venue slot the console cannot remove still arrives, and the page that reads it says so rather than claiming otherwise", async ({
+test("the venue slot is gone from the viewer's body because the platform moved it, and the page names what the read still carries rather than the four fields it used to", async ({
   page,
   request,
 }) => {
-  // Asserted the awkward way round on purpose. This console renders
-  // `secret_slot` and `secret_command` on the credential-lifecycle pages, so
-  // stripping them at the gateway would break the page that needs them and
-  // keep nothing from a browser that can call the route itself. The honest
-  // position is therefore that they do arrive — and the page must say that
-  // rather than the comfortable opposite.
+  // This test used to assert the opposite, and it was right to. `GET
+  // /registrations` was `Role::Viewer` and carried `secret_slot`,
+  // `secret_command` and each companion command, the credential-lifecycle
+  // pages rendered them, and stripping them at the gateway would have broken
+  // those pages while keeping nothing from a browser that can call the route
+  // itself. So the honest position then was that they arrive, and the page had
+  // to say so.
+  //
+  // The platform has since split the route by authority, which is the fix that
+  // position asked for: the slots moved to `GET /registrations/slots` at
+  // `Role::Operator`. So the assertion inverts, and it has to be made *here*,
+  // on the response body, for the same reason the original did — a DOM test
+  // cannot tell "the console does not render it" from "the console was never
+  // sent it", and that gap is exactly what let the mesh address ship.
   const answered = await request.get("/api/gateway/registrations");
+  expect(answered.status()).toBe(200);
   const body = await answered.text();
-  expect(body, "the fixture carries no slot name, so this test proves nothing").toContain(
-    SECRET_SLOT,
+
+  // The premise: the viewer's body really is this route's answer and really
+  // has rows in it. Without this the two absences below would pass against an
+  // empty body, a 404, or a gateway that answered nothing at all.
+  const parsed = JSON.parse(body) as {
+    sources: { source_id: string; terms: string; secret_slot?: unknown }[];
+  };
+  expect(parsed.sources, "the viewer's body carried no sources, so nothing below is a narrowing").toHaveLength(1);
+  expect(parsed.sources[0]!.source_id).toBe("alpaca-daily-bars");
+
+  expect(body, "a credential slot is still on the viewer's body").not.toContain(SECRET_SLOT);
+  expect(body, "the Secret Manager write command is still on the viewer's body").not.toContain(
+    SECRET_COMMAND,
   );
-  expect(body).toContain(SECRET_COMMAND);
+  expect(parsed.sources[0]!.secret_slot).toBeUndefined();
+  // And the narrowing is the platform's, not this gateway's: a console that
+  // had started stripping the field would be making a claim rather than
+  // reporting one, and `x-qip-redacted` is how those two are told apart.
   expect(answered.headers()["x-qip-redacted"]).toBeUndefined();
+
+  // The field that does still arrive, and that the health page is accountable
+  // for naming.
+  expect(parsed.sources[0]!.terms).toBe("https://alpaca.markets/terms-and-conditions");
+
+  // The operator route the slots moved to, refused to this console's
+  // credential — which is what a deployment answers it (ADR 0018: the console
+  // authenticates as viewer and holds no other platform credential).
+  const slots = await request.get("/api/gateway/registrations/slots");
+  expect(slots.status(), "the slots route was not refused, so the console holds more than viewer").toBe(403);
+  expect(await slots.text()).toContain("operator role");
 
   await page.goto("/data-sources/health");
   const row = page.locator('[data-testid="feed-health-disclosure-row"][data-route="/registrations"]');
   await expect(row, "the page does not name what its own read carried").toHaveCount(1);
   await expect(row).toHaveAttribute("data-role", "viewer");
+  // Derived from the table rather than transcribed, so a field that leaves the
+  // wire and the table leaves this assertion with it.
   for (const field of WIRE_DISCLOSURES[0]!.fields) {
     await expect(row, `${field} is not named as something this browser received`).toContainText(
       field,
     );
   }
+  // The table is the narrowed one. Asserted by value and not only by
+  // iteration: a loop over an empty list passes, and a loop over the old four
+  // would pass against a page that still claimed the browser holds slots it
+  // has not been sent since the split.
+  expect(WIRE_DISCLOSURES[0]!.fields).toEqual(["terms"]);
+  await expect(row, "the page still claims the viewer's body carries a slot").not.toContainText(
+    "secret_slot",
+  );
 
-  // The pixel half still holds: naming the field is not printing the value.
+  // The pixel half still holds: naming a field is not printing a value.
   const content = page.locator("#content");
   await expect(content, "a credential variable name was rendered").not.toContainText(SECRET_SLOT);
   await expect(content, "the command that writes a secret was rendered").not.toContainText(

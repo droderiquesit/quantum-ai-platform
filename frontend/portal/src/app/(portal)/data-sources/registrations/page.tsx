@@ -10,11 +10,18 @@ import { formatTimestamp } from "@/lib/format";
 import {
   approvalPermission,
   registrations,
+  slotAccess,
   useRegistrations,
+  useRegistrationSlots,
   useSessionIdentity,
+  viewerStanding,
+  SLOTS_REFUSAL,
+  SLOTS_ROUTE,
   type Approval,
+  type RegistrationSlotSource,
   type RegistrationSource,
   type SessionIdentity,
+  type SlotAccess,
 } from "@/lib/hooks/useRegistrations";
 import { useResource } from "@/lib/hooks/useResource";
 
@@ -51,11 +58,25 @@ import { useResource } from "@/lib/hooks/useResource";
  * field takes a variable *name* and the page says so; a pasted key is what
  * the platform's 400 exists to catch, and it is not repeated back.
  *
+ * **Two reads, and the second one is usually refused.** The slot a credential
+ * is read under moved off `GET /registrations` onto `GET /registrations/slots`
+ * at the operator role, because a slot names where a credential lives in this
+ * deployment's secret store and it was being served to a viewer credential.
+ * This console's own credential is the viewer token (ADR 0018), so the slot
+ * rows here render the platform's refusal, naming who may read the route and
+ * how, rather than an empty cell. An empty cell is the failure that matters:
+ * `secret_slot: null` already means something specific on this page — the
+ * manifest names no variable, so there is nothing to prefill — and a blank
+ * left by a refusal would be read as that, telling an operator no credential
+ * is needed for a source the platform is refusing for want of one.
+ *
  * Nothing here submits an order or could. The one write names a source and a
  * terms reference; no instrument, side, quantity or price exists on this page.
  */
 export default function RegistrationsPage() {
   const resource = useRegistrations();
+  const slotsResource = useRegistrationSlots();
+  const access = slotAccess(slotsResource);
   const identity = useSessionIdentity();
   const permission = approvalPermission(identity);
   const operatorName = identity.status === "authenticated" ? identity.name : null;
@@ -73,16 +94,30 @@ export default function RegistrationsPage() {
     }
   }, [resource.receivedAt]);
 
-  const [confirming, setConfirming] = useState<RegistrationSource | null>(null);
+  /**
+   * The card being confirmed, with whatever slot row the operator list
+   * supplied for it — `null` when that read was refused, which is what makes
+   * the dialog's variable field start empty rather than prefilled with a name
+   * this console never received.
+   */
+  const [confirming, setConfirming] = useState<{
+    readonly source: RegistrationSource;
+    readonly slot: RegistrationSlotSource | null;
+  } | null>(null);
 
   const refresh = resource.refresh;
+  // The slots read is not polled, so an approval is the one event that has to
+  // ask it again: the `secret` a record names is the only field on that route
+  // an approval changes.
+  const refreshSlots = slotsResource.refresh;
   const onApproved = useCallback(
     (approval: Approval) => {
       setApproved((current) => new Map(current).set(approval.source_id, approval));
       setConfirming(null);
       refresh();
+      refreshSlots();
     },
-    [refresh],
+    [refresh, refreshSlots],
   );
 
   return (
@@ -112,13 +147,23 @@ export default function RegistrationsPage() {
             <div className="grid grid-cols-1 gap-3 xl:grid-cols-2" data-testid="registration-cards">
               {data.sources.map((listed) => {
                 const approval = approved.get(listed.source_id);
-                const source = approval === undefined ? listed : { ...listed, standing: approval.standing };
+                // The approval answers the operator shape; this card is built
+                // from the viewer's list, so the standing is narrowed the way
+                // the platform narrows it rather than spread across.
+                const source =
+                  approval === undefined
+                    ? listed
+                    : { ...listed, standing: viewerStanding(approval.standing) };
+                const slot =
+                  access.status === "available" ? access.bySource.get(source.source_id) ?? null : null;
                 return (
                   <SourceCard
                     key={source.source_id}
                     source={source}
+                    slot={slot}
+                    access={access}
                     permission={permission}
-                    onApprove={() => setConfirming(source)}
+                    onApprove={() => setConfirming({ source, slot })}
                   />
                 );
               })}
@@ -129,7 +174,8 @@ export default function RegistrationsPage() {
 
       {confirming === null || operatorName === null ? null : (
         <ApproveDialog
-          source={confirming}
+          source={confirming.source}
+          slot={confirming.slot}
           operatorName={operatorName}
           onClose={() => setConfirming(null)}
           onApproved={onApproved}
@@ -195,7 +241,11 @@ function RegistrationsHeader({
             PAPER TRADING
           </span>
           Nothing on this page reads a venue, creates an account or submits an order. It reads{" "}
-          <span className="num">GET /registrations</span> and renders what the platform answered.
+          <span className="num">GET /registrations</span> for what each venue demands and where each
+          source stands, and <span className="num">GET /registrations/slots</span> for the
+          deployment variable behind each — the second at the operator role, which this
+          console&apos;s own credential does not hold, so its rows say so rather than showing
+          nothing. Both are rendered as the platform answered them.
           Its one control records that a venue was registered under terms someone read, and the
           platform will not create the account anonymously: a source that needs an account stays
           refused until that record exists, and the record cannot be made without a person
@@ -229,10 +279,15 @@ const REQUIREMENT_LABEL: Record<string, string> = {
 
 function SourceCard({
   source,
+  slot,
+  access,
   permission,
   onApprove,
 }: {
   source: RegistrationSource;
+  /** This source's row on the operator list, or `null` when that read did not land. */
+  slot: RegistrationSlotSource | null;
+  access: SlotAccess;
   permission: { readonly allowed: boolean; readonly reason: string };
   onApprove: () => void;
 }) {
@@ -269,8 +324,24 @@ function SourceCard({
             <Row label="standing">
               <span data-testid={`registration-record-${source.source_id}`}>
                 registered by <span className="num">{standing.operator}</span>, terms read{" "}
-                {formatTimestamp(standing.terms_read_at)}, credential named{" "}
-                <code className="num">{standing.secret}</code>
+                {formatTimestamp(standing.terms_read_at)}
+                {/*
+                  The variable the *record* names, which is not the same fact
+                  as the row's `secret_slot` — a registration mounted from the
+                  committed file need not agree with the shipped manifest, and
+                  an operator has to be able to see that disagreement. It rides
+                  on the operator list, so it is stated only when that list was
+                  actually served; the refusal below says why it is otherwise
+                  absent, rather than this line quietly saying nothing.
+                */}
+                {slot !== null && slot.standing.standing === "registered" ? (
+                  <>
+                    , credential named{" "}
+                    <code className="num" data-testid={`registration-record-secret-${source.source_id}`}>
+                      {slot.standing.secret}
+                    </code>
+                  </>
+                ) : null}
               </span>
             </Row>
           ) : kind === "pending" ? (
@@ -299,42 +370,56 @@ function SourceCard({
             )}
           </Row>
 
-          <Row label="secret slot">
-            {source.secret_slot === null ? (
-              // `null` is not the same fact twice. A keyless source reads no
-              // credential at all; a source that needs an account can still
-              // answer `null` here when the manifest the platform holds names
-              // no variable yet (the contract's own `kalshi-markets` row does),
-              // and calling that one keyless would tell an operator no key is
-              // needed for a source the platform is refusing for want of one.
-              <Muted testId={`registration-no-slot-${source.source_id}`}>
-                {kind === "keyless"
-                  ? "none; a keyless source reads no credential"
-                  : "none: the manifest the platform holds for this source names no credential variable, so there is nothing to prefill — the approval needs the variable name this deployment reads the credential under"}
-              </Muted>
-            ) : (
-              <code className="num" data-testid={`registration-secret-slot-${source.source_id}`}>
-                {source.secret_slot}
-              </code>
-            )}
-          </Row>
-
-          {source.secret_command === null ? null : (
-            <Row label="add the secret">
-              <CopyCommand command={source.secret_command} sourceId={source.source_id} />
+          {slot === null ? (
+            <Row label="secret slot">
+              <SlotsWithheld access={access} sourceId={source.source_id} />
             </Row>
+          ) : (
+            <>
+              <Row label="secret slot">
+                {slot.secret_slot === null ? (
+                  // `null` is not the same fact twice. A keyless source reads
+                  // no credential at all; a source that needs an account can
+                  // still answer `null` here when the manifest the platform
+                  // holds names no variable yet (the contract's own
+                  // `kalshi-markets` row does), and calling that one keyless
+                  // would tell an operator no key is needed for a source the
+                  // platform is refusing for want of one. Neither of those is
+                  // the third fact — that this console was refused the list —
+                  // which is why that one has its own branch above.
+                  <Muted testId={`registration-no-slot-${source.source_id}`}>
+                    {kind === "keyless"
+                      ? "none; a keyless source reads no credential"
+                      : "none: the manifest the platform holds for this source names no credential variable, so there is nothing to prefill — the approval needs the variable name this deployment reads the credential under"}
+                  </Muted>
+                ) : (
+                  <code className="num" data-testid={`registration-secret-slot-${source.source_id}`}>
+                    {slot.secret_slot}
+                  </code>
+                )}
+              </Row>
+
+              {slot.secret_command === null ? null : (
+                <Row label="add the secret">
+                  <CopyCommand command={slot.secret_command} sourceId={source.source_id} />
+                </Row>
+              )}
+
+              {slot.companion_secret_slots.map((companion) => (
+                <Row key={companion.variable} label="also reads">
+                  <div className="flex min-w-0 flex-col gap-1">
+                    <code className="num" data-testid={`registration-companion-slot-${source.source_id}`}>
+                      {companion.variable}
+                    </code>
+                    <CopyCommand
+                      command={companion.secret_command}
+                      sourceId={`${source.source_id}-${companion.variable}`}
+                    />
+                  </div>
+                </Row>
+              ))}
+            </>
           )}
-
-          {source.companion_secret_slots.map((companion) => (
-            <Row key={companion.variable} label="also reads">
-              <div className="flex min-w-0 flex-col gap-1">
-                <code className="num" data-testid={`registration-companion-slot-${source.source_id}`}>
-                  {companion.variable}
-                </code>
-                <CopyCommand command={companion.secret_command} sourceId={`${source.source_id}-${companion.variable}`} />
-              </div>
-            </Row>
-          ))}
         </dl>
 
         {kind === "pending" ? (
@@ -364,6 +449,61 @@ function SourceCard({
       </PanelBody>
     </Panel>
   );
+}
+
+/**
+ * What stands where a slot would be when the operator list did not arrive.
+ *
+ * Never a blank. A blank cell here would be read as the `secret_slot: null`
+ * case one branch away — "the manifest names no credential variable" — which
+ * is the opposite conclusion: it would tell an operator nothing is needed for
+ * a source the platform is refusing until a credential exists. So each of the
+ * three non-answers says which it is, and the refusal names the role that may
+ * read the route and the two ways an operator actually gets the fact.
+ */
+function SlotsWithheld({ access, sourceId }: { access: SlotAccess; sourceId: string }) {
+  switch (access.status) {
+    case "loading":
+      return (
+        <Muted testId={`registration-slot-loading-${sourceId}`}>
+          reading {SLOTS_ROUTE}…
+        </Muted>
+      );
+    case "available":
+      // The list was served and this source was not on it. Not a refusal and
+      // not an absent slot: the two lists are built from one catalogue in one
+      // order, so a row on one and not the other is a disagreement worth
+      // saying out loud rather than rendering as "none".
+      return (
+        <Muted testId={`registration-slot-absent-${sourceId}`}>
+          the operator list was served and carries no row for this source, though both lists are
+          built from the same catalogue — the platform is disagreeing with itself and this console
+          will not pick a side
+        </Muted>
+      );
+    case "refused":
+      return (
+        <span
+          className="flex flex-col gap-1"
+          data-testid={`registration-slot-refused-${sourceId}`}
+          data-slot-access="refused"
+        >
+          <span className="text-[11px] leading-snug text-[color:var(--color-warn)]">
+            withheld — <span className="num">{SLOTS_ROUTE}</span> answered{" "}
+            <span className="num">{access.status_code}</span>. {SLOTS_REFUSAL}
+          </span>
+          <span className="text-[11px] leading-snug text-[color:var(--color-ink-faint)]">
+            The platform said: {access.detail}
+          </span>
+        </span>
+      );
+    case "unavailable":
+      return (
+        <Muted testId={`registration-slot-unavailable-${sourceId}`}>
+          {SLOTS_ROUTE} did not answer, so no slot is shown rather than an empty one: {access.detail}
+        </Muted>
+      );
+  }
 }
 
 function TermsReference({ terms }: { terms: string }) {
@@ -427,21 +567,29 @@ function CopyCommand({ command, sourceId }: { command: string; sourceId: string 
  * from the platform and editable, since the operator is the one who knows
  * which document they read; both are sent as the operator left them and the
  * platform is the one that refuses a blank or key-shaped value.
+ *
+ * The variable name can only be prefilled from the operator list, and this
+ * console is usually refused it. An empty field is then the honest start:
+ * the operator knows which variable this deployment reads the credential
+ * under, and a guess made here would be a variable name the console invented
+ * and the platform recorded.
  */
 function ApproveDialog({
   source,
+  slot,
   operatorName,
   onClose,
   onApproved,
 }: {
   source: RegistrationSource;
+  slot: RegistrationSlotSource | null;
   operatorName: string;
   onClose: () => void;
   onApproved: (approval: Approval) => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [terms, setTerms] = useState(source.terms ?? "");
-  const [secret, setSecret] = useState(source.secret_slot ?? "");
+  const [secret, setSecret] = useState(slot?.secret_slot ?? "");
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<ApiOutcome<Approval> | null>(null);
 

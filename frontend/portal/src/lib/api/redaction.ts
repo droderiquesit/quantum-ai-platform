@@ -105,19 +105,30 @@ export interface WireDisclosure {
 export const WIRE_DISCLOSURES: readonly WireDisclosure[] = [
   {
     route: "/registrations",
-    fields: ["secret_slot", "secret_command", "companion_secret_slots[].secret_command", "terms"],
+    // Four fields until the platform split the route; one now. `secret_slot`,
+    // `secret_command` and each companion command moved to
+    // GET /api/v1/registrations/slots at Role::Operator, and the `secret` on a
+    // registered standing went with them — so a viewer credential no longer
+    // receives any of them, and this entry no longer claims it does. The list
+    // shrank because the platform changed, which is the outcome the previous
+    // `platform_fix` asked for; leaving the old four here would have told a
+    // reader their browser holds material it has not been sent since.
+    fields: ["terms"],
     role: "viewer",
     why:
-      "the credential-lifecycle pages render them: /data-sources/registrations shows the deployment " +
-      "variable and the one command that fills it, and /compliance shows the variable name per source. " +
-      "A gateway that stripped them would break those pages and keep nothing from a browser, which can " +
-      "call the route itself — so removing them here would be a claim rather than a control.",
+      "the venue's own terms reference — a licence identifier or a public URL off the catalogue. " +
+      "/compliance renders it per source because showing which licence each source is read under is " +
+      "that page's whole job, and /data-sources/registrations links it as the document an operator " +
+      "must read before approving. It says nothing about this deployment, which is why the platform " +
+      "keeps it on the viewer's list; it is named here because this health page promises to render no " +
+      "venue URL and a venue URL is nonetheless in the body behind it.",
     platform_fix:
-      "GET /api/v1/registrations is Role::Viewer and carries secret_slot, secret_command and each " +
-      "companion command (registration_views.rs: SourceRegistrationView). A viewer needs the standing " +
-      "and the requirement; the slot name and the Secret Manager write command are operator material. " +
-      "Serving those two only to Role::Operator, or splitting them onto a second route, is a backend " +
-      "change and is not this console's to make.",
+      "None outstanding, and that is the honest entry rather than an empty string. The fix this row " +
+      "used to ask for has been made: GET /api/v1/registrations answers SourceStandingView, with no " +
+      "credential slot and no Secret Manager command, and GET /api/v1/registrations/slots carries " +
+      "those at Role::Operator (registration_views.rs, ROUTES-REGISTRATIONS.md). `terms` is a public " +
+      "licence reference the compliance surface exists to show, so withholding it would remove a fact " +
+      "a page is accountable for and hide nothing from anyone.",
   },
 ] as const;
 

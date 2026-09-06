@@ -57,24 +57,35 @@ import { useResource } from "@/lib/hooks/useResource";
  *
  * What it may not promise is the wire, and it used to. The line here said the
  * four fields were withheld, full stop, which reads as an assurance that they
- * do not reach the browser at all — and they do. This page's own catalogue read
- * is `GET /registrations`, which answers `Role::Viewer` with `secret_slot`,
- * `secret_command`, each companion command and `terms` for every catalogued
- * source; opening this screen puts every venue's slot name and its Secret
- * Manager write command in the network tab, in memory, and in reach of any
- * extension with host permissions, whatever the screen shows. The
- * console cannot take that back at the gateway: `/data-sources/registrations`
- * and `/compliance` render the slot names because the credential lifecycle is
- * their whole job, so stripping the fields would break the pages that need them
- * and keep nothing from a browser that can call the route itself.
+ * do not reach the browser at all — and at the time they did. This page's own
+ * catalogue read is `GET /registrations`, and that route answered `Role::Viewer`
+ * with `secret_slot`, `secret_command`, each companion command and `terms` for
+ * every catalogued source, so opening this screen put every venue's slot name
+ * and its Secret Manager write command in the network tab, in memory, and in
+ * reach of any extension with host permissions, whatever the screen showed.
  *
- * So the claim is now split in two — what this page renders, and what the read
- * behind it carried — and the second half names the platform-side change that
- * would close it, in `WIRE_DISCLOSURES` (`@/lib/api/redaction`), which this
- * page renders rather than restates. `GET /mesh` and `GET /system/status` are
- * the other half of that module: those the gateway does redact, because no page
- * here needs a cell's address. `tests/wire.spec.ts` asserts both against the
- * response body rather than the DOM.
+ * **That is no longer what the route does, and this paragraph is the second
+ * thing that had to change when it stopped.** The platform split the read:
+ * `GET /registrations` now answers `SourceStandingView` — requirement,
+ * standing, terms — and the credential slots moved to
+ * `GET /registrations/slots` at `Role::Operator`, the `secret` on a registered
+ * standing with them. So the three slot fields reach no viewer credential at
+ * all, and this console's credential is a viewer credential (ADR 0018), which
+ * is why `/data-sources/registrations` and `/compliance` render a refusal
+ * where a slot used to be rather than a value. What is left on the viewer's
+ * body is `terms`, a public licence reference this page still declines to
+ * render and still receives.
+ *
+ * The claim is therefore still split in two — what this page renders, and what
+ * the read behind it carried — because the second half is the half that goes
+ * stale silently, and it just did. Both halves come from `WIRE_DISCLOSURES`
+ * (`@/lib/api/redaction`), which this page renders rather than restates, so a
+ * field that leaves the wire leaves this screen in the same commit. `GET /mesh`
+ * and `GET /system/status` are the other half of that module: those the gateway
+ * does redact, because no page here needs a cell's address.
+ * `tests/wire.spec.ts` asserts both against the response body rather than the
+ * DOM — including, now, that the slot name is absent from the viewer's body,
+ * which is an assertion only a wire test can make.
  *
  * There is no control on this page. It reads, and a page about whether a feed
  * is healthy has nothing it could legitimately submit.
@@ -268,16 +279,19 @@ export default function DataSourceHealth() {
               headline="No credential, no variable name, no command, no venue URL and no internal address is rendered on this page."
             >
               <p data-testid="feed-health-withheld">
-                <span className="num">GET /registrations</span> carries{" "}
-                <span className="num">secret_slot</span>, <span className="num">secret_command</span>,{" "}
-                <span className="num">terms</span> and any companion slots, and none of the four is on
-                this page. A health screen is the one an operator screenshots into an incident thread,
-                and a variable name beside a venue is half of the instruction for getting a key out of
-                a deployment. The variable names live on{" "}
+                <span className="num">GET /registrations</span> carries a{" "}
+                <span className="num">terms</span> reference per source, and it is not on this page. A
+                health screen is the one an operator screenshots into an incident thread, and a venue
+                URL beside a source is a licensing fact this screen is not about. The credential slots
+                are not on this page either, and are no longer on this read: the platform moved{" "}
+                <span className="num">secret_slot</span>, <span className="num">secret_command</span>{" "}
+                and each companion command onto{" "}
+                <span className="num">GET /registrations/slots</span> at the operator role. They are
+                shown, or explicitly refused, on{" "}
                 <Link href="/data-sources/registrations" className="underline">
                   venue registrations
                 </Link>
-                , behind the page whose job is the credential lifecycle.
+                , the page whose job is the credential lifecycle.
               </p>
               <p className="mt-2">
                 Nothing here reaches the platform except reads, and no control on this page could
@@ -291,13 +305,16 @@ export default function DataSourceHealth() {
             >
               <p data-testid="feed-health-disclosure">
                 The paragraph above is about pixels. The read that fills the catalogue on this page is{" "}
-                <span className="num">GET /api/v1/registrations</span>, and it answers those fields to
-                anything holding the lowest role — so they are in this browser&rsquo;s network tab
-                whatever the screen shows. This console does not redact them, and the reason is not
-                oversight: the pages below render them because the credential lifecycle is their job,
-                and a browser that can read this page can call the route itself, so removing the
-                fields here would be a claim rather than a control. What would close it is on the
-                platform&rsquo;s side, and is named per route.
+                <span className="num">GET /api/v1/registrations</span>, and whatever it answers is in
+                this browser&rsquo;s network tab whatever the screen shows. It used to answer the
+                credential slot and the Secret Manager command that fills it to anything holding the
+                lowest role; the platform has since split those onto{" "}
+                <span className="num">GET /api/v1/registrations/slots</span> at the operator role, so
+                they reach this browser no longer — this console holds a viewer credential and is
+                refused that route, which the venue registrations page shows as a refusal rather than
+                as an empty field. What is still on the viewer&rsquo;s body is listed below, with the
+                reason this console does not remove it. A field removed here would be a claim rather
+                than a control: a browser that can read this page can call the route itself.
               </p>
               <ul className="mt-2 flex flex-col gap-2" data-testid="feed-health-disclosures">
                 {WIRE_DISCLOSURES.map((disclosure) => (

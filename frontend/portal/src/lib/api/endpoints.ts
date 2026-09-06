@@ -48,6 +48,23 @@ export const REST: Record<string, EndpointSpec> = {
   backtests: { method: "GET", path: "/backtests", role: "viewer", summary: "holdout evidence, gate findings and bands from the ledger" },
   regimes: { method: "GET", path: "/regimes", role: "viewer", summary: "why no regime view is served, and the declared stream topic" },
   registrations: { method: "GET", path: "/registrations", role: "viewer", summary: "what each venue demands before it is read, and who has registered" },
+  /**
+   * The credential slots, and the one read in this table this console's own
+   * credential cannot make.
+   *
+   * Listed anyway, because this table is what the platform serves and not what
+   * the console is entitled to: a route omitted for being refused would make
+   * the API surface the console reports narrower than the platform's, and the
+   * page that renders this table would stop being a description of `routes.rs`.
+   * The refusal is a per-panel fact and is rendered where the slots would be
+   * (`useRegistrations.ts`, `SLOTS_REFUSAL`).
+   */
+  registrationSlots: {
+    method: "GET",
+    path: "/registrations/slots",
+    role: "operator",
+    summary: "the deployment variable each credential is read under and the command that fills it — names only",
+  },
   cycle: { method: "POST", path: "/cycle", role: "analyst", summary: "run one cycle of the intelligence loop" },
   killSwitchTrip: { method: "POST", path: "/kill-switch", role: "operator", summary: "halt the platform" },
   killSwitchClear: { method: "DELETE", path: "/kill-switch", role: "operator", summary: "clear a halt" },

@@ -95,11 +95,14 @@ const BODIES = {
     ],
   },
   "/api/v1/agents": { agents: [] },
-  // Carried in full, exactly as `registration_views.rs` serves it to
-  // `Role::Viewer`. `wire.spec.ts` asserts these fields *do* arrive: the
-  // console renders them on the credential-lifecycle pages, so it cannot
-  // remove them, and the page that reads this route says so instead of
-  // claiming otherwise.
+  // `RegistrationStandingsView`, exactly as `registration_views.rs::standings`
+  // serves it to `Role::Viewer` since the route was split by authority:
+  // requirement, standing and terms, and **no credential slot**. It carried
+  // `secret_slot`, `secret_command` and each companion command until the
+  // platform moved them onto `/registrations/slots` at `Role::Operator`, and
+  // `wire.spec.ts` asserts on this body that they are gone from the wire — an
+  // assertion no DOM test can make, and the one that was missing when the
+  // fields were there.
   "/api/v1/registrations": {
     posture: "PAPER TRADING",
     served_at: "2025-10-09T08:53:20Z",
@@ -109,14 +112,6 @@ const BODIES = {
         requirement: "account",
         standing: { standing: "keyless" },
         terms: "https://alpaca.markets/terms-and-conditions",
-        secret_slot: "QIP_ALPACA_API_SECRET_KEY",
-        secret_command: "gcloud secrets versions add qip-alpaca-api-secret-key --data-file=-",
-        companion_secret_slots: [
-          {
-            variable: "QIP_ALPACA_API_KEY_ID",
-            secret_command: "gcloud secrets versions add qip-alpaca-api-key-id --data-file=-",
-          },
-        ],
       },
     ],
   },
@@ -125,6 +120,24 @@ const BODIES = {
   // a test can distinguish from "the gateway parsed it and wrote it out again".
   "/api/v1/portfolio": { proposals: 0, orders: 0, fills: 0, paper_only: true },
   "/api/v1/opportunities": { opportunities: [] },
+};
+
+/**
+ * Routes this stub refuses, with the status and the platform's own words.
+ *
+ * `GET /registrations/slots` is `Role::Operator` in `routes.rs`, and the
+ * console authenticates with the viewer token: its service account is granted
+ * `secretAccessor` on `qip-token-viewer` and nothing else, and ADR 0018
+ * decided that ("The console authenticates as `viewer`"). So a refusal is what
+ * a deployed console receives on this route, and a stub that answered it 200
+ * would test the console against an entitlement it does not have — the same
+ * class of mistake as the DOM stubs that let the mesh address ship.
+ */
+const REFUSED = {
+  "/api/v1/registrations/slots": {
+    status: 403,
+    body: { error: "this operation requires the operator role" },
+  },
 };
 
 /**
@@ -157,6 +170,15 @@ createServer((request, response) => {
   if (raw !== undefined) {
     response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
     response.end(raw);
+    return;
+  }
+  const refusal = REFUSED[path];
+  if (refusal !== undefined) {
+    response.writeHead(refusal.status, {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+    });
+    response.end(JSON.stringify(refusal.body));
     return;
   }
   const body = BODIES[path] ?? {

@@ -45,9 +45,6 @@ const KALSHI_PENDING = {
     reason: KALSHI_REASON,
   },
   terms: "https://kalshi.com/terms",
-  secret_slot: null,
-  secret_command: null,
-  companion_secret_slots: [],
 } as const;
 
 const ALPACA_REGISTERED = {
@@ -57,17 +54,8 @@ const ALPACA_REGISTERED = {
     standing: "registered",
     operator: PLATFORM_OPERATOR,
     terms_read_at: "2025-10-09T08:50:00.000Z",
-    secret: "QIP_ALPACA_API_SECRET_KEY",
   },
   terms: "https://alpaca.markets/terms-and-conditions",
-  secret_slot: "QIP_ALPACA_API_SECRET_KEY",
-  secret_command: "gcloud secrets versions add qip-alpaca-api-secret-key --data-file=-",
-  companion_secret_slots: [
-    {
-      variable: "QIP_ALPACA_API_KEY_ID",
-      secret_command: "gcloud secrets versions add qip-alpaca-api-key-id --data-file=-",
-    },
-  ],
 } as const;
 
 const COINBASE_KEYLESS = {
@@ -75,9 +63,6 @@ const COINBASE_KEYLESS = {
   requirement: "keyless",
   standing: { standing: "keyless" },
   terms: "coinbase-exchange-market-data-terms",
-  secret_slot: null,
-  secret_command: null,
-  companion_secret_slots: [],
 } as const;
 
 const REGISTRATIONS = {

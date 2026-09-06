@@ -44,6 +44,21 @@ import { GATEWAY, healthy, servePlatform, servePlatformUnreachable } from "./sup
  * a credential variable, the command that writes one, a venue URL and a
  * companion slot. If any of the four appears on the screen the assertions
  * below fail on the value itself, not on a class name.
+ *
+ * **Deliberately a superset of what `GET /registrations` now serves.** The
+ * platform moved `secret_slot`, `secret_command`, the companion commands and
+ * the `secret` on a registered standing onto `GET /registrations/slots` at
+ * `Role::Operator`, so a real viewer body carries only the first four keys of
+ * each row here. They are kept in this fixture on purpose: strip them and the
+ * four "did not reach the browser" assertions below would be true of a body
+ * that never held them, which is the test that passes forever and guards
+ * nothing. Keeping them means this page is proven to render no slot even when
+ * handed one — a stronger property than the route's current shape, and one
+ * that survives the route changing again.
+ *
+ * What the wire actually carries is `tests/wire.spec.ts`'s business, against a
+ * real gateway and a real upstream; a DOM stub cannot tell "not rendered" from
+ * "not received" and must not be read as if it could.
  */
 const REGISTRATIONS = {
   posture: "PAPER TRADING",
@@ -238,7 +253,16 @@ test("the catalogue gives every source an empty health record and leaks no crede
   const disclosure = page.locator('[data-testid="feed-health-disclosure-row"][data-route="/registrations"]');
   await expect(disclosure, "the page no longer names what its own read carried").toHaveCount(1);
   await expect(disclosure).toHaveAttribute("data-role", "viewer");
-  await expect(disclosure).toContainText("secret_slot");
+  // `terms` and not `secret_slot`. The row used to name four fields, and three
+  // of them left the viewer's body when the platform split the route: naming
+  // them now would tell an operator their browser holds material it has not
+  // been sent since. The remaining one is real — a venue URL is in the body
+  // behind this screen and is not on it — so this assertion still guards
+  // something rather than restating an empty list.
+  await expect(disclosure).toContainText("terms");
+  await expect(disclosure, "the row still claims the viewer's body carries a credential slot").not.toContainText(
+    "secret_slot",
+  );
   await expect(disclosure).toContainText("Platform-side fix:");
 
   // The registry route's own answer, in the platform's words. `client.ts`

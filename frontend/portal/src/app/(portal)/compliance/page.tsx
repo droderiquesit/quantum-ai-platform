@@ -14,7 +14,16 @@ import { platform } from "@/lib/api/client";
 import { NOT_YET_SERVED } from "@/lib/api/endpoints";
 import type { Autonomy, Governance, SystemView } from "@/lib/api/types";
 import { formatCount, formatTimestamp } from "@/lib/format";
-import { useRegistrations, type RegistrationSource } from "@/lib/hooks/useRegistrations";
+import {
+  slotAccess,
+  useRegistrations,
+  useRegistrationSlots,
+  SLOTS_REFUSAL,
+  SLOTS_ROUTE,
+  type RegistrationSlotSource,
+  type RegistrationSource,
+  type SlotAccess,
+} from "@/lib/hooks/useRegistrations";
 import { useResource } from "@/lib/hooks/useResource";
 
 /**
@@ -63,6 +72,13 @@ import { useResource } from "@/lib/hooks/useResource";
  */
 export default function CompliancePage() {
   const registrations = useRegistrations();
+  // The credential-slot column's own read. It is a second route at a role
+  // this console does not hold, so the column states its absence per row
+  // rather than showing an em dash — which on this table already means "the
+  // manifest names no variable" and would otherwise absorb a refusal into a
+  // fact about the venue.
+  const slots = useRegistrationSlots();
+  const access = slotAccess(slots);
   const governance = useResource<Governance>(platform.governance, {
     key: "compliance-governance",
     label: "GET /system/governance",
@@ -266,7 +282,16 @@ export default function CompliancePage() {
                         </thead>
                         <tbody>
                           {data.sources.map((source) => (
-                            <ObligationRow key={source.source_id} source={source} />
+                            <ObligationRow
+                              key={source.source_id}
+                              source={source}
+                              slot={
+                                access.status === "available"
+                                  ? access.bySource.get(source.source_id) ?? null
+                                  : null
+                              }
+                              access={access}
+                            />
                           ))}
                         </tbody>
                       </table>
@@ -464,7 +489,15 @@ export default function CompliancePage() {
  * happened is that nobody declared what it needs — and the feed's gate refuses
  * it either way, so the screen and the gate would disagree.
  */
-function ObligationRow({ source }: { source: RegistrationSource }) {
+function ObligationRow({
+  source,
+  slot,
+  access,
+}: {
+  source: RegistrationSource;
+  slot: RegistrationSlotSource | null;
+  access: SlotAccess;
+}) {
   const standing = source.standing;
   return (
     <tr
@@ -502,13 +535,37 @@ function ObligationRow({ source }: { source: RegistrationSource }) {
       <td className="whitespace-normal text-[11px]" data-testid="compliance-terms">
         {source.terms ?? <span className="text-[color:var(--color-ink-faint)]">none cited</span>}
       </td>
-      <td className="num text-[10.5px]" data-testid="compliance-slot">
-        {source.secret_slot ?? "—"}
-        {source.companion_secret_slots.length > 0 ? (
-          <span className="block text-[color:var(--color-ink-faint)]">
-            {source.companion_secret_slots.map((slot) => slot.variable).join(", ")}
+      <td
+        className="num text-[10.5px]"
+        data-testid="compliance-slot"
+        data-slot-access={slot === null ? access.status : "available"}
+      >
+        {slot === null ? (
+          <span className="whitespace-normal text-[color:var(--color-warn)]">
+            {access.status === "refused"
+              ? // Never the em dash. On this column an em dash means the
+                // manifest names no credential variable, and a refusal shown
+                // as one would read as a source that needs no key — the
+                // opposite of what a refusal says, on the page whose job is
+                // to be right about what each source is allowed to be read
+                // under.
+                `withheld: ${SLOTS_ROUTE} answered ${access.status_code}. ${SLOTS_REFUSAL}`
+              : access.status === "loading"
+                ? `reading ${SLOTS_ROUTE}…`
+                : access.status === "unavailable"
+                  ? `${SLOTS_ROUTE} did not answer: ${access.detail}`
+                  : `${SLOTS_ROUTE} was served and carries no row for this source; both lists come from one catalogue, so this console will not guess which is right`}
           </span>
-        ) : null}
+        ) : (
+          <>
+            {slot.secret_slot ?? "—"}
+            {slot.companion_secret_slots.length > 0 ? (
+              <span className="block text-[color:var(--color-ink-faint)]">
+                {slot.companion_secret_slots.map((companion) => companion.variable).join(", ")}
+              </span>
+            ) : null}
+          </>
+        )}
       </td>
     </tr>
   );

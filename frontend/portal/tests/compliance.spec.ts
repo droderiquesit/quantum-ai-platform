@@ -5,11 +5,13 @@
  * There is no `GET /compliance`. `qip-api/src/routes.rs` declares no such
  * pattern, `NOT_YET_SERVED.compliance` has recorded the absence since that
  * table existed, and this page renders the entry rather than paraphrasing it.
- * What it *does* render comes from four routes the platform serves:
+ * What it *does* render comes from five routes the platform serves:
  * `GET /registrations` (what each venue demands before it may be read, and who
- * registered), `GET /system/governance`, `GET /system` (the hash chain re-walked
- * on the read) and `GET /autonomy` (posture, ceiling, and every change with the
- * operator who asked).
+ * registered), `GET /registrations/slots` (the deployment variable behind each,
+ * at `Role::Operator` — the credential-slot column's own route since the
+ * platform split the read by authority), `GET /system/governance`,
+ * `GET /system` (the hash chain re-walked on the read) and `GET /autonomy`
+ * (posture, ceiling, and every change with the operator who asked).
  *
  * The failures these tests prevent:
  *
@@ -31,6 +33,11 @@
  * * **a credential value on screen.** The registration surface carries
  *   deployment variable *names*. No value exists in the process that serves
  *   them, and none may appear here;
+ * * **a withheld credential slot rendered as an absent one.** The slot column
+ *   reads an operator-role route this console's viewer credential is refused
+ *   (ADR 0018). An em dash in that column means "the manifest names no
+ *   variable"; a refusal shown as one would report a source as needing no key
+ *   on the page whose job is being right about that;
  * * **a control.** Nothing on this page registers a venue, clears a finding,
  *   signs anything or submits an order, and it issues no non-GET request.
  *
@@ -39,29 +46,58 @@
 import { expect, test, type Page } from "@playwright/test";
 import { GATEWAY, healthy, servePlatform, servePlatformUnreachable } from "./support/platform";
 
+const KEYLESS_ROW = {
+  source_id: "frankfurter-rates",
+  requirement: "keyless",
+  standing: { standing: "keyless" },
+  terms: "CC-BY-4.0",
+} as const;
+
+const REGISTERED_ROW = {
+  source_id: "alpaca-daily-bars",
+  requirement: "account",
+  standing: {
+    standing: "registered",
+    operator: "operator@env",
+    terms_read_at: "2025-10-08T11:00:00Z",
+  },
+  terms: "https://example.invalid/alpaca-terms",
+} as const;
+
+const PENDING_ROW = {
+  source_id: "kalshi-markets",
+  // The registry declared nothing. Not keyless: an unasked question.
+  requirement: null,
+  standing: {
+    standing: "pending",
+    who_must_register: "the platform's owner",
+    reason:
+      "kalshi-markets is refused: no registration record exists, so the platform's owner must read the venue's terms and record that they did",
+  },
+  terms: null,
+} as const;
+
+/** `GET /registrations`, `Role::Viewer`. No credential slot on this route. */
 const REGISTRATIONS = {
   posture: "PAPER TRADING",
   served_at: "2025-10-09T08:53:20Z",
+  sources: [KEYLESS_ROW, REGISTERED_ROW, PENDING_ROW],
+} as const;
+
+/**
+ * `GET /registrations/slots`, `Role::Operator`: the credential-slot column's
+ * own route since the platform split the read by authority. A slot names where
+ * a credential lives in this deployment's secret store, which is not a fact
+ * about a venue, and it was being served to a viewer credential.
+ */
+const SLOTS = {
+  posture: "PAPER TRADING",
+  served_at: "2025-10-09T08:53:20Z",
   sources: [
+    { ...KEYLESS_ROW, secret_slot: null, secret_command: null, companion_secret_slots: [] },
     {
-      source_id: "frankfurter-rates",
-      requirement: "keyless",
-      standing: { standing: "keyless" },
-      terms: "CC-BY-4.0",
-      secret_slot: null,
-      secret_command: null,
-      companion_secret_slots: [],
-    },
-    {
-      source_id: "alpaca-daily-bars",
-      requirement: "account",
-      standing: {
-        standing: "registered",
-        operator: "operator@env",
-        terms_read_at: "2025-10-08T11:00:00Z",
-        secret: "QIP_ALPACA_SECRET_KEY",
-      },
-      terms: "https://example.invalid/alpaca-terms",
+      ...REGISTERED_ROW,
+      standing: { ...REGISTERED_ROW.standing, secret: "QIP_ALPACA_SECRET_KEY" },
       secret_slot: "QIP_ALPACA_SECRET_KEY",
       secret_command: "gcloud secrets versions add qip-alpaca-secret-key --data-file=-",
       companion_secret_slots: [
@@ -72,16 +108,7 @@ const REGISTRATIONS = {
       ],
     },
     {
-      source_id: "kalshi-markets",
-      // The registry declared nothing. Not keyless: an unasked question.
-      requirement: null,
-      standing: {
-        standing: "pending",
-        who_must_register: "the platform's owner",
-        reason:
-          "kalshi-markets is refused: no registration record exists, so the platform's owner must read the venue's terms and record that they did",
-      },
-      terms: null,
+      ...PENDING_ROW,
       secret_slot: "QIP_KALSHI_API_KEY",
       secret_command: "gcloud secrets versions add qip-kalshi-api-key --data-file=-",
       companion_secret_slots: [],
@@ -132,6 +159,7 @@ function served(overrides: Record<string, unknown> = {}) {
   return {
     ...healthy(),
     "/registrations": REGISTRATIONS,
+    "/registrations/slots": SLOTS,
     "/autonomy": AUTONOMY,
     "/system/governance": GOVERNANCE,
     "/system": SYSTEM,
@@ -208,6 +236,51 @@ test("the obligations table renders each standing as its own arm, with the terms
 
   // The body's own posture literal, and the label beside the autonomy panel.
   await expect(page.getByTestId("compliance-body-posture")).toHaveText("PAPER TRADING");
+  await expect(page.getByTestId("compliance-paper-label")).toHaveText("PAPER TRADING");
+});
+
+test("the credential-slot column states the refusal when the operator route is denied, and never as an em dash", async ({
+  page,
+}) => {
+  // The deployed case: `GET /registrations/slots` is `Role::Operator` and the
+  // console holds the viewer token (ADR 0018), so the column's own read is
+  // refused while the obligations table itself renders fine.
+  //
+  // The failure this prevents is narrow and bad: this column already uses an
+  // em dash for "the manifest names no credential variable", so a refusal that
+  // fell through to the same glyph would report a source as needing no key.
+  // On the compliance surface that is the one mistake that matters.
+  const slotReads: number[] = [];
+  await servePlatform(page, served());
+  await page.route("**/api/gateway/registrations/slots", async (route) => {
+    slotReads.push(403);
+    await route.fulfill({
+      status: 403,
+      headers: { "x-qip-gateway": "upstream", "content-type": "application/json" },
+      body: JSON.stringify({ error: "this operation requires the operator role" }),
+    });
+  });
+  await page.goto("/compliance");
+
+  // Premise: the table rendered from the viewer's list, and the second read
+  // really happened and was really refused.
+  await expect(page.getByTestId("compliance-obligation-row")).toHaveCount(3);
+  expect(slotReads, "the page never read /registrations/slots").toEqual([403]);
+
+  const cells = page.getByTestId("compliance-slot");
+  await expect(cells).toHaveCount(3);
+  for (const cell of await cells.all()) {
+    await expect(cell).toHaveAttribute("data-slot-access", "refused");
+    await expect(cell).toContainText("withheld");
+    await expect(cell).toContainText("operator role");
+    await expect(cell).not.toHaveText("—");
+  }
+
+  // No slot name reaches the screen from anywhere else, and the page does not
+  // fall back to a value it was not served.
+  const content = page.locator("#content");
+  await expect(content).not.toContainText("QIP_ALPACA_SECRET_KEY");
+  await expect(content).not.toContainText("QIP_KALSHI_API_KEY");
   await expect(page.getByTestId("compliance-paper-label")).toHaveText("PAPER TRADING");
 });
 
