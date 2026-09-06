@@ -418,6 +418,43 @@ pub fn log_returns(prices: &[f64]) -> Vec<f64> {
         .collect()
 }
 
+/// Period returns from a series whose base may be zero or negative — an equity
+/// curve, a P&L series, a book mark. **Not [`simple_returns`]**, which is for a
+/// price series and answers `0.0` from a zero base and a sign-flipped figure
+/// from a negative one.
+///
+/// Simple returns between consecutive samples. **A step from a non-positive
+/// base is skipped rather than divided by, and skipped rather than replaced
+/// with zero.** Both halves of that are the point:
+///
+/// * Dividing by it produces an infinity — or, from a negative base, a
+///   sign-flipped return, which is worse because it is finite and therefore
+///   survives every `is_finite` guard downstream. A book at -100 recovering to
+///   -50 improved by fifty and is recorded as a loss of half. Either poisons
+///   the volatility, the value at risk and the expected shortfall fitted on
+///   the series, and in this workspace those are limits that stop trading.
+/// * Substituting `0.0` fabricates an observation. "The book was flat over
+///   this step" is a measurement, and a book that had reached zero made no
+///   measurement at all. A tail statistic fitted on invented calm reports less
+///   risk than the book carries, which is the direction that matters.
+///
+/// It lives here because it had three implementations and they disagreed:
+/// `simple_returns` above, a private one in `qip_simulation_engine::backtest`,
+/// and a private one in `qip-kernel`'s `Platform`. The two private ones fed
+/// risk statistics on the same curve and answered different volatilities,
+/// Sharpe ratios and drawdowns for it. `libs` is the only layer both a service
+/// and the runtime may depend on, so this is the only place the rule can be
+/// stated once (`.claude/rules/architecture/00-boundaries.md`: a service may
+/// not depend on the runtime). A caller that wants this behaviour must call
+/// this rather than re-derive it; a fourth copy is a fourth answer.
+pub fn returns_over_signed_equity(equity: &[f64]) -> Vec<f64> {
+    equity
+        .windows(2)
+        .filter(|w| w[0] > 0.0)
+        .map(|w| (w[1] - w[0]) / w[0])
+        .collect()
+}
+
 /// Compound a return series into a cumulative growth path starting at 1.0.
 pub fn cumulative_growth(returns: &[f64]) -> Vec<f64> {
     let mut level = 1.0;

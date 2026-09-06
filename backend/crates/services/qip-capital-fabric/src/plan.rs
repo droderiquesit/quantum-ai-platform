@@ -594,8 +594,8 @@ impl PrePositioningPlanner {
 
             // The benefit is taken on the confident gap alone. The buffer above
             // it is a hedge and is not allowed to justify itself.
-            let benefit = asymmetry.shortfall_penalty(confident_gap, reactive_lag);
-            let funding_cost = asymmetry.surplus_penalty(amount, holding);
+            let benefit = asymmetry.shortfall_penalty(confident_gap, reactive_lag)?;
+            let funding_cost = asymmetry.surplus_penalty(amount, holding)?;
             let hurdle = cost.upper + funding_cost;
 
             if benefit <= hurdle {

@@ -177,12 +177,18 @@ impl LiquidityProfile {
 ///
 /// # Why deserialisation is routed through [`Self::checked`]
 ///
-/// Every component of [`Self::estimate`] crosses through
-/// `Decimal::apply_bps`, which is `Decimal::from_f64(bps / 10_000.0)` followed
-/// by a `checked_mul`. Neither half has an answer for `half_spread_bps: NaN`
-/// or `1e35`, and the answer it gave was `Decimal::ZERO` — not an error, not a
-/// refusal, a number: the instrument priced at **zero cost to trade**, which is
-/// the one direction that makes a trade look profitable that it is not. The
+/// Every component of [`Self::checked_estimate`] crosses through
+/// `Decimal::checked_apply_bps`, which is `Decimal::from_f64(bps / 10_000.0)`
+/// followed by a `checked_mul`. Neither half has an answer for
+/// `half_spread_bps: NaN` or `1e35`, and the answer it gave was
+/// `Decimal::ZERO` — not an error, not a refusal, a number: the instrument
+/// priced at **zero cost to trade**, which is the one direction that makes a
+/// trade look profitable that it is not. Since `f1b8840` neither half answers
+/// zero: `checked_apply_bps` answers `None`, which this type turns into a
+/// refusal, and the plain `apply_bps` panics. So the hazard this validation
+/// heads off has changed shape rather than gone — an unpriceable record now
+/// costs the desk the trade, or the process, instead of costing it money —
+/// and the place to correct it is still the record. The
 /// plain `#[derive(Deserialize)]` was the way in, exactly as it was for
 /// [`crate::valuation::ValuationInput`], and
 /// [`crate::object::FinancialObject::validate`] — the gate `Universe::insert`
@@ -265,7 +271,9 @@ impl TryFrom<TransactionCostModelWire> for TransactionCostModel {
 /// [`LiquidityProfile::typical_spread_bps`] — "at or beyond the whole value of
 /// the holding". It is not a clamp and not a view on what venues charge: a
 /// record stating more has a data error in it, and the alternative to refusing
-/// it is `apply_bps` answering zero.
+/// it here is refusing it later and worse — `checked_apply_bps` answering
+/// `None` on the money path, or `apply_bps` panicking there, which under
+/// `panic = "abort"` ends the process rather than the order.
 pub const MAX_TRADE_COST_BPS: f64 = 10_000.0;
 
 /// The largest borrow rate this platform will hold on a record.
@@ -312,15 +320,16 @@ impl TransactionCostModel {
             if !value.is_finite() || value < 0.0 {
                 issues.push(format!(
                     "{name} is {value}, which is not a cost in basis points; supply a finite \
-                     non-negative rate — a cost that is not a number is priced at zero by \
-                     `Decimal::apply_bps`, and an instrument that is free to trade is profitable \
-                     to trade"
+                     non-negative rate in the reference record — `Decimal::checked_apply_bps` \
+                     has no factor for it, so this instrument cannot be priced at all and every \
+                     trade in it is refused until the record is corrected"
                 ));
             } else if value >= MAX_TRADE_COST_BPS {
                 issues.push(format!(
                     "{name} is {value}bps, at or beyond the whole value of the notional; supply a \
-                     rate under {MAX_TRADE_COST_BPS} — a figure this large is a data error, and \
-                     one large enough to overflow is priced at zero rather than refused"
+                     rate under {MAX_TRADE_COST_BPS} in the reference record — a figure this \
+                     large is a data error, and one large enough to overflow the product stops \
+                     the instrument being priced rather than being charged"
                 ));
             }
         }
@@ -385,13 +394,79 @@ impl TransactionCostModel {
     }
 
     /// Estimated all-in cost of trading `notional` at `participation` of daily
-    /// volume, in the instrument's currency.
-    pub fn estimate(&self, notional: Decimal, participation: f64) -> Decimal {
+    /// volume, in the instrument's currency, or a refusal naming the term the
+    /// arithmetic could not apply.
+    ///
+    /// Every term crosses [`Decimal::checked_apply_bps`] and the sum uses
+    /// `checked_add`, so a rate or a product this platform cannot represent
+    /// comes back as an [`Error`] a caller can handle. The plain
+    /// `Decimal::apply_bps` would panic on the same input — correct, in that a
+    /// silent `Decimal::ZERO` prices the instrument as free to trade, but the
+    /// release profile is `panic = "abort"`, so one unpriceable reference
+    /// record would end a process that could have refused one order.
+    ///
+    /// [`Self::checked`] and [`crate::object::FinancialObject::validate`] keep
+    /// such a rate off a *record*. Neither sees a model a caller assembled
+    /// field by field from a struct literal — the fields are public and
+    /// `qip-simulation-engine` does exactly that — so this is the last seam
+    /// where an unpriceable model stops being priced.
+    pub fn checked_estimate(&self, notional: Decimal, participation: f64) -> Result<Decimal> {
         let magnitude = notional.abs();
-        let explicit = magnitude.apply_bps(self.commission_bps + self.tax_bps);
-        let spread = magnitude.apply_bps(self.half_spread_bps);
-        let impact = magnitude.apply_bps(self.impact_bps(participation));
-        explicit + spread + impact + self.fixed_fee
+        let mut total = self.fixed_fee;
+        for (term, bps) in [
+            (
+                "commission_bps + tax_bps",
+                self.commission_bps + self.tax_bps,
+            ),
+            ("half_spread_bps", self.half_spread_bps),
+            (
+                "impact_coefficient_bps at this participation",
+                self.impact_bps(participation),
+            ),
+        ] {
+            let component = magnitude
+                .checked_apply_bps(bps)
+                .ok_or_else(|| Self::unpriceable(term, bps, magnitude))?;
+            total = total
+                .checked_add(component)
+                .ok_or_else(|| Self::unpriceable(term, bps, magnitude))?;
+        }
+        Ok(total)
+    }
+
+    /// Why a term could not be priced, and what to do about it.
+    ///
+    /// The remedy is never in this crate: either the rate is wrong on the
+    /// reference record, or the notional is larger than any cost this platform
+    /// can represent. Both are the caller's to correct, and naming the term
+    /// rather than the whole model is what tells the operator which field.
+    fn unpriceable(term: &str, bps: f64, magnitude: Decimal) -> Error {
+        Error::numeric(format!(
+            "cannot price {magnitude} at {bps}bp of {term}: the rate must be a finite number \
+             whose product with the notional is representable. Correct that field on the \
+             instrument's reference record — TransactionCostModel::checked refuses the same \
+             figure at load — or, if the rate is sound, send a smaller notional. The trade is \
+             refused rather than priced at zero, because an instrument that is free to trade is \
+             profitable to trade"
+        ))
+    }
+
+    /// [`Self::checked_estimate`], panicking on a model that cannot price.
+    ///
+    /// Kept because callers outside this crate quote a cost inline; prefer
+    /// [`Self::checked_estimate`] anywhere the refusal can be handled, which
+    /// under `panic = "abort"` is the difference between refusing an order and
+    /// losing the process.
+    ///
+    /// # Panics
+    ///
+    /// If any rate is not a finite number, or if a term or the total is too
+    /// large to represent.
+    pub fn estimate(&self, notional: Decimal, participation: f64) -> Decimal {
+        match self.checked_estimate(notional, participation) {
+            Ok(cost) => cost,
+            Err(refusal) => panic!("{refusal}"),
+        }
     }
 
     /// Market impact in basis points at a given participation rate.

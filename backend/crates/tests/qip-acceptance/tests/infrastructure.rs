@@ -4895,7 +4895,34 @@ fn without_removed_blocks(text: &str) -> String {
     out
 }
 
+/// The steps of one job body, each as its own text, with every whole-line
+/// comment removed.
+///
+/// Stripped because every caller here finds a step by a substring of its text,
+/// and a comment is text. While `a100d9a` was being written a new comment
+/// containing the literal `terraform init` made `position("terraform init")`
+/// land on the comment's step instead of the init step, and the test that
+/// failed was an ordering test — so a needle that had stopped being unique
+/// read as a workflow whose steps were in the wrong order. A prose edit must
+/// not be able to move an assertion onto a different step.
+///
+/// A caller that needs the bytes the runner would execute uses
+/// [`raw_job_steps`] instead: a script driven under bash is run as written,
+/// comments and all, or it is not the script the runner produces.
 fn job_steps(job: &str) -> Vec<String> {
+    raw_job_steps(job)
+        .into_iter()
+        .map(|step| {
+            step.lines()
+                .filter(|line| !line.trim_start().starts_with('#'))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect()
+}
+
+/// The steps of one job body exactly as written.
+fn raw_job_steps(job: &str) -> Vec<String> {
     let mut steps: Vec<Vec<&str>> = Vec::new();
     let mut item_indent: Option<usize> = None;
     let mut in_steps = false;
@@ -7420,4 +7447,572 @@ fn the_default_openobserve_posture_names_no_anonymous_invoker() {
         "only {refusals} line(s) inside a validation block name an anonymous member; the \
          condition and its message are two, so the refusal this test relies on is gone"
     );
+}
+
+// --- the three guards of `a100d9a`, which nothing pinned ---------------------
+//
+// Commit `a100d9a` added a CI step that parses the environment tfvars and two
+// refusals of the `unprovisioned` marker, and said in its own message that
+// nothing in the suite would notice if any of the three were deleted. These
+// three tests are that notice. Two of them run the guard rather than read it,
+// because the guards are shell and a test that matches their spelling passes
+// for an implementation that spells the comparison correctly and means
+// something else — which is exactly how a substring guard would sail through.
+
+/// A tool's absolute path, resolved from the PATH this test inherited.
+///
+/// Resolved before the sandboxed PATH below replaces it, and absolute so that
+/// the interpreter is found whatever the child's PATH says.
+fn on_path(tool: &str) -> std::path::PathBuf {
+    let path = std::env::var("PATH").unwrap_or_default();
+    path.split(':')
+        .filter(|directory| !directory.is_empty())
+        .map(|directory| std::path::Path::new(directory).join(tool))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| {
+            panic!("`{tool}` is not on PATH, and these tests drive a shell script with it")
+        })
+}
+
+/// A directory nothing else is using, removed and recreated so a rerun starts
+/// from nothing.
+fn scratch(name: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("qip-guard-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).expect("a scratch directory is creatable");
+    path
+}
+
+/// A step's `run:` script, dedented, as the runner would hand it to bash.
+///
+/// The `${{ … }}` check is the reason this is a function rather than three
+/// lines: an expression is text the runner substitutes *before* bash sees a
+/// byte, so a script still carrying one is not the script that runs, and
+/// driving it would be testing something the runner never produces. Comment
+/// lines are exempt because a comment may quote an expression — the identity
+/// step's does, explaining why the value is bound through `env:`.
+fn step_run_script(step: &str, describe: &str) -> String {
+    let body = step
+        .split_once("run: |\n")
+        .unwrap_or_else(|| panic!("{describe} has no `run: |` block:\n{step}"))
+        .1;
+    let indent = body
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start().len())
+        .unwrap_or_default();
+    let script: String = body
+        .lines()
+        .map(|line| {
+            if line.len() >= indent {
+                &line[indent..]
+            } else {
+                line.trim_start()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let live: String = script
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !live.contains("${{"),
+        "{describe} pastes a workflow expression into its script, so what runs below is not \
+         what the runner would produce:\n{live}"
+    );
+    script
+}
+
+/// What a script did: its exit status and everything it printed, on either
+/// stream.
+fn drive(
+    interpreter: &std::path::Path,
+    script: &std::path::Path,
+    arguments: &[&str],
+    directory: &std::path::Path,
+    environment: &[(&str, &str)],
+) -> (i32, String) {
+    let mut command = std::process::Command::new(interpreter);
+    command.arg(script).args(arguments).current_dir(directory);
+    for (name, value) in environment {
+        command.env(name, value);
+    }
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("{} could not be run: {error}", script.display()));
+    let mut printed = String::from_utf8_lossy(&output.stdout).to_string();
+    printed.push_str(&String::from_utf8_lossy(&output.stderr));
+    (output.status.code().unwrap_or(-1), printed)
+}
+
+/// Whether a step runs `terraform fmt` over the environments directory —
+/// the only thing in this repository that parses those files.
+fn parses_the_environment_tfvars(step: &str) -> bool {
+    step.lines().any(|line| {
+        let line = line.trim_start();
+        !line.starts_with('#')
+            && line.contains("terraform fmt")
+            && line.contains("-check")
+            && line.contains("infrastructure/environments")
+    })
+}
+
+/// CI parses `infrastructure/environments/*/terraform.tfvars`, and it is the
+/// only thing that does.
+///
+/// The gap this closes, from `a100d9a`: `ci.yml`'s format step is
+/// `-chdir=infrastructure/terraform` and recurses only under it, and
+/// `terraform validate` checks the configuration rather than the values handed
+/// to it — it never opens a `.tfvars` at all. So a `terraform.tfvars` that was
+/// not parseable HCL passed every gate in the repository and failed at the
+/// moment an operator dispatched an apply. `terraform fmt` parses HCL in order
+/// to reformat it and reads `.tfvars`, so pointing it at the sibling directory
+/// is the whole check.
+///
+/// Asserted as a count over every workflow rather than as the presence of one
+/// step, because "something checks this" is the property and a step moved to
+/// another job would keep it. Deleting the step takes the count to zero and
+/// this test says which files stop being parsed.
+#[test]
+fn one_step_and_only_one_parses_the_environment_tfvars_no_other_gate_reads() {
+    // Premise: the files exist and there are four of them, so the check has
+    // something to parse and this test is not about an empty directory.
+    let tfvars: Vec<std::path::PathBuf> =
+        files_with_extension("infrastructure/environments", "tfvars");
+    assert_eq!(
+        tfvars.len(),
+        4,
+        "infrastructure/environments holds {} tfvars file(s), not the four environments' \
+         ({:?}); the gate below is scoped to a directory whose contents have changed",
+        tfvars.len(),
+        tfvars.iter().map(|path| path.display()).collect::<Vec<_>>()
+    );
+
+    const WORKFLOWS: [&str; 5] = [
+        ".github/workflows/ci.yml",
+        ".github/workflows/deploy.yml",
+        ".github/workflows/image.yml",
+        ".github/workflows/infra.yml",
+        ".github/workflows/vendor.yml",
+    ];
+    let mut parsing: Vec<(String, String, String)> = Vec::new();
+    let mut jobs_read = 0usize;
+    for workflow_file in WORKFLOWS {
+        let workflow = read(workflow_file);
+        let jobs = workflow_jobs(&workflow);
+        assert!(
+            !jobs.is_empty(),
+            "{workflow_file} parsed to no jobs at all; this check stopped checking"
+        );
+        jobs_read += jobs.len();
+        for (job_name, body) in jobs {
+            for step in job_steps(&body) {
+                if parses_the_environment_tfvars(&step) {
+                    parsing.push((workflow_file.to_string(), job_name.clone(), step));
+                }
+            }
+        }
+    }
+    assert!(
+        jobs_read >= 5,
+        "only {jobs_read} job(s) were read out of five workflows; the walk found nothing to \
+         check and would pass over a deleted step"
+    );
+
+    assert_eq!(
+        parsing.len(),
+        1,
+        "{} step(s) run `terraform fmt -check` over infrastructure/environments, and exactly \
+         one must ({:?}). At zero, nothing in this repository parses the four environments' \
+         terraform.tfvars: the format step is -chdir=infrastructure/terraform and cannot see a \
+         sibling directory, and `terraform validate` never opens a tfvars at all — so a tfvars \
+         that is not valid HCL passes CI and fails at the apply an operator dispatched. At two, \
+         two jobs disagree about which files are checked.",
+        parsing.len(),
+        parsing
+            .iter()
+            .map(|(file, job, _)| format!("{file} job `{job}`"))
+            .collect::<Vec<_>>()
+    );
+    let (workflow_file, job_name, step) = &parsing[0];
+    assert_eq!(
+        (workflow_file.as_str(), job_name.as_str()),
+        (".github/workflows/ci.yml", "infrastructure"),
+        "the environment tfvars are parsed by {workflow_file} job `{job_name}`; the gate belongs \
+         in ci.yml's infrastructure job, which every pull request runs, rather than in a \
+         workflow somebody dispatches"
+    );
+    // A check whose failure does not fail the job is a check nobody runs.
+    assert!(
+        step.contains("set -euo pipefail"),
+        "the step does not stop on error, so a failed parse is a passing step:\n{step}"
+    );
+    assert!(
+        step.contains("exit 1"),
+        "the step reports a bad tfvars and exits 0; the job then goes green on the file it \
+         could not parse:\n{step}"
+    );
+
+    // The complement, which is why the step above is load-bearing rather than
+    // redundant: the two steps beside it in the same job cover the
+    // configuration and not the values.
+    let ci = read(".github/workflows/ci.yml");
+    let (_, infrastructure) = workflow_jobs(&ci)
+        .into_iter()
+        .find(|(name, _)| name == "infrastructure")
+        .expect("ci.yml has an `infrastructure` job");
+    let steps = job_steps(&infrastructure);
+    let format = steps
+        .iter()
+        .find(|step| step.contains("terraform -chdir=infrastructure/terraform fmt"))
+        .expect(
+            "ci.yml's infrastructure job no longer runs terraform fmt over the configuration; \
+             the argument that the environments need their own step rests on that one being \
+             scoped to a sibling directory",
+        );
+    assert!(
+        !parses_the_environment_tfvars(format),
+        "the configuration's format step now covers the environments too; if that is \
+         deliberate, this test and the separate step both need rewriting rather than one \
+         quietly shadowing the other:\n{format}"
+    );
+    let validate = steps
+        .iter()
+        .find(|step| step.contains("terraform -chdir=infrastructure/terraform validate"))
+        .expect("ci.yml's infrastructure job no longer validates the configuration");
+    assert!(
+        !validate.contains("-var-file"),
+        "the validate step now passes a var-file; `terraform validate` takes none, and a reader \
+         who believes it does will retire the parse step above:\n{validate}"
+    );
+}
+
+/// `infra.yml` refuses an environment whose tfvars still carry the
+/// `unprovisioned` marker — driven, not read.
+///
+/// Before `a100d9a` the step exited 0 for `test` and emitted
+/// `provider=projects/0/…` and `account=qip-infra-test@unprovisioned.iam…`.
+/// The run then died at the OIDC exchange with a message about an invalid
+/// audience, which sends an operator to look at workload identity federation
+/// while the actual problem is an environment that has never been provisioned
+/// — the same class of misdirection that made this workflow derive its
+/// identity from the tfvars in the first place.
+///
+/// Three values, and the third is the one that matters:
+///
+///   * `test` is refused, and the refusal names the marker rather than failing
+///     for some other reason;
+///   * `dev` is admitted and emits its identity — the half a guard written too
+///     tightly fails, and without it a step that refused everything would pass;
+///   * a project id that merely *contains* the marker,
+///     `unprovisioned-legacy-01`, is **admitted**. The rule is an equality
+///     test; a substring test would refuse a legitimately named project, and
+///     it would pass a test that only checked the two obvious cases. That is
+///     the `limited_autonomous_live` trap the testing rules name, and it is
+///     the reason this test runs the script instead of matching its text.
+#[test]
+fn the_infrastructure_workflows_marker_refusal_is_an_equality_and_admits_a_project_named_after_it()
+{
+    let infra = read(".github/workflows/infra.yml");
+    let (_, terraform) = workflow_jobs(&infra)
+        .into_iter()
+        .find(|(name, _)| name == "terraform")
+        .expect("infra.yml has a `terraform` job");
+    let step = raw_job_steps(&terraform)
+        .into_iter()
+        .find(|step| step.contains("- name: derive the identity from the tfvars"))
+        .expect(
+            "infra.yml has no step named `derive the identity from the tfvars`; nothing derives \
+             the project the job authenticates as, so nothing can refuse an unprovisioned one",
+        );
+    let script = step_run_script(&step, "infra.yml's identity step");
+
+    // Premise, both halves. A test asserting `test` is refused proves nothing
+    // if `test` no longer carries the marker, and the dev half proves nothing
+    // if dev does.
+    let marked = read("infrastructure/environments/test/terraform.tfvars");
+    assert!(
+        marked
+            .lines()
+            .any(|line| collapsed(line) == "project_id = \"unprovisioned\""),
+        "test's tfvars no longer carry `project_id = \"unprovisioned\"`, so the refusal below \
+         would be asserted against an environment that has nothing to refuse. If test has been \
+         provisioned, point this at whichever environment still carries the marker."
+    );
+    let provisioned = read("infrastructure/environments/dev/terraform.tfvars");
+    assert!(
+        !provisioned.contains("\"unprovisioned\""),
+        "dev's tfvars carry the marker, so the admission below would be asserting that the \
+         guard does not work"
+    );
+
+    let root = repository_root();
+    let bash = on_path("bash");
+    let workspace = scratch("infra-identity");
+    let probe = workspace.join("identity.sh");
+    std::fs::write(&probe, &script).expect("the probe script is writable");
+
+    // Each case gets its own `$GITHUB_OUTPUT`, because what the step wrote
+    // there is how "it reached the end" is told from "it exited 0 early".
+    let outputs_for = |case: &str| workspace.join(format!("outputs-{case}"));
+    let run = |case: &str, environment: &str, directory: &std::path::Path| {
+        let outputs = outputs_for(case);
+        std::fs::write(&outputs, "").expect("the outputs file is writable");
+        let (code, printed) = drive(
+            &bash,
+            &probe,
+            &[],
+            directory,
+            &[
+                ("ENVIRONMENT", environment),
+                ("GITHUB_OUTPUT", &outputs.display().to_string()),
+            ],
+        );
+        let written = std::fs::read_to_string(&outputs).unwrap_or_default();
+        (code, printed, written)
+    };
+
+    // 1. The marker is refused, before anything authenticates.
+    let (code, printed, written) = run("marked", "test", &root);
+    assert_ne!(
+        code, 0,
+        "the identity step exited 0 for `test`, whose tfvars carry the marker. It would then \
+         authenticate as a project that does not exist and die at the OIDC exchange talking \
+         about an audience. It wrote: {written}"
+    );
+    assert!(
+        printed.contains("'unprovisioned' marker"),
+        "the identity step refused `test` for a reason it did not name; an operator learns \
+         nothing about which rule fired or what to do next: {printed}"
+    );
+    assert!(
+        printed.contains("scripts/bootstrap-deploy.sh"),
+        "the refusal does not name the command that clears the marker, which is the whole \
+         reason for refusing here rather than at the OIDC exchange: {printed}"
+    );
+    assert!(
+        written.is_empty(),
+        "the identity step refused `test` and still wrote outputs; four steps below read them, \
+         and an unwritten output interpolates to the empty string rather than failing: {written}"
+    );
+
+    // 2. A provisioned environment is admitted. Without this half, a step that
+    //    refused everything would pass.
+    let (code, printed, written) = run("provisioned", "dev", &root);
+    assert_eq!(
+        code, 0,
+        "the identity step exited {code} for `dev`, the one provisioned environment. A guard \
+         that refuses everything is not a guard, and this workflow is the tool for recovering a \
+         broken bootstrap. It printed: {printed}"
+    );
+    assert!(
+        written.lines().any(|line| line == "project=algorik-dev"),
+        "the identity step admitted `dev` and wrote no `project=` output naming dev's project; \
+         it exited 0 without reaching its end, which is the failure the four steps that read \
+         `steps.identity.outputs.project` cannot see"
+    );
+
+    // 3. The near miss. A real project id containing the marker as a substring
+    //    is admitted, because the rule is an equality. A substring guard would
+    //    lock a legitimately named project out of its own infrastructure and
+    //    pass cases 1 and 2 while doing it.
+    let near_miss = workspace.join("tree");
+    let environments = near_miss.join("infrastructure/environments/dev");
+    std::fs::create_dir_all(&environments).expect("the fixture tree is creatable");
+    std::fs::write(
+        environments.join("terraform.tfvars"),
+        "project_id     = \"unprovisioned-legacy-01\"\nproject_number = 1\n",
+    )
+    .expect("the fixture tfvars are writable");
+    let (code, printed, written) = run("near-miss", "dev", &near_miss);
+    assert_eq!(
+        code, 0,
+        "the identity step refused project id `unprovisioned-legacy-01`, which is a project a \
+         person may legitimately have named and is not the marker. The rule has become a \
+         substring test — the `limited_autonomous_live` trap — and it now locks that project \
+         out of the workflow that plans and applies it. It printed: {printed}"
+    );
+    assert!(
+        written
+            .lines()
+            .any(|line| line == "project=unprovisioned-legacy-01"),
+        "the identity step exited 0 for `unprovisioned-legacy-01` without writing its project \
+         output; it stopped somewhere in the middle, which is a refusal wearing an admission's \
+         exit code. It wrote: {written}"
+    );
+
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+/// `scripts/bootstrap-deploy.sh` refuses a project id of the wrong shape and
+/// refuses the marker, and gets past both for a provisioned environment —
+/// driven, not read.
+///
+/// This is the script `infra.yml`'s refusal points an operator at, and the
+/// path test, stage and prod are on today. Before `a100d9a` nothing checked
+/// the value `tfvar project_id` returned, and that value becomes the bootstrap
+/// account's domain, the state bucket's name, and the positional argument of
+/// `gcloud projects add-iam-policy-binding … --role roles/owner`.
+///
+/// # Why the PATH is replaced
+///
+/// The admission half has to prove the script got *past* the guards, and the
+/// next thing past them is step 1's tool check. Running it with the machine's
+/// own PATH would mean that on a machine with `gcloud` installed this test
+/// would run `gcloud config set project` and then `gcloud services enable`
+/// against a real project. So the child gets a PATH holding only the three
+/// utilities the script needs before that point, which makes `missing: gcloud
+/// terraform openssl` the deterministic outcome on every machine and makes it
+/// impossible for this test to reach a cloud API. That message is the
+/// evidence: it is printed only after both guards have admitted the value.
+#[test]
+fn the_bootstrap_script_refuses_a_malformed_project_and_the_marker_and_admits_what_a_plan_admits() {
+    let script_source = read("scripts/bootstrap-deploy.sh");
+    // Premise: the guards are in the file at all. Driving proves what they do;
+    // this names what is missing if somebody deletes them wholesale, rather
+    // than leaving three admissions that all look like successes.
+    assert!(
+        script_source.contains("is not a Google Cloud project id")
+            && script_source.contains("'unprovisioned' marker"),
+        "scripts/bootstrap-deploy.sh no longer carries both the shape guard and the marker \
+         guard; every case below would then be an admission and this test would pass"
+    );
+
+    let bash = on_path("bash");
+    let workspace = scratch("bootstrap");
+    // Only what the script uses before step 1's tool check: `dirname` for the
+    // repository root, `sed` and `head` for `tfvar`. Everything else it calls
+    // is a bash builtin.
+    let bin = workspace.join("bin");
+    std::fs::create_dir_all(&bin).expect("the sandboxed bin is creatable");
+    for tool in ["dirname", "sed", "head", "bash"] {
+        std::os::unix::fs::symlink(on_path(tool), bin.join(tool))
+            .unwrap_or_else(|error| panic!("cannot place {tool} in the sandboxed PATH: {error}"));
+    }
+    let sandboxed_path = bin.display().to_string();
+
+    let root = repository_root();
+    let real = root.join("scripts/bootstrap-deploy.sh");
+    let run = |script: &std::path::Path, environment: &str| {
+        drive(
+            &bash,
+            script,
+            &[environment],
+            &root,
+            &[("PATH", sandboxed_path.as_str()), ("HOME", &sandboxed_path)],
+        )
+    };
+
+    // 1. The marker, against the committed tree. Premise first: test still
+    //    carries it.
+    assert!(
+        read("infrastructure/environments/test/terraform.tfvars")
+            .lines()
+            .any(|line| collapsed(line) == "project_id = \"unprovisioned\""),
+        "test's tfvars no longer carry the marker, so the refusal below would be asserted \
+         against an environment that has nothing to refuse"
+    );
+    let (code, printed) = run(&real, "test");
+    assert_ne!(
+        code, 0,
+        "scripts/bootstrap-deploy.sh exited 0 for `test`, whose project does not exist. It \
+         creates a service account, a bucket and IAM bindings *in* a project and never creates \
+         the project, so there is nothing here it could complete. It printed: {printed}"
+    );
+    assert!(
+        printed.contains("'unprovisioned' marker"),
+        "the script refused `test` without naming the marker; the operator provisioning test, \
+         stage or prod reaches this message and it is the one that should tell them what to do: \
+         {printed}"
+    );
+    assert!(
+        !printed.contains("missing:"),
+        "the script reached step 1's tool check for an unprovisioned environment, so the marker \
+         guard ran after work rather than before it: {printed}"
+    );
+
+    // 2. Admission, against the committed tree: `dev` gets past both guards
+    //    and stops at the tool check, which is where a machine with no gcloud
+    //    stops. The project id it echoes is printed only after both guards.
+    let (code, printed) = run(&real, "dev");
+    assert!(
+        printed.contains("project:") && printed.contains("algorik-dev"),
+        "scripts/bootstrap-deploy.sh did not get past its own guards for `dev`, the one \
+         provisioned environment: it never echoed the project it would act on. A guard that \
+         refuses everything is not a guard. It exited {code} and printed: {printed}"
+    );
+    assert!(
+        printed.contains("missing:") && printed.contains("gcloud"),
+        "the script got past the guards for `dev` and did not stop at the tool check; this test \
+         runs it with a PATH holding no cloud tooling precisely so that it cannot reach a \
+         project, and something has changed about where it stops. It printed: {printed}"
+    );
+
+    // 3. and 4. The two near misses, against a fixture tree — the committed
+    //    tfvars are the reviewed configuration and no test may edit them. The
+    //    script under it is a byte-for-byte copy, so what runs is the real
+    //    file; only the value it reads is the fixture's.
+    let fixture = workspace.join("tree");
+    std::fs::create_dir_all(fixture.join("scripts")).expect("the fixture tree is creatable");
+    let copied = fixture.join("scripts/bootstrap-deploy.sh");
+    std::fs::write(&copied, &script_source).expect("the fixture script is writable");
+    assert_eq!(
+        std::fs::read_to_string(&copied).unwrap_or_default(),
+        script_source,
+        "the copy under test is not the committed script"
+    );
+    let fixture_environments = fixture.join("infrastructure/environments/dev");
+    std::fs::create_dir_all(&fixture_environments).expect("the fixture environments are creatable");
+    let write_project = |value: &str| {
+        std::fs::write(
+            fixture_environments.join("terraform.tfvars"),
+            format!("project_id     = \"{value}\"\nproject_number = 1\n"),
+        )
+        .expect("the fixture tfvars are writable");
+    };
+
+    // 3. A value that is not a project id at all is refused by shape, and the
+    //    message says so rather than blaming the marker.
+    write_project("my_project");
+    let (code, printed) = run(&copied, "dev");
+    assert_ne!(
+        code, 0,
+        "the script accepted `my_project`, which no Google Cloud project id can be. That value \
+         becomes a bucket name and the target of a roles/owner binding. It printed: {printed}"
+    );
+    // Refused *before* any work: `exit 69` from the tool check is also
+    // non-zero, so the assertion above alone would pass for a script that had
+    // stopped screening the shape at all.
+    assert!(
+        !printed.contains("missing:"),
+        "the script carried `my_project` past the shape guard and into step 1; with the real \
+         tooling present the next thing it does is point gcloud at that project: {printed}"
+    );
+    assert!(
+        printed.contains("is not a Google Cloud project id"),
+        "the script refused a malformed project id without naming the shape rule: {printed}"
+    );
+
+    // 4. The near miss, and the point of the whole test: a real project id
+    //    that merely *contains* the marker is admitted. A substring guard
+    //    would refuse it, would pass cases 1 to 3, and would leave that
+    //    project with no bootstrap path at all.
+    write_project("unprovisioned-legacy-01");
+    let (code, printed) = run(&copied, "dev");
+    assert!(
+        printed.contains("unprovisioned-legacy-01") && printed.contains("project:"),
+        "the script refused project id `unprovisioned-legacy-01`, which is a legitimately named \
+         project and not the marker. The marker rule has become a substring test — the \
+         `limited_autonomous_live` trap the testing rules name — and the id `variables.tf` and a \
+         plan both admit is refused here. It exited {code} and printed: {printed}"
+    );
+    assert!(
+        printed.contains("missing:"),
+        "the script admitted `unprovisioned-legacy-01` and then stopped somewhere other than the \
+         tool check: {printed}"
+    );
+
+    let _ = std::fs::remove_dir_all(&workspace);
 }

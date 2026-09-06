@@ -309,7 +309,7 @@ fn a_transfer_costing_more_than_its_lower_bound_benefit_is_refused_naming_both_f
     let needed_by = now.saturating_add(Duration::from_days(4));
     let reactive_lag = calendar.quote(needed_by)?.available_at.since(needed_by);
     let expected = ShortfallAsymmetry::for_kind(DemandKind::Margin)?
-        .shortfall_penalty(dec!("900000"), reactive_lag);
+        .shortfall_penalty(dec!("900000"), reactive_lag)?;
     assert_eq!(
         benefit, expected,
         "the refusal named a benefit the planner did not compute"
@@ -645,15 +645,15 @@ fn a_shortfall_is_penalised_harder_than_an_equivalent_surplus() -> Result<()> {
         for _ in 0..200 {
             let gap = Decimal::from_int(1 + (rng.next_u64() % 50_000_000) as i64);
             let over = Duration::from_hours(1 + (rng.next_u64() % 400) as i64);
-            let short = asymmetry.shortfall_penalty(gap, over);
-            let long = asymmetry.surplus_penalty(gap, over);
+            let short = asymmetry.shortfall_penalty(gap, over)?;
+            let long = asymmetry.surplus_penalty(gap, over)?;
             assert!(
                 short > long,
                 "{}: a {gap} shortfall cost {short} against {long} for the same surplus",
                 kind.as_str()
             );
-            assert_eq!(asymmetry.penalty(-gap, over), short);
-            assert_eq!(asymmetry.penalty(gap, over), long);
+            assert_eq!(asymmetry.penalty(-gap, over)?, short);
+            assert_eq!(asymmetry.penalty(gap, over)?, long);
         }
         // Contractual demands are penalised harder still, because a shortfall
         // there is somebody else choosing what to sell.
@@ -1352,6 +1352,120 @@ fn a_forecaster_refuses_history_that_reaches_past_its_own_as_of_instant() -> Res
         err.to_string()
             .contains("after the forecast's as-of instant"),
         "the refusal did not name the leakage as the reason: {err}"
+    );
+    Ok(())
+}
+
+// --- rates that cannot be applied to money ----------------------------------
+
+#[test]
+fn a_penalty_rate_that_cannot_charge_a_gap_is_refused_by_side_while_a_stated_one_still_charges()
+-> Result<()> {
+    // `ShortfallAsymmetry::new` proves both rates finite and the shortfall
+    // rate the larger, and a rate whose product with the gap is not
+    // representable satisfies both. The penalty is the entire benefit side of
+    // the planner's inequality, so a penalty silently answered as zero says
+    // "being short this capital costs nothing" and refuses every transfer that
+    // would have covered it — a control that reads as a decision.
+    let over = Duration::from_days(30);
+    let gap = dec!("1000000");
+
+    // The admitting half first, so the refusal below is about the rate.
+    let stated = ShortfallAsymmetry::new(1_200.0, 400.0)?;
+    let charged = stated.shortfall_penalty(gap, over)?;
+    assert!(
+        charged > Decimal::ZERO,
+        "a stated rate still charges for a shortfall, and charged {charged}"
+    );
+    assert!(
+        stated.surplus_penalty(gap, over)? < charged,
+        "and still charges a surplus less than a shortfall"
+    );
+
+    let unchargeable = ShortfallAsymmetry::new(1e308, 400.0)?;
+    let refusal = unchargeable
+        .shortfall_penalty(gap, over)
+        .expect_err("a rate whose product with the gap is unrepresentable cannot be charged");
+    assert!(
+        matches!(refusal, qip_core::error::Error::Numeric(_)),
+        "an unchargeable rate is a numeric refusal, not an invalid input: {refusal:?}"
+    );
+    let message = refusal.message();
+    assert!(
+        message.contains("shortfall") && !message.contains("surplus of"),
+        "the refusal must name which side could not be charged: {message}"
+    );
+    assert!(
+        message.contains("ShortfallAsymmetry::new"),
+        "and must say what to do instead of sizing against an unpriced tail: {message}"
+    );
+    // The surplus rate on the same asymmetry is stated, so it still charges:
+    // one poisoned rate does not take the whole model out of service.
+    assert!(unchargeable.surplus_penalty(gap, over)? > Decimal::ZERO);
+    Ok(())
+}
+
+#[test]
+fn a_funding_rate_that_cannot_price_a_transfer_is_refused_by_currency_and_a_stated_one_prices()
+-> Result<()> {
+    // The capital path, where a wrongly-priced move is worse than a
+    // wrongly-priced route: a funding differential and an in-flight
+    // opportunity cost of zero make a transfer look like it costs only its
+    // wire fee, and the planner then moves capital on the strength of it.
+    let calendar = SettlementCalendar::weekday(SettlementConvention::T1)?;
+    let quote = calendar.quote(thursday())?;
+    let holding = Duration::from_days(3);
+    let amount = dec!("1000000");
+    let euro_venue = CapitalLocation::new(
+        Region::new("emea"),
+        Currency::EUR,
+        VenueId::new("EURO-DESK"),
+    );
+
+    // The admitting half: the shipped curve prices this cross.
+    let priced =
+        cost_model(dec!("25"))?.price(amount, &treasury(), &euro_venue, &quote, holding)?;
+    assert!(
+        priced.in_flight_opportunity > Decimal::ZERO,
+        "a stated opportunity rate charges for capital in transit, and charged {}",
+        priced.in_flight_opportunity
+    );
+    assert!(priced.total > priced.wire_fee, "and costs more than a wire");
+
+    let poisoned_funding = TransferCostModel::new(
+        TransactionCostModel::listed(1.0),
+        LiquidityProfile::listed(Decimal::from_int(5_000_000_000), 1.0),
+        FundingCurve::flat(400.0)?.with_rate(Currency::USD, 1e308)?,
+        dec!("25"),
+        300.0,
+    )?;
+    let refusal = poisoned_funding
+        .price(amount, &treasury(), &euro_venue, &quote, holding)
+        .expect_err("a differential that cannot be charged cannot price the transfer");
+    let message = refusal.message();
+    assert!(
+        message.contains("USD") && message.contains("EUR"),
+        "the refusal must name the pair whose carry could not be priced: {message}"
+    );
+    assert!(
+        message.contains("FundingCurve::with_rate"),
+        "and must say what to correct rather than moving capital for a wire fee: {message}"
+    );
+
+    let poisoned_opportunity = TransferCostModel::new(
+        TransactionCostModel::listed(1.0),
+        LiquidityProfile::listed(Decimal::from_int(5_000_000_000), 1.0),
+        FundingCurve::flat(400.0)?,
+        dec!("25"),
+        1e308,
+    )?;
+    let refusal = poisoned_opportunity
+        .price(amount, &treasury(), &euro_venue, &quote, holding)
+        .expect_err("an opportunity rate that cannot be charged cannot price the transfer");
+    assert!(
+        refusal.message().contains("opportunity cost"),
+        "the refusal must name the component that failed: {}",
+        refusal.message()
     );
     Ok(())
 }

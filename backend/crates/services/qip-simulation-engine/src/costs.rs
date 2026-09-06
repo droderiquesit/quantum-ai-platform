@@ -196,7 +196,25 @@ impl CostModel {
     ///
     /// Exposed so a caller — or a test — can put the backtest's parameters and
     /// the pre-trade check's side by side and see that they are one object.
-    pub fn pricing(&self) -> TransactionCostModel {
+    ///
+    /// # Why this is fallible, when a struct literal never was
+    ///
+    /// A [`TransactionCostModel`] that arrives by deserialisation goes through
+    /// [`TransactionCostModel::checked`], and one that arrives on a reference
+    /// record goes through `FinancialObject::validate`. **A struct literal goes
+    /// through neither**, and this function and [`Self::pricing_at`] were the
+    /// literals: `qip-financial`'s own doc names them as the hole its wire
+    /// guard could not close, because a computed model is not a file and not a
+    /// record and no check inside that type can see it. So the check happens
+    /// here, at the seam where the model is computed, and the two ways in are
+    /// held to one bound rather than to whichever one the value happened to
+    /// take.
+    ///
+    /// [`Self::validate`] is not that check. It refuses a figure that is not a
+    /// finite non-negative number and stops there; it has no ceiling, so a
+    /// coefficient of 50,000bp — five times the whole notional per trade —
+    /// passes it and would be priced.
+    pub fn pricing(&self) -> Result<TransactionCostModel> {
         TransactionCostModel {
             commission_bps: self.commission_bps,
             fixed_fee: self.fixed_fee,
@@ -205,6 +223,7 @@ impl CostModel {
             tax_bps: self.tax_bps,
             short_borrow_bps_annual: self.short_borrow_bps_annual,
         }
+        .checked()
     }
 
     /// The platform's cost model as it applies to an instrument whose measured
@@ -223,12 +242,37 @@ impl CostModel {
     /// than charging nothing: a zero impact is visibly a zero in
     /// [`crate::backtest::BacktestResult::total_impact`], where a substituted
     /// reference reads as a measurement.
-    pub fn pricing_at(&self, daily_volatility: f64) -> TransactionCostModel {
+    ///
+    /// # The scaled coefficient is held to the same ceiling as a wire record
+    ///
+    /// This multiplication is the one place in the crate that can *manufacture*
+    /// a figure `qip-financial` would have refused on load: the scale is a
+    /// measured volatility over a stated reference and nothing bounded it, so a
+    /// volatility series with one bad bar in it produced a coefficient no
+    /// document could have carried, and `apply_bps` priced whatever came out.
+    ///
+    /// It is checked against `MAX_TRADE_COST_BPS` — the reference bound, not a
+    /// wider one invented for computed models — and the reason is arithmetic
+    /// rather than deference. That bound is 10,000bp: one component of one
+    /// trade costing the entire notional. Impact is a share of the notional
+    /// whatever volatility produced it, so there is no volatility at which
+    /// "this trade costs more than the thing being traded" becomes a modelling
+    /// requirement rather than a data error. The headroom is not tight: at the
+    /// default 40bp coefficient the ceiling is a scale of 250, which is a
+    /// **315% daily** volatility. A genuine crisis — 12.6% a day, ten times the
+    /// reference — scales to 400bp and prices, which is what
+    /// `a_volatility_a_crisis_could_produce_still_prices` holds. A distinct,
+    /// wider bound for computed models would therefore buy no legitimate
+    /// simulation anything, and would cost the property that the backtest and
+    /// the pre-trade check refuse the same figures.
+    pub fn pricing_at(&self, daily_volatility: f64) -> Result<TransactionCostModel> {
+        let pricing = self.pricing()?;
         TransactionCostModel {
-            impact_coefficient_bps: self.impact_coefficient_bps
+            impact_coefficient_bps: pricing.impact_coefficient_bps
                 * self.volatility_scale(daily_volatility),
-            ..self.pricing()
+            ..pricing
         }
+        .checked()
     }
 
     /// Measured volatility as a multiple of the reference it is quoted against.
@@ -245,8 +289,12 @@ impl CostModel {
     }
 
     /// Market impact in basis points, from the one square-root law.
-    pub fn impact_bps(&self, participation: f64, daily_volatility: f64) -> f64 {
-        self.pricing_at(daily_volatility).impact_bps(participation)
+    ///
+    /// Refused rather than answered where [`Self::pricing_at`] refuses: an
+    /// impact figure taken from a model the platform would not load is a number
+    /// with no model behind it.
+    pub fn impact_bps(&self, participation: f64, daily_volatility: f64) -> Result<f64> {
+        Ok(self.pricing_at(daily_volatility)?.impact_bps(participation))
     }
 
     pub fn is_frictionless(&self) -> bool {
@@ -365,6 +413,17 @@ pub enum Unfillable {
     NoPrice,
     /// Quantity times price is larger than the platform's money type can hold.
     NotRepresentable,
+    /// The cost model itself could not price anything: a rate outside what
+    /// `qip-financial` will hold on a record, or a charge the money type cannot
+    /// represent.
+    ///
+    /// Distinct from [`Self::NotRepresentable`], which is about the *order*.
+    /// This one is about the *model*, and the remedy is a different one: the
+    /// order is fine and the parameters it was priced with are not. Carrying
+    /// the refusal's own words rather than a code, because the field and the
+    /// value are what the operator has to correct and only the model knows
+    /// which they were.
+    Unpriceable { reason: String },
 }
 
 impl Unfillable {
@@ -384,6 +443,10 @@ impl Unfillable {
                 "the order's notional is larger than the platform's money type can represent, so no cost can be stated for it"
                     .to_string()
             }
+            Self::Unpriceable { reason } => format!(
+                "the cost model cannot price this order: {reason}; correct the model's parameters — \
+                 the order itself is fillable"
+            ),
         }
     }
 }
@@ -433,16 +496,43 @@ impl CostModel {
             return Err(Unfillable::NotRepresentable);
         };
 
-        let pricing = self.pricing_at(daily_volatility);
+        // The volatility-scaled model, checked. A backtest runs thousands of
+        // instruments and one of them has a bad volatility bar; refusing that
+        // instrument and naming it is the behaviour that lets the other
+        // thousand finish, where `apply_bps`'s panic would end the run — and
+        // in a release build, which is `panic = "abort"`, end the process.
+        let pricing =
+            self.pricing_at(daily_volatility)
+                .map_err(|error| Unfillable::Unpriceable {
+                    reason: error.to_string(),
+                })?;
         // The three terms of `TransactionCostModel::estimate`, split so a
         // result can be decomposed into what the strategy earned and what the
         // market took. They sum to `estimate` exactly, and
         // `a_simulated_fill_is_charged_exactly_what_the_pre_trade_model_quotes`
         // is what keeps it that way.
-        let commission =
-            notional.apply_bps(pricing.commission_bps + pricing.tax_bps) + pricing.fixed_fee;
-        let spread = notional.apply_bps(pricing.half_spread_bps);
-        let impact = notional.apply_bps(pricing.impact_bps(participation));
+        //
+        // `checked_apply_bps` and not `apply_bps` even though `pricing` is
+        // checked: the ceiling bounds the *rate*, and the product is a rate
+        // against a notional this function did not choose. A `None` here is
+        // the platform declining to charge a number it could not compute,
+        // never the zero this function used to be able to return.
+        let charge = |bps: f64, term: &str| {
+            notional
+                .checked_apply_bps(bps)
+                .ok_or_else(|| Unfillable::Unpriceable {
+                    reason: format!(
+                        "{bps}bp of {term} on a notional of {notional} is not representable as \
+                         money; reduce the order or correct the {term} rate"
+                    ),
+                })
+        };
+        let commission = charge(
+            pricing.commission_bps + pricing.tax_bps,
+            "commission and tax",
+        )? + pricing.fixed_fee;
+        let spread = charge(pricing.half_spread_bps, "half-spread")?;
+        let impact = charge(pricing.impact_bps(participation), "impact")?;
 
         Ok(TradeCost {
             commission,
@@ -456,13 +546,26 @@ impl CostModel {
     ///
     /// The same two terms [`Self::cost_of`] charges and
     /// [`TransactionCostModel::estimate`] quotes. A notional too large for a
-    /// [`Decimal`] never reaches here: [`Self::cost_of`] refuses it as
-    /// [`Unfillable::NotRepresentable`] before any fee is computed.
-    pub fn commission_on(&self, notional: Decimal) -> Decimal {
+    /// [`Decimal`] never reaches here through [`Self::cost_of`], which refuses
+    /// it as [`Unfillable::NotRepresentable`] before any fee is computed — but
+    /// this is a `pub fn` and that is a fact about one caller, not about this
+    /// one, so the rate goes through the same check the model does and the
+    /// product is taken as data.
+    pub fn commission_on(&self, notional: Decimal) -> Result<Decimal> {
         if !notional.is_positive() {
-            return Decimal::ZERO;
+            return Ok(Decimal::ZERO);
         }
-        notional.apply_bps(self.commission_bps + self.tax_bps) + self.fixed_fee
+        let pricing = self.pricing()?;
+        let rate = pricing.commission_bps + pricing.tax_bps;
+        notional
+            .checked_apply_bps(rate)
+            .map(|fees| fees + pricing.fixed_fee)
+            .ok_or_else(|| {
+                Error::numeric(format!(
+                    "commission of {rate}bp on a notional of {notional} is not representable as \
+                     money; charge it on a smaller fill or correct the commission and tax rates"
+                ))
+            })
     }
 
     /// Financing cost of holding a short for `days`, on an ACT/365 basis.

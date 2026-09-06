@@ -343,7 +343,16 @@ pub fn select_order_type(
 
 /// A limit set through the crossing touch, so it fills but not at any price.
 fn protective_limit(crossing: Decimal, side: BookSide) -> Result<Decimal> {
-    let tolerance = crossing.abs().apply_bps(PROTECTIVE_TOLERANCE_BPS);
+    let tolerance = crossing
+        .abs()
+        .checked_apply_bps(PROTECTIVE_TOLERANCE_BPS)
+        .ok_or_else(|| {
+            Error::numeric(format!(
+                "a protective tolerance of {PROTECTIVE_TOLERANCE_BPS}bp is not representable on a \
+                 touch of {crossing}; quote the instrument at a price the venue could accept, \
+                 rather than sending an order whose limit is the touch itself"
+            ))
+        })?;
     let limit = match side {
         BookSide::Ask => crossing + tolerance,
         BookSide::Bid => crossing - tolerance,

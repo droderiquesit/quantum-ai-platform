@@ -585,12 +585,7 @@ impl Router {
         let Some(notional) = quantity.checked_mul(price) else {
             return Err(Error::numeric("a venue's notional overflowed"));
         };
-        let fee = candidate.profile.fees.fee(
-            notional,
-            order_type.liquidity(),
-            candidate.profile.trailing_volume,
-        );
-        let health_cost = notional.apply_bps(candidate.health_bps_f64);
+        let (fee, health_cost) = charges_for(candidate, notional, order_type)?;
         let signed_notional = match request.side {
             BookSide::Ask => notional,
             BookSide::Bid => -notional,
@@ -622,12 +617,7 @@ impl Router {
         let notional = quantity
             .checked_mul(quoted_price)
             .ok_or_else(|| Error::numeric("a slice notional overflowed"))?;
-        let fee = candidate.profile.fees.fee(
-            notional,
-            order_type.liquidity(),
-            candidate.profile.trailing_volume,
-        );
-        let health_cost = notional.apply_bps(candidate.health_bps_f64);
+        let (fee, health_cost) = charges_for(candidate, notional, order_type)?;
         let consideration = match request.side {
             BookSide::Ask => notional + fee + health_cost,
             BookSide::Bid => -notional + fee + health_cost,
@@ -656,6 +646,43 @@ impl Default for Router {
     fn default() -> Self {
         Self::new(RouterSettings::default())
     }
+}
+
+/// The venue fee and the health surcharge on one notional, or a refusal.
+///
+/// Both are basis points applied to money, and neither may answer zero when the
+/// rate is unusable: a zero fee and a zero health surcharge are precisely what
+/// make a venue the cheapest one, so a poisoned rate would not merely mis-price
+/// a venue — it would elect it. `Err` and not `Ok(None)`, because `None` in
+/// [`Router::consideration`] means the venue cannot supply the size, and
+/// skipping the venue would route the order elsewhere on the strength of an
+/// arithmetic fault nobody was told about.
+fn charges_for(
+    candidate: &Eligible<'_>,
+    notional: Decimal,
+    order_type: RoutedOrderType,
+) -> Result<(Decimal, Decimal)> {
+    let venue = candidate.profile.venue.as_str();
+    let fee = candidate
+        .profile
+        .fees
+        .fee(
+            notional,
+            order_type.liquidity(),
+            candidate.profile.trailing_volume,
+        )
+        .map_err(|error| {
+            Error::numeric(format!("{venue} cannot be priced: {}", error.message()))
+        })?;
+    let health_bps_f64 = candidate.health_bps_f64;
+    let health_cost = notional.checked_apply_bps(health_bps_f64).ok_or_else(|| {
+        Error::numeric(format!(
+            "{venue} cannot be priced: a health surcharge of {health_bps_f64}bp cannot be \
+                 charged on a notional of {notional}; fix the health policy's cost basis points \
+                 or exclude the venue, rather than routing to it at no surcharge"
+        ))
+    })?;
+    Ok((fee, health_cost))
 }
 
 /// Turn a signed consideration back into a price per unit.

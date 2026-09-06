@@ -803,8 +803,8 @@ struct LadderReference {
     rung: Rung,
     /// Quoted spread in basis points of mid, the record's own figure. Not a
     /// [`Decimal`] because a rate is not money; it becomes money exactly once,
-    /// at [`Decimal::apply_bps`] in `Platform::liquidity_ladder`, where a
-    /// holding's mark is multiplied by it. That is the crossing point.
+    /// at [`exit_cost_of`], where a holding's mark is multiplied by it. That
+    /// is the crossing point.
     spread_bps: f64,
     /// Days to exit a position of average size, the record's own figure, never
     /// money and never derived here.
@@ -886,6 +886,45 @@ fn ladder_reference_of(
             days_to_liquidate: object.liquidity.days_to_liquidate,
         },
     ))
+}
+
+/// The cost of leaving a whole holding, or a refusal naming the record.
+///
+/// The one crossing from a rate to money on the liquidity path: a spread in
+/// basis points of mid becomes the `Decimal` cost of a full exit.
+///
+/// [`Decimal::checked_apply_bps`] rather than [`Decimal::apply_bps`], and the
+/// difference is not stylistic. `apply_bps` panics on a rate it cannot apply,
+/// which is the right default — it used to answer `Decimal::ZERO`, so a `NaN`
+/// spread priced an exit as free and the ladder read the holding as
+/// instantly liquid. But the release profile is `panic = "abort"`. A panic
+/// raised here is not an error the cycle reports; it is the process ending
+/// mid-cycle, with whatever the journal had not yet flushed. A refusal the
+/// caller can hold is strictly better, and there is a caller ready to hold it:
+/// [`Platform::liquidity_ladder`] returns `Result`, and `Platform::risk_state`
+/// turns its refusal into `RiskState::with_unevaluated(LIQUIDITY_FIGURE, …)`,
+/// which `PreTradeChecker::check` turns into a refusal at the venue path. The
+/// book stops trading and says why, rather than the process stopping and
+/// saying nothing.
+///
+/// **On today's assembly path this refusal cannot fire, and that is stated
+/// rather than left to be discovered.** [`ladder_reference_of`] admits only a
+/// finite spread in `[0, 10_000)` bps, so the rate is at most `1.0` and the
+/// product is at most `value`, which was already representable. What is
+/// guarded is the next caller: this function is the single place a spread
+/// becomes money on this path, so a reference assembled some other way — a
+/// wider bound, a record read from somewhere new — is refused here instead of
+/// aborting the process. It is a guard on the crossing, not a spare limit.
+fn exit_cost_of(instrument: &str, value: Decimal, spread_bps: f64) -> Result<Decimal> {
+    value.checked_apply_bps(spread_bps).ok_or_else(|| {
+        Error::numeric(format!(
+            "the cost of exiting {instrument} cannot be priced: a mark of {value} at \
+             {spread_bps}bps is not a representable amount of money; correct the reference \
+             record's typical spread, or the mark the book carries for the holding — pricing \
+             the exit at zero would report the holding as free to leave and the book as more \
+             liquid than it is"
+        ))
+    })
 }
 
 /// Where a private-asset record's life begins, for the valuation and
@@ -1015,44 +1054,6 @@ fn instrument_grid_of(
             error.message()
         ))
     })
-}
-
-/// Period returns from a series of equity marks.
-///
-/// Simple returns between consecutive samples. **A step from a non-positive
-/// equity is skipped rather than divided by, and skipped rather than replaced
-/// with zero.** Both halves of that are the point:
-///
-/// * Dividing by it produces an infinity — or, from a negative base, a
-///   sign-flipped return, which is worse because it is finite and therefore
-///   survives every `is_finite` guard downstream. Either poisons the
-///   volatility, the value at risk and the expected shortfall that
-///   `RiskState::with_tail_risk` fits on this series, and those are limits.
-/// * Substituting `0.0` fabricates an observation. "The book was flat over
-///   this step" is a measurement, and a book that had reached zero made no
-///   measurement at all. A tail statistic fitted on invented calm reports
-///   less risk than the book carries, which is the direction that matters.
-///
-/// A free function rather than a method so the rule can be asserted directly,
-/// and because it is the unit that should move: **there are three
-/// implementations of "equity marks to returns" in this workspace and they do
-/// not agree.** `qip_numerics::stats::simple_returns` substitutes `0.0` when
-/// the previous value is exactly zero and sign-flips on a negative one;
-/// `qip_simulation_engine::backtest`'s private `equity_returns` substitutes
-/// `0.0` below `1e-12` and sign-flips likewise; this one skips. All three feed
-/// risk statistics. The structural fix is one implementation in a lib both a
-/// service and the runtime may depend on — `qip_numerics::stats`, beside
-/// `simple_returns` and `log_returns`, under a name that says it takes a
-/// series whose base may be negative, because a *price* series cannot be and
-/// that is why `simple_returns` is not it. That change is not made here: the
-/// kernel may not be the home for it (a service may not depend on the
-/// runtime), and moving it is a change to another crate.
-fn equity_returns(history: &[f64]) -> Vec<f64> {
-    history
-        .windows(2)
-        .filter(|w| w[0] > 0.0)
-        .map(|w| (w[1] - w[0]) / w[0])
-        .collect()
 }
 
 /// Gross over equity as a gauge may carry it, or `None` for a book that has
@@ -5170,8 +5171,24 @@ impl Platform {
     }
 
     /// The book's period returns, from the equity series.
+    ///
+    /// The rule — a step from a non-positive equity is skipped, never divided
+    /// by and never replaced with zero — lives in
+    /// [`qip_numerics::stats::returns_over_signed_equity`] and no longer here.
+    /// The kernel held a private copy of it and so did
+    /// `qip_simulation_engine::backtest`, and while the two disagreed the same
+    /// curve produced two volatilities, two Sharpe ratios and two drawdowns
+    /// depending on which half of the platform read it. This crate's copy is
+    /// the one that had to move: `libs` is the only layer both a service and
+    /// the runtime may depend on, because a service may not depend on the
+    /// runtime.
+    ///
+    /// What is fitted on this series is not a report. `RiskState::with_tail_risk`
+    /// takes it and produces the volatility, the value at risk and the
+    /// expected shortfall that `LimitKind` reads, so a fabricated flat step
+    /// here is a limit reading less risk than the book carries.
     fn equity_returns(&self) -> Vec<f64> {
-        equity_returns(&self.equity_history)
+        qip_numerics::stats::returns_over_signed_equity(&self.equity_history)
     }
 
     /// Charge the rungs this cycle actually used.
@@ -8525,10 +8542,13 @@ impl Platform {
                     instrument.clone(),
                     reference.rung,
                     value,
-                    // The one crossing from a rate to money: a spread in basis
-                    // points of mid becomes the `Decimal` cost of leaving the
-                    // whole holding.
-                    value.apply_bps(reference.spread_bps),
+                    // The one crossing from a rate to money, and the only one
+                    // on this path. `exit_cost_of` refuses rather than
+                    // panicking, because a panic under `panic = "abort"` ends
+                    // the cycle's process where a refusal ends only the
+                    // liquidity read — and the caller of this function already
+                    // has somewhere to put that refusal.
+                    exit_cost_of(instrument, value, reference.spread_bps)?,
                 )
                 // The record's own exit time, carried onto the entry so the
                 // limits read what the catalogue says rather than the boundary
@@ -13970,88 +13990,197 @@ mod publishable_leverage_tests {
 
 #[cfg(test)]
 mod equity_returns_tests {
-    //! The degenerate step in the equity series is skipped, not invented.
+    //! The book's own return series obeys the shared rule, not a local one.
     //!
-    //! This series is what `RiskState::with_tail_risk` fits volatility, value
-    //! at risk and expected shortfall on, and all three are read by limits
-    //! that stop trading. Two other implementations of the same conversion
-    //! exist in this workspace — `qip_numerics::stats::simple_returns` and a
-    //! private one in `qip_simulation_engine::backtest` — and both answer
-    //! `0.0` for a step this one drops, and both sign-flip a step from a
-    //! negative base. A sign-flipped return is the more dangerous of the two
-    //! because it is finite: it passes every `is_finite` guard downstream and
-    //! reports a loss as a gain.
-    //!
-    //! Unit tests because the arithmetic is what is being pinned. Reaching it
-    //! through a `Platform` would need a book that lost everything it had, and
-    //! `Platform::new` refuses to open one at zero.
+    //! The arithmetic itself is pinned in
+    //! `qip-numerics/tests/equity_returns.rs`, beside the function. What is
+    //! asserted here is the thing that file cannot see: that
+    //! `Platform::equity_returns` — the series
+    //! `RiskState::with_tail_risk` fits volatility, value at risk and expected
+    //! shortfall on, all three read by limits that stop trading — is that
+    //! function's answer and not a second copy of the rule. The kernel held
+    //! such a copy, and `qip_simulation_engine::backtest` held a third; while
+    //! they disagreed the same curve produced two sets of statistics. A
+    //! reintroduced copy would pass every test in the lib and fail this one.
 
     use super::*;
+    use qip_financial::universe::Universe;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
 
-    #[test]
-    fn a_solvent_series_returns_one_figure_per_step() {
-        // Premise: three marks, so two steps, and neither is degenerate —
-        // otherwise the assertions below would be about the skipping rule
-        // rather than about the arithmetic.
-        let history = [100.0, 110.0, 99.0];
-        assert!(history.iter().all(|equity| *equity > 0.0));
-
-        let returns = equity_returns(&history);
-        assert_eq!(returns.len(), 2, "a step was dropped from a solvent series");
-        assert!((returns[0] - 0.1).abs() < 1e-12, "{returns:?}");
-        assert!((returns[1] + 0.1).abs() < 1e-12, "{returns:?}");
+    fn platform_with_history(history: Vec<f64>) -> Platform {
+        let config = PlatformConfig::default();
+        let (context, _clock) =
+            qip_core::Context::deterministic(Timestamp::from_secs(1_760_000_000), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles");
+        // Written directly because reaching these marks through cycles would
+        // need a book that lost everything it had, and `Platform::new`
+        // refuses to open one at zero — which is exactly why the degenerate
+        // arm has never been exercised by an ordinary run.
+        platform.equity_history = history;
+        platform
     }
 
     #[test]
-    fn a_step_from_a_wiped_out_book_is_dropped_rather_than_reported_as_flat() {
-        // Zero, and then a recovery. `qip_numerics::stats::simple_returns`
-        // answers `0.0` for this step — "the book was flat" — which is an
-        // observation nobody made, and a tail statistic fitted on invented
-        // calm reports less risk than the book carries.
-        let history = [100.0, 0.0, 50.0];
-        let returns = equity_returns(&history);
-
-        // The first step is real and is kept: -100%.
-        assert_eq!(
-            returns.len(),
-            1,
-            "expected only the solvent step: {returns:?}"
+    fn the_books_return_series_is_the_shared_rules_answer_for_the_same_marks() {
+        // A curve with an ordinary step, the ruin itself, a step out of a dead
+        // book, a real loss out of a live one, and two steps from a negative
+        // base. Every arm at once, because a curve with only ordinary steps is
+        // answered identically by every implementation in the workspace and
+        // would prove nothing about which one is wired in.
+        let marks = vec![100.0, 120.0, 0.0, 50.0, -100.0, -50.0, 200.0];
+        // Premise: the neighbouring rule really does answer differently for
+        // this curve, so the equality below distinguishes the two.
+        assert_ne!(
+            qip_numerics::stats::simple_returns(&marks),
+            qip_numerics::stats::returns_over_signed_equity(&marks),
+            "the fixture no longer separates the price rule from the equity rule"
         );
+
+        let platform = platform_with_history(marks.clone());
+        assert_eq!(
+            platform.equity_returns(),
+            qip_numerics::stats::returns_over_signed_equity(&marks),
+            "the platform's return series is not the shared rule's answer, so a second copy of \
+             it has come back"
+        );
+    }
+
+    #[test]
+    fn a_step_out_of_a_wiped_out_book_never_reaches_the_books_statistics() {
+        // Stated as a property of the platform rather than as an equality, so
+        // that it still fails if both this and the shared rule were changed
+        // together to fabricate the flat step. That is the failure the whole
+        // arrangement exists to prevent: a tail statistic fitted on invented
+        // calm reports less risk than the book carries, and the limits read
+        // it.
+        let platform = platform_with_history(vec![100.0, 0.0, 50.0]);
+        let returns = platform.equity_returns();
+        // The ruin itself is a real -100% and must survive; only the step out
+        // of the dead book is dropped.
+        assert_eq!(returns.len(), 1, "{returns:?}");
         assert!((returns[0] + 1.0).abs() < 1e-12, "{returns:?}");
-        // Said explicitly, because the failure being prevented is a zero in
-        // this position rather than a shorter list.
         assert!(
             !returns.contains(&0.0),
-            "a step out of a zero book was reported as a flat one: {returns:?}"
+            "a step out of a zero book reached the book's statistics as a flat one: {returns:?}"
         );
     }
 
     #[test]
-    fn a_step_from_a_negative_book_is_dropped_rather_than_sign_flipped() {
-        // The arm the two other implementations get wrong in a way no
-        // downstream guard catches. From -50 to -25 the book recovered half
-        // its deficit; `current / previous - 1.0` answers -0.5, a loss, and
-        // it is finite, so nothing rejects it.
-        let history: [f64; 2] = [-50.0, -25.0];
-        // Premise: the wrong answer is real arithmetic and not a NaN somebody
-        // would have noticed.
-        let sign_flipped = history[1] / history[0] - 1.0;
-        assert!(sign_flipped.is_finite() && sign_flipped < 0.0);
-
-        let returns = equity_returns(&history);
+    fn a_fresh_books_single_mark_yields_no_returns() {
+        // The boundary every deployment's opening cycle lands on: one mark
+        // after the first cycle, and nothing may panic or fabricate a return
+        // there.
         assert!(
-            returns.is_empty(),
-            "a step from a negative book produced a return of {returns:?}, and a book that \
-             halved its deficit would be charted as having lost half of it"
+            platform_with_history(Vec::new())
+                .equity_returns()
+                .is_empty()
+        );
+        assert!(
+            platform_with_history(vec![1_000_000.0])
+                .equity_returns()
+                .is_empty()
+        );
+    }
+}
+
+#[cfg(test)]
+mod exit_cost_tests {
+    //! The liquidity read refuses an unpriceable exit; it does not abort, and
+    //! it does not price it as free.
+    //!
+    //! Two failures are being kept apart here. `Decimal::apply_bps` once
+    //! answered `Decimal::ZERO` when it could not apply a rate, which priced a
+    //! full exit at nothing and reported the holding as instantly liquid —
+    //! `qip-financial`'s `ladder::prove_quotes_can_coexist` names that hazard.
+    //! `f1b8840` replaced the zero with a panic, which is the right direction
+    //! and the wrong mechanism for this call site: the release profile is
+    //! `panic = "abort"`, so a panic inside a cycle ends the process rather
+    //! than the read, taking the unflushed journal with it. `exit_cost_of`
+    //! answers with a refusal instead, and `Platform::risk_state` already
+    //! files a refused ladder under `LIQUIDITY_FIGURE` as unevaluated, which
+    //! stops the book trading and says why.
+
+    use super::*;
+    use qip_core::dec;
+
+    /// A rate no `Decimal` product can hold. Chosen rather than a `NaN`
+    /// because a `NaN` is refused by `ladder_reference_of` at assembly and an
+    /// overflowing product is not — this is the arm that has no earlier
+    /// guard.
+    const UNPRICEABLE_BPS: f64 = 1e30;
+
+    #[test]
+    fn a_holding_whose_exit_cannot_be_priced_is_refused_rather_than_aborting_the_process() {
+        // Premise, and the whole reason this function exists: `apply_bps` on
+        // the identical inputs does not answer — it panics, and under
+        // `panic = "abort"` that is the process, not the read. Asserted rather
+        // than asserted about, so this test fails if the panic is ever
+        // softened back into a silent zero and the refusal below stops being
+        // the safer of two behaviours.
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let aborted = std::panic::catch_unwind(|| Decimal::MAX.apply_bps(UNPRICEABLE_BPS)).is_err();
+        std::panic::set_hook(hook);
+        assert!(
+            aborted,
+            "`apply_bps` answered for an unpriceable rate, so this fixture no longer reaches \
+             the arm the refusal replaces"
+        );
+
+        let refused = exit_cost_of("obj-AAA", Decimal::MAX, UNPRICEABLE_BPS)
+            .expect_err("an unpriceable exit was given a price");
+        // The message must tell an operator which record to correct and what
+        // the alternative answer would have cost them. Matched on the record
+        // field by name, not on a word that appears in every liquidity error.
+        assert!(
+            refused.message().contains("obj-AAA"),
+            "the refusal does not name the holding: {}",
+            refused.message()
+        );
+        assert!(
+            refused.message().contains("typical spread"),
+            "the refusal does not name the record field to correct: {}",
+            refused.message()
         );
     }
 
     #[test]
-    fn a_series_too_short_to_have_a_step_has_no_returns() {
-        // The boundary `windows(2)` depends on. A fresh platform has one mark
-        // after its first cycle, and a panic or a fabricated return there
-        // would land on every deployment's opening cycle.
-        assert!(equity_returns(&[]).is_empty());
-        assert!(equity_returns(&[1_000_000.0]).is_empty());
+    fn an_ordinary_spread_still_prices_the_exit_and_prices_it_exactly() {
+        // The half that keeps the refusal from being an outage. A guard that
+        // refused everything would take every book's liquidity read down with
+        // it, and `risk_state` would file `LIQUIDITY_FIGURE` unevaluated on
+        // every cycle — which stops the book trading just as thoroughly as a
+        // real breach, for no reason.
+        //
+        // The expected figure is written out rather than recomputed from the
+        // implementation's own call, so this pins the arithmetic and not the
+        // expression: twenty-five basis points of a million is two and a half
+        // thousand.
+        assert_eq!(
+            exit_cost_of("obj-AAA", dec!("1000000"), 25.0).expect("25bps of a million is money"),
+            dec!("2500")
+        );
+    }
+
+    #[test]
+    fn a_holding_that_costs_nothing_to_leave_is_priced_at_zero_rather_than_refused() {
+        // The boundary `ladder_reference_of` admits at its lower end. A zero
+        // here is a measured cost — the record says the exit is free — and it
+        // must be distinguishable from the zero the old `apply_bps` returned
+        // when it could not price the exit at all. That is why the failure
+        // arm above is an `Err` and this one is an `Ok(ZERO)`: the type keeps
+        // the two apart where a value could not.
+        assert_eq!(
+            exit_cost_of("obj-AAA", dec!("1000000"), 0.0),
+            Ok(Decimal::ZERO)
+        );
     }
 }

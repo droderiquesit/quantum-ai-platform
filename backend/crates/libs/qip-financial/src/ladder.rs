@@ -309,8 +309,12 @@ impl Rung {
 /// gives a `NaN` quote an order instead of an answer of `false` in both
 /// directions. A `NaN` therefore sorts widest and is refused here, where `>`
 /// would have admitted it — and [`LiquidityLadder`] would have admitted it
-/// too, because `Decimal::apply_bps` turns a `NaN` rate into a zero cost, so
-/// the rung would have read as free to exit. `qip-kernel`'s
+/// too, because `Decimal::apply_bps` turned a `NaN` rate into a zero cost, so
+/// the rung read as free to exit. Since `f1b8840` that rate is not priced at
+/// all: `apply_bps` panics on it and `checked_apply_bps` answers `None`, which
+/// is the right direction and not a reason to stop refusing it here — a
+/// catalogue that aborts the process on the day the desk first quotes the
+/// offending name is the same failure arriving later. `qip-kernel`'s
 /// `ladder_reference_of` refuses a non-finite spread before this is reached;
 /// this is the arm that keeps that refusal from being the only thing standing
 /// between a `NaN` and a liquidity floor.

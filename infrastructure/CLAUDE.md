@@ -6,18 +6,27 @@ code under ADR 0024. **Not a cargo directory.**
 ```
 terraform fmt -check -recursive .
 terraform validate                       # needs `terraform init -backend=false` first
-make infra                               # both of the above from the repo root
 terraform fmt -check -recursive environments   # the tfvars; run from infrastructure/
+make infra                               # all three of the above, from the repo root
 ```
 
-The fourth is a separate command because the first two do not reach the tfvars:
+The third is a separate command because the first two do not reach the tfvars:
 `fmt` above is scoped to `terraform/`, and `validate` checks the configuration
 rather than the values handed to it — it never opens a `.tfvars` at all. So an
 environment file that was not valid HCL used to pass every gate here and fail
 at the moment somebody applied. `terraform fmt` parses HCL to reformat it, so
 pointing it at `environments/` is the whole check; `ci.yml`'s infrastructure
-job runs exactly that. `make infra` does **not** yet include it — the Makefile
-is outside this domain — so run it by hand or expect CI to find it.
+job has run exactly that since `a100d9a`.
+
+`make infra` now runs it too, as the `tf-tfvars` target between `tf-fmt` and
+`tf-validate`. This paragraph said it did **not** — true when written, and it
+stayed on the page after the gap was closed, which is precisely how an agent
+here gets told a closed gap is open. If you change the Makefile's infra
+targets, change this sentence in the same diff.
+
+None of the three screens a *value*: a project id carrying `$(…)` is valid
+HCL and is canonically formatted. What refuses that is the validation on the
+variable it is passed to — see below.
 
 Rules: `.claude/rules/domains/infrastructure.md`.
 
@@ -63,6 +72,16 @@ refusing a `qip-*` image in any Pod spec. Terraform's provider set is still
   and each observation found.
 - `autonomy_ceiling` may not name a live level. `variables.tf` refuses all
   three at plan time; that validation is load-bearing and mutation-tested.
+- **`modules/execution-node/templates/startup.sh.tftpl` runs as root on the
+  node and `templatefile` escapes nothing.** Every `${...}` in it is a
+  substitution into a systemd `EnvironmentFile`, a unit file, a YAML label
+  block or a shell command; a newline in one appends a line nobody reviewed
+  and a `$(…)` in one that lands in a double-quoted word is a command. The
+  guard is a validation on each of the module's variables in
+  `modules/execution-node/variables.tf`, not anything the template can do:
+  a quoted heredoc cannot survive its own terminator appearing in its payload.
+  `isolated_cpus` and `shadow_mode` are the two bounded structurally instead.
+  Adding a substitution without adding its validation reopens the hole.
 - No service-account keys. Workload Identity Federation only.
 - A validation change needs a real plan proving the gate fires on a bad value
   **and admits a good one**.

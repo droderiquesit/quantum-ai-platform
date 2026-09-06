@@ -225,10 +225,13 @@ pub fn evaluate(plan: &PrePositioningPlan, realised: &RealisedDemand) -> Result<
         // Only the capital this plan sent can be this plan's idle surplus.
         let lane_surplus = (available - need).max(Decimal::ZERO).min(lane.positioned);
 
-        let lane_shortfall_penalty = asymmetry.shortfall_penalty(lane_shortfall, lane.reactive_lag);
+        // A penalty this cannot price refuses the whole score. A lane silently
+        // scored at zero penalty would read as a lane the plan covered.
+        let lane_shortfall_penalty =
+            asymmetry.shortfall_penalty(lane_shortfall, lane.reactive_lag)?;
         let lane_baseline_penalty =
-            asymmetry.shortfall_penalty(baseline_shortfall, lane.reactive_lag);
-        let lane_surplus_penalty = asymmetry.surplus_penalty(lane_surplus, lane.committed_for);
+            asymmetry.shortfall_penalty(baseline_shortfall, lane.reactive_lag)?;
+        let lane_surplus_penalty = asymmetry.surplus_penalty(lane_surplus, lane.committed_for)?;
 
         let error_stat = need.to_f64() - lane.forecast_point.to_f64();
         let hit = need >= lane.forecast_lower && need <= lane.forecast_upper;
