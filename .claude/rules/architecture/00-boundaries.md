@@ -46,7 +46,11 @@ is the point:
   writes TLS for a living". ADR 0002's Decision section authorises the in-tree
   hashing by name: "SHA-256 and HMAC, the random number generator". Both are
   proven against published vectors (`qip-core/tests/hashing.rs` — FIPS 180-4
-  and RFC 4231, 6 passed), which is what makes that narrow case defensible and
+  and RFC 4231, 6 tests; check with
+  `grep -c '#\[test\]' backend/crates/libs/qip-core/tests/hashing.rs`, which
+  printed `6` on 2026-09-06, and `cargo test -p qip-core --test hashing` for
+  the pass, since a count of declarations is not a count of passes and this
+  line previously conflated the two), which is what makes that narrow case defensible and
   is exactly what a TLS or JWT implementation could never claim: those fail
   silently against a live adversary and never against a fixture.
   This line used to read "No in-tree cryptography. ADR 0009 forbids hand-rolled
