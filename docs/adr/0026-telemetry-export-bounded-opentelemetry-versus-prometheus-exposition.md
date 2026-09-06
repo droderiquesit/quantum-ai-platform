@@ -186,12 +186,17 @@ Not enforced, and worth the owner's eye against §44.2:
 
 ### What is collected, and what is not
 
-`infrastructure/terraform/modules/observability/main.tf` declares seven alert
-policies in PromQL — kill switch, live fill, persistent breach, permission
-violation, edge halted, edge reconciliation break, central reconciliation
-break (`main.tf:23,59,97,131,176,213,253`) — every one gated on
-`workload_metrics_exist` because Cloud Monitoring refuses a policy naming a
-descriptor it has never ingested (`main.tf:7-14`).
+`infrastructure/terraform/modules/observability/main.tf` declares its alert
+policies in PromQL — seven when this record was written, and **nine** as of
+2026-09-06: kill switch, live fill, persistent breach, permission violation,
+edge halted, edge reconciliation break, central reconciliation break, and the
+two `599daaa` added, `risk_figure_unevaluated` and
+`sign_off_withheld_on_liquidity`. Recount with
+`grep -c '^resource "google_monitoring_alert_policy"'` rather than quoting
+either number. Every one is gated on `workload_metrics_exist` because Cloud
+Monitoring refuses a policy naming a descriptor it has never ingested — that
+equality is the load-bearing fact and it is unchanged, so **no policy exists in
+any environment and a break on either plane pages nobody.**
 
 `NOT-SCRAPED.md` states the collector position exactly:
 

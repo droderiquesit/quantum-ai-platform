@@ -1,10 +1,11 @@
 # Venue registration routes
 
-The venue-registration surface of `qip-api`: one `GET` and one `POST` under
-`/api/v1`, both answering `content-type: application/json`.
-`GET /registrations` requires the `viewer` role; `POST
-/registrations/{source}/approve` requires `operator`. `PUT`, `PATCH` and
-`DELETE` on either answer `405 {"error":"that method is not allowed here"}`.
+The venue-registration surface of `qip-api`: two `GET`s and one `POST` under
+`/api/v1`, all answering `content-type: application/json`.
+`GET /registrations` requires the `viewer` role; `GET /registrations/slots`
+and `POST /registrations/{source}/approve` require `operator`. `PUT`, `PATCH`
+and `DELETE` on any of them answer
+`405 {"error":"that method is not allowed here"}`.
 
 What this surface is for. The platform refuses to read a source that needs
 an account until a named person has registered for it
@@ -34,6 +35,41 @@ The Rust shapes are in `src/registration_views.rs`. This file is the same
 contract in prose, kept exact so a page can be built against it without
 reading Rust.
 
+## Why the read is two routes
+
+The two lists differ by authority, not by taste. `GET /registrations` says
+what each venue demands and where each source stands. `GET
+/registrations/slots` adds the *credential slots* — the deployment variable
+each connector manifest reads the credential under, the one `gcloud` line
+that puts a version behind it, any companion variable, and the variable the
+registration record itself names.
+
+A slot is not a fact about a venue. It names where a credential lives in
+this deployment's secret store, and beside it is the exact command that
+writes one. That is operator material, and it was being served to a viewer
+credential: a console review reproduced `QIP_ALPACA_API_SECRET_KEY` and its
+`gcloud secrets versions add` line in the body of a viewer's
+`GET /api/v1/registrations` against the built binary, and correctly refused
+to strip them at the console's gateway — the pages that render them need
+them, and a browser that can call the route itself loses nothing to a
+gateway that redacts.
+
+It is two routes and not one body that varies by caller because the route
+table in `src/routes.rs` states each route's authority in one place and a
+security review reads that table instead of the handlers. A `viewer` row
+that served more to an operator would make the table untrue, and the next
+field added to a shared struct would be served to whoever the struct is
+shared with rather than to whoever the field is for.
+
+`standing` is derived once and narrowed for the viewer
+(`StandingSummaryView::of`), so the two routes cannot disagree about who
+registered a source.
+
+**A console renders the slots by reading `/registrations/slots`.** The
+credential-lifecycle pages (`/data-sources/registrations`, `/compliance`)
+need an operator credential for that read; the standings list alone is what
+a viewer session can be shown.
+
 ## Conventions
 
 - Every body carries `"posture": "PAPER TRADING"` as its first key. Render it.
@@ -53,7 +89,8 @@ reading Rust.
 ## `GET /api/v1/registrations`
 
 **Role: `viewer`.** Every source in the data finder's licensing catalogue,
-with what it demands and where it stands.
+with what it demands and where it stands. **No credential slot and no
+command**: those are `GET /registrations/slots`, below.
 
 ```json
 {
@@ -67,6 +104,77 @@ with what it demands and where it stands.
         "standing": "pending",
         "who_must_register": "qip-platform",
         "reason": "`kalshi-markets` requires an account with the venue, opened in the operator's own name (requirement `account`) and no registration record exists for it, so it is refused. The platform's owner must register with the venue under their own identity, read its terms, create the credential in the venue's dashboard, place it in Secret Manager as a `_FILE`-projected secret, and record the registration — see docs/operations/registering-a-venue.md. anonymous or automated registration is not a path this platform offers: it circumvents the venue's terms and identity checks, and a licence nobody read is one nobody can be held to"
+      },
+      "terms": "https://kalshi.com/terms"
+    },
+    {
+      "source_id": "alpaca-daily-bars",
+      "requirement": "account",
+      "standing": {
+        "standing": "registered",
+        "operator": "operator@env",
+        "terms_read_at": "2025-10-09T08:50:00.000Z"
+      },
+      "terms": "https://alpaca.markets/terms-and-conditions"
+    },
+    {
+      "source_id": "coinbase-spot-ticker",
+      "requirement": "keyless",
+      "standing": { "standing": "keyless" },
+      "terms": "coinbase-exchange-market-data-terms"
+    }
+  ]
+}
+```
+
+Per source:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `source_id` | string | The manifest's `source_id`; the path segment the approval route takes. |
+| `requirement` | string or `null` | What the venue demands, from the shipped table: `keyless`, `self_service_api_key`, `account`, `account_with_identity_verification`. `null` when no requirement is declared — the standing is then `pending`, because an unasked question is not a keyless source. |
+| `standing` | object | One of the three shapes below. |
+| `terms` | string or `null` | The terms reference the catalogue carries: the licence identifier of an evaluated posture, or the URL an unevaluated posture's evidence names. A licence reference, and a public one — it says nothing about this deployment, which is why it stays on the viewer's list. |
+
+`standing` is tagged by its own `standing` key:
+
+- `{ "standing": "keyless" }` — no registration needed.
+- `{ "standing": "registered", "operator", "terms_read_at" }` — a
+  registration exists. `operator` is the **authenticated subject of the
+  credential the approval arrived on** (or the operator named in the
+  deployment's committed configuration) — for an approval made through the
+  console that is the console's deployment credential, `operator@env`, and
+  not the person who clicked; see the 2026-09-05 amendment to ADR 0041.
+  `terms_read_at` is the instant the platform answered. **There is no
+  `secret` here.** The variable the record names is a slot like any other
+  and is on the operator list; leaving it on this arm would have closed the
+  disclosure only until somebody registered, and reopened it the moment
+  they did.
+- `{ "standing": "pending", "who_must_register", "reason" }` — refused
+  until somebody registers. `who_must_register` is the deployment's
+  configured owner; `reason` is the registry's own refusal, verbatim, the
+  same sentence the feed's admission gate prints.
+
+## `GET /api/v1/registrations/slots`
+
+**Role: `operator`.** The same rows, in the same catalogue order, with the
+credential slots beside each: everything above, plus `secret_slot`,
+`secret_command`, `companion_secret_slots`, and the `secret` on a registered
+standing. A `viewer` credential gets `403 {"error":"this operation requires
+the operator role"}`, and the refusal names no slot.
+
+```json
+{
+  "posture": "PAPER TRADING",
+  "served_at": "2025-10-09T08:53:20.000Z",
+  "sources": [
+    {
+      "source_id": "kalshi-markets",
+      "requirement": "account",
+      "standing": {
+        "standing": "pending",
+        "who_must_register": "qip-platform",
+        "reason": "…"
       },
       "terms": "https://kalshi.com/terms",
       "secret_slot": null,
@@ -91,47 +199,19 @@ with what it demands and where it stands.
           "secret_command": "gcloud secrets versions add qip-alpaca-api-key-id --data-file=-"
         }
       ]
-    },
-    {
-      "source_id": "coinbase-spot-ticker",
-      "requirement": "keyless",
-      "standing": { "standing": "keyless" },
-      "terms": "coinbase-exchange-market-data-terms",
-      "secret_slot": null,
-      "secret_command": null,
-      "companion_secret_slots": []
     }
   ]
 }
 ```
 
-Per source:
+The four keys this route adds:
 
 | Key | Type | Meaning |
 |---|---|---|
-| `source_id` | string | The manifest's `source_id`; the path segment the approval route takes. |
-| `requirement` | string or `null` | What the venue demands, from the shipped table: `keyless`, `self_service_api_key`, `account`, `account_with_identity_verification`. `null` when no requirement is declared — the standing is then `pending`, because an unasked question is not a keyless source. |
-| `standing` | object | One of the three shapes below. |
-| `terms` | string or `null` | The terms reference the catalogue carries: the licence identifier of an evaluated posture, or the URL an unevaluated posture's evidence names. What an operator reads before approving; the record then cites what they actually read. |
 | `secret_slot` | string or `null` | The deployment variable the connector manifest reads the credential under — the value an approval's `secret` must carry. `null` for a manifest that names no credential. |
 | `secret_command` | string or `null` | The one line an operator runs to put a version behind `secret_slot`. Names the secret only; the value comes from stdin (`--data-file=-`) so it is in no shell history or process listing. |
 | `companion_secret_slots` | list | Every further variable the manifest reads (Alpaca's key id beside its secret key), each `{ "variable", "secret_command" }`. Empty for a single-secret or keyless source. |
-
-`standing` is tagged by its own `standing` key:
-
-- `{ "standing": "keyless" }` — no registration needed.
-- `{ "standing": "registered", "operator", "terms_read_at", "secret" }` — a
-  registration exists. `operator` is the **authenticated subject of the
-  credential the approval arrived on** (or the operator named in the
-  deployment's committed configuration) — for an approval made through the
-  console that is the console's deployment credential, `operator@env`, and
-  not the person who clicked; see the 2026-09-05 amendment to ADR 0041.
-  `terms_read_at` is the instant the platform answered; `secret` the
-  deployment variable the credential is read under. Never the value.
-- `{ "standing": "pending", "who_must_register", "reason" }` — refused
-  until somebody registers. `who_must_register` is the deployment's
-  configured owner; `reason` is the registry's own refusal, verbatim, the
-  same sentence the feed's admission gate prints.
+| `standing.secret` | string | On the `registered` arm only: the deployment variable the *record* names. Never the value. It can differ from `secret_slot` — a registration mounted from the committed file need not agree with the shipped manifest, and that disagreement is something an operator has to be able to see. |
 
 The Secret Manager secret in `secret_command` is named by the convention
 the environment already uses for every secret it declares
@@ -161,7 +241,7 @@ Request body — both fields required, both refused blank:
 | Key | Meaning |
 |---|---|
 | `terms` | The URL or document name of the terms the operator read. Blank is refused: "the terms" without a citation is a claim nobody can re-read. |
-| `secret` | The deployment variable the manifest reads the credential under — the list's `secret_slot`. Screened by the manifest's own shape rule (`SecretRef`): a name starts with `A-Z` and continues in `A-Z`, `0-9` and `_`, so a pasted key cannot be written here. |
+| `secret` | The deployment variable the manifest reads the credential under — the `secret_slot` on `GET /registrations/slots`. Screened by the manifest's own shape rule (`SecretRef`): a name starts with `A-Z` and continues in `A-Z`, `0-9` and `_`, so a pasted key cannot be written here. |
 
 The operator on the record is the **authenticated principal's subject** —
 that is, the subject of the bearer credential this request presented. The

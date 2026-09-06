@@ -624,8 +624,15 @@ be the last file to hear about one.
 
 The gate is evidence that something scraped.
 `modules/observability/NOT-SCRAPED.md` holds the argument and nothing has
-changed it. All seven alert policies in `modules/observability/main.tf` remain
-gated on it (`grep -c 'resource "google_monitoring_alert_policy"'` returns 7).
+changed it. **Every** alert policy in `modules/observability/main.tf` remains
+gated on it. The number was seven when this was written and is **nine** as of
+2026-09-06, after `599daaa` added `risk_figure_unevaluated` and
+`sign_off_withheld_on_liquidity`; recount rather than quote —
+`grep -c '^resource "google_monitoring_alert_policy"' …/main.tf` returns 9 and
+`grep -c 'count *=.*workload_metrics_exist' …/main.tf` returns 9, and it is the
+*equality* of those two numbers, not either of them, that says nothing pages
+anybody. Exactly two of the nine query a `qip_edge_*` series
+(`grep -c 'query *= *"[^"]*qip_edge'`).
 
 ### Null image digests, no proxy on the fast brain, no Cloud Run job — not stale
 

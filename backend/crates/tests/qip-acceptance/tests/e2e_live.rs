@@ -1549,7 +1549,16 @@ fn the_platform_completes_a_cycle_observed_from_sockets_and_acted_on_over_one() 
     );
 
     // ===== 7. LEARNING, AND NOTHING BECAME LIVE ============================
-    let learning = platform.run_cycle(at(Duration::from_secs(180)));
+    //
+    // Three minutes after the *second* cycle, not after `start()`. This read
+    // `at(Duration::from_secs(180))` — three minutes after the walk began and
+    // therefore a day and fifteen hours *before* the cycle at `second` above —
+    // which is exactly the backwards cycle `Platform::run_cycle` now refuses.
+    // The clock had already been moved to `second` at step 4, so the platform's
+    // own `context.now()` was a day ahead of the instant the report claimed and
+    // every stage duration on it was measured across that gap. Anchoring on
+    // `second` keeps the "and then three minutes passed" the section means.
+    let learning = platform.run_cycle(second.saturating_add(Duration::from_secs(180)));
     let learn = learning.stage(Stage::Learn).expect("learn ran");
     assert!(
         learn.ran && learn.detail.len() > 10,

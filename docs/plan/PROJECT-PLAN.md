@@ -248,7 +248,7 @@ findings across documents are merged into one row citing both.
 | REG-2 | The landing ran as the project's default compute identity | done in code; unobserved | `c643d42`, same commit | Same as REG-1 |
 | REG-3 | The console-egress subnet had no egress deny | done | `fbb73a7`, 2026-09-04 14:04:57+0000 | — (not observed in the running project) |
 | REG-4 | The portal's session secret reached the process as an environment value | done | `c643d42` | Same as REG-1 |
-| REG-5 | `ledger_database`/`control_fabric_topic` are unassigned module inputs | open — answered in the working tree, uncommitted | not closed | **Both halves of F5 now have an answer, and this row is deliberately not `done`, because none of it is committed.** *Ledger half — wired.* `modules/data/outputs.tf` publishes `spanner_instance` beside `spanner_database`, and `infrastructure/terraform/main.tf` passes `ledger_database = var.enable_spanner ? { instance = module.data.spanner_instance, database = module.data.spanner_database } : null` into `module.trust_zones`. That pair is what `google_spanner_database_iam_member` is keyed on; until the instance was published the root could name only half of it, so neither `ledger_read` nor `ledger_append` could be created from here in any environment — which is precisely what the gap said. `enable_spanner = false` in all four environments (dev:224, test:78, stage:78, prod:81), so it creates nothing and changes no plan; that is the variable's own argument, not a workaround for it. *Fabric half — argued at the seam.* `control_fabric_topic = null` now carries the three reasons nothing can set it, written where a value would be passed rather than as a default two files away; the decision it waits on is REG-6. **Check before re-scoring:** `git show HEAD:infrastructure/terraform/main.tf \| grep -n ledger_database` returns nothing, so every sentence above describes an uncommitted working-tree change and this register records the committed tree |
+| REG-5 | `ledger_database`/`control_fabric_topic` are unassigned module inputs | done | `76c677f`, 2026-09-06 14:02:16+0000 | **Both halves of F5 are answered, and the two answers are different in kind — which is the whole finding.** *Ledger half — wired.* `modules/data/outputs.tf` publishes `spanner_instance` beside `spanner_database`, and `infrastructure/terraform/main.tf:419-422` passes `ledger_database = var.enable_spanner ? { instance = module.data.spanner_instance, database = module.data.spanner_database } : null` into `module.trust_zones`. That pair is what `google_spanner_database_iam_member` is keyed on; until the instance was published the root could name only half of it, so neither `ledger_read` nor `ledger_append` could be created from here in **any** environment — exactly what the gap said. The conditional is on `var.enable_spanner` rather than on the outputs being null, because two switches for one fact disagree eventually. `enable_spanner = false` in all four environments (dev:224, test:78, stage:78, prod:81), so it creates nothing and changes no plan; that is the variable's own argument and not a workaround for it. *Fabric half — an argued null, and deliberately not "never".* `control_fabric_topic = null` (`main.tf:458`) now carries, at the seam where a value would be passed, the three reasons nothing can set it today. It stops short of the register's "record why it can never be wired", and says so: it stays null **until an ADR decides**, and that decision is REG-6, which is where the remaining work is tracked rather than being counted twice here. **Verify:** `git show HEAD:infrastructure/terraform/main.tf \| grep -n ledger_database` returns `419` |
 | REG-6 | §46.1's control fabric (Pub/Sub) has no resource | **blocked-external** | not closed | **Re-scored 2026-09-06: this is not an unclaimed wiring gap. It is a decision plus a capability, and neither is an agent's to take** — which is why it moves off `open` rather than towards `done`. The fabric is *deliberately* not declared, for two reasons that are independent of each other. **(1) Nothing in this build can speak to Pub/Sub.** `backend/crates/services/qip-streaming/src/pubsub.rs` is a port that refuses: `PubSubTransport` returns `Error::Unavailable` naming the four things production must supply, and its module doc says why — reaching it "needs a gRPC client, a TLS stack and a Google auth flow", none of which this workspace has. Admitting them reopens ADR 0009, which is an architecture decision and not a Terraform edit. A topic provisioned today is one no process could publish to or pull from — the shape `modules/data` refuses by default, "a provisioned database no adapter can open is a bill, an attack surface, and a diagram that reads as a capability". **(2) Whether the fabric is Pub/Sub at all is open.** ADR 0011 replaced Pub/Sub with the in-tree HTTP mesh for the data bus, and ADR 0024 records which of the two carries the *control* fabric as work it names and does not do. So the need is an owner's ADR on (2), and — only if that answer is Pub/Sub — a dependency decision on (1). Not a value somebody types |
 | REG-7 | `catalogue.tf`'s "deliberately not here" list omits the two frontend workloads | open (COSMETIC) | not closed | One doc edit |
 | REG-8 | The §2.1 scorecard claimed "no third-party SaaS at runtime" after OpenObserve deployed | **confirmed by observation, still open** | not closed | The scorecard row needs rewriting; OpenObserve is observed serving anonymously (ADR 0030) |
@@ -286,14 +286,12 @@ $ { awk -F'|' '/^\| (ALIGN|PHASE)-/{print $6}' docs/plan/PROJECT-PLAN.md; \
     awk -F'|' '/^\| DEC-/{print $5}'          docs/plan/PROJECT-PLAN.md; \
     awk -F'|' '/^\| (REG|GATE)-/{print $4}'   docs/plan/PROJECT-PLAN.md; } \
   | sed 's/^ *//; s/ *$//' | sort | uniq -c | sort -rn
-     24 done
+     25 done
      12 **blocked-external**
       3 in progress
       2 open (COSMETIC)
       2 moot
-      1 taken in code; ADR 0047 *proposed*
-      1 open — answered in the working tree,  1 open
-        uncommitted
+      1 taken in code; ADR 0047 *proposed*   1 open
       1 taken for code; applied in `dev`      1 taken by circumstance
       1 taken (sidecar, ADR 0024)             1 taken (narrower reading, …)
       1 overtaken in practice; …              1 open, BLOCKING-DEPLOY
@@ -302,20 +300,22 @@ $ { awk -F'|' '/^\| (ALIGN|PHASE)-/{print $6}' docs/plan/PROJECT-PLAN.md; \
       1 done (arithmetic only, … live venue)  1 **confirmed …, still open**
 ```
 
-24 + 12 + 3 + 2 + 2 = 43, plus fifteen singletons = **58**, which is the row
+25 + 12 + 3 + 2 + 2 = 44, plus fourteen singletons = **58**, which is the row
 count `grep -c` returns. The buckets below are that tally regrouped.
 
 **What moved, and why the total is 58 rather than 57.** One row was *added* —
 **DEC-D14**, the reasoning bar's routing requirement, which ADR 0047 asked for
 by name and could not create itself because creating it changes this
-arithmetic. Two rows changed bucket without changing the total. **REG-6** moves
-from `open` to `**blocked-external**`: the control fabric is not an unclaimed
-wiring gap but an ADR 0009 dependency decision plus an open question about
-which fabric it is (ADR 0011's mesh or Pub/Sub), and calling that "unblocked"
-told a reader it was somebody's afternoon. **REG-5**'s token gains the
-qualifier `answered in the working tree, uncommitted`, and it stays in the open
-bucket deliberately — the wiring exists, `git show HEAD:` cannot see it, and
-this register counts the committed tree.
+arithmetic. Two rows changed bucket without changing the total. **REG-5** is
+`done` at `76c677f`: the ledger input is wired from the module that creates the
+instance, and the control-fabric input is an argued null at the seam rather
+than a default two files away. **REG-6** moves from `open` to
+`**blocked-external**`: the control fabric is not an unclaimed wiring gap but
+an ADR 0009 dependency decision plus an open question about which fabric it is
+(ADR 0011's mesh or Pub/Sub), and calling that "unblocked" told a reader it was
+somebody's afternoon. Splitting them this way is deliberate — REG-5 was closed
+by a diff and REG-6 cannot be, and one row saying both would have to pick one
+answer and be wrong about the other half.
 
 **One correction to the method, because the previous sentence overstated it.**
 It said the count is "by the status token each row actually carries", and for
@@ -323,12 +323,12 @@ one row it is not: **REG-4's token is plain `done`**, while its
 blocked-external-need column says "Same as REG-1" — an authenticated read of
 a running revision nobody has made. It is grouped with REG-1 and REG-2 below
 on the strength of that column, not its token. Either grouping keeps the total
-at 58; the point is that a reader re-running the `awk` will see 24 `done`
-tokens and 29 in the first bucket, and the one row that moves is REG-4.
+at 58; the point is that a reader re-running the `awk` will see 25 `done`
+tokens and 30 in the first bucket, and the one row that moves is REG-4.
 
-- **Done or taken, nothing outstanding:** 29 (ALIGN-A1, A2, A3, A4, A5, A7 ·
+- **Done or taken, nothing outstanding:** 30 (ALIGN-A1, A2, A3, A4, A5, A7 ·
   PHASE-B1, B5, B6, B10, B11, B12, B15, B18, B19, B20, B21, B22, B23, New1,
-  New2, New3 · DEC-D1, D6, D7, D8, D12, D13 · REG-3)
+  New2, New3 · DEC-D1, D6, D7, D8, D12, D13 · REG-3, REG-5)
 - **Done in code, unobserved on the running deployment:** 3 (REG-1, REG-2,
   REG-4) — each waits on an authenticated read of a revision nobody has made,
   which is why they are not folded into the line above.
@@ -339,18 +339,17 @@ tokens and 29 in the first bucket, and the one row that moves is REG-4.
 - **In progress:** 3 (PHASE-B2, B14, B17)
 - **Blocked-external:** 12 (ALIGN-A6 · PHASE-B3, B4, B7, B9, B13, B24 · DEC-D2,
   D3, D9, D11 · REG-6)
-- **Open (unblocked, unclaimed):** 6 (PHASE-B8 · REG-5, REG-7, REG-8,
+- **Open (unblocked, unclaimed):** 5 (PHASE-B8 · REG-7, REG-8,
   REG-9 · GATE-1) — precisely: PHASE-B8 (passkeys) is the one genuinely open,
   unblocked, uncommitted item of size in the blueprint backlog;
-  REG-5/7/8/9 and GATE-1 are small, named documentation or wiring gaps,
-  none BLOCKING-A-GATE. REG-5's answer is written and sitting in the working
-  tree; it leaves this bucket when it is committed and not before.
+  REG-7/8/9 and GATE-1 are small, named documentation gaps, none
+  BLOCKING-A-GATE.
 - **Moot:** 2 (PHASE-B16, DEC-D4) — B16's evidence can no longer be gathered
   because the cluster it concerned is gone; D4's switch belonged to the same
   cluster.
 
-Total rows in this register: 58 (29 done + 3 done-unobserved + 3 taken-
-unreconciled + 3 in progress + 12 blocked-external + 6 open + 2 moot), which
+Total rows in this register: 58 (30 done + 3 done-unobserved + 3 taken-
+unreconciled + 3 in progress + 12 blocked-external + 5 open + 2 moot), which
 is the row count `grep -c '^| \(ALIGN\|PHASE\|DEC\|REG\|GATE\)-'` returns for
 this file. The three commits this section was last re-scored against
 (`0829b29`, `ba8e767`, `e71c397`) and the uncommitted registration wave move
@@ -373,11 +372,12 @@ a register row, which is why the register is flat while §1 moved from 0% to
 did nothing — but a plan that let the reader infer otherwise would be making
 the same mistake these four commits were about.
 
-**2026-09-06 — the register does move, by one row and two buckets, and none of
-it is a completion.** DEC-D14 is new (ADR 0047 asked for it and could not add
-it). REG-6 is re-scored `**blocked-external**` because it needs an ADR and not
-an afternoon. REG-5 keeps its `open` token with the reason attached: its answer
-is written and uncommitted. PHASE-B17's evidence column gains a harness result
+**2026-09-06 — the register moves, by one row added and three re-scored, and
+exactly one of those is a completion.** DEC-D14 is new (ADR 0047 asked for it
+and could not add it). **REG-5 is done** at `76c677f` — the ledger input wired
+from the module that creates the instance, the control-fabric input an argued
+null at the seam. REG-6 is re-scored `**blocked-external**` because it needs an
+ADR and not an afternoon. PHASE-B17's evidence column gains a harness result
 that narrows its blocker from "unvalidated" to "two values a person must
 supply" and does not close it, because `validate` is not a plan. **The two
 facts that bound every row above are unchanged and were re-checked for this

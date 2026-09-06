@@ -132,15 +132,32 @@ before quoting either line.
 `workload_metrics_exist` remains `false` everywhere — the default in
 `infrastructure/terraform/variables.tf` and in the observability module, and
 commented out in `environments/dev/terraform.tfvars` — and flipping it still
-requires evidence something actually scraped. All seven alert policies in
+requires evidence something actually scraped. All **nine** alert policies in
 `modules/observability/main.tf` are gated on it and name descriptors the
-binaries do record: four central-plane policies, `edge_halted`,
-`edge_reconciliation_break` and `central_reconciliation_break`. Seven, and
-exactly two of them query a `qip_edge_*` series — recount with
+binaries do record: seven central-plane policies, `edge_halted` and
+`edge_reconciliation_break`. Nine, and exactly two of them query a
+`qip_edge_*` series — recount with
 `grep -c '^resource "google_monitoring_alert_policy"' …/main.tf` and
-`grep -n 'query *= *"[^"]*qip_edge' …/main.tf` before quoting either number;
-`NOT-SCRAPED.md` said "three edge policies" for a while, which made the two
-groups sum to eight. Verified 2026-09-05 that each of the seven names has a
+`grep -c 'query *= *"[^"]*qip_edge' …/main.tf` before quoting either number,
+and check the third figure too, because it is the one that carries the
+meaning: `grep -c 'count *=.*workload_metrics_exist' …/main.tf` must equal
+the first. Declared 9, gated 9, edge 2 on 2026-09-06.
+
+It was seven until `599daaa` added `risk_figure_unevaluated` (on
+`qip_risk_figures_unevaluated`) and `sign_off_withheld_on_liquidity` (on
+`qip_proposals_unsigned_total{control="liquidity-read"}`), so a book whose
+liquidity cannot be read is no longer charted for nobody. Both fire on a
+control **working** rather than failing: the platform has stopped trading that
+book, not started trading it badly, and an operator who reads either as a
+fault will look for the wrong problem. Their documentation says so in its
+first sentence.
+
+This paragraph has now been wrong twice about this number, in both
+directions, which is why the recount commands are here rather than the
+figures alone. `NOT-SCRAPED.md` said "three edge policies" for a while, which
+made the two groups sum to eight; this file then said seven for a day after
+the count reached nine. **Recount before you quote.** Verified 2026-09-05
+that each of the then-seven names has a
 production recording site rather than only a registered constant: the four
 central ones and `qip_central_reconciliation_breaks_total` in
 `runtime/qip-kernel/src/{platform.rs,central/plane.rs}`, and `EDGE_HALTED`

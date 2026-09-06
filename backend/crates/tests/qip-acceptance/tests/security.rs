@@ -498,18 +498,29 @@ fn token(role: Role) -> String {
 }
 
 fn credentials() -> Vec<Credential> {
-    [Role::Viewer, Role::Operator]
-        .into_iter()
-        .map(|role| {
-            Credential::from_token(
-                format!("{}@example.com", role.as_str()),
-                role,
-                token(role),
-                now(),
-                now().saturating_add(Duration::from_days(30)),
-            )
-        })
-        .collect()
+    // One per role rather than two, so a scan of the route table can call
+    // each row with a credential of exactly the authority that row declares.
+    // Calling an analyst route with a viewer token reads as a body with
+    // nothing in it, and a body with nothing in it passes every check about
+    // what a body must not carry.
+    [
+        Role::Monitor,
+        Role::Viewer,
+        Role::Analyst,
+        Role::Approver,
+        Role::Operator,
+    ]
+    .into_iter()
+    .map(|role| {
+        Credential::from_token(
+            format!("{}@example.com", role.as_str()),
+            role,
+            token(role),
+            now(),
+            now().saturating_add(Duration::from_days(30)),
+        )
+    })
+    .collect()
 }
 
 /// The API assembled over a platform with an empty universe.
@@ -633,6 +644,132 @@ fn a_caller_with_the_wrong_role_cannot_reach_a_privileged_route() -> Result<()> 
             );
         }
     }
+    Ok(())
+}
+
+// --- what a body may name about this deployment's secret store ---------------
+
+/// The head of the one command that puts a credential into Secret Manager.
+///
+/// Written out here rather than imported from
+/// [`qip_api::registration_views::secret_command`], because a test that built
+/// its needle with the same function the implementation builds the haystack
+/// with would still pass if both changed together — and the thing worth
+/// catching is exactly a change that moves the command somewhere new.
+const SECRET_WRITE_COMMAND: &str = "gcloud secrets versions add";
+
+/// Every deployment variable a shipped connector manifest reads a credential
+/// under, off the manifests rather than off a list kept here, so a connector
+/// that ships a new slot tomorrow is covered the day it lands.
+fn credential_slots() -> Result<Vec<String>> {
+    let catalogue = qip_data_finder::admission::catalogue()?;
+    let mut slots = Vec::new();
+    for entry in &catalogue {
+        slots.extend(
+            qip_api::registration_views::declared_slots(entry.source_id)
+                .map_err(qip_core::error::Error::invalid)?,
+        );
+    }
+    Ok(slots)
+}
+
+#[test]
+fn no_route_below_the_operator_role_names_a_credential_slot_or_the_command_that_writes_one()
+-> Result<()> {
+    // The failure this prevents, and it is not hypothetical: `GET
+    // /api/v1/registrations` was `Role::Viewer` and served `secret_slot`,
+    // `secret_command` and every companion command, so a viewer credential —
+    // whose whole authority is reading what the platform decided — was
+    // answered with the deployment variable each venue credential is read
+    // under and the exact `gcloud` line that writes one. It was reproduced
+    // against the built binary on loopback before it was split onto
+    // `/registrations/slots` at the operator role.
+    //
+    // The check is over the whole table rather than that one route, because
+    // the same two facts could be added to any body, and the console's own
+    // review is what found this one.
+    let api = api()?;
+
+    // Premise one: this build reads credentials under variables at all. A
+    // scan for needles that do not exist passes for ever.
+    let slots = credential_slots()?;
+    assert!(
+        slots.iter().any(|slot| slot.starts_with("QIP_")),
+        "no shipped connector manifest declares a credential slot, so this scan has nothing \
+         to look for: {slots:?}"
+    );
+
+    // Premise two: the material is served somewhere, to somebody. Without
+    // this the test would pass against a platform that had simply stopped
+    // telling an operator where to put a credential, which is a different
+    // change and a worse one.
+    let operator = api.handle(&request(
+        Method::Get,
+        "/api/v1/registrations/slots",
+        Some(&token(Role::Operator)),
+    ));
+    assert_eq!(
+        operator.status,
+        200,
+        "the operator list did not answer: {}",
+        String::from_utf8_lossy(&operator.body)
+    );
+    let served = String::from_utf8_lossy(&operator.body).into_owned();
+    for slot in &slots {
+        assert!(
+            served.contains(slot.as_str()),
+            "{slot} is on no list: {served}"
+        );
+    }
+    assert!(served.contains(SECRET_WRITE_COMMAND), "{served}");
+
+    // The scan. Every route a caller below the operator role can read,
+    // called with a credential of that route's own declared authority.
+    let mut reached = 0usize;
+    for route in ROUTES {
+        if route.method.is_mutating()
+            || route.required_role >= Role::Operator
+            || route.pattern.contains(':')
+        {
+            continue;
+        }
+        let path = format!("/api/v1{}", route.pattern);
+        let response = api.handle(&request(
+            route.method,
+            &path,
+            Some(&token(route.required_role)),
+        ));
+        // Admitted, so what follows is a statement about a body and not
+        // about a refusal. A 403 carries no slot either, and proves nothing.
+        assert!(
+            response.status != 401 && response.status != 403,
+            "{} {path} answered {} to a credential holding its own declared role",
+            route.method.as_str(),
+            response.status
+        );
+        reached += 1;
+        let body = String::from_utf8_lossy(&response.body).into_owned();
+        for slot in &slots {
+            assert!(
+                !body.contains(slot.as_str()),
+                "{} {path} is served at the {} role and names the credential slot {slot}. A \
+                 slot names where a credential lives; it belongs on an operator route",
+                route.method.as_str(),
+                route.required_role.as_str()
+            );
+        }
+        assert!(
+            !body.contains(SECRET_WRITE_COMMAND),
+            "{} {path} is served at the {} role and carries the command that writes a \
+             credential into Secret Manager",
+            route.method.as_str(),
+            route.required_role.as_str()
+        );
+    }
+    assert!(
+        reached > 20,
+        "only {reached} route(s) were reached; the scan is not walking the table"
+    );
     Ok(())
 }
 

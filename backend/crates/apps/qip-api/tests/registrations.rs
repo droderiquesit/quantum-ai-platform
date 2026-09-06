@@ -71,6 +71,18 @@ const KEYLESS_SOURCE: &str = "coinbase-spot-ticker";
 
 const APPROVE_PATH: &str = "/registrations/alpaca-daily-bars/approve";
 
+/// The operator-role list that carries the credential slots.
+const SLOTS_PATH: &str = "/registrations/slots";
+
+/// The prefix of every deployment variable this platform reads a credential
+/// under. What a viewer's list must not contain anywhere in its bytes.
+const SLOT_PREFIX: &str = "QIP_";
+
+/// The head of the one command that writes a credential. The whole point of
+/// keeping it off the viewer's list: it names the secret and the way to fill
+/// it in one line a person can paste.
+const WRITE_COMMAND: &str = "gcloud secrets versions add";
+
 fn start() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
 }
@@ -163,6 +175,12 @@ impl Rig {
 
     fn list(&self, token: &str) -> Response {
         self.call(Method::Get, "/registrations", token, "")
+    }
+
+    /// The operator list: the same rows with the credential slots beside
+    /// them.
+    fn slots(&self, token: &str) -> Response {
+        self.call(Method::Get, SLOTS_PATH, token, "")
     }
 
     fn approve(&self, token: &str, body: &str) -> Response {
@@ -397,12 +415,12 @@ fn a_blank_or_key_shaped_secret_is_refused_and_echoed_nowhere() -> Result<()> {
     Ok(())
 }
 
-// --- the list -----------------------------------------------------------------
+// --- the operator's list ------------------------------------------------------
 
 #[test]
-fn the_list_names_the_command_for_each_slot_and_the_posture() -> Result<()> {
+fn the_operator_list_names_the_command_for_each_slot_and_the_posture() -> Result<()> {
     let rig = rig()?;
-    let response = rig.list(VIEWER_TOKEN);
+    let response = rig.slots(OPERATOR_TOKEN);
     assert_eq!(response.status, 200);
     let (text, list) = body_of(response);
 
@@ -459,6 +477,128 @@ fn the_list_names_the_command_for_each_slot_and_the_posture() -> Result<()> {
     for value in text.split('"').filter(|token| token.starts_with("QIP_")) {
         SecretRef::new(value)?;
     }
+    Ok(())
+}
+
+// --- the viewer's list, and what it must not carry ----------------------------
+
+#[test]
+fn a_viewer_is_refused_the_operator_slot_list_and_the_refusal_names_no_slot() -> Result<()> {
+    let rig = rig()?;
+
+    // Premise one: the viewer's credential is good on this surface — it
+    // reads the standings list — so the refusal below is about the route and
+    // not about a credential that works nowhere.
+    assert_eq!(rig.list(VIEWER_TOKEN).status, 200);
+
+    // Premise two, from the table rather than from memory: the slot list is
+    // declared at the operator role. A test that only drove the handler
+    // would pass just as well if the row said `Role::Viewer` and the 403
+    // came from somewhere else.
+    let route = ROUTES
+        .iter()
+        .find(|route| route.method == Method::Get && route.pattern == SLOTS_PATH)
+        .expect("the slot list is in the route table");
+    assert_eq!(route.required_role, Role::Operator);
+
+    // Premise three: an operator is admitted, so the route is reachable and
+    // the viewer's refusal is the authorisation.
+    let allowed = rig.slots(OPERATOR_TOKEN);
+    assert_eq!(allowed.status, 200);
+    let (allowed_text, _) = body_of(allowed);
+    assert!(allowed_text.contains(ACCOUNT_SLOT), "{allowed_text}");
+
+    let refused = rig.slots(VIEWER_TOKEN);
+    assert_eq!(
+        refused.status,
+        403,
+        "{}",
+        String::from_utf8_lossy(&refused.body)
+    );
+    // A refusal that named what it was withholding would withhold nothing.
+    let (refused_text, _) = body_of(refused);
+    assert!(!refused_text.contains(SLOT_PREFIX), "{refused_text}");
+    assert!(!refused_text.contains(WRITE_COMMAND), "{refused_text}");
+    Ok(())
+}
+
+#[test]
+fn the_viewer_list_carries_the_standing_and_never_a_slot_or_the_command_that_fills_it() -> Result<()>
+{
+    let rig = rig()?;
+
+    // The premise this test exists for, asserted rather than assumed: the
+    // material really is in this process and really is on a list — the
+    // operator's. Without this the assertions below would pass just as well
+    // against a build whose manifests declared no credential at all, which
+    // is the cheapest kind of green.
+    let (operator_text, operator_list) = body_of(rig.slots(OPERATOR_TOKEN));
+    assert!(operator_text.contains(SLOT_PREFIX), "{operator_text}");
+    assert!(operator_text.contains(WRITE_COMMAND), "{operator_text}");
+    assert_eq!(
+        row(&operator_list, ACCOUNT_SOURCE)["secret_slot"],
+        ACCOUNT_SLOT
+    );
+
+    // What a viewer is answered with. This was reproduced on the wire
+    // against the built binary before the split existed: a viewer token on
+    // `GET /api/v1/registrations` came back naming
+    // `QIP_ALPACA_API_SECRET_KEY` and the `gcloud secrets versions add` line
+    // that writes it — the slot a credential lives in and the exact command
+    // to put one there, served to a role whose whole authority is reading
+    // what the platform decided.
+    let response = rig.list(VIEWER_TOKEN);
+    assert_eq!(response.status, 200);
+    let (text, list) = body_of(response);
+    assert!(!text.contains(SLOT_PREFIX), "{text}");
+    assert!(!text.contains(WRITE_COMMAND), "{text}");
+    // The keys themselves are gone, not emptied. A `"secret_slot": null` on
+    // every row would read as a platform that reads no credentials.
+    // Matched with the quotes and the colon, because `secret_command` has
+    // `secret_slot`'s neighbours in it and a bare substring check would pass
+    // on the wrong field.
+    for key in ["secret_slot", "secret_command", "companion_secret_slots"] {
+        assert!(!text.contains(&format!(r#""{key}":"#)), "{key}: {text}");
+    }
+
+    // And it is still the list: every catalogued source, its requirement,
+    // its standing and its terms. A route that answered nothing would also
+    // contain no slot.
+    let catalogue = qip_data_finder::admission::catalogue()?;
+    assert!(!catalogue.is_empty());
+    for entry in &catalogue {
+        row(&list, entry.source_id);
+    }
+    assert_eq!(list["posture"], POSTURE);
+    let account = row(&list, ACCOUNT_SOURCE);
+    assert_eq!(account["requirement"], "account");
+    assert_eq!(account["standing"]["standing"], "pending");
+    assert_eq!(account["terms"], TERMS);
+    assert_eq!(
+        row(&list, KEYLESS_SOURCE)["standing"],
+        serde_json::json!({ "standing": "keyless" })
+    );
+
+    // The half that a fix to the row alone would have left open. The
+    // registered standing carries the variable the *record* names, so before
+    // this test a viewer saw no slot for a pending source and saw one the
+    // moment an operator approved it. Approve, then read the viewer's list
+    // again.
+    assert_eq!(rig.approve(OPERATOR_TOKEN, &good_body()).status, 200);
+    let (after_text, after) = body_of(rig.list(VIEWER_TOKEN));
+    let registered = row(&after, ACCOUNT_SOURCE);
+    assert_eq!(registered["standing"]["standing"], "registered");
+    assert_eq!(registered["standing"]["operator"], OPERATOR_SUBJECT);
+    assert!(registered["standing"]["secret"].is_null(), "{registered}");
+    assert!(!after_text.contains(SLOT_PREFIX), "{after_text}");
+    assert!(!after_text.contains(WRITE_COMMAND), "{after_text}");
+
+    // The operator's list still has it, from the record the kernel adopted.
+    let (_, operator_after) = body_of(rig.slots(OPERATOR_TOKEN));
+    assert_eq!(
+        row(&operator_after, ACCOUNT_SOURCE)["standing"]["secret"],
+        ACCOUNT_SLOT
+    );
     Ok(())
 }
 

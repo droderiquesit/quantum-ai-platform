@@ -34,6 +34,36 @@
 # which is a machine that cannot be replaced and a group that cannot heal.
 # The bake creates the image; a person names it in the tfvars; nothing in this
 # configuration can remove it.
+#
+# ## What nothing here reclaims, said plainly rather than discovered on a bill
+#
+# The staging bucket has a lifecycle rule and the payload expires. Two things
+# beside it do not, and neither has an owner yet:
+#
+#   * **Every image the bake ever produced stays.** Roughly 20 GB each, billed
+#     for as long as the project exists, including the ones from a bake that
+#     was retried and the ones for a machine shape nobody chose in the end.
+#     A lifecycle rule is not the answer and must not be added here: an image
+#     a node's instance template names cannot be deleted by a schedule that
+#     does not read the tfvars. What is needed is a person reading
+#     `gcloud compute images list --filter="labels.qip-environment=<env>"`
+#     against the `boot_image` values in `environments/*/terraform.tfvars`
+#     and deleting the rest by hand, with the approval this repository
+#     requires for deleting anything in a cloud project.
+#   * **A runner that dies rather than fails leaks a builder.** `image.yml`
+#     deletes the instance and the disk in steps marked `if: always()`, which
+#     covers a failed step and a cancelled job — but not a runner that is
+#     killed, loses its network, or has its token expire mid-job. What is left
+#     is an `e2-standard-2` and a 20 GB pd-balanced disk, both labelled
+#     `qip-role=image-bake`, and nothing watches for them. The cheap
+#     mitigation is `--max-run-duration` with
+#     `--instance-termination-action=DELETE` on the builder, which would bound
+#     the instance half at Compute Engine rather than in the workflow; it is
+#     not applied here because it has never been exercised against a real
+#     dispatch and a wrong flag would fail the first bake at the point where
+#     the machine is created. Until then the check is
+#     `gcloud compute instances list --filter="labels.qip-role=image-bake"`,
+#     which should be empty between bakes.
 
 locals {
   name = "qip-${var.environment}-image-bake"

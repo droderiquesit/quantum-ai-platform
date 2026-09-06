@@ -9,24 +9,80 @@
 //! settled cash less reservations and nothing else; expected inflows are
 //! held beside the balance, visible, and excluded until
 //! [`CashBalance::post_inflow`] is called by whatever reconciled them.
+//!
+//! # Custody of the record: a balance serialises out and does not come back
+//!
+//! This platform holds no capital, so the only custody it can enforce is
+//! custody of the record — the set of ways a number can appear in a user's
+//! book must be closed, named, and every one of them gated. There are five,
+//! all on [`super::UserLedger`]: `fund`, `journal`, `journal_to`,
+//! `journal_pro_rata` and `post_inflow`. Each asks the mandate registry, the
+//! eligibility registry, the investable ceiling or the exact-split rule
+//! before it moves anything.
+//!
+//! There used to be a sixth, and nothing gated it. `CashBalance` derived
+//! `Deserialize`, so
+//! `serde_json::from_str::<CashBalance>(r#"{"currency":"USD","settled":"999999999",…}"#)`
+//! returned a settled balance of any size that no funding, no operator's
+//! eligibility decision, no product catalogue and no attributed fill had
+//! produced. `ledger/entitlement.rs` states the rule that closes it — "a
+//! record is evidence of what was decided, never an input that decides" — and
+//! applies it to the entitlement while the money next door was reading itself
+//! back in from a document. ADR 0021 refuses the path by which capital leaves
+//! this platform; nothing in it permits a path by which capital arrives from a
+//! file.
+//!
+//! So the money types here serialise and do not deserialise, and the guarantee
+//! is the type system's rather than a check's:
+//!
+//! ```compile_fail
+//! # use qip_capital::ledger::CashBalance;
+//! // There is no `Deserialize for CashBalance`, and by the orphan rules no
+//! // crate but this one can add it. A balance minted from a document is
+//! // unrepresentable rather than refused.
+//! let minted: CashBalance = serde_json::from_str(
+//!     r#"{"currency":"USD","settled":"999999999","reserved":"0","expected":{}}"#,
+//! )
+//! .expect("a document is not a balance");
+//! ```
+//!
+//! Serialising out still works, because a report of what the ledger holds is
+//! the whole point of holding it:
+//!
+//! ```
+//! # use qip_capital::ledger::CashBalance;
+//! # use qip_core::Currency;
+//! let empty = CashBalance::new(Currency::USD);
+//! let document = serde_json::to_string(&empty).expect("a balance reports");
+//! assert!(document.contains(r#""settled":"0""#));
+//! ```
 
 use qip_core::error::{Error, Result};
 use qip_core::{Currency, Decimal, Timestamp};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::BTreeMap;
 
 /// A deposit the user says is on its way.
 ///
 /// Recorded so the desk can see what has been promised and match it when
 /// something arrives; counted nowhere a position could be sized against.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// Serialises and does not deserialise, for the reason this module's own
+/// documentation gives: an inflow reaches a book through
+/// [`CashBalance::expect_inflow`], which refuses a blank reference, a
+/// non-positive amount and a reference already declared. A document that
+/// wrote one straight into the map would meet none of those.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ExpectedInflow {
     pub amount: Decimal,
     pub declared_at: Timestamp,
 }
 
 /// One currency's cash at one strategy for one user.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// Serialises and does not deserialise — see this module's documentation for
+/// the way in that closed.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CashBalance {
     currency: Currency,
     /// Cash the ledger has said is here: funded, posted, or realised.

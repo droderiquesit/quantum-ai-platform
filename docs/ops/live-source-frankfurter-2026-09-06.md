@@ -187,11 +187,17 @@ absorption arm and concluded about all of them.
 
 The stage now says what it *holds* beside what it took in. Its format string is
 `{held} observation(s) held from {absorbed} absorbed: {breakdown}{sourced}`, so
-the three-macro-record case this session produced renders as `3 observation(s)
-held from 3 absorbed: 3 knowable event(s)`. `produced` deliberately stays what
-is held rather than what arrived — every store it counts is bounded, so under
-load the two diverge and the divergence is the retention policy working, not a
-lost record.
+the three-macro-record case this session produced opens
+`3 observation(s) held from 3 absorbed: 3 knowable event(s)` — followed, on a
+run like this one where a source is registered, by `{sourced}`'s
+`; N registered source(s)`, which is there so that a filling registry beside a
+zero observation count stays visible rather than being the interesting failure
+nobody is shown. `produced` deliberately stays what is held rather than what
+arrived — every store it counts is bounded, so under load the two diverge and
+the divergence is the retention policy working, not a lost record. **The exact
+rendered string above was not captured from a run**: it is the format string
+applied to this session's numbers, and what the tests assert is the
+`3 observation(s) held` clause and the absence of "running blind".
 
 Two kernel tests hold it, both in
 `backend/crates/runtime/qip-kernel/tests/kernel.rs` and both run for this

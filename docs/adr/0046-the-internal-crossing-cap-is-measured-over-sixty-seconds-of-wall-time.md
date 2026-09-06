@@ -3,11 +3,16 @@
 - **Status:** **proposed**
 - **Date:** 2026-09-06
 - **Numbering note:** drafted as 0043 and renumbered on discovering that a
-  record written in parallel had taken that number and indexed it. The
-  mis-numbered file at
-  `docs/adr/0043-the-internal-crossing-cap-is-measured-over-sixty-seconds-of-wall-time.md`
-  is a stub pointing here and should be deleted; this session had no shell
-  and could not remove it.
+  record written in parallel had taken that number and indexed it. This note
+  used to end "the mis-numbered file at
+  `docs/adr/0043-the-internal-crossing-cap-…` is a stub pointing here and
+  should be deleted; this session had no shell and could not remove it."
+  **The stub is gone** — checked 2026-09-06, `ls docs/adr/0043*` returns only
+  `0043-the-cryptography-this-platform-has-and-the-three-gaps-no-crate-closes.md`
+  — so that instruction is withdrawn rather than left standing, because a
+  record that sends a maintainer to delete a file which does not exist costs
+  them the same search whether or not the file is there. 0043 is the
+  cryptography record and nothing else.
 - **Decides:** DEC-D3 / PHASE-B13 — the interval §27.1's forty percent
   internal-crossing cap is measured over, which
   `CellConfig::crossing_interval` has held as `None` since the mechanism

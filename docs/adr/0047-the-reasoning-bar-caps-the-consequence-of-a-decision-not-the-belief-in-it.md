@@ -2,7 +2,10 @@
 
 **Status:** *proposed*, 2026-09-06. **The change this record describes is
 already in the tree.** `PlatformConfig::reasoning_confidence_bar` is read at
-`backend/crates/runtime/qip-kernel/src/platform.rs:5157` and two kernel tests
+`backend/crates/runtime/qip-kernel/src/platform.rs` — `:5157` when this was
+written, `:5276` at HEAD on 2026-09-06; find it with `grep -n
+'self.config.reasoning_confidence_bar'`, because `platform.rs` moves by
+hundreds of lines a day — and two kernel tests
 hold it there. So this is a ratification, in the shape
 [ADR 0044](0044-adr-0039s-four-open-decisions-on-cross-process-region-shares-are-taken.md)
 used for three of its four decisions: a record written after a commit decided
@@ -11,10 +14,15 @@ it. The commit itself flagged the question — *did this need a decision record?
 — as open. This record answers it: **half of it did, and the half that did is
 not the half a reader would guess.**
 
-**Answers:** the open question left by the wave that wired the field. There is
-no register row for it in `../plan/PROJECT-PLAN.md`; adding one would change
-that file's row count and its re-tallied arithmetic, which is the register
-owner's edit and not this record's.
+**Answers:** the open question left by the wave that wired the field. When this
+was written there was no register row for it in `../plan/PROJECT-PLAN.md`, and
+adding one would change that file's row count and its re-tallied arithmetic,
+which is the register owner's edit and not this record's. **That row now
+exists** — added 2026-09-06 as **DEC-D14**, with the register's `grep -c` and
+its published `awk` tally both re-run in the same change (57 rows → 58), and
+scored `taken in code; ADR 0047 *proposed*` rather than `done`, because a
+proposed record is not an acceptance. Accepting or rejecting this record is
+still the owner's, and the register says so.
 
 **Relates to:** [ADR 0005](0005-confidence-is-arithmetic.md) (confidence is
 computed from evidence and never assigned — the property that makes the
@@ -79,8 +87,13 @@ not live.
 
 Four things, and the fourth is the one that matters.
 
-1. **The field is read.** `platform.rs:5157`, in `reason_decision_context`,
-   the one place that builds the `qip_cost_router::DecisionContext`.
+Line numbers below were taken when this record was written and `platform.rs`
+has moved a hundred lines since; the function name is the durable reference and
+`grep -n 'self.config.reasoning_confidence_bar'` finds the site in one step.
+
+1. **The field is read.** `platform.rs:5157` (`:5276` at HEAD on 2026-09-06),
+   in `reason_decision_context`, the one place that builds the
+   `qip_cost_router::DecisionContext`.
 2. **The requirement is `rank.importance`, capped by the bar**, where it was
    `rank.confidence`: `opportunity.rank.importance.min(bar)` (`:5170`).
 3. **A bar outside `(0, 1]` stops the decision and names the field**
@@ -304,11 +317,17 @@ app → runtime → service → lib. Inward.
 
 ## Applied by this record
 
-**Nothing.** The wiring, its refusal and its two tests are already in the tree
-and this document changes no file. What it adds is the argument and the named
-consequence; what it asks of whoever accepts it is a decision on the register
-row — this platform has no row for a change that has already landed, and either
-the register gains one or it records that ratifications do not get rows.
+**Nothing in the workspace.** The wiring, its refusal and its two tests were
+already in the tree and this document changed no Rust file. What it adds is the
+argument and the named consequence.
+
+**The one thing it asked for has been done.** This section used to end "either
+the register gains one or it records that ratifications do not get rows". The
+register gained one: **DEC-D14** in `../plan/PROJECT-PLAN.md`, added
+2026-09-06, with that file's row count and its published `awk` tally re-run in
+the same change rather than left to disagree with the tables above them. So the
+question is settled in the first direction — ratifications *do* get rows here —
+and what remains for whoever accepts this record is the acceptance itself.
 
 **Gates run for this record: none.** No Rust, TOML, Terraform or TypeScript
 file was modified by it, so `cargo fmt`, `cargo clippy`, `cargo test`,

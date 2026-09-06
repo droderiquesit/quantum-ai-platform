@@ -544,6 +544,24 @@ pub struct PrivateAssetDetails {
     pub stage: String,
     pub lockup_years: f64,
     /// Time between a capital call and its due date, in days.
+    ///
+    /// **Read by nothing.** Verified 2026-09-06 by
+    /// `grep -rn capital_call_notice_days --include=*.rs backend/`: this
+    /// declaration, the wire field and the mapping between them, and the
+    /// literal `10` in seven test fixtures. No production caller, and — unlike
+    /// `vintage_year` and `lockup_years` — [`Self::checked`] does not examine
+    /// it, because there is no arithmetic downstream for an absurd value to
+    /// break.
+    ///
+    /// Named rather than left as a field that reads like a control, because a
+    /// notice period is the sort of thing a reader assumes bounds something.
+    /// It bounds nothing here. The horizon it belongs to is
+    /// `Commitment::demand_within`, which has no production caller either, and
+    /// `Platform::deployable_capital` reserves the *whole* unfunded balance at
+    /// every instant — the conservative bound a notice period could only
+    /// relax. So this earns its place the day a liquidity ladder places a
+    /// capital call in a dated rung, and until then the alternatives are
+    /// saying so, as here, and deleting it with the fixtures that set it.
     pub capital_call_notice_days: u32,
 }
 

@@ -406,7 +406,27 @@ impl AssetValuation {
     /// The mark reduced to the part of it the platform is willing to stand
     /// behind at `now`.
     ///
-    /// **Statistic meets money here.** Confidence is `f64`; the mark is
+    /// **Nothing in this platform calls this.** Verified 2026-09-06 by
+    /// `grep -rn supportable_value --include=*.rs backend/`: the definition,
+    /// one doc reference, and two assertions in
+    /// `qip-financial/tests/valuation.rs`. No production caller. Said here
+    /// rather than left for a reader to discover, because the paragraph below
+    /// describes a crossing point between a statistic and money that no
+    /// running code crosses, and a comment of that shape is read as a live
+    /// guarantee.
+    ///
+    /// It has no caller because there is no figure for it to reduce. The
+    /// kernel's book equity is realised-only and holds no marks at all
+    /// (`Platform::equity`), so no private mark is ever summed into a balance
+    /// sheet this could weight; and the sizing path narrows the *position*
+    /// rather than the mark, through `Platform::sizing_confidence`, which
+    /// reads [`Self::confidence_at`] directly. This earns its place the day
+    /// something reports a private book at value — a statement of net asset
+    /// value, a collateral schedule — and until then the honest alternatives
+    /// are the one taken here, saying so, and deleting it.
+    ///
+    /// **Statistic meets money here** — in this function's arithmetic, not on
+    /// any path the platform runs. Confidence is `f64`; the mark is
     /// [`Decimal`]. The confidence crosses into `Decimal` once, at this
     /// conversion, and the product is exact decimal arithmetic — a
     /// risk-bearing figure is never carried through binary floating point.
@@ -430,9 +450,23 @@ impl AssetValuation {
 
     /// A haircut on a notional, taken at this mark's decayed confidence.
     ///
+    /// **Nothing in this platform calls this either**, and here the reason is
+    /// worth more than the function. Verified 2026-09-06 by
+    /// `grep -rn '\.haircut(' --include=*.rs backend/`: one assertion in
+    /// `qip-financial/tests/valuation.rs` and nothing else. The kernel does
+    /// take a haircut on private positions — `Platform::sizing_confidence`
+    /// returns [`Self::confidence_at`] as a fraction and `construct_from`
+    /// narrows the position by it — so wiring this in would give one figure
+    /// two derivations in two crates, which is the arrangement that produced
+    /// the disagreement `9f9c92a` deleted rather than taught to refuse. It is
+    /// therefore not a gap waiting to be closed by a call site; it is a
+    /// duplicate awaiting a decision to delete it, and it is documented rather
+    /// than deleted here only because its test lives outside this file.
+    ///
     /// Money in, money out: the haircut is applied to a [`Decimal`] notional
     /// and the result is [`Decimal`]. The confidence is the only `f64` and it
-    /// crosses in [`Self::supportable_value`]'s sibling conversion below.
+    /// crosses in [`Self::supportable_value`]'s sibling conversion above —
+    /// which no running code crosses either.
     pub fn haircut(&self, notional: Decimal, now: Timestamp) -> Result<Decimal> {
         let confidence = self.confidence_at(now)?;
         let weight = Decimal::from_f64(confidence).ok_or_else(|| {

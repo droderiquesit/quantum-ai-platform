@@ -21,10 +21,27 @@ the heading "The seven layers (§40.5, §41, §45, §46, §47, §48)" at `:443`.
 [ADR 0022](0022-the-algorik-blueprint-is-the-architecture-of-record.md) (why a
 departure from §48 needs scoring at all).
 
-**Changes no file.** The rows below are drafted for the matrix owner;
-`docs/architecture/` is outside the paths this record's author may edit, and a
-matrix row written by someone who cannot then re-score the surrounding table is
-a half-edit.
+**Changed no file when written.** The rows below were drafted for the matrix
+owner, because `docs/architecture/` was outside the paths this record's author
+could edit and a matrix row written by someone who cannot then re-score the
+surrounding table is a half-edit.
+
+**Applied to one of the two registers on 2026-09-06, and the citations below
+are therefore historical.** The three rows are now in
+`../architecture/deployed-vs-blueprint.md`'s "What the blueprint requires"
+table, replacing the single `Cloud Build, Cloud Deploy, OpenTofu | ABSENT` line
+this record found at `:246`; and that document's D11 assumption — quoted below
+from `:648`, now at `:650` — is corrected in place, both for its stale factual
+half and for carrying a verdict in a table headed "Decisions this document does
+not make". **Read every `deployed-vs-blueprint.md:NNN` citation in this record
+as the state that prompted it, not as the state today.** Part two is unchanged
+and untouched: nothing is adopted, and that remains the owner's.
+
+**Still not applied:** `../architecture/algorik-blueprint-traceability.md`,
+whose §48 exists only as a heading at `:443` and which has no rows for any of
+the three. Writing them there is the larger half of this record's ask — it
+needs the surrounding layer table re-scored, which is the matrix owner's edit
+and not a paste of the three rows above.
 
 ---
 

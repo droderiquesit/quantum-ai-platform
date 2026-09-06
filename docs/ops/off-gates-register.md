@@ -305,8 +305,12 @@ edit here that a reviewer sees").
 
 **Delta.** Empty in all four: `dev:67`, `test:49`, `stage:49`, `prod:51`. No
 node exists anywhere, so the edge plane's entire pass-time series reaches no
-deployed process, and the three edge alert policies would have nothing to
-query even if gate 6 were flipped (`NOT-SCRAPED.md:20-24`).
+deployed process, and the **two** alert policies that query a `qip_edge_*`
+series would have nothing to query even if gate 6 were flipped
+(`NOT-SCRAPED.md:20-24`). This cell said "three", which made the edge and
+central groups sum to one more policy than exists; the count is
+`grep -c 'query *= *"[^"]*qip_edge'` over `modules/observability/main.tf`,
+which returns 2 — `edge_halted` and `edge_reconciliation_break`.
 
 **Deliberate?** **Yes**, argued in four places: the variable
 (`variables.tf:227-254`), `main.tf:471-478`, each tfvars, and
@@ -356,14 +360,19 @@ is named as open, not assumed solved.
 
 # COSMETIC
 
-## 9. Two variable descriptions say "four" alert policies; there are seven
+## 9. Two variable descriptions say "four" alert policies; there are nine
 
-**Delta.** `modules/observability/main.tf:3` and `:7` say "Seven alerts" and
-"All seven are gated on `workload_metrics_exist`", and `grep -c` over that
-file returns 7 `google_monitoring_alert_policy` resources: `kill_switch`
-(`:23`), `live_fill` (`:59`), `persistent_breach` (`:97`),
-`permission_violation` (`:131`), `edge_halted` (`:176`),
-`edge_reconciliation_break` (`:216`), `central_reconciliation_break` (`:257`).
+**Delta.** Re-counted 2026-09-06, because this section had itself gone stale
+and was saying "seven" while §1 and §6 of this register already said nine —
+the drift it exists to record had reached it. `modules/observability/main.tf:3`
+and `:7` now say "Nine alerts" and "All nine are gated on
+`workload_metrics_exist`", and
+`grep -c '^resource "google_monitoring_alert_policy"'` over that file returns
+**9**: `kill_switch` (`:23`), `live_fill` (`:59`), `persistent_breach`
+(`:97`), `permission_violation` (`:131`), `edge_halted` (`:182`),
+`edge_reconciliation_break` (`:222`), `central_reconciliation_break` (`:262`),
+and — added at `599daaa` on 2026-09-06 — `risk_figure_unevaluated` (`:313`)
+and `sign_off_withheld_on_liquidity` (`:395`).
 
 Two descriptions still say four:
 
@@ -380,10 +389,14 @@ Two descriptions still say four:
 > alerts cannot exist before the workloads do.
 > ```
 
-The tree moved and these two sentences did not: the three edge and
-central-plane reconciliation policies were added afterwards.
-`NOT-SCRAPED.md:69-71` is correct where it counts ("the five central-plane
-policies").
+The tree moved twice and these two sentences did not: the three edge and
+central-plane reconciliation policies were added after they were written, and
+the two liquidity policies after that. Both are verified still to say "four" at
+`infrastructure/terraform/variables.tf:772` and
+`modules/observability/variables.tf:24` on 2026-09-06. Correcting them is a
+Terraform edit and is out of this register's hands; what this register owes is
+the true number, which is nine, and the recount command rather than a figure
+somebody must trust.
 
 **Severity: COSMETIC.** No behaviour depends on the number.
 
@@ -557,7 +570,7 @@ so a later reader can see they were checked rather than missed.
 | 6 | `workload_metrics_exist = false` | Yes | BLOCKING-DEPLOY |
 | 7 | `execution_nodes = {}` | Yes | BLOCKING-DEPLOY |
 | 8 | `vendored_openobserve_image_digest` null | Yes | BLOCKING-DEPLOY |
-| 9 | "four" alert policies, seven exist | n/a — drift | COSMETIC |
+| 9 | "four" alert policies, nine exist | n/a — drift | COSMETIC |
 | 10 | stale prod-tfvars cross-reference | n/a — drift | COSMETIC |
 | 11 | live-fill alarm excluded from a paper prod | Yes, on a stale premise | COSMETIC |
 | 12 | `identity_mfa_state` optional in dev | Yes, in the variable | COSMETIC |

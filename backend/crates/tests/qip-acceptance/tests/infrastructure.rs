@@ -1185,21 +1185,29 @@ fn every_file_the_boot_image_installs_is_attested_pinned_or_from_the_reviewed_br
          than the repository's default branch. The reference value has to be \
          one the dispatcher cannot choose; a branch they name is not one."
     );
-    for fragment in [
-        "git fetch",
-        "git hash-object",
-        "git rev-parse --verify --quiet",
-        "git cat-file blob",
+    // The two sides of the comparison, the comparison, and the extraction —
+    // as whole lines, because a check for the *names* of these commands is
+    // one a mutation walks through. `contains("git hash-object")` stayed true
+    // when the tree-side hash was replaced by a second read of the branch's
+    // own blob, since the step hashes the extracted files again further down
+    // to report them: the step then compared the reviewed bytes with
+    // themselves, passed always, and the test noticed nothing.
+    for anchor in [
+        "git fetch --depth=1 --no-tags origin \"${DEFAULT_BRANCH}\"",
+        "here=\"$(git hash-object \"$path\")\"",
+        "there=\"$(git rev-parse --verify --quiet \"${reviewed}:${path}\" || true)\"",
+        "if [ \"$here\" != \"$there\" ]; then",
+        "git cat-file blob \"${reviewed}:${path}\"",
         "exit 1",
     ] {
         assert!(
-            reviewed.contains(fragment),
-            "{IMAGE_WORKFLOW}'s source-provenance step no longer runs \
-             `{fragment}`. Comparing against the remote, refusing on a \
-             difference and taking the bytes from the reviewed commit are one \
-             mechanism; with any of them gone the rest records a digest \
-             against no reference, which is a number rather than a chain of \
-             custody."
+            reviewed.contains(anchor),
+            "{IMAGE_WORKFLOW}'s source-provenance step no longer carries \
+             `{anchor}`. Fetching the default branch from origin, hashing what \
+             is in the tree, hashing what is on the branch, refusing when they \
+             differ and taking the bytes from the branch are one mechanism: \
+             with any of them gone the rest records a digest against no \
+             reference, which is a number and not a chain of custody."
         );
     }
     // The paths that step actually compares, read out of it as whole tokens.

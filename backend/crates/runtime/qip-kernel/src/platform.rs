@@ -4662,7 +4662,19 @@ impl Platform {
     /// Never panics, never stops early. A stage that fails records its problem
     /// and the cycle continues, because the learning stage is what would
     /// eventually notice that a stage keeps failing.
+    ///
+    /// **One thing does stop it before it starts.** A cycle asked for as of an
+    /// instant earlier than one this platform has already reasoned at is
+    /// refused whole rather than run: see [`Platform::reasoned_through`] for
+    /// the leak that permits, and [`Self::refuse_cycle_before`] for what the
+    /// caller gets back. The refusal is not a stage failing — it is the
+    /// argument being wrong — so nothing is journalled, nothing is charged and
+    /// no state moves.
     pub fn run_cycle(&mut self, now: Timestamp) -> CycleReport {
+        if now < self.reasoned_through {
+            return self.refuse_cycle_before(now);
+        }
+        self.reasoned_through = now;
         self.cycle += 1;
         let correlation_id = self
             .context
@@ -4798,6 +4810,74 @@ impl Platform {
             report.events_logged as f64,
         );
         report
+    }
+
+    /// Refuse a cycle dated before one this platform has already reasoned at.
+    ///
+    /// Refused rather than clamped forward. Moving `now` up to
+    /// `reasoned_through` would produce a cycle whose report claims an instant
+    /// the caller never asked for, and would leave the caller's clock — the
+    /// thing that is actually wrong — undisturbed and wrong again next pass.
+    ///
+    /// The cycle counter does not move and `qip_cycles_run_total` is not
+    /// counted: nothing ran, and the platform bills what ran. What does move is
+    /// `qip_stage_runs_total{ran="false"}` for all eight stages and one
+    /// `qip_stage_problems_total{stage="sense"}`, so a process being handed a
+    /// clock that walks backwards is a series an operator can chart rather than
+    /// a sentence in a report nobody reads. It is deliberately not journalled:
+    /// the event log is the record of what the platform did, and the one thing
+    /// worse than a backwards cycle is a backwards record of one.
+    fn refuse_cycle_before(&mut self, now: Timestamp) -> CycleReport {
+        let detail = format!(
+            "the cycle asked for as of {} was refused before any stage ran: this platform has \
+             already reasoned as of {}",
+            now.to_rfc3339(),
+            self.reasoned_through.to_rfc3339()
+        );
+        let problem = format!(
+            "{detail}. Every point-in-time check this platform holds was taken as of the \
+             assembly instant — the marks, the commitment book, the feasibility grids, the \
+             exposure axes and the decision-grade sweep — so reading them as of {} would read \
+             records that were not knowable here then, and a mark decays from when its evidence \
+             was observed, which makes the earlier read the larger one as well as the \
+             unknowable one. Correct the clock the caller reads; the instant is not moved \
+             forward, because a cycle dated before the cycle before it is a caller defect and \
+             not a rounding error.",
+            now.to_rfc3339()
+        );
+        let correlation_id = self
+            .context
+            .ids()
+            .generate::<qip_core::lineage::CorrelationKind>(now);
+        let mut stages: Vec<StageOutcome> = Stage::all()
+            .into_iter()
+            .map(|stage| StageOutcome::skipped(stage, detail.clone()))
+            .collect();
+        // On the first stage alone: eight copies of one problem would multiply
+        // `qip_stage_problems_total` by eight for a single refusal, and the
+        // stage that would have read the world first is the honest place for it.
+        if let Some(sense) = stages.first_mut() {
+            sense.problems.push(problem);
+        }
+        for outcome in &stages {
+            let mut ran = labels([("stage", outcome.stage.as_str())]);
+            ran.insert("ran".to_string(), outcome.ran.to_string());
+            self.telemetry.metrics.count(names::STAGE_RUNS, ran);
+        }
+        self.telemetry.metrics.increment(
+            names::STAGE_PROBLEMS,
+            labels([("stage", Stage::Sense.as_str())]),
+            1,
+        );
+        CycleReport {
+            cycle: self.cycle,
+            correlation_id,
+            started_at: now,
+            finished_at: now,
+            stages,
+            events_logged: self.event_log.len(),
+            halted: self.autonomy.kill_switch().is_globally_tripped(),
+        }
     }
 
     /// Close one stage off: time it on the injected clock and keep it.
@@ -12830,6 +12910,229 @@ mod episodic_slot_tests {
         );
 
         // The boundary: producing policy reached no venue.
+        assert!(!platform.orders.has_live_fills());
+        assert!(!platform.is_live_capable());
+    }
+}
+
+#[cfg(test)]
+mod backwards_cycle_tests {
+    //! A cycle may not be run at an instant the platform has already reasoned
+    //! past.
+    //!
+    //! **The leak this closes, measured rather than argued.**
+    //! `IlliquidValuator::mark_private_asset` refuses a record whose
+    //! `known_at` is after the instant it is asked to mark as of — the
+    //! point-in-time check — and `Platform::new` runs it once, with the
+    //! assembly instant as that instant. The mark it produces carries `as_of`,
+    //! when the evidence was observed, and nothing else about time, so
+    //! `AssetValuation::confidence_at` can refuse a read before the mark was
+    //! *struck* and has nothing with which to refuse a read before the record
+    //! was *knowable here*. A cycle run between those two instants therefore
+    //! sized against a mark this platform could not have held — and sized
+    //! larger, because a mark decays from `as_of` and the earlier read has
+    //! decayed less. The test below asserts that inversion as its premise
+    //! before asserting the refusal, so it cannot pass on a fixture where the
+    //! leak was never available.
+    //!
+    //! **Reachable how.** `run_cycle` takes its instant from the caller.
+    //! `qip-api` and `qip-fastbrain` assemble the platform on
+    //! `qip_core::SystemClock` and hand it that clock's reads, and the host
+    //! wall clock moves backwards on an NTP step, a live migration or an
+    //! operator's `date`. `qip_core::ManualClock::set` already refuses to move
+    //! backwards, calling monotonicity "a precondition of the event log's
+    //! ordering guarantees"; `SystemClock` promises nothing of the sort and
+    //! the event log itself orders by sequence, not by timestamp, so nothing
+    //! between the clock and the marks held the precondition. This is where it
+    //! is held now.
+
+    use super::*;
+    use qip_core::dec;
+    use qip_financial::asset_class::InstrumentType;
+    use qip_financial::extensions::{Extension, PrivateAssetDetails};
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    use qip_financial::universe::Universe;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    const PRIVATE: &str = "obj-PRIV";
+
+    /// The instant the platform is assembled at, and so the instant every
+    /// point-in-time check in `Platform::new` is taken as of.
+    fn assembled_at() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    /// The administrator's reporting date: far enough back that the mark is
+    /// struck before the earlier instant below — so `confidence_at` does not
+    /// refuse it for some other reason — and near enough that a `LastRound`
+    /// mark's 365-day review interval has not lapsed.
+    fn reported_at() -> Timestamp {
+        assembled_at().saturating_sub(Duration::from_days(10))
+    }
+
+    /// One day before assembly: after the evidence was observed and before the
+    /// record became knowable to this platform.
+    fn before_assembly() -> Timestamp {
+        assembled_at().saturating_sub(Duration::from_days(1))
+    }
+
+    /// A platform over one private fund whose record became knowable at the
+    /// assembly instant — `ObjectBuilder::build` stamps `updated_at` with the
+    /// instant it is given, and `IlliquidValuator::mark_object` hands that in
+    /// as `known_at`.
+    fn platform_holding_a_fund() -> Platform {
+        let fund = FinancialObject::builder(
+            ObjectId::from_string(PRIVATE),
+            "PRIV",
+            InstrumentType::PrivateEquityFund,
+            LiquidityProfile::illiquid(90.0, 250.0),
+        )
+        .venue("OTC")
+        .geography("US")
+        .price(dec!("100"))
+        .extension(Extension::PrivateAsset(PrivateAssetDetails {
+            vintage_year: 2024,
+            // Committed equals called, so the book carries no unfunded
+            // commitment: `CommitmentBook::unfunded_total` already refuses a
+            // read before its own `known_at`, and this test is about the mark,
+            // which does not.
+            committed_capital: dec!("400000"),
+            called_capital: dec!("400000"),
+            distributed_capital: Decimal::ZERO,
+            residual_value: dec!("500000"),
+            stage: "buyout".to_string(),
+            lockup_years: 7.0,
+            capital_call_notice_days: 10,
+        }))
+        .provenance(Provenance::synthetic("administrator", reported_at()))
+        .build(assembled_at())
+        .expect("a private fund record");
+        let mut universe = Universe::new();
+        universe.insert(fund).expect("insertable");
+        let config = PlatformConfig::default().with_initial_equity(Decimal::from_int(200_000));
+        let (context, _clock) = qip_core::Context::deterministic(assembled_at(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            universe,
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    #[test]
+    fn a_cycle_dated_before_the_platform_assembled_is_refused_whole_rather_than_sizing_against_a_mark_it_could_not_have_held()
+     {
+        let mut platform = platform_holding_a_fund();
+
+        // Premise 1: the fund is marked and sizeable as of the instant its
+        // record became knowable. Without this the refusal below would be
+        // about a platform that could not size the fund anyway.
+        let knowable = platform
+            .sizing_confidence(PRIVATE, assembled_at())
+            .expect("the fund is sizeable as of the instant its record was knowable");
+
+        // Premise 2, and the leak itself: asked as of a day *before* the
+        // record was knowable here, the mark still answers — and answers
+        // higher, because it has had a day less to decay. This is the value a
+        // cycle at that instant would have sized against.
+        let leaked = platform
+            .sizing_confidence(PRIVATE, before_assembly())
+            .expect("the premise failed: the mark refuses the earlier instant on its own");
+        assert!(
+            leaked > knowable,
+            "the premise failed: reading the mark before its record was knowable did not inflate \
+             it ({leaked} against {knowable}), so this fixture does not carry the leak the guard \
+             exists to stop"
+        );
+
+        // The behaviour: the cycle is refused before any stage runs.
+        let cycles_before = platform.cycle;
+        let events_before = platform.event_log.len();
+        let report = platform.run_cycle(before_assembly());
+
+        assert_eq!(
+            platform.cycle, cycles_before,
+            "a refused cycle was billed as a cycle that ran"
+        );
+        assert_eq!(
+            platform.event_log.len(),
+            events_before,
+            "a refused cycle wrote a backwards-dated record into the hash-chained log"
+        );
+        assert!(
+            report.stages.iter().all(|stage| !stage.ran),
+            "a stage ran inside a refused cycle: {:?}",
+            report
+                .stages
+                .iter()
+                .filter(|stage| stage.ran)
+                .map(|stage| stage.stage.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !report.traversed_every_stage(),
+            "a refused cycle reported traversing the whole loop"
+        );
+
+        // The refusal names both instants, matched on the full RFC 3339 stamp
+        // rather than on a fragment: a stamp one second either side is a
+        // different claim, and a substring of one of these is a substring of
+        // the other for the first sixteen characters.
+        let problems: Vec<&str> = report
+            .problems()
+            .into_iter()
+            .map(|(_, problem)| problem)
+            .collect();
+        assert_eq!(
+            problems.len(),
+            1,
+            "a refused cycle reported {} problems; one refusal is one problem: {problems:?}",
+            problems.len()
+        );
+        let problem = problems[0];
+        assert!(
+            problem.contains(&before_assembly().to_rfc3339()),
+            "the refusal does not name the instant that was asked for: {problem}"
+        );
+        assert!(
+            problem.contains(&assembled_at().to_rfc3339()),
+            "the refusal does not name the instant already reasoned at: {problem}"
+        );
+        assert!(
+            problem.contains("Correct the clock the caller reads"),
+            "the refusal does not say what to do instead: {problem}"
+        );
+
+        // The other half of a working gate: it admits a good value. A guard
+        // that refused every cycle would satisfy every assertion above.
+        let admitted = platform.run_cycle(assembled_at());
+        assert_eq!(
+            platform.cycle,
+            cycles_before + 1,
+            "the guard refused a cycle at the instant the platform had reasoned to"
+        );
+        assert!(
+            admitted.stages.iter().any(|stage| stage.ran),
+            "no stage ran in a cycle the guard should have admitted: {:?}",
+            admitted.stages
+        );
+
+        // And it is a high-water mark, not a one-off comparison against
+        // assembly: having reasoned forward, the platform will not go back to
+        // the instant it just admitted minus a day.
+        let later = assembled_at().saturating_add(Duration::from_secs(60));
+        let _ = platform.run_cycle(later);
+        let backwards = platform.run_cycle(assembled_at());
+        assert!(
+            backwards.stages.iter().all(|stage| !stage.ran),
+            "the platform reasoned at an instant earlier than the cycle before it"
+        );
+
+        // The boundary: nothing here reached a venue.
         assert!(!platform.orders.has_live_fills());
         assert!(!platform.is_live_capable());
     }

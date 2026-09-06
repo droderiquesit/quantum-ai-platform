@@ -255,6 +255,13 @@ jobs:
           # A GCP image self-link contains only these characters. Anything else
           # — a newline, a quote, a semicolon, a backtick, a dollar — is not a
           # malformed self-link, it is someone else's shell command.
+          case "$BASE_IMAGE" in
+            *[!a-z0-9:/._-]*)
+              echo "base_image contains a character no image self-link contains." >&2
+              echo "Permitted: lowercase letters, digits, and : / . _ -" >&2
+              exit 1
+              ;;
+          esac
           if printf '%s' "$BASE_IMAGE" | grep -q '/family/'; then
             echo "base_image names an image family. A family is a moving pointer, not an immutable image; name the image itself." >&2
             echo "  gcloud compute images list --project debian-cloud --filter='family=debian-12' --format='value(selfLink)'" >&2

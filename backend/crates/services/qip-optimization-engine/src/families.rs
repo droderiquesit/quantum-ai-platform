@@ -528,7 +528,7 @@ impl StressCorrelation {
         // promised a usable sample "on both sides"; until this guard existed
         // only one side was checked.
         for (entry, values) in ordered.iter().zip(&calm_slices) {
-            if false {
+            if stats::stddev(values) <= 0.0 {
                 return Err(Error::numeric(format!(
                     "strategy {} does not move outside the stress window, so its calm correlation \
                      with anything is unmeasured and would be recorded as a zero nobody \
