@@ -545,13 +545,17 @@ pub struct PrivateAssetDetails {
     pub lockup_years: f64,
     /// Time between a capital call and its due date, in days.
     ///
-    /// **Read by nothing.** Verified 2026-09-06 by
+    /// **Read by no production code.** Verified 2026-09-06 with
     /// `grep -rn capital_call_notice_days --include=*.rs backend/`: this
-    /// declaration, the wire field and the mapping between them, and the
-    /// literal `10` in seven test fixtures. No production caller, and — unlike
-    /// `vintage_year` and `lockup_years` — [`Self::checked`] does not examine
-    /// it, because there is no arithmetic downstream for an absurd value to
-    /// break.
+    /// declaration, the wire field and the mapping between them, and fourteen
+    /// further sites, every one of them a fixture or an assertion under
+    /// `tests/` or inside a `#[cfg(test)]` module. **Recount before quoting
+    /// that number.** This sentence said "seven test fixtures" while the tree
+    /// held nine, which is the failure mode the count was written to prevent:
+    /// a figure carried forward from a tree that no longer exists reads as
+    /// evidence and is not. Unlike `vintage_year` and `lockup_years`,
+    /// [`Self::checked`] does not examine this field, because there is no
+    /// arithmetic downstream for an absurd value to break.
     ///
     /// Named rather than left as a field that reads like a control, because a
     /// notice period is the sort of thing a reader assumes bounds something.
@@ -559,9 +563,23 @@ pub struct PrivateAssetDetails {
     /// `Commitment::demand_within`, which has no production caller either, and
     /// `Platform::deployable_capital` reserves the *whole* unfunded balance at
     /// every instant — the conservative bound a notice period could only
-    /// relax. So this earns its place the day a liquidity ladder places a
-    /// capital call in a dated rung, and until then the alternatives are
-    /// saying so, as here, and deleting it with the fixtures that set it.
+    /// relax. So it earns a reader the day a liquidity ladder places a capital
+    /// call in a dated rung.
+    ///
+    /// **Having no reader is not on its own grounds to delete it, and for the
+    /// two dead accessors audited beside it on 2026-09-06 it was.**
+    /// `AssetValuation::supportable_value` and `AssetValuation::haircut` were
+    /// functions: removing them changed no record, and they are gone. This is a
+    /// serialised member in both directions. `Serialize` emits the key, and
+    /// `PrivateAssetDetailsWire` declares it with no `serde(default)`, so a
+    /// document omitting it is refused at load *today*. Dropping the field
+    /// would narrow what this type writes and widen what it accepts in the same
+    /// stroke — a wire-format change, to be argued as one rather than taken as
+    /// tidying, because the records it would silently start admitting are
+    /// vendor records nobody re-reads.
+    /// `a_private_asset_record_must_carry_its_capital_call_notice_period` in
+    /// `tests/valuation.rs` holds both halves, so this paragraph is checked
+    /// rather than asserted.
     pub capital_call_notice_days: u32,
 }
 

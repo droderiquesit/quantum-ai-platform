@@ -183,30 +183,19 @@ fn a_mark_loses_exactly_half_its_confidence_over_one_half_life() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn an_uncertain_mark_supports_less_notional_than_a_certain_one() -> Result<()> {
-    // §16.3: confidence enters position sizing, so an uncertain mark cannot
-    // silently support leverage. This is the arithmetic that makes it true.
-    let cost = IlliquidValuator::at_cost("obj-a", dec!("1000"), origin(), origin())?;
-    let quote = IlliquidValuator::from_quote("obj-b", dec!("1000"), origin(), origin())?;
-    // Premise: both marks are the same money on the same day, so the only
-    // difference in what they support is the method's confidence.
-    assert_eq!(cost.value(), quote.value());
-
-    let supported_by_cost = cost.supportable_value(origin())?;
-    let supported_by_quote = quote.supportable_value(origin())?;
-    assert!(
-        supported_by_cost < supported_by_quote,
-        "a cost mark must support strictly less than a quote: {supported_by_cost} against \
-         {supported_by_quote}"
-    );
-    assert_eq!(
-        cost.haircut(dec!("1000"), origin())?,
-        dec!("1000") - supported_by_cost,
-        "the haircut is the part of the notional the mark does not stand behind"
-    );
-    Ok(())
-}
+// `an_uncertain_mark_supports_less_notional_than_a_certain_one` stood here and
+// was deleted with the two functions it drove. It asserted that a cost mark
+// stands behind less money than a quote of the same size, through
+// `AssetValuation::supportable_value` and `AssetValuation::haircut` — the only
+// callers either function ever had. §16.3's property did not go with them: the
+// platform narrows the *position* and not the mark, in
+// `Platform::sizing_confidence`, and
+// `qip-kernel/tests/valuation_seam.rs`'s
+// `the_weaker_of_two_marks_produces_the_smaller_notional_from_an_otherwise_identical_cycle`
+// asserts the same ordering against that path, plus the magnitude bound this
+// file never had. Deleting the pair removed a second derivation of one figure,
+// which is the arrangement that produces two answers to the same question; the
+// test went because its subject went, not because it was inconvenient.
 
 #[test]
 fn a_marks_confidence_cannot_be_read_before_it_was_struck() -> Result<()> {
@@ -651,6 +640,52 @@ fn a_catalogue_file_cannot_smuggle_an_unrepresentable_vintage_year_past_deserial
     assert!(
         refused.to_string().contains("vintage year of 2300"),
         "the refusal must survive into the deserialisation error, said: {refused}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_private_asset_record_must_carry_its_capital_call_notice_period() -> Result<()> {
+    // The failure this prevents is a tidy-up, not a bug report.
+    // `capital_call_notice_days` has no production reader — its own doc says so
+    // — and the audit that deleted `AssetValuation::supportable_value` and
+    // `AssetValuation::haircut` for exactly that reason came one step from
+    // deleting this beside them. It is not the same case: those were functions,
+    // and this is a serialised member, so removing it changes what the platform
+    // writes *and* what it accepts, in opposite directions at once. Both halves
+    // are pinned here so the difference is checked rather than remembered.
+    let record = details(dec!("1000"), dec!("800"), Decimal::ZERO);
+    // Premise: the fixture states a notice period, so an absence below is the
+    // serialiser's doing and not the fixture's.
+    assert_eq!(record.capital_call_notice_days, 10);
+
+    let written = serde_json::to_value(&record).map_err(|e| Error::invalid(e.to_string()))?;
+    let document = written
+        .as_object()
+        .ok_or_else(|| Error::invalid("a private-asset record serialises to an object"))?;
+    // Keyed lookup rather than a substring of the rendered document. The token
+    // is a suffix of nothing in this type today, but `contains` would go on
+    // passing if a neighbouring key were ever named for it.
+    assert_eq!(
+        document.get("capital_call_notice_days"),
+        Some(&serde_json::Value::from(10)),
+        "the notice period must reach the document; dropping the field narrows what this type \
+         writes, and a reader holding the old shape would not be told"
+    );
+
+    // The read half: the wire declares the field with no `serde(default)`, so a
+    // record that omits it is refused rather than admitted at zero days.
+    let mut incomplete = document.clone();
+    assert!(
+        incomplete.remove("capital_call_notice_days").is_some(),
+        "the premise failed: the key was not there to remove"
+    );
+    let refusal =
+        serde_json::from_value::<PrivateAssetDetails>(serde_json::Value::Object(incomplete))
+            .expect_err("a private-asset record with no notice period is not a complete record");
+    assert!(
+        refusal.to_string().contains("capital_call_notice_days"),
+        "the refusal must name the field it wanted, said: {refusal}"
     );
     Ok(())
 }
