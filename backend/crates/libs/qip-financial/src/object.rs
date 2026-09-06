@@ -204,6 +204,14 @@ impl FinancialObject {
         if !self.risk.is_coherent() {
             issues.push("risk characteristics are incoherent".into());
         }
+        // The cost model is checked here and not only at its own wire, because
+        // this is the gate `Universe::insert` runs and a record can reach the
+        // world model without ever having been a document. Until this line
+        // existed, `transaction_costs` was the one block of a `FinancialObject`
+        // that nothing on the ingestion path looked at, so a spread of `NaN`
+        // reached `Decimal::apply_bps`, which has no answer for it — and the
+        // answer it gave was a cost of exactly zero.
+        issues.extend(self.transaction_costs.problems());
         if self.provenance.ingestion_time < self.provenance.event_time {
             issues.push("record was ingested before it happened".into());
         }

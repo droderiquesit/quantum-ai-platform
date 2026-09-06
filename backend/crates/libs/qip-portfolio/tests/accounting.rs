@@ -595,7 +595,9 @@ fn exposures_are_aggregated_along_every_axis() {
         (tech.object_id.as_str().to_string(), dec!("100")),
         (bank.object_id.as_str().to_string(), dec!("50")),
     ]);
-    let exposures = book.exposures(&universe, &prices);
+    let exposures = book
+        .exposures(&universe, &prices)
+        .expect("both records state finite factor loadings");
 
     assert_eq!(
         exposures.by_sector.net_of("information_technology"),
@@ -664,12 +666,88 @@ fn an_unclassified_instrument_still_counts_toward_gross() {
     );
 
     let prices = BTreeMap::from([(object.object_id.as_str().to_string(), dec!("100"))]);
-    let exposures = book.exposures(&universe, &prices);
+    let exposures = book
+        .exposures(&universe, &prices)
+        .expect("an empty universe classifies nothing and so reads no loading");
     assert_eq!(
         exposures.by_asset_class.gross_of("unknown"),
         Decimal::from_int(100_000)
     );
     assert_eq!(exposures.gross_exposure(), Decimal::from_int(100_000));
+}
+
+#[test]
+fn a_factor_loading_that_is_not_a_number_refuses_the_breakdown_rather_than_reading_as_flat() {
+    // `Decimal::from_f64(loading).unwrap_or(Decimal::ZERO)` reported a NaN
+    // loading as no exposure at all. That is the understatement the loop's own
+    // comment forbids six lines above it — an unclassified instrument is
+    // bucketed as unknown rather than dropped *because dropping it would
+    // understate gross exposure* — applied to a different input in the same
+    // loop. A factor the book is running and the breakdown calls flat is a
+    // factor nobody hedges.
+    let mut universe = Universe::new();
+    let mut poisoned = equity("NANF", "100", Sector::InformationTechnology, "US");
+    poisoned
+        .risk
+        .factor_exposures
+        .set(factors::MARKET, f64::NAN);
+
+    // Premise, asserted before the property: the record clears every gate in
+    // front of this one, so the refusal below is this function's own and not
+    // one inherited from `Universe::insert`. `RiskCharacteristics::is_coherent`
+    // does not read factor loadings, which is why the poison gets this far.
+    assert!(
+        poisoned.validate().is_empty(),
+        "the poisoned record must be admitted by the ingestion gate for this test to \
+         exercise the exposure loop, but it reported {:?}",
+        poisoned.validate()
+    );
+    universe
+        .insert(poisoned.clone())
+        .expect("the ingestion gate does not read factor loadings");
+
+    let mut book = portfolio(1_000_000);
+    book.apply_fill(
+        &poisoned,
+        Decimal::from_int(1000),
+        dec!("100"),
+        Decimal::ZERO,
+        now(),
+        None,
+    );
+    let prices = BTreeMap::from([(poisoned.object_id.as_str().to_string(), dec!("100"))]);
+
+    let refusal = book
+        .exposures(&universe, &prices)
+        .expect_err("a loading that is not a number cannot become an exposure");
+    assert_eq!(refusal.code(), "invalid", "got {refusal}");
+    assert!(
+        refusal.message().contains(poisoned.object_id.as_str()),
+        "the refusal must name the record to correct, got {refusal}"
+    );
+    assert!(
+        refusal.message().contains("NaN"),
+        "the refusal must name the value it refused, got {refusal}"
+    );
+
+    // The admitting half, and the reason this is a validation rather than a
+    // wall: the same book with the same instrument at a stated loading is still
+    // priced, and the exposure it reports is the one the zero used to hide.
+    let mut sound = Universe::new();
+    let mut healthy = poisoned.clone();
+    healthy.risk.factor_exposures.set(factors::MARKET, 1.1);
+    sound
+        .insert(healthy)
+        .expect("a stated loading is an ordinary record");
+    let breakdown = book
+        .exposures(&sound, &prices)
+        .expect("a finite loading is admitted");
+    assert_eq!(
+        breakdown.by_factor.gross_of(factors::MARKET),
+        Decimal::from_int(110_000),
+        "1.1 against a 100,000 position is 110,000 of market exposure, which is exactly \
+         what the refused branch used to report as zero"
+    );
 }
 
 #[test]

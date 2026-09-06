@@ -634,3 +634,117 @@ fn a_committed_record_the_tape_does_not_cover_is_quoted_no_tighter_than_every_re
         );
     }
 }
+
+#[test]
+fn a_cost_model_whose_spread_is_not_a_number_is_refused_before_it_reaches_the_money_path() {
+    // The premise first, because the refusal below is only worth having if the
+    // figure really is unusable. Every component of `estimate` crosses through
+    // `Decimal::apply_bps`, which is `Decimal::from_f64(bps / 10_000.0)`
+    // followed by a `checked_mul`, and for these rates that conversion has no
+    // answer at all — asserted here on `from_f64` itself rather than on
+    // `apply_bps`, so that this test states the fact the finding rests on and
+    // not whichever way `apply_bps` currently reports its failure. It has
+    // answered `Decimal::ZERO`, which prices the instrument as free to trade;
+    // whatever it does instead, a cost model the arithmetic cannot apply has no
+    // business being in the world model, and refusing it here is what keeps the
+    // question from arising on the money path.
+    for rate in [f64::NAN, f64::INFINITY, 1e35] {
+        assert!(
+            qip_core::Decimal::from_f64(rate / 10_000.0).is_none(),
+            "{rate}bp has no Decimal factor, which is what makes it unusable"
+        );
+    }
+    let poisoned = TransactionCostModel {
+        commission_bps: 0.0,
+        fixed_fee: qip_core::Decimal::ZERO,
+        half_spread_bps: f64::NAN,
+        impact_coefficient_bps: 0.0,
+        tax_bps: 0.0,
+        short_borrow_bps_annual: 0.0,
+    };
+    let notional = qip_core::dec!("1000000");
+
+    // So the figure is refused before it reaches the arithmetic. A document is
+    // the way it arrived: `#[derive(Deserialize)]` wrote straight to the
+    // fields, exactly as it did for `ValuationInput`.
+    // Each document is refused *by this validation* and not by serde's own
+    // parsing, which is what the message assertion establishes: `1e400` would
+    // fail as "number out of range" whatever this crate did, and a test
+    // asserting only `is_err()` on it would guard nothing. Every figure below
+    // is a perfectly good `f64` that decodes and then does not price a trade.
+    for (described, field, document) in [
+        (
+            "a spread too large to represent as a factor",
+            "half_spread_bps",
+            r#"{"commission_bps":1.0,"fixed_fee":"0","half_spread_bps":1e35,
+                "impact_coefficient_bps":40.0,"tax_bps":0.0,"short_borrow_bps_annual":50.0}"#,
+        ),
+        (
+            "a spread at the whole value of the notional",
+            "half_spread_bps",
+            r#"{"commission_bps":1.0,"fixed_fee":"0","half_spread_bps":10000.0,
+                "impact_coefficient_bps":40.0,"tax_bps":0.0,"short_borrow_bps_annual":50.0}"#,
+        ),
+        (
+            "a commission the venue pays the desk",
+            "commission_bps",
+            r#"{"commission_bps":-5.0,"fixed_fee":"0","half_spread_bps":2.5,
+                "impact_coefficient_bps":40.0,"tax_bps":0.0,"short_borrow_bps_annual":50.0}"#,
+        ),
+        (
+            "an impact coefficient beyond the notional",
+            "impact_coefficient_bps",
+            r#"{"commission_bps":1.0,"fixed_fee":"0","half_spread_bps":2.5,
+                "impact_coefficient_bps":1e30,"tax_bps":0.0,"short_borrow_bps_annual":50.0}"#,
+        ),
+        (
+            "a fixed fee the venue pays the desk",
+            "fixed_fee",
+            r#"{"commission_bps":1.0,"fixed_fee":"-5","half_spread_bps":2.5,
+                "impact_coefficient_bps":40.0,"tax_bps":0.0,"short_borrow_bps_annual":50.0}"#,
+        ),
+    ] {
+        let error = serde_json::from_str::<TransactionCostModel>(document)
+            .expect_err(described)
+            .to_string();
+        assert!(
+            error.contains(field),
+            "{described} must be refused by name, got {error}"
+        );
+    }
+
+    // `checked` is the same gate reached without a document, and it names the
+    // field and the value so the record can be corrected.
+    let refusal = poisoned
+        .clone()
+        .checked()
+        .expect_err("a spread that is not a number cannot price a trade");
+    assert_eq!(refusal.code(), "invalid", "got {refusal}");
+    assert!(
+        refusal.message().contains("half_spread_bps"),
+        "the refusal must name the field to correct, got {refusal}"
+    );
+
+    // The admitting half, and what makes this a validation rather than a wall:
+    // an ordinary listed cost model still decodes, and the cost it prices is
+    // the non-zero figure the refused one reported as free.
+    let document = r#"{"commission_bps":1.0,"fixed_fee":"0","half_spread_bps":2.5,
+        "impact_coefficient_bps":40.0,"tax_bps":0.0,"short_borrow_bps_annual":50.0}"#;
+    let sound: TransactionCostModel =
+        serde_json::from_str(document).expect("an ordinary listed cost model decodes");
+    assert_eq!(sound, TransactionCostModel::default());
+    assert!(
+        sound.estimate(notional, 0.1).is_positive(),
+        "a stated cost model prices a million-dollar trade above zero"
+    );
+    // And the wide end is admitted too: a hard-to-borrow name really does quote
+    // past 100% a year, so the borrow ceiling is not the per-trade one.
+    let hard_to_borrow = TransactionCostModel {
+        short_borrow_bps_annual: 45_000.0,
+        ..TransactionCostModel::default()
+    };
+    assert!(
+        hard_to_borrow.checked().is_ok(),
+        "a 450% annual borrow is a rate a lending desk writes down"
+    );
+}

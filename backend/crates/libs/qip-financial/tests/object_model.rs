@@ -297,6 +297,69 @@ fn a_negative_price_is_rejected() {
 }
 
 #[test]
+fn a_free_to_trade_cost_model_is_refused_by_the_gate_that_universe_insert_runs() {
+    // `FinancialObject::validate` listed nine checks and looked at every block
+    // of the record except `transaction_costs`, so an instrument whose modelled
+    // cost of trading was a rate the arithmetic cannot apply was registered in
+    // the world model without comment. That is the direction that admits a
+    // trade: the cheaper an instrument is to trade, the more of the expected
+    // alpha survives, and free is the cheapest there is.
+    let (ctx, now) = ctx();
+    let poisoned = TransactionCostModel {
+        half_spread_bps: f64::NAN,
+        ..TransactionCostModel::default()
+    };
+
+    // Premise: everything else about this record is sound, so what the gate
+    // reports below is this field and not a defect somewhere else in the
+    // fixture.
+    let sound_but_for_costs = FinancialObject::builder(
+        ctx.ids().generate(now),
+        "FREE",
+        InstrumentType::CommonStock,
+        fixture_liquidity(),
+    )
+    .price(dec!("100"))
+    .provenance(Provenance::synthetic("test", now))
+    .build(now)
+    .expect("the fixture is otherwise a valid equity");
+    assert!(sound_but_for_costs.validate().is_empty());
+
+    let mut broken = sound_but_for_costs.clone();
+    broken.transaction_costs = poisoned;
+    let issues = broken.validate();
+    assert_eq!(
+        issues.len(),
+        1,
+        "exactly one block of this record is wrong, got {issues:?}"
+    );
+    assert!(
+        issues[0].contains("half_spread_bps"),
+        "the gate must name the field, got {issues:?}"
+    );
+
+    // And the gate the platform actually runs on the way into the world model
+    // is `Universe::insert`, which is why `validate` was the place to put it.
+    let mut universe = Universe::new();
+    let refusal = universe
+        .insert(broken)
+        .expect_err("an instrument that is free to trade does not enter the universe");
+    assert_eq!(refusal.code(), "invalid", "got {refusal}");
+    assert!(
+        refusal.message().contains("half_spread_bps"),
+        "got {refusal}"
+    );
+
+    // The admitting half: the same record with a stated three-basis-point
+    // spread is registered, so this is a check on the figure and not on the
+    // field's existence.
+    assert!(
+        universe.insert(sound_but_for_costs).is_ok(),
+        "an ordinary listed cost model is admitted"
+    );
+}
+
+#[test]
 fn every_asset_class_can_be_represented() {
     let (ctx, now) = ctx();
     let maturity = Timestamp::from_civil(2034, 8, 15);

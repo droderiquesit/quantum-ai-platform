@@ -6,6 +6,7 @@
 //! paper.
 
 use qip_core::Decimal;
+use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 /// How readily a position can be turned into cash.
@@ -173,7 +174,38 @@ impl LiquidityProfile {
 /// Total cost is the sum of an explicit fee, half the spread, and a market
 /// impact term following the square-root law — the empirical regularity that
 /// impact scales with the square root of participation rather than linearly.
+///
+/// # Why deserialisation is routed through [`Self::checked`]
+///
+/// Every component of [`Self::estimate`] crosses through
+/// `Decimal::apply_bps`, which is `Decimal::from_f64(bps / 10_000.0)` followed
+/// by a `checked_mul`. Neither half has an answer for `half_spread_bps: NaN`
+/// or `1e35`, and the answer it gave was `Decimal::ZERO` — not an error, not a
+/// refusal, a number: the instrument priced at **zero cost to trade**, which is
+/// the one direction that makes a trade look profitable that it is not. The
+/// plain `#[derive(Deserialize)]` was the way in, exactly as it was for
+/// [`crate::valuation::ValuationInput`], and
+/// [`crate::object::FinancialObject::validate`] — the gate `Universe::insert`
+/// runs — did not look at this field at all. Both holes are closed: the wire
+/// goes through `checked`, and `validate` now reports [`Self::problems`].
+///
+/// # What this does not close, and no check inside this type could
+///
+/// The fields stay public, so a struct literal remains a way in that runs no
+/// check. That is not hypothetical: `grep -rn 'TransactionCostModel *{'
+/// --include=*.rs` finds `qip-simulation-engine`'s `CostModel::pricing` and
+/// `pricing_at` assembling one field by field (four sites on 2026-09-06;
+/// **recount before quoting that number**, because a figure carried forward
+/// from a tree that no longer exists reads as evidence and is not). Those are
+/// *computed* models rather than reference data — they never enter a
+/// [`crate::universe::Universe`] — and neither the wire nor `validate` sees
+/// them. What `try_from` buys is precisely that a **file** cannot smuggle a
+/// figure past the arithmetic, and what `validate` buys is that a **record**
+/// cannot. A caller computing a coefficient is neither, and the remedy for it
+/// is [`Self::checked`] at the seam where it is computed — which is in that
+/// crate and not this one.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "TransactionCostModelWire")]
 pub struct TransactionCostModel {
     /// Commission and exchange fees, in basis points of notional.
     pub commission_bps: f64,
@@ -192,6 +224,59 @@ pub struct TransactionCostModel {
     pub short_borrow_bps_annual: f64,
 }
 
+/// The on-disk shape. Deserialising goes through [`TransactionCostModel::checked`],
+/// so a record whose spread is not a spread is refused at load rather than
+/// discovered as a zero cost inside a profitability comparison.
+///
+/// The field set is identical to the struct's and no field carries
+/// `serde(default)`, so what a document must state is unchanged; only what it
+/// may state is narrower.
+#[derive(Deserialize)]
+struct TransactionCostModelWire {
+    commission_bps: f64,
+    fixed_fee: Decimal,
+    half_spread_bps: f64,
+    impact_coefficient_bps: f64,
+    tax_bps: f64,
+    short_borrow_bps_annual: f64,
+}
+
+impl TryFrom<TransactionCostModelWire> for TransactionCostModel {
+    type Error = Error;
+
+    fn try_from(wire: TransactionCostModelWire) -> Result<Self> {
+        Self {
+            commission_bps: wire.commission_bps,
+            fixed_fee: wire.fixed_fee,
+            half_spread_bps: wire.half_spread_bps,
+            impact_coefficient_bps: wire.impact_coefficient_bps,
+            tax_bps: wire.tax_bps,
+            short_borrow_bps_annual: wire.short_borrow_bps_annual,
+        }
+        .checked()
+    }
+}
+
+/// The largest per-trade cost component this platform will price.
+///
+/// A single component at 10,000bps says one trade costs the entire notional.
+/// The same bound, for the same reason and in the same words, is what
+/// `qip-kernel`'s `ladder_reference_of` applies to
+/// [`LiquidityProfile::typical_spread_bps`] — "at or beyond the whole value of
+/// the holding". It is not a clamp and not a view on what venues charge: a
+/// record stating more has a data error in it, and the alternative to refusing
+/// it is `apply_bps` answering zero.
+pub const MAX_TRADE_COST_BPS: f64 = 10_000.0;
+
+/// The largest borrow rate this platform will hold on a record.
+///
+/// Wider than [`MAX_TRADE_COST_BPS`] and deliberately so: a borrow rate is
+/// charged per year rather than per trade, and a hard-to-borrow name really
+/// does quote past 100% per annum, so the per-trade ceiling would refuse a
+/// figure a securities-lending desk writes down in an ordinary week. A hundred
+/// times the position per year is not one.
+pub const MAX_BORROW_BPS_ANNUAL: f64 = 1_000_000.0;
+
 impl Default for TransactionCostModel {
     fn default() -> Self {
         Self {
@@ -206,6 +291,79 @@ impl Default for TransactionCostModel {
 }
 
 impl TransactionCostModel {
+    /// Structural problems with the model. Empty means it can price a trade.
+    ///
+    /// Reported by [`crate::object::FinancialObject::validate`], so the gate
+    /// `Universe::insert` already runs is the gate this field passes through
+    /// too. It listed nine other checks and never looked here, which is how a
+    /// zero-cost instrument reached the world model.
+    ///
+    /// Each message names the figure and what to supply instead, because the
+    /// remedy is always the same and is never in this crate: correct the
+    /// reference record.
+    pub fn problems(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+        for (name, value) in [
+            ("commission_bps", self.commission_bps),
+            ("half_spread_bps", self.half_spread_bps),
+            ("impact_coefficient_bps", self.impact_coefficient_bps),
+            ("tax_bps", self.tax_bps),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                issues.push(format!(
+                    "{name} is {value}, which is not a cost in basis points; supply a finite \
+                     non-negative rate — a cost that is not a number is priced at zero by \
+                     `Decimal::apply_bps`, and an instrument that is free to trade is profitable \
+                     to trade"
+                ));
+            } else if value >= MAX_TRADE_COST_BPS {
+                issues.push(format!(
+                    "{name} is {value}bps, at or beyond the whole value of the notional; supply a \
+                     rate under {MAX_TRADE_COST_BPS} — a figure this large is a data error, and \
+                     one large enough to overflow is priced at zero rather than refused"
+                ));
+            }
+        }
+        if !self.short_borrow_bps_annual.is_finite() || self.short_borrow_bps_annual < 0.0 {
+            issues.push(format!(
+                "short_borrow_bps_annual is {}, which is not a borrow rate; supply a finite \
+                 non-negative rate in basis points per year",
+                self.short_borrow_bps_annual
+            ));
+        } else if self.short_borrow_bps_annual >= MAX_BORROW_BPS_ANNUAL {
+            issues.push(format!(
+                "short_borrow_bps_annual is {}bps per year, a hundred times the position; supply \
+                 a rate under {MAX_BORROW_BPS_ANNUAL}",
+                self.short_borrow_bps_annual
+            ));
+        }
+        if self.fixed_fee.is_negative() {
+            issues.push(format!(
+                "fixed_fee is {}; supply a non-negative amount — a negative fee is a claim that \
+                 the venue pays the desk to send an order, and it subtracts from every estimate \
+                 the sizing engine compares against expected alpha",
+                self.fixed_fee
+            ));
+        }
+        issues
+    }
+
+    /// Return the model if it can price a trade, and a refusal naming the
+    /// field and its value otherwise.
+    ///
+    /// Consumed rather than borrowed so a caller cannot hold on to the
+    /// unchecked value it handed in.
+    pub fn checked(self) -> Result<Self> {
+        let issues = self.problems();
+        if !issues.is_empty() {
+            return Err(Error::invalid(format!(
+                "invalid transaction cost model: {}",
+                issues.join("; ")
+            )));
+        }
+        Ok(self)
+    }
+
     /// A cost model for a liquid listed instrument.
     pub fn listed(spread_bps: f64) -> Self {
         Self {
