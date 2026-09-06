@@ -335,3 +335,104 @@ fn a_mark_past_its_review_date_stops_sizing_rather_than_decaying_forever() -> Re
     );
     Ok(())
 }
+
+/// A private object whose administrator record was last updated at `updated`,
+/// with the vintage year overridden.
+fn private_object_at(
+    symbol: &str,
+    updated: Timestamp,
+    mut record: PrivateAssetDetails,
+    vintage_year: u32,
+) -> Result<FinancialObject> {
+    record.vintage_year = vintage_year;
+    FinancialObject::builder(
+        ObjectId::from_string(format!("obj-{symbol}")),
+        symbol,
+        InstrumentType::PrivateEquityFund,
+    )
+    .venue("OTC")
+    .geography("US")
+    .price(dec!("1"))
+    .extension(Extension::PrivateAsset(record))
+    .provenance(Provenance::new("administrator", updated, updated))
+    .build(updated)
+}
+
+#[test]
+fn a_vintage_year_that_is_not_an_instant_stops_assembly_instead_of_the_process() -> Result<()> {
+    // `private_asset_origin` read `Timestamp::from_civil(vintage_year as i32,
+    // 1, 1)`, which multiplies unchecked. A catalogue record stating 2300 — or
+    // a typed 20204 — aborted `Platform::new` on an arithmetic overflow in a
+    // debug build, and in a release build wrapped to a negative instant that
+    // became the commitment origin, the discounting origin and the knowability
+    // stamp. It is deserialised vendor data reaching a `Result`-returning
+    // function in a workspace that denies `panic_in_result_fn`.
+    let sound = details(
+        dec!("400000"),
+        dec!("150000"),
+        Decimal::ZERO,
+        dec!("160000"),
+    );
+    // Premise: the identical record with a representable vintage assembles, so
+    // the refusal below is the year and nothing else about the record.
+    let mut admitted = Universe::new();
+    admitted.insert(private_object_at("FUND", start(), sound.clone(), 2024)?)?;
+    assert!(
+        platform_over(admitted, dec!("1000000"))?
+            .illiquid_mark("obj-FUND")
+            .is_some(),
+        "a record with a representable vintage year is assembled and marked"
+    );
+
+    let mut broken = Universe::new();
+    broken.insert(private_object_at("FUND", start(), sound, 20204)?)?;
+    let refusal = platform_over(broken, dec!("1000000"))
+        .expect_err("a vintage year that is not an instant must stop assembly");
+    assert!(
+        refusal.message().contains("vintage year of 20204"),
+        "the refusal must name the value it read, said: {}",
+        refusal.message()
+    );
+    assert!(
+        refusal.message().contains("between 1678 and 2262"),
+        "the refusal must say what to supply instead, said: {}",
+        refusal.message()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_record_updated_before_its_own_vintage_is_refused_rather_than_quietly_repaired() -> Result<()> {
+    // `private_holdings_of` passed `object.updated_at.max(origin)` as the
+    // commitment's knowability stamp, which disarmed
+    // `Commitment::unscheduled`'s refusal of `known_at < origin` — "a
+    // commitment cannot be known before it was made" — for exactly the record
+    // that check exists to catch. A vintage of 2024 with an administrator
+    // update stamped in 2023 is a plausible typing error, and the repair
+    // booked it as a real obligation dated from a year nobody entered.
+    let sound = details(
+        dec!("400000"),
+        dec!("150000"),
+        Decimal::ZERO,
+        dec!("160000"),
+    );
+    // Premise: the same record updated after its vintage assembles, so the
+    // refusal below is the ordering of the two stamps.
+    let mut ordered = Universe::new();
+    ordered.insert(private_object_at("FUND", start(), sound.clone(), 2024)?)?;
+    assert!(platform_over(ordered, dec!("1000000")).is_ok());
+
+    let before_vintage = Timestamp::from_civil(2023, 11, 15);
+    let mut inverted = Universe::new();
+    inverted.insert(private_object_at("FUND", before_vintage, sound, 2024)?)?;
+    let refusal = platform_over(inverted, dec!("1000000"))
+        .expect_err("a commitment known before it was made must be refused, not repaired");
+    assert!(
+        refusal
+            .message()
+            .contains("a commitment cannot be known before it was made"),
+        "the engine's own refusal must reach the operator, said: {}",
+        refusal.message()
+    );
+    Ok(())
+}
