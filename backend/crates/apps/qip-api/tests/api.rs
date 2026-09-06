@@ -171,15 +171,77 @@ fn roles_are_ordered_so_authority_accumulates() {
     assert!(Role::Operator.includes(Role::Monitor));
     assert!(!Role::Viewer.includes(Role::Operator));
     assert!(!Role::Monitor.includes(Role::Viewer));
-    for role in [
-        Role::Monitor,
-        Role::Viewer,
-        Role::Analyst,
-        Role::Approver,
-        Role::Operator,
-    ] {
+    for role in every_role() {
         assert_eq!(Role::parse(role.as_str()).unwrap(), role);
         assert!(role.includes(role), "a role includes itself");
+    }
+}
+
+/// Every role the API defines, kept level with the enum by an exhaustive match.
+///
+/// The `match` is the whole point of the helper. A role added to `Role` and not
+/// added here makes this function fail to compile, so the list cannot fall
+/// quietly behind the type — which is how the approver role came to exist for
+/// months in an enum, in a credential loop and in four environments' secret
+/// mounts while nothing checked it against the route table.
+fn every_role() -> Vec<Role> {
+    let all = vec![Role::Monitor, Role::Viewer, Role::Analyst, Role::Operator];
+    for role in &all {
+        match role {
+            Role::Monitor | Role::Viewer | Role::Analyst | Role::Operator => {}
+        }
+    }
+    all
+}
+
+#[test]
+fn every_role_the_api_defines_is_required_by_at_least_one_route() {
+    // The defect this refuses, which was real in this repository rather than
+    // hypothetical. `Role::Approver` sat in the enum, was minted from
+    // QIP_TOKEN_APPROVER at start-up, and had a Secret Manager container
+    // mounted into all four environments — and
+    // `grep -c 'required_role: Role::Approver' src/routes.rs` was 0. Its
+    // holder could do precisely what an analyst could do. Nothing failed,
+    // because the enum and the route table were never compared.
+    //
+    // A role no route requires is worse than an absent role: it reads on the
+    // deployment as a distinct authority, an operator rotates a secret for it,
+    // and a security review counts one more level of separation than exists.
+    // The temptation when this fires is to hand the role a route it can just
+    // about justify, which lowers whatever that route required before. Removing
+    // the role is the other answer and usually the right one.
+    //
+    // Premise first: a route table this test could not read would make every
+    // assertion below vacuous.
+    assert!(
+        ROUTES.len() > 10,
+        "the route table holds {} rows, so it is not being read and no role \
+         could be found unrequired",
+        ROUTES.len()
+    );
+    let roles = every_role();
+    assert!(
+        roles.len() >= 4,
+        "only {} roles were enumerated",
+        roles.len()
+    );
+
+    for role in roles {
+        let requiring = ROUTES
+            .iter()
+            .filter(|route| route.required_role == role)
+            .count();
+        assert!(
+            requiring > 0,
+            "no route requires the {} role, so the credential minted for it \
+             authorises nothing: it is loaded at start-up, mounted from Secret \
+             Manager into every environment, rotated by someone, and grants its \
+             holder exactly what the role below it grants. Give it a route or \
+             remove it — and if the only candidate route already requires a \
+             higher role, removing it is the answer, because widening that \
+             route to fit is weakening a live control to occupy a dead one.",
+            role.as_str()
+        );
     }
 }
 

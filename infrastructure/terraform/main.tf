@@ -239,8 +239,15 @@ module "secrets" {
   # created empty and the value is written out of band, so a state file that
   # leaks does not leak credentials.
   secret_names = [
+    # Four bearer tokens, one per role `qip_api::auth::Role` defines. There
+    # was a fifth, qip-token-approver, and it held a credential for a role no
+    # route in `qip-api` required — a secret created, granted, seeded and
+    # rotated in every environment, whose holder could do exactly what the
+    # analyst token could do. The role was removed rather than given a route,
+    # because the only approval the API exposes already requires the operator
+    # role. Recreating the container here without a role to match reintroduces
+    # a credential that authorises nothing.
     "qip-token-operator",
-    "qip-token-approver",
     "qip-token-analyst",
     "qip-token-viewer",
     "qip-token-monitor",

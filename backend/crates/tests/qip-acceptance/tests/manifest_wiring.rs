@@ -2203,6 +2203,89 @@ fn every_connector_credential_slot_the_registrations_route_names_exists_and_reac
 }
 
 #[test]
+fn the_bearer_tokens_a_deployment_mounts_are_exactly_the_roles_the_route_table_requires() {
+    // A third way for the two sides of this seam to disagree, and the one the
+    // checks above cannot see: both halves are individually consistent and the
+    // *set* is wrong.
+    //
+    // It was real. `Role::Approver` sat in `qip_api::auth::Role`, was minted
+    // from QIP_TOKEN_APPROVER at start-up, and had `qip-token-approver` created
+    // by `main.tf`, mounted by `catalogue.tf` and rendered into all four
+    // environments' manifests — and no row of `qip_api::ROUTES` required it.
+    // Every check in this file passed: the deployment set a variable the binary
+    // did read, and the binary read a variable the deployment did set. The
+    // credential authorised nothing, and the deployment could not tell.
+    //
+    // So the comparison is against the route table rather than against the
+    // enum. A role is a credential's justification only if some row requires
+    // it; a role no row requires is a secret created, IAM-granted, seeded and
+    // rotated in every environment for a level of separation that does not
+    // exist. Equality in both directions, because each direction is a distinct
+    // failure: a token no role requires is the dead credential above, and a
+    // required role with no token is a route nobody in that deployment can
+    // call.
+    let required: BTreeSet<String> = qip_api::ROUTES
+        .iter()
+        .map(|route| route.required_role.as_str().to_string())
+        .collect();
+    // Premises. A route table that stopped being readable, or a role naming
+    // convention that stopped matching, would make every comparison below a
+    // comparison of two empty sets.
+    assert!(
+        required.len() >= 4,
+        "the route table requires only {required:?}; either the table is not \
+         being read or the roles have collapsed, and this check would then \
+         demand almost nothing of a deployment"
+    );
+
+    let mut compared = 0usize;
+    for (place, binary, set) in deployments() {
+        if binary != "qip-api" {
+            // Only the API authenticates a bearer token, so only the API has
+            // a role to justify one. A token variable appearing on any other
+            // workload is caught by the read-versus-set checks above.
+            assert!(
+                !set.iter().any(|name| name.starts_with("QIP_TOKEN_")),
+                "{place} runs {binary} and sets a QIP_TOKEN_ variable; no other \
+                 binary authenticates a bearer token, so this mounts a \
+                 credential nothing there can check"
+            );
+            continue;
+        }
+        // `<VARIABLE>` or the `_FILE` variant a secret mount projects, back to
+        // the role name `Role::as_str` produces.
+        let mounted: BTreeSet<String> = set
+            .iter()
+            .filter_map(|name| {
+                name.strip_suffix("_FILE")
+                    .unwrap_or(name.as_str())
+                    .strip_prefix("QIP_TOKEN_")
+            })
+            .map(str::to_ascii_lowercase)
+            .collect();
+        assert_eq!(
+            mounted, required,
+            "{place} mounts bearer tokens for {mounted:?} and the route table \
+             requires {required:?}. A token whose role no route requires \
+             authorises nothing — it is created in Secret Manager, granted, \
+             seeded and rotated, and grants its holder exactly what the role \
+             below it grants. A required role with no token is the opposite \
+             failure: routes at that authority that nobody deployed there can \
+             call. Land both halves of a role change or neither."
+        );
+        compared += 1;
+    }
+    // The catalogue entry plus one rendered manifest per environment.
+    let deployments_of_the_api = ENVIRONMENTS.len() + 1;
+    assert!(
+        compared >= deployments_of_the_api,
+        "only {compared} deployments of qip-api were compared and there are \
+         {deployments_of_the_api}; the walk is matching fewer deployments than \
+         exist, so a manifest could carry a token this never looked at"
+    );
+}
+
+#[test]
 fn the_centre_declares_no_mesh_listener_because_cloud_run_publishes_one_port() {
     // The mesh was the general property's first violation: complete, tested,
     // and configured by nothing. On this runtime it is unconfigured for a

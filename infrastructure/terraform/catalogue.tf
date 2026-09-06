@@ -180,11 +180,12 @@ locals {
           file_name         = "token-operator"
           env_file_variable = "QIP_TOKEN_OPERATOR_FILE"
         }
-        token-approver = {
-          secret_id         = module.secrets.secret_ids["qip-token-approver"]
-          file_name         = "token-approver"
-          env_file_variable = "QIP_TOKEN_APPROVER_FILE"
-        }
+        # There is no token-approver mount. The approver role authorised no
+        # route in `qip-api`, so this mounted a credential that granted its
+        # holder exactly what the analyst token granted, in all four
+        # environments; the binary now refuses to start if either spelling of
+        # QIP_TOKEN_APPROVER reaches it, so putting the mount back would stop
+        # the revision rather than quietly restore a dead control.
         token-analyst = {
           secret_id         = module.secrets.secret_ids["qip-token-analyst"]
           file_name         = "token-analyst"

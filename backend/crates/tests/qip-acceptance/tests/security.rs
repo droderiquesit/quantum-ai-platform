@@ -503,24 +503,18 @@ fn credentials() -> Vec<Credential> {
     // Calling an analyst route with a viewer token reads as a body with
     // nothing in it, and a body with nothing in it passes every check about
     // what a body must not carry.
-    [
-        Role::Monitor,
-        Role::Viewer,
-        Role::Analyst,
-        Role::Approver,
-        Role::Operator,
-    ]
-    .into_iter()
-    .map(|role| {
-        Credential::from_token(
-            format!("{}@example.com", role.as_str()),
-            role,
-            token(role),
-            now(),
-            now().saturating_add(Duration::from_days(30)),
-        )
-    })
-    .collect()
+    [Role::Monitor, Role::Viewer, Role::Analyst, Role::Operator]
+        .into_iter()
+        .map(|role| {
+            Credential::from_token(
+                format!("{}@example.com", role.as_str()),
+                role,
+                token(role),
+                now(),
+                now().saturating_add(Duration::from_days(30)),
+            )
+        })
+        .collect()
 }
 
 /// The API assembled over a platform with an empty universe.

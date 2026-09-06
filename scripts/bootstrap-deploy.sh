@@ -308,11 +308,11 @@ echo "granted ${infra_sa} object administration on gs://${STATE_BUCKET}"
 # --- 7. the generated secrets ------------------------------------------------
 
 # Terraform creates the secret containers empty — their values are never in
-# Terraform, so a leaked state file leaks no credential. Six of them are
+# Terraform, so a leaked state file leaks no credential. Five of them are
 # self-generated random values with no external party involved, and a secret
 # with no version fails the Cloud Run volume mount, so the revision that
 # needs it never becomes Ready and the pipeline's rollout proof fails.
-# So the six are seeded here, once: an existing value is never overwritten,
+# So the five are seeded here, once: an existing value is never overwritten,
 # because replacing the capital-envelope key mid-flight would strand every
 # grant signed under the old one. Rotation is a deliberate act — add a version
 # and restart the workloads.
@@ -322,7 +322,12 @@ echo "granted ${infra_sa} object administration on gs://${STATE_BUCKET}"
 # a broker and a quantum provider respectively; a random value would not be a
 # credential, and the venue credential is unreadable under paper trading
 # anyway.
-for secret in qip-token-operator qip-token-approver qip-token-analyst \
+#
+# There were six because there were five bearer tokens; there are five because
+# the approver role was removed from qip-api. Seeding qip-token-approver now
+# would call `gcloud secrets versions add` on a container `main.tf` no longer
+# creates, so the loop would fail on a secret nothing mounts.
+for secret in qip-token-operator qip-token-analyst \
   qip-token-viewer qip-token-monitor qip-capital-envelope-key; do
   qualified="${secret}-${ENVIRONMENT}"
   if [[ -z "$(gcloud secrets versions list "${qualified}" --limit=1 --format='value(name)' 2>/dev/null)" ]]; then
