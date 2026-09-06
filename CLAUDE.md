@@ -12,8 +12,11 @@ Multi-regional AI and quantum research platform for investment decisions.
 
 A Rust workspace that senses markets, reasons about them with a panel of
 agents, sizes positions, executes against a simulator, and scores itself
-afterwards. Seven stages run in one cycle: SENSE, UNDERSTAND, DISCOVER,
-REASON, SIMULATE, DECIDE, ACT, LEARN.
+afterwards. Eight stages run in one cycle: SENSE, UNDERSTAND, DISCOVER,
+REASON, SIMULATE, DECIDE, ACT, LEARN — count them, because this sentence said
+"Seven" until 2026-09-06 while listing all eight, and it is the first thing
+every agent reads. `sed -n '/pub enum Stage/,/^}/p'
+backend/crates/runtime/qip-kernel/src/cycle.rs` is the check.
 
 Intended users are the research and risk desk running it — not external
 customers. The business outcome is a decision loop whose every step is

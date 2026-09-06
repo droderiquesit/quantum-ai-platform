@@ -164,8 +164,12 @@ impl LimitKind {
     /// monotone in size — converges to zero and refuses everything. Nothing
     /// about the threshold could have fixed that.
     ///
-    /// The match is exhaustive with no wildcard, so a seventeenth kind cannot
-    /// be added without someone answering this question about it. That is the
+    /// The match is exhaustive with no wildcard, so an eighteenth kind cannot
+    /// be added without someone answering this question about it. There are
+    /// seventeen — `grep -c '=> "max_\|=> "min_' src/limits.rs` — and this
+    /// sentence said "a seventeenth" after the count had already reached it,
+    /// which would have let the next author think the arm they were adding was
+    /// the one the rule already covered. That is the
     /// whole point of the method: the question was never asked of
     /// `MaxConcentration`, and it shipped in every default set.
     pub fn denominator_moves_with_the_order(&self) -> bool {
