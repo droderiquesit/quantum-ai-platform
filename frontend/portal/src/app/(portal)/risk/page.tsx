@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { Chip, Freshness, Metric, MetricRow, StatusChip } from "@/components/data/Bits";
 import { Panel, PanelBody, PanelHead, TableWell } from "@/components/data/Panel";
@@ -20,8 +21,32 @@ const AXES = ["all", "instrument", "sector", "venue", "currency", "cell"] as con
 
 /**
  * Exposure against limits, the governance findings on the agent roster, and
- * the halt state — with the two things the platform explicitly cannot measure
- * here named rather than left blank.
+ * the halt state — with everything the platform explicitly cannot measure here
+ * named rather than left blank.
+ *
+ * **Nothing on this page decides anything.** Every figure is a field
+ * `GET /risk` answered; the two controls are a filter on an axis and a filter
+ * on the platform's own `breached` flag, and neither computes a risk figure
+ * nor could submit an order. In particular the utilisation bar draws
+ * `bucket.breached` as the platform decided it. It used to re-derive that in
+ * the browser from `share > limit` — the same comparison the risk engine makes,
+ * made a second time in the one place this platform forbids risk logic, and on
+ * two floats that had already crossed the Decimal boundary. Two independent
+ * claims about whether a limit is breached will one day disagree, and the
+ * louder one would have been the red bar.
+ *
+ * **The four states are four, and they do not look alike.** Nothing has
+ * arrived yet; the route answered and the book is genuinely flat; the platform
+ * could not be reached; and the console's credential may not read `/risk`.
+ * `ResourceView` renders each as its own block, in its own colour, saying which
+ * — because "no exposure" and "we could not ask" are opposite facts with
+ * opposite remedies, and a flat book is the one an operator is happiest to
+ * believe.
+ *
+ * A fifth thing, distinct from all four: the platform answering `/risk` and
+ * saying inside it that a section is not measurable in this process. That is
+ * `UnavailableBlock`, with the platform's own sentence, and it is why this page
+ * shows no tail risk rather than showing tail risk at zero.
  */
 export default function RiskAndCompliance() {
   const risk = useResource<Risk>(platform.risk, {
@@ -44,7 +69,7 @@ export default function RiskAndCompliance() {
   const [breachedOnly, setBreachedOnly] = useState(false);
 
   return (
-    <div className="flex flex-col gap-3 p-3">
+    <div className="flex flex-col gap-3 p-3" data-testid="risk-page">
       <Panel>
         <PanelHead
           title="Kill switch and autonomy"
@@ -160,20 +185,29 @@ export default function RiskAndCompliance() {
                 .filter((bucket) => !breachedOnly || bucket.breached);
               if (rows.length === 0) {
                 return (
-                  <div className="p-3">
+                  <div className="p-3" data-testid="risk-exposure-empty">
                     <EmptyBlock
                       headline={
                         breachedOnly
                           ? "No bucket breaches its limit."
                           : `No exposure is recorded on the ${axis} axis.`
                       }
-                    />
+                    >
+                      <p>
+                        Observed, not assumed:{" "}
+                        <code className="num">GET /api/v1/risk</code> served the exposure section
+                        and, after the filters above, it holds no bucket. A read that succeeded and
+                        found a flat book — not a platform this console could not reach, and not a
+                        credential it was refused, each of which says so in its own words and its
+                        own colour.
+                      </p>
+                    </EmptyBlock>
                   </div>
                 );
               }
               return (
                 <TableWell maxHeight="46vh" label="Exposure buckets">
-                  <table className="dt">
+                  <table className="dt" data-testid="risk-exposure-table">
                     <thead>
                       <tr>
                         <th scope="col">Axis</th>
@@ -197,6 +231,9 @@ export default function RiskAndCompliance() {
                       {rows.map((bucket) => (
                         <tr
                           key={`${bucket.axis}:${bucket.bucket}`}
+                          data-testid="risk-exposure-row"
+                          data-axis={bucket.axis}
+                          data-breached={bucket.breached ? "true" : "false"}
                           data-alert={bucket.breached ? "true" : undefined}
                         >
                           <td className="num text-[color:var(--color-ink-dim)]">{bucket.axis}</td>
@@ -212,7 +249,11 @@ export default function RiskAndCompliance() {
                             {formatPercent(bucket.limit)}
                           </td>
                           <td>
-                            <UtilisationBar share={bucket.share} limit={bucket.limit} />
+                            <UtilisationBar
+                              share={bucket.share}
+                              limit={bucket.limit}
+                              breached={bucket.breached}
+                            />
                           </td>
                         </tr>
                       ))}
@@ -231,7 +272,7 @@ export default function RiskAndCompliance() {
           <PanelBody>
             <ResourceView resource={risk} loadingRows={2}>
               {(data) => (
-                <div className="flex flex-col gap-3">
+                <div className="flex flex-col gap-3" data-testid="risk-unmeasured">
                   <UnavailableBlock
                     subject={data.limit_utilisation.subject}
                     reason={data.limit_utilisation.reason}
@@ -244,9 +285,29 @@ export default function RiskAndCompliance() {
         </Panel>
 
         <Panel>
-          <PanelHead title="Compliance obligations" actions={<Chip tone="warn">no endpoint</Chip>} />
+          <PanelHead
+            title="What no route answers"
+            actions={<Chip tone="warn">no endpoint</Chip>}
+          />
           <PanelBody>
-            <MissingEndpointBlock endpoint={NOT_YET_SERVED["compliance"]!} />
+            <div className="flex flex-col gap-3" data-testid="risk-absences">
+              {/*
+                The halt record, named where its absence is felt. The panel
+                above reports whether the switch is tripped right now and how
+                many clearances have been recorded; a count is not a record,
+                and an incident review asking when a halt began and who cleared
+                it cannot be answered from this console.
+              */}
+              <MissingEndpointBlock endpoint={NOT_YET_SERVED["killSwitchHistory"]!} />
+              <MissingEndpointBlock
+                endpoint={NOT_YET_SERVED["compliance"]!}
+                action={
+                  <Link className="btn" href="/compliance" data-testid="risk-to-compliance">
+                    What the platform does answer about obligations
+                  </Link>
+                }
+              />
+            </div>
           </PanelBody>
         </Panel>
       </div>
@@ -355,15 +416,32 @@ function directionOfNet(net: string): "positive" | "negative" | "flat" {
   return /[1-9]/.test(net) ? "positive" : "flat";
 }
 
-/** Share against limit. Red only past the limit, where red means breach. */
-function UtilisationBar({ share, limit }: { share: number; limit: number }) {
+/**
+ * Share against limit. Red only past the limit, where red means breach.
+ *
+ * `breached` is the platform's field, passed in, never re-derived. The bar
+ * used to compute `share > limit` for itself, which is the risk engine's own
+ * comparison made a second time in the browser: two independent claims about
+ * the same fact, on floats that had already crossed out of `Decimal`, with no
+ * series in which they could be seen to disagree. The width is presentation —
+ * how far along a 110-pixel bar to paint — and nothing reads it back.
+ */
+function UtilisationBar({
+  share,
+  limit,
+  breached,
+}: {
+  share: number;
+  limit: number;
+  breached: boolean;
+}) {
   const ratio = limit > 0 ? Math.min(2, share / limit) : 0;
   const width = Math.min(100, ratio * 50);
-  const breached = share > limit;
   return (
     <span
       className="relative block h-[8px] w-[110px] border border-[color:var(--color-line-strong)]"
       role="img"
+      data-breached={breached ? "true" : "false"}
       aria-label={`${formatPercent(share)} of a ${formatPercent(limit)} limit`}
     >
       <span

@@ -136,6 +136,42 @@ export const NOT_YET_SERVED: Record<string, MissingEndpoint> = {
     needed_for: "compliance obligations and attestations",
     note: "GET /risk covers exposure and the kill switch; there is no compliance surface.",
   },
+  /**
+   * The attestation half of the entry above, separated because the two are
+   * missing for different reasons and a page that named only "compliance"
+   * invited the reading that the hash chain covers both.
+   *
+   * `GET /system` re-walks the hash chain on every read and answers
+   * `chain_intact`, which proves no sealed record was edited. That is not an
+   * attestation: nobody signed it, it covers no period, and it names no
+   * obligation it was produced against. The `/compliance` page renders this
+   * beside the chain result precisely so a reader does not take a live
+   * integrity check for a countersigned statement.
+   */
+  complianceAttestations: {
+    method: "GET",
+    path: "/api/v1/compliance/attestations",
+    needed_for: "the attestations a named person signed, what each covered, and when it lapses",
+    note:
+      "GET /system re-verifies the event log's hash chain on every read, which proves records were not edited after sealing. No route serves a statement anybody signed, over a stated period, against a named obligation — and integrity is not attestation.",
+  },
+  /**
+   * Why the risk surface can say a halt is on but not how the desk got here.
+   *
+   * `GET /risk` answers the kill switch's *current* trip — halted, the scopes,
+   * who tripped it, the reason — and a count of clearances. A count is not a
+   * record: it cannot say when each halt began, how long it ran, who cleared
+   * it or on what basis, so a desk reconstructing an incident from this
+   * console alone cannot. The event log holds the facts; no HTTP route
+   * projects them.
+   */
+  killSwitchHistory: {
+    method: "GET",
+    path: "/api/v1/kill-switch/history",
+    needed_for: "each halt and clearance with its operator, instant, scope and basis",
+    note:
+      "GET /risk answers the current trip and a count of clearances only. A count cannot say when a halt began, how long it ran, or who cleared it, so the halt record an incident review needs is not reachable from this console.",
+  },
   topology: {
     method: "GET",
     path: "/api/v1/topology",

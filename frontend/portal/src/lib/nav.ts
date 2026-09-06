@@ -328,6 +328,19 @@ export const NAV: readonly NavGroup[] = [
         description: "The hash-chained event log and its integrity, verified live",
         reads: ["/system", "/system/status"],
       },
+      {
+        // There is no `GET /compliance`, and this entry is not pretending
+        // otherwise: the page assembles the compliance facts the platform does
+        // serve, each from its own route, and renders the missing register and
+        // the missing attestations through the console's `NOT_YET_SERVED`
+        // vocabulary rather than filling either in.
+        href: "/compliance",
+        label: "Compliance",
+        mark: "CM",
+        description:
+          "Venue and licensing obligations, governance findings, the chain the record can be held to, and the register no route answers",
+        reads: ["/registrations", "/system/governance", "/system", "/autonomy"],
+      },
     ],
   },
   {
@@ -374,6 +387,19 @@ export const NAV: readonly NavGroup[] = [
         reads: ["/data-sources", "/regions", "/mesh"],
       },
       {
+        // The four per-source facts a desk needs before trusting a feed —
+        // latency, freshness, quality, provenance — and the page exists
+        // because none of them is served. `GET /data-sources` matches one
+        // expression in `routes.rs` and returns `{subject, available, reason}`
+        // with no branch for a wired-in finder, so the page names the absent
+        // route and fills nothing in.
+        href: "/data-sources/health",
+        label: "Feed health",
+        mark: "FH",
+        description: "Per-source latency, freshness, quality and provenance — and which of them the platform serves",
+        reads: ["/registrations", "/data-sources", "/system/status"],
+      },
+      {
         // The one page in this section with a write on it, and the write
         // records a registration a person made rather than making one: the
         // platform creates no venue account, and a source that needs one stays
@@ -390,6 +416,17 @@ export const NAV: readonly NavGroup[] = [
         mark: "DM",
         description: "The backbone between cells and centre, counter by counter",
         reads: ["/mesh", "/regions"],
+      },
+      {
+        // The service dependency graph, assembled in the browser because the
+        // platform serves no such document. Every node and edge names the
+        // route that evidenced it, and the page says out loud that the join is
+        // this console's and not a fact the platform holds.
+        href: "/topology",
+        label: "Service topology",
+        mark: "TP",
+        description: "The dependency graph, assembled here from four served routes — the platform holds no topology document",
+        reads: ["/system", "/mesh", "/regions", "/agents"],
       },
       {
         href: "/operations/telemetry",
