@@ -1,0 +1,35 @@
+# What runs in stage, by digest.
+#
+# Every `image:` in the manifests beside this file is a logical name —
+# `qip-api`, `envoy`, `openobserve` — and this `images` block is where each
+# becomes a registry path and a digest. One place, on purpose: it is the
+# file Kargo's promotion commit edits (`kustomize-set-image`, ADR 0036
+# decision 6), it is what the parity test reads for "by digest, never a
+# tag", and it is the record of what stage serves that images.tfvars used to
+# be. A tag here is refused by the test; `TO-PIN` marks an environment
+# nothing has ever built for, and stays until the first promotion into it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: qip-run
+resources:
+- api.yaml
+- fastbrain.yaml
+- deepbrain.yaml
+- invokers.yaml
+- prove-serving.yaml
+images:
+- name: qip-api
+  newName: europe-west2-docker.pkg.dev/unprovisioned/qip-stage/qip-api
+  digest: TO-PIN
+- name: qip-fastbrain
+  newName: europe-west2-docker.pkg.dev/unprovisioned/qip-stage/qip-fastbrain
+  digest: TO-PIN
+- name: qip-deepbrain
+  newName: europe-west2-docker.pkg.dev/unprovisioned/qip-stage/qip-deepbrain
+  digest: TO-PIN
+- name: envoy
+  newName: europe-west2-docker.pkg.dev/unprovisioned/qip-stage/vendor/envoy
+  digest: sha256:574348fada8eb1130b448132287d76626dfb07525b16668075382f8e154a45a8
+- name: google-cloud-cli
+  newName: europe-west2-docker.pkg.dev/unprovisioned/qip-stage/vendor/google-cloud-cli
+  digest: sha256:87eaf69da735ab8dfc1c640df1e85a467a4feedf2256d35dad368f970d9cd35f

@@ -21,10 +21,16 @@
 //! [`feedback`] then turns that into changes: a calibration adjustment when
 //! stated confidences do not match outcomes, and candidate lessons only where
 //! a pattern holds across enough episodes from enough different agents.
+//!
+//! [`self_model`] keeps the per-component record those evaluations imply —
+//! which detector, which analyst — as a bounded window with a stated
+//! estimate, refused below a minimum sample, so the REASON stage can weight a
+//! component by what it has actually got right.
 
 pub mod attribution;
 pub mod evaluation;
 pub mod feedback;
+pub mod self_model;
 
 pub use attribution::{Attribution, Attributor, PositionAttribution, PositionPeriod, Source};
 pub use evaluation::{
@@ -32,4 +38,8 @@ pub use evaluation::{
 };
 pub use feedback::{
     CalibrationReport, FeedbackEngine, FeedbackReport, LessonCandidate, PromotionBar,
+};
+pub use self_model::{
+    CAPABILITY_WINDOW, Capability, CapabilityEstimate, ComponentKey, ComponentKind, MAX_COMPONENTS,
+    MINIMUM_SAMPLE, ScoredOutcome, SelfModel,
 };

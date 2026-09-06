@@ -47,7 +47,7 @@ use std::sync::Arc;
 /// `api.exchange.coinbase.com`.
 const COINBASE_BASE_URL: &str = "QIP_LIVE_COINBASE_BASE_URL";
 /// Plaintext address of a TLS-terminating proxy in front of
-/// `api.frankfurter.app`.
+/// `api.frankfurter.dev`.
 const FRANKFURTER_BASE_URL: &str = "QIP_LIVE_FRANKFURTER_BASE_URL";
 
 /// The address the deployment supplied, or `None` with a printed reason.

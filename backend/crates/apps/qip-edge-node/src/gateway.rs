@@ -262,6 +262,19 @@ impl SimulatedGateway {
         self.exchange.resting_count()
     }
 
+    /// Whether the venue's own order record still holds `order_id` open.
+    ///
+    /// Read from the matching engine, not from the gateway's working set:
+    /// the working set is what this gateway *follows*, and the question a
+    /// requote test has to ask is what the venue holds — which is the only
+    /// witness to "one intention, one live order" that the gateway's own
+    /// bookkeeping cannot fake.
+    pub fn venue_holds_open(&self, order_id: &str) -> bool {
+        self.exchange
+            .query_order(&OrderId::from_string(order_id))
+            .is_ok_and(|order| !order.state.is_terminal())
+    }
+
     /// The venue's resting depth for every instrument it lists, from the
     /// venue itself.
     ///

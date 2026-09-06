@@ -1,0 +1,14 @@
+# Which stages promote on their own (ADR 0036 decision 6): `dev`, and no
+# other. `test` and `stage` are absent here, so a promotion into either is a
+# person's act in Kargo. `prod` is absent here *and* refused in its own
+# Stage by a `fail` step, so the absence of a policy is not the only thing
+# between a click and production — see stages.yaml.
+apiVersion: kargo.akuity.io/v1alpha1
+kind: ProjectConfig
+metadata:
+  name: qip
+  namespace: qip
+spec:
+  promotionPolicies:
+    - stage: dev
+      autoPromotionEnabled: true

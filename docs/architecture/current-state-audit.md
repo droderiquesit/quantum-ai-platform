@@ -674,12 +674,14 @@ reads.
    `PreTradeChecker` and submits with the platform's own autonomy controller,
    which is the call `Platform::submit_order` makes internally and the closest
    it can get.
-4. **Nothing decodes a cell delta into a `CellReport`.** `qip-mesh::spine` says
-   in as many words that the composition root is where that decode belongs,
-   because it is the one place that legitimately knows both
-   `qip_edge::CellStateDelta` and `qip_kernel::CellReport`. The composition root
-   does not do it — `qip-kernel` names `CellReport` and never names
-   `CellStateDelta`. The walk performs the decode itself and says so.
+4. **The cell-delta decode is the composition root's, and it does it.** This
+   item once said nothing decoded a `qip_edge::CellStateDelta` into a
+   `qip_kernel::CellReport`. That was true when written and is not now:
+   `qip_api::mesh` performs the decode on every `POST /cycle` (`report_from`),
+   proven live on 2026-09-04 — eight deltas published by a running
+   `qip-edge-node` were drained and `reports_ingested` rose from 0 to 8 — and
+   the demo walk no longer lists it as a gap. The walk still decodes for
+   itself, because it runs without the API, and says so.
 5. **A live depth feed cannot supply a cell's features.** `FeatureEngine::ingest`
    takes a `MarketMessage`; `DepthFeedAdapter` produces an `OrderBook` and a
    `VenueState`. A socket can therefore give a cell the book it *routes* against

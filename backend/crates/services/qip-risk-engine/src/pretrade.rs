@@ -161,6 +161,21 @@ impl PreTradeChecker {
     }
 
     /// Check an order against the state it would produce.
+    ///
+    /// Refuses outright, before any limit is weighed, when the state names a
+    /// figure its producer could not compute. A limit whose figure is missing
+    /// records no breach — `MinLiquidity` looks its fraction up by horizon and
+    /// takes the `None` arm when the key is absent — so an unevaluated control
+    /// and a control that passed arrive at this function as the same thing:
+    /// silence. The platform shipped that: a liquidity ladder refused over one
+    /// instrument's quoted spread emptied `liquidatable_within`, the floor
+    /// abstained, and every order was approved with the floor never run. An
+    /// operator reading an approval had grounds to believe a control had
+    /// cleared it, which is worse than a control that never existed.
+    ///
+    /// Refused rather than reduced, whatever `allow_reduction` says: no size
+    /// makes an uncomputed figure computable, and a reduction would report a
+    /// quantity that some control had permitted when none had looked.
     pub fn check(
         &self,
         order: &ProposedOrder,
@@ -179,17 +194,34 @@ impl PreTradeChecker {
             .collect();
         checks_run.sort();
 
-        let decision = if check.is_blocked() {
-            let reasons: Vec<String> = check
-                .blocking()
-                .iter()
-                .map(|breach| {
-                    format!(
-                        "{}: {} (observed {:.6} against a limit of {:.6})",
-                        breach.limit_name, breach.detail, breach.observed, breach.bound
-                    )
-                })
-                .collect();
+        let breached: Vec<String> = check
+            .blocking()
+            .iter()
+            .map(|breach| {
+                format!(
+                    "{}: {} (observed {:.6} against a limit of {:.6})",
+                    breach.limit_name, breach.detail, breach.observed, breach.bound
+                )
+            })
+            .collect();
+        // The unevaluated figures first, because they are the reason the list
+        // of breaches below cannot be read as complete. `BTreeMap` order, so
+        // the same state produces the same sentence in the same order in the
+        // event log every replay.
+        let unevaluated: Vec<String> = current
+            .unevaluated
+            .iter()
+            .map(|(figure, refusal)| {
+                format!("{figure} could not be evaluated, so no limit reading it ran: {refusal}")
+            })
+            .collect();
+
+        let decision = if !unevaluated.is_empty() {
+            let mut reasons = unevaluated;
+            reasons.extend(breached);
+            PreTradeDecision::Rejected { reasons }
+        } else if check.is_blocked() {
+            let reasons = breached;
             if self.allow_reduction {
                 match self.largest_permissible(order, current) {
                     Some((quantity, constraint)) if !quantity.is_zero() => {

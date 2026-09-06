@@ -48,15 +48,27 @@ public_ingress  = {}
 # modules/execution-node/README.md for the entry when they are.
 execution_nodes = {}
 
-# No image has ever been built for this environment, so there is no digest
-# to create a service at. deploy.yml writes images.tfvars beside this file
-# on its first run against a provisioned project.
-image_digests = {}
+# No control plane (ADR 0036): gitops_enabled stays at its default of false,
+# so no cluster, no controller identity and nothing reconciling the
+# RunService manifests under infrastructure/gitops/envs/test/ into a project
+# that does not exist yet. Turning it on needs a `management` entry in
+# trust_zones above and a gitops_master_ipv4_cidr_block; see dev.
 
 # OpenObserve (ADR 0028) is not deployed here either: vendored_openobserve_image_digest
 # stays at its default of null, the same closed state as every other environment,
 # and see dev/terraform.tfvars for what setting it requires — a digest and a
 # `management` entry in trust_zones above, neither declared here.
+
+# The two optional files the API can be given stay unset here, at their
+# default of null: venue_registrations_file, because nobody has registered
+# with a venue from this environment and a record is a named person's act
+# (docs/operations/registering-a-venue.md), and wallet_statement_file,
+# because this environment trades on the in-process simulated venue (ADR
+# 0003), which issues no custodian statement to mount. Unset renders no
+# configuration file and therefore no variable, so the API's registry holds
+# nobody and /wallet answers `assembled: false` — see dev/terraform.tfvars
+# for the whole argument, including why a committed statement is a same-day
+# act.
 
 enable_bigquery      = false
 enable_cloud_storage = false

@@ -7,19 +7,20 @@
 //! the staleness" then becomes irresistible — which is how a safety property
 //! gets deleted by the people it protects.
 //!
-//! **This is a typed contract awaiting its consumer, and it enforces nothing
-//! yet.** No engine calls it: `DegradationState` has no caller outside this
-//! crate and its tests. Saying otherwise would be the exact overclaim this
-//! module's own reasoning rejects elsewhere — the reason the self-model and
-//! valuation rows are omitted below is that a control which cannot fire reads
-//! as protection and is not, and that argument applies to the five rows here
-//! just as well while nothing consults them.
-//!
-//! It is built before its consumer deliberately. The consumer is the signed
-//! twelve-item payload of blueprint §41.5, whose stale-item narrowing is
-//! defined in exactly these terms, and having the vocabulary settled first is
-//! what stops that work from inventing a second one. Until it is wired, treat
-//! this as a specification with a compiler checking it, not as a control.
+//! **Which rows fire, and where.** The policy-fed rows are consumed: the
+//! edge cell sizes every pass by [`DegradationState::sizing_multiplier`] over
+//! the narrowing `PolicyPayload::narrowing` derives from the signed payload of
+//! blueprint §41.5. At the centre, [`SelfModelFreshness`] derives the
+//! self-model row from the learning engine's record and
+//! [`DegradationState::central_sizing_multiplier`] compounds it; the kernel's
+//! `Platform::central_degradation` calls both at sizing time. The centre's
+//! own causal-graph and belief-state rows are derived the same way —
+//! [`CausalGraphFreshness`] and [`BeliefFreshness`] from the instant each
+//! last absorbed evidence — and are specifications until that same seam
+//! observes them: a row the kernel does not observe reads fresh there by
+//! construction, which is the overclaim this module's own reasoning rejects
+//! elsewhere. The reason the valuation row is still omitted below is that a
+//! control which cannot fire reads as protection and is not.
 //!
 //! This is *capability*-level degradation and it composes with, rather than
 //! replaces, the mechanism-level rules already in the tree: a stale book
@@ -41,14 +42,17 @@
 //!   would let a second, independent loss of confidence cost nothing.
 //!
 //! Only the capabilities this repository actually has are represented.
-//! Blueprint §6.2 also names a self-model and a valuation engine; neither
-//! exists here, and inventing an enum variant for a capability that can never
-//! be unavailable would be a control that cannot fire — a mistake this
-//! repository has already made nine times and does not need a tenth of.
+//! Blueprint §6.2 also names a valuation engine; none exists here, and
+//! inventing an enum variant for a capability that can never be unavailable
+//! would be a control that cannot fire — a mistake this repository has
+//! already made nine times and does not need a tenth of. The self-model row
+//! was omitted on the same argument until `qip-learning-engine`'s `SelfModel`
+//! existed; it does now, and it can be thin or empty, so the row can fire.
 
-use qip_core::{Decimal, Error, Result};
+use qip_core::{Decimal, Duration, Error, Result, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fmt;
 
 /// A cognitive capability whose loss changes what the platform will do.
 ///
@@ -68,6 +72,14 @@ pub enum Capability {
     BeliefState,
     /// Counterfactual scoring of paths not taken. Row 5.
     CounterfactualScoring,
+    /// The platform's estimate of its own components' reliability. Row 6.
+    ///
+    /// Held by the centre alone: the LEARN stage feeds it and the REASON
+    /// stage scales evidence by it. No policy item ships it to a cell, so a
+    /// cell's table reads it as unavailable by default — truthfully, since
+    /// the cell has no such model — and the edge's sizing deliberately does
+    /// not compound it; see [`DegradationState::central_sizing_multiplier`].
+    SelfModel,
 }
 
 impl Capability {
@@ -78,16 +90,18 @@ impl Capability {
             Self::EpisodicMemory => "episodic_memory",
             Self::BeliefState => "belief_state",
             Self::CounterfactualScoring => "counterfactual_scoring",
+            Self::SelfModel => "self_model",
         }
     }
 
-    pub const fn all() -> [Self; 5] {
+    pub const fn all() -> [Self; 6] {
         [
             Self::Ingestion,
             Self::CausalGraph,
             Self::EpisodicMemory,
             Self::BeliefState,
             Self::CounterfactualScoring,
+            Self::SelfModel,
         ]
     }
 
@@ -222,6 +236,454 @@ const CAUSAL_STALE_MULTIPLIER: (i128, u32) = (75, 2);
 /// gone stale.
 const BELIEF_STALE_MULTIPLIER: (i128, u32) = (50, 2);
 
+/// The multiplier §6.2 row 6 applies when the self-model is thin or old.
+///
+/// A thin model is still a model: some components are weighted on a measured
+/// record and the rest are left at full weight because nothing has measured
+/// them. The narrowing is for the second group, whose weight is a default
+/// rather than an estimate.
+const SELF_MODEL_STALE_MULTIPLIER: (i128, u32) = (75, 2);
+
+/// The multiplier §6.2 row 6 applies when the self-model has never absorbed
+/// an outcome.
+///
+/// Smaller than the stale case on purpose. A model that has absorbed nothing
+/// weights *every* component at full weight on no evidence at all — the
+/// state the self-model exists to end — and a sizing that treated it like a
+/// merely thin model would size a platform that has never checked itself as
+/// if it had.
+const SELF_MODEL_UNAVAILABLE_MULTIPLIER: (i128, u32) = (50, 2);
+
+/// How old the self-model's newest graded outcome may be before the row is
+/// stale.
+///
+/// A policy choice, and this is the one place it is written down. The LEARN
+/// stage grades a thesis when it resolves, and theses resolve over days; a
+/// week with no graded outcome on any component means either that LEARN has
+/// stopped running or that nothing resolved, and either way the record
+/// describes a platform a week older than the one now sizing.
+pub const SELF_MODEL_HORIZON: Duration = Duration::from_days(7);
+
+/// How old the causal graph's newest absorbed claim may be before §6.2 row 2
+/// reads stale.
+///
+/// A policy choice, and this is the one place it is written down. Causal
+/// claims are recorded from filings and research notes, and filings arrive
+/// on a quarterly cycle; a graph that has absorbed no claim in a full quarter
+/// has sat through at least one filing season without being re-estimated,
+/// and the relationships it propagates a shock along are the ones a quarter
+/// ago's evidence supported.
+pub const CAUSAL_GRAPH_HORIZON: Duration = Duration::from_days(90);
+
+/// How old the belief state's newest formed hypothesis may be before §6.2
+/// row 4 reads stale.
+///
+/// A policy choice, and this is the one place it is written down. The REASON
+/// stage forms a belief from evidence as of a cycle, and the confidence it
+/// computes is what drives size; a session with nothing formed means the
+/// centre is sizing against a confidence that read the market a session ago,
+/// which is exactly the case row 4's fixed fallback exists for.
+pub const BELIEF_HORIZON: Duration = Duration::from_days(1);
+
+/// Why the self-model row of §6.2 reads as it does.
+///
+/// An enum rather than a bare [`Freshness`] because the table's consumer has
+/// to say what to do about a narrowing, and "stale" alone does not say
+/// whether a component needs more outcomes or LEARN needs to run. Every arm
+/// carries the fact that produced it, so the reason is reported from the
+/// same computation that narrowed and cannot drift from it.
+///
+/// Derived by [`SelfModelFreshness::assess`] from what the learning engine's
+/// `SelfModel` reports about each component — its sample count and the
+/// instant its newest outcome was graded — so that this crate, which the
+/// learning engine may not depend on in reverse, needs nothing of the model
+/// but those facts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SelfModelFreshness {
+    /// Every component the platform charges has at least the minimum sample
+    /// and the newest outcome across them is within the horizon.
+    Fresh {
+        components: usize,
+        newest: Timestamp,
+    },
+    /// The model has never absorbed an outcome. Reads as
+    /// [`Freshness::Unavailable`]: there is no record at all, and the
+    /// distinction from a thin one is the whole reason the row exists.
+    NeverAbsorbed,
+    /// A charged component has fewer outcomes than the minimum, so its
+    /// estimate is withheld and it is weighted on no evidence. The first
+    /// such component in key order is named, so two replays name the same
+    /// one.
+    UnderSampled {
+        component: String,
+        samples: usize,
+        minimum: usize,
+    },
+    /// Every component has its sample, but the newest outcome across them is
+    /// older than the horizon.
+    BeyondHorizon {
+        newest: Timestamp,
+        age: Duration,
+        horizon: Duration,
+    },
+}
+
+impl SelfModelFreshness {
+    /// Derive the row's freshness from the model's per-component record.
+    ///
+    /// `records` yields, per charged component, its key, its sample count
+    /// and when its newest outcome was graded — the shape the learning
+    /// engine's `SelfModel::sample_facts` produces. `minimum_sample` is the
+    /// engine's own bar below which it withholds an estimate; passing it in
+    /// rather than restating it here is what keeps the two from disagreeing.
+    ///
+    /// Refuses rather than guesses on the two inputs that would widen: a
+    /// minimum of zero calls an empty record measured, and a horizon of zero
+    /// or less is a configuration nothing can be within. A record claiming
+    /// outcomes but no newest instant is refused too — it is the reporter's
+    /// bug, and reading it as either fresh or stale would hide it.
+    ///
+    /// A newest instant *after* `now` is not treated as stale: its age is
+    /// negative and negative is within the horizon. That is deliberate — a
+    /// replay that grades ahead of the clock it sizes against has a record,
+    /// and the table's job is to narrow on the absence of one.
+    pub fn assess<I>(
+        records: I,
+        minimum_sample: usize,
+        horizon: Duration,
+        now: Timestamp,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = (String, usize, Option<Timestamp>)>,
+    {
+        if minimum_sample == 0 {
+            return Err(Error::invalid(
+                "a self-model minimum sample of 0 would call an empty record measured; pass \
+                 the learning engine's minimum",
+            ));
+        }
+        if horizon <= Duration::ZERO {
+            return Err(Error::invalid(format!(
+                "a self-model horizon of {horizon:?} is one nothing can be within; pass a \
+                 positive horizon"
+            )));
+        }
+        let mut components = 0usize;
+        let mut newest: Option<Timestamp> = None;
+        for (component, samples, last_graded) in records {
+            components += 1;
+            if samples < minimum_sample {
+                return Ok(Self::UnderSampled {
+                    component,
+                    samples,
+                    minimum: minimum_sample,
+                });
+            }
+            let Some(last_graded) = last_graded else {
+                return Err(Error::invalid(format!(
+                    "self-model component {component} reports {samples} outcome(s) but no \
+                     newest instant; the record is inconsistent"
+                )));
+            };
+            newest = Some(match newest {
+                Some(held) if held >= last_graded => held,
+                _ => last_graded,
+            });
+        }
+        let Some(newest) = newest else {
+            return Ok(Self::NeverAbsorbed);
+        };
+        let age = now.since(newest);
+        if age > horizon {
+            return Ok(Self::BeyondHorizon {
+                newest,
+                age,
+                horizon,
+            });
+        }
+        Ok(Self::Fresh { components, newest })
+    }
+
+    /// The table's three-valued reading of this outcome.
+    ///
+    /// Thin and old both read as [`Freshness::Stale`] — a record exists and
+    /// is worth less — while never-absorbed is [`Freshness::Unavailable`],
+    /// and the two narrow by different multipliers.
+    pub const fn freshness(&self) -> Freshness {
+        match self {
+            Self::Fresh { .. } => Freshness::Fresh,
+            Self::UnderSampled { .. } | Self::BeyondHorizon { .. } => Freshness::Stale,
+            Self::NeverAbsorbed => Freshness::Unavailable,
+        }
+    }
+}
+
+impl fmt::Display for SelfModelFreshness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fresh { components, newest } => write!(
+                f,
+                "self-model fresh: {components} component(s) at or above the minimum sample, \
+                 newest graded at {newest:?}"
+            ),
+            Self::NeverAbsorbed => write!(
+                f,
+                "self-model unavailable: it has never absorbed a graded outcome"
+            ),
+            Self::UnderSampled {
+                component,
+                samples,
+                minimum,
+            } => write!(
+                f,
+                "self-model stale: {component} has {samples} graded outcome(s), below the \
+                 {minimum} an estimate needs"
+            ),
+            Self::BeyondHorizon {
+                newest,
+                age,
+                horizon,
+            } => write!(
+                f,
+                "self-model stale: newest outcome graded at {newest:?} is {age:?} old, past \
+                 the {horizon:?} horizon"
+            ),
+        }
+    }
+}
+
+/// The reading shared by the two rows that are judged on one instant alone.
+///
+/// The causal graph and the belief state each carry a single fact — when
+/// they last absorbed evidence — so their rows are one arithmetic, written
+/// once here and named twice below so that a reason reaching a screen says
+/// which row it is about. Not public: the named types are the contract.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Recency {
+    Fresh {
+        last_updated: Timestamp,
+    },
+    NeverUpdated,
+    BeyondHorizon {
+        last_updated: Timestamp,
+        age: Duration,
+        horizon: Duration,
+    },
+}
+
+/// Derive a single-instant row's recency, refusing what would widen it.
+///
+/// Unlike [`SelfModelFreshness::assess`], a `last_updated` after `now` is
+/// refused rather than read as within the horizon. The self-model's newest
+/// instant is a grade from a LEARN replay that may legitimately run ahead
+/// of the sizing clock; these two instants are recorded by this process at
+/// the seam where it absorbed evidence, and one ahead of the clock it is
+/// now sizing against means a clock or a replay is wrong. Reading it as
+/// fresh would size on the strength of a bug.
+fn assess_recency(
+    row: &str,
+    last_updated: Option<Timestamp>,
+    horizon: Duration,
+    now: Timestamp,
+) -> Result<Recency> {
+    if horizon <= Duration::ZERO {
+        return Err(Error::invalid(format!(
+            "a {row} horizon of {horizon:?} is one nothing can be within; pass a positive \
+             horizon"
+        )));
+    }
+    let Some(last_updated) = last_updated else {
+        return Ok(Recency::NeverUpdated);
+    };
+    if last_updated > now {
+        return Err(Error::invalid(format!(
+            "the {row} reports its last update at {last_updated:?}, after the {now:?} it is \
+             being sized against; a record from the future is a clock bug, not a fresh row — \
+             fix the clock rather than the reading"
+        )));
+    }
+    let age = now.since(last_updated);
+    if age > horizon {
+        return Ok(Recency::BeyondHorizon {
+            last_updated,
+            age,
+            horizon,
+        });
+    }
+    Ok(Recency::Fresh { last_updated })
+}
+
+/// Why the causal-graph row of §6.2 reads as it does.
+///
+/// Derived by [`CausalGraphFreshness::assess`] from the one fact the world
+/// model's `CausalGraph` records at the seam where it absorbs a claim — the
+/// instant of its newest recorded edge — so this crate needs nothing of the
+/// graph but that instant. Every arm carries the fact that produced it, so
+/// the reason is reported from the same computation that narrowed and cannot
+/// drift from it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum CausalGraphFreshness {
+    /// The newest claim was absorbed within the horizon.
+    Fresh { last_updated: Timestamp },
+    /// The graph has never absorbed a claim. Reads as
+    /// [`Freshness::Unavailable`]: there is no relationship to reason about,
+    /// as distinct from one that is merely old.
+    NeverUpdated,
+    /// The newest claim is older than the horizon.
+    BeyondHorizon {
+        last_updated: Timestamp,
+        age: Duration,
+        horizon: Duration,
+    },
+}
+
+impl CausalGraphFreshness {
+    /// Derive the row from the graph's `last_updated` fact.
+    ///
+    /// Refuses a non-positive horizon and a `last_updated` after `now`; see
+    /// [`assess_recency`] for why the second is a refusal here and not in the
+    /// self-model row.
+    pub fn assess(
+        last_updated: Option<Timestamp>,
+        horizon: Duration,
+        now: Timestamp,
+    ) -> Result<Self> {
+        Ok(
+            match assess_recency("causal graph", last_updated, horizon, now)? {
+                Recency::Fresh { last_updated } => Self::Fresh { last_updated },
+                Recency::NeverUpdated => Self::NeverUpdated,
+                Recency::BeyondHorizon {
+                    last_updated,
+                    age,
+                    horizon,
+                } => Self::BeyondHorizon {
+                    last_updated,
+                    age,
+                    horizon,
+                },
+            },
+        )
+    }
+
+    /// The table's three-valued reading of this outcome.
+    pub const fn freshness(&self) -> Freshness {
+        match self {
+            Self::Fresh { .. } => Freshness::Fresh,
+            Self::BeyondHorizon { .. } => Freshness::Stale,
+            Self::NeverUpdated => Freshness::Unavailable,
+        }
+    }
+}
+
+impl fmt::Display for CausalGraphFreshness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fresh { last_updated } => write!(
+                f,
+                "causal graph fresh: newest claim absorbed at {last_updated:?}"
+            ),
+            Self::NeverUpdated => {
+                write!(f, "causal graph unavailable: it has never absorbed a claim")
+            }
+            Self::BeyondHorizon {
+                last_updated,
+                age,
+                horizon,
+            } => write!(
+                f,
+                "causal graph stale: newest claim absorbed at {last_updated:?} is {age:?} old, \
+                 past the {horizon:?} horizon"
+            ),
+        }
+    }
+}
+
+/// Why the belief-state row of §6.2 reads as it does.
+///
+/// Derived by [`BeliefFreshness::assess`] from the one fact the reasoning
+/// engine's `BeliefState` records at the seam where evidence becomes a belief
+/// — the instant its newest hypothesis was formed — so this crate needs
+/// nothing of the engine but that instant.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum BeliefFreshness {
+    /// The newest belief was formed within the horizon.
+    Fresh { last_updated: Timestamp },
+    /// No belief has ever been formed. Reads as [`Freshness::Unavailable`]:
+    /// there is no confidence to drive size, as distinct from one that is
+    /// merely old.
+    NeverUpdated,
+    /// The newest belief is older than the horizon.
+    BeyondHorizon {
+        last_updated: Timestamp,
+        age: Duration,
+        horizon: Duration,
+    },
+}
+
+impl BeliefFreshness {
+    /// Derive the row from the belief state's `last_updated` fact.
+    ///
+    /// Refuses a non-positive horizon and a `last_updated` after `now`; see
+    /// [`assess_recency`].
+    pub fn assess(
+        last_updated: Option<Timestamp>,
+        horizon: Duration,
+        now: Timestamp,
+    ) -> Result<Self> {
+        Ok(
+            match assess_recency("belief state", last_updated, horizon, now)? {
+                Recency::Fresh { last_updated } => Self::Fresh { last_updated },
+                Recency::NeverUpdated => Self::NeverUpdated,
+                Recency::BeyondHorizon {
+                    last_updated,
+                    age,
+                    horizon,
+                } => Self::BeyondHorizon {
+                    last_updated,
+                    age,
+                    horizon,
+                },
+            },
+        )
+    }
+
+    /// The table's three-valued reading of this outcome.
+    pub const fn freshness(&self) -> Freshness {
+        match self {
+            Self::Fresh { .. } => Freshness::Fresh,
+            Self::BeyondHorizon { .. } => Freshness::Stale,
+            Self::NeverUpdated => Freshness::Unavailable,
+        }
+    }
+}
+
+impl fmt::Display for BeliefFreshness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fresh { last_updated } => write!(
+                f,
+                "belief state fresh: newest belief formed at {last_updated:?}"
+            ),
+            Self::NeverUpdated => write!(
+                f,
+                "belief state unavailable: no belief has ever been formed"
+            ),
+            Self::BeyondHorizon {
+                last_updated,
+                age,
+                horizon,
+            } => write!(
+                f,
+                "belief state stale: newest belief formed at {last_updated:?} is {age:?} old, \
+                 past the {horizon:?} horizon"
+            ),
+        }
+    }
+}
+
 /// What the platform currently believes about each capability, and what that
 /// implies.
 ///
@@ -303,6 +765,14 @@ impl DegradationState {
     /// Compounding rather than competing. Two independent reasons to distrust
     /// a size are two reasons, and a scheme that took the most conservative
     /// single rule would let the second one cost nothing.
+    ///
+    /// Compounds the rows every plane holds — the causal graph and the
+    /// belief state, both shipped to a cell in the policy payload. The
+    /// self-model row is not here: a cell never holds a self-model, so its
+    /// table reads that row as unavailable by default rather than by
+    /// measurement, and compounding it would move every cell's floor on a
+    /// number nobody computed. The centre, which does hold one, sizes by
+    /// [`Self::central_sizing_multiplier`].
     pub fn sizing_multiplier(&self) -> Decimal {
         let mut multiplier = Decimal::from_int(1);
         if !self.freshness(Capability::CausalGraph).is_fresh() {
@@ -312,6 +782,25 @@ impl DegradationState {
             multiplier = Self::scaled(BELIEF_STALE_MULTIPLIER, multiplier);
         }
         multiplier
+    }
+
+    /// The multiplier the centre applies to size: [`Self::sizing_multiplier`]
+    /// compounded with §6.2 row 6, the self-model.
+    ///
+    /// Fails closed like every other reading here: a centre that never
+    /// observed [`Capability::SelfModel`] gets the unavailable multiplier,
+    /// because a self-model nobody consulted is indistinguishable, for
+    /// sizing, from one that does not exist. Stale and unavailable narrow by
+    /// different amounts — see [`SELF_MODEL_STALE_MULTIPLIER`] and
+    /// [`SELF_MODEL_UNAVAILABLE_MULTIPLIER`] — which is the distinction
+    /// [`Freshness`] is three-valued to keep.
+    pub fn central_sizing_multiplier(&self) -> Decimal {
+        let shared = self.sizing_multiplier();
+        match self.freshness(Capability::SelfModel) {
+            Freshness::Fresh => shared,
+            Freshness::Stale => Self::scaled(SELF_MODEL_STALE_MULTIPLIER, shared),
+            Freshness::Unavailable => Self::scaled(SELF_MODEL_UNAVAILABLE_MULTIPLIER, shared),
+        }
     }
 
     /// Apply a policy constant, narrowing further if it cannot be represented.

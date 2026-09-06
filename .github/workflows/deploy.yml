@@ -1,5 +1,9 @@
-# Build, scan, sign and attest the images, then move each Cloud Run service to
-# the attested digest and prove it serves it.
+# Build, scan, sign, attest and push the images. Nothing here moves a
+# service any more (ADR 0036): Kargo's warehouse discovers the attested digest
+# in the registry, its promotion commits the digest into
+# infrastructure/gitops/envs/<env>/kustomization.yaml, Argo CD reconciles the
+# commit through Config Connector, and the post-sync hook proves the routed
+# revision serves it. This workflow's last act is to record what it pushed.
 #
 # Two rules shape everything below.
 #
@@ -236,13 +240,61 @@ jobs:
       - name: let docker push to artifact registry
         run: gcloud auth configure-docker "${{ steps.identity.outputs.region }}-docker.pkg.dev" --quiet
 
+      # Whether the registry already holds this commit's image.
+      #
+      # `modules/registry` makes tags immutable, and the builder stage is not
+      # byte-reproducible (infrastructure/docker/Dockerfile names the one
+      # line), so a second build of the same commit is different bytes and
+      # the registry refuses to move `binary:<sha>` onto them. Without this
+      # step every re-run for a commit already built failed at `push` — and a
+      # rollback, which is nothing more than a dispatch against an earlier
+      # commit, was impossible by construction. The bytes under `binary:<sha>`
+      # can only have been put there by this job for this commit: the tag
+      # cannot move and the account that pushes is the one this job
+      # authenticates as. So an existing tag *is* the commit's image, and the
+      # build and the push are skipped for it. The scan is not skipped: it
+      # runs against the registry's copy, so old bytes that have since
+      # acquired a finding stop the line the way new bytes would. The sign
+      # step already treats an existing attestation as success.
+      #
+      # A describe that fails for any reason other than absence reads as
+      # absence here and the job builds; the push then meets the immutable
+      # tag and fails with the registry's own message, which is exactly
+      # where it failed before this step existed and no worse.
+      - name: whether the registry already holds this commit's image
+        id: existing
+        run: |
+          set -euo pipefail
+          prefix="${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
+          digest="$(gcloud artifacts docker images describe \
+            "${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}" \
+            --format='value(image_summary.digest)' 2>/dev/null || true)"
+          if [ -n "$digest" ]; then
+            echo "${{ matrix.binary }}:${DEPLOY_SHA} is already in the registry as ${digest}; build and push are skipped and the scan runs against it."
+          else
+            echo "${{ matrix.binary }}:${DEPLOY_SHA} is not in the registry; building it."
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      # Labelled with the commit it was built from and the repository it came
+      # from, in the OCI names Kargo and a person both read. The Dockerfile
+      # sets no label; without these an image's only link to its source is
+      # the tag, and a tag is a name. Kargo's warehouse refuses freight whose
+      # three images carry different tags today; the label is what lets a
+      # reader — or a later step — check the same fact against the bytes
+      # rather than the name (ADR 0036 decision 6). An image built before
+      # this line exists carries neither label, and that is visible rather
+      # than assumed.
       - name: build
+        if: steps.existing.outputs.digest == ''
         run: |
           set -euo pipefail
           prefix="${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
           docker build \
             --file infrastructure/docker/Dockerfile \
             --build-arg "BINARY=${{ matrix.binary }}" \
+            --label "org.opencontainers.image.revision=${DEPLOY_SHA}" \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
             --tag "${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}" \
             .
 
@@ -268,8 +320,10 @@ jobs:
 
       # Tagged by commit and never by `latest`. The registry refuses to move a
       # tag onto different bytes, so a tag names one image for ever and a
-      # rollback is a tag somebody can still find.
+      # rollback is a tag somebody can still find — and, since the step
+      # above, one this job finds for itself and reuses.
       - name: push
+        if: steps.existing.outputs.digest == ''
         run: |
           set -euo pipefail
           prefix="${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
@@ -338,57 +392,55 @@ jobs:
             --attestor-project "${GCP_PROJECT}" \
             --keyversion "${BINAUTHZ_KEY_VERSION}"
 
-  # ── Deploy ─────────────────────────────────────────────────────────────
+  # ── Record ─────────────────────────────────────────────────────────────
   #
-  # Move each Cloud Run service to the digest the images job just attested,
-  # wait for the revision to serve, prove it is the one asked for, and
-  # record the digest beside the environment's tfvars.
+  # What this job did until ADR 0036 — `gcloud run services update`, the
+  # serving proof, the images.tfvars write and its commit — belongs to the
+  # reconciler now. Kargo's warehouse on the environment's control plane
+  # polls the registry and discovers the digest this run attested; its
+  # promotion commits the digest into
+  # infrastructure/gitops/envs/<env>/kustomization.yaml (automatically for
+  # dev, on a person's approval for test and stage, never for prod); Argo CD
+  # reconciles the commit through Config Connector; and the post-sync hook
+  # in envs/<env>/prove-serving.yaml asks the two questions prove-serving.py
+  # asked here — is the revision Ready, does the routed revision's workload
+  # container run the digest — and fails the sync when the answer is no.
+  # ADR 0024 decision 3's proof moved, and was not weakened.
   #
-  # `gcloud run services update --image` is the whole delivery mechanism
-  # now. There is no reconciler, no chart and no values file to commit for
-  # something else to apply (ADR 0024): the pipeline is the only writer to
-  # a service's image, Terraform creates the service and ignores the image
-  # thereafter (`modules/cloudrun` says why), and `images.tfvars` is written
-  # here so the committed record and the running revision agree again as
-  # soon as the commit lands.
+  # Nothing here talks to Kargo, and this comment is where that is said
+  # rather than a step that would fail: Kargo's API server is a ClusterIP
+  # service on a cluster whose endpoint is private, a GitHub runner has no
+  # route to it, and the warehouse needs no notification — it polls.
   #
-  # What this closes: the GitOps cut-over lost the rollout wait, so a build
-  # that crash-looped on boot produced a green pipeline and
-  # docs/operations/gitops-exceptions.md recorded the gap. `services update`
-  # blocks until the new revision is ready and routing, and fails the job
-  # when it is not; the describe afterwards is the second half, proving the
-  # serving revision runs the digest that was signed rather than whatever
-  # was there before. An apply that returns is not a deployment that worked;
-  # a revision that is Ready and serving the attested bytes is.
-  #
-  # The execution node is not deployed here in the same sense. It runs a
-  # boot image, not a container, and nothing in this repository bakes one
-  # yet — modules/execution-node/README.md and ADR 0024 record that as the
-  # remaining work. What this job does for a node is the rolling
-  # replacement §41.4 describes, so that a node whose template Terraform
-  # already changed is re-created from it under the group's surge-one,
-  # wait-for-health policy. With `execution_nodes` empty in every
-  # environment the step finds no group and says so.
+  # What stays: the record of what was pushed, in the run's summary, and the
+  # execution node's rolling replacement (ADR 0036 decision 11), because the
+  # node is not a Cloud Run service and is not moving. It runs a boot image,
+  # not a container, and nothing in this repository bakes one yet —
+  # modules/execution-node/README.md and ADR 0024 record that as the
+  # remaining work. What this job does for a node is the rolling replacement
+  # §41.4 describes, so that a node whose template Terraform already changed
+  # is re-created from it under the group's surge-one, wait-for-health
+  # policy. With `execution_nodes` empty in every environment the step finds
+  # no group and says so.
   deploy:
-    name: deploy to cloud run (${{ inputs.environment || 'dev' }})
+    name: record what was pushed (${{ inputs.environment || 'dev' }})
     needs: images
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment || 'dev' }}
     permissions:
-      # To record the deployed digests in images.tfvars.
-      contents: write
+      # Read-only. This job no longer commits anything: Kargo's promotion
+      # commit is the record.
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.DEPLOY_SHA }}
-          token: ${{ github.token }}
 
       # The same derivation as the images job, from the same committed
       # tfvars, for the same reason: nothing here may depend on a repository
       # variable. Every value below is fixed by the Terraform that creates
       # it, so constructing it here cannot drift from what exists:
-      #   service   modules/cloudrun names it qip-<env>-<catalogue name>
       #   registry  modules/registry names it qip-<env>
       #   node      modules/execution-node names the group qip-<env>-exec-<id>
       - name: derive the identity from the tfvars
@@ -424,11 +476,11 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      # The catalogue's services, by the names catalogue.tf gives them, and
+      # The catalogue's workloads, by the names catalogue.tf gives them, and
       # the binary each runs. Read out of the committed catalogue rather than
-      # listed here, so a workload added there is deployed here without a
+      # listed here, so a workload added there is recorded here without a
       # second edit — and a workload listed here that the catalogue does not
-      # know is refused before anything is moved.
+      # know is refused before anything is recorded.
       - name: read the catalogue
         id: catalogue
         run: |
@@ -445,94 +497,30 @@ jobs:
           echo "$pairs"
           echo "pairs=$(echo "$pairs" | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
 
-      # Move each service, wait for it, prove it.
-      - name: move every service to the attested digest and prove it serves it
-        id: rollout
+      # The record: every catalogue workload's binary and the digest the
+      # images job attested for this commit, read back from the registry
+      # rather than from the build, because what was signed is what the
+      # warehouse will find. Written to the run's summary, where the person
+      # who dispatched the run reads it; a digest the registry does not hold
+      # fails this step, since the images job was supposed to push it.
+      - name: record the attested digests
+        id: record
         env:
           GCP_PROJECT: ${{ steps.identity.outputs.project }}
           GCP_REGION: ${{ steps.identity.outputs.region }}
           PAIRS: ${{ steps.catalogue.outputs.pairs }}
         run: |
           set -euo pipefail
-          # Selection by name, in one place. An index is what this step got
-          # wrong; a gcloud projection filter is not something this
-          # repository can test before it runs, and python3 is on every
-          # runner. Each question fails loudly rather than returning an
-          # empty string that a comparison would read as a mismatch it
-          # cannot explain.
-          cat > "${RUNNER_TEMP}/prove-serving.py" <<'PY'
-          import json
-          import sys
-
-          question, path, wanted = sys.argv[1], sys.argv[2], sys.argv[3]
-          with open(path, encoding="utf-8") as handle:
-              described = json.load(handle)
-
-          if question == "routed":
-              status = described.get("status", {})
-              conditions = status.get("conditions", [])
-              ready = next((c for c in conditions if c.get("type") == "Ready"), None)
-              if ready is None:
-                  sys.exit(
-                      f"{wanted} reports no Ready condition; it reports "
-                      f"{[c.get('type') for c in conditions]}"
-                  )
-              if ready.get("status") != "True":
-                  sys.exit(
-                      f"{wanted} is not Ready: {ready.get('status')} — "
-                      f"{ready.get('message', 'no message given')}"
-                  )
-              routed = [t for t in status.get("traffic", []) if t.get("percent")]
-              if not routed:
-                  sys.exit(f"{wanted} is Ready and routes traffic to no revision")
-              for entry in routed:
-                  revision = entry.get("revisionName")
-                  if not revision:
-                      sys.exit(f"{wanted} routes {entry.get('percent')}% to an unnamed revision")
-                  print(revision)
-          elif question == "image":
-              containers = described.get("spec", {}).get("containers", [])
-              named = [c for c in containers if c.get("name") == wanted]
-              if not named:
-                  sys.exit(
-                      f"the revision runs no container named {wanted}; it runs "
-                      f"{[c.get('name') for c in containers]}"
-                  )
-              print(named[0]["image"])
-          else:
-              sys.exit(f"prove-serving.py was asked an unknown question: {question}")
-          PY
-
           prefix="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/qip-${TARGET_ENVIRONMENT}"
-          images_file="infrastructure/environments/${TARGET_ENVIRONMENT}/images.tfvars"
-          # `terraform fmt` aligns the `=` of every attribute in a block to the
-          # longest key, and `ci.yml` runs `terraform fmt -check`. A file this
-          # step writes unaligned therefore fails the gate on the very next
-          # push — which is exactly what happened the first time this step
-          # succeeded: run 33780092495 recorded three digests, `qip-api` was
-          # six characters shorter than its neighbours, and the branch went
-          # red on formatting alone with every service correctly deployed.
-          # Computed from PAIRS rather than hardcoded, so adding a binary
-          # cannot silently reintroduce it.
-          key_width=0
-          for pair in $PAIRS; do
-            binary="${pair#*=}"
-            [ "${#binary}" -gt "$key_width" ] && key_width="${#binary}"
-          done
           {
-            echo "# ${TARGET_ENVIRONMENT}'s deployed image digests — written by .github/workflows/deploy.yml."
-            echo "#"
-            echo "# Not hand-edited. Each digest below was built, scanned, signed and attested"
-            echo "# by run ${GITHUB_RUN_ID} for ${DEPLOY_SHA}, moved onto its Cloud Run service,"
-            echo "# and proven serving before this line was written. Terraform creates a"
-            echo "# service at the digest recorded here and ignores the image thereafter;"
-            echo "# modules/cloudrun says why."
-            echo "image_digests = {"
-          } > "$images_file"
+            echo "## ${TARGET_ENVIRONMENT}: images attested for ${DEPLOY_SHA} by run ${GITHUB_RUN_ID}"
+            echo
+            echo "| workload | binary | digest |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
           for pair in $PAIRS; do
             name="${pair%%=*}"
             binary="${pair#*=}"
-            service="qip-${TARGET_ENVIRONMENT}-${name}"
             digest=$(gcloud artifacts docker images describe \
               "${prefix}/${binary}:${DEPLOY_SHA}" \
               --format='value(image_summary.digest)')
@@ -540,112 +528,21 @@ jobs:
               echo "no digest for ${binary}:${DEPLOY_SHA}; the images job did not push it" >&2
               exit 1
             fi
-            image="${prefix}/${binary}@${digest}"
-
-            # By digest, never by tag, for the reason the sign step gives:
-            # Binary Authorization evaluates the digest, and the attestation
-            # names bytes. Blocks until the revision is Ready and routing,
-            # and fails otherwise — which is the rollout wait the GitOps
-            # cut-over lost.
-            #
-            # `--container` names the workload's own container, which
-            # modules/cloudrun names after the catalogue entry. Every service
-            # now has more than one — the egress proxy, the metrics collector
-            # — and gcloud refuses an unqualified `--image` on a
-            # multi-container service rather than guess which one to move.
-            # Terraform owns the service — its ingress, its secrets, its
-            # sidecars, its identity, its scaling floor. This step only moves
-            # the image, so a service that does not exist yet is not
-            # something to create here: `gcloud run deploy` would make a bare
-            # one carrying none of that, and the next apply would fight it.
-            # Say what is missing and what makes it, rather than dying on
-            # `Service could not be found` with the fix nowhere in the log.
-            if ! gcloud run services describe "$service" \
-              --project "${GCP_PROJECT}" --region "${GCP_REGION}" \
-              --format='value(name)' >/dev/null 2>&1; then
-              echo "${service} does not exist in ${GCP_PROJECT}/${GCP_REGION}." >&2
-              echo "Terraform creates the Cloud Run services; this step only moves them to a digest it has attested." >&2
-              echo "Run the infra workflow first with action=up and environment=${TARGET_ENVIRONMENT}, then re-run this one." >&2
-              exit 1
-            fi
-
-            # Every global flag precedes `--container`. `--container` opens
-            # a scope that only container-level flags may enter, so a global
-            # one after it makes gcloud refuse the whole command with
-            # `unrecognized arguments: --quiet` — which is how every
-            # deployment failed between the sidecars landing and this fix.
-            # On a rollout failure, say why here rather than printing a
-            # console URL nobody in CI can open.
-            #
-            # `services update` fails with one line — "the user-provided
-            # container failed the configured startup probe checks" — and a
-            # Logs URL. That is the true statement and it is not a cause: the
-            # cause is in the revision's own log, one API call away, and a
-            # pipeline that makes a person go and fetch it is a pipeline that
-            # reports failures nobody reads. This platform's roots refuse to
-            # start on a configuration they cannot honour (an unwritable
-            # journal, a live autonomy ceiling, a missing trust root), and
-            # each refusal names what to do instead — so the message that
-            # matters is almost always in those first lines.
-            if ! gcloud run services update "$service" \
-              --project "${GCP_PROJECT}" --region "${GCP_REGION}" --quiet \
-              --container "$name" \
-              --image "$image"; then
-              echo "::group::${service}: why the revision did not start"
-              revision="$(gcloud run revisions list \
-                --project "${GCP_PROJECT}" --region "${GCP_REGION}" \
-                --service "$service" --sort-by=~metadata.creationTimestamp \
-                --limit 1 --format='value(metadata.name)' || true)"
-              if [ -n "$revision" ]; then
-                echo "revision ${revision}:"
-                # Both containers: a workload that refused its configuration
-                # and a sidecar that never listened look identical from
-                # outside, and the difference is the whole diagnosis.
-                gcloud logging read \
-                  "resource.type=cloud_run_revision AND resource.labels.revision_name=${revision}" \
-                  --project "${GCP_PROJECT}" --limit 50 --order asc \
-                  --format='value(timestamp,labels.container_name,textPayload)' || true
-              else
-                echo "no revision was created; the failure is ahead of the container."
-              fi
-              echo "::endgroup::"
-              exit 1
-            fi
-
-            # The second half, and the claim the GitOps cut-over lost: the
-            # revision that is *serving* runs the digest that was signed.
-            # `services update` returning is not that, and neither is
-            # reading `spec.template` — that is what was asked for, which a
-            # traffic split that never moved satisfies just as well. So the
-            # revisions read are the ones `status.traffic` routes to.
-            #
-            # Both selections are by name, never by position: every service
-            # carries the egress sidecar and may carry the metrics
-            # collector, so the first container is as likely to be a sidecar
-            # as the workload, and nothing documents the first condition as
-            # Ready.
-            gcloud run services describe "$service" \
-              --project "${GCP_PROJECT}" --region "${GCP_REGION}" \
-              --format=json > "${RUNNER_TEMP}/service-${name}.json"
-            routed=$(python3 "${RUNNER_TEMP}/prove-serving.py" \
-              routed "${RUNNER_TEMP}/service-${name}.json" "$service")
-            for revision in $routed; do
-              gcloud run revisions describe "$revision" \
-                --project "${GCP_PROJECT}" --region "${GCP_REGION}" \
-                --format=json > "${RUNNER_TEMP}/revision-${revision}.json"
-              serving=$(python3 "${RUNNER_TEMP}/prove-serving.py" \
-                image "${RUNNER_TEMP}/revision-${revision}.json" "$name")
-              if [ "$serving" != "$image" ]; then
-                echo "${service} routes traffic to ${revision}, whose ${name} container runs '${serving}'; asked for ${image}" >&2
-                exit 1
-              fi
-              echo "${service} serves ${image} from ${revision}"
-            done
-            printf '  %-*s = "%s"\n' "$key_width" "$binary" "$digest" >> "$images_file"
+            echo "| ${name} | ${binary} | \`${digest}\` |" >> "$GITHUB_STEP_SUMMARY"
+            echo "${name}: ${prefix}/${binary}@${digest}"
           done
-          echo "}" >> "$images_file"
-          echo "wrote ${images_file}:"
-          cat "$images_file"
+          {
+            echo
+            echo "Nothing was deployed by this run. The Kargo warehouse on the"
+            echo "${TARGET_ENVIRONMENT} control plane discovers these digests from the"
+            echo "registry on its own poll; its promotion commits them into"
+            echo "infrastructure/gitops/envs/${TARGET_ENVIRONMENT}/kustomization.yaml —"
+            echo "automatically for dev, on a person's approval for test and stage,"
+            echo "never for prod — and Argo CD's post-sync hook proves the routed"
+            echo "revision serves them. Kargo's API is not reachable from a runner"
+            echo "(the control plane's endpoint is private), so this run notified"
+            echo "nothing and says so (ADR 0036)."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # The execution nodes: a rolling replacement under the group's own
       # policy, for every group the environment has. None today — every
@@ -674,55 +571,3 @@ jobs:
               --max-surge 1 --max-unavailable 0 --quiet
             echo "replacing ${group} in ${zone} under its rolling policy"
           done <<< "$groups"
-
-      # Record what was deployed, beside the tfvars that describe the
-      # environment. Nothing to commit means the digests are already current.
-      #
-      # The checkout above is pinned to `${{ env.DEPLOY_SHA }}` — a commit,
-      # not a branch — so the working tree is a detached HEAD here. `git
-      # push` alone has nothing to push *to* and fails with "You are not
-      # currently on a branch"; the deployment this step is recording had
-      # already succeeded when that happened, which is a worse failure to
-      # read than an honest one, since the run ends red over bookkeeping
-      # after doing the thing that mattered. `GITHUB_REF_NAME` is the branch
-      # this workflow was actually asked to run against — set by GitHub for
-      # both triggers this file has: the branch a person chose in
-      # `workflow_dispatch`, or the branch `ci` just ran on for the
-      # automatic path — so pushing `HEAD` to it names the real target
-      # explicitly instead of asking git to infer one from a detached state
-      # that carries no branch to infer.
-      - name: commit the deployed digests
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "infrastructure/environments/${TARGET_ENVIRONMENT}/images.tfvars"
-          git diff --cached --quiet && {
-            echo "digests unchanged for ${TARGET_ENVIRONMENT}; nothing to commit."
-            exit 0
-          }
-          git commit -m "Record the digests ${TARGET_ENVIRONMENT} now serves, from run ${GITHUB_RUN_ID}
-
-          Written by .github/workflows/deploy.yml after each Cloud Run service was
-          moved to the attested digest for ${DEPLOY_SHA} and proven serving it."
-
-          # `origin/${GITHUB_REF_NAME}` moves whenever anything else lands on
-          # this branch while a deploy is mid-run — this repo pushes crate
-          # fixes to it continuously, and a deploy takes minutes. The first
-          # `git push` failing with a non-fast-forward rejection is that race,
-          # not a real conflict: this commit only ever touches one generated
-          # file (images.tfvars) and its own predecessor's content, so
-          # rebasing onto whatever landed in the meantime is always safe.
-          # Retry a bounded number of times rather than once, since a branch
-          # under continuous push traffic can move again between the rebase
-          # and the retry.
-          for attempt in 1 2 3 4 5; do
-            if git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"; then
-              exit 0
-            fi
-            echo "push rejected (attempt ${attempt}/5); rebasing onto origin/${GITHUB_REF_NAME} and retrying"
-            git fetch origin "${GITHUB_REF_NAME}"
-            git rebase "origin/${GITHUB_REF_NAME}"
-          done
-          echo "::error::commit the deployed digests: push kept losing the race after 5 attempts"
-          exit 1

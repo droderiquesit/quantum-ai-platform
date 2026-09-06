@@ -28,6 +28,7 @@ pub mod reasoning;
 pub mod review;
 pub mod simulation;
 pub mod support;
+pub mod vocabulary;
 
 pub use chief::{ChiefInvestmentIntelligence, Organisation, OrganisationReport};
 pub use desk::{BookView, ComplianceView, Desk, MarketView, RiskView};

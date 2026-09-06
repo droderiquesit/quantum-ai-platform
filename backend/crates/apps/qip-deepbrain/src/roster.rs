@@ -76,6 +76,50 @@ impl ClearedRoster {
     }
 }
 
+/// The shortest review interval on the whole roster — how long the
+/// organisation the platform convenes stays authorised after assembly.
+///
+/// Read so a tape can be checked against it at start-up: a manifest is
+/// stamped reviewed at assembly and `AgentHost::run` refuses it once tape
+/// time passes the interval, so a tape longer than this runs its remaining
+/// periods with every agent refused and nothing but a `failed` count to say
+/// so. The fast brain learned this on a 320-day tape; see its `roster.rs`.
+pub fn shortest_review_interval(now: Timestamp) -> Option<Duration> {
+    manifests::roster(now)
+        .iter()
+        .map(|manifest| manifest.review_interval)
+        .min()
+}
+
+/// Refuse a tape that outlasts the organisation's authorisation.
+///
+/// A manifest stamped reviewed at assembly — the tape's first instant — is
+/// refused by `AgentHost::run` once tape time reaches the review interval,
+/// and nothing inside a replay can re-review a roster. Refused at start-up,
+/// naming the two spans, rather than run with every panel refused.
+pub fn refuse_tape_beyond_review(
+    tape: &qip_market_ingestion::tape::Tape,
+    now: Timestamp,
+) -> Result<()> {
+    let (Some(interval), Some((first, last))) = (shortest_review_interval(now), tape.span()) else {
+        return Ok(());
+    };
+    let span = last.since(first);
+    if span >= interval {
+        return Err(Error::invalid(format!(
+            "the tape spans {:.1} day(s), from {} to {}, and the organisation's authorisation \
+             lapses {:.1} day(s) after assembly; every panel after that would be refused. \
+             Shorten the tape or use a finer interval; a roster cannot be re-reviewed inside a \
+             replay",
+            span.as_days_f64(),
+            first.to_rfc3339(),
+            last.to_rfc3339(),
+            interval.as_days_f64()
+        )));
+    }
+    Ok(())
+}
+
 /// Clear the roster, or refuse.
 pub fn clear(now: Timestamp) -> Result<ClearedRoster> {
     clear_excluding(NOT_HOSTED, now)
@@ -136,6 +180,58 @@ mod tests {
 
     fn now() -> Timestamp {
         Timestamp::from_secs(1_760_000_000)
+    }
+
+    /// A daily tape of `days` bars on one instrument, in memory.
+    fn tape_of(days: i64) -> qip_market_ingestion::tape::Tape {
+        use qip_market_ingestion::tape::{SCHEMA_VERSION, Tape, TapeDocument, TapeObservation};
+        let first = Timestamp::parse_rfc3339("2025-01-06T21:00:00Z").expect("an instant");
+        Tape::from_document(TapeDocument {
+            schema_version: SCHEMA_VERSION,
+            name: "roster".to_string(),
+            description: "a roster-test tape".to_string(),
+            interval: qip_market::bar::Interval::Day,
+            observations: (0..days)
+                .map(|day| {
+                    let at = first.saturating_add(Duration::from_days(day));
+                    TapeObservation {
+                        object_id: "OBJ-TAPE".to_string(),
+                        venue: "XNYS".to_string(),
+                        at: at.to_rfc3339(),
+                        known_at: at.saturating_add(Duration::from_mins(15)).to_rfc3339(),
+                        open: qip_core::Decimal::from_int(100),
+                        high: qip_core::Decimal::from_int(101),
+                        low: qip_core::Decimal::from_int(99),
+                        close: qip_core::Decimal::from_int(100),
+                        volume: qip_core::Decimal::from_int(1_000),
+                    }
+                })
+                .collect(),
+            macro_releases: Vec::new(),
+            alternative_data: Vec::new(),
+            dividend_declarations: Vec::new(),
+        })
+        .expect("the tape loads")
+    }
+
+    #[test]
+    fn a_tape_that_outlasts_the_roster_review_interval_is_refused_and_one_inside_it_is_not() {
+        // The run that showed why, on the fast brain: a 320-day daily tape
+        // convened its first panel on tape day 103 and every agent was
+        // refused from then on, reported as `failed`. The premise first: the
+        // roster does state an interval, or the check below checks nothing.
+        let interval = shortest_review_interval(now()).expect("the roster states an interval");
+        let too_long = tape_of(interval.as_days_f64().ceil() as i64 + 10);
+        let refusal = refuse_tape_beyond_review(&too_long, now())
+            .expect_err("a tape longer than the review interval was admitted");
+        assert!(
+            refusal.message().contains("lapses") && refusal.message().contains("Shorten"),
+            "the refusal does not say what lapses or what to do: {}",
+            refusal.message()
+        );
+        // And the other half, or the gate refuses everything and proves nothing.
+        refuse_tape_beyond_review(&tape_of(10), now())
+            .expect("a ten-day tape is inside the review interval");
     }
 
     #[test]

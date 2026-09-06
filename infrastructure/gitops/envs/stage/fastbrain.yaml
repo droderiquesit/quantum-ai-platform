@@ -1,0 +1,107 @@
+# Generated shape, reviewed content. One file per environment rather than a
+# kustomize base with replacements, so a reader — and the acceptance suite's
+# parity test, which reads these files without a kustomize binary — sees
+# every concrete value the running service must carry. The catalogue entry
+# in infrastructure/terraform/catalogue.tf is the source of truth for each
+# value here; a disagreement fails the build, not the sync (ADR 0036).
+apiVersion: run.cnrm.cloud.google.com/v1beta1
+kind: RunService
+metadata:
+  name: qip-stage-fastbrain
+  annotations:
+    cnrm.cloud.google.com/deletion-policy: abandon
+    cnrm.cloud.google.com/project-id: unprovisioned
+  labels:
+    platform: qip
+    environment: stage
+    managed_by: config-connector
+    live_capable: 'false'
+    qip-plane: capital-and-risk
+    qip-trust-zone: intelligence
+    qip-traffic-class: trading
+    qip-workload: fastbrain
+spec:
+  projectRef:
+    external: projects/unprovisioned
+  location: europe-west2
+  ingress: INGRESS_TRAFFIC_INTERNAL_ONLY
+  binaryAuthorization:
+    useDefault: true
+  template:
+    serviceAccountRef:
+      external: qip-fastbrain-stage@unprovisioned.iam.gserviceaccount.com
+    vpcAccess:
+      egress: ALL_TRAFFIC
+      networkInterfaces:
+      - networkRef:
+          external: projects/unprovisioned/global/networks/qip-stage
+        subnetworkRef:
+          external: projects/unprovisioned/regions/europe-west2/subnetworks/qip-stage-tz-intelligence
+        tags:
+        - qip-stage-tz-intelligence
+    scaling:
+      minInstanceCount: 1
+      maxInstanceCount: 1
+    maxInstanceRequestConcurrency: 1
+    timeout: 300s
+    executionEnvironment: EXECUTION_ENVIRONMENT_GEN2
+    containers:
+    - name: fastbrain
+      image: qip-fastbrain
+      ports:
+      - containerPort: 8080
+      resources:
+        limits:
+          cpu: '2'
+          memory: 2Gi
+        cpuIdle: false
+        startupCpuBoost: true
+      env:
+      - name: QIP_AUTONOMY_CEILING
+        value: paper_trading
+      - name: QIP_CAPITAL_ENVELOPE_KEY_FILE
+        value: /var/run/secrets/qip/capital-envelope-key/capital-envelope-key
+      - name: QIP_FASTBRAIN_HEALTH_ADDRESS
+        value: 0.0.0.0:8080
+      - name: QIP_STORAGE_TARGET
+        value: memory
+      - name: QIP_UNIVERSE_PATH
+        value: /etc/qip/7ec25303c3f3ecac/universe.json
+      volumeMounts:
+      - name: capital-envelope-key
+        mountPath: /var/run/secrets/qip/capital-envelope-key
+      - name: config-files
+        mountPath: /etc/qip
+      startupProbe:
+        initialDelaySeconds: 2
+        periodSeconds: 3
+        timeoutSeconds: 2
+        failureThreshold: 10
+        httpGet:
+          path: /health
+          port: 8080
+      livenessProbe:
+        periodSeconds: 30
+        timeoutSeconds: 5
+        failureThreshold: 3
+        httpGet:
+          path: /health
+          port: 8080
+    volumes:
+    - name: capital-envelope-key
+      secret:
+        secretRef:
+          external: qip-capital-envelope-key-stage
+        defaultMode: 256
+        items:
+        - path: capital-envelope-key
+          mode: 256
+          versionRef:
+            external: latest
+    - name: config-files
+      gcs:
+        bucket: qip-config-stage-fastbrain-unprovisioned
+        readOnly: true
+  traffic:
+  - type: TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST
+    percent: 100

@@ -30,6 +30,20 @@ has created the service. The API's OTLP drain is inert in every environment —
 An anonymous OpenObserve at the moment of this record serves an empty
 database to anyone who reaches it.
 
+**Corrected 2026-09-05: the service now exists, and the cost is still zero
+for the reason that actually carried the argument.** "No apply has created
+the service" is false — `dev` was applied and OpenObserve was observed
+serving anonymously at its `run.app` URL on 2026-09-04, answering `308` to
+`/web/`, `200` there, and `401` on `/api/default/`. What has *not* changed is
+the load-bearing half: no deployment sets `QIP_OPENOBSERVE_URL`, so nothing
+drains to it, and the database an anonymous visitor reaches is still empty.
+The distinction matters because this record priced anonymity on emptiness,
+not on absence, and emptiness is the thing to keep re-checking. The trigger
+below is unchanged and has been taken up by ADR 0033, which is accepted and
+not applied: the running service is still anonymous, and moving it waits on
+the `dev` control-plane cluster, because the `RunService` and its invoker are
+Config Connector's under ADR 0036 and no cluster reconciles them.
+
 **The moment the drain is wired, the cost is the platform's whole operational
 surface**, served to the internet with no credential: positions and exposure
 by instrument, order flow, fills, reconciliation breaks by direction, halt

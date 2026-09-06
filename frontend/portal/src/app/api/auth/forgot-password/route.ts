@@ -5,6 +5,14 @@ import { forgotPassword } from "@/lib/server/identity";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/**
+ * Request a password reset code.
+ *
+ * @deprecated Retired under ADR 0038 (proposed, not applied). There is no
+ * password to reset once passkeys are the only credential; recovery becomes a
+ * second passkey or an operator-issued one-time re-enrolment code that opens
+ * only the enrolment ceremony. Working until then.
+ */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const refused = requireCsrf(request);
   if (refused) return refused;

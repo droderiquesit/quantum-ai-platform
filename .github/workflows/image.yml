@@ -1,0 +1,735 @@
+# Bake the execution node's boot image from the artefact the pipeline attested.
+#
+# `modules/execution-node/README.md` said, under "No image bake exists":
+#
+#   Nothing in this repository builds the boot image. `deploy.yml` builds and
+#   attests a container image of `qip-edge-node`; turning that, Envoy and the
+#   Ops Agent into a Compute Engine image with the kernel command line above
+#   is a build step that has not been written.
+#
+# This is that build step. It produces one `projects/<project>/global/images/…`
+# self-link, in the exact form `var.boot_image`'s validation admits, and prints
+# it. Nothing here edits a tfvars, applies anything, or creates a node: a
+# person reads the self-link out of the run and decides.
+#
+# ## Where the trust comes from
+#
+# **The image is built from the signed artefact and never from source.** There
+# is no compiler step and no container build anywhere below — the acceptance
+# suite refuses either by name, and it reads this file whole, which is why the
+# names are not written out even in a comment saying they are absent.
+# `deploy.yml`
+# already builds, scans, pushes, signs and attests `qip-edge-node`; this job
+# resolves that image's digest, **refuses to continue unless the environment's
+# attestor has signed it**, and extracts the binary out of it with crane. An
+# image that recompiled the binary during the bake would have no relationship
+# to anything that was signed, and the attestation chain would end at the
+# container registry rather than at the machine.
+#
+# The same applies to Envoy. Its digest is read out of
+# `infrastructure/egress/vendored-images.txt` — the one file `vendor.yml`
+# mirrors from and `modules/egress-proxy` reads the running proxy's digest out
+# of — and the mirrored copy in this environment's registry must be attested
+# before a byte of it is used.
+#
+# The one input that is not an attested container image is the Ops Agent's
+# Debian package, pinned by version and by sha256 below. It is fetched by the
+# runner, verified there, and staged into the payload, so the builder machine
+# — which has no route to the internet — installs bytes this file's git
+# history accounts for. `curl | bash` of Google's repository-adding script is
+# the documented way to install it and is not used here: an unpinned third
+# party in the trusted computing base of a trading machine is the thing
+# `vendored-images.txt` exists to refuse.
+#
+# ## What Binary Authorization can and cannot do here
+#
+# Nothing admits a Compute Engine image. §41.4's whole point is that nothing
+# sits between the binary and the kernel, and admission control is something
+# that sits in between — `modules/execution-node/README.md` says so plainly
+# and this workflow does not pretend otherwise. What survives is the *signing*
+# half: the bytes that go into the image are bytes the attestor signed, this
+# job refuses to proceed when they are not, and the image records every input
+# digest in its own description and in `/etc/qip/boot-image-manifest` on the
+# disk. That is a chain of custody a person can check. It is not admission
+# control and must not be described as such.
+#
+# ## Why this is not in vendor.yml and not in deploy.yml
+#
+# `vendor.yml` mirrors third-party *container* images by digest and attests
+# them; its trigger is a change to the vendored list and its output is a
+# registry copy. `deploy.yml` runs automatically after ci and must never
+# create a billable machine. This creates a Compute Engine instance, an image
+# and a disk, and its output is a value a person pastes into a reviewed tfvars
+# diff. So: its own workflow, manual dispatch only, and prod refused outright
+# — the same shape as `infra.yml`, which is the other workflow that creates
+# infrastructure.
+#
+# Nothing here is hand-configured. Every value authentication needs is a pure
+# function of the project id and number recorded in
+# `infrastructure/environments/<env>/terraform.tfvars`, exactly as in
+# `deploy.yml` and `vendor.yml`. There is no repository variable in this file
+# and `no_workflow_depends_on_a_repository_variable` refuses one.
+name: image
+
+on:
+  # Manual dispatch only. An image bake creates a machine, and a machine
+  # created by a push is a bill nobody decided on.
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Which environment's registry, attestor and project. prod is refused — ADR 0035 authorises one node, in dev."
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - test
+          - stage
+      machine_type:
+        description: "The shape the image is built for. The kernel's isolated-core range is derived from it, so an image is valid for one shape only."
+        required: true
+        default: "c3-highcpu-8"
+        type: choice
+        options:
+          - c3-highcpu-8
+          - c3-highcpu-22
+          - c3d-highcpu-8
+          - c3d-highcpu-16
+      base_image:
+        description: "Full self-link of the Debian base to build on, e.g. projects/debian-cloud/global/images/debian-12-bookworm-vYYYYMMDD. A family is refused: it is a moving pointer."
+        required: true
+        type: string
+      commit:
+        description: "The commit whose attested qip-edge-node image to bake in. Defaults to the dispatched ref's commit."
+        required: false
+        default: ""
+        type: string
+      hugepages_gb:
+        description: "Gigabytes of 1 GiB huge pages the image preallocates. Must be at least modules/execution-node's required_hugepages_gb, which defaults to 1."
+        required: false
+        default: "1"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # One bake at a time per environment. Two racing bakes would name their
+  # instances the same thing and the second would fail on the first's.
+  group: image-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  TARGET_ENVIRONMENT: ${{ inputs.environment }}
+  BAKE_SHA: ${{ inputs.commit || github.sha }}
+  # Pinned by version and checksum, like every other tool this pipeline
+  # downloads. The same pin `vendor.yml` carries, for the same tool.
+  CRANE_VERSION: v0.22.0
+  CRANE_SHA256: edb74d53fad9a596860f59d1c5d04a43dfb5f441dc71f57060dd0bf39483c833
+  # The Ops Agent, pinned to one build. `google-cloud-ops-agent.service` is
+  # what the node's startup script refuses to boot without, and its Prometheus
+  # receiver is what carries every `qip_edge_*` series to Cloud Monitoring.
+  # The version, the path and the digest were read from the repository's own
+  # `Packages` index and the download was verified against it; moving to a
+  # newer agent is an edit to these three lines, which is a line a reviewer
+  # sees.
+  OPS_AGENT_VERSION: 2.70.0~debian12
+  OPS_AGENT_PATH: pool/google-cloud-ops-agent-bookworm-all/google-cloud-ops-agent_2.70.0~debian12_amd64_573fb7f311d94efe89327c6de168ed7e.deb
+  OPS_AGENT_SHA256: e6b7811beb96ecc865bfe1f52644959214afe99c94a606f905b69d405fa45255
+
+jobs:
+  bake:
+    name: bake the execution-node image for ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The OIDC token. This is the whole reason there is no key.
+      id-token: write
+    steps:
+      - name: refuse what this workflow must never do
+        run: |
+          set -euo pipefail
+          # Defence in depth behind the choice list: a fork of this file with
+          # prod added to the options still stops here. ADR 0035 authorises
+          # one node, in dev, and says explicitly that it authorises nothing
+          # in prod.
+          if [ "${TARGET_ENVIRONMENT}" = "prod" ]; then
+            echo "prod images are not baked from this workflow." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BAKE_SHA }}
+
+      # Refused before anything is created, and refused for the same reason
+      # `var.boot_image` refuses the same shapes: this machine has no
+      # admission controller between the image and the kernel, so the image
+      # reference is the whole of the identity check. A base named by family
+      # is a base whoever last pushed to that family chose.
+      #
+      # The machine type is checked against the module's own list rather than
+      # against a copy here. A second list drifts, and the drift would be an
+      # image built for a shape Terraform will not accept.
+      - name: check the inputs this workflow will not guess
+        id: inputs
+        env:
+          BASE_IMAGE: ${{ inputs.base_image }}
+          MACHINE_TYPE: ${{ inputs.machine_type }}
+          HUGEPAGES_GB: ${{ inputs.hugepages_gb }}
+        run: |
+          set -euo pipefail
+          if printf '%s' "$BASE_IMAGE" | grep -q '/family/'; then
+            echo "base_image names an image family. A family is a moving pointer, not an immutable image; name the image itself." >&2
+            echo "  gcloud compute images list --project debian-cloud --filter='family=debian-12' --format='value(selfLink)'" >&2
+            exit 1
+          fi
+          # The same regex modules/execution-node/variables.tf applies to
+          # boot_image: a bare name or a partial URL resolves against a
+          # project nothing states, so it names a different image depending
+          # on who reads it.
+          if ! printf '%s' "$BASE_IMAGE" | grep -Eq '^(https://www\.googleapis\.com/compute/v1/)?projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/global/images/[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'; then
+            echo "base_image must be a full image self-link — projects/<project>/global/images/<image>." >&2
+            exit 1
+          fi
+          variables="infrastructure/terraform/modules/execution-node/variables.tf"
+          permitted="$(sed -n '/variable "machine_type"/,/^}/p' "$variables" | sed -n 's/^ *"\([a-z0-9-]*\)",$/\1/p')"
+          [ -n "$permitted" ] || { echo "no permitted machine types were read out of $variables; its shape has changed and this check has stopped checking" >&2; exit 1; }
+          if ! printf '%s\n' "$permitted" | grep -qx "$MACHINE_TYPE"; then
+            echo "$MACHINE_TYPE is not one of the shapes ${variables} permits:" >&2
+            printf '  %s\n' $permitted >&2
+            exit 1
+          fi
+          # The module's own derivation, and deliberately the same arithmetic:
+          # §41.3 gives cores 0 and 1 to the OS, the telemetry drainer and the
+          # control-plane client, and isolates the rest. Two spellings of this
+          # would eventually disagree, and the disagreement is an isolcpus
+          # range naming cores the machine does not have — which the kernel
+          # ignores, leaving a node that boots, passes every check anybody
+          # wrote, and schedules the hot path wherever it likes.
+          vcpus="$(printf '%s' "$MACHINE_TYPE" | grep -oE '[0-9]+$')"
+          isolcpus="2-$((vcpus - 1))"
+          case "$HUGEPAGES_GB" in
+            ''|*[!0-9]*) echo "hugepages_gb must be a whole number of gigabytes" >&2; exit 1 ;;
+          esac
+          [ "$HUGEPAGES_GB" -ge 1 ] || { echo "requiring zero huge pages is not a requirement; modules/execution-node refuses it too" >&2; exit 1; }
+          echo "building for $MACHINE_TYPE: isolcpus=$isolcpus, ${HUGEPAGES_GB} GiB of huge pages"
+          {
+            echo "isolcpus=$isolcpus"
+            echo "vcpus=$vcpus"
+          } >> "$GITHUB_OUTPUT"
+
+      # Identical derivation to deploy.yml and vendor.yml, from the same
+      # committed tfvars, for the identical reason: nothing here may depend on
+      # a repository variable. One of those was once set from a shell whose
+      # `terraform` printed apt install advice, and every run afterwards failed
+      # on an audience nobody could explain.
+      #
+      # This authenticates as `qip-infra-<env>` rather than the deploy
+      # account, and the choice is not incidental. Baking an image creates a
+      # Compute Engine instance, a disk and an image; `qip-ci-<env>` holds
+      # `run.developer`, `logging.viewer` and a three-permission custom role
+      # for a rolling replacement, and deliberately cannot create
+      # infrastructure — that refusal is most of its value and widening it to
+      # make a bake work would spend it. `qip-infra-<env>` already holds every
+      # role this workflow needs (`modules/cicd`'s `infra_roles`:
+      # compute.admin for the instance, the disk and the image;
+      # artifactregistry.admin to read the two images; containeranalysis.admin
+      # and binaryauthorization.attestorsAdmin to read the attestations; and a
+      # custom storage role carrying `storage.objects.create`), so **no grant
+      # is added anywhere for this workflow to exist**. Its blast radius is
+      # the one `modules/cicd` already documents, and the bound is the same:
+      # manual dispatch, prod refused.
+      - name: derive the identity from the tfvars
+        id: identity
+        run: |
+          set -euo pipefail
+          tfvars="infrastructure/environments/${TARGET_ENVIRONMENT}/terraform.tfvars"
+          [ -f "$tfvars" ] || { echo "no tfvars at $tfvars" >&2; exit 1; }
+          project="$(sed -n 's/^project_id[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          number="$(sed -n 's/^project_number[[:space:]]*=[[:space:]]*\([0-9]*\)/\1/p' "$tfvars" | head -1)"
+          region="$(sed -n 's/^region[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          [ -n "$region" ] || region="europe-west2"   # the variable's default
+          [ -n "$project" ] && [ -n "$number" ] || {
+            echo "$tfvars carries no project_id/project_number" >&2
+            exit 1
+          }
+          if [ "$project" = "unprovisioned" ]; then
+            echo "environment '${TARGET_ENVIRONMENT}' is not provisioned: its tfvars carry the 'unprovisioned' marker." >&2
+            echo "Create a project for it, record the id and number in $tfvars, then bake." >&2
+            exit 1
+          fi
+          # The bake's own infrastructure exists only where an environment
+          # named a range. Read here so the preflight can say which file to
+          # edit rather than failing on a bucket that is not there.
+          bake_cidr="$(sed -n 's/^image_bake_subnet_cidr[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          ring="qip-${TARGET_ENVIRONMENT}"
+          {
+            echo "project=$project"
+            echo "region=$region"
+            echo "zone=${region}-a"
+            echo "provider=projects/$number/locations/global/workloadIdentityPools/qip-github-${TARGET_ENVIRONMENT}/providers/github"
+            echo "account=qip-infra-${TARGET_ENVIRONMENT}@$project.iam.gserviceaccount.com"
+            echo "attestor=${ring}-build"
+            echo "prefix=${region}-docker.pkg.dev/$project/qip-${TARGET_ENVIRONMENT}"
+            echo "bake_cidr=$bake_cidr"
+            echo "bucket=qip-${TARGET_ENVIRONMENT}-image-bake-$project"
+            echo "builder_account=qip-${TARGET_ENVIRONMENT}-image-builder@$project.iam.gserviceaccount.com"
+            echo "subnet=qip-${TARGET_ENVIRONMENT}-image-bake"
+            echo "tag=qip-${TARGET_ENVIRONMENT}-image-bake-builder"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: authenticate without a key
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ steps.identity.outputs.provider }}
+          service_account: ${{ steps.identity.outputs.account }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          # `binauthz attestations list` is on the beta track, as it is in
+          # deploy.yml and vendor.yml.
+          install_components: beta
+
+      - name: let crane read artifact registry
+        run: gcloud auth configure-docker "${{ steps.identity.outputs.region }}-docker.pkg.dev" --quiet
+
+      # Pinned by version and checksum. A tool that copies bytes between
+      # registries is exactly the wrong place to trust a moving tag.
+      - name: install crane
+        run: |
+          set -euo pipefail
+          curl -sSLo /tmp/crane.tar.gz \
+            "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz"
+          echo "${CRANE_SHA256}  /tmp/crane.tar.gz" | sha256sum -c -
+          sudo tar -C /usr/local/bin -xzf /tmp/crane.tar.gz crane
+
+      # The chain of custody, and the step this whole workflow is arranged
+      # around. Neither binary is used until the environment's attestor has
+      # signed the exact bytes it comes out of.
+      #
+      # `attestations list` returning nothing is the refusal. It is not an
+      # error to be retried and not a warning: an unattested artefact is one
+      # `deploy.yml` did not push, or one it pushed and did not sign, and a
+      # boot image built from either has a provenance story with a hole in it
+      # that nothing downstream can see. There is no admission controller on
+      # the node to catch it later.
+      - name: the artefacts this image is built from are ones the pipeline attested
+        id: artefacts
+        env:
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+          ATTESTOR: ${{ steps.identity.outputs.attestor }}
+          PREFIX: ${{ steps.identity.outputs.prefix }}
+        run: |
+          set -euo pipefail
+
+          require_attested() {
+            local image="$1" what="$2"
+            local found
+            found="$(gcloud container binauthz attestations list \
+              --project "${GCP_PROJECT}" \
+              --attestor "${ATTESTOR}" \
+              --attestor-project "${GCP_PROJECT}" \
+              --artifact-url "${image}" \
+              --format='value(name)')"
+            if [ -z "$found" ]; then
+              echo "${what} is not attested by ${ATTESTOR}:" >&2
+              echo "  ${image}" >&2
+              echo "Nothing is baked from bytes this pipeline did not sign. Run deploy.yml for this commit (or vendor.yml for the vendored list) and bake again." >&2
+              exit 1
+            fi
+            echo "${what} is attested: ${image}"
+          }
+
+          node_digest="$(gcloud artifacts docker images describe \
+            "${PREFIX}/qip-edge-node:${BAKE_SHA}" \
+            --format='value(image_summary.digest)' 2>/dev/null || true)"
+          if [ -z "$node_digest" ]; then
+            echo "the registry holds no qip-edge-node:${BAKE_SHA}. deploy.yml builds it; bake a commit it has already built." >&2
+            exit 1
+          fi
+          require_attested "${PREFIX}/qip-edge-node@${node_digest}" "qip-edge-node"
+
+          # Envoy's digest comes out of the one committed list — the same file
+          # vendor.yml mirrors from and modules/egress-proxy reads the running
+          # proxy's digest out of — so the proxy in the boot image and the
+          # proxy in every Cloud Run sidecar are the same reviewed bytes and
+          # cannot fork.
+          envoy_line="$(grep -c ' vendor/envoy ' infrastructure/egress/vendored-images.txt || true)"
+          if [ "$envoy_line" != "1" ]; then
+            echo "infrastructure/egress/vendored-images.txt names ${envoy_line} entries for vendor/envoy; exactly one, pinned by digest, is what vendor.yml mirrors and modules/egress-proxy runs." >&2
+            exit 1
+          fi
+          envoy_digest="$(grep ' vendor/envoy ' infrastructure/egress/vendored-images.txt | awk '{print $1}' | cut -d@ -f2)"
+          case "$envoy_digest" in
+            sha256:*) ;;
+            *) echo "the vendor/envoy entry names no sha256 digest" >&2; exit 1 ;;
+          esac
+          require_attested "${PREFIX}/vendor/envoy@${envoy_digest}" "the vendored Envoy"
+
+          {
+            echo "node_digest=$node_digest"
+            echo "envoy_digest=$envoy_digest"
+          } >> "$GITHUB_OUTPUT"
+
+      # Out of the attested images, never out of the source tree. There is no
+      # compiler step in this workflow and there must never be one: a binary
+      # rebuilt here is a binary nothing signed, however identical the source.
+      #
+      # `crane export` flattens an image to a tarball, so this reads the two
+      # files by the paths the images actually put them at:
+      # `infrastructure/docker/Dockerfile` copies the static binary to `/qip`
+      # on scratch, and the vendored Envoy image carries
+      # `usr/local/bin/envoy`.
+      - name: extract the binaries from the attested images
+        env:
+          PREFIX: ${{ steps.identity.outputs.prefix }}
+          NODE_DIGEST: ${{ steps.artefacts.outputs.node_digest }}
+          ENVOY_DIGEST: ${{ steps.artefacts.outputs.envoy_digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p payload
+          crane export --platform linux/amd64 "${PREFIX}/qip-edge-node@${NODE_DIGEST}" - \
+            | tar -xO qip > payload/qip-edge-node
+          crane export --platform linux/amd64 "${PREFIX}/vendor/envoy@${ENVOY_DIGEST}" - \
+            | tar -xO usr/local/bin/envoy > payload/envoy
+          chmod 0755 payload/qip-edge-node payload/envoy
+
+          # What was extracted is what was expected. A `tar -xO` of a member
+          # that is not there produces an empty file and exits zero on some
+          # tars, so size and file type are checked rather than assumed — and
+          # the static/dynamic split is checked because it is the property the
+          # node's base image has to satisfy. `qip-edge-node` is a static musl
+          # binary from a scratch image and must have no ELF interpreter;
+          # Envoy is dynamically linked against glibc, which the Debian base
+          # provides.
+          for binary in qip-edge-node envoy; do
+            [ -s "payload/${binary}" ] || { echo "payload/${binary} came out empty; the image no longer carries it at the path this step reads" >&2; exit 1; }
+            head -c 4 "payload/${binary}" | grep -q "ELF" || { echo "payload/${binary} is not an ELF executable" >&2; exit 1; }
+          done
+          if readelf -l payload/qip-edge-node | grep -q INTERP; then
+            echo "qip-edge-node has an ELF interpreter, so it is not the static musl binary infrastructure/docker/Dockerfile produces. The image contract assumes nothing dynamic is needed for the binary itself." >&2
+            exit 1
+          fi
+          readelf -l payload/envoy | grep -q INTERP || { echo "the vendored envoy has no ELF interpreter; the extraction read the wrong file" >&2; exit 1; }
+          ls -l payload/
+
+      # The one input that is not an attested container image. Pinned by
+      # version and by digest, fetched here where there is a route to the
+      # internet, and verified before it is staged — the builder machine has
+      # no route to anything but Cloud Storage over the restricted VIP, so
+      # this is the only place it can come from.
+      - name: stage the pinned ops agent
+        run: |
+          set -euo pipefail
+          curl -sSLo payload/google-cloud-ops-agent.deb \
+            "https://packages.cloud.google.com/apt/${OPS_AGENT_PATH}"
+          echo "${OPS_AGENT_SHA256}  payload/google-cloud-ops-agent.deb" | sha256sum -c -
+          echo "staged google-cloud-ops-agent ${OPS_AGENT_VERSION}"
+
+      # The payload: three binaries, a package, a manifest of their digests,
+      # and nothing else. Named by its own sha256 when it is uploaded, which
+      # is not decoration — see the upload step.
+      - name: build the payload
+        id: payload
+        env:
+          NODE_DIGEST: ${{ steps.artefacts.outputs.node_digest }}
+          ENVOY_DIGEST: ${{ steps.artefacts.outputs.envoy_digest }}
+          ISOLCPUS: ${{ steps.inputs.outputs.isolcpus }}
+        run: |
+          set -euo pipefail
+          cp infrastructure/images/execution-node/qip-fetch-secret payload/qip-fetch-secret
+          chmod 0755 payload/qip-fetch-secret
+
+          # A digest per file, checked again on the builder. The outer hash
+          # proves the tarball is the one this run uploaded; this proves each
+          # file inside it is the one this run put there, which is what lets
+          # the image's own manifest name a digest per file.
+          ( cd payload && sha256sum qip-edge-node envoy qip-fetch-secret google-cloud-ops-agent.deb > MANIFEST.sha256 )
+          cat payload/MANIFEST.sha256
+
+          # What the image will say about itself, on the image, at
+          # /etc/qip/boot-image-manifest.
+          {
+            echo "# The execution node's boot image. Built by .github/workflows/image.yml."
+            echo "repository=${{ github.repository }}"
+            echo "commit=${BAKE_SHA}"
+            echo "run=${GITHUB_RUN_ID}"
+            echo "environment=${TARGET_ENVIRONMENT}"
+            echo "machine_type=${{ inputs.machine_type }}"
+            echo "base_image=${{ inputs.base_image }}"
+            echo "qip_edge_node=${NODE_DIGEST}"
+            echo "envoy=${ENVOY_DIGEST}"
+            echo "ops_agent=${OPS_AGENT_VERSION} sha256:${OPS_AGENT_SHA256}"
+          } > provenance.txt
+          cat provenance.txt
+
+          tar -czf payload.tar.gz -C payload .
+          sha256="$(sha256sum payload.tar.gz | awk '{print $1}')"
+          echo "payload_sha256=${sha256}" >> "$GITHUB_OUTPUT"
+          echo "payload sha256 ${sha256}"
+
+      # Refused with the file to edit, rather than failing on a bucket that is
+      # not there. `modules/image-bake` creates all three, and it creates
+      # nothing at all until an environment names a range — a subnet created
+      # because a variable had a default is a subnet nobody decided to create.
+      - name: the bake's own infrastructure exists
+        env:
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+          BAKE_CIDR: ${{ steps.identity.outputs.bake_cidr }}
+          BUCKET: ${{ steps.identity.outputs.bucket }}
+          BUILDER_ACCOUNT: ${{ steps.identity.outputs.builder_account }}
+          SUBNET: ${{ steps.identity.outputs.subnet }}
+          REGION: ${{ steps.identity.outputs.region }}
+        run: |
+          set -euo pipefail
+          tfvars="infrastructure/environments/${TARGET_ENVIRONMENT}/terraform.tfvars"
+          if [ -z "$BAKE_CIDR" ]; then
+            echo "${TARGET_ENVIRONMENT} bakes no image: ${tfvars} sets no image_bake_subnet_cidr, so module.image_bake creates nothing." >&2
+            echo "Set image_bake_subnet_cidr in ${tfvars} to a free /28 that overlaps no trust zone, no console subnet and no execution node's block, dispatch infra.yml with action=up for ${TARGET_ENVIRONMENT}, then dispatch this workflow again." >&2
+            exit 1
+          fi
+          missing=0
+          gcloud storage buckets describe "gs://${BUCKET}" --project "${GCP_PROJECT}" --format='value(name)' >/dev/null 2>&1 \
+            || { echo "no staging bucket gs://${BUCKET}" >&2; missing=1; }
+          gcloud iam service-accounts describe "${BUILDER_ACCOUNT}" --project "${GCP_PROJECT}" --format='value(email)' >/dev/null 2>&1 \
+            || { echo "no builder identity ${BUILDER_ACCOUNT}" >&2; missing=1; }
+          gcloud compute networks subnets describe "${SUBNET}" --project "${GCP_PROJECT}" --region "${REGION}" --format='value(name)' >/dev/null 2>&1 \
+            || { echo "no builder subnet ${SUBNET} in ${REGION}" >&2; missing=1; }
+          if [ "$missing" != "0" ]; then
+            echo "${tfvars} names image_bake_subnet_cidr=${BAKE_CIDR}, so module.image_bake is declared and has not been applied." >&2
+            echo "Dispatch infra.yml with action=up for ${TARGET_ENVIRONMENT} and read its plan, then bake again." >&2
+            exit 1
+          fi
+          echo "the staging bucket, the builder identity and the builder subnet all exist."
+
+      # Content-addressed, and that is load-bearing rather than tidy.
+      #
+      # This workflow authenticates as `qip-infra-<env>`, whose custom storage
+      # role in `modules/cicd` carries `storage.objects.create` and
+      # deliberately not `storage.objects.delete`, so that nothing it runs can
+      # delete from the evidence bucket. Overwriting an object in Cloud
+      # Storage requires the delete permission — so a bake that wrote
+      # `payload.tar.gz` twice would fail the second time with a 403 naming a
+      # permission this account is never going to hold. A name derived from
+      # the bytes is never an overwrite, and the same payload uploaded twice
+      # is the same object. The bucket's lifecycle rule expires them, because
+      # nothing else can.
+      - name: stage the payload where the builder can read it
+        id: staged
+        env:
+          BUCKET: ${{ steps.identity.outputs.bucket }}
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+          PAYLOAD_SHA256: ${{ steps.payload.outputs.payload_sha256 }}
+        run: |
+          set -euo pipefail
+          object="payload-${PAYLOAD_SHA256}.tar.gz"
+          if gcloud storage objects describe "gs://${BUCKET}/${object}" --project "${GCP_PROJECT}" --format='value(name)' >/dev/null 2>&1; then
+            echo "gs://${BUCKET}/${object} already holds these exact bytes; not re-uploading."
+          else
+            gcloud storage cp payload.tar.gz "gs://${BUCKET}/${object}" --project "${GCP_PROJECT}"
+          fi
+          # The media URL, because the builder reads it with the JSON API and
+          # its own token rather than with a tool the base image does not have.
+          echo "url=https://storage.googleapis.com/storage/v1/b/${BUCKET}/o/${object}?alt=media" >> "$GITHUB_OUTPUT"
+          echo "object=${object}" >> "$GITHUB_OUTPUT"
+
+      # The builder: one machine, no external address, the identity whose only
+      # grant is reading that one bucket, and the network tag both firewall
+      # rules target. A machine created without the tag has no rules at all
+      # and reaches whatever the VPC's implied allow-all permits, which is why
+      # the tag is derived from the module rather than typed here twice.
+      #
+      # Shielded, like the node it builds an image for. Secure boot survives
+      # this bake because nothing here replaces a signed binary: the drop-in
+      # under /etc/default/grub.d and `update-grub` regenerate grub.cfg, and
+      # the shim and grub images Debian signed are untouched.
+      - name: create the builder
+        id: builder
+        env:
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+          ZONE: ${{ steps.identity.outputs.zone }}
+          SUBNET: ${{ steps.identity.outputs.subnet }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          BUILDER_ACCOUNT: ${{ steps.identity.outputs.builder_account }}
+          PAYLOAD_URL: ${{ steps.staged.outputs.url }}
+          PAYLOAD_SHA256: ${{ steps.payload.outputs.payload_sha256 }}
+          ISOLCPUS: ${{ steps.inputs.outputs.isolcpus }}
+        run: |
+          set -euo pipefail
+          instance="qip-image-bake-${GITHUB_RUN_ID}"
+          echo "instance=${instance}" >> "$GITHUB_OUTPUT"
+          echo "disk=${instance}" >> "$GITHUB_OUTPUT"
+          gcloud compute instances create "${instance}" \
+            --project "${GCP_PROJECT}" --zone "${ZONE}" \
+            --machine-type e2-standard-2 \
+            --image "${{ inputs.base_image }}" \
+            --boot-disk-size 20GB --boot-disk-type pd-balanced \
+            --boot-disk-device-name "${instance}" \
+            --no-boot-disk-auto-delete \
+            --subnet "${SUBNET}" --no-address \
+            --tags "${TAG}" \
+            --service-account "${BUILDER_ACCOUNT}" \
+            --scopes https://www.googleapis.com/auth/devstorage.read_only \
+            --shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring \
+            --metadata-from-file "startup-script=infrastructure/images/execution-node/provision.sh,qip-provenance=provenance.txt" \
+            --metadata "qip-payload-url=${PAYLOAD_URL},qip-payload-sha256=${PAYLOAD_SHA256},qip-isolcpus=${ISOLCPUS},qip-hugepages-gb=${{ inputs.hugepages_gb }}" \
+            --labels "qip-role=image-bake,qip-environment=${TARGET_ENVIRONMENT}" \
+            --quiet
+
+      # The builder answers no port and has no external address, so the serial
+      # console is the only channel. `provision.sh` prints exactly one of two
+      # sentinels and then shuts down; a machine that stopped without printing
+      # either is a machine that died before the script ran, which is a
+      # different failure and reads as one here.
+      - name: wait for the provisioning to finish
+        env:
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+          ZONE: ${{ steps.identity.outputs.zone }}
+          INSTANCE: ${{ steps.builder.outputs.instance }}
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 1800 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            serial="$(gcloud compute instances get-serial-port-output "${INSTANCE}" \
+              --project "${GCP_PROJECT}" --zone "${ZONE}" --port 1 2>/dev/null || true)"
+            if printf '%s' "$serial" | grep -q 'QIP-IMAGE-BAKE-RESULT: OK'; then
+              echo "the builder reported success."
+              printf '%s\n' "$serial" | grep 'qip-image-bake:' || true
+              exit 0
+            fi
+            if printf '%s' "$serial" | grep -q 'QIP-IMAGE-BAKE-RESULT: FAILED'; then
+              echo "the builder refused to bake. Its own output:" >&2
+              printf '%s\n' "$serial" | grep -E 'qip-image-bake:|QIP-IMAGE-BAKE-RESULT:' >&2
+              exit 1
+            fi
+            sleep 20
+          done
+          echo "the builder printed neither sentinel within 30 minutes; no image is created." >&2
+          gcloud compute instances get-serial-port-output "${INSTANCE}" \
+            --project "${GCP_PROJECT}" --zone "${ZONE}" --port 1 | tail -50 >&2 || true
+          exit 1
+
+      # The instance goes and its boot disk stays: an image cannot be created
+      # from a disk attached to a running machine, and the disk is what the
+      # image is made of. Both were created by this run, minutes ago, and
+      # nothing else in the project is named or touched.
+      #
+      # `always()` because a builder left running after a failed bake bills
+      # for a build nobody is going to use. The step id is written before the
+      # create command, so an instance that was never created reaches here
+      # with a name; the delete then answers "not found" and that is reported
+      # rather than turned into a second failure on top of the real one.
+      - name: retire the builder, keep its disk
+        if: always() && steps.builder.outputs.instance != ''
+        env:
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+          ZONE: ${{ steps.identity.outputs.zone }}
+          INSTANCE: ${{ steps.builder.outputs.instance }}
+        run: |
+          set -euo pipefail
+          if gcloud compute instances delete "${INSTANCE}" \
+            --project "${GCP_PROJECT}" --zone "${ZONE}" --quiet; then
+            echo "deleted the builder instance ${INSTANCE}; its boot disk is kept for the image."
+          else
+            echo "no builder instance ${INSTANCE} to delete; the create step did not get that far."
+          fi
+
+      # The image. **No `--family`**, deliberately and permanently: a family
+      # is a moving pointer, `var.boot_image` refuses one by name, and an
+      # image published into a family would be exactly the value that
+      # validation exists to keep out of a tfvars.
+      #
+      # Its guest OS features are not cosmetic. `modules/execution-node`'s
+      # template sets `nic_type = "GVNIC"` and a full shielded config, and
+      # Compute Engine refuses an instance whose image does not declare
+      # `GVNIC` and `UEFI_COMPATIBLE`. An image baked without them plans
+      # cleanly and fails at apply, after the subnet, the identity and four
+      # IAM bindings already exist — which is the failure this whole file is
+      # arranged to move earlier.
+      - name: create the image
+        id: image
+        env:
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+          ZONE: ${{ steps.identity.outputs.zone }}
+          DISK: ${{ steps.builder.outputs.disk }}
+          NODE_DIGEST: ${{ steps.artefacts.outputs.node_digest }}
+          ENVOY_DIGEST: ${{ steps.artefacts.outputs.envoy_digest }}
+          ISOLCPUS: ${{ steps.inputs.outputs.isolcpus }}
+        run: |
+          set -euo pipefail
+          short="$(printf '%s' "${BAKE_SHA}" | cut -c1-12)"
+          name="qip-execution-node-${{ inputs.machine_type }}-${short}-r${GITHUB_RUN_NUMBER}"
+          gcloud compute images create "${name}" \
+            --project "${GCP_PROJECT}" \
+            --source-disk "${DISK}" --source-disk-zone "${ZONE}" \
+            --guest-os-features "UEFI_COMPATIBLE,GVNIC,VIRTIO_SCSI_MULTIQUEUE" \
+            --description "qip execution node. commit=${BAKE_SHA} run=${GITHUB_RUN_ID} base=${{ inputs.base_image }} qip-edge-node=${NODE_DIGEST} envoy=${ENVOY_DIGEST} ops-agent=${OPS_AGENT_VERSION} isolcpus=${ISOLCPUS} hugepages_gb=${{ inputs.hugepages_gb }}" \
+            --labels "qip-environment=${TARGET_ENVIRONMENT},qip-machine-type=${{ inputs.machine_type }},qip-commit=${short},qip-isolcpus=${ISOLCPUS},qip-hugepages-gb=${{ inputs.hugepages_gb }},qip-run=${GITHUB_RUN_ID}" \
+            --quiet
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "self_link=projects/${GCP_PROJECT}/global/images/${name}" >> "$GITHUB_OUTPUT"
+
+      # The disk was created by this run, for this image, and has no other
+      # reader. It goes whether or not the image was created: a bake that
+      # refused leaves a half-provisioned disk nothing may be built from, and
+      # a disk kept "just in case" is a standing cost against a re-run that
+      # would rebuild it in eight minutes from the same content-addressed
+      # payload. A failure between the instance delete and the image create
+      # therefore costs a re-run, which is the trade this comment is stating
+      # rather than hiding.
+      - name: release the builder's disk
+        if: always() && steps.builder.outputs.disk != ''
+        env:
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+          ZONE: ${{ steps.identity.outputs.zone }}
+          DISK: ${{ steps.builder.outputs.disk }}
+        run: |
+          set -euo pipefail
+          gcloud compute disks delete "${DISK}" \
+            --project "${GCP_PROJECT}" --zone "${ZONE}" --quiet || \
+            echo "the builder's disk ${DISK} is still there; delete it by hand once the image above exists."
+
+      # What a person does with this, spelled out, because the two things this
+      # run does not do are the two things somebody will assume it did.
+      - name: what was built, and what it does not unblock
+        env:
+          SELF_LINK: ${{ steps.image.outputs.self_link }}
+          NODE_DIGEST: ${{ steps.artefacts.outputs.node_digest }}
+          ENVOY_DIGEST: ${{ steps.artefacts.outputs.envoy_digest }}
+          ISOLCPUS: ${{ steps.inputs.outputs.isolcpus }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## ${TARGET_ENVIRONMENT}: execution-node boot image"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| boot_image | \`${SELF_LINK}\` |"
+            echo "| built from commit | \`${BAKE_SHA}\` |"
+            echo "| qip-edge-node | \`${NODE_DIGEST}\` (attested) |"
+            echo "| envoy | \`${ENVOY_DIGEST}\` (attested, vendored) |"
+            echo "| ops agent | \`${OPS_AGENT_VERSION}\` |"
+            echo "| machine type | \`${{ inputs.machine_type }}\`, isolcpus=\`${ISOLCPUS}\` |"
+            echo "| huge pages | ${{ inputs.hugepages_gb }} GiB |"
+            echo
+            echo "The image is valid for \`${{ inputs.machine_type }}\` and no other shape:"
+            echo "the isolated-core range is in its kernel command line, and a node on a"
+            echo "different shape refuses to start rather than running unisolated."
+            echo
+            echo "**This run deployed nothing.** \`execution_nodes\` is still \`{}\` in every"
+            echo "environment and this workflow does not edit a tfvars. Two things stood"
+            echo "between ADR 0035 and a node; this is one of them."
+            echo
+            echo "The other is \`region_allocation\` — the ceiling on the capital the cell may"
+            echo "hold in reservation. It has no default anywhere on purpose: a default is a"
+            echo "number nobody chose, and it is the one number in a cell's envelope a"
+            echo "reviewer has to have read. Nothing here may pick it."
+            echo
+            echo "So: a person writes the \`execution_nodes\` entry in"
+            echo "\`infrastructure/environments/${TARGET_ENVIRONMENT}/terraform.tfvars\` with the"
+            echo "self-link above and an allocation they chose, dispatches \`infra.yml\` with"
+            echo "\`action=plan\`, and reads the plan. ADR 0020 step 3 asks for that plan as"
+            echo "the evidence."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "boot_image = \"${SELF_LINK}\""

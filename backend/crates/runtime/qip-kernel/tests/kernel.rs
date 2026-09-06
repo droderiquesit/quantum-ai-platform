@@ -1058,3 +1058,240 @@ fn the_panel_records_the_agents_that_ran_and_records_no_denial_it_did_not_have()
     );
     Ok(())
 }
+
+#[test]
+fn a_lapsed_roster_is_recorded_as_an_unauthorised_organisation_and_not_as_eighteen_failures()
+-> Result<()> {
+    // The failure: every manifest is reviewed at assembly and expires after
+    // its ninety-day review interval, whereupon `AgentHost::run` refuses each
+    // agent and the cycle reports one `failed` line per agent — the same
+    // line a bug in the analyst produces. Nothing halted, nothing paged, and
+    // no series carried the fact. This proves the fact now has a number and
+    // a sentence, and that neither is produced by a fresh roster.
+
+    // The premise on a fresh roster: the panel convenes, nothing is refused,
+    // and the gauge reads zero. Without this the assertions below could be
+    // passing against a roster that is always reported unauthorised.
+    let mut fresh = platform(PlatformConfig::default())?;
+    let roster = fresh.organisation().roster().len();
+    assert!(
+        roster > 1,
+        "the roster is empty; there is nothing to expire"
+    );
+    fresh.observe(bars("AAA", 120));
+    let report = fresh.run_cycle(start());
+    let reason = report.stage(Stage::Reason).expect("REASON reports");
+    assert!(
+        !reason.detail.contains("nothing in the queue"),
+        "the panel did not convene on a fresh roster: {}",
+        reason.detail
+    );
+    assert!(
+        !reason.problems.iter().any(|p| p.contains("unauthorised")),
+        "a fresh roster was reported unauthorised: {:?}",
+        reason.problems
+    );
+    assert!(
+        !reason.problems.iter().any(|p| p.contains("refused to run")),
+        "a fresh roster had a run refused: {:?}",
+        reason.problems
+    );
+    assert_eq!(
+        recorded(&fresh).gauge(names::AGENT_MANIFESTS_EXPIRED, &labels([])),
+        Some(0.0),
+        "the expiry gauge was not recorded as zero on a fresh roster"
+    );
+
+    // The same assembly, first cycle one day past the review interval.
+    let mut lapsed = platform(PlatformConfig::default())?;
+    lapsed.observe(bars("AAA", 120));
+    let later = start().saturating_add(Duration::from_days(91));
+    let report = lapsed.run_cycle(later);
+    let reason = report.stage(Stage::Reason).expect("REASON reports");
+    assert!(
+        !reason.detail.contains("nothing in the queue"),
+        "the panel did not convene, so no run could be refused: {}",
+        reason.detail
+    );
+
+    // The number: every manifest on the roster.
+    assert_eq!(
+        recorded(&lapsed).gauge(names::AGENT_MANIFESTS_EXPIRED, &labels([])),
+        Some(roster as f64),
+        "the expiry gauge does not count the whole lapsed roster"
+    );
+    // The sentence: one cycle-level line naming the organisation, not the
+    // agents one by one as failures.
+    let unauthorised: Vec<&String> = reason
+        .problems
+        .iter()
+        .filter(|p| p.starts_with("the organisation is unauthorised"))
+        .collect();
+    assert_eq!(
+        unauthorised.len(),
+        1,
+        "expected exactly one organisation-level line, got {:?}",
+        reason.problems
+    );
+    assert!(
+        unauthorised[0].contains(&format!("{roster} of {roster} agent manifest(s)")),
+        "the line does not count the roster: {}",
+        unauthorised[0]
+    );
+    assert!(
+        unauthorised[0].contains("nothing here renews one"),
+        "the line does not say a manifest is not auto-renewed: {}",
+        unauthorised[0]
+    );
+    // And each refused run says it was refused, with the host's reason,
+    // rather than reading as a failed analysis.
+    let refused = reason
+        .problems
+        .iter()
+        .filter(|p| p.contains("refused to run: ") && p.contains("expired"))
+        .count();
+    assert!(
+        refused >= 1,
+        "no run was reported as refused for an expired manifest: {:?}",
+        reason.problems
+    );
+    assert!(
+        !reason.problems.iter().any(|p| p.ends_with(" failed")),
+        "a refused run still reads as a failure: {:?}",
+        reason.problems
+    );
+    Ok(())
+}
+
+/// Where the router put the one decision a cycle made, and whether the panel
+/// convened, read off the counter `place_reason_routing` writes.
+///
+/// The counter rather than the record because `Platform::reason_routing` is
+/// private, and the counter is the surface an operator actually reads.
+fn routing_placement(platform: &Platform) -> Vec<(String, String)> {
+    recorded(platform)
+        .series
+        .iter()
+        .filter(|series| series.name == names::REASON_ROUTINGS)
+        .filter_map(|series| {
+            Some((
+                series.labels.get("tier")?.clone(),
+                series.labels.get("outcome")?.clone(),
+            ))
+        })
+        .collect()
+}
+
+/// Run one cycle over the same tape and return the REASON stage's detail beside
+/// where the router placed the decision.
+fn reason_over_the_same_tape(config: PlatformConfig) -> Result<(String, Vec<(String, String)>)> {
+    let mut platform = platform(config)?;
+    platform.observe(bars("AAA", 120));
+    let report = platform.run_cycle(start());
+    let reason = report
+        .stage(Stage::Reason)
+        .expect("REASON reports")
+        .detail
+        .clone();
+    Ok((reason, routing_placement(&platform)))
+}
+
+#[test]
+fn lowering_the_reasoning_confidence_bar_places_the_same_decision_on_a_cheaper_rung() -> Result<()>
+{
+    // `PlatformConfig::reasoning_confidence_bar` shipped as a documented
+    // control that nothing consulted. The field, its default and its builder
+    // existed; `Platform::reason_decision_context` handed the router
+    // `opportunity.rank.confidence` instead, under a call-site comment arguing
+    // for that — two contradictory arguments in the tree about one number, and
+    // the one an operator could set was the one nothing read. That is the
+    // `MaxExpectedShortfall` shape `.claude/rules/domains/risk-and-execution.md`
+    // names by example, moved from a limit to a routing control.
+    //
+    // This test is what stops it coming back. It fails if the field is not
+    // read, and it fails if the cap is applied anywhere other than the routing
+    // requirement, because the only thing it looks at is where the router put
+    // the decision.
+    //
+    // Two platforms, identical but for the bar, over one deterministic tape.
+    // The requirement is the opportunity's own `rank.importance` capped by the
+    // bar. This tape's head-of-queue opportunity carries an importance just
+    // under 0.90, so at the shipped bar the cheapest rung that reaches it is
+    // `multi_agent_reasoning` (resolving power 0.90) — the cap does not bind.
+    // At 0.55 the cap binds and the cheapest rung that reaches 0.55 is
+    // `statistical_model` (0.60), which is exactly the deliberate statement the
+    // field's own documentation describes: a deployment that lowers it is
+    // saying one agent's answer is good enough, and the router will then place
+    // below the panel.
+    let (shipped_detail, shipped) = reason_over_the_same_tape(PlatformConfig::default())?;
+    let (lowered_detail, lowered) =
+        reason_over_the_same_tape(PlatformConfig::default().with_reasoning_confidence_bar(0.55))?;
+
+    // Premise: both cycles had something to reason about and both routed it.
+    // On an empty queue REASON returns before it routes anything and the
+    // labels below would be about a stage that never ran.
+    for (label, detail, placement) in [
+        ("shipped", &shipped_detail, &shipped),
+        ("lowered", &lowered_detail, &lowered),
+    ] {
+        assert!(
+            !detail.contains("nothing in the queue"),
+            "the premise failed: the {label} cycle had an empty queue: {detail}"
+        );
+        assert_eq!(
+            placement.len(),
+            1,
+            "the premise failed: the {label} cycle recorded {} routing decisions, not one",
+            placement.len()
+        );
+    }
+
+    assert_eq!(
+        shipped[0],
+        ("multi_agent_reasoning".to_string(), "convened".to_string()),
+        "at the shipped 0.90 bar the router did not place this decision on the panel's own rung; \
+         the requirement it was given is not the opportunity's importance — {shipped_detail}"
+    );
+    assert_eq!(
+        lowered[0],
+        ("statistical_model".to_string(), "convened".to_string()),
+        "lowering the bar to 0.55 did not move where the router placed the decision, so the \
+         configured bar is not reaching `DecisionContext::required_confidence_f64` — {lowered_detail}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_reasoning_confidence_bar_that_is_not_a_probability_stops_the_decision_and_names_the_field()
+-> Result<()> {
+    // Refused rather than clamped, and refused where an operator will see it.
+    // The requirement handed to the router is
+    // `importance.min(reasoning_confidence_bar)` and importance is at most one,
+    // so a bar above one would never bind: `DecisionContext::validate` would
+    // pass, the routing would look ordinary, and a nonsense setting would live
+    // in the deployment unremarked. That is the failure this refusal exists to
+    // prevent, and it is why the check is the kernel's own rather than left to
+    // the router's.
+    let (detail, placement) =
+        reason_over_the_same_tape(PlatformConfig::default().with_reasoning_confidence_bar(1.5))?;
+
+    // Premise: there was a decision to refuse. An empty queue would produce
+    // "nothing in the queue to reason about" and no routing record at all.
+    assert!(
+        !detail.contains("nothing in the queue"),
+        "the premise failed: the queue was empty, so nothing was refused: {detail}"
+    );
+    assert!(
+        detail.contains("the panel was not convened")
+            && detail.contains("reasoning_confidence_bar")
+            && detail.contains("(0, 1]"),
+        "the stage does not say that the configured bar is what stopped it, or does not say what \
+         to set instead: {detail}"
+    );
+    assert_eq!(
+        placement,
+        vec![("none".to_string(), "declined".to_string())],
+        "a decision the platform refused to price was still recorded as placed somewhere: {detail}"
+    );
+    Ok(())
+}

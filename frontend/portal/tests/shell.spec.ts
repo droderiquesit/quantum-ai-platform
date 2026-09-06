@@ -55,6 +55,14 @@ test("the route list under test is the console's own map", () => {
 });
 
 test("the paper trading declaration is on every route", async ({ page }) => {
+  // One test, one page load per route in the console's map, and the map grows
+  // whenever a section does. At 34 routes this took 37s of a 45s budget in
+  // isolation and timed out under the full suite's parallelism — twice, at the
+  // run before this line was added — so it failed for the length of the map
+  // rather than for anything about the declaration. `test.slow()` triples the
+  // budget and changes no assertion below it; the alternative, splitting the
+  // loop, would lose the property that the list under test is the map itself.
+  test.slow();
   await servePlatform(page, healthy());
   for (const route of ROUTES) {
     await page.goto(route);
@@ -76,6 +84,10 @@ test("the declaration survives a platform that cannot be reached", async ({ page
   // The case it exists for. During an incident the upstream is exactly what is
   // missing, and a banner assembled from upstream state would vanish at the
   // moment an operator most needs to know what this console can do.
+  //
+  // Slow for the same reason as the test above: it walks every route in the
+  // map, and the map is longer than the per-test budget was sized for.
+  test.slow();
   await servePlatformUnreachable(page);
   for (const route of ROUTES) {
     await page.goto(route);

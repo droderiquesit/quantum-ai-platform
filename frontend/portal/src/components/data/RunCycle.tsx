@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import { describeOutcome, platform, type ApiOutcome } from "@/lib/api/client";
 import type { CycleReport } from "@/lib/api/types";
 import { formatClock } from "@/lib/format";
+import { recordCycleReport } from "@/lib/hooks/useCycleReports";
 import { Panel, PanelBody, PanelHead } from "./Panel";
 import { Chip } from "./Bits";
 
@@ -25,6 +26,10 @@ export function RunCycleCard({ onRan }: { onRan?: () => void }) {
       const response = await platform.runCycle();
       setOutcome(response.outcome);
       setRanAt(response.receivedAt);
+      if (response.outcome.kind === "ok") {
+        // The dataflow page reads its stages from this register; see there.
+        recordCycleReport(response.outcome.data, response.receivedAt);
+      }
       onRan?.();
     } finally {
       setBusy(false);

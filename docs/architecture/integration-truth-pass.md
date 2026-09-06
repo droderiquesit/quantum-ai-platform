@@ -29,28 +29,47 @@ IMPLEMENTED-UNVERIFIED (code exists, no deployable composes it) · PLANNED
 
 ## Flow 1 — public signup/passkey → mandate and entitlements → empty account
 
-**Verdict: BREAKS at the first seam after authentication. The platform has no
-concept of a customer account.**
+**Verdict: BREAKS at the first seam after authentication.** Originally this
+line read "The platform has no concept of a customer account", and **that half
+is withdrawn on evidence, re-traced 2026-09-06 at `2cfff8f`**: there is a
+customer mandate type, a mandate registry, a per-user per-strategy book and a
+route that serves all three (the `→ mandate` row below). What still breaks is
+the *arrow*, and it breaks in one specific place — **nothing binds an
+authenticated session to a ledger account**. A mandate is enrolled from
+committed configuration, no route creates one, and the console reaches
+`qip-api` with a single deployment credential whose subject is
+`operator@env`, the same for every person who signs in. So an account exists
+and is readable; whose account it is, is a question no code answers. Read the
+distinction carefully before quoting this flow: "no account" and "no binding
+to an account" send a reader to build two different things.
 
 | Link | Status | Evidence |
 |---|---|---|
 | Sign-up page | TESTED | `frontend/portal/src/app/(auth)/sign-up/page.tsx`; siblings for sign-in, reset, agreements, account-locked |
 | Browser → identity | IMPLEMENTED-UNVERIFIED | `(auth)/_lib/api.ts` posts to Next.js `/api/auth/*` with CSRF priming. ADR 0019 makes Identity Platform the only identity store |
 | Passkey | MISSING | `grep -rn passkey backend/crates` returns nothing. Blueprint Phase 0 names passkeys; nothing implements them |
-| → mandate | MISSING | No customer mandate type. `Mandate` in `runtime/qip-kernel/src/config.rs` and `services/qip-portfolio-engine/src/construction.rs` is a *portfolio* mandate — risk limits for the desk's own book, not a customer agreement |
+| → mandate | **WAS MISSING; the type exists and is served — re-traced 2026-09-06 at `2cfff8f`** | **This row read "No customer mandate type." That was true when it was written and false since `0599092`, and an agent who believed it would build a type the tree already holds.** `qip_capital::ledger::mandate::Mandate` (`services/qip-capital/src/ledger/mandate.rs:69`) **is** the customer mandate. Its own module opens "The terms a user's capital is managed under (blueprint §43.3)" and names the chain the attribution terminates in — `Strategy → StrategyFamily → Mandate → User`. The terms are capital, currency, risk tolerance, permitted families, liquidity floor, exploration share and jurisdiction (`MandateTerms`, `:45`), every one validated by `Mandate::new` (`:75`) and none clamped, and `#[serde(try_from = "MandateTerms")]` (`:68`) runs the same validation on the way back in so a stored record cannot smuggle terms nobody agreed to. It is held one per user in `MandateRegistry` (`ledger/registry.rs:59`, `mandates()` at `:110`), admitted against the desk's own mandate as a ceiling, and served by `GET /ledger/users` (`apps/qip-api/src/routes.rs:378-386`, analyst-only) through `ledger_users` → `MandateView` (`apps/qip-api/src/ledger_views.rs:225`, `:342-349`). **The name collision this row was warning about is real and survives, which is why the row is corrected rather than deleted:** `runtime/qip-kernel/src/config.rs` imports *both* — `qip_capital::ledger::Mandate as LedgerMandate` (`:10`) and `qip_portfolio_engine::construction::Mandate` (`:17`) — and the unqualified `Mandate` at `config.rs:199` is still the *portfolio* mandate, the desk's own risk limits (`services/qip-portfolio-engine/src/construction.rs:68`: `target_gross`, `position_cap`, `long_only`, `risk_aversion`). Two different objects, one word, one file. The customer one reaches `config.rs` as `UserMandate` (`:160`), carrying `LedgerMandate` at `:163`. **What is still MISSING is the arrow this row is in, not its object:** a mandate is enrolled only from the deployment's committed configuration, and no route creates, amends or retires one — `qip-api` has exactly five mutating routes (`POST /cycle`, `POST`/`DELETE /kill-switch`, `POST /ledger/users/:user/eligibility`, `POST /registrations/:source/approve`), so signing up mints nothing. Named tests exist (`qip-capital/tests/user_ledger.rs::a_mandate_that_promises_more_than_the_desk_carries_is_refused_by_the_term_that_exceeds_it`, `::user_mandates_cannot_together_promise_more_capital_than_the_desk_holds`; `qip-api/tests/ledger_routes.rs::the_desk_is_enrolled_with_its_mandate_and_no_balance_until_a_fill_is_booked`) and **were not run in this pass** — the workspace did not compile at the time of writing, so this row is traced by reading and `grep`, not by `cargo` |
 | → entitlements | MISSING (name collision) | `qip_contracts::governance::Entitlement` (`governance.rs:83-94`) is `Granted{dataset, usage, expires_at}` / `Denied{...}` — **dataset licensing**, not a customer's product rights. Blueprint §40.13 means the latter. Same word, different concept; do not conflate |
-| → empty account | MISSING | No account creation anywhere. `qip-api` exposes 30 endpoints (`routes.rs:73-299`) and not one is per-user: `/portfolio`, `/orders`, `/capital`, `/risk` are all desk-wide singletons |
+| → empty account | **MISSING as a flow; partly false as written — re-traced 2026-09-06 at `2cfff8f`** | Account *creation* is still missing: nothing on the sign-up path opens a book, and the five mutating routes above include none that could. But the counts this row gave are stale twice over. `qip-api` now exposes **47** routes, not 30 (`grep -c 'pattern: "' backend/crates/apps/qip-api/src/routes.rs` → 47; the `ROUTES` table is `routes.rs:70-511`, not `:73-299`), and "not one is per-user" is no longer true: `GET /ledger/users` (`pattern` at `:380`) answers every enrolled user's mandate, per-strategy balances and entitlement evaluation, and `POST /ledger/users/:user/eligibility` (`:398`) decides one user's eligibility. What remains true, and is the part that matters, is that not one route is per-**session**: there is no `GET /account/me` and no `GET /ledger/users/{user}`, so a route keyed on a user id is a lookup an operator performs, not a reader's own account. `/portfolio` (`:108`), `/orders` (`:129`), `/capital` (`:235`) and `/risk` (`:242`) are still desk-wide singletons |
 
 **The seam.** Authentication terminates at Identity Platform and nothing carries
 a subject into the Rust platform as an account holder. `qip-api`'s `auth.rs`
-resolves a `Principal` with a `Role` (`auth.rs:48-81`) — operator RBAC, not
-customer identity.
+resolves a `Principal { subject, role, issued_at }` (`auth.rs:67-73`; the row
+cited `:48-81` before this re-trace) — operator RBAC, not customer identity.
+The subject is minted at the composition root as `format!("{}@env",
+role.as_str())` (`qip-api/src/main.rs:269`), so it names a *role*, never a
+person, and there is nothing in it for a ledger account to be resolved from.
 
 This is consistent with `CLAUDE.md` ("intended users are the research and risk
 desk — not external customers") and **contradicts the blueprint**, which
 specifies an investor portal over a per-user ledger. Now that the blueprint is
 the architecture of record, this is a real gap rather than a scoping choice.
-Blueprint Phase 13. Backlogged; nothing built here.
+Blueprint Phase 13. Backlogged; nothing built here — **"here" means this pass,
+and the sentence has since aged.** The per-user ledger the blueprint asks for
+was built afterwards (`0599092` for the book and the mandate, `5546a24` for
+the treasury records, `e5dc8fc` for `GET /ledger/users`), so what Phase 13
+still owes is the identity half — passkeys, a signed assertion the API can
+verify, and an account a session resolves to — not the ledger half.
 
 ---
 

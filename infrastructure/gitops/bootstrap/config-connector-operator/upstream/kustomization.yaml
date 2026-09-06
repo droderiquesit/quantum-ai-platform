@@ -1,0 +1,8 @@
+# The upstream file, verbatim, as a kustomization of its own: kustomize refuses
+# a base that names a file outside its directory and admits a directory, so
+# this is the one line that lets base/ reference the bytes SOURCE.md records
+# without copying them.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - autopilot-configconnector-operator.yaml

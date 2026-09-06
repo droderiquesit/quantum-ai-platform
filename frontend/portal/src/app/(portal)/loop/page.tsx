@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useState } from "react";
 import { Chip, Freshness } from "@/components/data/Bits";
 import { Kpi, KpiRow } from "@/components/data/Kpi";
@@ -9,6 +10,7 @@ import { Heatmap, type HeatCell } from "@/components/viz/primitives";
 import { describeOutcome, platform, type ApiOutcome } from "@/lib/api/client";
 import type { CycleReport, SystemMetrics } from "@/lib/api/types";
 import { formatClock, formatCount } from "@/lib/format";
+import { recordCycleReport } from "@/lib/hooks/useCycleReports";
 import { useResource } from "@/lib/hooks/useResource";
 
 /**
@@ -63,6 +65,9 @@ export default function LoopPage() {
         // Newest last, so the grid reads left to right in time. Bounded: a
         // console left running all day must not grow a column per cycle.
         setRuns((previous) => [...previous, entry].slice(-24));
+        // Handed to the tab-wide register so the dataflow page, which runs
+        // no cycle of its own, can show the stages of this one.
+        recordCycleReport(outcome.data, response.receivedAt);
       } else {
         setFailure(outcome);
       }
@@ -98,16 +103,21 @@ export default function LoopPage() {
           title="Loop"
           meta={<Freshness resource={metrics} name="metrics" />}
           actions={
-            <button
-              type="button"
-              className="btn"
-              data-variant="primary"
-              onClick={run}
-              disabled={busy}
-              data-testid="run-cycle"
-            >
-              {busy ? "Running…" : "Run one cycle"}
-            </button>
+            <>
+              <Link href="/loop/dataflow" className="btn" data-testid="loop-dataflow-link">
+                Dataflow
+              </Link>
+              <button
+                type="button"
+                className="btn"
+                data-variant="primary"
+                onClick={run}
+                disabled={busy}
+                data-testid="run-cycle"
+              >
+                {busy ? "Running…" : "Run one cycle"}
+              </button>
+            </>
           }
         />
         <PanelBody>

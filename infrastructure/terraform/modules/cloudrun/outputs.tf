@@ -7,32 +7,27 @@ output "service_account_email" {
     grant is written where the resource is, named, rather than passed back into
     this module as a list of roles: a role list on a module instantiated
     seventy times is where a wide grant arrives without anyone reading it.
+    It is also the `serviceAccountRef` the manifest must name.
   EOT
 
   value = google_service_account.workload.email
 }
 
 output "name" {
-  description = "The deployed resource's name, which is not the workload name: the environment is in it, so two environments in one project cannot collide."
+  description = "The Cloud Run resource's name — and the manifest's `metadata.name`, which is how Config Connector acquires it. The environment is in it, so two environments in one project cannot collide."
   value       = local.name
 }
 
 output "uri" {
   description = <<-EOT
-    The service's own URL, or null for a job.
-
-    Present so a caller can attach it to a load balancer's serverless network
-    endpoint group. It is not a public address: ingress is internal or
-    load-balancer-only under every input this module accepts, so a request
-    arriving here from the internet is refused before the container sees it.
+    The service's own URL, computed from Cloud Run's deterministic form
+    rather than read from a resource, because the resource is Config
+    Connector's (ADR 0036). It is not a public address: every catalogue
+    workload's ingress is internal, so a request arriving here from the
+    internet is refused before the container sees it.
   EOT
 
-  value = one(google_cloud_run_v2_service.workload[*].uri)
-}
-
-output "ingress" {
-  description = "The ingress setting that was actually applied, so a caller can assert on it rather than on the posture it asked for."
-  value       = local.ingress
+  value = local.uri
 }
 
 output "trust_zone" {
@@ -40,13 +35,23 @@ output "trust_zone" {
   value       = local.trust_zone
 }
 
+output "environment" {
+  description = "Every environment variable the manifest must set, name to value: the caller's settings, the `_FILE` path of each mounted secret, the `_PATH` of each configuration file. The parity test compares the manifest to this and to no second list."
+  value       = local.environment
+}
+
+output "secret_root" {
+  description = "The directory every secret volume mounts under, so the manifest and the `_FILE` paths agree by construction."
+  value       = local.secret_root
+}
+
 output "secret_file_paths" {
   description = <<-EOT
     Mount key to the file path the process reads, one entry per mounted secret.
 
-    Exported because the same paths appear in the workload's own configuration,
+    Exported because the same paths appear in the manifest's volume mounts,
     and a path that is written twice is a path that will eventually be written
-    two ways. A test asserting the deployment and the binary agree reads this.
+    two ways. A test asserting the manifest and the binary agree reads this.
   EOT
 
   value = local.secret_files
@@ -58,8 +63,8 @@ output "config_file_paths" {
     file, or empty for a workload that reads none.
 
     Exported for the reason `secret_file_paths` is: the same path is the
-    value of the workload's `_PATH` variable, and a test asserting the
-    deployment and the binary agree reads this rather than a second copy.
+    value of the workload's `_PATH` variable in the manifest, and the
+    hash-named directory in it changes when the committed file does.
   EOT
 
   value = local.config_files
@@ -78,6 +83,16 @@ output "config_file_hashes" {
   value = local.config_file_hashes
 }
 
+output "config_files_bucket" {
+  description = "The bucket the manifest mounts read-only at `/etc/qip`, or null for a workload that reads no configuration file."
+  value       = one(google_storage_bucket.config_files[*].name)
+}
+
+output "collector_config_bucket" {
+  description = "The bucket the collector sidecar's scrape document is published to, or null where no collector is declared."
+  value       = one(google_storage_bucket.collector_config[*].name)
+}
+
 output "egress_endpoints" {
   description = <<-EOT
     The loopback addresses this workload's egress proxy answers on, one per
@@ -85,7 +100,7 @@ output "egress_endpoints" {
 
     Exported so a test can assert that every outbound address a workload is
     configured with is one of these — an adapter pointed anywhere else is a
-    credential crossing the internet in clear text, or a pod that cannot
+    credential crossing the internet in clear text, or an instance that cannot
     start, and neither is visible from the configuration alone.
   EOT
 
@@ -102,7 +117,7 @@ output "metrics_collected" {
     Whether a managed-Prometheus collector is declared beside this workload.
 
     False unless `collector_image_digest` named one. Declared is the whole
-    of what this answers: it says a sidecar is in the plan, not that a
+    of what this answers: it says a sidecar is in the manifest, not that a
     scrape has happened, and `workload_metrics_exist` in the root stays a
     separate fact a person flips on evidence of ingestion.
   EOT
@@ -111,6 +126,6 @@ output "metrics_collected" {
 }
 
 output "network_tags" {
-  description = "The tags the workload's VPC interface carries — the trust zone's, so the zone's firewall rules see this instance."
+  description = "The tags the workload's VPC interface carries in the manifest — the trust zone's, so the zone's firewall rules see this instance."
   value       = var.network_tags
 }

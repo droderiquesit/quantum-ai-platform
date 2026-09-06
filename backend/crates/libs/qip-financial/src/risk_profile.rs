@@ -1,5 +1,7 @@
 //! Risk characteristics carried on every financial object.
 
+use qip_core::Decimal;
+use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -190,4 +192,66 @@ impl RiskCharacteristics {
     pub fn expected_credit_loss(&self) -> f64 {
         self.default_probability * (1.0 - self.recovery_rate)
     }
+
+    /// Decomposes the credit-spread identity `spread ≈ default_probability ×
+    /// (1 − recovery_rate)` into its named components, in exact `Decimal`
+    /// arithmetic.
+    ///
+    /// This identity assumes risk-neutral default and recovery probabilities,
+    /// a single period to the credit horizon, and no liquidity premium. A
+    /// market-observed spread also compensates for liquidity and term
+    /// premia this identity does not separate out — the result is the
+    /// credit-risk component of a spread, not a market spread itself.
+    ///
+    /// Refuses rather than clamps: a `default_probability` or `recovery_rate`
+    /// outside `[0, 1]` is a data error upstream, and silently clamping it
+    /// would hide that error inside a plausible-looking number.
+    pub fn spread_decomposition(&self) -> Result<SpreadDecomposition> {
+        if !(0.0..=1.0).contains(&self.default_probability) {
+            return Err(Error::invalid(format!(
+                "default_probability must lie within [0, 1], got {}",
+                self.default_probability
+            )));
+        }
+        if !(0.0..=1.0).contains(&self.recovery_rate) {
+            return Err(Error::invalid(format!(
+                "recovery_rate must lie within [0, 1], got {}",
+                self.recovery_rate
+            )));
+        }
+
+        // The range checks above already exclude NaN and infinities, so these
+        // conversions cannot fail on the values that reach them; the `Err`
+        // arms exist because `from_f64`/`checked_*` return `Option`, not
+        // because failure is expected here.
+        let default_probability = Decimal::from_f64(self.default_probability)
+            .ok_or_else(|| Error::invalid("default_probability is not a finite number"))?;
+        let recovery_rate = Decimal::from_f64(self.recovery_rate)
+            .ok_or_else(|| Error::invalid("recovery_rate is not a finite number"))?;
+        let loss_given_default = Decimal::ONE
+            .checked_sub(recovery_rate)
+            .ok_or_else(|| Error::numeric("loss given default overflowed"))?;
+        let spread = default_probability
+            .checked_mul(loss_given_default)
+            .ok_or_else(|| Error::numeric("spread computation overflowed"))?;
+
+        Ok(SpreadDecomposition {
+            default_probability,
+            loss_given_default,
+            spread,
+        })
+    }
+}
+
+/// The named components of the credit-spread identity. See
+/// [`RiskCharacteristics::spread_decomposition`] for what this assumes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpreadDecomposition {
+    /// Probability of default over the horizon, as supplied.
+    pub default_probability: Decimal,
+    /// `1 − recovery_rate`: the fraction of notional lost in default.
+    pub loss_given_default: Decimal,
+    /// `default_probability × loss_given_default`, the credit-risk
+    /// component of a spread.
+    pub spread: Decimal,
 }

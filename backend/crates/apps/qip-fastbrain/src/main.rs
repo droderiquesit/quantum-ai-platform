@@ -91,16 +91,6 @@ fn run() -> Result<()> {
         .local_addr()
         .map_err(|error| Error::io(format!("the health listener has no address: {error}")))?;
 
-    let mut feed = Feed::open(
-        config.live_feed.as_ref(),
-        config.connector_feed.as_ref(),
-        config.replay_path.as_deref(),
-        config.seed,
-        config.cycle_interval,
-        started,
-    )
-    .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
-
     // The ceiling this deployment is permitted to run at. Read here for the
     // first time: `fastbrain.yaml` has always set QIP_AUTONOMY_CEILING from
     // the qip-config ConfigMap, and this binary has always ignored it and used
@@ -112,10 +102,54 @@ fn run() -> Result<()> {
     // `deployable` refuses the three live levels outright rather than lowering
     // them, so a ConfigMap edited past review stops this process instead of
     // starting it somewhere it should not be.
+    //
+    // Resolved before the feed rather than after it because the feed's
+    // registration gate reads the registry this configuration stands for. The
+    // order also refuses a live ceiling before any socket opens, which is the
+    // right way round for the two to fail.
     let platform_config = PlatformConfig::default().with_live_ceiling(AutonomyLevel::deployable(
         std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref(),
     )?);
-    let context = qip_core::Context::new(clock.clone(), platform_config.seed);
+    // The registry the connector is admitted against is the one the platform
+    // will hold: `registration_registry` is the same function `Platform::new`
+    // applies at assembly, so the feed cannot open a source on a record the
+    // platform then does not have. This root commits no record yet, so the
+    // registry is the shipped requirement table with nothing in it — and a
+    // source needing an account is refused by name at start, rather than
+    // opened on nobody's registration.
+    let registrations = platform_config
+        .registration_registry()
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+
+    let mut feed = Feed::open(
+        config.live_feed.as_ref(),
+        config.connector_feed.as_ref(),
+        config.replay_path.as_deref(),
+        config.tape_path.as_deref(),
+        &registrations,
+        config.seed,
+        config.cycle_interval,
+        started,
+    )
+    .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    // A tape must end before the roster's authorisation does. See
+    // `Feed::refuse_tape_beyond` for the run that showed why.
+    if let Some(interval) = roster::shortest_review_interval(started) {
+        feed.refuse_tape_beyond(interval)
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    }
+    // The clock the platform reasons on. A tape owns its own, and the
+    // platform must be assembled on it: opportunities expire at tape time,
+    // and a router asked for a latency budget measured from the wall clock
+    // against a deadline in 2025 would refuse every panel as already late.
+    // Everything operational — the health surface, the run bound, telemetry
+    // timestamps — stays on the wall clock, which is what an operator is on.
+    let platform_clock: Arc<dyn Clock> = match feed.owned_clock() {
+        Some(tape_clock) => tape_clock,
+        None => clock.clone(),
+    };
+
+    let context = qip_core::Context::new(platform_clock, platform_config.seed);
     let ceiling = platform_config.autonomy_ceiling.to_string();
     // The registry handle is taken before the telemetry moves into the
     // platform, because the health thread below serves a scrape from it and
@@ -209,6 +243,13 @@ fn run() -> Result<()> {
     banner(
         provenance, &config, &cleared, &feed, &platform, &ceiling, bound, &archive,
     );
+    // Read off the platform's own registry rather than the one handed to the
+    // feed above. The two are built by the same function from the same
+    // configuration, and printing the platform's is what would make a
+    // disagreement between them visible instead of asserting there is none.
+    for line in qip_fastbrain::feed::source_standings(platform.registrations())? {
+        println!("{line}");
+    }
     println!(
         "  universe:         {}; sector and country buckets are fed from it. Note ADR 0027: under the \
          conservative default the first desk order into an empty book is refused by \
@@ -393,6 +434,9 @@ fn banner(
     );
     if let Some(requirement) = feed.production_requirement() {
         println!("  awaiting:         {requirement}");
+    }
+    if let Some(summary) = feed.tape_summary() {
+        println!("  tape:             {summary}");
     }
     for line in config.storage.banner_lines(
         &["the event log's hash chain, between cycles and once on the way out"],

@@ -49,6 +49,10 @@ qip-contracts.workspace = true
 # before. What it may reach is bounded by the transport itself, which refuses
 # any scheme but plaintext http by name, and by the one operator-set URL.
 qip-transport.workspace = true
+# The hosted language-model adapter (ADR 0037). This is the one root that may
+# construct it: the fast brain reads none of its variables (ADR 0008) and the
+# API serves what the brains recorded. In-tree; not a third-party dependency.
+qip-reasoning-engine.workspace = true
 
 [lints]
 workspace = true

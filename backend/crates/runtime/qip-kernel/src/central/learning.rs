@@ -30,23 +30,45 @@
 //! has already made, or a recommendation for one it has not yet — and
 //! [`StrategyReview::stage_after`] says which.
 //!
-//! What a retirement does not yet do is disposition the strategy's open
-//! positions. Blueprint §35.2 says they are reassigned or scheduled for
-//! unwinding, never left ownerless; nothing here reaches the books when the
-//! ledger retires a strategy, and the positions stay where the last
-//! settlement left them. That composition belongs in this kernel, because it
-//! crosses the lifecycle, portfolio and capital services, and §35 owes it.
+//! **A retirement dispositions the strategy's open positions** (blueprint
+//! §35.2: "never orphaned silently"). The review that retired a strategy is
+//! followed, in the same call, by a [`RetirementDisposition`] naming every
+//! lot the attribution holds for it — cell, instrument, signed quantity,
+//! average price — and the instruction for each: unwind, as a flatten intent
+//! for the owning cell's own DECIDE/ACT path. No order is created here, and
+//! nothing reaches a venue from this module; the record is the schedule, and
+//! [`CentralPlane::scheduled_unwinds`] is the same schedule read back from the
+//! ledger and the books, so a retired strategy still holding a lot is a
+//! visible state rather than an orphan nobody can list. The composition sits
+//! here rather than in `qip-lifecycle` or `qip-capital` because it crosses
+//! them: the ledger knows the retirement and the books know the lots.
+//!
+//! The disposition is refused rather than guessed when the centre holds two
+//! claims about the strategy's positions and they disagree. The attribution's
+//! books are what the centre moves positions from; a cell's reported book is
+//! a second claim where a cell has made one. A retirement whose lots the two
+//! claims cannot agree on is a [`DispositionRefused`] record — the
+//! reconciliation break §35.2 says an ownerless position is — and not a
+//! flatten instruction for a quantity one of the two claims says is wrong.
+//!
+//! Handover — reassigning a position to a funded strategy that shares its
+//! thesis — is not produced. The centre records no thesis shared between two
+//! strategies, and a handover chosen on anything else would be an owner
+//! picked to make the record look complete. The instruction has one arm for
+//! that reason, and grows a second when the shared-thesis fact exists.
 
 use super::factory::StrategyReview;
 use super::plane::CentralPlane;
 use qip_ai::registry::ModelRegistry;
-use qip_contracts::gate::GateStage;
+use qip_contracts::gate::{GateStage, Promotion};
 use qip_contracts::signal::StrategyId;
 use qip_core::error::Result;
 use qip_core::{Decimal, Timestamp};
+use qip_events::{EventBody, Topic};
 use qip_lifecycle::demotion::LiveObservation;
 use qip_simulation_engine::validation::assess_overfitting;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// What one cell realised for one strategy since the baseline was established.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -205,6 +227,127 @@ impl StrategyLearning {
     }
 }
 
+/// What is to be done with one of a retired strategy's positions.
+///
+/// One arm, deliberately: see the module documentation for why handover is
+/// absent until the centre records which strategies share a thesis.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DispositionInstruction {
+    /// Flatten the lot through the owning cell's own DECIDE/ACT path: the
+    /// signed quantity to trade that brings the lot to zero. An intent for
+    /// the cell to size and route against its ladder, never an order the
+    /// centre submits.
+    Unwind { flatten_by: Decimal },
+}
+
+/// One open lot a retired strategy held, and what is to be done with it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DispositionedPosition {
+    pub cell: String,
+    pub instrument: String,
+    /// Signed, as the attribution holds it; negative is short.
+    pub quantity: Decimal,
+    pub average_price: Decimal,
+    pub instruction: DispositionInstruction,
+}
+
+/// Blueprint §35.2: the record that a retired strategy's positions were not
+/// left ownerless.
+///
+/// Written to the event log at the retirement, so the instruction is
+/// reproducible from the log alone and a lot still open afterwards can be
+/// read against it. An empty `positions` is recorded too: "held nothing" is
+/// a finding about the book, and the absence of a record would be
+/// indistinguishable from a retirement nobody dispositioned.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RetirementDisposition {
+    pub strategy: StrategyId,
+    pub retired_at: Timestamp,
+    /// The retirement's rationale as the ledger recorded it.
+    pub rationale: String,
+    /// Keyed `cell/instrument`, the same order the strategy books iterate in,
+    /// so a replay lists the lots as this record did.
+    pub positions: BTreeMap<String, DispositionedPosition>,
+}
+
+impl EventBody for RetirementDisposition {
+    // A claim about positions and what happens to them, which is what the
+    // Act group's position topic is for; retained permanently with it.
+    const TOPIC: Topic = Topic::PositionUpdated;
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn idempotency_key(&self) -> Option<String> {
+        // Retirement is terminal, so one strategy is dispositioned once.
+        Some(format!("retirement-disposition:{}", self.strategy))
+    }
+}
+
+/// The two claims the centre holds about one of a retired strategy's lots,
+/// which do not agree.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PositionDiscrepancy {
+    pub cell: String,
+    pub instrument: String,
+    /// What the attribution's books hold for the strategy there.
+    pub attributed: Decimal,
+    /// What the cell's last reported book says the strategy holds there.
+    pub reported: Decimal,
+}
+
+/// Blueprint §35.2's other case: a retirement whose positions the centre
+/// cannot name, recorded as the reconciliation break it is rather than as a
+/// flatten instruction for a quantity one of two claims says is wrong.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DispositionRefused {
+    pub strategy: StrategyId,
+    pub retired_at: Timestamp,
+    /// Keyed `cell/instrument`, every lot on which the claims disagree.
+    pub discrepancies: BTreeMap<String, PositionDiscrepancy>,
+}
+
+impl DispositionRefused {
+    pub fn describe(&self) -> String {
+        let lots: Vec<String> = self
+            .discrepancies
+            .values()
+            .map(|d| {
+                format!(
+                    "{}/{}: attributed {}, cell reports {}",
+                    d.cell, d.instrument, d.attributed, d.reported
+                )
+            })
+            .collect();
+        format!(
+            "{} retired at {} with {} lot(s) the attribution and the cell's book disagree on; \
+             no unwind was scheduled — reconcile the book, then disposition by hand: {}",
+            self.strategy,
+            self.retired_at,
+            self.discrepancies.len(),
+            lots.join("; ")
+        )
+    }
+}
+
+impl EventBody for DispositionRefused {
+    // A reconciliation of the cell's book against the attribution that
+    // finished in disagreement. Same group and retention as the disposition
+    // it stands in for, so a replay finds the two side by side.
+    const TOPIC: Topic = Topic::ReconciliationCompleted;
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn idempotency_key(&self) -> Option<String> {
+        Some(format!("retirement-disposition-refused:{}", self.strategy))
+    }
+}
+
+/// What one retirement did about the strategy's positions.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum DispositionOutcome {
+    Dispositioned(RetirementDisposition),
+    Refused(DispositionRefused),
+}
+
 /// What one learn edge produced.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LearningReport {
@@ -215,6 +358,8 @@ pub struct LearningReport {
     /// treating that as a failure would make the tick fail whenever a cell
     /// reported on something it also runs in shadow.
     pub skipped: Vec<(StrategyId, String)>,
+    /// One per strategy this tick retired: what became of its positions.
+    pub dispositions: Vec<DispositionOutcome>,
 }
 
 impl LearningReport {
@@ -277,6 +422,24 @@ impl CentralPlane {
 
         let reviews = self.factory_mut().review(&observations, models, now)?;
 
+        // Dispositioned before the learnings are assembled, at the seam where
+        // the retirement is known: the review says the ledger retired the
+        // strategy this tick, and the books are as the last settlement left
+        // them. A review the monitor returned for an already-retired strategy
+        // has no move and is not dispositioned again.
+        let mut dispositions = Vec::new();
+        for review in &reviews {
+            if review.stage_after != GateStage::Retired || review.stage_before == GateStage::Retired
+            {
+                continue;
+            }
+            let Some(retirement) = &review.demotion else {
+                continue;
+            };
+            dispositions.push(self.disposition_for(&review.strategy, retirement));
+            self.forget_realised(&review.strategy);
+        }
+
         let mut learnings = Vec::new();
         for review in reviews {
             let Some(outcome) = outcomes
@@ -324,7 +487,119 @@ impl CentralPlane {
             at: now,
             learnings,
             skipped,
+            dispositions,
         })
+    }
+
+    /// What becomes of one retired strategy's positions, from the two claims
+    /// the centre holds about them.
+    ///
+    /// The attribution's books name the lots. Where the cell has reported a
+    /// book of its own — the delta a cell ships carries none, so in a
+    /// deployment this is the exception — that book must agree with the
+    /// attribution on every lot of the strategy's, or the disposition is
+    /// refused with each disagreement named. A cell that reported no book
+    /// has made no second claim, and the attribution stands alone.
+    fn disposition_for(&self, strategy: &StrategyId, retirement: &Promotion) -> DispositionOutcome {
+        let mut attributed: BTreeMap<(String, String), (Decimal, Decimal)> = BTreeMap::new();
+        for ((cell, owner, instrument), lot) in self.strategy_books() {
+            if owner == strategy && !lot.quantity.is_zero() {
+                attributed.insert(
+                    (cell.clone(), instrument.clone()),
+                    (lot.quantity, lot.average_price),
+                );
+            }
+        }
+
+        // The cells that have made a position claim at all, and what each
+        // says the strategy holds. Two lines for one instrument at one cell
+        // (two venues, say) are one holding.
+        let mut claiming_cells: BTreeSet<String> = BTreeSet::new();
+        let mut reported: BTreeMap<(String, String), Decimal> = BTreeMap::new();
+        for position in self.reported_positions() {
+            claiming_cells.insert(position.cell.clone());
+            if &position.strategy == strategy && !position.quantity.is_zero() {
+                *reported
+                    .entry((position.cell.clone(), position.instrument.clone()))
+                    .or_insert(Decimal::ZERO) += position.quantity;
+            }
+        }
+
+        let mut discrepancies = BTreeMap::new();
+        let lots: BTreeSet<&(String, String)> = attributed.keys().chain(reported.keys()).collect();
+        for key in lots {
+            let (cell, instrument) = key;
+            if !claiming_cells.contains(cell) {
+                continue;
+            }
+            let held = attributed.get(key).map_or(Decimal::ZERO, |(q, _)| *q);
+            let claimed = reported.get(key).copied().unwrap_or(Decimal::ZERO);
+            if held != claimed {
+                discrepancies.insert(
+                    format!("{cell}/{instrument}"),
+                    PositionDiscrepancy {
+                        cell: cell.clone(),
+                        instrument: instrument.clone(),
+                        attributed: held,
+                        reported: claimed,
+                    },
+                );
+            }
+        }
+        if !discrepancies.is_empty() {
+            return DispositionOutcome::Refused(DispositionRefused {
+                strategy: strategy.clone(),
+                retired_at: retirement.at,
+                discrepancies,
+            });
+        }
+
+        let positions = attributed
+            .into_iter()
+            .map(|((cell, instrument), (quantity, average_price))| {
+                (
+                    format!("{cell}/{instrument}"),
+                    DispositionedPosition {
+                        cell,
+                        instrument,
+                        quantity,
+                        average_price,
+                        instruction: DispositionInstruction::Unwind {
+                            flatten_by: -quantity,
+                        },
+                    },
+                )
+            })
+            .collect();
+        DispositionOutcome::Dispositioned(RetirementDisposition {
+            strategy: strategy.clone(),
+            retired_at: retirement.at,
+            rationale: retirement.rationale.clone(),
+            positions,
+        })
+    }
+
+    /// Every lot a retired strategy still holds, by strategy then
+    /// `cell/instrument`, with the flatten quantity for each.
+    ///
+    /// Derived from the ledger and the books on every call rather than kept
+    /// as a schedule of its own, so there is no second record to drift from
+    /// the settlements that move the lots: a lot the next fill closes leaves
+    /// this list by the same arithmetic that closed it. Non-empty is the
+    /// state §35.2 calls a reconciliation break, and this is how it is
+    /// listed rather than discovered.
+    pub fn scheduled_unwinds(&self) -> BTreeMap<StrategyId, BTreeMap<String, Decimal>> {
+        let mut scheduled: BTreeMap<StrategyId, BTreeMap<String, Decimal>> = BTreeMap::new();
+        for ((cell, strategy, instrument), lot) in self.strategy_books() {
+            if lot.quantity.is_zero() || self.factory().stage_of(strategy) != GateStage::Retired {
+                continue;
+            }
+            scheduled
+                .entry(strategy.clone())
+                .or_default()
+                .insert(format!("{cell}/{instrument}"), -lot.quantity);
+        }
+        scheduled
     }
 
     /// Update the allocator's evidence for one strategy.

@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { declaresWrite } from "@/lib/api/endpoints";
+import { declaresWrite, describeWrites } from "@/lib/api/endpoints";
+import { authRequired } from "@/lib/server/auth-gate";
 import { requireCsrf, sessionFrom } from "@/lib/server/auth-http";
 import {
   API_VERSION_PREFIX,
@@ -44,7 +45,10 @@ interface RouteContext {
  * user became anonymous at a scale event, not how a revoked one was refused.
  */
 function refuseUnauthenticated(request: NextRequest): NextResponse | null {
-  if (process.env.ALGORIK_AUTH_REQUIRED !== "true") return null;
+  // The closed gate is the default; see `auth-gate.ts` for the deployment
+  // that once forgot the variable and served the platform's credential to
+  // everyone.
+  if (!authRequired()) return null;
   if (!sessionFrom(request)) {
     return NextResponse.json(
       { error: "sign in to use this console", gateway: "unauthenticated" },
@@ -68,7 +72,19 @@ async function forward(request: NextRequest, context: RouteContext): Promise<Res
     const { path: segments } = await context.params;
     path = resolveUpstreamPath(segments);
     // Asked before `upstream()`, so a write this console does not declare does
-    // not even cause the credential to be read off disk.
+    // not even cause the credential to be read off disk. The allowlist is the
+    // `REST` table in `@/lib/api/endpoints`, and both this comment and the
+    // refusal below now derive their list from it rather than restating it.
+    //
+    // They did not, and the cost was a shipped route that could never work:
+    // this comment named four writes, the eligibility decision was added to
+    // the platform and the panel as a fifth, nobody edited the table, and
+    // every decision an operator made in a real deployment came back 405 from
+    // here. The seven eligibility specs did not catch it because they
+    // `page.route`-mock the gateway — they stub the component that refuses.
+    // A `{parameter}` segment matches exactly one non-empty segment, so
+    // `/registrations/a/b/approve` stays undeclared
+    // (`tests/registrations-gateway.spec.ts`).
     const undeclared =
       request.method !== "GET" &&
       request.method !== "HEAD" &&
@@ -78,8 +94,8 @@ async function forward(request: NextRequest, context: RouteContext): Promise<Res
         {
           error:
             `this console declares no ${request.method} on ${path}. ` +
-            "Its writes are POST /cycle, POST /kill-switch and DELETE /kill-switch; " +
-            "adding a fourth is an edit to the route table, not to a page.",
+            `Its writes are ${describeWrites()}; adding another is an edit to the ` +
+            "route table, not to a page.",
           gateway: "refused",
         },
         {

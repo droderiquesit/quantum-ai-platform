@@ -17,22 +17,42 @@
 //! every gateway call — which is what it looked like before it had a route
 //! at all, so the obvious diagnosis is the wrong one.
 //!
+//! Under ADR 0036 the Cloud Run service itself is no longer Terraform's. The
+//! catalogue entry still names the invokers and `modules/cloudrun` still
+//! creates the identity, but the resource that carries the ingress posture
+//! and the resource that carries the invoker grant are Config Connector
+//! manifests under `infrastructure/gitops/envs/<env>/` — `api.yaml` and
+//! `invokers.yaml` — reconciled by Argo CD. Two of the tests below used to
+//! read the posture and the refusals out of the module's own text; the
+//! module has no service to put them on now, so they read the manifests.
+//! The property did not weaken; it moved, and a test still pointed at the
+//! old location would have failed on the move rather than on a breach —
+//! or, re-aimed carelessly at the module's remaining text, passed forever.
+//!
 //! `manifest_wiring.rs` exists for the same class of drift on the workloads'
 //! configuration, and says at length why a check like this is a test rather
-//! than a review note.
+//! than a review note. `gitops.rs` holds every property the module held for
+//! every service in one parity test; the two tests here hold the console's
+//! route specifically, and name what `gitops.rs` already pins rather than
+//! asserting it twice.
 
 // The workspace denies `panic_in_result_fn`. These tests return `()` and
 // assert; the lint does not apply, and neither does the reason for it.
 
-use qip_acceptance::read;
+use qip_acceptance::{files_with_extension, read, repository_root};
 
 const TFVARS: &str = "infrastructure/environments/dev/terraform.tfvars";
 const DEPLOY_SCRIPT: &str = "scripts/deploy-frontends.sh";
 const CATALOGUE: &str = "infrastructure/terraform/catalogue.tf";
 const NETWORK_MODULE: &str = "infrastructure/terraform/modules/network/main.tf";
-const CLOUD_RUN_MODULE: &str = "infrastructure/terraform/modules/cloudrun/main.tf";
-const CLOUD_RUN_VARIABLES: &str = "infrastructure/terraform/modules/cloudrun/variables.tf";
 const OUTPUTS: &str = "infrastructure/terraform/outputs.tf";
+const GITOPS: &str = "infrastructure/gitops";
+const ENVS: &str = "infrastructure/gitops/envs";
+
+/// The one ingress a service on the console's route may carry.
+const INTERNAL_ONLY: &str = "INGRESS_TRAFFIC_INTERNAL_ONLY";
+/// The ingress ADR 0030 grants exactly one service, OpenObserve.
+const ALL_TRAFFIC: &str = "INGRESS_TRAFFIC_ALL";
 
 // ---------------------------------------------------------------------------
 // Parsing
@@ -109,6 +129,177 @@ fn parse_cidr(text: &str) -> Option<(u32, u32)> {
     Some((u32::from(address), prefix))
 }
 
+/// One YAML document under `infrastructure/gitops`, read as its non-comment
+/// lines.
+///
+/// `gitops.rs` carries a reader for the manifest subset into `serde_json`;
+/// it is private to that file, and this one needs five scalars per
+/// document — `kind`, `metadata.name`, and three fixed-indent `spec` fields
+/// — so they are read by line rather than by duplicating it. The shape read
+/// is the one every manifest under `envs/` has: `kind:` and `metadata:` at
+/// column zero, `  name:` two in under `metadata:`. A document outside that
+/// shape reads as one with no kind and no name, and the premise assertions
+/// (an API `RunService` in every environment that has an `api.yaml`) catch
+/// the reader going blind rather than letting it pass over nothing.
+struct Document {
+    path: String,
+    kind: String,
+    name: String,
+    lines: Vec<String>,
+}
+
+impl Document {
+    /// `kind` and name together, for messages.
+    fn describe(&self) -> String {
+        format!("{} `{}` in {}", self.kind, self.name, self.path)
+    }
+
+    /// The value of `key:` at exactly `indent` spaces, quotes stripped.
+    fn field(&self, indent: usize, key: &str) -> Option<String> {
+        let prefix = format!("{}{key}: ", " ".repeat(indent));
+        self.lines.iter().find_map(|line| {
+            line.strip_prefix(&prefix).map(|value| {
+                value
+                    .trim()
+                    .trim_matches(|c| c == '"' || c == '\'')
+                    .to_string()
+            })
+        })
+    }
+
+    /// The `name` under an `IAMPolicyMember`'s `spec.resourceRef`: the
+    /// service the grant is on.
+    fn resource_ref_name(&self) -> Option<String> {
+        self.lines
+            .iter()
+            .skip_while(|line| line.as_str() != "  resourceRef:")
+            .find_map(|line| line.strip_prefix("    name: "))
+            .map(|value| value.trim().to_string())
+    }
+}
+
+/// The `  name:` directly under a column-zero `metadata:`.
+fn metadata_name(lines: &[String]) -> String {
+    let mut in_metadata = false;
+    for line in lines {
+        if line == "metadata:" {
+            in_metadata = true;
+            continue;
+        }
+        if in_metadata {
+            if let Some(name) = line.strip_prefix("  name: ") {
+                return name.trim().to_string();
+            }
+            if !line.is_empty() && !line.starts_with(' ') {
+                in_metadata = false;
+            }
+        }
+    }
+    String::new()
+}
+
+/// Every YAML document under a directory, split on `---`, comment lines
+/// dropped.
+fn documents_under(relative: &str) -> Vec<Document> {
+    let root = repository_root();
+    let mut found = Vec::new();
+    for extension in ["yaml", "yml"] {
+        for path in files_with_extension(relative, extension) {
+            let display = path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            let source = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("cannot read {display}: {error}"));
+            for chunk in source.split("\n---") {
+                let lines: Vec<String> = chunk
+                    .lines()
+                    .filter(|line| !line.trim_start().starts_with('#'))
+                    .map(str::to_string)
+                    .collect();
+                let kind = lines
+                    .iter()
+                    .find_map(|line| line.strip_prefix("kind: "))
+                    .map(|value| value.trim().to_string())
+                    .unwrap_or_default();
+                let name = metadata_name(&lines);
+                found.push(Document {
+                    path: display.clone(),
+                    kind,
+                    name,
+                    lines,
+                });
+            }
+        }
+    }
+    found
+}
+
+/// Every non-comment line under a directory that names `principal` as a
+/// whole token, as `path:line: text`.
+///
+/// A token, not a substring: `allUsers` is a suffix of nothing here today,
+/// but `contains` on a principal is exactly the check that has already
+/// passed a mutation in this repository, and the delimiter costs one line.
+fn lines_naming_principal(relative: &str, principal: &str) -> Vec<String> {
+    let root = repository_root();
+    let mut found = Vec::new();
+    for extension in ["yaml", "yml"] {
+        for path in files_with_extension(relative, extension) {
+            let display = path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            let source = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("cannot read {display}: {error}"));
+            for (index, line) in source.lines().enumerate() {
+                if line.trim_start().starts_with('#') {
+                    continue;
+                }
+                if line
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .any(|token| token == principal)
+                {
+                    found.push(format!("{display}:{}: {}", index + 1, line.trim()));
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The environments under `envs/` that carry an `api.yaml`, which must be
+/// at least one: a test that loops over none asserts nothing.
+fn environments_with_an_api() -> Vec<String> {
+    let envs = repository_root().join(ENVS);
+    assert!(
+        envs.is_dir(),
+        "{ENVS} does not exist; ADR 0036 decision 4 puts one directory per environment there"
+    );
+    let mut found: Vec<String> = std::fs::read_dir(&envs)
+        .expect("readable")
+        .flatten()
+        .filter(|entry| entry.path().join("api.yaml").is_file())
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .collect();
+    found.sort();
+    assert!(
+        !found.is_empty(),
+        "no directory under {ENVS} carries an api.yaml; ADR 0036 moved the API's service there \
+         and every assertion below would be skipped"
+    );
+    found
+}
+
+/// One environment's tfvars, comments stripped.
+fn tfvars_of(environment: &str) -> String {
+    without_comments(&read(&format!(
+        "infrastructure/environments/{environment}/terraform.tfvars"
+    )))
+}
+
 // ---------------------------------------------------------------------------
 // The properties
 // ---------------------------------------------------------------------------
@@ -176,40 +367,139 @@ fn the_console_reaches_the_api_as_a_named_invoker_and_nothing_else_may() {
         );
     }
 
-    // And the module refuses the two principals that would make the URL the
-    // route in.
-    let variables = read(CLOUD_RUN_VARIABLES);
+    // The catalogue is what a reviewer reads; the grant that exists is the
+    // `IAMPolicyMember` in each environment's `invokers.yaml`, since ADR
+    // 0036 decision 5 released `_iam_member.invokers` from the module. So
+    // the same decision is read again where it is applied, per environment:
+    // exactly one grant on the API, `roles/run.invoker`, to the console's
+    // own account — and only where the tfvars create that account, because
+    // `console_enabled = var.console_egress_cidr != null` in the root, and a
+    // grant to an identity that does not exist is one Config Connector
+    // cannot apply. An environment with no console carries no grant on the
+    // API, so the API there is reachable by nobody, which is the honest
+    // state rather than a placeholder principal.
+    //
+    // What used to refuse the two principals that turn the URL into the
+    // route in — `allAuthenticatedUsers` outright, `allUsers` outside the
+    // open-anonymous posture — was a precondition on the service resource,
+    // and left with it. The refusal is now a read of every manifest: the
+    // manifests are what is applied, and a principal that is not in them is
+    // not on any service.
+    let environments = environments_with_an_api();
+    let mut grants_checked = 0usize;
+    for environment in &environments {
+        let tfvars = tfvars_of(environment);
+        let project = tfvar(&tfvars, "project_id")
+            .unwrap_or_else(|| panic!("{environment}'s tfvars set no project_id"));
+        let console_enabled = tfvar(&tfvars, "console_egress_cidr").is_some();
+        let api = format!("qip-{environment}-api");
+        let openobserve = format!("qip-{environment}-openobserve");
+        let expected_member =
+            format!("serviceAccount:qip-{environment}-console@{project}.iam.gserviceaccount.com");
+        let documents = documents_under(&format!("{ENVS}/{environment}"));
+        let mut on_api = Vec::new();
+        for document in &documents {
+            if !document.kind.starts_with("IAM") {
+                continue;
+            }
+            // One shape only. An authoritative `IAMPolicy` carries a
+            // `bindings` list this reader does not walk, and a grant it
+            // could not see is a grant this test would call absent.
+            assert_eq!(
+                document.kind,
+                "IAMPolicyMember",
+                "{} is an IAM grant in a shape this test does not read; write it as an \
+                 IAMPolicyMember so who may call what is one line per grant",
+                document.describe()
+            );
+            let target = document.resource_ref_name().unwrap_or_else(|| {
+                panic!("{} names no spec.resourceRef.name", document.describe())
+            });
+            if target == api {
+                on_api.push(document);
+            } else if target == openobserve {
+                // ADR 0030's one anonymous grant. `gitops.rs`'s
+                // `openobserve_is_deployed_at_the_reviewed_digest_anonymous_as_adr_0030_records_and_on_ephemeral_storage`
+                // pins it to exactly one `allUsers` per environment, on that
+                // service, and refuses `allUsers` wherever OpenObserve is not
+                // deployed. Not asserted twice here.
+            } else {
+                // The brains, or anything else: nothing calls them over HTTP,
+                // and a grant on one is a route in that the catalogue's
+                // `invokers = []` says does not exist.
+                panic!(
+                    "{} grants {} on `{target}`, which is not the API; the brains take no \
+                     invoker (catalogue.tf: `invokers = []`) and nothing else under {ENVS}/\
+                     {environment} may be called",
+                    document.describe(),
+                    document.field(2, "role").unwrap_or_default()
+                );
+            }
+        }
+        if console_enabled {
+            assert_eq!(
+                on_api.len(),
+                1,
+                "{environment} creates a console identity (console_egress_cidr is set) and its \
+                 invokers.yaml carries {} grant(s) on {api}; exactly one, to the console, is the \
+                 route the portal has — none is a 403 on every gateway call, two is a second \
+                 caller",
+                on_api.len()
+            );
+            let grant = on_api[0];
+            assert_eq!(
+                grant.field(2, "role").as_deref(),
+                Some("roles/run.invoker"),
+                "{} grants a role other than roles/run.invoker on the API",
+                grant.describe()
+            );
+            assert_eq!(
+                grant.field(2, "member").as_deref(),
+                Some(expected_member.as_str()),
+                "{} names a principal other than the console's own account; the API's invoker \
+                 is exactly `{expected_member}`",
+                grant.describe()
+            );
+            grants_checked += 1;
+        } else {
+            assert!(
+                on_api.is_empty(),
+                "{environment} sets no console_egress_cidr, so no console identity exists, yet \
+                 {} grant(s) name {api}: {:?}",
+                on_api.len(),
+                on_api.iter().map(|d| d.describe()).collect::<Vec<_>>()
+            );
+        }
+    }
     assert!(
-        variables.contains("!contains(var.invokers, \"allAuthenticatedUsers\")"),
-        "the Cloud Run module no longer refuses allAuthenticatedUsers, which has no \
-         exception anywhere"
+        grants_checked >= 1,
+        "no environment under {ENVS} enables the console, so the positive half of this test \
+         — the grant that exists is the console's — was never checked"
     );
-    // Conditional since ADR 0030, not absent: refused on every posture except
-    // the one that declares the exposure. The console's API is `internal`, so
-    // the refusal still binds it exactly as before — what changed is that the
-    // exception now has to be written down where a reader sees it.
-    // In `main.tf`, as a precondition, and asserted there specifically. It
-    // was first written as a `validation` on `invokers` and silently did
-    // nothing: a validation that reads a second variable is a cross-variable
-    // reference terraform skips, and `terraform validate` reported success on
-    // a configuration pairing `allUsers` with `ingress_posture = "internal"`.
-    // This test names the file so the guard cannot drift back to the block
-    // where it cannot fire.
-    let module = read(CLOUD_RUN_MODULE);
+
+    // `allAuthenticatedUsers` has no exception anywhere: it is every Google
+    // account on earth, and reads to a reviewer as if it were a restriction.
+    // Over the whole of {GITOPS}, not only `envs/`, because a grant is a
+    // grant wherever a manifest declares it.
+    let all_authenticated = lines_naming_principal(GITOPS, "allAuthenticatedUsers");
     assert!(
-        module.contains(
-            "!contains(var.invokers, \"allUsers\") || var.ingress_posture == \"open-anonymous\""
-        ),
-        "the module no longer refuses an anonymous invoker outside the open-anonymous \
-         posture, or the refusal moved back to a variable validation where a \
-         cross-variable reference is skipped"
+        all_authenticated.is_empty(),
+        "allAuthenticatedUsers is named under {GITOPS}; it has no exception on any service, \
+         and the module refusal that used to catch it left with the service resource (ADR \
+         0036):\n{}",
+        all_authenticated.join("\n")
     );
+    // `allUsers` outside `envs/` has nothing to be bound to; inside, the
+    // gitops.rs test named above holds it to OpenObserve's one grant.
+    let anonymous_outside_envs: Vec<String> = lines_naming_principal(GITOPS, "allUsers")
+        .into_iter()
+        .filter(|line| !line.starts_with(&format!("{ENVS}/")))
+        .collect();
     assert!(
-        module.contains(
-            "var.ingress_posture != \"open-anonymous\" || contains(var.invokers, \"allUsers\")"
-        ),
-        "the module no longer refuses the open-anonymous posture without an anonymous \
-         invoker, so a public URL that answers 403 to everyone would plan clean"
+        anonymous_outside_envs.is_empty(),
+        "allUsers is named under {GITOPS} outside {ENVS}, where no service exists for ADR \
+         0030's one exception to apply to:\n{}",
+        anonymous_outside_envs.join("\n")
     );
 }
 
@@ -218,40 +508,83 @@ fn the_api_is_reachable_only_from_inside_the_vpc_and_its_address_is_a_terraform_
     // The security argument of ADR 0018, restated for Cloud Run: without
     // internal ingress the API's own URL answers the internet, and `POST
     // /api/v1/kill-switch` acquires a public address.
-    // Scoped to the API's own entry. A bare `contains` over the whole file
-    // was enough while every workload was internal; since ADR 0030 put one on
-    // the internet it would pass on a neighbour's posture while the API sat
-    // anywhere at all.
-    let catalogue = without_comments(&read(CATALOGUE));
-    let api_entry = catalogue
-        .split("api = {")
-        .nth(1)
-        .and_then(|rest| rest.split("\n    }").next())
-        .expect("catalogue.tf declares an `api` entry in the Cloud Run catalogue");
-    assert!(
-        !api_entry.contains("ingress_posture"),
-        "the API's catalogue entry now names an ingress posture of its own; it relied on \
-         the module default of internal, and a value here is the thing to read:\n{api_entry}"
-    );
-    let module = without_comments(&read(CLOUD_RUN_MODULE));
-    assert!(
-        module.contains("\"INGRESS_TRAFFIC_INTERNAL_ONLY\""),
-        "the Cloud Run module no longer names the internal-only ingress"
-    );
-    // Since ADR 0030 the module *can* publish a service, through exactly one
-    // posture. The property that matters to this test is unchanged and is
-    // asserted directly rather than by the absence of the setting: no arm
-    // reaches the internet except the one named, so a workload that does not
-    // ask for it cannot get it.
-    assert!(
-        module.contains("var.ingress_posture == \"open-anonymous\" ? \"INGRESS_TRAFFIC_ALL\" :"),
-        "INGRESS_TRAFFIC_ALL is produced by something other than the open-anonymous \
-         posture, so a workload could reach the internet without declaring it"
-    );
+    //
+    // Read from `api.yaml` in every environment that has one, because that
+    // is the resource that carries the posture since ADR 0036 decision 4;
+    // the module this test used to read has no service resource to put an
+    // ingress on, and `catalogue.tf` names no posture for the API at all.
+    // Asserted as equality with the internal value, never as the absence of
+    // `INGRESS_TRAFFIC_ALL`: a `RunService` with no `ingress` field at all
+    // is one Cloud Run defaults to all traffic, so a deleted line is the
+    // public address, not a safe omission.
+    let environments = environments_with_an_api();
+    for environment in &environments {
+        let api = format!("qip-{environment}-api");
+        let openobserve = format!("qip-{environment}-openobserve");
+        let documents = documents_under(&format!("{ENVS}/{environment}"));
+        let services: Vec<&Document> = documents
+            .iter()
+            .filter(|document| document.kind == "RunService")
+            .collect();
+        let api_service = services
+            .iter()
+            .find(|service| service.name == api)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{ENVS}/{environment}/api.yaml exists and no RunService named `{api}` was \
+                     read out of {ENVS}/{environment}; the manifest has changed shape and this \
+                     test is blind to it"
+                )
+            });
+        let ingress = api_service.field(2, "ingress");
+        assert_eq!(
+            ingress.as_deref(),
+            Some(INTERNAL_ONLY),
+            "{} carries ingress {ingress:?}; anything but {INTERNAL_ONLY} — including no \
+             `ingress` line, which Cloud Run reads as all traffic — puts the kill switch on a \
+             public address",
+            api_service.describe()
+        );
+
+        // The neighbours, so that the API's posture cannot be relaxed by
+        // moving its route onto another service. `gitops.rs`'s
+        // `every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held`
+        // pins each catalogue workload — the two brains included — to
+        // internal ingress; this is the complement, over every RunService
+        // the environment declares whatever it is named: the one that may
+        // answer the internet is OpenObserve (ADR 0030, revisited by ADR
+        // 0033), it does so through exactly the one value, and no other
+        // service carries any other posture.
+        for service in &services {
+            let ingress = service.field(2, "ingress");
+            if service.name == openobserve {
+                assert_eq!(
+                    ingress.as_deref(),
+                    Some(ALL_TRAFFIC),
+                    "{} is ADR 0030's anonymous service and carries ingress {ingress:?} rather \
+                     than {ALL_TRAFFIC}; a public grant behind an internal posture is a public \
+                     403 that reads as an exposure",
+                    service.describe()
+                );
+                continue;
+            }
+            assert_eq!(
+                ingress.as_deref(),
+                Some(INTERNAL_ONLY),
+                "{} carries ingress {ingress:?}; only `{openobserve}` may answer the internet \
+                 (ADR 0030), and every other service under {ENVS}/{environment} is \
+                 {INTERNAL_ONLY}",
+                service.describe()
+            );
+        }
+    }
 
     // The address the console dials is the API's URL as Terraform reports
     // it, never a literal. A copy in a script is the copy nobody thinks to
-    // change, because it is the only one that is not configuration.
+    // change, because it is the only one that is not configuration. Since
+    // ADR 0036 the module computes the URL from the project number rather
+    // than reading it back from a service it no longer owns; the output is
+    // still the module's, and still the API's.
     assert_eq!(
         output_value("api_internal_base_url"),
         "module.cloud_run[\"api\"].uri",

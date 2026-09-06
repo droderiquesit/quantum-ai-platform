@@ -181,7 +181,13 @@ pub fn run(
             break Stop::FeedExhausted;
         }
 
-        let now = clock.now();
+        // The feed says when the cycle is: the wall clock for a venue or the
+        // synthetic exchange, the next knowable instant for a tape. A tape
+        // read on the wall clock is swallowed whole in one poll, and a claim
+        // with a five-day horizon recorded in that cycle is never scored.
+        let Some(now) = feed.cycle_instant(clock.as_ref()) else {
+            break Stop::FeedExhausted;
+        };
         set_status(status, |status| status.cycle_started(now));
 
         let outcome = step(platform, feed, now, config.cycle_budget)?;
@@ -198,7 +204,9 @@ pub fn run(
 
         let record = CycleRecord {
             started_at: now,
-            finished_at: clock.now(),
+            // On the same clock the cycle started on, so a tape's status
+            // does not report a cycle that began last year and ended today.
+            finished_at: feed.now(clock.as_ref()),
             elapsed: outcome.elapsed,
             observed: outcome.observed,
             rejected: outcome.rejections.len(),

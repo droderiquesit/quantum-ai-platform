@@ -47,7 +47,11 @@ The rule permits a conversation nothing holds. The in-tree mesh binds one
 listener per cell on its own port and a Cloud Run service publishes exactly
 one, so `QIP_MESH_CELLS` is unset on the API and `QIP_MESH_PEER` on the node
 (`catalogue.tf:21-27`; ADR 0024, "What it costs"): the API answers
-`available: false` and a node starts detached.
+`available: false` and a node starts detached. When the mesh is served,
+`QIP_MESH_REGIONS` (`region=grant:cell,cell;…`) on the API files every served
+cell under one region so the centre ships each cell a disjoint share of its
+region's grant (ADR 0039); left unset, every live grant ships to every cell
+and each cycle says so beside the payload.
 
 **It fails quietly in the direction that matters.** A node that cannot reach
 the central plane keeps trading inside the envelope it already holds — that is

@@ -30,22 +30,38 @@ use qip_market_ingestion::connectors::FrankfurterRatesConnector;
 use server::{Action, TestServer, address_with_no_listener};
 use std::time::Duration as StdDuration;
 
-/// The rate table's reference date is `2026-08-24`; the ECB's own sixteen-hour
+/// The rate table's reference date is `2026-09-04`; the ECB's own sixteen-hour
 /// publication delay is the manifest's, not this test's, so the horizon only
 /// has to clear it — sixty hours after the reference date leaves no ambiguity.
 fn horizon() -> Timestamp {
-    Timestamp::parse_rfc3339("2026-08-27T00:00:00Z").expect("a literal instant parses")
+    Timestamp::parse_rfc3339("2026-09-07T00:00:00Z").expect("a literal instant parses")
 }
 
 /// The body `fixtures/frankfurter-ecb-reference-rates.json` records from the
 /// live endpoint, unwrapped from the harness's own recording envelope.
-const RATE_TABLE: &str = r#"{"amount":1.0,"base":"EUR","date":"2026-08-24","rates":{"GBP":0.84215,"JPY":171.94,"USD":1.0827}}"#;
+const RATE_TABLE: &str = r#"{"amount":1.0,"base":"EUR","date":"2026-09-04","rates":{"GBP":0.85898,"JPY":181.59,"USD":1.1622}}"#;
+
+/// The one path the shipped manifest requests, read from the manifest so a
+/// repointed connector fails the premise below instead of being agreed with.
+fn manifest_path() -> Result<String> {
+    Ok(FrankfurterRatesConnector::shipped_manifest()?.endpoint.path)
+}
 
 #[test]
 fn the_connector_feed_opens_frankfurter_by_name_and_polls_real_rates() -> Result<()> {
     // Both the health probe `ConnectorFeed::open` performs during connect and
-    // the poll that follows hit the same `/latest` path, so one scripted
+    // the poll that follows hit the same `/v1/latest` path, so one scripted
     // answer serves both — the manifest's own `health_path`.
+    //
+    // Premise: the path is the versioned one the vendor serves since it
+    // moved hosts. The unversioned `/latest` answers 404 on
+    // `api.frankfurter.dev`, and a server here that answered any path would
+    // hide a manifest that had drifted back.
+    let path = manifest_path()?;
+    assert_eq!(
+        path, "/v1/latest",
+        "the shipped manifest requests {path}; the vendor serves /v1/latest and nothing else"
+    );
     let server = TestServer::always(Action::json(200, RATE_TABLE));
 
     let mut feed = ConnectorFeed::open(
@@ -89,7 +105,7 @@ fn the_connector_feed_opens_frankfurter_by_name_and_polls_real_rates() -> Result
         "expected at least the health probe and one poll, saw {} request(s)",
         server.served()
     );
-    // Every request the bridge sent actually reached `/latest` — the
+    // Every request the bridge sent actually reached `/v1/latest` — the
     // manifest's own endpoint path — over a plain GET. A bridge that
     // silently reformed the request (a different path, a body on a GET)
     // would still pass on the response alone; the recorded request is the
@@ -102,8 +118,8 @@ fn the_connector_feed_opens_frankfurter_by_name_and_polls_real_rates() -> Result
     for request in &requests {
         assert_eq!(request.method, "GET");
         assert!(
-            request.target.starts_with("/latest"),
-            "expected the manifest's own path, got {}",
+            request.target.starts_with(&path),
+            "expected the manifest's own path {path}, got {}",
             request.target
         );
         // The manifest declares `auth: {"scheme": "none"}` — Frankfurter

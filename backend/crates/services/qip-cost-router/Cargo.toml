@@ -15,5 +15,12 @@ qip-financial.workspace = true
 qip-agents.workspace = true
 qip-ai.workspace = true
 
+[dev-dependencies]
+# The reputation tests round-trip a `Judgement` through JSON to prove that the
+# deserialisation path is the same validating path a literal must take. The
+# crate itself never names it, and there is no other way to exercise a
+# `serde(try_from)` seam than to run a real deserialiser at it.
+serde_json.workspace = true
+
 [lints]
 workspace = true

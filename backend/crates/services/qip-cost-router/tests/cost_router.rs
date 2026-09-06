@@ -21,8 +21,8 @@ use qip_core::error::Result;
 use qip_core::{Decimal, Duration, ModelId, Timestamp, dec};
 use qip_cost_router::{
     ComputeLedger, Conditions, CostEngine, DataCostModel, DataReads, DataSource, DecisionContext,
-    Determinism, Escalation, EscalationLimits, Horizon, IntelligenceTier, MarketRegime, Region,
-    ReputationBook, Router, Routing, TierVerdict, VolatilityRegime,
+    Determinism, Escalation, EscalationLimits, Horizon, IntelligenceTier, Judgement, MarketRegime,
+    Region, ReputationBook, Router, Routing, TierVerdict, VolatilityRegime,
 };
 use qip_financial::asset_class::AssetClass;
 use std::collections::BTreeMap;
@@ -689,6 +689,28 @@ fn production_model(registry: &mut ModelRegistry, name: &str, at: Timestamp) -> 
     Ok(reference)
 }
 
+/// Mint a judgement the way the platform has to: rank under the conditions the
+/// decision is being made in, and take the token from the model that was
+/// chosen.
+///
+/// There is deliberately no shortcut, here or anywhere. A helper that built a
+/// `Judgement` from a bare model name and a bare `Conditions` would let every
+/// test below pass while the production caller keyed its scores on whatever
+/// market it was looking at when the outcome came back, which is the failure
+/// the type exists to make unwritable.
+fn judgement_for(
+    book: &ReputationBook,
+    registry: &ModelRegistry,
+    reference: &str,
+    under: &Conditions,
+) -> Result<Judgement> {
+    book.rank(registry, under, now())
+        .into_iter()
+        .find(|rated| rated.card.reference() == reference)
+        .expect("the model is registered and eligible to decide")
+        .judgement()
+}
+
 #[test]
 fn a_model_with_no_observations_in_a_regime_does_not_read_as_competent_there() -> Result<()> {
     // The failure contextual reputation exists to prevent: a model that has
@@ -699,8 +721,14 @@ fn a_model_with_no_observations_in_a_regime_does_not_read_as_competent_there() -
     let reference = production_model(&mut registry, "dislocation-classifier", now())?;
 
     let mut book = ReputationBook::new();
+    let trending_judgement = judgement_for(
+        &book,
+        &registry,
+        &reference,
+        &conditions(MarketRegime::Trending),
+    )?;
     for _ in 0..40 {
-        book.observe(&reference, conditions(MarketRegime::Trending), true);
+        book.observe(&trending_judgement, true);
     }
 
     let trending = book.competence(&reference, &conditions(MarketRegime::Trending));
@@ -727,8 +755,14 @@ fn a_model_with_no_observations_in_a_regime_does_not_read_as_competent_there() -
 
     // Shrinkage, not just absence: a perfect record of two is not a reputation.
     let mut thin = ReputationBook::new();
+    let crisis_judgement = judgement_for(
+        &thin,
+        &registry,
+        &reference,
+        &conditions(MarketRegime::Crisis),
+    )?;
     for _ in 0..2 {
-        thin.observe(&reference, conditions(MarketRegime::Crisis), true);
+        thin.observe(&crisis_judgement, true);
     }
     let lucky = thin.competence(&reference, &conditions(MarketRegime::Crisis));
     assert!(
@@ -753,11 +787,14 @@ fn a_model_the_registry_refuses_is_never_ranked_however_good_its_record() -> Res
     let retired = production_model(&mut registry, "old-classifier", now())?;
 
     let mut book = ReputationBook::new();
+    let trending = conditions(MarketRegime::Trending);
+    let retired_judgement = judgement_for(&book, &registry, &retired, &trending)?;
+    let good_judgement = judgement_for(&book, &registry, &good, &trending)?;
     for _ in 0..500 {
-        book.observe(&retired, conditions(MarketRegime::Trending), true);
+        book.observe(&retired_judgement, true);
     }
     for _ in 0..100 {
-        book.observe(&good, conditions(MarketRegime::Trending), true);
+        book.observe(&good_judgement, true);
     }
 
     let before = book.rank(&registry, &conditions(MarketRegime::Trending), now());
@@ -790,9 +827,12 @@ fn ranking_two_models_with_identical_records_is_stable() -> Result<()> {
     let right = production_model(&mut registry, "beta-classifier", now())?;
 
     let mut book = ReputationBook::new();
+    let quiet = conditions(MarketRegime::Quiet);
+    let left_judgement = judgement_for(&book, &registry, &left, &quiet)?;
+    let right_judgement = judgement_for(&book, &registry, &right, &quiet)?;
     for _ in 0..50 {
-        book.observe(&left, conditions(MarketRegime::Quiet), true);
-        book.observe(&right, conditions(MarketRegime::Quiet), true);
+        book.observe(&left_judgement, true);
+        book.observe(&right_judgement, true);
     }
 
     let first = book.rank(&registry, &conditions(MarketRegime::Quiet), now());
@@ -805,5 +845,448 @@ fn ranking_two_models_with_identical_records_is_stable() -> Result<()> {
     }
     assert_eq!(first[0].card.reference(), left, "ties break by reference");
     assert_eq!(first[1].card.reference(), right);
+    Ok(())
+}
+
+// --- the conditions a decision was made under, kept as data ------------------
+
+#[test]
+fn a_routing_record_carries_the_conditions_it_was_made_under_on_both_arms() -> Result<()> {
+    // `Conditions` doubles as the routing record and as the key a model's
+    // record is kept under, and the crate says so. It only holds if the routing
+    // record actually carries the value: reciting it inside the rationale
+    // sentence leaves a later caller with prose to parse or a market to guess
+    // from, and it will guess.
+    let router = Router::default();
+    let under = Conditions::new(
+        AssetClass::Equity,
+        Region::new("apac"),
+        MarketRegime::Crisis,
+        VolatilityRegime::Extreme,
+        Horizon::Strategic,
+    );
+    // Assert the premise: this is not the conditions the other helpers build,
+    // so a routing that reported some default would not match by accident.
+    assert_ne!(under, conditions(MarketRegime::Crisis));
+
+    for determinism in [Determinism::Required, Determinism::NotRequired] {
+        let context = DecisionContext::new(
+            "is the dislocation real",
+            dec!("100000"),
+            Duration::from_secs(300),
+            0.60,
+            determinism,
+            under.clone(),
+        );
+        let routing = router.select(&context)?;
+        assert_eq!(
+            routing.conditions(),
+            &under,
+            "the {determinism:?} arm lost the conditions its decision was made under"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn an_escalated_routing_keeps_the_conditions_the_decision_started_under() -> Result<()> {
+    // The failure this prevents, which is a live one rather than a
+    // hypothetical: `escalate` is handed a `&DecisionContext` by the caller,
+    // and a caller climbing a rung after a slow first answer may well have
+    // rebuilt that context from a fresher market. If the climbed routing took
+    // its conditions from the context, the record of what the platform believed
+    // the market was doing would move underneath the decision, and the model
+    // that answered in a crisis would be scored as having answered in whatever
+    // came next.
+    let router = Router::default();
+    let started_in = conditions(MarketRegime::Crisis);
+    let started = DecisionContext::new(
+        "is the dislocation real",
+        dec!("100000"),
+        Duration::from_secs(300),
+        0.60,
+        Determinism::NotRequired,
+        started_in.clone(),
+    );
+    // The same decision, re-read from a market that has moved on.
+    let moved_on = conditions(MarketRegime::Quiet);
+    assert_ne!(started_in, moved_on, "the two markets must actually differ");
+    let refreshed = DecisionContext::new(
+        "is the dislocation real",
+        dec!("100000"),
+        Duration::from_secs(300),
+        0.60,
+        Determinism::NotRequired,
+        moved_on.clone(),
+    );
+
+    let Routing::Judged(routing) = router.select(&started)? else {
+        panic!("a decision that tolerates an estimate must be judged");
+    };
+    assert_eq!(
+        routing.conditions(),
+        &started_in,
+        "premise: it started here"
+    );
+
+    let limits = EscalationLimits::new(IntelligenceTier::DeepModel, dec!("10"))?;
+    let unconvincing = Conviction::new(0.55, 1_000);
+    let escalation = router.escalate(&routing, &refreshed, unconvincing, &limits)?;
+    assert!(
+        escalation.climbed(),
+        "premise: the answer was unconvincing and had to climb"
+    );
+    assert_eq!(
+        escalation.routing().conditions(),
+        &started_in,
+        "the climbed rung adopted the refreshed market as the conditions of a decision that was made before it"
+    );
+    assert_ne!(escalation.routing().conditions(), &moved_on);
+    Ok(())
+}
+
+#[test]
+fn a_models_score_lands_in_the_cell_it_was_chosen_in_not_the_one_its_outcome_resolved_in()
+-> Result<()> {
+    // The reason `ReputationBook::observe` takes a `Judgement` and not a model
+    // name and a `Conditions`. An outcome is resolved at the end of the
+    // decision's horizon — this one is `Horizon::Intraday`, and a strategic
+    // call resolves months out — and the caller that learns whether the answer
+    // was right is looking at a different market. Given a free `Conditions`
+    // parameter it will fill it from the market in front of it, and the book
+    // will then say the model is good at quiet tapes when what it survived was
+    // a crisis.
+    let mut registry = ModelRegistry::new();
+    let reference = production_model(&mut registry, "dislocation-classifier", now())?;
+    let mut book = ReputationBook::new();
+
+    let decided_in = conditions(MarketRegime::Crisis);
+    let resolved_in = conditions(MarketRegime::Quiet);
+    assert_ne!(
+        decided_in, resolved_in,
+        "the two cells must actually differ"
+    );
+
+    // Premise: neither cell has anything in it, so an assertion that one of
+    // them moved is an assertion about this observation and not about setup.
+    assert_eq!(book.competence(&reference, &decided_in).observations(), 0);
+    assert_eq!(book.competence(&reference, &resolved_in).observations(), 0);
+
+    // The decision: the model is chosen under the crisis, and the token is
+    // minted there.
+    let judgement = judgement_for(&book, &registry, &reference, &decided_in)?;
+    assert_eq!(judgement.conditions(), &decided_in);
+    assert_eq!(judgement.model(), reference);
+
+    // Much later, in a quiet market, the outcome comes back. The caller has
+    // nothing to key it on but the token.
+    book.observe(&judgement, true);
+
+    assert_eq!(
+        book.competence(&reference, &decided_in).observations(),
+        1,
+        "the score belongs in the cell the decision was made in"
+    );
+    assert_eq!(
+        book.competence(&reference, &resolved_in).observations(),
+        0,
+        "the quiet tape the outcome happened to resolve in earned the model nothing"
+    );
+    Ok(())
+}
+
+// --- the second mint: reading a judgement back from the log ------------------
+//
+// `Judgement`'s doc claimed the two ways to obtain one "both carry
+// decision-time conditions by construction, so there is no expression a
+// resolution-time caller can write that keys a score on the market it happens
+// to be looking at". `#[derive(Deserialize)]` was that expression, and it was
+// available from any crate carrying `serde_json` — including `qip-kernel`,
+// which is where `ReputationBook`'s wiring is destined. A resolution-time
+// caller built a `Conditions` from the market in front of it (`Conditions::new`
+// is public), round-tripped it through `serde_json::from_value::<Judgement>`
+// and handed the result to `observe`, which took it — for a model reference no
+// `ModelRegistry` ever held, and for the empty string.
+//
+// What follows is what the fix does establish. What it cannot establish — that
+// the conditions in a document were captured at the decision — is stated on the
+// type rather than asserted here, because no test in this crate could prove it.
+
+/// A judgement minted the way the platform mints one, and the document it
+/// serialises to.
+///
+/// Each forgery below is this document with one field edited, so what is proved
+/// is the edit rather than a difference between a hand-written blob and a real
+/// token.
+fn genuine_judgement() -> Result<(Judgement, serde_json::Value)> {
+    let mut registry = ModelRegistry::new();
+    let reference = production_model(&mut registry, "dislocation-classifier", now())?;
+    let book = ReputationBook::new();
+    let judgement = judgement_for(
+        &book,
+        &registry,
+        &reference,
+        &conditions(MarketRegime::Crisis),
+    )?;
+    let document = serde_json::to_value(&judgement)
+        .map_err(|e| qip_core::error::Error::invalid(e.to_string()))?;
+    Ok((judgement, document))
+}
+
+#[test]
+fn a_judgement_read_back_from_a_document_meets_the_same_check_the_mint_ran() -> Result<()> {
+    let (judgement, document) = genuine_judgement()?;
+
+    // Premise, and the half that separates a working gate from one that refuses
+    // everything: a judgement the platform minted survives the round trip and
+    // compares equal, so the refusals below are caused by the edit. A token the
+    // decision path can write and the replay path refuses would be a decision
+    // that cannot be scored twice the same way.
+    let round_tripped: Judgement = serde_json::from_value(document.clone())
+        .map_err(|e| qip_core::error::Error::invalid(e.to_string()))?;
+    assert_eq!(round_tripped, judgement);
+    assert_eq!(round_tripped.conditions(), judgement.conditions());
+
+    // The forgery as it was actually written: a bare model id with no version.
+    // It is not a `ModelCard::reference`, so `ReputationBook::competence` —
+    // which is always called with a `card.reference()` — can never read the
+    // cell it would book into. An accumulating record nobody reads is worse
+    // than none, because it looks like a reputation.
+    let mut forged = document.clone();
+    assert!(
+        forged.get("model").is_some(),
+        "the document must have a model field for editing it to forge anything"
+    );
+    forged["model"] = serde_json::json!("some-vendor/some-model");
+    let refusal = serde_json::from_value::<Judgement>(forged)
+        .expect_err("a document naming something that is not a model reference must be refused");
+    assert!(
+        refusal.to_string().contains("is not a model reference"),
+        "the refusal must name what is wrong with it, said: {refusal}"
+    );
+    assert!(
+        refusal.to_string().contains("supply name@version"),
+        "the refusal must name what to supply instead, said: {refusal}"
+    );
+
+    // The empty string, which booked a cell keyed on "" that nothing looks up.
+    let mut ghost = document.clone();
+    ghost["model"] = serde_json::json!("");
+    let refusal = serde_json::from_value::<Judgement>(ghost)
+        .expect_err("a document naming no model must be refused");
+    assert!(
+        refusal.to_string().contains("a judgement names no model"),
+        "the refusal must say the model is missing, said: {refusal}"
+    );
+
+    // Padding is its own refusal and not a trim. `" name@1 "` and `"name@1"`
+    // are different keys in the book, so a whitespace-padded reference books a
+    // cell adjacent to the real one and invisible from it. Note the substring
+    // trap this avoids: the padded string *contains* a valid reference, so a
+    // check that looked for one would pass.
+    let mut padded = document.clone();
+    padded["model"] = serde_json::json!(format!(" {} ", judgement.model()));
+    let refusal = serde_json::from_value::<Judgement>(padded)
+        .expect_err("a padded reference must be refused rather than trimmed");
+    assert!(
+        refusal.to_string().contains("with surrounding whitespace"),
+        "the refusal must name the padding, said: {refusal}"
+    );
+
+    // Half a reference either side of the separator.
+    for half in ["@1.0.0", "dislocation-classifier@"] {
+        let mut broken = document.clone();
+        broken["model"] = serde_json::json!(half);
+        let refusal = serde_json::from_value::<Judgement>(broken)
+            .expect_err("half a model reference must be refused");
+        assert!(
+            refusal.to_string().contains("supply name@version"),
+            "the refusal must name the shape, said: {refusal}"
+        );
+    }
+
+    // The mint and the replay must agree on every string
+    // `ModelCard::reference` can produce, and it can produce a great many:
+    // `reference` is `format!("{name}@{version}")` over two free-text fields.
+    // Hence the split at the *last* separator. Splitting at the first would
+    // refuse a card whose name contains one — a token the platform itself
+    // minted, refused a year later on replay, which is precisely the asymmetry
+    // the shared constructor exists to remove. Driven through a real card
+    // rather than an edited document so the mint side is exercised too.
+    let mut registry = ModelRegistry::new();
+    let awkward = production_model(&mut registry, "@vendor/dislocation@classifier", now())?;
+    assert_eq!(
+        awkward, "@vendor/dislocation@classifier@1.0",
+        "the premise is a reference whose name contains the separator and begins with it"
+    );
+    let book = ReputationBook::new();
+    let minted = judgement_for(
+        &book,
+        &registry,
+        &awkward,
+        &conditions(MarketRegime::Crisis),
+    )?;
+    let text = serde_json::to_value(&minted)
+        .map_err(|e| qip_core::error::Error::invalid(e.to_string()))?;
+    let read_back: Judgement =
+        serde_json::from_value(text).map_err(|e| qip_core::error::Error::invalid(e.to_string()))?;
+    assert_eq!(read_back, minted);
+    assert_eq!(read_back.model(), awkward);
+    Ok(())
+}
+
+/// A judgement inside an internally-tagged enum — the route `qip-financial`'s
+/// `Extension` takes, where serde buffers the content and re-deserialises from
+/// the buffer. That buffering is where a `serde(try_from)` is most likely to be
+/// silently dropped, so the fix is attacked through it deliberately.
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum TaggedOutcome {
+    Scored { judgement: Judgement, correct: bool },
+}
+
+/// The same, untagged: serde tries each variant against a buffered copy.
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum UntaggedOutcome {
+    Scored(Judgement),
+}
+
+#[test]
+fn a_forged_judgement_is_refused_through_every_container_that_buffers_it() -> Result<()> {
+    let (judgement, document) = genuine_judgement()?;
+    let mut forged = document.clone();
+    forged["model"] = serde_json::json!("some-vendor/some-model");
+
+    // A list, and a map keyed by decision id — the shape a journal of open
+    // decisions would take.
+    let accepted: Vec<Judgement> = serde_json::from_value(serde_json::json!([document.clone()]))
+        .map_err(|e| qip_core::error::Error::invalid(e.to_string()))?;
+    assert_eq!(accepted, vec![judgement.clone()]);
+    assert!(
+        serde_json::from_value::<Vec<Judgement>>(serde_json::json!([forged.clone()])).is_err(),
+        "a forged judgement inside a list must be refused"
+    );
+
+    let accepted: BTreeMap<String, Judgement> =
+        serde_json::from_value(serde_json::json!({ "decision-1": document.clone() }))
+            .map_err(|e| qip_core::error::Error::invalid(e.to_string()))?;
+    assert_eq!(accepted.len(), 1, "the genuine map must be readable");
+    assert!(
+        serde_json::from_value::<BTreeMap<String, Judgement>>(
+            serde_json::json!({ "decision-1": forged.clone() })
+        )
+        .is_err(),
+        "a forged judgement inside a map must be refused"
+    );
+
+    let accepted: Option<Judgement> = serde_json::from_value(document.clone())
+        .map_err(|e| qip_core::error::Error::invalid(e.to_string()))?;
+    assert_eq!(accepted, Some(judgement.clone()));
+    assert!(
+        serde_json::from_value::<Option<Judgement>>(forged.clone()).is_err(),
+        "a forged judgement inside an Option must be refused"
+    );
+
+    // The internally-tagged route, which is how an outcome record would most
+    // naturally carry one.
+    let genuine_tagged = serde_json::json!({
+        "kind": "scored", "judgement": document.clone(), "correct": true,
+    });
+    let forged_tagged = serde_json::json!({
+        "kind": "scored", "judgement": forged.clone(), "correct": true,
+    });
+    let accepted: TaggedOutcome = serde_json::from_value(genuine_tagged)
+        .map_err(|e| qip_core::error::Error::invalid(e.to_string()))?;
+    let TaggedOutcome::Scored {
+        judgement: read_back,
+        correct,
+    } = accepted;
+    assert_eq!(read_back, judgement);
+    assert!(correct);
+    let refusal = serde_json::from_value::<TaggedOutcome>(forged_tagged)
+        .expect_err("a forged judgement inside an internally-tagged enum must be refused");
+    assert!(
+        refusal.to_string().contains("is not a model reference"),
+        "the tagged route must keep the refusal's own words, said: {refusal}"
+    );
+
+    // The untagged route refuses too, but serde reports "did not match any
+    // variant" and the refusal's words are lost. Asserted rather than left
+    // unsaid: an untagged container is a bad place for a judgement, because the
+    // record to correct cannot be named from the error.
+    let genuine_untagged: UntaggedOutcome = serde_json::from_value(document)
+        .map_err(|e| qip_core::error::Error::invalid(e.to_string()))?;
+    let UntaggedOutcome::Scored(read_back) = genuine_untagged;
+    assert_eq!(read_back, judgement);
+    assert!(
+        serde_json::from_value::<UntaggedOutcome>(forged).is_err(),
+        "a forged judgement inside an untagged enum must be refused"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_card_with_no_name_or_no_version_cannot_mint_a_judgement_the_replay_would_refuse() -> Result<()>
+{
+    // `ModelCard::new` does not require a name or a version, so a card carrying
+    // neither produces a reference of `@` — and the decision path used to mint
+    // a token from it happily, leaving the refusal for whoever replayed the log
+    // a year later. One predicate, both mints: the refusal arrives at the
+    // decision, where the corrupt card can still be fixed.
+    let mut registry = ModelRegistry::new();
+    let good = production_model(&mut registry, "dislocation-classifier", now())?;
+
+    let mut nameless = ModelCard::new(
+        ModelId::from_string("m-nameless"),
+        "",
+        "1.0",
+        "quant.research",
+        now(),
+    );
+    nameless.stage = qip_ai::registry::ModelStage::Validation;
+    let nameless_reference = nameless.reference();
+    assert_eq!(
+        nameless_reference, "@1.0",
+        "a card with no name must produce exactly the reference the mint has to refuse"
+    );
+    registry.register(nameless);
+    registry.record_evaluation(
+        &nameless_reference,
+        EvaluationRecord {
+            evaluated_at: now(),
+            dataset: "held-out".to_string(),
+            metrics: BTreeMap::new(),
+            passed: true,
+        },
+    )?;
+    registry.promote(&nameless_reference, now())?;
+
+    let book = ReputationBook::new();
+    let ranked = book.rank(&registry, &conditions(MarketRegime::Quiet), now());
+    // Premise: both cards are eligible and ranked, so the refusal below is
+    // about the reference and not about the card being filtered out first.
+    assert_eq!(ranked.len(), 2, "both cards must be eligible to decide");
+
+    let mut minted = 0;
+    let mut refused = 0;
+    for rated in &ranked {
+        match rated.judgement() {
+            Ok(token) => {
+                assert_eq!(token.model(), good);
+                minted += 1;
+            }
+            Err(refusal) => {
+                assert!(
+                    refusal.message().contains("which has no name"),
+                    "the refusal must name the missing half, said: {}",
+                    refusal.message()
+                );
+                refused += 1;
+            }
+        }
+    }
+    assert_eq!(minted, 1, "the sound card must still mint a judgement");
+    assert_eq!(refused, 1, "the nameless card must not mint one");
     Ok(())
 }

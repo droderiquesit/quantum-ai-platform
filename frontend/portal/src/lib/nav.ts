@@ -6,8 +6,6 @@ export interface NavItem {
   readonly description: string;
   /** The platform surfaces this page reads, shown in the palette. */
   readonly reads: readonly string[];
-  /** True where the page's figures are a labelled deterministic illustration. */
-  readonly simulated?: boolean;
 }
 
 export interface NavGroup {
@@ -18,11 +16,13 @@ export interface NavGroup {
 /**
  * The console's map: the eight PEOS sections.
  *
- * Every entry resolves to a page, and every page is one of three honest
- * things: a client of an endpoint the platform serves; a rendering of the
- * platform's own `available: false` reason; or a deterministic illustration
- * labelled SIMULATED DATA and written against the typed contract the real
- * surface will have. Nothing here invents a live number, and nothing is a
+ * Every entry resolves to a page, and every page is one of two honest
+ * things: a client of an endpoint the platform serves, or a rendering of the
+ * platform's own `available: false` reason. There used to be a third — a
+ * deterministic illustration labelled SIMULATED DATA, written against the
+ * contract a surface would have — and the last three pages that used it
+ * (predictions, correlation, backtesting) stopped when the platform started
+ * serving those routes. Nothing here invents a live number, and nothing is a
  * dead link kept to make a section look finished.
  *
  * Trading & Execution reads the platform's execution record and nothing more.
@@ -89,36 +89,79 @@ export const NAV: readonly NavGroup[] = [
         reads: ["/cycle", "/system/metrics"],
       },
       {
+        href: "/loop/dataflow",
+        label: "Dataflow",
+        mark: "DF",
+        description:
+          "The eight stages left to right, what flowed along each edge on the last cycle, and where it went",
+        reads: [
+          "/stream/health",
+          "/system/status",
+          "/system",
+          "/system/metrics",
+          "/opportunities",
+          "/proposals",
+          "/orders",
+          "/fills",
+          "/portfolio",
+          "/pnl",
+          "/predictions",
+          "/mesh",
+          "/regions",
+        ],
+      },
+      {
         href: "/intelligence/predictions",
         label: "Market predictions",
         mark: "PR",
-        description: "Model forecasts with confidence — illustrated until the surface exists",
-        reads: [],
-        simulated: true,
+        description: "Every claim the loop wrote down, per instrument, and whether it held",
+        reads: ["/predictions"],
       },
       {
         href: "/intelligence/correlation",
         label: "Cross-market correlation",
         mark: "CX",
-        description: "Pairwise co-movement across the universe — illustrated",
-        reads: [],
-        simulated: true,
+        description: "Pearson correlation of returns over the tape, or the reason there is none",
+        reads: ["/correlation"],
       },
       {
         href: "/intelligence/news",
         label: "News & sentiment",
         mark: "NW",
-        description: "What the platform ingests as narrative, and what it does not yet",
-        reads: [],
-        simulated: true,
+        description: "News, filings and macro releases as the market stream records them",
+        reads: ["/stream/market"],
       },
       {
         href: "/intelligence/regimes",
         label: "Regime detection",
         mark: "RG",
-        description: "The market state the detectors currently believe — illustrated",
-        reads: [],
-        simulated: true,
+        description: "The newest regime change the signal stream carried, and the platform's own account of the gap",
+        reads: ["/regimes", "/stream/signals"],
+      },
+    ],
+  },
+  {
+    // The platform's account of itself, read-only. The self-model is what it
+    // has measured its own origins to be worth and the precedents are what
+    // its memory last recalled; both are recorded on the hypothesis for
+    // replay, and a section that offered to grade, re-weight or recall would
+    // be a second cognition that could disagree with the one in the log.
+    label: "Cognition",
+    items: [
+      {
+        href: "/cognition/self-model",
+        label: "Self-model",
+        mark: "SM",
+        description:
+          "Measured accuracy per detector, analyst, rung and strategy family, and the sample below which the platform refuses an estimate",
+        reads: ["/cognition/self-model"],
+      },
+      {
+        href: "/cognition/precedents",
+        label: "Precedents",
+        mark: "PC",
+        description: "The episodes the memory last recalled, every field as it came",
+        reads: ["/cognition/precedents"],
       },
     ],
   },
@@ -143,8 +186,8 @@ export const NAV: readonly NavGroup[] = [
         href: "/research/backtesting",
         label: "Backtesting",
         mark: "BT",
-        description: "The simulator that gates promotion, and where its results live",
-        reads: ["/strategies"],
+        description: "Holdout evidence, gate findings and the band the ledger recorded, per strategy",
+        reads: ["/backtests"],
       },
       {
         href: "/research/quantum",
@@ -185,6 +228,79 @@ export const NAV: readonly NavGroup[] = [
         mark: "PL",
         description: "Profit, loss, and who or what earned it",
         reads: ["/pnl", "/portfolio"],
+      },
+    ],
+  },
+  {
+    // The ledger plane, read-only. Every page here renders a record the
+    // platform holds and offers nothing that proposes, approves, signs or
+    // transfers: ADR 0021 refuses the half of the treasury by which capital
+    // leaves, and a section that offered a control for it would imply a
+    // path that does not exist.
+    label: "Treasury",
+    items: [
+      {
+        href: "/treasury/ledger",
+        label: "Ledger",
+        mark: "LG",
+        description: "Users, mandates, per-strategy balances with expected inflows kept apart, and entitlements",
+        reads: ["/ledger/users"],
+      },
+      {
+        // The agreements themselves, side by side. The ledger page carries a
+        // mandate inside a card per user; this is every mandate at once, which
+        // is the only shape in which "which jurisdictions, which floors, which
+        // families" can be read. It also names the three fields the platform
+        // holds about a mandate and this route does not carry.
+        href: "/treasury/mandates",
+        label: "Mandates",
+        mark: "MD",
+        description:
+          "Every mandate the ledger holds, term by term, and the three facts about an agreement this route does not carry",
+        reads: ["/ledger/users"],
+      },
+      {
+        // The catalogue down the other axis from the ledger: one card per
+        // product, every account's evaluation inside it. Same route, no
+        // capability decided here — the browser holds no entitlement logic.
+        href: "/treasury/products",
+        label: "Product entitlements",
+        mark: "PE",
+        description:
+          "Every registered product and what the platform decided each account may do with it, with the reason it decided so",
+        reads: ["/ledger/users"],
+      },
+      {
+        // One account whole: mandate, eligibility verdict, books, entitlements.
+        // The account is the one an operator selected; the platform serves no
+        // per-user route and binds no console session to a ledger account, and
+        // the page says so where it is read.
+        href: "/treasury/accounts",
+        label: "Account",
+        mark: "AC",
+        description: "One account as the ledger holds it: mandate, eligibility, books and entitlements",
+        reads: ["/ledger/users"],
+      },
+      {
+        href: "/treasury/wallet",
+        label: "Wallet",
+        mark: "WL",
+        description: "Holdings observed at venues beside the ledger's view, and every reconciliation outcome",
+        reads: ["/wallet"],
+      },
+      {
+        href: "/treasury/corridors",
+        label: "Corridors",
+        mark: "CR",
+        description: "Where capital may go, under what caps, at what stage, and when each destination becomes usable",
+        reads: ["/corridors"],
+      },
+      {
+        href: "/treasury/transfer-gate",
+        label: "Transfer gate",
+        mark: "TG",
+        description: "The seven veto-only checks and the last assessment, or that there has been none",
+        reads: ["/transfer-gate"],
       },
     ],
   },
@@ -256,6 +372,17 @@ export const NAV: readonly NavGroup[] = [
         mark: "DS",
         description: "Source registry, licensing posture, and the finder's status",
         reads: ["/data-sources", "/regions", "/mesh"],
+      },
+      {
+        // The one page in this section with a write on it, and the write
+        // records a registration a person made rather than making one: the
+        // platform creates no venue account, and a source that needs one stays
+        // refused until a named operator says they read the terms.
+        href: "/data-sources/registrations",
+        label: "Venue registrations",
+        mark: "VR",
+        description: "What each venue demands before it is read, who registered, and the one approval an operator records",
+        reads: ["/registrations"],
       },
       {
         href: "/operations/mesh",

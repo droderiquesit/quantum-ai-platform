@@ -30,7 +30,19 @@ export const GATEWAY_HEADER = "x-qip-gateway";
 export type ApiOutcome<D> =
   | { readonly kind: "ok"; readonly data: D }
   /** The platform answered, and the answer was "nothing here, because…". */
-  | { readonly kind: "unavailable"; readonly subject: string; readonly reason: string }
+  | {
+      readonly kind: "unavailable";
+      readonly subject: string;
+      readonly reason: string;
+      /**
+       * The whole body, because a refusal is allowed to carry evidence beside
+       * its reason — `/correlation` lists the instruments it saw and how many
+       * closes each holds, `/regimes` names the stream topic and whether it
+       * is published — and a page that could only show the reason would have
+       * to state those facts from memory.
+       */
+      readonly body: Unavailable & Readonly<Record<string, unknown>>;
+    }
   /** The platform has no such route. */
   | { readonly kind: "missing"; readonly endpoint: string; readonly status: number; readonly detail: string }
   /** The credential this deployment holds is not permitted to call it. */
@@ -185,8 +197,8 @@ export async function request<D>(
   }
 
   if (isUnavailable(body)) {
-    const absence = body as Unavailable;
-    return finish({ kind: "unavailable", subject: absence.subject, reason: absence.reason });
+    const absence = body as Unavailable & Readonly<Record<string, unknown>>;
+    return finish({ kind: "unavailable", subject: absence.subject, reason: absence.reason, body: absence });
   }
 
   return finish({ kind: "ok", data: body as D });
@@ -219,6 +231,18 @@ export const platform = {
   dataSources: (signal?: AbortSignal) => request<unknown>("/data-sources", withSignal(signal)),
   training: (signal?: AbortSignal) => request<unknown>("/training", withSignal(signal)),
   quantum: (signal?: AbortSignal) => request<T.Quantum>("/quantum", withSignal(signal)),
+
+  /**
+   * The research routes. Each answers Role::Viewer, and each is allowed to
+   * answer with a stated absence: `/correlation` and `/regimes` do so at the
+   * top level, which `request` reports as `unavailable` with the body kept;
+   * `/predictions` and `/backtests` do so per section, which the page reads.
+   */
+  predictions: (signal?: AbortSignal) => request<T.Predictions>("/predictions", withSignal(signal)),
+  correlation: (signal?: AbortSignal) => request<T.Correlation>("/correlation", withSignal(signal)),
+  backtests: (signal?: AbortSignal) => request<T.Backtests>("/backtests", withSignal(signal)),
+  /** Answers `unavailable` today; typed as `unknown` because no available shape exists yet. */
+  regimes: (signal?: AbortSignal) => request<unknown>("/regimes", withSignal(signal)),
 
   /**
    * The route table the process is serving right now.

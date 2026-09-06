@@ -640,3 +640,320 @@ fn a_module_block_omitting_a_required_input_is_found_by_this_scan() {
         "the scan found no omitted required input in a block that omits several: {omitted:#?}"
     );
 }
+
+// --- the condition ADR 0030 set for itself, enforced ------------------------
+//
+// ADR 0030 put OpenObserve on the internet anonymously *because it was empty*,
+// and wrote its own revisit trigger: "the moment any deployment sets
+// `QIP_OPENOBSERVE_URL`". ADR 0033 is that trigger firing and is not yet
+// applied. Nothing checked the trigger — the comment beside the posture in
+// `catalogue.tf` said it, and a comment stops nobody. The first catalogue
+// entry to name the variable would have pointed the platform's telemetry at a
+// store anyone on the internet can read and write, with every gate green.
+
+/// The variable whose first appearance in a deployment is ADR 0030's trigger.
+const OPENOBSERVE_URL_VARIABLE: &str = "QIP_OPENOBSERVE_URL";
+
+/// Where the RunService manifests live since ADR 0036: one directory per
+/// environment, each holding OpenObserve's manifest beside the catalogue's.
+const GITOPS_ENVS: &str = "infrastructure/gitops/envs";
+const ENVIRONMENTS: [&str; 4] = ["dev", "test", "stage", "prod"];
+
+/// The `RunService` documents under every environment, as
+/// `(file, environment, document text)`. Line-based, like the catalogue
+/// reads here: a document is the text between `---` separators.
+fn run_service_documents() -> Vec<(String, String, String)> {
+    let mut documents = Vec::new();
+    for environment in ENVIRONMENTS {
+        let directory = terraform_root()
+            .parent()
+            .expect("the terraform root sits under infrastructure/")
+            .parent()
+            .expect("infrastructure/ sits under the repository root")
+            .join(GITOPS_ENVS)
+            .join(environment);
+        assert!(
+            directory.is_dir(),
+            "{GITOPS_ENVS}/{environment} does not exist; ADR 0036 decision 4 puts OpenObserve's \
+             RunService there, and until it lands this tripwire cannot read the posture"
+        );
+        let mut paths: Vec<PathBuf> = Vec::new();
+        let mut stack = vec![directory];
+        while let Some(current) = stack.pop() {
+            for entry in std::fs::read_dir(&current).expect("readable").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "yaml" || e == "yml") {
+                    paths.push(path);
+                }
+            }
+        }
+        paths.sort();
+        for path in paths {
+            let content = std::fs::read_to_string(&path).expect("readable");
+            for document in content.split("\n---") {
+                if document
+                    .lines()
+                    .any(|line| line.trim_end() == "kind: RunService")
+                {
+                    documents.push((
+                        path.display().to_string(),
+                        environment.to_string(),
+                        document.to_string(),
+                    ));
+                }
+            }
+        }
+    }
+    documents
+}
+
+/// Whether OpenObserve is anonymously reachable — `ingress: INGRESS_TRAFFIC_ALL`
+/// on its RunService — in every environment. The four must agree: a posture
+/// that differs by environment is one this tripwire cannot reason about.
+fn openobserve_is_anonymous() -> bool {
+    let mut postures: Vec<(String, bool)> = Vec::new();
+    for (file, environment, document) in run_service_documents() {
+        let named = document
+            .lines()
+            .any(|line| line.trim_end() == format!("  name: qip-{environment}-openobserve"));
+        if !named {
+            continue;
+        }
+        let open = document
+            .lines()
+            .any(|line| line.trim() == "ingress: INGRESS_TRAFFIC_ALL");
+        postures.push((file, open));
+    }
+    // Deployed only where the tfvars name its digest — dev today — so the
+    // premise is at least one, and every environment that has it agrees.
+    assert!(
+        !postures.is_empty(),
+        "no environment under {GITOPS_ENVS} deploys an OpenObserve RunService; the posture \
+         this tripwire reads is nowhere"
+    );
+    let mut distinct: Vec<bool> = postures.iter().map(|(_, open)| *open).collect();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        1,
+        "OpenObserve's posture differs by environment: {postures:?}"
+    );
+    distinct[0]
+}
+
+/// Every RunService container `env` entry naming `name`, as `file:line`.
+///
+/// The whole identifier: `- name: QIP_OPENOBSERVE_URL_FILE` is not the
+/// variable, and the value after `name:` is compared as a token.
+fn run_services_setting(name: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for (file, _, document) in run_service_documents() {
+        for (index, line) in document.lines().enumerate() {
+            let entry = line.trim_start();
+            let entry = entry.strip_prefix("- ").unwrap_or(entry);
+            if entry
+                .strip_prefix("name:")
+                .is_some_and(|value| value.trim().trim_matches('"') == name)
+            {
+                found.push(format!("{file}:{}", index + 1));
+            }
+        }
+    }
+    found
+}
+
+/// The body of a column-zero `module "<name>" {` block, comments already
+/// stripped by the caller, or `None` when the file declares no such block.
+fn module_block_body<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let opening = format!("module \"{name}\" {{\n");
+    let start = text.find(&opening)? + opening.len();
+    let end = text[start..].find("\n}\n")?;
+    Some(&text[start..start + end])
+}
+
+/// Every line, 1-based, whose left-hand side is exactly `name`.
+///
+/// The whole identifier, never a substring: `QIP_OPENOBSERVE_URL_FILE` would
+/// contain the token, and the `env` and `secret_env` maps both write the
+/// variable as `NAME = ...`, so the name up to the `=` is the delimited thing.
+fn lines_setting(text: &str, name: &str) -> Vec<usize> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| {
+            line.split_once('=')
+                .is_some_and(|(lhs, _)| lhs.trim() == name && !lhs.trim().is_empty())
+        })
+        .map(|(index, _)| index + 1)
+        .collect()
+}
+
+/// The tripwire, over a catalogue's text and the manifests' posture: refused
+/// when OpenObserve is still anonymous and any deployment — a catalogue
+/// entry, or a RunService's own env — sets the variable that would fill it.
+///
+/// The posture is the manifest's since ADR 0036 (`ingress: INGRESS_TRAFFIC_ALL`
+/// on OpenObserve's RunService, where the catalogue's module block used to
+/// say `open-anonymous`), so it is passed in rather than read from the
+/// catalogue. Returns the refusal as an `Err` rather than panicking so the
+/// fixture test below can prove it fires without the process aborting on
+/// the fixture.
+fn openobserve_stays_empty_while_anonymous(
+    catalogue: &str,
+    anonymous: bool,
+    manifest_setters: &[String],
+) -> Result<(), String> {
+    if !anonymous {
+        return Ok(());
+    }
+    let setters = lines_setting(catalogue, OPENOBSERVE_URL_VARIABLE);
+    if setters.is_empty() && manifest_setters.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "catalogue.tf sets {OPENOBSERVE_URL_VARIABLE} at line(s) {setters:?} and the RunService \
+         manifests set it at {manifest_setters:?} while OpenObserve's RunService is still \
+         `ingress: INGRESS_TRAFFIC_ALL` with `allUsers` as its invoker (open-anonymous). \
+         That is the trigger ADR 0030 set for itself — the store stops being empty the \
+         moment a deployment sets this variable — and ADR 0033 is the decision it fires: \
+         apply ADR 0033 (IAP, `public-edge`, named principals) before any workload points \
+         its telemetry here, or re-argue the exposure in a new record. Do not set the \
+         variable first."
+    ))
+}
+
+#[test]
+fn no_deployment_points_telemetry_at_openobserve_while_it_is_anonymous() {
+    let catalogue = without_comments(
+        &std::fs::read_to_string(terraform_root().join("catalogue.tf"))
+            .expect("catalogue.tf is readable"),
+    );
+    // The premises, each stated so the assertion below cannot pass by
+    // scanning the wrong thing. First: OpenObserve is deployed and is
+    // anonymous today, on its RunService in every environment. When ADR
+    // 0033 is applied this line fails alongside the pins in gitops.rs, and
+    // the change is to retire this tripwire with them, not to loosen it.
+    assert!(
+        module_block_body(&catalogue, "openobserve").is_some(),
+        "catalogue.tf no longer declares module \"openobserve\"; the workload's identity is gone \
+         and this tripwire's subject with it"
+    );
+    let anonymous = openobserve_is_anonymous();
+    assert!(
+        anonymous,
+        "OpenObserve's RunService is no longer INGRESS_TRAFFIC_ALL; ADR 0033 has been applied \
+         and this tripwire's premise is gone — retire it with the pins in gitops.rs"
+    );
+    // Second: the scanner sees the catalogue's variables at all. The three
+    // built entries each set the autonomy ceiling, so a walk that found fewer
+    // has stopped reading `env` maps and would find nothing below either.
+    let ceilings = lines_setting(&catalogue, "QIP_AUTONOMY_CEILING");
+    assert!(
+        ceilings.len() >= 3,
+        "only {ceilings:?} lines set QIP_AUTONOMY_CEILING; the three catalogue entries each \
+         set it, so the scan has stopped reading env maps"
+    );
+    // Third: today nothing sets the variable — neither the catalogue nor a
+    // RunService — which is what ADR 0030 relied on and `manifest_wiring.rs`
+    // records for each binary. The manifest scan sees env entries at all:
+    // every RunService sets the autonomy ceiling, so a walk finding fewer
+    // than four has stopped reading env lists.
+    let manifest_ceilings = run_services_setting("QIP_AUTONOMY_CEILING");
+    assert!(
+        manifest_ceilings.len() >= 4,
+        "only {manifest_ceilings:?} RunService env entries set QIP_AUTONOMY_CEILING; the \
+         manifest scan has stopped reading env lists"
+    );
+    assert!(
+        lines_setting(&catalogue, OPENOBSERVE_URL_VARIABLE).is_empty(),
+        "catalogue.tf now sets {OPENOBSERVE_URL_VARIABLE}; this test's premise that nothing \
+         does is false, and the assertion below is the one that says what to do"
+    );
+    let manifest_setters = run_services_setting(OPENOBSERVE_URL_VARIABLE);
+    if let Err(refusal) =
+        openobserve_stays_empty_while_anonymous(&catalogue, anonymous, &manifest_setters)
+    {
+        panic!("{refusal}");
+    }
+}
+
+#[test]
+fn a_catalogue_entry_setting_the_openobserve_url_while_it_is_anonymous_is_refused() {
+    // The mutation, kept rather than performed, for the reason the two
+    // fixture tests above give: `infrastructure/**` is another workstream's
+    // and a real edit is a window somebody else reads. The fixture is the
+    // real catalogue with one line added to the API entry's `env` map, so
+    // the parse being proven is the parse of the file as it is.
+    let catalogue = without_comments(
+        &std::fs::read_to_string(terraform_root().join("catalogue.tf"))
+            .expect("catalogue.tf is readable"),
+    );
+    let anchor = "        QIP_AUTONOMY_CEILING = var.autonomy_ceiling\n";
+    assert!(
+        catalogue.contains(anchor),
+        "the API entry no longer sets QIP_AUTONOMY_CEILING at the indentation this fixture \
+         splices after; move the anchor rather than the tripwire"
+    );
+    let with_url = catalogue.replacen(
+        anchor,
+        &format!(
+            "{anchor}        {OPENOBSERVE_URL_VARIABLE} = \"http://openobserve.internal:5080\"\n"
+        ),
+        1,
+    );
+    assert_eq!(
+        lines_setting(&with_url, OPENOBSERVE_URL_VARIABLE).len(),
+        1,
+        "the fixture sets the variable exactly once and the scan must find that line"
+    );
+    let refusal = openobserve_stays_empty_while_anonymous(&with_url, true, &[])
+        .expect_err("a catalogue setting the URL while OpenObserve is anonymous is refused");
+    for named in [
+        "ADR 0030",
+        "ADR 0033",
+        OPENOBSERVE_URL_VARIABLE,
+        "open-anonymous",
+    ] {
+        assert!(
+            refusal.contains(named),
+            "the refusal does not name {named}, so the person reading it is not told which \
+             record to apply: {refusal}"
+        );
+    }
+
+    // The same fixture with the posture already moved is admitted: the
+    // tripwire is about the combination, and a gate that refused the URL
+    // under every posture would refuse the fix ADR 0033 prescribes.
+    assert_eq!(
+        openobserve_stays_empty_while_anonymous(&with_url, false, &[]),
+        Ok(()),
+        "the tripwire refuses the URL even once OpenObserve is behind IAP, so it would refuse \
+         ADR 0033's own outcome"
+    );
+    // And a manifest setting it is refused the same way, naming the file.
+    let from_manifest = openobserve_stays_empty_while_anonymous(
+        &catalogue,
+        true,
+        &["infrastructure/gitops/envs/dev/api.yaml:40".to_string()],
+    )
+    .expect_err("a RunService setting the URL while OpenObserve is anonymous is refused");
+    assert!(
+        from_manifest.contains("envs/dev/api.yaml:40"),
+        "the refusal does not name the manifest that set the variable: {from_manifest}"
+    );
+
+    // And the delimited match: a name that merely starts with the variable
+    // is not the variable.
+    let lookalike = catalogue.replacen(
+        anchor,
+        &format!("{anchor}        {OPENOBSERVE_URL_VARIABLE}_FILE = \"/etc/qip/collector\"\n"),
+        1,
+    );
+    assert_eq!(
+        openobserve_stays_empty_while_anonymous(&lookalike, true, &[]),
+        Ok(()),
+        "the scan matched `{OPENOBSERVE_URL_VARIABLE}_FILE` as the variable; the match is on a \
+         substring, which is the trap the testing rules name"
+    );
+}

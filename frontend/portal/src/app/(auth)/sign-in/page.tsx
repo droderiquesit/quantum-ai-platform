@@ -19,6 +19,12 @@ import { AuthHeading, Notice, SubmitButton, SummaryError, TextField } from "../_
  * address (finishing verification is the fix, not retyping the password), and
  * the post-success destination passes through `safeRedirect` because a `next`
  * parameter honoured verbatim is an open redirect wearing our sign-in page.
+ *
+ * The password form is the working credential and is deprecated (ADR 0038,
+ * proposed, not applied): passkeys become the only credential and this form
+ * is retired once one can be enrolled here. The page says so beneath the
+ * form, in the same register as the paper-trading footer, so a screenshot of
+ * this page never reads as the platform's standing sign-in method.
  */
 export default function SignInPage() {
   return (
@@ -138,6 +144,17 @@ function SignInForm() {
           Sign in
         </SubmitButton>
       </form>
+
+      {/* Not a feature announcement: the honest state of the credential, in
+          the footer's register. The form above works and is interim; the
+          record says where it goes, and that nothing of that is applied. */}
+      <p
+        data-testid="auth-credential-posture"
+        className="text-[11px] leading-snug text-[color:var(--color-ink-faint)]"
+      >
+        PASSKEYS ARE THE RECORDED DESTINATION — ADR 0038, proposed, not applied. Password sign-in
+        is the interim credential and is retired once a passkey can be enrolled here.
+      </p>
 
       <div>
         {/* Present but disabled: hiding it would make the deployment look

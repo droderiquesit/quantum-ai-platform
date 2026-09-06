@@ -16,10 +16,11 @@ use qip_contracts::capital::CapitalEnvelope;
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueId, VenueStatus};
-use qip_core::error::Result;
+use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::cell::{Cell, CellConfig, CrossingInterval, Placer, PricingPolicy, WorkReport};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
+use qip_edge::journal::Decision;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_observability::metrics::{Metrics, labels, names};
@@ -136,9 +137,12 @@ impl Placer for PaperGateway {
     }
 }
 
-/// A cell whose two strategies want exactly opposite things every pass, with
-/// the crossing cap measured over `interval` when one is given.
-fn cancelling_cell(interval: Option<CrossingInterval>) -> Result<(Cell, Arc<Metrics>)> {
+/// A cell running the given strategies, each firing at its size every pass,
+/// with the crossing cap measured over `interval` when one is given.
+fn cell_with(
+    strategies: &[(&str, SignalKind, &str)],
+    interval: Option<CrossingInterval>,
+) -> Result<(Cell, Arc<Metrics>)> {
     let metrics = Arc::new(Metrics::new("qip-edge-node"));
     let mut config = CellConfig::new(CELL, REGION).with_venue(venue());
     if let Some(interval) = interval {
@@ -147,8 +151,8 @@ fn cancelling_cell(interval: Option<CrossingInterval>) -> Result<(Cell, Arc<Metr
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
     let mut cell = Cell::new(config, features)?.with_metrics(Arc::clone(&metrics));
     cell.track(book()?);
-    for (id, kind) in [("alpha", SignalKind::Enter), ("beta", SignalKind::Exit)] {
-        let (compiled, program) = firing_strategy(id, kind, "100")?;
+    for (id, kind, size) in strategies {
+        let (compiled, program) = firing_strategy(id, *kind, size)?;
         cell.deploy_with_pricing(
             compiled,
             program,
@@ -157,6 +161,44 @@ fn cancelling_cell(interval: Option<CrossingInterval>) -> Result<(Cell, Arc<Metr
         )?;
     }
     Ok((cell, metrics))
+}
+
+/// A cell whose two strategies want exactly opposite things every pass.
+fn cancelling_cell(interval: Option<CrossingInterval>) -> Result<(Cell, Arc<Metrics>)> {
+    cell_with(
+        &[
+            ("alpha", SignalKind::Enter, "100"),
+            ("beta", SignalKind::Exit, "100"),
+        ],
+        interval,
+    )
+}
+
+fn strategy(id: &str) -> StrategyId {
+    StrategyId::new(id)
+}
+
+/// The price the chain sealed the one cross in `report` at, read back from
+/// the journal entry rather than from the report, so a settlement can be
+/// checked against what a replay would see.
+fn journaled_cross_price(cell: &Cell) -> Result<Decimal> {
+    let prices: Vec<Decimal> = cell
+        .journal()
+        .entries()
+        .iter()
+        .filter_map(|entry| match &entry.decision {
+            Decision::CrossedInternally {
+                quantity, price, ..
+            } if quantity != "0" => Decimal::parse(price),
+            _ => None,
+        })
+        .collect();
+    match prices.as_slice() {
+        [price] => Ok(*price),
+        other => Err(Error::invalid(format!(
+            "expected exactly one non-zero cross in the chain, found {other:?}"
+        ))),
+    }
 }
 
 fn work(cell: &mut Cell, at: Timestamp) -> Result<WorkReport> {
@@ -273,5 +315,226 @@ fn with_no_interval_the_same_two_passes_never_cross() -> Result<()> {
             report.refusals
         );
     }
+    Ok(())
+}
+
+// --- settlement (§27.1 "both strategies receive their full intended fill") --
+
+#[test]
+fn a_booked_cross_moves_both_contributors_lots_and_cash_at_the_journaled_mid_and_the_cash_legs_cancel()
+-> Result<()> {
+    // One hundred against forty inside one pass: forty crosses (under the
+    // cap, 40 * 5 < 140 * 2) and sixty goes to the venue. Before this the
+    // cross was journaled and nothing moved — a reader of
+    // `crossed_internally` in the chain assumed books that did not exist
+    // (traceability F7). Now the buyer's lot is up and its cash down by the
+    // notional at the price the chain sealed, the seller's the reverse, and
+    // the venue-facing aggregate has not moved because the venue saw none of
+    // it.
+    let (mut cell, metrics) = cell_with(
+        &[
+            ("alpha", SignalKind::Enter, "100"),
+            ("beta", SignalKind::Exit, "40"),
+        ],
+        None,
+    )?;
+    let (alpha, beta) = (strategy("alpha"), strategy("beta"));
+    assert!(
+        cell.strategy_position(&alpha, &venue(), &object())
+            .is_zero()
+            && cell.strategy_cash(&alpha).is_zero()
+            && cell.strategy_position(&beta, &venue(), &object()).is_zero()
+            && cell.strategy_cash(&beta).is_zero(),
+        "the premise failed: a fresh cell already holds lots or cash"
+    );
+
+    let report = work(&mut cell, t(50))?;
+    assert_eq!(
+        report.crosses.len(),
+        1,
+        "the premise failed: no cross was booked: {:?}",
+        report.refusals
+    );
+    let cross = &report.crosses[0];
+    assert!(
+        cross.quantity.is_positive(),
+        "the premise failed: the cross has no size"
+    );
+    assert_eq!(cross.bought, vec![alpha.clone()], "the buyer is alpha");
+    assert_eq!(cross.sold, vec![beta.clone()], "the seller is beta");
+    assert_eq!(
+        report.orders.len(),
+        1,
+        "the premise failed: the residual did not reach the venue"
+    );
+
+    // The price is read back from the chain, not from the report: the
+    // journal is what a replay sees, so the books must agree with it.
+    let journaled = journaled_cross_price(&cell)?;
+    assert_eq!(
+        journaled, cross.price,
+        "the report and the chain disagree on the cross price"
+    );
+    let notional = journaled
+        .checked_mul(cross.quantity)
+        .ok_or_else(|| Error::invalid("the fixture notional overflowed"))?;
+    assert!(
+        notional.is_positive(),
+        "the premise needs a positive notional"
+    );
+
+    assert_eq!(
+        cell.strategy_position(&alpha, &venue(), &object()),
+        cross.quantity,
+        "the buyer's lot did not rise by the crossed quantity"
+    );
+    assert_eq!(
+        cell.strategy_position(&beta, &venue(), &object()),
+        -cross.quantity,
+        "the seller's lot did not fall by the crossed quantity"
+    );
+    assert_eq!(
+        cell.strategy_cash(&alpha),
+        -notional,
+        "the buyer did not pay quantity times the journaled mid"
+    );
+    assert_eq!(
+        cell.strategy_cash(&beta),
+        notional,
+        "the seller did not receive quantity times the journaled mid"
+    );
+    assert!(
+        (cell.strategy_cash(&alpha) + cell.strategy_cash(&beta)).is_zero(),
+        "the two cash legs of a cross are not equal and opposite"
+    );
+    assert!(
+        cell.position(&venue(), &object()).is_zero(),
+        "a cross moved the venue-facing position, which the venue never saw"
+    );
+    assert_eq!(
+        metrics.snapshot().counter(
+            names::EDGE_INTERNAL_CROSSES,
+            &labels([("cell", CELL), ("region", REGION), ("venue", VENUE)])
+        ),
+        1,
+        "the settled cross was not counted on the venue that priced it"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cross_above_the_cap_is_still_refused_and_moves_no_lot_or_cash() -> Result<()> {
+    // The settlement sits behind the cap, not beside it. A full cancellation
+    // under the per-net default is over the forty percent cap by arithmetic
+    // (see `Cell::cross_internally`); it must be refused under the cap's own
+    // gate as before, and a refused cross must leave every book untouched —
+    // a lot that moved on a cross the chain says was refused is a position
+    // no record explains.
+    let (mut cell, _metrics) = cancelling_cell(None)?;
+    let (alpha, beta) = (strategy("alpha"), strategy("beta"));
+
+    let report = work(&mut cell, t(50))?;
+    assert_eq!(
+        report.cancelled.len(),
+        1,
+        "the premise failed: the two intents did not cancel: {:?}",
+        report.refusals
+    );
+    assert!(
+        report
+            .refusals
+            .iter()
+            .any(|(gate, _)| gate == "internal_cross_cap"),
+        "the premise failed: the cap did not refuse the cross: {:?}",
+        report.refusals
+    );
+    assert!(
+        report.crosses.is_empty(),
+        "a cross above the cap was booked"
+    );
+
+    for id in [&alpha, &beta] {
+        assert!(
+            cell.strategy_position(id, &venue(), &object()).is_zero(),
+            "{} holds a lot from a cross the cap refused",
+            id.as_str()
+        );
+        assert!(
+            cell.strategy_cash(id).is_zero(),
+            "{} holds cash from a cross the cap refused",
+            id.as_str()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_cross_with_two_strategies_on_one_side_is_refused_rather_than_settled_by_a_guess() -> Result<()>
+{
+    // Sixty and forty buying against forty selling: forty would cross, and
+    // it is under the cap (40 * 5 < 140 * 2). But the record names one
+    // size and two buyers, so the settlement cannot be read from it — only
+    // guessed, by splitting evenly or pro rata — and the centre refuses the
+    // same record for the same reason. The cell refuses it under its own
+    // gate before the record exists: nothing is booked, counted or moved,
+    // and the intents still net as before.
+    let (mut cell, metrics) = cell_with(
+        &[
+            ("alpha", SignalKind::Enter, "60"),
+            ("gamma", SignalKind::Enter, "40"),
+            ("beta", SignalKind::Exit, "40"),
+        ],
+        None,
+    )?;
+
+    let report = work(&mut cell, t(50))?;
+    assert_eq!(
+        report.signals.len(),
+        3,
+        "the premise failed: the three strategies did not all fire"
+    );
+    assert!(
+        !report
+            .refusals
+            .iter()
+            .any(|(gate, _)| gate == "internal_cross_cap"),
+        "the premise failed: the cap refused a cross this test needs under it: {:?}",
+        report.refusals
+    );
+    assert!(
+        report
+            .refusals
+            .iter()
+            .any(|(gate, _)| gate == "internal_cross_attribution"),
+        "the two-buyer cross was not refused under the attribution gate: {:?}",
+        report.refusals
+    );
+    assert!(
+        report.crosses.is_empty(),
+        "a cross with two buyers was booked: {:?}",
+        report.crosses
+    );
+    assert_eq!(
+        report.orders.len(),
+        1,
+        "the net residual did not reach the venue"
+    );
+    for id in ["alpha", "gamma", "beta"] {
+        let id = strategy(id);
+        assert!(
+            cell.strategy_position(&id, &venue(), &object()).is_zero()
+                && cell.strategy_cash(&id).is_zero(),
+            "{} was settled on a cross that was refused",
+            id.as_str()
+        );
+    }
+    assert_eq!(
+        metrics.snapshot().counter(
+            names::EDGE_INTERNAL_CROSSES,
+            &labels([("cell", CELL), ("region", REGION), ("venue", VENUE)])
+        ),
+        0,
+        "a refused cross was counted as a cross"
+    );
     Ok(())
 }

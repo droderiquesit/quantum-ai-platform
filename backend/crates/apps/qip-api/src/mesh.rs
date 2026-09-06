@@ -69,7 +69,7 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Clock, hash};
 use qip_events::AnyEvent;
 use qip_kernel::Platform;
-use qip_kernel::central::{BreakOrigin, CellReport, ReconciliationBreak};
+use qip_kernel::central::{BreakOrigin, CellReport, ReconciliationBreak, RegionMembership};
 use qip_mesh::delta::{CellStanding, decode_cell_delta};
 use qip_mesh::spine::{
     CapitalDispatch, CapitalDispatcher, CellDeltaReceiver, CellDeltaSink, DispatcherConfig,
@@ -93,6 +93,12 @@ pub const CELLS_VARIABLE: &str = "QIP_MESH_CELLS";
 pub const INBOX_CAPACITY_VARIABLE: &str = "QIP_MESH_INBOX_CAPACITY";
 /// Undelivered capital envelopes one cell's durable spool may hold.
 pub const SPOOL_CAPACITY_VARIABLE: &str = "QIP_MESH_SPOOL_CAPACITY";
+/// The region membership the centre partitions grants by (ADR 0039):
+/// `region=grant:cell[,cell…][;region=…]`, every served cell filed under
+/// exactly one region. Unset, the `capital_grants` slot ships every live
+/// grant to every cell — the one-cell-per-region shape ADR 0039 exists to
+/// grow out of — and the cycle says so beside each payload.
+pub const REGIONS_VARIABLE: &str = "QIP_MESH_REGIONS";
 
 /// Deltas absorbed per cycle. A bound because the drain runs inside a
 /// request: a backlog is worked off across cycles rather than stalling one
@@ -123,11 +129,17 @@ pub struct CellAddress {
 }
 
 /// What the environment says the mesh should be.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MeshSettings {
     pub cells: Vec<CellAddress>,
     pub inbox_capacity: usize,
     pub spool_capacity: usize,
+    /// Which region each served cell belongs to and what the region is
+    /// granted, or `None` when the deployment declared none. Validated at
+    /// parse time to cover every cell in `cells`: a cell the centre serves
+    /// but files nowhere would be withheld every share for as long as the
+    /// process ran, silently.
+    pub regions: Option<RegionMembership>,
 }
 
 impl MeshSettings {
@@ -145,6 +157,10 @@ impl MeshSettings {
             &cells,
             std::env::var(INBOX_CAPACITY_VARIABLE).ok().as_deref(),
             std::env::var(SPOOL_CAPACITY_VARIABLE).ok().as_deref(),
+            std::env::var(REGIONS_VARIABLE)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .as_deref(),
         )
         .map(Some)
     }
@@ -155,6 +171,7 @@ impl MeshSettings {
         cells: &str,
         inbox_capacity: Option<&str>,
         spool_capacity: Option<&str>,
+        regions: Option<&str>,
     ) -> Result<Self> {
         let mut parsed = Vec::new();
         let mut names = BTreeSet::new();
@@ -202,12 +219,33 @@ impl MeshSettings {
                  no mesh, which is a decision, rather than an empty list, which is a typo"
             )));
         }
+        let regions = match regions {
+            None => None,
+            Some(declaration) => {
+                let membership = RegionMembership::parse(declaration).map_err(|error| {
+                    Error::invalid(format!(
+                        "configuration: {REGIONS_VARIABLE}: {}",
+                        error.message()
+                    ))
+                })?;
+                membership
+                    .covering(parsed.iter().map(|cell| cell.cell.as_str()))
+                    .map_err(|error| {
+                        Error::invalid(format!(
+                            "configuration: {REGIONS_VARIABLE} against {CELLS_VARIABLE}: {}",
+                            error.message()
+                        ))
+                    })?;
+                Some(membership)
+            }
+        };
         Ok(Self {
             cells: parsed,
             inbox_capacity: parse_capacity(INBOX_CAPACITY_VARIABLE, inbox_capacity)?
                 .unwrap_or_else(default_inbox_capacity),
             spool_capacity: parse_capacity(SPOOL_CAPACITY_VARIABLE, spool_capacity)?
                 .unwrap_or_else(default_spool_capacity),
+            regions,
         })
     }
 }
@@ -600,6 +638,13 @@ pub struct PendingPolicy {
     /// the slot ships unproduced. `WhitelistIssue::describe` for an issue,
     /// the producer's refusal for a refusal.
     pub whitelist: Vec<String>,
+    /// One line per cell: what its `capital_grants` slot carries — a share
+    /// of its region's grant, every live grant because no membership is
+    /// declared, or why it was withheld (ADR 0039). Beside the whitelist
+    /// lines for the same reason they exist: a node that opens unfunded and
+    /// never funds is explained where the share was, or was not, shipped
+    /// from.
+    pub shares: Vec<String>,
 }
 
 /// The policy payloads one cycle should ship, one per configured cell.
@@ -644,27 +689,65 @@ pub struct PendingPolicy {
 pub fn pending_policy(
     platform: &mut Platform,
     cells: impl Iterator<Item = String>,
+    regions: Option<&RegionMembership>,
     now: Timestamp,
 ) -> PendingPolicy {
     let halted = platform.autonomy().kill_switch().is_globally_tripped();
     let limits = serde_json::to_value(platform.risk_limits()).ok();
+    let cells: Vec<String> = cells.collect();
+    // With a membership declared, the centre decides every cell's share of
+    // its region's grant from the plan it sizes under the same drawdown the
+    // envelopes were issued against (ADR 0039); a cell whose share was
+    // withheld ships the slot unproduced and the reason travels beside it.
+    // Without one, every live grant ships to every cell — the shape the ADR
+    // grows out of, said out loud rather than defaulted silently, because
+    // two nodes under one grant could each spend it.
+    let manifests = regions.map(|membership| {
+        platform.central().grant_manifests(
+            cells.iter().map(String::as_str),
+            membership,
+            platform.drawdown(),
+            now,
+        )
+    });
     let mut pending = PendingPolicy::default();
     for cell in cells {
         let sequence = now.as_nanos().max(0) as u64;
         let mut payload = PolicyPayload::unproduced(sequence, &cell, now);
         payload.halted = halted;
-        let live_grants: Vec<String> = {
-            let central = platform.central();
-            central
-                .factory()
-                .candidates()
-                .filter(|candidate| candidate.cell() == cell)
-                .filter_map(|candidate| central.envelope(candidate.cell(), candidate.strategy()))
-                .filter(|envelope| envelope.is_live(now))
-                .map(|envelope| envelope.signature().to_string())
-                .collect()
-        };
-        payload.capital_grants = Slot::produced(GrantManifest { live_grants }, now);
+        match manifests
+            .as_ref()
+            .and_then(|decided| decided.for_cell(&cell))
+        {
+            Some(decision) => {
+                pending.shares.push(decision.describe(&cell));
+                if let Some(manifest) = decision.manifest() {
+                    payload.capital_grants = Slot::produced(manifest, now);
+                }
+            }
+            None => {
+                let live_grants: Vec<String> = {
+                    let central = platform.central();
+                    central
+                        .factory()
+                        .candidates()
+                        .filter(|candidate| candidate.cell() == cell)
+                        .filter_map(|candidate| {
+                            central.envelope(candidate.cell(), candidate.strategy())
+                        })
+                        .filter(|envelope| envelope.is_live(now))
+                        .map(|envelope| envelope.signature().to_string())
+                        .collect()
+                };
+                pending.shares.push(format!(
+                    "region share for {cell}: no {REGIONS_VARIABLE} declared, every live grant \
+                     shipped ({} grant(s)); a second cell under one of these grants could spend \
+                     it too (ADR 0039)",
+                    live_grants.len()
+                ));
+                payload.capital_grants = Slot::produced(GrantManifest { live_grants }, now);
+            }
+        }
         if let Some(limits) = limits.clone() {
             payload.risk_envelope = Slot::produced(RiskEnvelopeSnapshot { limits }, now);
         }
@@ -697,6 +780,9 @@ pub struct MeshBackbone {
     counters: BackboneCounters,
     standings: BTreeMap<String, CellStandingSummary>,
     last_undecodable: Option<String>,
+    /// The region membership the deployment declared, carried here so the
+    /// cycle that builds payloads reads the same one the settings validated.
+    regions: Option<RegionMembership>,
 }
 
 // The key is deliberately not in the `Debug` output, matching
@@ -834,12 +920,18 @@ impl MeshBackbone {
             counters: BackboneCounters::default(),
             standings: BTreeMap::new(),
             last_undecodable: None,
+            regions: settings.regions.clone(),
         })
     }
 
     /// The cells this backbone serves, for building payloads.
     pub fn cells(&self) -> impl Iterator<Item = String> + '_ {
         self.lanes.keys().cloned()
+    }
+
+    /// The region membership the deployment declared, for the payload builder.
+    pub fn regions(&self) -> Option<&RegionMembership> {
+        self.regions.as_ref()
     }
 
     /// Sign and send one cycle's policy payloads.
@@ -850,6 +942,7 @@ impl MeshBackbone {
     pub fn dispatch_policy(&mut self, pending: PendingPolicy, now: Timestamp) -> PolicySummary {
         let mut summary = PolicySummary {
             whitelist: pending.whitelist,
+            shares: pending.shares,
             ..PolicySummary::default()
         };
         let Some(key) = self.policy_key.clone() else {
@@ -1115,6 +1208,10 @@ pub struct PolicySummary {
     /// cycle that shipped the policy, not only from a pod's stderr.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub whitelist: Vec<String>,
+    /// What each cell's `capital_grants` slot carried, or why it was withheld
+    /// (ADR 0039), for the same reason the whitelist lines are here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shares: Vec<String>,
 }
 
 pub fn exchange_json(
@@ -1273,6 +1370,46 @@ mod tests {
     use super::*;
     use qip_contracts::capital::Utilisation;
     use qip_contracts::signal::StrategyId;
+
+    /// A membership that files nowhere a cell the centre serves is refused
+    /// at parse, naming the cell: shipped no share for as long as the
+    /// process ran, that cell would look like a node that never funds
+    /// (ADR 0039), and the reason would be in nobody's log.
+    #[test]
+    fn a_region_membership_must_file_every_served_cell_and_is_carried_when_it_does() -> Result<()> {
+        let covered = MeshSettings::parse(
+            "london-1=127.0.0.1:9101, tokyo-1=127.0.0.1:9102",
+            None,
+            None,
+            Some("europe-west2=1000:london-1; asia-northeast1=500:tokyo-1"),
+        )?;
+        let membership = covered
+            .regions
+            .as_ref()
+            .ok_or_else(|| Error::not_found("the parsed membership"))?;
+        assert_eq!(membership.region_of("tokyo-1"), Some("asia-northeast1"));
+
+        let error = MeshSettings::parse(
+            "london-1=127.0.0.1:9101, tokyo-1=127.0.0.1:9102",
+            None,
+            None,
+            Some("europe-west2=1000:london-1"),
+        )
+        .err()
+        .ok_or_else(|| Error::invalid("a membership missing tokyo-1 was admitted"))?;
+        assert!(
+            error.message().contains("tokyo-1") && error.message().contains(REGIONS_VARIABLE),
+            "the refusal names neither the cell nor the variable: {}",
+            error.message()
+        );
+
+        let unset = MeshSettings::parse("london-1=127.0.0.1:9101", None, None, None)?;
+        assert!(
+            unset.regions.is_none(),
+            "an undeclared membership was invented"
+        );
+        Ok(())
+    }
     use qip_mesh::delta::StrategyStanding;
 
     #[test]
@@ -1280,6 +1417,7 @@ mod tests {
         let settings = MeshSettings::parse(
             "london-1=127.0.0.1:9101, tokyo-1=127.0.0.1:9102",
             Some("64"),
+            None,
             None,
         )?;
         assert_eq!(settings.cells.len(), 2);
@@ -1299,17 +1437,17 @@ mod tests {
         // Two lanes for one cell would both claim the capital spool; two
         // cells on one address are indistinguishable on this transport, so
         // the second would silently read the first's capital.
-        let duplicate = MeshSettings::parse("a=127.0.0.1:1,a=127.0.0.1:2", None, None)
+        let duplicate = MeshSettings::parse("a=127.0.0.1:1,a=127.0.0.1:2", None, None, None)
             .expect_err("one cell was accepted twice");
         assert!(duplicate.message().contains("twice"));
-        let shared = MeshSettings::parse("a=127.0.0.1:1,b=127.0.0.1:1", None, None)
+        let shared = MeshSettings::parse("a=127.0.0.1:1,b=127.0.0.1:1", None, None, None)
             .expect_err("two cells were accepted on one address");
         assert!(shared.message().contains("identity"));
     }
 
     #[test]
     fn an_entry_without_an_address_is_refused_rather_than_defaulted() {
-        let error = MeshSettings::parse("london-1", None, None)
+        let error = MeshSettings::parse("london-1", None, None, None)
             .expect_err("a cell with no address was accepted");
         assert!(
             error.message().contains("cell=host:port"),
@@ -1320,7 +1458,7 @@ mod tests {
 
     #[test]
     fn a_zero_capacity_is_refused_because_it_is_not_a_disable_switch() {
-        let error = MeshSettings::parse("a=127.0.0.1:1", Some("0"), None)
+        let error = MeshSettings::parse("a=127.0.0.1:1", Some("0"), None, None)
             .expect_err("a zero inbox capacity was accepted");
         assert!(error.message().contains(CELLS_VARIABLE));
     }
@@ -1432,6 +1570,7 @@ mod tests {
             }],
             inbox_capacity: 64,
             spool_capacity: 64,
+            regions: None,
         };
         let backbone = MeshBackbone::open(
             &settings,

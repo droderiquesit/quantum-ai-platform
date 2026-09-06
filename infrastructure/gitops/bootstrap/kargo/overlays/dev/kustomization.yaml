@@ -1,0 +1,20 @@
+# Kargo for dev: the vendored manifest, with every image moved to
+# this environment's own registry at the digest infrastructure/egress/
+# vendored-images.txt reviewed and vendor.yml mirrored and attested. The
+# cluster's Binary Authorization policy admits nothing else, so an overlay
+# that named the upstream repository would produce Pods that never start.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../../base
+images:
+- name: ghcr.io/akuity/kargo
+  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/vendor/kargo
+  digest: sha256:1413bdb63b1ad409c0a38a0ae5d6f4080e1fd3226aaf8344dfe0e5552921f533
+patches:
+- target:
+    kind: ServiceAccount
+    name: kargo-controller
+    namespace: kargo
+  patch: "apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: kargo-controller\n  namespace: kargo\n\
+    \  annotations:\n    iam.gke.io/gcp-service-account: qip-dev-kargo@algorik-dev.iam.gserviceaccount.com\n"

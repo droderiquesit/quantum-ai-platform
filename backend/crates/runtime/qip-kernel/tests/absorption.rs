@@ -115,7 +115,8 @@ fn a_fundamental_that_previously_vanished_now_lands_with_its_own_two_instants() 
     let absorbed = platform.observe(vec![SensedRecord::Fundamental(Box::new(update))]);
     assert_eq!(absorbed, 1);
 
-    let features = platform.world().features();
+    let world = platform.world();
+    let features = world.features();
     // Not knowable at the period end: a backtest asking "what did we know
     // when the quarter closed" must not see a figure filed five weeks later.
     assert!(
@@ -305,7 +306,8 @@ fn a_reference_change_is_readable_only_from_its_effective_instant() -> Result<()
     let absorbed = platform.observe(vec![SensedRecord::ReferenceData(Box::new(update))]);
     assert_eq!(absorbed, 1);
 
-    let features = platform.world().features();
+    let world = platform.world();
+    let features = world.features();
     assert!(
         features
             .value_as_of(

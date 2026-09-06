@@ -12,7 +12,7 @@ use qip_compliance::model_risk::{
     ValidationEvidence, ValidationKind,
 };
 use qip_core::error::Result;
-use qip_core::{Decimal, Duration, ModelId, Timestamp, dec};
+use qip_core::{Decimal, Duration, HypothesisId, ModelId, Timestamp, dec};
 
 fn now() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
@@ -102,6 +102,7 @@ fn honest_explanation() -> Result<Explanation> {
             },
         ],
         now(),
+        None,
     )
 }
 
@@ -201,6 +202,7 @@ fn an_explanation_whose_contributions_do_not_reconcile_cannot_be_constructed() {
             },
         ],
         now(),
+        None,
     )
     .expect_err("an explanation that does not add up must be refused");
 
@@ -211,8 +213,9 @@ fn an_explanation_whose_contributions_do_not_reconcile_cannot_be_constructed() {
 
 #[test]
 fn an_explanation_with_no_inputs_explains_nothing_and_is_refused() {
-    let error = Explanation::reconciled(REFERENCE, Decimal::ZERO, Decimal::ZERO, vec![], now())
-        .expect_err("an explanation naming no inputs is not an explanation");
+    let error =
+        Explanation::reconciled(REFERENCE, Decimal::ZERO, Decimal::ZERO, vec![], now(), None)
+            .expect_err("an explanation naming no inputs is not an explanation");
     assert!(error.message().contains("at least one input"));
 }
 
@@ -241,6 +244,7 @@ fn a_model_used_outside_its_validated_range_is_refused() -> Result<()> {
             },
         ],
         now(),
+        None,
     )?;
 
     let error = register
@@ -337,4 +341,89 @@ fn every_admission_decision_is_recorded_whichever_way_it_went() -> Result<()> {
     assert!(!register.admissions()[0].admitted);
     assert!(register.admissions()[1].admitted);
     Ok(())
+}
+
+/// §43.3 hop: an explanation may name the claim/hypothesis whose belief
+/// produced its inputs. Built with a known id, `reference()` — here
+/// `upstream()` — must return exactly that id, and the id must survive a
+/// serde round trip rather than being an in-memory-only convenience.
+#[test]
+fn an_explanation_built_with_a_known_upstream_reference_returns_it_and_survives_the_serde_round_trip()
+-> Result<()> {
+    let upstream = HypothesisId::from_string("hyp-vol-regime-shift");
+    let explanation = Explanation::reconciled(
+        REFERENCE,
+        dec!("0.18"),
+        dec!("0.10"),
+        vec![
+            Contribution {
+                input: "adv_participation".to_string(),
+                value: dec!("0.01"),
+                contribution: dec!("0.05"),
+            },
+            Contribution {
+                input: "realised_vol_5d".to_string(),
+                value: dec!("0.22"),
+                contribution: dec!("0.03"),
+            },
+        ],
+        now(),
+        Some(upstream.clone()),
+    )?;
+
+    // Premise first: the id we handed in must actually be present before
+    // checking it is the exact one that comes back.
+    assert!(explanation.upstream().is_some());
+    assert_eq!(explanation.upstream(), Some(&upstream));
+
+    let wire = serde_json::to_string(&explanation)
+        .map_err(|e| qip_core::error::Error::invalid(format!("did not serialise: {e}")))?;
+    let restored: Explanation = serde_json::from_str(&wire)
+        .map_err(|e| qip_core::error::Error::invalid(format!("did not deserialise: {e}")))?;
+
+    assert_eq!(restored.upstream(), Some(&upstream));
+    // The whole value round-trips exactly, not merely the field under test.
+    assert_eq!(restored, explanation);
+    Ok(())
+}
+
+/// An explanation built with no upstream cause must report `None`, not
+/// merely "whatever the type defaults to" — the constructor takes the
+/// argument, so `None` here means somebody looked and found none.
+#[test]
+fn an_explanation_built_with_an_explicit_none_upstream_reports_none() -> Result<()> {
+    let explanation = honest_explanation()?;
+    assert_eq!(explanation.upstream(), None);
+    Ok(())
+}
+
+/// Carrying an upstream reference is additive: it must not relax the
+/// reconciliation check that already refuses arithmetic that does not add
+/// up. 0.10 + 0.05 + 0.03 is 0.18, not 0.25, with or without a claim behind
+/// the inputs.
+#[test]
+fn an_explanation_with_an_upstream_reference_that_does_not_reconcile_is_still_refused() {
+    let upstream = HypothesisId::from_string("hyp-vol-regime-shift");
+    let error = Explanation::reconciled(
+        REFERENCE,
+        dec!("0.25"),
+        dec!("0.10"),
+        vec![
+            Contribution {
+                input: "adv_participation".to_string(),
+                value: dec!("0.01"),
+                contribution: dec!("0.05"),
+            },
+            Contribution {
+                input: "realised_vol_5d".to_string(),
+                value: dec!("0.22"),
+                contribution: dec!("0.03"),
+            },
+        ],
+        now(),
+        Some(upstream),
+    )
+    .expect_err("carrying an upstream reference must not relax the reconciliation check");
+
+    assert!(error.message().contains("does not reconcile"));
 }

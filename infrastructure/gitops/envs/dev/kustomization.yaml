@@ -1,0 +1,39 @@
+# What runs in dev, by digest.
+#
+# Every `image:` in the manifests beside this file is a logical name —
+# `qip-api`, `envoy`, `openobserve` — and this `images` block is where each
+# becomes a registry path and a digest. One place, on purpose: it is the
+# file Kargo's promotion commit edits (`kustomize-set-image`, ADR 0036
+# decision 6), it is what the parity test reads for "by digest, never a
+# tag", and it is the record of what dev serves that images.tfvars used to
+# be. A tag here is refused by the test; `TO-PIN` marks an environment
+# nothing has ever built for, and stays until the first promotion into it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: qip-run
+resources:
+- api.yaml
+- fastbrain.yaml
+- deepbrain.yaml
+- openobserve.yaml
+- invokers.yaml
+- prove-serving.yaml
+images:
+- name: qip-api
+  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/qip-api
+  digest: sha256:1f09b5c3e9205e6723f72a9de57c4aca04e80a24cb76eb0a2f9153699a18daf6
+- name: qip-fastbrain
+  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/qip-fastbrain
+  digest: sha256:458a25afc17a3eaefdc0c8ff35542fa6abd57260725ad14aa6f4f9973a618c51
+- name: qip-deepbrain
+  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/qip-deepbrain
+  digest: sha256:09138ad3b9738587315d28f8a9a19435ff35942c39edde3931dad7c324c081bc
+- name: openobserve
+  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/vendor/openobserve
+  digest: sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9e105491d58d29ac2739560b3b
+- name: envoy
+  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/vendor/envoy
+  digest: sha256:574348fada8eb1130b448132287d76626dfb07525b16668075382f8e154a45a8
+- name: google-cloud-cli
+  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/vendor/google-cloud-cli
+  digest: sha256:87eaf69da735ab8dfc1c640df1e85a467a4feedf2256d35dad368f970d9cd35f

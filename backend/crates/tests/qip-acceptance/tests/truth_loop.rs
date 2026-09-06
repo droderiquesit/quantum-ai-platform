@@ -990,3 +990,452 @@ fn two_journeys_through_the_loop_produce_byte_identical_outcomes() -> Result<()>
     assert_eq!(first.neighbours.len(), 1);
     Ok(())
 }
+
+// --- the log as the only source of truth ------------------------------------
+//
+// Everything above walks one market fact into state. What follows is the
+// claim the walk is worth keeping for: that the state the platform acts on
+// can be rebuilt from the event log and nothing else, by a process that took
+// none of the decisions.
+//
+// It belongs here rather than in `qip-kernel/tests/` because it is a claim
+// about three registries at once — who may be funded, which venues a named
+// person registered with, and where the desk's cash is — rebuilt through
+// three different paths that only meet in one log. A crate's own tests can
+// see one of those paths; none of them can see that the three agree about the
+// same log, or that one altered byte stops all of them.
+//
+// The imports are here rather than in the file's header because this section
+// was appended: the walk above reaches ingestion, the mesh and the world
+// model, and this one reaches the kernel, and keeping the two lists apart
+// says which test needs what.
+
+use qip_capital::ledger::{
+    Eligibility, EligibilityDecision, EligibilityTerms, Jurisdiction, Mandate, MandateId,
+    MandateTerms, PermittedFamilies, UserId,
+};
+use qip_contracts::signal::StrategyId;
+use qip_contracts::venue::VenueId;
+use qip_core::{Currency, dec};
+use qip_data_finder::registration::{RegistrationRecord, RegistrationRequirement};
+use qip_events::log::EventLog;
+use qip_financial::asset_class::{InstrumentType, Sector};
+use qip_financial::object::FinancialObject;
+use qip_financial::universe::Universe;
+use qip_kernel::config::{PlatformConfig, UserMandate};
+use qip_kernel::cycle::Stage;
+use qip_kernel::platform::Platform;
+use qip_market_ingestion::connector::manifest::SecretRef;
+use qip_observability::Telemetry;
+use qip_risk::limits::{Limit, LimitKind, LimitSet};
+use qip_risk_engine::autonomy::OperatorIdentity;
+
+/// The instrument the desk's book is opened over — the same object the walk
+/// above carries, so the log the registries are rebuilt from also holds the
+/// market records of the loop this file is about rather than operator
+/// decisions alone.
+const DESK_INSTRUMENT: &str = OBJECT;
+
+/// A source the shipped registration table says needs an account, so it is
+/// pending — refused, with nobody's name on it — until an operator approves.
+const ACCOUNT_SOURCE: &str = "alpaca-daily-bars";
+const REGISTRATION_TERMS: &str = "https://alpaca.markets/terms-and-conditions";
+
+/// The *name* of the deployment variable the credential is read under, never
+/// a credential. `SecretRef` refuses anything that is not a variable name,
+/// which is the point of the type.
+const CREDENTIAL_SLOT: &str = "QIP_ALPACA_API_KEY_ID";
+
+const OPERATOR: &str = "ops-dana";
+const INVESTOR: &str = "alice";
+const STRATEGY: &str = "alpha";
+const DESK_VENUE: &str = "simulated-venue";
+
+/// How long the operator's verification of the investor stands.
+fn verified_until() -> Timestamp {
+    origin().saturating_add(Duration::from_days(365))
+}
+
+/// A universe of one instrument, so the platform has a book to open.
+fn desk_universe() -> Result<Universe> {
+    let mut universe = Universe::new();
+    universe.insert(
+        FinancialObject::builder(
+            ObjectId::from_string(DESK_INSTRUMENT),
+            CANONICAL_SYMBOL,
+            InstrumentType::CommonStock,
+        )
+        .venue(CANONICAL_VENUE)
+        .sector(Sector::InformationTechnology)
+        .price(dec!("100"))
+        .provenance(RecordProvenance::synthetic("truth-loop", origin()))
+        .build(origin())?,
+    )?;
+    Ok(universe)
+}
+
+/// Two hours of the synthetic venue's own output for that instrument.
+///
+/// The same environment `source_event` draws the walk's bar from, and the
+/// same seed, so the market half of the log is the loop's own material and
+/// not a fixture written to suit the replay.
+fn observed_history() -> Vec<SensedRecord> {
+    SyntheticEnvironment::demo(
+        origin(),
+        EnvironmentConfig {
+            seed: 20_260_822,
+            ..EnvironmentConfig::default()
+        },
+    )
+    .run_until(origin().saturating_add(Duration::from_mins(120)))
+}
+
+fn desk_limits() -> LimitSet {
+    LimitSet::new("truth-loop-replay").with(
+        Limit::new("max-leverage", LimitKind::MaxLeverage { limit: 2.0 })
+            .with_rationale("gross exposure is capped at twice equity"),
+    )
+}
+
+/// The configuration both processes assemble under.
+///
+/// Identical for the two of them on purpose — same seed, same mandate, same
+/// file — because the second process must differ from the first in exactly
+/// one respect: it has the log and it took none of the decisions in it. A
+/// configuration that carried the eligibility or the registration would prove
+/// nothing, since the registry would then be the configuration's doing.
+fn replay_config(path: &std::path::Path) -> Result<PlatformConfig> {
+    Ok(PlatformConfig::default()
+        .with_event_log_file(path)
+        .with_user_mandates(vec![UserMandate {
+            user: UserId::new(INVESTOR)?,
+            id: MandateId::new("mandate-truth-loop")?,
+            mandate: Mandate::new(MandateTerms {
+                capital: dec!("1000"),
+                currency: Currency::USD,
+                risk_tolerance: Decimal::ONE,
+                permitted_families: PermittedFamilies::Any,
+                liquidity_floor: Decimal::ZERO,
+                exploration_share: Decimal::ZERO,
+                jurisdiction: Jurisdiction::new("GB")?,
+            })?,
+        }]))
+}
+
+fn assemble(config: PlatformConfig) -> Result<Platform> {
+    let (context, _clock) = Context::deterministic(origin(), config.seed);
+    Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        desk_universe()?,
+        desk_limits(),
+    )
+}
+
+/// A directory nothing else in this run writes to.
+fn log_directory(label: &str) -> std::path::PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let directory = std::env::temp_dir().join(format!(
+        "qip-truth-loop-{label}-{}-{unique}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    directory
+}
+
+/// Flip one byte of one record, in place, and say which byte was flipped.
+///
+/// The alteration is deliberately the smallest one a disk fault or a hand
+/// edit produces: a single character inside a string the record already
+/// holds, leaving the line valid JSON and a loadable `LogRecord`. A tamper
+/// that broke the JSON would be caught by the parser at load, which proves
+/// nothing about the chain.
+fn flip_one_byte(line: &str) -> (String, char, char) {
+    // The producer name: content the chain covers, and no part of the log's
+    // structure, so the record still loads and still indexes.
+    const MARKER: &str = "\"producer\":\"";
+    let at = line
+        .find(MARKER)
+        .unwrap_or_else(|| panic!("no record names its producer: {line}"))
+        + MARKER.len();
+    let mut bytes = line.as_bytes().to_vec();
+    let was = bytes[at];
+    assert!(
+        was.is_ascii_alphabetic(),
+        "the producer does not start with a letter, so the flip below would not be one byte"
+    );
+    let now = if was == b'a' { b'b' } else { b'a' };
+    bytes[at] = now;
+    (
+        String::from_utf8(bytes).expect("flipping one ASCII byte for another leaves valid UTF-8"),
+        char::from(was),
+        char::from(now),
+    )
+}
+
+#[test]
+fn every_registry_the_platform_acts_on_rebuilds_from_the_event_log_alone_and_one_flipped_byte_refuses_the_replay()
+-> Result<()> {
+    // The failure this closes, and it has happened here before: a decision
+    // that lived in a registry's memory and nowhere else, so the platform
+    // acted on something the log could not account for. The fabric's
+    // controls decided exactly that way once — in memory, with nothing in
+    // the process writing the decision anywhere — and `/wallet` reported
+    // that no wallet existed. Three registries are driven through their
+    // operator paths, three cycles are run so the fabric writes, and then
+    // all three are rebuilt from the log by a *second* process that took
+    // none of the decisions. The last part is the one that matters most: a
+    // rebuild is only evidence if a log that has been altered is refused,
+    // and refused in a way that names where.
+    let directory = log_directory("replay");
+    let path = directory.join("events.jsonl");
+    assert!(!path.exists(), "the premise: nothing is written there yet");
+
+    let investor = UserId::new(INVESTOR)?;
+    let strategy = StrategyId::new(STRATEGY);
+    let venue = VenueId::new(DESK_VENUE);
+    let mut platform = assemble(replay_config(&path)?)?;
+    let initial_equity = platform.config().initial_equity;
+
+    // --- the premise: nothing decided, and nothing to replay ------------
+    assert!(
+        platform.replay_eligibility()?.records().is_empty(),
+        "the log already held an eligibility decision before one was taken"
+    );
+    assert_eq!(
+        platform.registrations().requirement(ACCOUNT_SOURCE),
+        Some(RegistrationRequirement::Account),
+        "the source under test needs no account, so approving one proves nothing"
+    );
+    assert!(
+        platform.registrations().record(ACCOUNT_SOURCE).is_none(),
+        "somebody was already recorded as having registered"
+    );
+    assert_eq!(
+        platform.fabric_records(),
+        0,
+        "the fabric journal held records before anything was decided"
+    );
+    assert!(
+        platform.fabric_state().wallet().is_none(),
+        "a wallet existed before any statement was handed in"
+    );
+    assert!(
+        platform
+            .fund_user(&investor, &strategy, dec!("100"), origin())
+            .is_err(),
+        "the premise: nobody has verified the investor, so the funding below is the decision's doing"
+    );
+
+    // --- an operator decides eligibility --------------------------------
+    let operator = OperatorIdentity::verified(OPERATOR, "hardware-token", origin());
+    let decided = platform.decide_eligibility(
+        &investor,
+        EligibilityDecision::Granted {
+            eligibility: Eligibility::new(EligibilityTerms {
+                verified_at: origin(),
+                can_invest: true,
+                jurisdiction: Jurisdiction::new("GB")?,
+                expires_at: verified_until(),
+            })?,
+        },
+        &operator,
+        "identity verified against the document on file",
+        origin(),
+    )?;
+    assert_eq!(decided.by.subject(), OPERATOR);
+
+    // --- the same operator approves a venue registration ----------------
+    let registration = platform.approve_registration(
+        ACCOUNT_SOURCE,
+        &operator,
+        REGISTRATION_TERMS,
+        SecretRef::new(CREDENTIAL_SLOT)?,
+        origin(),
+    )?;
+    assert_eq!(registration.operator(), OPERATOR);
+
+    // --- the investor is funded, and a statement is handed in -----------
+    platform.fund_user(&investor, &strategy, dec!("100"), origin())?;
+    platform.observe_statement(venue, "USD", initial_equity, dec!("1"), origin())?;
+    assert_eq!(platform.holdings_observed().len(), 1);
+
+    // --- the market the cycle reasons over ------------------------------
+    let history = observed_history();
+    assert!(
+        !history.is_empty(),
+        "the synthetic venue produced nothing, so the cycle below has no market to sense"
+    );
+    let absorbed = platform.observe(history);
+    assert!(
+        absorbed > 0,
+        "the platform absorbed none of what it was given"
+    );
+
+    // --- three cycles, so the fabric journal writes ---------------------
+    // Three rather than one because a replay that kept only the last record
+    // per key, or that reordered them, rebuilds a one-cycle log correctly
+    // and a three-cycle log wrongly.
+    for minutes in [121, 181, 241] {
+        let report = platform.run_cycle(origin().saturating_add(Duration::from_mins(minutes)));
+        assert!(
+            report.stage(Stage::Learn).is_some(),
+            "the premise is a cycle whose LEARN ran, since that is where the wallet is \
+             assembled: {report:?}"
+        );
+    }
+    assert!(
+        platform.fabric_records() >= 6,
+        "the cycles wrote {} fabric records; each assembles the wallet and reconciles it",
+        platform.fabric_records()
+    );
+    assert!(
+        platform.fabric_state().wallet().is_some(),
+        "no wallet was assembled, so the fabric state below would be empty and equal to itself"
+    );
+
+    // The premise for every comparison that follows: the log holds more than
+    // a handful of records, so an equality between two rebuilt-from-nothing
+    // registries cannot be what passes.
+    let written = platform.event_log().records().len();
+    assert!(
+        written > 10,
+        "the log holds only {written} records; a replay of almost nothing proves almost nothing"
+    );
+    if let Err(sequence) = platform.event_log().verify_chain() {
+        panic!("the live log's own chain breaks at sequence {sequence}");
+    }
+
+    // --- path 1: the eligibility registry -------------------------------
+    let replayed_eligibility = platform.replay_eligibility()?;
+    assert_eq!(
+        replayed_eligibility.records().len(),
+        1,
+        "the log rebuilt {} standing decisions where one was taken",
+        replayed_eligibility.records().len()
+    );
+    assert!(
+        matches!(
+            replayed_eligibility
+                .record(&investor)
+                .expect("the log holds the investor's standing decision")
+                .decision,
+            EligibilityDecision::Granted { .. }
+        ),
+        "the log rebuilt a decision other than the grant that was taken"
+    );
+    assert_eq!(&replayed_eligibility, platform.user_ledger().eligibility());
+
+    // --- path 2: the registration registry ------------------------------
+    let replayed_registrations = platform.replay_registrations()?;
+    assert_eq!(
+        replayed_registrations
+            .record(ACCOUNT_SOURCE)
+            .map(RegistrationRecord::operator),
+        Some(OPERATOR),
+        "the log rebuilt no registration for {ACCOUNT_SOURCE}, or one in somebody else's name"
+    );
+    assert_eq!(&replayed_registrations, platform.registrations());
+
+    // --- path 3: the fabric, through a second process's resume ----------
+    // Assembly is the replay: `resume_fabric` decides the log's commands
+    // again into a fresh journal and refuses if it does not arrive where the
+    // log's own replay says it should.
+    let resumed = assemble(replay_config(&path)?)?;
+    assert_eq!(
+        resumed.fabric_state(),
+        platform.fabric_state(),
+        "a second process over the same log rebuilt a different fabric state"
+    );
+
+    // And the second process rebuilds the other two registries as well —
+    // from the log alone, having been configured with neither. This is the
+    // property in its strongest form: what the platform acts on came from
+    // the record, not from a memory that happened to survive.
+    assert!(
+        resumed.user_ledger().eligibility().records().is_empty(),
+        "the second process was configured with an eligibility, so its rebuild proves nothing"
+    );
+    assert!(
+        resumed.registrations().record(ACCOUNT_SOURCE).is_none(),
+        "the second process was configured with the registration, so its rebuild proves nothing"
+    );
+    assert_eq!(
+        &resumed.replay_eligibility()?,
+        platform.user_ledger().eligibility()
+    );
+    assert_eq!(&resumed.replay_registrations()?, platform.registrations());
+
+    // --- one flipped byte -----------------------------------------------
+    // A rebuild is evidence only if a log that was altered is refused. One
+    // byte of the first record — a letter of its producer's name, still
+    // valid JSON, still a loadable record — and the replay must stop rather
+    // than rebuild a state that reads as having come from the log.
+    let original = std::fs::read_to_string(&path)?;
+    let mut lines: Vec<String> = original.lines().map(str::to_string).collect();
+    assert!(
+        lines.len() > 10,
+        "the file holds {} lines; the flip below would be most of the log",
+        lines.len()
+    );
+    let (tampered, was, now) = flip_one_byte(&lines[0]);
+    assert_ne!(tampered, lines[0], "the flip changed nothing");
+    assert_eq!(
+        tampered.len(),
+        lines[0].len(),
+        "the flip changed the length, so it was not one byte for another"
+    );
+    lines[0] = tampered;
+    std::fs::write(&path, format!("{}\n", lines.join("\n")))?;
+
+    let refused = assemble(replay_config(&path)?)
+        .expect_err("a platform assembled over a log whose first record had been altered");
+    assert!(
+        refused
+            .message()
+            .contains("record at position 1 (sequence 1)"),
+        "the refusal does not name where the log was altered — an auditor cannot act on \
+         'somewhere': {refused}"
+    );
+    assert!(
+        refused.message().contains("has been altered"),
+        "the refusal does not say what is wrong: {refused}"
+    );
+
+    // The log's own chain check, a second implementation of the same rule,
+    // agrees about which record it was. Two independent answers, because one
+    // of them could be the thing that is broken.
+    assert_eq!(
+        EventLog::open(&path)?.verify_chain(),
+        Err(1),
+        "the log's own chain check disagrees with the replay about where the alteration is"
+    );
+
+    // And the other half, which is what distinguishes a gate from a refusal
+    // of everything: put the byte back and the same log rebuilds the same
+    // state again. Byte for byte — the file is restored from what was read
+    // before the flip, not re-derived.
+    std::fs::write(&path, &original)?;
+    assert_eq!(
+        std::fs::read_to_string(&path)?,
+        original,
+        "the restore did not put the log back as it was"
+    );
+    let restored = assemble(replay_config(&path)?)?;
+    assert_eq!(
+        restored.fabric_state(),
+        platform.fabric_state(),
+        "the restored log no longer rebuilds the state, so the refusal above was not the \
+         flipped {was} → {now} byte's doing"
+    );
+    assert_eq!(
+        &restored.replay_eligibility()?,
+        platform.user_ledger().eligibility()
+    );
+    assert_eq!(&restored.replay_registrations()?, platform.registrations());
+
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}

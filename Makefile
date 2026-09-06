@@ -106,10 +106,11 @@ sbom:
 # Infrastructure
 #
 # `tf-validate` needs `terraform init`, which downloads the provider schema.
-# The structural properties that a plan would *not* catch — the node pool
-# having no public addresses, no workload identity holding delete on the
-# evidence bucket — are asserted by Rust tests in `make test`, and those need
-# no network at all.
+# The structural properties that a plan would *not* catch — the execution
+# node having no external address, every Cloud Run service opting into the
+# admission policy, no workload identity holding delete on the evidence
+# bucket — are asserted by Rust tests in `make test`, and those need no
+# network at all.
 # ---------------------------------------------------------------------------
 
 infra: tf-fmt tf-validate
@@ -121,13 +122,15 @@ tf-validate:
 	terraform -chdir=$(TERRAFORM_DIR) init -backend=false
 	terraform -chdir=$(TERRAFORM_DIR) validate
 
-# Deliberately absent: an `apply` target.
+# Deliberately absent: an `apply` target, and any deploy target.
 #
-# `terraform apply` against this configuration creates a GKE cluster, a KMS
-# keyring and a set of service accounts in a real project, and a Makefile
-# target is exactly the wrong affordance for that — too close to `make test`
-# on the keyboard and in the mind. Applying is documented, with the
-# impersonation flow it requires, in docs/security/credentials.md.
+# `terraform apply` against this configuration creates Cloud Run services, a
+# KMS keyring, a workload identity pool and a set of service accounts in a
+# real project, and a Makefile target is exactly the wrong affordance for
+# that — too close to `make test` on the keyboard and in the mind. There is
+# one deployment path and it is not here: docs/operations/deployment-path.md
+# names it (infra.yml for dev/test/stage, scripts/bootstrap-deploy.sh for
+# the first apply and for prod, deploy.yml for every image).
 
 clean:
 	cd backend && cargo clean

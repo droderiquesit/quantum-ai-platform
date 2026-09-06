@@ -20,7 +20,7 @@ use qip_contracts::capital::CapitalEnvelope;
 use qip_contracts::degradation::Capability;
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::policy::{
-    BeliefPriors, CausalDigest, EpisodicDigest, HaltCommand, PolicyPayload, Slot,
+    BeliefPriors, CausalDigest, EpisodicDigest, GrantManifest, HaltCommand, PolicyPayload, Slot,
 };
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueId, VenueStatus};
@@ -30,6 +30,8 @@ use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy, WorkReport};
 use qip_edge::dropcopy::DropCopyFill;
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::policy::{VerifiedHalt, VerifiedPolicy};
+use qip_edge::reservation::RegionTable;
+use qip_edge::telemetry::{EDGE_REGION_SHARE_APPLIED, EDGE_REGION_SHARE_BOUND};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_observability::metrics::{Labels, Metrics, labels, names};
@@ -744,6 +746,304 @@ fn a_reconciliation_break_is_counted_and_raises_the_kill_switch_gauge() -> Resul
         after.counter(names::EDGE_WORK_PASSES, &base()),
         2,
         "the halted pass was not counted"
+    );
+    Ok(())
+}
+
+// --- ADR 0039: the cell's share of its region's grant ------------------------
+
+/// The operator's ceiling on every table below. High enough that what the
+/// bound gauge reports is always the centre's share and never the local
+/// backstop, which would make a narrowed cell and a capped one identical.
+const CEILING: &str = "100000000";
+
+/// One grant, sized exactly, so the share a manifest naming it derives is
+/// this number and every assertion below is against something the test
+/// computed rather than against whatever the cell happened to produce.
+const GRANT: &str = "250000";
+
+/// An envelope whose gross, per-order and loss limits are all `gross`.
+///
+/// The signature is deterministic over the envelope's terms, so signing the
+/// same terms twice names the grant the cell already holds. That is how a
+/// manifest names a grant without the test reaching inside the cell for it —
+/// and it is how the centre does it too.
+fn envelope_of(strategy: &str, gross: Decimal) -> Result<VerifiedEnvelope> {
+    let build = |signature: &str| {
+        CapitalEnvelope::new(
+            StrategyId::new(strategy),
+            CELL,
+            gross,
+            gross,
+            gross,
+            vec![venue()],
+            t(0),
+            t(3600),
+            "alice@example.com",
+            signature,
+        )
+    };
+    let unsigned = build("unsigned")?;
+    let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
+    VerifiedEnvelope::verify(build(&signature)?, ENVELOPE_KEY, CELL, t(1))
+}
+
+fn deploy_under(cell: &mut Cell, strategy: &str, envelope: VerifiedEnvelope) -> Result<()> {
+    let (compiled, program) = firing_strategy(strategy, SignalKind::Enter, "10")?;
+    cell.deploy_with_pricing(compiled, program, envelope, PricingPolicy::Marketable)
+}
+
+/// A wired cell over `table`, holding a grant of `GRANT` for each named
+/// strategy. Deploying before any payload arrives moves nothing on the share
+/// series — `Cell::deploy` re-derives only under a payload already applied —
+/// so every test below starts from a cell that has recorded no share.
+fn share_cell(table: &RegionTable, strategies: &[&str]) -> Result<(Cell, Arc<Metrics>)> {
+    let metrics = Arc::new(Metrics::new("qip-edge-node"));
+    let config = CellConfig::new(CELL, REGION).with_venue(venue());
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?
+        .with_metrics(Arc::clone(&metrics))
+        .with_region_table(table.clone());
+    cell.track(book()?);
+    for strategy in strategies {
+        deploy_under(&mut cell, strategy, envelope_of(strategy, d(GRANT))?)?;
+    }
+    Ok((cell, metrics))
+}
+
+/// A verified payload for this cell whose `capital_grants` slot names
+/// `grants`, or is unproduced when `None` — the centre withholding it.
+fn share_policy(
+    sequence: u64,
+    issued_at: Timestamp,
+    grants: Option<Vec<String>>,
+) -> Result<VerifiedPolicy> {
+    let mut payload = PolicyPayload::unproduced(sequence, CELL, issued_at);
+    if let Some(live_grants) = grants {
+        payload.capital_grants = Slot::produced(GrantManifest { live_grants }, issued_at);
+    }
+    VerifiedPolicy::verify(payload.signed(POLICY_KEY)?, POLICY_KEY, CELL, issued_at)
+}
+
+fn shares(metrics: &Metrics, outcome: &str) -> u64 {
+    metrics
+        .snapshot()
+        .counter(EDGE_REGION_SHARE_APPLIED, &by("outcome", outcome))
+}
+
+fn share_bound(metrics: &Metrics) -> Option<f64> {
+    metrics.snapshot().gauge(EDGE_REGION_SHARE_BOUND, &base())
+}
+
+#[test]
+fn a_payload_naming_this_cells_grant_charts_the_bound_and_counts_the_share_as_applied() -> Result<()>
+{
+    // The failure this prevents: a bound that moves only in the journal. A
+    // cell the centre has narrowed to nothing and a cell that has spent its
+    // share both report a free balance of zero, and with no bound beside it
+    // nothing on a chart tells those two apart.
+    let table = RegionTable::unfunded(d(CEILING))?;
+    let (mut cell, metrics) = share_cell(&table, &["alpha"])?;
+    let signature = envelope_of("alpha", d(GRANT))?.signature().to_string();
+
+    assert_eq!(
+        share_bound(&metrics),
+        None,
+        "the premise failed: a cell nobody has named a share for already published a bound"
+    );
+    assert_eq!(
+        shares(&metrics, "applied"),
+        0,
+        "the premise failed: a share was counted before any payload arrived"
+    );
+
+    cell.apply_policy(share_policy(1, t(10), Some(vec![signature]))?, t(10))?;
+    assert_eq!(
+        cell.region_allocation_bound(),
+        Some(d(GRANT)),
+        "the premise failed: the payload did not re-base the table to the grant it named"
+    );
+
+    assert_eq!(
+        share_bound(&metrics),
+        Some(d(GRANT).to_f64()),
+        "the applied share left the bound uncharted"
+    );
+    assert_eq!(
+        shares(&metrics, "applied"),
+        1,
+        "the applied share was not counted under its own outcome"
+    );
+    for other in ["rederived", "refused_lower_sequence", "withheld"] {
+        assert_eq!(
+            shares(&metrics, other),
+            0,
+            "a payload's re-base was counted as {other}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_grant_landing_after_the_payload_naming_it_raises_the_bound_and_counts_a_rederivation()
+-> Result<()> {
+    // A node applies a payload before it deploys the plan that payload names,
+    // so the first sum over the manifest finds no grant and the table funds
+    // nothing. What happens when the grant lands is invisible otherwise: the
+    // bound rises with no payload behind it, and an operator reading only
+    // `applied` sees a cell whose share never moved after sequence one.
+    let table = RegionTable::unfunded(d(CEILING))?;
+    let (mut cell, metrics) = share_cell(&table, &[])?;
+    let envelope = envelope_of("alpha", d(GRANT))?;
+    let signature = envelope.signature().to_string();
+
+    cell.apply_policy(share_policy(1, t(10), Some(vec![signature]))?, t(10))?;
+    assert_eq!(
+        cell.region_allocation_bound(),
+        Some(Decimal::ZERO),
+        "the premise failed: a manifest naming a grant nobody holds yet funded the table"
+    );
+    assert_eq!(
+        share_bound(&metrics),
+        Some(0.0),
+        "the premise failed: the first sum over the manifest charted no bound"
+    );
+    assert_eq!(
+        shares(&metrics, "rederived"),
+        0,
+        "the premise failed: a re-derivation was counted before the grant landed"
+    );
+
+    deploy_under(&mut cell, "alpha", envelope)?;
+    assert_eq!(
+        cell.region_allocation_bound(),
+        Some(d(GRANT)),
+        "the premise failed: the landed grant did not fund the table"
+    );
+
+    assert_eq!(
+        share_bound(&metrics),
+        Some(d(GRANT).to_f64()),
+        "the bound charted still reads the nothing the payload alone summed to"
+    );
+    assert_eq!(
+        shares(&metrics, "rederived"),
+        1,
+        "the re-derivation was not counted under its own outcome"
+    );
+    assert_eq!(
+        shares(&metrics, "applied"),
+        1,
+        "the re-derivation was counted as a fresh re-base, so the two cannot be told apart"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_share_offered_under_a_sequence_the_ledger_has_passed_is_counted_as_a_replay() -> Result<()> {
+    // The ledger keeps the sequence guard itself so the guarantee does not
+    // rest on `Cell::apply_policy` remembering to check — and here the cell's
+    // own guard cannot fire, because this cell has applied no payload at all
+    // and the table it was handed already carries a newer share. Without the
+    // counter the refusal is one line in a journal nobody reads, and
+    // something re-sending captured payloads at a cell looks like silence.
+    let table = RegionTable::unfunded(d(CEILING))?;
+    let held = d("500000");
+    table.rebase(CELL, held, 9)?;
+    let (mut cell, metrics) = share_cell(&table, &["alpha"])?;
+
+    assert_eq!(
+        shares(&metrics, "refused_lower_sequence"),
+        0,
+        "the premise failed: a replay was counted before one was offered"
+    );
+    assert_eq!(
+        share_bound(&metrics),
+        None,
+        "the premise failed: the cell charted a bound it never applied"
+    );
+
+    let signature = envelope_of("alpha", d(GRANT))?.signature().to_string();
+    cell.apply_policy(share_policy(5, t(10), Some(vec![signature]))?, t(10))?;
+    assert_eq!(
+        cell.region_allocation_bound(),
+        Some(held),
+        "the premise failed: a share under a sequence the ledger has passed moved the bound"
+    );
+
+    assert_eq!(
+        shares(&metrics, "refused_lower_sequence"),
+        1,
+        "the replayed share was not counted under its own outcome"
+    );
+    assert_eq!(
+        shares(&metrics, "applied"),
+        0,
+        "a share the ledger refused was counted as applied"
+    );
+    assert_eq!(
+        share_bound(&metrics),
+        None,
+        "a refused share published a bound the ledger never took"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_payload_that_says_nothing_about_capital_is_counted_as_withheld_and_moves_no_bound()
+-> Result<()> {
+    // "The centre narrowed us to nothing" and "the centre has stopped saying
+    // anything about capital" leave the same table and the same balance. One
+    // is a plan and the other is an outage, and the only thing separating
+    // them on a chart is that the second was counted.
+    let table = RegionTable::unfunded(d(CEILING))?;
+    let (mut cell, metrics) = share_cell(&table, &["alpha"])?;
+    assert_eq!(
+        shares(&metrics, "withheld"),
+        0,
+        "the premise failed: a withheld manifest was counted before any payload arrived"
+    );
+
+    // `fresh_policy` produces the three capability slots and leaves
+    // `capital_grants` unproduced, which is the centre saying nothing.
+    cell.apply_policy(fresh_policy(1, t(10))?, t(10))?;
+    assert_eq!(
+        cell.region_allocation_bound(),
+        Some(Decimal::ZERO),
+        "the premise failed: a payload carrying no manifest moved the bound"
+    );
+
+    assert_eq!(
+        shares(&metrics, "withheld"),
+        1,
+        "a payload that said nothing about capital was not counted as withheld"
+    );
+    assert_eq!(
+        share_bound(&metrics),
+        None,
+        "a withheld manifest published a bound nobody applied"
+    );
+    for other in ["applied", "rederived", "refused_lower_sequence"] {
+        assert_eq!(
+            shares(&metrics, other),
+            0,
+            "a withheld manifest was counted as {other}"
+        );
+    }
+
+    // A cell holding no table counts nothing: it has no share for the centre
+    // to withhold, and counting one would put every table-less cell in the
+    // tree on a series meant to say a downlink has gone quiet about capital.
+    let (mut tableless, tableless_metrics) = wired_cell()?;
+    assert!(
+        tableless.region_allocation_bound().is_none(),
+        "the premise failed: the contrast cell holds a region table"
+    );
+    tableless.apply_policy(fresh_policy(1, t(10))?, t(10))?;
+    assert_eq!(
+        shares(&tableless_metrics, "withheld"),
+        0,
+        "a cell with no region table counted a share the centre withheld from nobody"
     );
     Ok(())
 }

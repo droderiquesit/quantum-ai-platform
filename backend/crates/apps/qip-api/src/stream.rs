@@ -172,6 +172,11 @@ impl StreamKind {
             Self::Signals => &[
                 Topic::SignalGenerated,
                 Topic::AnomalyDetected,
+                // Declared so a subscriber's filter admits it; nothing in
+                // this composition publishes it, because no regime classifier
+                // keeps state in the kernel. `GET /api/v1/regimes` says so in
+                // the platform's own words rather than leaving a quiet stream
+                // to be read as a steady regime.
                 Topic::RegimeChanged,
                 Topic::OpportunityDetected,
                 Topic::OpportunityRanked,

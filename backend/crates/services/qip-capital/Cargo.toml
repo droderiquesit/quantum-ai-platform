@@ -14,5 +14,10 @@ qip-financial.workspace = true
 qip-contracts.workspace = true
 qip-portfolio.workspace = true
 
+[dev-dependencies]
+# The ledger's tests edit a stored mandate on the way back in to prove the
+# validation runs at deserialisation; the crate itself never names it.
+serde_json.workspace = true
+
 [lints]
 workspace = true

@@ -1,6 +1,10 @@
 # 0011 — Everything in Rust on Kubernetes; IBM Quantum is the only integration
 
-**Status:** superseded by ADR 0024 in its "on Kubernetes" half — the runtime is Cloud Run and one execution node per region, provisioned in code and not yet applied; the "everything in Rust" half stands.
+**Status:** superseded by ADR 0024 in its "on Kubernetes" half — the runtime is Cloud Run and one execution node per region. The "everything in Rust" half stands, and ADR 0025 leaves the browser layer's exception open.
+
+*Corrected 2026-09-05.* This line read "provisioned in code and not yet applied". That is no longer true: `dev` was planned and applied under ADR 0040 (`infra.yml` runs 34–38, state 163 → 237 resources), and three Cloud Run services were observed serving there on 2026-09-04. Two qualifications keep the correction honest — **no execution node exists in any environment** (`execution_nodes = {}` everywhere), so the "one execution node per region" half is still provisioned in code and not applied; and nothing outside `dev` has been applied at all.
+
+*Kubernetes returned, and not as this record had it.* ADR 0036 brings Argo CD and Kargo back on a GKE Autopilot **control-plane** cluster per environment that runs **no trading binary** — the opposite of this record's decision, which put the platform's own workloads on the cluster. `qip-dev-control-plane` exists in `algorik-dev` and is tainted with no controller on it. A reader who finds a GKE cluster and this record should read ADR 0036, not conclude that this one is back in force.
 **Supersedes in part:** ADR 0009, which tiered the dependency policy to admit
 Google client libraries at the I/O edge. No such client is now permitted.
 

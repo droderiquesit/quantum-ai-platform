@@ -1,5 +1,28 @@
 # Blueprint v10.1 gap map
 
+> **Superseded for status by [`PROJECT-PLAN.md`](PROJECT-PLAN.md).** This
+> document's structural inventory is kept as history.
+>
+> **Re-scored 2026-09-05 at `1107305`.** Eleven rows moved and the top-line
+> counts were recomputed rather than adjusted. The valuation plane went from
+> 0 of 6 engines to 6 of 6 built, **4 of 6 with a production caller at that
+> commit and 5 of 6 in the working tree** — the liquidity ladder's risk read
+> landed uncommitted while this was being written, and is scored, flagged and
+> cited by symbol rather than waited for. **Amended 2026-09-06:** that fifth
+> caller committed at `b060df2`, and the claim its row made for it — "so it is
+> a control that can fire" — is withdrawn on evidence. Wired, yes;
+> trustworthy, no. See the liquidity-ladder row, and
+> `PROJECT-PLAN.md`'s valuation row, which withdrew the same claim. The
+> self-model, wallet, treasury/corridor and per-account-entitlement rows had
+> been ABSENT since the first pass and stopped being true at `e5dc8fc`,
+> `5546a24` and `0599092`; and two first-pass findings were themselves wrong
+> and are corrected in place — the credit row's "No spread decomposition"
+> (it has existed in exact `Decimal` since `b3ebc7f`) and the term-structure
+> row's BUILT-UNWIRED, which understated a defect that silently dropped a
+> duplicate tenor under an unstable comparator. Rows not named in this note
+> were not re-verified in this pass and carry their original evidence and
+> date; a row's silence is not a claim that it was rechecked.
+
 A first-pass structural inventory: for each capability the "Algorik —
 Cognitive Investment Platform, Blueprint v10.1" document names, does anything
 resembling it exist in the actual tree, and if so, does a real caller reach
@@ -61,21 +84,41 @@ ABSENT, and the terms tried are named in the evidence column.
 | Episodic memory (full blueprint shape: state vector, regime, causal context, beliefs, actions, outcome, surprise; ANN retrieval over millions of episodes) | PARTIAL | `qip-agents/src/memory.rs` defines `Episode`/`ResearchMemory` (occurred_at, question, conclusion, evidence, conviction, outcome) and `qip_agents::memory::ResearchMemory` is imported and used in `qip-kernel/src/platform.rs:44`. This is a real, wired episodic store, but it holds one agent's research conclusion and outcome, not the blueprint's richer episode (compressed market/world state vector, regime label, active causal edges, declined actions, multi-horizon outcome, surprise score) or approximate-nearest-neighbour retrieval over a large corpus — no HNSW, no vector index, and no "surprise" field were found (`grep -rli "hnsw\|nearest.neighbour\|surprise"` on `crates/libs/qip-agents` returns no such fields) |
 | Belief state with confidence and TTL, shipped to regions as priors | PARTIAL | `qip-reasoning-engine/src/bayes.rs` implements Bayesian log-odds confidence updating (`BeliefContribution`, `BeliefUpdate`, `to_log_odds`/`from_log_odds`) and the reasoning engine is wired into the kernel (`qip_reasoning_engine::engine::{ReasoningEngine,ReasoningOutcome}` at `platform.rs:115`). No `struct Belief` with a TTL field exists anywhere in the tree (`grep -rn "struct Belief\b" backend/crates` returns nothing), and no mechanism ships a belief prior from a centre to a region — `qip-edge` has no belief-cache module (`grep -rli "belief" backend/crates/edge` matches only `qip-strategy/src/ir.rs` and test/telemetry files, not a cache) |
 | Counterfactual learning / shadow execution of vetoed paths | BUILT+WIRED | `qip-twin` crate (`counterfactual.rs`, `capture.rs`, `regret.rs`, `asof.rs`) is wired: `qip_twin::counterfactual`, `::capture::{Action,Decision,OutcomeCapture,RealisedOutcome}`, `::asof::TwinMarket` imported at `platform.rs:129-134`. Per `.claude/rules/domains/observability.md`, `Platform::evaluate_alternatives` (counterfactual scoring) is reached from `score_declined`, itself called from `stage_learn` — a real production call path in the LEARN stage of the cycle |
-| Self-model (capability estimate, coverage, calibration tracking) | ABSENT | `grep -rli "self.model\|selfmodel"` finds only unrelated hits (model-risk self-reference in `qip-compliance`, an AI embedding self-reference, agent factory/DNA code). `grep -rln "CapabilityEstimate"` returns nothing. No type resembling the blueprint's self-model (estimator reliability, coverage, calibration, capacity, regime experience, blind spots) exists |
+| Self-model (capability estimate, coverage, calibration tracking) | BUILT+WIRED | Re-scored 2026-09-05; the ABSENT verdict above was true when written and stopped being true at `e5dc8fc`. `qip-learning-engine/src/self_model.rs` holds every component's calibration, fed from the LEARN stage and feeding the reasoning engine's origin factors on supporting evidence only; it is served at `GET /cognition/self-model`. It is also one of the three §6.2 rows the centre now *sizes against* rather than reads as a constant: `SELF_MODEL_HORIZON` is 7 days (`qip-contracts/src/degradation.rs:265`) and `Platform::central_degradation` observes it before `construct_from` narrows the budget by `central_sizing_multiplier()` (`qip-kernel/src/platform.rs`, cited by symbol). `grep -rl self_model backend/crates --include=*.rs` returns `qip-learning-engine/src/lib.rs`, `qip-contracts/src/degradation.rs`, `qip-kernel/src/platform.rs` and two test files |
 | Exploration budget (UCB/Thompson sampling, declared capital share for information gain) | ABSENT | `grep -rli "thompson\|ucb\b\|exploration.budget\|explorationbudget"` across `backend/crates` returns nothing |
 | Hypothesis generation with falsification | BUILT+WIRED | `qip-reasoning-engine/src/hypothesis.rs` (`Claim`, `CausalChain`) and `src/redteam.rs` (adversarial challenge against a hypothesis's structure, `Severity`, `ReviewOutcome::rejection_rate`) both wired into `qip-kernel/src/platform.rs:116,3630-3633,5843-5847` |
 | Degradation ("narrow rather than halt") | BUILT+WIRED (edge code path exists and has a real caller; that caller is exercised only in tests, no deployment) | `.claude/rules/domains/observability.md` documents extensively that `qip-edge`'s `Cell` narrows on stale capability freshness with per-source telemetry (`qip_edge_capability_freshness{capability}`), each recording site proven by `backend/crates/edge/qip-edge/tests/telemetry.rs`; `Cell::work` is reached from `qip-edge-node/src/pass.rs:118` → `main.rs:586`, but only when `QIP_VENUE_FEED=simulated`, and `execution_nodes = {}` in every Terraform environment, so no deployed process exercises it today |
 | Source discovery (surface/deep/dark-web tiers, discovery crawler, `SourceCandidate`, `DeepWebAdapter`) | PARTIAL | `qip-data-finder/src/{source,finder,legal,robots,probe}.rs` define `SourceCandidate` (`source.rs:82`) and a robots.txt-respecting finder with a legality/licensing gate; `SourceCandidate`, `DataFinder`, `RegistrationDecision` are imported and used in `qip-kernel/src/platform.rs:75-78,5084`, so the licensing-gated source-registration path is real and wired. But the blueprint's specific three-tier model (surface/deep/dark web) does not exist — `grep -rn "surface_web\|SurfaceWeb\|DarkWeb\|dark_web"` returns nothing — nor does a `DeepWebAdapter` type or its six access modes (`open_query`/`api`/`registered`/`licensed`/`rendered`/`bulk`; `grep -rn "struct DeepWebAdapter"` returns nothing), nor an isolated discovery enclave, nor dark-web defensive monitoring |
 
+Re-scored 2026-09-05, source-discovery row only: the three-tier model now
+exists as typed policy in `qip-data-finder/src/tier.rs` — `SourceTier`
+(`surface_web`/`deep_web`/`dark_web`), classified by `SourceTier::classify`
+from a `TierEvidence` built from the candidate before the probe and from the
+`Source` after it, refusing on insufficient evidence rather than defaulting to
+the surface web; `DeepWebAdapter` with the six `AccessMode` arms
+(`open_query`/`api`/`registered`/`licensed`/`rendered`/`bulk`), each carrying
+what it needs (a `CredentialReference` by name only, a licence identifier
+checked against the `Declared` posture, a `RenderingBudget`, a `BulkCadence`
+with a retention bound) and an `admissible()` rule per arm; `DiscoveryEnclave`
+as the isolation record the `rendered` and `bulk` modes are refused without;
+and `DefensiveMonitoring` as a watch-list record with no fetch path. The tier
+is wired into `DataFinder::assess` (`finder.rs`, `route_by_tier`): a
+hidden-service host is rejected before any probe call, an unplaceable source
+is deferred, and the routing decision records tier, mode and refusal in the
+`classify` and `route` reasoning steps. Proven by
+`qip-data-finder/tests/tiers.rs`. Status is now **BUILT+WIRED (policy)**:
+still no crawler, no renderer and no Tor client — this crate opens no sockets
+— so the tier decides what may be reached and how, and nothing yet reaches it.
+
 ## Valuation & assets plane
 
 | Capability | Status | Evidence |
 |---|---|---|
-| Term structure (yield curves, forward rates) | BUILT-UNWIRED | `qip-market/src/curve.rs` defines `TermStructure`/`CurvePoint` with monotone-cubic interpolation via `qip-numerics/src/interpolate.rs`. `grep -n "TermStructure\|curve::" backend/crates/runtime/qip-kernel/src/platform.rs` returns no hits — no production caller found in the kernel, the only place services are composed |
-| Credit engine (default probability, recovery, spread decomposition, covenant state) | PARTIAL | `qip-financial/src/risk_profile.rs:170,184,191` and `extensions.rs:244` carry `default_probability`/`recovery_rate` fields on a risk-profile struct and an `indicative_default_probability()` method — a data holder, not an engine. No spread decomposition, no covenant state, and no dedicated credit crate or `CreditProfile` type (`grep -rln "CreditProfile"` returns nothing) |
-| Volatility surface | ABSENT | `grep -rn "struct VolSurface\|struct VolatilitySurface"` returns nothing. The only hits for "vol surface" are doc-comment prose in `qip-numerics/src/interpolate.rs:3` ("Yield curves, volatility surfaces...") and an unrelated `surface` field name in `qip-feature-dag/src/state.rs:32` — no type, no skew/term modelling |
-| Illiquid valuation (mark with method + confidence: comparables, DCF, model, last round, cost) | ABSENT | The only "illiquid" hits are a liquidity-regime classifier and a cost multiplier (`qip-financial/src/costs.rs:57` `illiquid(days_to_liquidate)`; `qip-kernel/src/platform.rs:601-602,3048,3120` `MarketRegime::Illiquid` / `ILLIQUID_SPREAD_MULTIPLE`). No `Valuation` type carrying a mark, a method enum, and a confidence exists |
-| Cashflow forecasting / commitments / capital calls | ABSENT | `grep -rli "cashflow\|CashflowForecast"` and `grep -rli "commitment.*capital.call\|CapitalCall"` both return nothing across `backend/crates` |
+| Term structure (yield curves, forward rates) | BUILT+WIRED | Re-scored 2026-09-05 at `1107305`; the previous row said BUILT-UNWIRED and **understated the defect as well as the wiring**. `qip-market/src/curve.rs` defines `TermStructure`/`CurvePoint` with monotone-cubic interpolation via `qip-numerics/src/interpolate.rs`, and `TermStructure::new` is now called from `CreditRegister::from_universe` (`qip-kernel/src/valuation.rs:114`), itself called at `Platform::new` (`platform.rs:1952`) — one sovereign curve per currency — and read back through `CreditRegister::discounted_expected_loss` (`valuation.rs:159`). The unwiring was not the whole finding: `TermStructure::new` carried `points.dedup_by(\|a, b\| (a.tenor_years - b.tenor_years).abs() < 1e-12)`, so a vendor publishing the ten-year point twice at two yields had one **silently dropped**, and which one survived depended on a comparator falling back to `Ordering::Equal` — not stable across the two orders the same file can arrive in, so the curve interpolated differently on a replay than it did live. A negative tenor re-anchored the front end and a `NaN` tenor compared equal and landed wherever the input put it. All three are refusals now, naming the tenor and both quoted values (`curve.rs`, the `# Refusals` block on `new`; `DISTINCT_TENOR_YEARS`), proven by `qip-market/tests/structure.rs` |
+| Credit engine (default probability, recovery, spread decomposition, covenant state) | BUILT+WIRED | Re-scored 2026-09-05 at `1107305`. **The previous row was wrong in one direction**: it said "No spread decomposition", and `RiskCharacteristics::spread_decomposition` has existed in exact `Decimal` since `b3ebc7f` (`qip-financial/src/risk_profile.rs:209`; `git log -1 -S spread_decomposition -- .../risk_profile.rs` returns `b3ebc7f`). What was genuinely absent — survival curve, hazard rate, seniority-derived recovery, covenant state, and any caller — is supplied by `CreditProfile` (`qip-financial/src/credit.rs:234`, with `CovenantState` at `:74` and its own `spread_decomposition` at `:459`). `covenant_state()` returns `Option<CovenantState>`, because an obligor nobody wrote a covenant for has had nothing tested and reporting `Compliant` for it would be the `MaxExpectedShortfall` shape by another name. Wired: `CreditProfile::from_object` at `qip-kernel/src/valuation.rs:88` builds one profile per credit claim, and the register reaches `CycleReport` twice per cycle — `self.credit.summary()` into the UNDERSTAND stage's detail string and `self.credit.problems()` as stage problems (`platform.rs:4781-4800`) |
+| Volatility surface | **BUILT-UNWIRED** | Re-scored 2026-09-05 at `1107305`; previously ABSENT and now built but reached by nothing. `qip-market/src/volatility.rs:151` defines `VolatilitySurface`, interpolating across expiries linearly in **total variance** rather than in volatility, because interpolating volatility directly manufactures negative forward variance — a calendar arbitrage the interpolator invented. Nothing extrapolates: both smile and surface guard the domain and refuse a strike inside one bracketing smile and outside the other as a hole. 711 lines of tests in `qip-market/tests/volatility.rs`. **No production caller**, and this is not an oversight waiting on a wire: nothing in this platform ingests option quotes, and `OptionDetails` (`qip-financial/src/extensions.rs:411`) is constructed nowhere outside fixtures. `grep -rl VolatilitySurface backend/crates --include=*.rs` returns only `qip-market/src/{lib,volatility}.rs` and `qip-market/tests/volatility.rs`. Wiring one is a data source with a licensing evaluation ahead of it, not a code change |
+| Illiquid valuation (mark with method + confidence: comparables, DCF, model, last round, cost) | BUILT+WIRED | Re-scored 2026-09-05 at `1107305`; previously ABSENT. `qip-financial/src/valuation.rs:332` defines `IlliquidValuator`, and it is on the **sizing path**: `IlliquidValuator::mark_object` is called at `qip-kernel/src/platform.rs:767`, feeding `Platform::mark_confidence_multiplier` (`platform.rs:5815`) which narrows the construction budget at `platform.rs:5969`, inside `construct_from` — reached from `stage_decide` (`platform.rs:6289`, call at `:6324`). An asset with no residual value and nothing called beyond what was distributed is **refused** with "this plane refuses to invent a mark" rather than marked, and an unmarkable private asset refuses the construction outright, because a number nobody could observe returned as a valuation is the one failure a valuation plane must not have |
+| Cashflow forecasting / commitments / capital calls | BUILT+WIRED | Re-scored 2026-09-05 at `1107305`; previously ABSENT. `qip-financial/src/cashflow.rs:179` defines `CashflowForecast`, and the kernel holds a `CommitmentBook` (`platform.rs:372`, `qip_financial::cashflow::CommitmentBook`). It is on the **sizing path**: `Platform::deployable_capital` (`platform.rs:5879`) is free capital less `self.commitments.unfunded_total(now)?`, and `construct_from`'s budget line reads it (`platform.rs:5956`) where it previously read `self.reservations.free(now)`. It **refuses rather than flooring at zero** when obligations meet or exceed what is free — a called commitment that cannot be met forfeits the position, and sizing against a budget of zero would report that as an ordinary quiet cycle |
 | Corporate actions (splits, dividends, mergers, spinoffs, delistings) | BUILT+WIRED | `qip-market/src/corporate_action.rs` defines `CorporateActionKind`; imported and switched on at `qip-kernel/src/platform.rs:96,2317,5804-5812` (`corporate_action_class`, covering `Split`, `CashDividend`, `StockDividend`, `RightsIssue`, `Merger`, `Spinoff`, `Delisting`) |
 
 ## Intelligence & quantum plane
@@ -94,10 +137,10 @@ ABSENT, and the terms tried are named in the evidence column.
 |---|---|---|
 | Capital engine (deployed/reserve/exploration split, bounded expiring grants) | BUILT+WIRED | `qip-capital::reservation::ReservationLedger`, `AllocationLimits`, `CapitalAllocator`, `DrawdownSchedule` and `qip_capital_fabric` imports at `qip-kernel/src/platform.rs:47-49`; `qip_capital_fabric::evaluate(&plan, realised)` called at `platform.rs:5661` |
 | Risk envelope including a per-causal-driver concentration limit | BUILT+WIRED | Confirmed by `.claude/rules/domains/risk-and-execution.md`: `RiskState::with_tail_risk` fills expected shortfall per-limit, and `the_expected_shortfall_limit_can_actually_fire` in `qip-kernel/src/platform.rs` proves the veto fires rather than reading as decorative protection |
-| Liquidity ladder (rung-by-rung withdrawal ordering, cash → PE commitments) | ABSENT | `grep -rli "liquidity.ladder"` across `backend/crates` returns nothing |
+| Liquidity ladder (rung-by-rung withdrawal ordering, cash → PE commitments) | **BUILT+WIRED as a risk read, committed at `b060df2` — but the control it wires is not trustworthy; BUILT-UNWIRED at `1107305`** | Re-scored three times: ABSENT at the first pass, twice on 2026-09-05, and again on 2026-09-06 after an adversarial review of the wiring. `qip-financial/src/ladder.rs:238` defines `LiquidityLadder`; monotonicity is compared by cross-multiplication so money never leaves `Decimal`, and the rung order is the enum's declaration order — a property of the type rather than of a sort call someone can forget. At `1107305` it had **no production caller**. It has one now, committed at `b060df2` (`git merge-base --is-ancestor b060df2 HEAD` succeeds; the row said "not yet committed" and that is stale): `Platform::liquidity_ladder` builds one from the aggregates, `Platform::risk_state_from` fills `RiskState::days_to_liquidate` and `RiskState::liquidatable_within` from it, and `stage_act` calls it. Those fields are read by `LimitKind::MaxDaysToLiquidate` and `LimitKind::MinLiquidity` (`qip-risk/src/limits.rs:298,300`). **This row then said "so it is a control that can fire", and that sentence is withdrawn.** It did not survive a second adversarial pass, and the identical over-claim was withdrawn from `PROJECT-PLAN.md`'s valuation row; leaving it here would let the retired claim survive in the history document. Two findings, each re-verified against the committed tree on 2026-09-06 rather than taken on report. First, **the floor fails open**: at HEAD `risk_state_from` reads the ladder through `if let Ok(ladder) = self.liquidity_ladder(figures) { … }`, so a refused ladder leaves both maps untouched and empty, `MinLiquidity` takes its `None` arm, and every order is accepted — and `LiquidityProfile::illiquid()` hardcodes `typical_spread_bps: 250.0` (`qip-financial/src/costs.rs:60`) while `listed()` takes the caller's spread (`:46`), so any listed instrument quoted above 250 bps makes the monotonicity proof refuse the whole ladder. A silently unevaluated floor and a satisfied floor are the same empty map. Second, **`LiquidationHorizon::least_days` over-counts liquidity**: `Rung::classify` puts any non-negotiated holding with `days_to_liquidate > 1.0` on `BondsAndLessLiquidListed`, whose horizon is `Days`, whose `least_days` is `2.0` — so a record stating forty-five days is read as two and both limits report green. So: **BUILT+WIRED is a structural verdict about whether a caller exists, and this row's own preamble says these counts are not a judgment of correctness. Take it that way and no further.** Repairs are in the working tree, uncommitted at this writing — `risk_state_from` recording the refusal through `RiskState::with_unevaluated`, and `LadderEntry::days_to_exit` carrying the record's own measurement rather than the bucket floor — and this row should be re-scored again when they land, not before. **The blueprint's own caller stays structurally forbidden**: serving a withdrawal from the top of the ladder needs a *granted* withdrawal, and ADR 0021 leaves `WithdrawalEntitlement` with exactly one arm, `Refused` — no `Granted` to construct and no `Deserialize` to smuggle one through (`qip-capital/src/ledger/entitlement.rs:155`). So the ladder is wired along the one seam that is admissible here and will never be wired along the one the blueprint names. Verify before quoting: `grep -rn 'liquidity_ladder(' backend/crates/runtime/qip-kernel/src/platform.rs` for the caller, and read the `if let Ok(` in `risk_state_from` before believing any sentence about the limit firing. The ladder is execution-adjacent by subject and inert by construction: its plan legs carry an object id, a rung, an amount and a cost, and a test asserts the serialised field set is exactly those four so a future venue or side field trips it |
 | Compounding policy (reinvestment cadence, fee-tier accumulation, withdrawal drag) | ABSENT | `grep -rli "compounding"` returns nothing |
-| Treasury / signed corridors / MPC withdrawal gates | ABSENT | `grep -rli "corridor\|treasury"` hits only a doc-comment example in `qip-capital-fabric/src/lib.rs:102-116` that uses "treasury" as a location *label* in a worked example (`CapitalLocation::new(Region::new("namr"), Currency::USD, VenueId::new("TREASURY"))`), not a corridor, transfer-gate, or MPC-signing implementation. No `corridor-registry`, `transfer-engine`, `transfer-gate`, or `custody-policy-engine` exists |
-| Wallet (read-only balance aggregation, signing crate deliberately unlinked) | ABSENT | No `wallet-aggregator`, `wallet-adapters`, or `wallet-reconciler` service or crate exists anywhere in `backend/crates` or `frontend/**` |
+| Treasury / signed corridors / MPC withdrawal gates | PARTIAL (records and refusals only, by ADR 0021) | Re-scored 2026-09-05; the ABSENT verdict above was true when written and stopped being true at `5546a24`. `qip-capital-fabric/src/corridor.rs` defines `CorridorId:33`, `CorridorCaps:125`, `CorridorStage:245`; `destination.rs` defines `DestinationKey:80`, `DestinationRecord:230`, `DestinationRegistry:249`; `gate.rs` defines the seven-veto transfer gate, reached from the kernel at `qip-kernel/src/platform.rs:3751` (`GateCheck::ALL`, seven checks); `custody.rs` defines `CorridorKind:95` and custody policy as data; `journal.rs` defines `CorridorAction:156`, `CorridorStep:199`, `CorridorStanding:282`. **What is deliberately still absent is the half that would move money**: there is no transfer engine and no MPC signer, so the gate's `Approved` has no consumer, and ADR 0021 forbids building one until Phase 12. This is a refusal, not a gap |
+| Wallet (read-only balance aggregation, signing crate deliberately unlinked) | BUILT+WIRED (read model only) | Re-scored 2026-09-05; ABSENT above was true when written and stopped being true at `5546a24`. `qip-capital-fabric/src/wallet.rs` is the read model with halting reconciliation, imported into the kernel at `qip-kernel/src/platform.rs:63` beside the journal at `:59`, and served at `GET /wallet`. The signing half is unlinked exactly as the blueprint's own parenthesis asks, and as ADR 0021 requires |
 | Tax-lot accounting (FIFO/LIFO/highest-cost/lowest-cost, holding period) | BUILT-UNWIRED | `qip-portfolio/src/lot.rs` defines `Lot`, `LotMethod` (`FirstInFirstOut`/`LastInFirstOut`/`HighestCost`/`LowestCost`), `RealisedTrade`, re-exported from `qip-portfolio/src/lib.rs:20,25`. `grep -rln "qip_portfolio::lot\|portfolio::lot::"` finds only `qip-portfolio/tests/accounting.rs` — no caller outside the crate's own tests, so no production code path computes a realised gain from a lot today |
 | Settlement calendar (cut-off, value date, settlement days) | BUILT+WIRED | `qip-capital-fabric/src/settlement.rs` defines `SettlementCalendar`; `qip-capital-fabric` (`plan.rs`, `settlement.rs`, `forecast.rs`) is imported and used at `qip-kernel/src/platform.rs` (settlement-calendar hits present in `platform.rs`) |
 
@@ -135,9 +178,9 @@ re-verified against a live plan.
 | Leptos-based portal (one Rust codebase, shared types with backend, SSR + WASM) | ABSENT | `frontend/portal/` is Next.js + TypeScript (`.claude/rules/domains/frontend.md`: "Next.js + TypeScript, and the one part of this platform that is not Rust"). ADR 0022 records Leptos as "the target experience layer" and that the Next.js frontend is "transitional"; today it is what is deployed |
 | Installable PWA for mobile | BUILT+WIRED | `frontend/mobile/README.md` documents the PWA-as-mobile-app decision and names concrete artefacts: `frontend/portal/src/app/manifest.ts`, `frontend/portal/public/sw.js`, `frontend/portal/src/components/chrome/InstallApp.tsx`, `AppShell.tsx`. These paths were confirmed present in the source tree |
 | Investor portal surfaces (portfolio, strategies, risk, execution, capital, agents, intelligence, research, operations) | BUILT+WIRED | `frontend/portal/src/app/(portal)/` contains route directories for `portfolio`, `strategies`, `risk`, `execution`, `capital`, `agents`, `intelligence`, `research`, `operations`, `command`, `orders`, `signals`, `models`, `data-sources`, `integrations`, `admin`, `system` — confirmed by directory listing |
-| Wallet / treasury / withdrawal UI | ABSENT | `grep -rli "withdraw\|corridor\|treasury\|wallet" --include=*.tsx` in `frontend/portal/src/app/(portal)/` returns one incidental match in an unrelated news page, no wallet or treasury surface |
+| Wallet / treasury / withdrawal UI | PARTIAL | Re-scored 2026-09-05; ABSENT above was true when written and stopped being true at `e5dc8fc`. `frontend/portal/src/app/(portal)/treasury/` now holds six surfaces — `ledger`, `wallet`, `corridors`, `transfer-gate`, and, since `bcf7330`, `products` and `accounts` — reached from `src/lib/nav.ts:253,265`, with Playwright coverage in `tests/treasury-*.spec.ts`. **There is no withdrawal UI and there may not be one** (ADR 0021, ADR 0023): the only write the treasury surface carries is an operator's eligibility decision, and the accounts page states in its own source that the account shown is one an operator selected, never the signed-in person's own, because the gateway forwards one deployment credential and no session-to-ledger-account binding exists below it |
 | Passkey-only sign-in (WebAuthn, "passwords none, anywhere") | PARTIAL | `frontend/packages/auth/src/index.ts:24` defines `AuthMethod = "password" | "google" | "passkey" | "saml" | "oidc" | "development"` — `passkey` is one option among several, and `password` is explicitly still a listed method, which is the opposite of the blueprint's "no passwords, anywhere" requirement. No WebAuthn ceremony implementation was inspected beyond this type definition |
-| Per-account entitlements (`can_invest`, `can_withdraw`, `can_view_execution_trace`, etc.) | ABSENT | The only "entitlement" hits in the tree (`qip-compliance/src/licensing.rs`) are **data-licensing** entitlements — whether a market-data feed may be used for a given purpose — a different concept from the blueprint's per-user, per-account capability gating. No `can_invest`/`can_withdraw`/`can_view_execution_trace` construct exists |
+| Per-account entitlements (`can_invest`, `can_withdraw`, `can_view_execution_trace`, etc.) | BUILT+WIRED | Re-scored 2026-09-05; the ABSENT verdict above was true when written and stopped being true at `0599092`. `qip-capital/src/ledger/entitlement.rs:118` defines `Entitlement` carrying `can_view`, `can_invest` and `can_withdraw` — per user, per product, at one instant, with private fields, no builder and no `Deserialize`, so the only way to hold one is to have evaluated one (`Entitlement::evaluate`, `:137`). `can_withdraw` is a `WithdrawalEntitlement` whose sole arm is `Refused` (`:155`), which is ADR 0021 expressed in the type rather than in a flag. Served: `qip-api/src/ledger_views.rs:120` projects `EntitlementView` with all three capabilities (`:314-316`) onto every row of `GET /ledger/users`. The blueprint's `can_view_execution_trace` specifically is **not** among them — the field is `can_view`, and no execution-trace capability is gated |
 
 ## Experience / governance
 
@@ -152,19 +195,58 @@ re-verified against a live plan.
 
 ## Top-line counts
 
-Counting only the rows in this document that were individually classified
-above (44 capability rows; the "eight execution paths" and "cloud & network"
-rows are explicitly excluded because they were not individually verified):
+**Re-counted 2026-09-05 at `1107305`.** The figures below were 26 of 44 and 16
+of 44 at the first pass; they are recomputed here from the rows as they now
+read, not adjusted by hand. The command, and its output:
 
-- **26 of 44** identified capabilities have *any* production code resembling
-  them (BUILT+WIRED, BUILT-UNWIRED, or PARTIAL).
-- **16 of 44** identified capabilities have a wired production caller
+```
+$ awk -F'|' '/^\| .+ \| .+ \| .+ \|$/ && $2 !~ /^ *Capability *$/ && $3 !~ /^-+$/ \
+    {gsub(/^ +| +$/,"",$3); s=$3; gsub(/\*/,"",s); \
+     if (s ~ /^NOT INDIVIDUALLY/) {n++; next} \
+     if (s ~ /^BUILT\+WIRED/) w++; else if (s ~ /^BUILT-UNWIRED/) u++; \
+     else if (s ~ /^PARTIAL/) p++; else if (s ~ /^ABSENT/) a++; else other++; t++} \
+    END {print t, w, u, p, a, other+0, n}' docs/plan/blueprint-v10.1-gap-map.md
+classified rows: 44
+BUILT+WIRED: 24
+BUILT-UNWIRED: 3
+PARTIAL: 8
+ABSENT (incl. the one qualified "ABSENT (deployed)"): 9
+unmatched: 0
+excluded NOT INDIVIDUALLY VERIFIED: 1
+```
+
+24 + 3 + 8 + 9 = 44, and the one excluded row is the "eight execution paths"
+row, which was never individually verified. Counting only rows individually
+classified above:
+
+- **35 of 44** identified capabilities have *any* production code resembling
+  them (BUILT+WIRED, BUILT-UNWIRED, or PARTIAL) — 24 + 3 + 8. It would be 36
+  on a looser reading: the GCE execution-node row is ABSENT *as deployed* and
+  says in its own status that an infrastructure module exists in code. It is
+  counted with ABSENT here, because the question that row asks is whether a
+  node runs, and none does.
+- **24 of 44** identified capabilities have a wired production caller
   (BUILT+WIRED only — code that exists and is reached from a composition root
-  or from a service the kernel actually calls). Of those 16, several are
-  wired in the codebase sense but reach no *deployed* process, most notably
-  the entire edge/execution plane (`execution_nodes = {}` in every
-  environment) — that distinction is called out per-row above and matters
-  more than the count does.
+  or from a service the kernel actually calls). **One of the 24 was
+  uncommitted when this was written and is committed now** (`b060df2`): the
+  liquidity ladder's risk read. A reader checking out `1107305` still counts
+  23 and 4, not 24 and 3. Read its row before treating that as good news —
+  the caller exists and the control it feeds abstains silently on a class of
+  book, which is a correctness question this document's counts do not ask.
+  Of the 24, several more are wired in the
+  codebase sense but reach no *deployed* process, most notably the entire
+  edge/execution plane (`execution_nodes = {}` in every environment) — that
+  distinction is called out per-row above and matters more than the count.
+- **3 of 44** are BUILT-UNWIRED. The valuation result is the interesting one:
+  six engines were built at `1107305`, four wired then and a fifth wired
+  uncommitted since, leaving **the volatility surface as the only one reached
+  by nothing** — and for a reason that is not "nobody got to it yet". Nothing
+  in this platform ingests option quotes, so wiring it is a data source with a
+  licensing evaluation ahead of it. A future re-score should check the caller
+  rather than the type. The ladder's wiring did survive into a commit
+  (`b060df2`); what a re-score should check next is not whether it is wired
+  but whether the limits it feeds can be made to fire, which as of 2026-09-06
+  they cannot on any book whose ladder is refused.
 
 These are **structural counts** — does code exist, is it called — not a
 judgment of correctness, completeness, or fitness of what exists. A
@@ -178,30 +260,63 @@ individually verify.
 
 ## Most significant ABSENT capabilities
 
-Capabilities the blueprint describes at length for which this pass found
-literally nothing resembling them in the tree, after trying multiple
-plausible names:
+**Re-scored 2026-09-05.** Six of the nine bullets this list carried have been
+closed or narrowed since it was written, and leaving them would send a reader
+to build a thing that exists. What each was replaced by is stated rather than
+deleted, because the point of this list is which gaps are real *today*.
+
+Still absent, after trying multiple plausible names:
 
 - **The entire ML training pipeline stack** (`burn`, `linfa`, `polars`,
   `tract`, ONNX model promotion) — blocked at the root by the workspace's own
-  two-dependency policy (serde/serde_json only), not merely unbuilt.
-- **Treasury, corridors, and wallet** — no signed-corridor transfer system,
-  no MPC withdrawal gate, no read-only wallet aggregator anywhere in the tree.
-- **Volatility surface, illiquid valuation, cashflow/commitments** — three of
-  the blueprint's six valuation engines have no corresponding type or engine
-  at all (a fourth, credit, has only two struct fields; a fifth, term
-  structure, exists but is unwired).
-- **Self-model and exploration budget** — no capability-estimate type, no
-  UCB/Thompson exploration allocator, no capital line item for exploration.
-- **Liquidity ladder and compounding policy** — no rung-by-rung withdrawal
-  ordering, no reinvestment-cadence reasoning.
-- **Per-account entitlements** (`can_invest`, `can_withdraw`, etc.) and a
-  passkey-only, password-free sign-in — the frontend's own auth-method type
-  still lists `password` as an option.
-- **Leg coordinator** and **meta-learning** — named as distinct blueprint
-  mechanisms with no matching code under any plausible name tried.
+  two-dependency policy (serde/serde_json only), not merely unbuilt. Unchanged
+  and structural.
+- **Exploration budget** — no UCB/Thompson allocator and no capital line item
+  for information gain. `grep -rl ExplorationBudget backend/crates
+  --include=*.rs` returns nothing. This is the half of the self-model bullet
+  that survived.
+- **Compounding policy** — no reinvestment cadence, no fee-tier accumulation,
+  no withdrawal drag.
+- **Leg coordinator** and **meta-learning** — `grep -rl LegCoordinator
+  backend/crates --include=*.rs` returns nothing; the meta-learning search is
+  unchanged from the first pass.
+- **A passkey-only, password-free sign-in** — the frontend's own auth-method
+  type still lists `password`. ADR 0038 is *proposed*, not applied, and turns
+  on four Identity Platform questions nobody has answered.
+- **Leptos** — ADR 0025 is a record with no code; the portal is Next.js and
+  ADR 0022 calls that transitional.
 - **Asset class registry, venue onboarding, DeFi execution model,
-  cross-margin model, hedge map** (the blueprint's "registries and lifecycle"
-  section) — none found; not individually detailed as full rows above because
-  each returned zero hits on first search, but recorded here since the
-  section is a named blueprint capability.
+  cross-margin model, hedge map** — none found; not individually detailed as
+  full rows above because each returned zero hits on first search, but
+  recorded here since the section is a named blueprint capability.
+
+No longer absent, and each row above now carries the evidence:
+
+- **Treasury, corridors, and wallet** — closed at `5546a24` as far as ADR 0021
+  permits: corridor, destination, transfer-gate, custody and journal types
+  exist and the wallet read model is served at `GET /wallet`. What stays
+  refused is the transfer engine and the MPC signer, so the gate's `Approved`
+  reaches no consumer. That is a decision, not a gap.
+- **The six valuation engines** — this bullet said three of six had no type at
+  all, a fourth had two struct fields and a fifth was unwired. At `1107305`
+  **all six exist**, and the number that matters is that **four have a
+  production caller and two do not**: term structure, credit, cashflow
+  commitments and illiquid valuation are reached from `Platform`, the last two
+  on the sizing path itself; the volatility surface and the liquidity ladder
+  are BUILT-UNWIRED. The bullet was also wrong about credit in one direction —
+  `spread_decomposition` had existed in exact `Decimal` since `b3ebc7f`.
+- **Self-model** — built at `e5dc8fc`, served at `GET /cognition/self-model`,
+  and since `0829b29` one of the three §6.2 rows the centre sizes against.
+- **Liquidity ladder** — the type exists and, since `b060df2`, is
+  read by `RiskState` and by the `MaxDaysToLiquidate` and `MinLiquidity`
+  limits. **Wired is not working**: as committed, a refused ladder leaves both
+  figures empty and the floor accepts everything, and a forty-five-day holding
+  reads as two days. The row above carries the probes. The *ordering it would
+  serve* still does not exist and may not,
+  because serving a withdrawal needs a granted withdrawal and ADR 0021 leaves
+  `WithdrawalEntitlement` with one arm: wired along the admissible seam,
+  unwirable along its blueprint one.
+- **Per-account entitlements** — `Entitlement` carries `can_view`,
+  `can_invest` and `can_withdraw`, and `GET /ledger/users` serves all three.
+  The blueprint's `can_view_execution_trace` specifically is still not a
+  capability anything gates.

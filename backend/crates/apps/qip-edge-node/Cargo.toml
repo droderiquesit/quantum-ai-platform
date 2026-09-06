@@ -46,6 +46,11 @@ qip-orderbook.workspace = true
 # dependency; `serde_json` is one of the two permitted and parses the plan.
 qip-strategy.workspace = true
 serde_json.workspace = true
+# The repricer: the parent/child conservation arithmetic and the
+# cancel-then-replace decision `qip_routing::reprice` holds, wired here into
+# the pass loop beneath the cell's placer seam. A workspace crate the edge's
+# order model already comes from, not a third external dependency.
+qip-routing.workspace = true
 
 [dev-dependencies]
 # The mesh tests frame a capital grant the way the central plane does, so the

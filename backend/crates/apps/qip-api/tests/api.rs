@@ -1028,6 +1028,8 @@ fn a_surface_with_nothing_behind_it_names_the_reason_and_returns_no_number() -> 
         "/api/v1/pnl",
         "/api/v1/data-sources",
         "/api/v1/training",
+        "/api/v1/regimes",
+        "/api/v1/news",
     ] {
         let response = get(&api, path, Some("viewer-token"));
         assert_eq!(response.status, 200, "{path}");
@@ -1222,6 +1224,22 @@ fn the_openapi_document_is_unauthenticated_valid_json_and_declares_its_version()
     Ok(())
 }
 
+/// A route-table pattern in the document's syntax: `:name` becomes
+/// `{name}`, which is how OpenAPI spells a path parameter and how the
+/// generator renders one. Spelled here independently of the generator so
+/// the two comparisons below read the document the way a client would
+/// rather than through the code that wrote it.
+fn openapi_pattern(pattern: &str) -> String {
+    pattern
+        .split('/')
+        .map(|segment| match segment.strip_prefix(':') {
+            Some(name) => format!("{{{name}}}"),
+            None => segment.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 #[test]
 fn the_openapi_document_describes_every_route_and_the_authority_it_requires() {
     // The document is generated from the route table, so this is really a
@@ -1231,7 +1249,7 @@ fn the_openapi_document_describes_every_route_and_the_authority_it_requires() {
         serde_json::from_str(&qip_api::document()).expect("valid JSON");
     let paths = &document["paths"];
     for route in ROUTES {
-        let path = format!("/api/v1{}", route.pattern);
+        let path = format!("/api/v1{}", openapi_pattern(route.pattern));
         let method = route.method.as_str().to_ascii_lowercase();
         let operation = &paths[&path][&method];
         assert!(
@@ -1285,7 +1303,8 @@ fn the_openapi_document_declares_nothing_the_router_does_not_serve() {
             }
             assert!(
                 ROUTES.iter().any(|route| {
-                    route.pattern == suffix && route.method.as_str().to_ascii_lowercase() == *method
+                    openapi_pattern(route.pattern) == suffix
+                        && route.method.as_str().to_ascii_lowercase() == *method
                 }),
                 "the document declares {method} {path}, which is not a route"
             );
@@ -1565,6 +1584,7 @@ fn a_router_with_a_mesh_lends_it_to_the_page_and_the_page_says_no_delta_was_deco
         }],
         inbox_capacity: 8,
         spool_capacity: 8,
+        regions: None,
     };
     let mesh = MeshBackbone::open(
         &settings,

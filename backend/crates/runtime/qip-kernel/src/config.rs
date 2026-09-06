@@ -7,9 +7,11 @@
 //! what else is configured.
 
 use crate::central::CentralConfig;
+use qip_capital::ledger::{DecidedBy, Eligibility, Mandate as LedgerMandate, MandateId, UserId};
 use qip_core::Decimal;
 use qip_core::error::Result;
 use qip_core::time::Duration;
+use qip_data_finder::registration::{RegistrationRecord, RegistrationRegistry};
 use qip_events::log::{Durability, EventLog};
 use qip_optimization_engine::router::RoutingPolicy;
 use qip_portfolio_engine::construction::Mandate;
@@ -143,6 +145,44 @@ impl EventLogDestination {
     }
 }
 
+/// One user's mandate, as the deployment enrols it beside the desk's.
+///
+/// Carried in configuration — the same committed source the desk's own
+/// mandate is sized from (`initial_equity`) — because a user mandate is a
+/// statement about whose capital the deployment manages, and the kernel has
+/// no other honest source for one: a mandate invented at runtime would be
+/// capital the platform promised to somebody nobody named. Every field is
+/// validated on the way in ([`UserId`], [`MandateId`] and the ledger's `Mandate` all
+/// refuse rather than correct), and the registry refuses the enrolment at
+/// assembly if the terms exceed the desk's, so a bad entry stops the process
+/// rather than opening a book under it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UserMandate {
+    pub user: UserId,
+    pub id: MandateId,
+    pub mandate: LedgerMandate,
+}
+
+/// One user's eligibility, as the deployment commits it beside their mandate.
+///
+/// A committed list, like [`UserMandate`], and for the same reason: the
+/// kernel has no other honest source for who was verified. What it is not
+/// is a bare flag — `decided_by` is the operator who took the decision, and
+/// [`DecidedBy`] refuses a blank subject on deserialisation, so a
+/// configuration that says `can_invest: true` and names nobody stops
+/// assembly rather than admitting a user on the file's say-so. ADR 0021
+/// lists "a configuration value" among the things that must never decide;
+/// the operator in the record is what makes this a decision instead. Applied
+/// at assembly through the same journaled path an operator's runtime
+/// decision takes, so the log says who admitted whom whichever way it
+/// happened.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UserEligibility {
+    pub user: UserId,
+    pub eligibility: Eligibility,
+    pub decided_by: DecidedBy,
+}
+
 /// How the platform is assembled.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlatformConfig {
@@ -217,6 +257,45 @@ pub struct PlatformConfig {
     #[serde(default = "default_initial_equity")]
     pub initial_equity: Decimal,
 
+    /// The user mandates enrolled under the desk's ceiling at assembly.
+    ///
+    /// Empty by default, and empty means what it says: the per-user ledger
+    /// then holds the desk alone and books every settled fill to it whole.
+    /// Nothing here is inferred from anywhere else — see [`UserMandate`].
+    /// `#[serde(default)]` so a configuration stored before users existed
+    /// keeps deserialising, to the one-user ledger it always had.
+    #[serde(default)]
+    pub user_mandates: Vec<UserMandate>,
+
+    /// The eligibility decisions the deployment commits, each attributed to
+    /// the operator who took it — see [`UserEligibility`].
+    ///
+    /// Empty by default, and empty means nobody may be funded: the registry
+    /// refuses every user it holds no decision about, which is the honest
+    /// state of a deployment that verified no one. `#[serde(default)]` so a
+    /// configuration stored before eligibility existed keeps deserialising,
+    /// to a platform that funds nobody rather than everybody.
+    #[serde(default)]
+    pub user_eligibilities: Vec<UserEligibility>,
+
+    /// The venue registrations the deployment commits, each a
+    /// [`RegistrationRecord`] naming the operator who registered, the terms
+    /// they read and the deployment variable the credential is read under.
+    ///
+    /// Attributed by construction: the record's only constructor refuses a
+    /// blank operator and its deserialiser goes through that constructor, so
+    /// a configuration cannot say "registered" and name nobody. Applied at
+    /// assembly onto [`RegistrationRegistry::shipped`] through the same
+    /// journaled path an operator's runtime approval takes, so the log says
+    /// who registered whichever way it happened. Empty by default, and empty
+    /// means what it says: every source that needs an account stays refused,
+    /// which is the honest state of a deployment where nobody registered.
+    /// `#[serde(default)]` so a configuration stored before venue
+    /// registrations existed keeps deserialising, to a platform that admits
+    /// the keyless sources and nothing else.
+    #[serde(default)]
+    pub venue_registrations: Vec<RegistrationRecord>,
+
     /// How deep a chain observation has to be buried before the platform will
     /// read state derived from it.
     ///
@@ -246,6 +325,19 @@ pub struct PlatformConfig {
     /// stage reaches for by habit. Lowering it is a deliberate statement that
     /// a single agent's answer is good enough for this deployment, and the
     /// router will then route below the panel and the panel will not convene.
+    ///
+    /// Read in exactly one place: `Platform::reason_decision_context`, which
+    /// caps `opportunity.rank.importance` with it to produce the
+    /// `qip_cost_router::DecisionContext` requirement. That reader is new. The
+    /// field, its default and its builder shipped with **nothing in the kernel
+    /// consulting any of them** — `grep -rn reasoning_confidence_bar` returned
+    /// this declaration, its default, its builder and one assertion in an app
+    /// test — while `reason_decision_context` passed `rank.confidence` under a
+    /// call-site comment arguing for that instead. Two contradictory arguments
+    /// about the same number, one of them a control an operator could set and
+    /// watch do nothing: the `MaxExpectedShortfall` shape
+    /// `.claude/rules/domains/risk-and-execution.md` names by example. Say
+    /// where a number is read, or delete it.
     ///
     /// `#[serde(default)]` for the same reason every field below it carries
     /// one: a configuration stored before this field existed keeps
@@ -311,6 +403,9 @@ impl Default for PlatformConfig {
             owner: default_owner(),
             data_user_agent: default_data_user_agent(),
             initial_equity: default_initial_equity(),
+            user_mandates: Vec::new(),
+            user_eligibilities: Vec::new(),
+            venue_registrations: Vec::new(),
             chain_confirmations: default_chain_confirmations(),
             reasoning_confidence_bar: default_reasoning_confidence_bar(),
         }
@@ -387,12 +482,69 @@ impl PlatformConfig {
         self
     }
 
+    /// Enrol user mandates beside the desk's at assembly.
+    ///
+    /// Not validated here — each is validated where it is enrolled, against
+    /// the desk's mandate as the ceiling, and a refused enrolment stops
+    /// assembly with the term named.
+    pub fn with_user_mandates(mut self, mandates: Vec<UserMandate>) -> Self {
+        self.user_mandates = mandates;
+        self
+    }
+
+    /// Commit eligibility decisions to be applied at assembly.
+    ///
+    /// Each is applied after the mandates through the platform's journaled
+    /// eligibility path, and a decision about a user who holds no mandate
+    /// stops assembly with the user named.
+    pub fn with_user_eligibilities(mut self, eligibilities: Vec<UserEligibility>) -> Self {
+        self.user_eligibilities = eligibilities;
+        self
+    }
+
+    /// Commit venue registrations to be applied at assembly.
+    ///
+    /// Each is applied onto the shipped requirement table through the
+    /// platform's journaled registration path, and a record for a source
+    /// whose requirement is not declared stops assembly with the source
+    /// named.
+    pub fn with_venue_registrations(mut self, registrations: Vec<RegistrationRecord>) -> Self {
+        self.venue_registrations = registrations;
+        self
+    }
+
+    /// The registration registry this configuration stands for: the shipped
+    /// requirement table with every committed record applied.
+    ///
+    /// Built here as well as inside the platform because a composition root
+    /// admits its connector *before* the platform exists — a tape owns the
+    /// clock the platform is assembled on — and the registry the feed's
+    /// admission gate consults must be the one the platform then holds.
+    /// One function, called from both places, is what keeps the two from
+    /// disagreeing about who registered. Refused, naming the source, when a
+    /// record has no declared requirement to satisfy.
+    pub fn registration_registry(&self) -> Result<RegistrationRegistry> {
+        self.venue_registrations
+            .iter()
+            .try_fold(RegistrationRegistry::shipped(), |registry, record| {
+                registry.with_record(record.clone())
+            })
+    }
+
     /// State the most confidence the REASON stage may demand of an answer.
     ///
     /// Not clamped on the way in. A bar outside `(0, 1]` is not a probability,
-    /// and `qip_cost_router::DecisionContext::validate` refuses it by name on
-    /// every cycle rather than quietly routing as though a plausible value had
-    /// been configured — which is the failure a clamp here would introduce.
+    /// and `Platform::reason_decision_context` refuses it by name on every
+    /// cycle rather than quietly routing as though a plausible value had been
+    /// configured — which is the failure a clamp here would introduce.
+    ///
+    /// The refusal is the kernel's own and deliberately not left to
+    /// `qip_cost_router::DecisionContext::validate`, which this doc used to
+    /// name. The requirement handed to the router is
+    /// `importance.min(reasoning_confidence_bar)` and importance is at most
+    /// one, so a bar of 1.5 would never bind: the context would validate, the
+    /// routing would look ordinary, and the nonsense setting would live in the
+    /// deployment unremarked.
     pub fn with_reasoning_confidence_bar(mut self, bar: f64) -> Self {
         self.reasoning_confidence_bar = bar;
         self

@@ -1,0 +1,19 @@
+{
+  "venue": "alpaca",
+  "source_id": "alpaca-daily-bars",
+  "signup_url": "https://app.alpaca.markets/signup",
+  "identity_verification_required": false,
+  "steps": [
+    { "selector": "input[name='email']", "field": "contact_email" },
+    { "selector": "input[name='password']", "field": "password" },
+    { "selector": "input[name='name']", "field": "legal_name" },
+    {
+      "selector": "input[name='terms']",
+      "field": "accept_terms",
+      "terms": "https://alpaca.markets/terms-and-conditions"
+    }
+  ],
+  "submit": "button[type='submit']",
+  "after_submit": "email_verification",
+  "notes": "Alpaca's paper-trading account signup: e-mail, password and name, then an e-mail verification code the job cannot read — declared here as the hard stop the job hands back at, so the run ends with the password in its slot and the verification the operator's. The selectors were written from the venue's public signup form and have not been run against it: the first run is a review, and a field the page has that this list does not is an unexpected-field hand-back rather than a guess. No API key is shown at signup; the key is created in the dashboard afterwards, by the operator, with a read-only market-data scope (runbook step 3). Registration requirement per RegistrationRegistry::shipped is `account`; if the terms turn out to demand identity verification, set identity_verification_required to true and the job refuses before opening a browser."
+}

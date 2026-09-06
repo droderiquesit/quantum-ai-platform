@@ -25,6 +25,7 @@ use qip_api::web::{Router, Web};
 use qip_core::error::{Error, Result};
 use qip_core::time::Duration;
 use qip_core::{Clock, SystemClock};
+use qip_data_finder::registration::RegistrationRecord;
 use qip_kernel::central::ArbitragePolicy;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_observability::Telemetry;
@@ -61,8 +62,11 @@ fn run() -> Result<()> {
 
     // Resolved and proven writable before anything else is built. Failing here
     // costs a restart; failing at the first archived cycle costs the record of
-    // everything that happened up to it.
-    let storage = StorageSettings::from_env()?;
+    // everything that happened up to it. The environment is passed in rather
+    // than read by the library: this is the composition root, the one place
+    // that may read it, and the managed-target credentials it resolves go
+    // through `qip_core::secret` so a deployment may mount them as files.
+    let storage = StorageSettings::from_env(&|name| std::env::var(name).ok())?;
     storage.preflight()?;
     let archive = Arc::new(ChainArchive::open(storage.key_value("event-log")?)?);
 
@@ -79,9 +83,55 @@ fn run() -> Result<()> {
     // it too; a policy attached after the rebuild would be lost in the swap.
     let (arbitrage, arbitrage_banner) = load_arbitrage_policy()?;
 
-    let mut config = PlatformConfig::default().with_live_ceiling(ceiling);
+    // Who has registered with a venue, from the committed file the deployment
+    // names — see `load_venue_registrations` for why an unset path is a
+    // registry that records nobody and a named file that does not parse is a
+    // refusal to start. Read before the configuration is built because the
+    // registry the feed's admission gate consults is built from that
+    // configuration a few lines below, and a record applied afterwards would
+    // admit a source the connector had already been refused.
+    let (venue_registrations, registrations_source) = load_venue_registrations()?;
+
+    let mut config = PlatformConfig::default()
+        .with_live_ceiling(ceiling)
+        .with_venue_registrations(venue_registrations);
     config.central.arbitrage = arbitrage;
-    let context = qip_core::Context::new(clock.clone(), config.seed);
+
+    // The source `POST /cycle` senses, chosen before the platform exists
+    // because a tape owns the clock the platform must be assembled on. A
+    // connector is admitted by the data finder's licensing catalogue inside
+    // `ApiFeed::open`, before any socket is touched, and refused rather than
+    // opened when its posture is not evaluated — see `feed.rs` for why the
+    // absent case stays absent instead of falling back to generated prices.
+    let feed_settings = qip_api::feed::FeedSettings::from_env()
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    // The registration registry the connector is admitted against is the one
+    // this configuration stands for — the same function the platform builds
+    // its own from at assembly — so the feed cannot admit a source on a
+    // record the platform then does not hold. With no registrations file
+    // named the registry is the shipped table with no record, and every
+    // source that needs an account is refused here until an operator approves
+    // it through `POST /registrations/{source}/approve`, which reaches the
+    // platform's registry and the event log but not a connector already
+    // opened — a connector is admitted once, at start. A committed file is
+    // how a deployment starts with those records already in place.
+    let registrations = config
+        .registration_registry()
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let feed = qip_api::feed::ApiFeed::open(&feed_settings, &registrations, config.seed, now)
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    // The clock the platform reasons on. A tape owns its own, and the
+    // platform must be assembled on it: opportunities expire at tape time,
+    // and a router asked for a latency budget measured from the wall clock
+    // against a deadline in 2025 would refuse every panel as already late.
+    // Everything operational — credentials, rate limits, the console's
+    // staleness, telemetry timestamps — stays on the wall clock, which is
+    // what an operator is on.
+    let platform_clock: Arc<dyn Clock> = match feed.as_ref().and_then(|feed| feed.owned_clock()) {
+        Some(tape_clock) => tape_clock,
+        None => clock.clone(),
+    };
+    let context = qip_core::Context::new(platform_clock, config.seed);
     // Cloned before the platform takes it: `Telemetry` holds `Arc`s over its
     // registry, tracer and logger, so the clone shares the same underlying
     // state rather than starting a second, disconnected one. The OpenObserve
@@ -114,6 +164,27 @@ fn run() -> Result<()> {
     let provenance = qip_api::trust::harden_central(&mut platform, envelope_key.as_deref())
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
+    // A tape must end before the roster's authorisation does, and the
+    // assembled organisation is asked directly. See
+    // `ApiFeed::refuse_tape_beyond_authorisation` for the run that showed why.
+    if let Some(feed) = &feed {
+        feed.refuse_tape_beyond_authorisation(&platform)
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    }
+    let feed_banner = feed.as_ref().map_or_else(
+        || {
+            format!(
+                "none ({} and {} are not set); POST /cycle senses nothing and reasons over what \
+                 the platform already holds, and no research route will show an instrument until \
+                 a source is chosen",
+                qip_api::feed::TAPE_PATH_VARIABLE,
+                qip_api::feed::CONNECTOR_SOURCE_VARIABLE
+            )
+        },
+        qip_api::feed::ApiFeed::describe,
+    );
+    let feed = feed.map(|feed| Arc::new(Mutex::new(feed)));
+
     // The durable trial book, on the same storage the event log archives to.
     // The factory the plane was built with charges holdout evaluations to an
     // in-process book, so until this call every restart forgot every
@@ -126,6 +197,15 @@ fn run() -> Result<()> {
     platform
         .open_trial_book(storage.key_value("trial-book")?, "trial-book")
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+
+    // The wallet statement, read and observed into the platform before
+    // anything is served, on the wall clock — a statement is a document a
+    // person dated. See `load_wallet_statement` for why unset is no feed and
+    // set-but-unreadable is a refusal to start. Observed here rather than in
+    // a route so that the very first cycle's LEARN stage reconciles it, and
+    // wrapped around the router below so each admitted `POST /cycle`
+    // re-reads a file that has changed.
+    let (statement_feed, statement_banner) = load_wallet_statement(&mut platform, now)?;
 
     // The mesh backbone, where the deployment names cells to serve. Absent
     // configuration means the routes are absent: no listener binds, and the
@@ -228,6 +308,9 @@ fn run() -> Result<()> {
     if let Some(mesh) = &mesh {
         api = api.with_mesh(mesh.clone());
     }
+    if let Some(feed) = &feed {
+        api = api.with_feed(feed.clone());
+    }
     let api = Arc::new(api);
     let console = Arc::new(Console::new(
         platform.clone(),
@@ -237,8 +320,22 @@ fn run() -> Result<()> {
         clock.clone(),
     ));
     let router = Router::new(api, web).with_console(console);
+    // With a statement feed, the router is wrapped so an admitted
+    // `POST /cycle` re-reads the file before the API runs the cycle. Without
+    // one the router is served bare: no code on the cycle path can re-read
+    // anything, which is the structural form of "no feed".
+    let handler: Arc<dyn qip_api::http::Handler> = match statement_feed {
+        Some(feed) => Arc::new(qip_api::statement::StatementRefresh::new(
+            router,
+            Arc::new(Mutex::new(feed)),
+            platform.clone(),
+            authenticator.clone(),
+            clock.clone(),
+        )),
+        None => Arc::new(router),
+    };
 
-    let server = Server::bind(&address, Arc::new(router), ServerLimits::default())?;
+    let server = Server::bind(&address, handler, ServerLimits::default())?;
     let bound = server.local_address()?;
 
     // The start-up banner. An operator should be able to read what this
@@ -285,7 +382,23 @@ fn run() -> Result<()> {
          clears one"
     );
     println!("  capital trust:    {}", provenance.describe());
+    println!("  feed:             {feed_banner}");
+    if let Some(feed) = &feed {
+        let Ok(feed) = feed.lock() else {
+            return Err(Error::invalid(
+                "the feed is in an inconsistent state before serving began",
+            ));
+        };
+        if let Some(tape_clock) = feed.owned_clock() {
+            println!(
+                "  platform clock:   tape time, at {} until the first POST /cycle; credentials, \
+                 rate limits and the console stay on the wall clock",
+                tape_clock.now().to_rfc3339()
+            );
+        }
+    }
     println!("  arbitrage desk:   {arbitrage_banner}");
+    println!("  wallet statement: {statement_banner}");
     match &mesh {
         Some(mesh) => {
             // The addresses come from the bound sockets rather than from the
@@ -348,6 +461,13 @@ fn run() -> Result<()> {
         println!("{line}");
     }
     println!("  event chain:      {}", archive.describe());
+    {
+        let platform = platform.lock().map_err(|_| {
+            Error::invalid("the platform lock is poisoned before the first request")
+        })?;
+        println!("  registrations:    {registrations_source}");
+        println!("  source standing:  {}", registrations_banner(&platform));
+    }
     println!(
         "  universe:         {}; sector and country buckets are fed from it. Note ADR 0027: under the \
          conservative default the first desk order into an empty book is refused by \
@@ -356,6 +476,32 @@ fn run() -> Result<()> {
     );
 
     server.serve()
+}
+
+/// One banner line: which catalogued sources stand registered, keyless or
+/// pending, as the platform's own registry answers at start.
+///
+/// Read off the assembled platform rather than the configuration so the line
+/// describes the registry a route will read, and every source in the
+/// finder's catalogue is named so an operator sees what is refused as well
+/// as what is admitted — a banner that listed only the admitted sources would
+/// read as a platform with nothing to register.
+fn registrations_banner(platform: &Platform) -> String {
+    let catalogue = match qip_data_finder::admission::catalogue() {
+        Ok(catalogue) => catalogue,
+        Err(error) => return format!("the catalogue did not build: {}", error.message()),
+    };
+    let lines: Vec<String> = catalogue
+        .iter()
+        .map(|entry| {
+            let standing = match platform.registration_standing(entry.source_id) {
+                Ok(standing) => standing.describe(),
+                Err(_) => "pending; refused until an operator approves it".to_string(),
+            };
+            format!("{} ({standing})", entry.source_id)
+        })
+        .collect();
+    lines.join("; ")
 }
 
 /// The instrument universe, from the committed catalogue the deployment names.
@@ -397,6 +543,85 @@ fn load_universe(
         &catalogue.manifest,
     )?;
     Ok(catalogue)
+}
+
+/// Where the venue registrations are read from: a JSON array of
+/// `RegistrationRecord`s, mounted the way the universe is. Unset means nobody
+/// has registered.
+const VENUE_REGISTRATIONS_VARIABLE: &str = "QIP_VENUE_REGISTRATIONS_PATH";
+
+/// The registrations the deployment commits, from the JSON file it names, and
+/// the banner line that says where they came from.
+///
+/// `QIP_VENUE_REGISTRATIONS_PATH` unset is not a refusal: it is a deployment
+/// where nobody has registered with a venue, and the platform's answer to that
+/// is the fail-closed one — the shipped requirement table records nobody, and
+/// every source needing an account is refused by name until an operator
+/// approves it at runtime. Set and unreadable, or readable and not an array of
+/// records, is a refusal to start: a process that fell back to "nobody
+/// registered" because the file the operator pointed at was missing would run
+/// healthy with every account-bearing source silently refused, and the
+/// operator would look for the fault at the venue.
+///
+/// Nothing here can invent an attribution. `RegistrationRecord` has one
+/// constructor, it refuses a blank operator, a blank terms citation and a
+/// `secret` that is not a variable name, and the `Deserialize` impl goes
+/// through that same constructor — so a malformed record is refused at load
+/// with serde naming the field, and a pasted key is refused without being
+/// echoed. That is the whole reason this reads records rather than accepting
+/// a looser shape and validating it afterwards.
+///
+/// An empty array is refused too. A mounted file that registers nobody is a
+/// configured feed that grants nothing, which reads to the next operator as a
+/// registration that failed rather than as a deployment where nobody
+/// registered; unsetting the variable says the second thing, and says it in
+/// the plan as well as in the banner.
+fn load_venue_registrations() -> Result<(Vec<RegistrationRecord>, String)> {
+    let Some(path) = std::env::var(VENUE_REGISTRATIONS_VARIABLE)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok((
+            Vec::new(),
+            format!(
+                "none ({VENUE_REGISTRATIONS_VARIABLE} is not set); the registry records nobody \
+                 and every source that needs an account stays refused until an operator \
+                 approves it"
+            ),
+        ));
+    };
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        Error::io(format!(
+            "configuration: {VENUE_REGISTRATIONS_VARIABLE} names {path}, which cannot be read: \
+             {error}. Unset it to run with no registrations; a named file that does not read is \
+             not a deployment where nobody registered"
+        ))
+    })?;
+    let records: Vec<RegistrationRecord> = serde_json::from_str(&text).map_err(|error| {
+        Error::invalid(format!(
+            "configuration: {VENUE_REGISTRATIONS_VARIABLE} names {path}, which is not an array \
+             of venue registrations: {error}. Each record carries source_id, operator, \
+             terms_read_at, terms and secret.variable — the deployment variable the credential \
+             is read under, never the credential; see docs/operations/registering-a-venue.md"
+        ))
+    })?;
+    if records.is_empty() {
+        return Err(Error::invalid(format!(
+            "configuration: {VENUE_REGISTRATIONS_VARIABLE} names {path}, which registers nobody. \
+             Unset the variable — the deployment then says out loud that nobody registered, \
+             rather than mounting a file that grants nothing"
+        )));
+    }
+    let banner = format!(
+        "{} record(s) from {path}: {}",
+        records.len(),
+        records
+            .iter()
+            .map(|record| format!("{} by {}", record.source_id(), record.operator()))
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
+    Ok((records, banner))
 }
 
 /// Where the arbitrage desk's policy is read from: a JSON `ArbitragePolicy`,
@@ -451,6 +676,36 @@ fn load_arbitrage_policy() -> Result<(Option<ArbitragePolicy>, String)> {
         policy.funding_instrument
     );
     Ok((Some(policy), banner))
+}
+
+/// The wallet statement the deployment names, observed into `platform`, and
+/// the banner line that says what was read.
+///
+/// `QIP_WALLET_STATEMENT_PATH` unset is not a refusal: it is the operator
+/// saying no custodian has reported to this process, and the platform's
+/// answer is the honest one — nothing is observed, LEARN reconciles nothing,
+/// and `/wallet` answers `assembled: false`. Set and unreadable, or readable
+/// and not a statement, or dated in the future, or past the kernel's bound,
+/// is a refusal to start naming the field: a process that fell back to no
+/// feed because the file the operator pointed at was wrong would run
+/// healthy with the wallet silently unobserved, which is the state every
+/// deployment was in before this feed existed. Nothing is clamped — a
+/// statement of 257 holdings is refused, not truncated to 256.
+fn load_wallet_statement(
+    platform: &mut Platform,
+    now: qip_core::Timestamp,
+) -> Result<(Option<qip_api::statement::StatementFeed>, String)> {
+    let Some(feed) =
+        qip_api::statement::StatementFeed::from_env(&|name| std::env::var(name).ok(), now)
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?
+    else {
+        return Ok((None, qip_api::statement::absent_banner()));
+    };
+    feed.statement()
+        .observe_into(platform)
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let banner = feed.describe();
+    Ok((Some(feed), banner))
 }
 
 #[cfg(test)]
@@ -590,7 +845,17 @@ mod tests {
         // the other mask. So the same axis is driven past 0.35 of equity and
         // must be refused by name.
         let equity = platform.risk_figures().equity();
-        let breaching_quantity = (equity * dec!("0.5")) / first.price;
+        // Whole lots of the catalogue's default lot of one: the central
+        // feasibility gate now sits ahead of every other control and refuses
+        // a fractional size by name, so an off-grid order would prove the
+        // wrong veto. The premise of this half is the sector cap, and half
+        // the book's equity floored to a whole share is still past it.
+        let breaching_quantity =
+            ((equity * dec!("0.5")) / first.price).floor_to_step(qip_core::Decimal::ONE);
+        assert!(
+            breaching_quantity.is_positive(),
+            "the premise: half the equity buys at least one whole share"
+        );
         let breach = platform.order_from(
             first.object_id.clone(),
             side,

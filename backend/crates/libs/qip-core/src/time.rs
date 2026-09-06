@@ -45,6 +45,21 @@ impl Duration {
     pub const fn from_days(n: i64) -> Self {
         Self(n * NANOS_PER_DAY)
     }
+    /// Days as a duration, or `None` where that many days names more
+    /// nanoseconds than an [`i64`] holds.
+    ///
+    /// [`Self::from_days`] multiplies unchecked: it aborts a debug build and
+    /// wraps to a negative duration in a release one. Every caller deriving a
+    /// day count from data rather than from a literal must come through here.
+    /// A private-asset record stating a lockup of `f64::INFINITY` years
+    /// saturated its `as i64` cast to `i64::MAX` days and reached
+    /// `from_days` — the arithmetic below is what that number met.
+    pub const fn from_days_checked(n: i64) -> Option<Self> {
+        match n.checked_mul(NANOS_PER_DAY) {
+            Some(nanos) => Some(Self(nanos)),
+            None => None,
+        }
+    }
 
     pub const fn as_nanos(self) -> i64 {
         self.0
@@ -243,8 +258,28 @@ impl Timestamp {
     }
 
     /// Construct from a civil UTC date at midnight.
+    ///
+    /// Multiplies unchecked, so it is for date literals a reader can see are
+    /// in range. A date derived from data goes through
+    /// [`Self::from_civil_checked`].
     pub fn from_civil(y: i32, m: u32, d: u32) -> Self {
         Self(days_from_civil(y, m, d) * NANOS_PER_DAY)
+    }
+
+    /// Construct from a civil UTC date at midnight, or `None` where the date
+    /// lies outside the instants an [`i64`] nanosecond count can name —
+    /// roughly 1677-09-21 to 2262-04-11.
+    ///
+    /// A vendor record carrying `"vintage_year": 2300` reached
+    /// [`Self::from_civil`] and took the process with it, in a
+    /// `Result`-returning function that had a refusal available to it. The
+    /// range is not a policy about plausible dates; it is the range the type
+    /// can represent, and a caller wanting a narrower one refuses on its own
+    /// terms after this returns.
+    pub fn from_civil_checked(y: i32, m: u32, d: u32) -> Option<Self> {
+        days_from_civil(y, m, d)
+            .checked_mul(NANOS_PER_DAY)
+            .map(Self)
     }
 }
 

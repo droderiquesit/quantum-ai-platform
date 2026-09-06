@@ -10,6 +10,27 @@ that step before it begins, exactly as written below; nothing in the direction
 being settled changes that, and nothing has been migrated, decommissioned or
 provisioned.
 
+**That paragraph is now false in its last clause, and true in the rest —
+corrected 2026-09-05.** The authorisation arrived, twice and narrowly. ADR
+0024 records the owner's instruction "create the new infrastructure while
+devouring the old", which superseded the per-step approval rule *for the
+code*; ADR 0040 records the owner's instruction of 2026-09-05, which
+authorised an agent to dispatch `infra.yml` `dev` `up` after reading the plan,
+and only for `dev`. Both happened: `dev` has been applied (runs 34–38 against
+`algorik-dev`, state 163 → 237 resources) and three Cloud Run services and two
+browser surfaces are serving there.
+
+Three things this does **not** mean, each of which a reader of this record
+would otherwise get wrong. `test`, `stage` and `prod` are untouched, and
+`prod` is refused by `infra.yml` and by the deploy gate and needs a human
+dispatch. **Step 3 has not happened** — no execution node exists in any
+environment, `execution_nodes = {}` everywhere — so the reversal condition
+below ("an execution node running on GCE C3 in shadow mode, approved and
+observed") has *not* fired, and this record's warning that it is not a licence
+to build one in order to satisfy it stands unchanged. And step 1's evidence,
+which GKE workloads ever actually ran, was never gathered and now cannot be:
+the cluster's Terraform was removed before anyone looked.
+
 ## Context
 
 The Algorik Master Blueprint v10.1-4 (§41.4, §41.6, §45.1) describes a runtime

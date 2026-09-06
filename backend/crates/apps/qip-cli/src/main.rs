@@ -28,12 +28,26 @@ use qip_cli::demo::{DemoSettings, LiveDemo};
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, SystemClock};
 use qip_financial::universe::Universe;
+use qip_kernel::config::EventLogDestination;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
 use qip_storage::ChainArchive;
 use qip_storage::settings::StorageSettings;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
+
+/// The exit code of a command that ran and found nothing wrong.
+const OK: u8 = 0;
+
+/// The exit code of a command that could not answer at all: a bad argument,
+/// a configuration that does not parse, a journal that is not one. Kept
+/// distinct from the verdict codes — [`qip_cli::registrations::PENDING`] and
+/// [`qip_cli::replay::DIFFERS`], both three — because a script that could
+/// not tell "I could not look" from "I looked and it is wrong" would report
+/// a broken invocation as a finding, or worse, the other way round.
+const REFUSED: i32 = 1;
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -42,23 +56,31 @@ fn main() {
     let result = match command {
         "help" | "--help" | "-h" => {
             print_help();
-            Ok(())
+            Ok(OK)
         }
-        "status" => status(),
-        "demo" => demo(&arguments[1..]),
-        "cycle" => cycle_count(arguments.get(1)).and_then(cycle),
-        "agents" => agents(),
-        "governance" => governance(),
-        "limits" => limits_command(),
-        "storage" => storage_command(),
+        "status" => status().map(|()| OK),
+        "demo" => demo(&arguments[1..]).map(|()| OK),
+        "cycle" => cycle_count(arguments.get(1)).and_then(cycle).map(|()| OK),
+        "agents" => agents().map(|()| OK),
+        "governance" => governance().map(|()| OK),
+        "limits" => limits_command().map(|()| OK),
+        "storage" => storage_command().map(|()| OK),
+        "registrations" => registrations_command(&arguments[1..]),
+        "replay" => replay_command(&arguments[1..]),
         other => Err(Error::invalid(format!(
             "unknown command: {other}. Run `qip help` for the list."
         ))),
     };
 
-    if let Err(error) = result {
-        eprintln!("qip: {}", error.message());
-        std::process::exit(1);
+    match result {
+        Err(error) => {
+            eprintln!("qip: {}", error.message());
+            std::process::exit(REFUSED);
+        }
+        // The verdict *is* the exit code for the two commands that have one,
+        // so the process cannot report a clean run over a report that says
+        // otherwise.
+        Ok(code) => std::process::exit(i32::from(code)),
     }
 }
 
@@ -72,6 +94,20 @@ fn print_help() {
     println!("  governance        run the roster's governance review");
     println!("  limits            the risk limits and their rationales");
     println!("  storage           the configured store, and what survives a restart");
+    println!("  registrations [--config <path>]");
+    println!("                    every catalogued source's requirement and standing,");
+    println!("                    and the exact secret-add command for a pending one");
+    println!("  replay --journal <path> [--config <path>]");
+    println!("                    verify a journal's hash chain and rebuild the");
+    println!("                    eligibility, registration and fabric registries from");
+    println!("                    it alone, against the platform this configuration");
+    println!("                    assembles");
+    println!();
+    println!("`registrations` exits 3 while any catalogued source is still refused, and");
+    println!("`replay` exits 3 if the chain is broken or a registry disagrees. Both exit");
+    println!("1 when they could not answer at all. Neither prints a credential value:");
+    println!("`registrations` prints the name a credential is read under and the command");
+    println!("that puts a version behind it, which reads the value from stdin.");
     println!();
     println!("`demo --live` binds a data vendor, a venue and a mesh peer on");
     println!("loopback, points the live adapters at them and prints what every");
@@ -91,7 +127,7 @@ fn print_help() {
 /// store on a bad configuration would make `qip cycle` report archived records
 /// that were never anywhere.
 fn storage() -> Result<StorageSettings> {
-    let settings = StorageSettings::from_env()?;
+    let settings = StorageSettings::from_env(&|name| std::env::var(name).ok())?;
     settings.preflight()?;
     Ok(settings)
 }
@@ -101,8 +137,12 @@ fn archive(settings: &StorageSettings) -> Result<ChainArchive> {
 }
 
 fn platform() -> Result<Platform> {
+    platform_from(PlatformConfig::default())
+}
+
+/// The platform a configuration assembles, on the host clock.
+fn platform_from(config: PlatformConfig) -> Result<Platform> {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-    let config = PlatformConfig::default();
     let context = qip_core::Context::new(clock.clone(), config.seed);
     Platform::new(
         config,
@@ -344,6 +384,114 @@ fn limits_command() -> Result<()> {
         println!();
     }
     Ok(())
+}
+
+// --- the two commands whose exit code is the answer -------------------------
+
+/// The `--name <path>` options a command was given.
+///
+/// Refuses what it cannot act on rather than ignoring it: an option this
+/// command does not take, an option with no path after it, and the same
+/// option twice. The last is the one worth naming — `--journal a --journal
+/// b` has an obvious reading and a wrong one, and a command that silently
+/// picked either would verify a file the operator did not mean while
+/// printing the name of the one they did.
+fn options(arguments: &[String], permitted: &[&str]) -> Result<BTreeMap<String, PathBuf>> {
+    let mut found: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let mut index = 0;
+    while index < arguments.len() {
+        let name = arguments[index].as_str();
+        if !permitted.contains(&name) {
+            return Err(Error::invalid(format!(
+                "unknown argument {name}; this command takes {}",
+                permitted.join(" and ")
+            )));
+        }
+        let Some(value) = arguments.get(index + 1) else {
+            return Err(Error::invalid(format!("{name} needs a path after it")));
+        };
+        if found
+            .insert(name.to_string(), PathBuf::from(value))
+            .is_some()
+        {
+            return Err(Error::invalid(format!(
+                "{name} was given twice; which one is meant is not something this command will \
+                 guess"
+            )));
+        }
+        index += 2;
+    }
+    Ok(found)
+}
+
+/// The configuration a command runs against: the file if one was named, and
+/// otherwise the shipped default.
+///
+/// A named file that does not exist is refused rather than falling back to
+/// the default. The fallback is the dangerous one: `qip registrations
+/// --config /etc/qip/confg.json` would report every source pending, name
+/// nothing wrong, and exit 3 for a typo.
+fn configuration(path: Option<&PathBuf>) -> Result<PlatformConfig> {
+    let Some(path) = path else {
+        return Ok(PlatformConfig::default());
+    };
+    let text = std::fs::read_to_string(path).map_err(|error| {
+        Error::invalid(format!(
+            "the configuration at {} could not be read: {error}",
+            path.display()
+        ))
+    })?;
+    serde_json::from_str(&text).map_err(|error| {
+        Error::schema(format!(
+            "the configuration at {} is not a platform configuration: {error}",
+            path.display()
+        ))
+    })
+}
+
+/// `qip registrations [--config <path>]`.
+fn registrations_command(arguments: &[String]) -> Result<u8> {
+    let options = options(arguments, &["--config"])?;
+    let mut config = configuration(options.get("--config"))?;
+    // A read-only question must not append to a deployment's event log.
+    // Assembling on a file destination journals every committed
+    // registration again — correct for the platform resuming its own log,
+    // and not something a command that only reports should do to the
+    // evidence.
+    config.event_log = EventLogDestination::InMemory;
+    let now = SystemClock.now();
+    let platform = platform_from(config)?;
+    let view =
+        qip_api::registration_views::registrations(&platform, now).map_err(Error::invalid)?;
+    let report = qip_cli::registrations::report(&view.sources);
+    for line in &report.lines {
+        println!("{line}");
+    }
+    Ok(report.code)
+}
+
+/// `qip replay --journal <path> [--config <path>]`.
+///
+/// `--config` is not decoration: a deployment that commits venue
+/// registrations assembles a platform holding them, and checking its
+/// journal against the *default* configuration would report a divergence on
+/// every one. The journal names the log; the configuration names the
+/// platform it is being compared against.
+fn replay_command(arguments: &[String]) -> Result<u8> {
+    let options = options(arguments, &["--journal", "--config"])?;
+    let Some(journal) = options.get("--journal") else {
+        return Err(Error::invalid(
+            "`qip replay` needs --journal <path>, the event log to check. There is no default: a \
+             default would name a file the operator did not choose",
+        ));
+    };
+    let config = configuration(options.get("--config"))?;
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let verdict = qip_cli::replay::verify(journal, config, clock)?;
+    for line in &verdict.lines {
+        println!("{line}");
+    }
+    Ok(verdict.code)
 }
 
 #[cfg(test)]

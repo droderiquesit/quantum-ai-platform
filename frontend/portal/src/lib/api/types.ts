@@ -37,6 +37,43 @@ export interface Health {
   readonly reconciliation_breaks: number;
 }
 
+/**
+ * `BackboneCounters` in `qip-api/src/mesh.rs`: what the backbone has done
+ * since the process started, as it counts it. Orders and fills are separate
+ * series on purpose — the status surface once read one as the other.
+ */
+export interface MeshCounters {
+  readonly reports_ingested: number;
+  readonly undecodable: number;
+  readonly orders_reported: number;
+  readonly fills_reported: number;
+  readonly fills_omitted: number;
+  readonly refusals_reported: number;
+  readonly cell_halts: number;
+  readonly recalls_issued: number;
+  readonly envelopes_dispatched: number;
+  readonly envelopes_held: number;
+  readonly envelopes_rejected: number;
+  readonly envelopes_unserved: number;
+}
+
+export interface MeshCellStatus {
+  readonly cell: string;
+  readonly address: string;
+  readonly spool_pending: number;
+  readonly circuit: string;
+}
+
+export interface MeshCellStanding {
+  readonly cell: string;
+  readonly region: string;
+  readonly sequence: number;
+  readonly halted: boolean;
+  readonly strategies: number;
+  readonly reconciliation_breaks: number;
+  readonly reconciliation_breaks_omitted: number;
+}
+
 export interface MeshStatus {
   readonly served: boolean;
   readonly error?: string;
@@ -44,6 +81,11 @@ export interface MeshStatus {
   readonly deltas_absorbed?: number;
   readonly envelopes_dispatched?: number;
   readonly inbox_depth?: number;
+  /** Present when the backbone is served and answered; `MeshStatus` in `mesh.rs`. */
+  readonly counters?: MeshCounters;
+  readonly cells?: readonly MeshCellStatus[];
+  readonly standings?: readonly MeshCellStanding[];
+  readonly last_undecodable?: string | null;
 }
 
 export interface SystemStatus {
@@ -366,4 +408,190 @@ export interface OpenApiDocument {
     readonly description?: string;
   };
   readonly paths: Readonly<Record<string, Readonly<Record<string, OpenApiOperation>>>>;
+}
+
+// --- research routes ---------------------------------------------------------
+//
+// Transcribed from `predictions`, `correlation`, `backtests` and `regimes` in
+// `qip-api/src/routes.rs`, and checked against a running process on
+// 2026-09-04. Where the route serves a stated absence inside an otherwise
+// available body — the calibration before a claim resolves, the equity curve
+// that is never kept — it is modelled as `Unavailable`, for the reason the
+// file header gives: an absent report and a report of zero are different
+// answers, and a page that cannot tell them apart will draw the second.
+
+/** One falsifiable claim the REASON stage wrote down, as LEARN has graded it. */
+export interface RecordedPrediction {
+  readonly hypothesis: string;
+  readonly cycle: number;
+  readonly statement: string;
+  /** The platform's own series the claim settles on, e.g. `close:obj-AAA`. */
+  readonly metric: string;
+  /** "unstated" is a value: the record carried no claim, and no direction. */
+  readonly direction: "up" | "down" | "unstated";
+  /** In [0, 1], or null where the record carried no claim. */
+  readonly confidence: number | null;
+  readonly expected_move_bps: number | null;
+  readonly horizon_seconds: number;
+  readonly made_at: string;
+  readonly resolves_at: string;
+  /** "undetermined" is a resolved claim the series could not settle either way. */
+  readonly state: "open" | "held" | "failed" | "undetermined";
+  readonly scored_at: string | null;
+}
+
+export interface CalibrationReport {
+  readonly available: true;
+  readonly evaluations_in_window: number;
+  readonly material: boolean;
+  /** The LEARN stage's own report, serialised as it holds it. */
+  readonly report: Readonly<Record<string, unknown>> & {
+    readonly evaluated?: number;
+    readonly brier_score?: number;
+  };
+}
+
+export interface Predictions {
+  readonly as_of_cycle: number;
+  /** The working set's bound, so `held` can be read against it. */
+  readonly window: number;
+  readonly held: number;
+  readonly open: number;
+  readonly resolved: number;
+  /** Keyed by instrument, in the platform's key order. */
+  readonly instruments: Readonly<Record<string, { readonly predictions: readonly RecordedPrediction[] }>>;
+  readonly calibration: Section<CalibrationReport>;
+}
+
+export interface CorrelationExclusion {
+  readonly instrument: string;
+  readonly closes: number;
+  readonly reason: string;
+}
+
+export interface CorrelationUndefinedPair {
+  readonly a: string;
+  readonly b: string;
+  readonly reason: string;
+}
+
+/** The body when the estimate can be made. Otherwise the route answers `Unavailable`. */
+export interface Correlation {
+  readonly available: true;
+  readonly as_of_cycle: number;
+  readonly statistic: string;
+  /** How the two series were lined up. Read it: it is not by timestamp. */
+  readonly alignment: string;
+  readonly window_closes: number;
+  readonly window_returns: number;
+  readonly minimum_closes: number;
+  readonly instruments: readonly string[];
+  /** `null` where the coefficient is undefined; never NaN. */
+  readonly matrix: Readonly<Record<string, Readonly<Record<string, number | null>>>>;
+  readonly excluded: readonly CorrelationExclusion[];
+  readonly undefined: readonly CorrelationUndefinedPair[];
+}
+
+/** What `/correlation` carries beside `available: false`. */
+export interface CorrelationRefusal {
+  readonly as_of_cycle?: number;
+  readonly minimum_closes?: number;
+  readonly instruments_observed?: readonly { readonly instrument: string; readonly closes: number }[];
+  readonly excluded?: readonly CorrelationExclusion[];
+}
+
+export interface GateFinding {
+  readonly check: string;
+  readonly passed: boolean;
+  readonly detail: string;
+}
+
+export interface LedgerMove {
+  readonly from: string;
+  readonly to: string;
+  readonly at: string;
+  readonly approver: string | null;
+  readonly rationale: string;
+  readonly gate: { readonly stage: string; readonly passed: boolean; readonly findings: readonly GateFinding[] } | null;
+}
+
+export type HoldoutSubmission =
+  | { readonly submitted: false }
+  | {
+      readonly submitted: true;
+      readonly observations: number;
+      readonly trials_this_run: number;
+      readonly periods_per_year: number;
+      readonly cross_validation: {
+        readonly folds: number;
+        readonly observations: number;
+        readonly purged: number;
+        readonly embargoed: number;
+      };
+      readonly leakage_findings: readonly string[];
+    };
+
+export type TrialAccount =
+  | { readonly on_evidence: false; readonly reason: string }
+  | {
+      readonly on_evidence: true;
+      readonly lifetime: number;
+      readonly this_run: number;
+      readonly prior: number;
+      readonly charged_at: string;
+    };
+
+export type HoldoutBand =
+  | { readonly present: false; readonly reason: string }
+  | {
+      readonly present: true;
+      readonly sharpe: number;
+      readonly lower: number;
+      readonly upper: number;
+      readonly standard_error: number;
+      readonly observations: number;
+      readonly periods_per_year: number;
+      readonly trials: number;
+      readonly method: string;
+      readonly as_of: string;
+    };
+
+export interface BacktestRecord {
+  readonly strategy: string;
+  readonly family: string;
+  readonly cell: string;
+  readonly venue: string;
+  readonly stage: string;
+  readonly registered_at: string;
+  readonly holdout: HoldoutSubmission;
+  readonly trial_account: TrialAccount;
+  readonly family_lifetime_trials: number | null;
+  readonly holdout_band: HoldoutBand;
+  readonly ledger: readonly LedgerMove[];
+}
+
+export type TrialBook =
+  | { readonly attached: false }
+  | {
+      readonly attached: true;
+      readonly durable: boolean;
+      readonly families: readonly { readonly family: string; readonly lifetime_trials: number | null }[];
+    };
+
+export interface Backtests {
+  readonly strategies: readonly BacktestRecord[];
+  readonly trial_book: TrialBook;
+  /** Always a stated absence today; typed as a section so a future value renders. */
+  readonly deflated_sharpe: Section<{ readonly available: true }>;
+  /** Always a stated absence: no curve is kept. Typed so the page can only ever say so. */
+  readonly equity_curve: Section<{ readonly available: true }>;
+}
+
+/** What `/regimes` carries beside `available: false`. */
+export interface RegimesRefusal {
+  readonly stream_topic?: {
+    readonly name: string;
+    readonly declared_on: string;
+    readonly published: boolean;
+  };
 }

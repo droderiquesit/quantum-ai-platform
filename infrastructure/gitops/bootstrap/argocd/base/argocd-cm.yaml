@@ -1,0 +1,71 @@
+# What this deployment changes in Argo CD's own configuration, merged over the
+# upstream `argocd-cm`. Everything not named here is the upstream default.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+data:
+  # No admin login. The identity that operates this control plane is the
+  # GKE one, through the Connect gateway and `argocd --core`; a local admin
+  # password would be a second credential nobody rotates and a login path
+  # the audit log attributes to "admin".
+  admin.enabled: "false"
+  # Three minutes rather than the upstream default, and deliberately not
+  # faster: every reconcile of `dev` is a Config Connector reconcile of four
+  # Cloud Run services, and a manifest changes when a promotion commits,
+  # which the argocd-update step announces without waiting for the poll.
+  timeout.reconciliation: 180s
+  # A Config Connector object is healthy when Config Connector says the
+  # cloud resource matches it. The reason strings are Config Connector's:
+  # `UpToDate` is Ready; `UpdateFailed`, `CreateFailed` and
+  # `DependencyInvalid` are terminal for this generation and read as
+  # Degraded — which is what Cloud Run's admission refusing an unattested
+  # digest produces (ADR 0036 decision 8); anything else is still
+  # Progressing. Without this Argo CD reports every custom resource Healthy
+  # the moment it is applied, and a sync that deployed nothing reads green.
+  resource.customizations.health.run.cnrm.cloud.google.com_RunService: |
+    local hs = {}
+    if obj.status ~= nil and obj.status.conditions ~= nil then
+      for _, condition in ipairs(obj.status.conditions) do
+        if condition.type == "Ready" then
+          if condition.status == "True" then
+            hs.status = "Healthy"
+            hs.message = condition.message or "Config Connector reports the service up to date"
+            return hs
+          end
+          if condition.reason == "UpdateFailed" or condition.reason == "CreateFailed" or condition.reason == "DependencyInvalid" then
+            hs.status = "Degraded"
+          else
+            hs.status = "Progressing"
+          end
+          hs.message = condition.message or condition.reason
+          return hs
+        end
+      end
+    end
+    hs.status = "Progressing"
+    hs.message = "Waiting for Config Connector to report a Ready condition"
+    return hs
+  resource.customizations.health.iam.cnrm.cloud.google.com_IAMPolicyMember: |
+    local hs = {}
+    if obj.status ~= nil and obj.status.conditions ~= nil then
+      for _, condition in ipairs(obj.status.conditions) do
+        if condition.type == "Ready" then
+          if condition.status == "True" then
+            hs.status = "Healthy"
+            hs.message = condition.message or "Config Connector reports the binding up to date"
+            return hs
+          end
+          if condition.reason == "UpdateFailed" or condition.reason == "CreateFailed" or condition.reason == "DependencyInvalid" then
+            hs.status = "Degraded"
+          else
+            hs.status = "Progressing"
+          end
+          hs.message = condition.message or condition.reason
+          return hs
+        end
+      end
+    end
+    hs.status = "Progressing"
+    hs.message = "Waiting for Config Connector to report a Ready condition"
+    return hs

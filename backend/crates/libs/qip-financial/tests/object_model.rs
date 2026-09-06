@@ -642,6 +642,67 @@ fn incoherent_risk_characteristics_are_caught() {
 }
 
 #[test]
+fn the_spread_decomposition_identity_is_exact_in_decimal() {
+    let risk = RiskCharacteristics {
+        default_probability: 0.02,
+        recovery_rate: 0.4,
+        ..RiskCharacteristics::default()
+    };
+    let decomposed = risk.spread_decomposition().expect("valid inputs");
+
+    // Premise first: default_probability and loss_given_default must
+    // themselves be the values the identity is built from, not just the
+    // final product, before trusting the product.
+    assert_eq!(decomposed.default_probability, dec!("0.02"));
+    assert_eq!(decomposed.loss_given_default, dec!("0.6"));
+    assert_eq!(decomposed.spread, dec!("0.012"));
+}
+
+#[test]
+fn a_recovery_rate_above_one_is_refused_not_clamped() {
+    let risk = RiskCharacteristics {
+        default_probability: 0.02,
+        recovery_rate: 1.5,
+        ..RiskCharacteristics::default()
+    };
+    let err = risk
+        .spread_decomposition()
+        .expect_err("recovery_rate outside [0, 1] must be refused");
+    let message = err.to_string();
+    assert!(message.contains("recovery_rate"));
+    assert!(message.contains("1.5"));
+}
+
+#[test]
+fn a_recovery_rate_of_exactly_one_is_the_admitted_boundary() {
+    let risk = RiskCharacteristics {
+        default_probability: 0.02,
+        recovery_rate: 1.0,
+        ..RiskCharacteristics::default()
+    };
+    let decomposed = risk
+        .spread_decomposition()
+        .expect("recovery_rate == 1.0 is the closed upper bound, not excluded");
+    assert_eq!(decomposed.loss_given_default, Decimal::ZERO);
+    assert_eq!(decomposed.spread, Decimal::ZERO);
+}
+
+#[test]
+fn a_negative_default_probability_is_refused_not_clamped() {
+    let risk = RiskCharacteristics {
+        default_probability: -0.01,
+        recovery_rate: 0.4,
+        ..RiskCharacteristics::default()
+    };
+    let err = risk
+        .spread_decomposition()
+        .expect_err("negative default_probability must be refused");
+    let message = err.to_string();
+    assert!(message.contains("default_probability"));
+    assert!(message.contains("-0.01"));
+}
+
+#[test]
 fn greeks_aggregate_linearly() {
     let single = Greeks {
         delta: 0.5,

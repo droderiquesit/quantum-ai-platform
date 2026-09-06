@@ -57,6 +57,7 @@ pub mod engine;
 mod fsio;
 pub mod gcp;
 pub mod kv;
+pub mod managed;
 pub mod provider;
 pub mod redis;
 pub mod repository;
@@ -74,6 +75,7 @@ pub use gcp::{
     QueryRequest, StaticToken, TokenFile, TokenSource,
 };
 pub use kv::{FileKeyValueStore, KeyValueStore, KeyValueStoreExt, MemoryKeyValueStore};
+pub use managed::ManagedSettings;
 pub use provider::{StorageProvider, StorageTarget};
 pub use redis::{RedisConfig, RedisKeyValueStore, RedisLimits, RespValue};
 pub use repository::{MemoryRepository, Record, Repository};

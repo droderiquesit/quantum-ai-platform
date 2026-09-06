@@ -1,6 +1,7 @@
-//! The capital this whole cell may commit, as the deployment states it.
+//! The ceiling on the capital this whole cell may commit, as the deployment
+//! states it.
 //!
-//! `qip-edge` holds the discipline — `Cell::with_region_allocation`, one hold
+//! `qip-edge` holds the discipline — `Cell::with_unfunded_region`, one hold
 //! per strategy per pass, refused whole when the region has nothing left —
 //! and the library's own tests prove it. What the library cannot do is give
 //! itself the number: a cell that chose how much it may risk would be
@@ -11,6 +12,17 @@
 //! signed envelope and nothing bounding their sum. Two strategies in one
 //! disconnected cell could each spend the whole envelope, which is exactly
 //! the double-spend the reservation was written to close.
+//!
+//! # A ceiling, not a funding
+//!
+//! Since ADR 0039 the amount read here **funds nothing**. The node opens its
+//! table unfunded under it, and what funds the cell is its share of the
+//! region's grant, carried by the centre's signed policy payload and applied
+//! by the cell; the amount here is the most that share will ever fund the
+//! cell to, a local backstop that can only narrow. Before that the amount
+//! was the funding, and two nodes under one region's grant held two amounts
+//! nothing summed. An operator who sets this believing it funds the cell
+//! will see a node that places nothing and a health body saying why.
 //!
 //! # Refused, never defaulted
 //!
@@ -27,17 +39,18 @@
 //!
 //! # What this number is, and is not
 //!
-//! It is the operator's local backstop, not the centre's authority. Nothing
-//! on the mesh carries a per-region amount — a `CapitalEnvelope` is keyed on
-//! (strategy, cell) — so this can only ever narrow what the signed envelopes
-//! already permit, never widen it. See `qip_edge::reservation` for the
-//! argument in full.
+//! It is the operator's local backstop, not the centre's authority. The
+//! centre's authority is the share: the gross of the grants the payload's
+//! manifest names, which the centre checked against the region's grant
+//! before shipping. This number can only ever narrow that, never widen it.
+//! See `qip_edge::reservation` for the argument in full.
 
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 
-/// Names the capital the whole cell may commit, as a decimal amount in the
-/// envelope's currency.
+/// Names the ceiling on the capital the whole cell may commit, as a decimal
+/// amount in the envelope's currency. The centre's share funds the cell up
+/// to it and never past it.
 pub const ALLOCATION_VARIABLE: &str = "QIP_REGION_ALLOCATION";
 
 /// A positive amount the deployment stated, and the only way to get one.
@@ -60,10 +73,10 @@ impl RegionCapital {
     pub fn read(value: Option<&str>) -> Result<Self> {
         let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
             return Err(Error::invalid(format!(
-                "configuration: {ALLOCATION_VARIABLE} must be set to the capital this cell may \
-                 commit in total; without it every deployed strategy is bounded only by its own \
-                 envelope and nothing bounds their sum. There is no default: a number nobody \
-                 chose is not a limit"
+                "configuration: {ALLOCATION_VARIABLE} must be set to the most this cell may \
+                 commit in total, the ceiling the centre's region share funds it up to; without \
+                 it every deployed strategy is bounded only by its own envelope and nothing \
+                 bounds their sum. There is no default: a number nobody chose is not a limit"
             )));
         };
         let Some(amount) = Decimal::parse(value) else {

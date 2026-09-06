@@ -35,17 +35,35 @@
 //!   for and nothing was filling.
 
 use crate::central::{
-    AbsorbedFill, CellIngestion, CellOutcome, CellReport, CentralPlane, LearningReport,
-    WhitelistIssue,
+    AbsorbedFill, CellIngestion, CellOutcome, CellReport, CentralPlane, DispositionOutcome,
+    LearningReport, WhitelistIssue,
 };
 use crate::config::PlatformConfig;
 use crate::cycle::{CycleReport, Stage, StageOutcome};
-use qip_agents::Budget;
 use qip_agents::memory::ResearchMemory;
-use qip_ai::language::DeterministicModel;
+use qip_agents::runtime::{Reading, Upstream};
+use qip_agents::{Budget, RunStatus};
+use qip_ai::language::{DeterministicModel, LanguageModel};
+use qip_ai::memory::{
+    AnalystStance, ClaimRecord, DecisionTaken, Episode, EpisodeOutcome, EpisodeQuery,
+    EpisodicMemory, FindingsSummary, PrecedentDigest, Recall, RegimeLabel, StanceDirection,
+};
 use qip_ai::retrieval::SearchIndex;
+use qip_capital::ledger::{
+    AttributedFill, Capability, DecidedBy, EligibilityDecision, EligibilityRecord,
+    EligibilityRegistry, Entitlement, PermittedFamilies, ProductCatalogue, ProductEligibility,
+    Role, UserId, UserLedger, UserShare,
+};
 use qip_capital::reservation::ReservationLedger;
 use qip_capital::{AllocationLimits, CapitalAllocator, DrawdownSchedule};
+use qip_capital_fabric::journal::{
+    FabricCommand, FabricJournal, FabricRecord, FabricState, PRODUCER as FABRIC_PRODUCER,
+    WalletCommand,
+};
+use qip_capital_fabric::wallet::{
+    Asset, HoldingObservation, LedgerView, Provenance as HoldingProvenance, TolerancePolicy,
+    VenueAsset,
+};
 use qip_capital_fabric::{
     CapitalLocation, DemandForecast, DemandForecaster, DemandKind, DemandObservation, FundingCurve,
     FxRates, LocationBalance, PlanScore, PrePositioningPlan, PrePositioningPlanner,
@@ -59,6 +77,7 @@ use qip_chain::{
 use qip_contracts::edge::Deduction;
 use qip_contracts::governance::Usage;
 use qip_contracts::message::BookSide;
+use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::{VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::ids::{DecisionKind, EventKind, ObjectId, OrderId, ProposalId};
@@ -74,6 +93,9 @@ use qip_cost_router::{
 };
 use qip_data_finder::finder::{DataFinder, FinderConfig};
 use qip_data_finder::probe::SourceProbe;
+use qip_data_finder::registration::{
+    RegistrationRecord, RegistrationRegistry, RegistrationStanding,
+};
 use qip_data_finder::source::SourceCandidate;
 use qip_data_finder::{RegisteredSource, RegistrationDecision};
 use qip_events::log::EventLog;
@@ -83,6 +105,7 @@ use qip_execution_engine::oms::{OrderManager, RefusalReason, SubmissionResult};
 use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_financial::asset_class::AssetClass;
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
+use qip_financial::ladder::{LadderEntry, LiquidityLadder, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
 use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{BookView, ComplianceView, Desk, MarketView, RiskView};
@@ -91,11 +114,13 @@ use qip_learning_engine::evaluation::{
     Evaluation, Outcome as ThesisOutcome, ThesisClaim, ThesisEvaluator,
 };
 use qip_learning_engine::feedback::{CalibrationReport, FeedbackEngine, FeedbackReport};
+use qip_learning_engine::self_model::{ComponentKey, SelfModel};
 use qip_lifecycle::trials::TrialBook;
 use qip_market::bar::Bar;
 use qip_market::corporate_action::CorporateActionKind;
 use qip_market::snapshot::MarketSnapshot;
 use qip_market_ingestion::adapter::SensedRecord;
+use qip_market_ingestion::connector::manifest::SecretRef;
 use qip_mesh::catalog::Catalog;
 use qip_observability::Telemetry;
 use qip_observability::metrics::{labels, names};
@@ -116,7 +141,7 @@ use qip_reasoning_engine::engine::{ReasoningEngine, ReasoningOutcome};
 use qip_reasoning_engine::hypothesis::Claim;
 use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
 use qip_risk::limits::{LimitSet, RiskState};
-use qip_risk_engine::autonomy::AutonomyController;
+use qip_risk_engine::autonomy::{AutonomyController, OperatorIdentity};
 use qip_risk_engine::monitor::RiskMonitor;
 use qip_risk_engine::pretrade::PreTradeChecker;
 use qip_simulation_engine::costs::CostModel;
@@ -163,6 +188,49 @@ pub struct Platform {
     /// the same window cannot pass against the same free balance — gap-matrix
     /// item 10, wired.
     reservations: ReservationLedger,
+    /// The per-user, per-strategy books (blueprint §43.3), holding the
+    /// mandate registry: the desk's mandate as the ceiling and every user
+    /// mandate the configuration enrolled under it. Every attributed fill
+    /// the centre settles is booked here — split pro rata across the users
+    /// with capital at work at the strategy, or to the desk whole when no
+    /// user mandate is registered — so the §43.4 chain terminates in a
+    /// mandate rather than in a strategy lot.
+    user_ledger: UserLedger,
+    /// Which strategy family may be sold in which jurisdiction — the product
+    /// half of the gate [`Platform::fund_user`] runs, beside the eligibility
+    /// registry's statement about the user. Empty at assembly, because that
+    /// determination is compliance's and this platform has never been given
+    /// one; a family absent from it is refused everywhere. Moved only
+    /// through [`Platform::offer_product`], which journals the offering
+    /// before adopting it, so [`Platform::replay_products`] rebuilds this
+    /// from the log alone.
+    products: ProductCatalogue,
+    /// Who registered with which venue, under which terms, and the name the
+    /// credential is read under — never the credential. Seeded from the
+    /// shipped requirement table and moved only through
+    /// [`Platform::approve_registration`] and the configuration applied at
+    /// assembly, both of which journal the record before adopting it, so
+    /// [`Platform::replay_registrations`] rebuilds this from the log alone.
+    registrations: RegistrationRegistry,
+    /// The fabric journal: every wallet, corridor, destination and gate
+    /// decision as the command and its outcome, replayable. Its working
+    /// copy of the log is process-local; the platform's own event log
+    /// carries the same record ([`Platform::decide_fabric`]), and it is the
+    /// platform's log a replay reads. Held rather than rebuilt per query
+    /// because the state is what the records built, and a state rebuilt on
+    /// each read would be a second reading of the log that could disagree
+    /// with the one the cycle acted on.
+    fabric: FabricJournal,
+    /// Holdings observed through a statement, latest per venue-asset,
+    /// bounded by [`MAX_OBSERVED_VENUE_ASSETS`]. What the wallet is
+    /// assembled from; empty until a statement is handed in, and while
+    /// empty no wallet is assembled — a wallet showing zero holdings would
+    /// read as an empty account rather than an unobserved one.
+    holdings_observed: BTreeMap<VenueAsset, HoldingObservation>,
+    /// The reconciliation tolerance per observed asset, supplied with the
+    /// statement by whoever holds the rates; the wallet refuses to reconcile
+    /// an asset it has no tolerance for rather than guessing one.
+    wallet_tolerances: TolerancePolicy,
     attributor: Attributor,
     evaluator: ThesisEvaluator,
     feedback: FeedbackEngine,
@@ -205,6 +273,21 @@ pub struct Platform {
     bridges: BridgeLedger,
     /// Falsifiable claims the REASON stage has made, and their verdicts.
     predictions: Vec<RecordedPrediction>,
+    /// Resolved episodes, for precedent (blueprint §10): what this platform
+    /// reasoned in situations like the one in front of it, and what
+    /// followed. Bounded by the memory's own capacity, and readable only
+    /// from each episode's `known_at`, so REASON cannot recall a resolution
+    /// LEARN has not yet seen.
+    episodes: EpisodicMemory,
+    /// Episodes REASON formed whose claim has not resolved, oldest first,
+    /// bounded by [`PREDICTION_HISTORY`] like the claims they stand behind.
+    /// Held apart from memory rather than in it with an empty outcome,
+    /// because a precedent with no outcome is not a precedent, and a memory
+    /// that returned one would report "no evidence" as a neighbour.
+    pending_episodes: Vec<Episode>,
+    /// The precedent recorded beside each hypothesis, most recent last,
+    /// bounded by [`PREDICTION_HISTORY`].
+    precedents: Vec<HypothesisPrecedent>,
     /// Theses scored against what was published, oldest first, bounded by
     /// [`PREDICTION_HISTORY`] like the claims they came from.
     ///
@@ -216,6 +299,11 @@ pub struct Platform {
     evaluations: Vec<Evaluation>,
     /// The most recent calibration, for the health surfaces and the tests.
     last_calibration: Option<CalibrationReport>,
+    /// What the platform has measured of its own components — each detector
+    /// kind and each analyst — from the theses they produced that resolved.
+    /// Fed by [`Platform::learn_from`]; read by the REASON stage through the
+    /// per-origin factors it hands the reasoning engine (blueprint §13.1).
+    self_model: SelfModel,
     /// What the LEARN stage calibrated this cycle, for the journal. Cleared
     /// as each cycle's LEARN begins so a cycle that scored nothing journals
     /// nothing rather than the previous cycle's figure.
@@ -235,6 +323,9 @@ pub struct Platform {
     /// What the LEARN stage priced this cycle, for the journal. Cleared as
     /// each cycle's LEARN begins.
     cycle_counterfactuals: Option<CounterfactualJournal>,
+    /// What the LEARN stage's strategy review did this cycle, for the
+    /// journal. Cleared as each cycle's LEARN begins.
+    cycle_strategy_review: Option<StrategyReviewJournal>,
     /// The durable, hash-chained mirror of the cycle journal.
     journal: DurableLogTransport,
     /// Everything the platform decided, and what came of it — refusals
@@ -271,6 +362,41 @@ pub struct Platform {
     /// decision, with the reason, in object-id order. Empty is the only
     /// state a production universe should show.
     universe_not_decision_grade: Vec<(String, String)>,
+    /// Unfunded private commitments this book is on the hook for, derived
+    /// from the universe at assembly.
+    ///
+    /// A promise of capital somebody else may call is a liability, not spare
+    /// cash. `construct_from` subtracts the whole unfunded balance from the
+    /// free budget before anything is sized, which is the only place in the
+    /// platform where capital is withheld from deployment for an obligation
+    /// that has not yet been demanded.
+    commitments: qip_financial::cashflow::CommitmentBook,
+    /// The mark on every private asset in the universe, by object id, with
+    /// the method and the confidence it was arrived at by.
+    ///
+    /// Read in `construct_from`: a thesis on a marked instrument is sized
+    /// against the mark's decayed confidence rather than its face value, so
+    /// an uncertain mark cannot silently support leverage (blueprint §16.3).
+    illiquid_marks: BTreeMap<String, qip_financial::valuation::AssetValuation>,
+    /// Private assets the valuation plane refused to mark, by object id, with
+    /// the refusal.
+    ///
+    /// `construct_from` refuses to size any of them. The alternative — a
+    /// mark the platform invented so that sizing had a number to work with —
+    /// is indistinguishable downstream from an observed one and would support
+    /// leverage on its own authority.
+    illiquid_unmarkable: BTreeMap<String, String>,
+    /// The credit half of the valuation plane: one profile per obligor the
+    /// universe holds a claim on, and the sovereign curve per currency those
+    /// claims discount against.
+    ///
+    /// Read in `stage_understand`, which reports what it holds and raises
+    /// every unquantified claim, every currency with no curve and every
+    /// breached covenant as a stage problem. Built at assembly rather than per
+    /// cycle because it is a fact about the instruments, and rebuilding it
+    /// each pass would be a second reading of the universe that could disagree
+    /// with the one the log recorded.
+    credit: crate::valuation::CreditRegister,
     /// What the event log's first record says about the universe this
     /// platform was assembled from. Kept so the overview can say it without
     /// decoding the log; the log is the record.
@@ -282,12 +408,12 @@ pub struct Platform {
     /// trade, taken from the universe at assembly.
     ///
     /// A projection of reference data rather than a second copy of a facility.
-    /// The universe itself lives behind the desk's `read_market_data`
-    /// capability gate and the composition root holds no agent context to
-    /// unlock it — see [`Platform::world`] for the same trade-off made the
-    /// other way. Reference data does not change under the platform, so a
-    /// projection of it cannot drift from the desk's copy the way absorbed
-    /// state would.
+    /// The universe itself lives in the market view behind the desk's
+    /// `read_market_data` gate; the platform is that view's upstream and
+    /// could read it without a context, but reference data does not change
+    /// under the platform, so a projection taken once at assembly cannot
+    /// drift from it the way absorbed state would — and absorbed state is
+    /// now shared rather than projected, see the `world` field.
     asset_classes: BTreeMap<String, AssetClass>,
     /// The exposure buckets every instrument this platform was assembled to
     /// trade belongs to, keyed by object id then axis — the same projection
@@ -305,6 +431,23 @@ pub struct Platform {
     /// all, so a `MaxConcentration` or `MaxBucketExposure` limit sees only
     /// what the reference data can vouch for.
     exposure_axes: BTreeMap<String, BTreeMap<String, String>>,
+    /// Where every instrument this platform was assembled to trade sits on the
+    /// liquidity ladder, and what a full exit from it costs — the same
+    /// projection of reference data as `asset_classes` and `exposure_axes`,
+    /// taken at the same moment for the same reason.
+    ///
+    /// This is what [`Platform::liquidity_ladder`] builds the book's ladder
+    /// from, and therefore what the shipped `liquidity` limit —
+    /// `LimitKind::MinLiquidity`, in `LimitSet::conservative_default` — reads.
+    /// Before it existed nothing in the kernel filled either
+    /// `RiskState::days_to_liquidate` or `RiskState::liquidatable_within`:
+    /// `RiskAggregates::mark_liquidity` had no caller anywhere outside its own
+    /// tests, and `Platform::risk_state_from` never called
+    /// `RiskState::with_liquidity_horizons`. Two independent gaps, either of
+    /// which alone was enough — the limit took its `None` arm on every book of
+    /// every cycle, so every deployment believed it held a liquidity floor it
+    /// did not have. A control that cannot fire reads as protection and is not.
+    liquidity_reference: BTreeMap<String, LadderReference>,
     /// Turns what a decision spent into what its edge has to survive.
     cost_engine: CostEngine,
     /// The rungs the most recent cycle actually used.
@@ -318,17 +461,31 @@ pub struct Platform {
     /// and neither is one that can fail to write silently.
     capture_problems: Vec<String>,
 
-    /// The platform's own world model — the one [`Platform::observe`] feeds.
+    /// The world model — the one [`Platform::observe`] feeds, held as the
+    /// writing end of the slot the agents' desk reads through its
+    /// `read_world_model` gate.
     ///
-    /// Distinct from the copy handed to the agents' desk at assembly: the
-    /// desk's sits behind a read-only capability gate inside an `Arc` every
-    /// agent shares, so there is deliberately no mutable path to it. The
-    /// absorbed state therefore lives here, where the UNDERSTAND stage reads
-    /// its coverage and the DISCOVER stage reads its series. Sharing one
-    /// instance with the desk would require interior mutability in the agent
-    /// runtime, which is a change with its own review; until then the desk's
-    /// copy is honestly a cold start, exactly as `Desk::empty` documents.
-    world: WorldModel,
+    /// One instance, not a copy. Until this was an [`Upstream`] the desk held
+    /// a `WorldModel::new()` taken at assembly and nothing ever wrote to it:
+    /// the platform absorbed three hundred and twenty periods of a tape into
+    /// *this* field while every analyst read an empty model, answered
+    /// `no_data`, and left each hypothesis resting on the single anomaly
+    /// origin — whose concentration penalty caps effective confidence at
+    /// 0.36 against a 0.50 bar. No running binary had ever produced an order,
+    /// and the reason was a cold copy, not a control. The platform writes
+    /// between cycles, in `observe`, and never while a dispatch is reading.
+    world: Upstream<WorldModel>,
+    /// The market view the agents read through the desk's `read_market_data`
+    /// gate — the snapshot [`Platform::observe`] applies every bar, quote,
+    /// trade and book to, beside the reference universe.
+    ///
+    /// The snapshot's bar series is trimmed to [`SERIES_HISTORY`] on every
+    /// push past it, so what the desk holds per instrument is exactly the
+    /// platform's own `bar_history`: the same bars, the same bound, the same
+    /// newest-first retention. A `BarSeries` is unbounded on its own, and a
+    /// desk that grew with uptime would be the failure [`SERIES_HISTORY`]
+    /// documents, reached by a second road.
+    market: Upstream<MarketView>,
     /// Where liquidity lives per instrument across venues, fed from books and
     /// quotes as they arrive, each at its own observed instant.
     liquidity: LiquidityTopology,
@@ -480,6 +637,82 @@ const DECLINED_HISTORY: usize = 256;
 /// arriving beside it as cell fills are carried across.
 const DESK_STRATEGY: &str = "central-desk";
 
+/// The one user the per-user ledger books to until users exist: the desk,
+/// under [`qip_capital::ledger::Mandate::desk`]. A literal, like
+/// [`DESK_STRATEGY`], so the ledger's user set is bounded by the source
+/// until a mandate registry enrols anyone else.
+const DESK_USER: &str = "desk";
+
+/// How recently an operator must have authenticated to decide a user's
+/// eligibility — the same fifteen minutes `AutonomyController` holds an
+/// autonomy change to, because the two are the same kind of act: a person
+/// widening what the platform may do with capital. A session token from
+/// this morning is not evidence that anyone is at the keyboard now.
+const ELIGIBILITY_CREDENTIAL_AGE: Duration = Duration::from_mins(15);
+
+/// The producer every eligibility record in the event log carries, and the
+/// one [`Platform::replay_eligibility`] selects on. Distinct from the fabric
+/// journal's producer on the topic they share, so each replay passes over
+/// the other's records rather than refusing them as undecodable.
+const ELIGIBILITY_ORIGIN: &str = "kernel/eligibility";
+
+/// How recently an operator must have authenticated to approve a venue
+/// registration — the same fifteen minutes an eligibility decision and an
+/// autonomy change are held to, because approving a registration is the same
+/// kind of act: a person attaching their name to a credential the platform
+/// will read. A session token from this morning is not evidence that the
+/// person named on the record is at the keyboard now.
+const REGISTRATION_CREDENTIAL_AGE: Duration = ELIGIBILITY_CREDENTIAL_AGE;
+
+/// The producer every venue-registration record in the event log carries,
+/// and the one [`Platform::replay_registrations`] selects on. Distinct from
+/// the eligibility and fabric producers on the topic the three share, so
+/// each replay passes over the others' records rather than refusing them as
+/// undecodable.
+const REGISTRATION_ORIGIN: &str = "kernel/registration";
+
+/// The producer every product-offering record in the event log carries, and
+/// the one [`Platform::replay_products`] selects on. Distinct from the
+/// eligibility, registration and fabric producers on the topic the four
+/// share, for the reason each of the others gives.
+const PRODUCT_ORIGIN: &str = "kernel/product";
+
+/// The most venue-assets the platform keeps a statement about.
+///
+/// A statement names one balance at one venue, and an operator hands them
+/// in; the bound is what keeps the wallet's working set a working set rather
+/// than the unbounded history the retention rule forbids. A statement for a
+/// venue-asset already held replaces it; a statement for a new one past the
+/// bound is refused by name.
+const MAX_OBSERVED_VENUE_ASSETS: usize = 256;
+
+/// How old a statement may be when the wallet is assembled against it.
+///
+/// A custodian's, bank's or administrator's statement is a daily document,
+/// so a day is the bound a statement is judged fresh within; one older than
+/// that at assembly makes the wallet's assembly a refused, journalled
+/// decision rather than a reconciliation against yesterday's figure — the
+/// break the wallet would otherwise manufacture itself.
+const STATEMENT_FRESHNESS: Duration = Duration::from_days(1);
+
+/// The correlation the fabric journal's own working-copy records carry.
+///
+/// A literal, because the journal is constructed before any cycle has a
+/// correlation of its own and its working copy is not the record: the
+/// platform's event log holds each fabric record under the correlation the
+/// decision was made in, which is where a reader looks.
+const FABRIC_CORRELATION: &str = "capital-fabric-journal";
+
+/// The name the liquidity read is filed under when it could not be computed.
+///
+/// One literal for three places — `RiskState::unevaluated`'s key, the gauge's
+/// `figure` label and the sentence on the cycle report — because they are one
+/// fact, and a label that disagreed with the key would put the count and the
+/// reason on different lines of the same investigation. A source literal, so
+/// the label's cardinality is fixed at compile time and no instrument,
+/// strategy or order id can ever reach it.
+const LIQUIDITY_FIGURE: &str = "liquidity";
+
 /// The exposure buckets one instrument record vouches for.
 ///
 /// Axis names are the ones the default limit set looks up — `sector` and
@@ -501,6 +734,225 @@ fn exposure_axes_of(object: &qip_financial::object::FinancialObject) -> BTreeMap
         }
     }
     axes
+}
+
+/// What one instrument record says about how readily a holding in it becomes
+/// cash: the liquidity-ladder rung it sits on, and the rate a full exit costs.
+///
+/// Two fields and no arithmetic, because both are facts of the reference data
+/// rather than opinions formed here. The rung is
+/// [`qip_financial::ladder::Rung::classify`]'s own answer, unmodified — the
+/// kernel deliberately adds no classification law of its own, so the rung a
+/// risk read fires on and the rung the valuation plane would report are one
+/// answer, not two.
+#[derive(Clone, Copy, Debug)]
+struct LadderReference {
+    rung: Rung,
+    /// Quoted spread in basis points of mid, the record's own figure. Not a
+    /// [`Decimal`] because a rate is not money; it becomes money exactly once,
+    /// at [`Decimal::apply_bps`] in `Platform::liquidity_ladder`, where a
+    /// holding's mark is multiplied by it. That is the crossing point.
+    spread_bps: f64,
+    /// Days to exit a position of average size, the record's own figure, never
+    /// money and never derived here.
+    ///
+    /// Carried beside the rung rather than left to be re-derived from it,
+    /// because the rung cannot express it: `Rung::classify` places everything
+    /// stated to take more than one day on the same rung, whose horizon floors
+    /// at two, so a record stating forty-five days produced a ladder reporting
+    /// two. The limits that read this — `MaxDaysToLiquidate` per holding and
+    /// `MinLiquidity` over the book — are both stated in days, and this is the
+    /// number the record actually contains.
+    days_to_liquidate: f64,
+}
+
+/// The ladder placement one instrument record vouches for, or a refusal
+/// naming the record.
+///
+/// Fallible for the same reason `instrument_grid_of` is: a record whose
+/// stated spread cannot be turned into an exit cost should stop assembly
+/// rather than be quietly given a made-up one. Four refusals: a non-finite
+/// spread, a negative spread, a spread of a hundred percent or more, and an
+/// exit time that is not a number of days. The third because
+/// `LiquidityLadder::new` refuses an entry costing more to exit than it is
+/// marked at, so a record stating 10,000bps would take the whole book's
+/// liquidity read down with it, one cycle at a time and for a reason no
+/// operator could see from the risk report. The fourth is `Rung::classify`'s
+/// own, raised here rather than swallowed: a `NaN` or negative exit time used
+/// to leave the holding on its asset class's rung and an infinite one used to
+/// place it two days out, and both figures reach the shipped `liquidity`
+/// limit. Better to name the record at start-up than to veto trading on a
+/// number nobody computed.
+fn ladder_reference_of(
+    object: &qip_financial::object::FinancialObject,
+) -> Result<(String, LadderReference)> {
+    let spread_bps = object.liquidity.typical_spread_bps;
+    if !spread_bps.is_finite() || spread_bps < 0.0 {
+        return Err(Error::invalid(format!(
+            "{} states a typical spread of {spread_bps}bps, which is not a spread; correct the \
+             reference record — the liquidity ladder prices an exit from it",
+            object.object_id.as_str()
+        )));
+    }
+    if spread_bps >= 10_000.0 {
+        return Err(Error::invalid(format!(
+            "{} states a typical spread of {spread_bps}bps, at or beyond the whole value of the \
+             holding; correct the reference record — an instrument that costs more to exit than \
+             it is marked at raises no cash and the ladder will not carry it",
+            object.object_id.as_str()
+        )));
+    }
+    // A fourth refusal, and it arrives from the ladder rather than from here:
+    // `Rung::classify` will not place a holding whose stated days to
+    // liquidate is not a number of days. Named with the object id, because
+    // the classifier sees a liquidity record and not which record it is.
+    let rung = Rung::classify(object.asset_class, &object.liquidity).map_err(|error| {
+        Error::invalid(format!(
+            "{}: {}",
+            object.object_id.as_str(),
+            error.message()
+        ))
+    })?;
+    Ok((
+        object.object_id.as_str().to_string(),
+        LadderReference {
+            rung,
+            spread_bps,
+            // Readable as a number of days because `Rung::classify` above
+            // refused the record otherwise. Taken from the record rather than
+            // from the rung, which is a cost ordering and cannot carry it.
+            days_to_liquidate: object.liquidity.days_to_liquidate,
+        },
+    ))
+}
+
+/// Where a private-asset record's life begins, for the valuation and
+/// commitment engines.
+///
+/// The vintage year is the only origin the record carries, and the first
+/// instant of it is the one date every private-fund convention agrees on.
+/// Taken from the record rather than from the clock, so two platforms
+/// assembled from the same catalogue at different moments derive the same
+/// origin and therefore the same discounted mark.
+///
+/// Fallible because the year is a `u32` off a catalogue file and the origin is
+/// an `i64` nanosecond instant. This once read
+/// `Timestamp::from_civil(details.vintage_year as i32, 1, 1)`, so a record
+/// stating 2300 — or a typed 20204 — aborted `Platform::new` on an overflowing
+/// multiplication in a debug build, and in a release build wrapped to a
+/// negative instant that went on to be the commitment origin, the discounting
+/// origin and the knowability stamp. `PrivateAssetDetails::vintage_origin`
+/// holds the range check, so the same refusal is reached whether the record
+/// arrived through `serde` or was built field by field.
+fn private_asset_origin(
+    details: &qip_financial::extensions::PrivateAssetDetails,
+) -> Result<Timestamp> {
+    details.vintage_origin()
+}
+
+/// Sweep the universe for what the platform is obliged to and what it cannot
+/// price, in one pass.
+///
+/// Two facts come out of it and both are load-bearing in `construct_from`:
+///
+/// * Every unfunded private commitment in the universe. The capital engine
+///   treats it as a hard reservation and never as available capital
+///   (blueprint §16.4): failing a capital call typically forfeits the
+///   position, so the reserve is not optional and cannot wait for a pacing
+///   model to exist.
+/// * A mark for every private asset, or the refusal that says why there is
+///   none. An instrument the valuation plane refuses to price is one nothing
+///   may be sized into, and it joins `not_decision_grade` for the same reason
+///   a research-only instrument does — the platform can say what it is and
+///   cannot say what it is worth.
+///
+/// A universe of listed equities produces an empty book and no marks, so
+/// nothing about an ordinary assembly changes.
+#[allow(clippy::type_complexity)]
+fn private_holdings_of(
+    universe: &Universe,
+    now: Timestamp,
+) -> Result<(
+    qip_financial::cashflow::CommitmentBook,
+    BTreeMap<String, qip_financial::valuation::AssetValuation>,
+    Vec<(String, String)>,
+)> {
+    let mut book = qip_financial::cashflow::CommitmentBook::new();
+    let mut marks = BTreeMap::new();
+    let mut unmarkable = Vec::new();
+    for object in universe.iter() {
+        let qip_financial::extensions::Extension::PrivateAsset(details) = &object.extension else {
+            continue;
+        };
+        let id = object.object_id.as_str().to_string();
+        let origin = private_asset_origin(details)?;
+        // `object.updated_at` is handed over as it stands. It was once
+        // `object.updated_at.max(origin)`, which disarmed
+        // `Commitment::unscheduled`'s refusal of `known_at < origin` — "a
+        // commitment cannot be known before it was made" — for precisely the
+        // record the check exists to catch: a vintage of 2020 with an
+        // administrator's update stamped November 2019 is a plausible typing
+        // error, and the repair booked it as a real obligation dated from a
+        // year nobody entered. The engine refuses it now, and the refusal
+        // names the record.
+        if let Some(commitment) = qip_financial::cashflow::Commitment::from_private_asset(
+            id.clone(),
+            details,
+            origin,
+            object.updated_at,
+        )? {
+            book.record(commitment)?;
+        }
+        match qip_financial::valuation::IlliquidValuator::mark_object(object, origin, now) {
+            Ok(Some(mark)) => {
+                marks.insert(id, mark);
+            }
+            // `mark_object` returns `None` only for an object this engine has
+            // no business marking, and the `let else` above has already
+            // excluded those, so this arm is unreachable in practice and is
+            // still not a `panic!` in a `Result` function.
+            Ok(None) => {}
+            Err(refusal) => unmarkable.push((id, refusal.message().to_string())),
+        }
+    }
+    Ok((book, marks, unmarkable))
+}
+
+/// The feasibility grid one instrument record vouches for, in the shape the
+/// execution engine's central gate judges an order against.
+///
+/// The lot and the tick are the record's own — the value the catalogue
+/// stated, or `qip_financial`'s builder default of one lot and a hundredth of
+/// a tick where the record stated none, which is a fact about the reference
+/// data and not a number invented here. The two minimums are zero, which the
+/// engine defines as "the venue states none": the catalogue carries no
+/// minimum quantity or notional, and `qip_execution_engine::feasibility`
+/// states no numeric constants of its own, only the gate literals, so a
+/// positive minimum here would be a guess wearing a refusal's clothes. Until
+/// this existed the kernel constructed its order manager bare, so the
+/// central path judged no order against any grid: every off-lot or off-tick
+/// order rode the kill switch, the autonomy gate and pre-trade risk to the
+/// venue, and the platform's test universes — lot one, tick a hundredth,
+/// stated on every record — protected nothing. Fallible because a record
+/// with a non-positive lot or tick is one `ObjectBuilder::build` already
+/// refuses, and a universe that reached here carrying one anyway should stop
+/// assembly rather than be checked for nothing.
+fn instrument_grid_of(
+    object: &qip_financial::object::FinancialObject,
+) -> Result<qip_execution_engine::VenueFeasibility> {
+    qip_execution_engine::VenueFeasibility::new(
+        object.lot_size,
+        Some(object.tick_size),
+        Decimal::ZERO,
+        Decimal::ZERO,
+    )
+    .map_err(|error| {
+        Error::invalid(format!(
+            "{} carries a grid the execution engine cannot judge against: {}",
+            object.object_id.as_str(),
+            error.message()
+        ))
+    })
 }
 
 /// Bars the twin estimates liquidity over when pricing a declined path — the
@@ -646,6 +1098,94 @@ impl RecordedPrediction {
     pub fn held(&self) -> bool {
         self.verdict.as_ref().is_some_and(Verdict::holds)
     }
+}
+
+/// How many prior episodes REASON recalls for a situation.
+///
+/// Five is what a brief can carry and a reviewer can read; the memory ranks
+/// by exact cosine, so these are the five nearest of the bounded candidate
+/// set, not the first five found.
+const PRECEDENT_K: usize = 5;
+
+/// The precedent as the panel is briefed on it, from what REASON recalled.
+///
+/// `None` where nothing was recalled: an empty brief field is "no
+/// precedent", which is not the same statement as a digest of zeros. The
+/// direction the digest is taken against is the claim the anomaly implies,
+/// the same one the recall query carried, so the panel reads the agreement
+/// share the record beside the hypothesis will show. The age is measured
+/// from the nearest episode's `known_at`, which the store guarantees is
+/// strictly before `now`; `BriefPrecedent::new` refuses anything else, and
+/// that refusal reaching a caller means the store's rule was bypassed.
+fn brief_precedent(
+    query: &EpisodeQuery,
+    recall: &Recall,
+    now: Timestamp,
+) -> Result<Option<qip_agents::finding::BriefPrecedent>> {
+    let Some(nearest) = recall.nearest.first() else {
+        return Ok(None);
+    };
+    let direction = query.claim.as_ref().map_or(0.0, |claim| claim.direction);
+    let digest = PrecedentDigest::of(&recall.nearest, direction);
+    let prior_outcome = nearest
+        .episode
+        .outcome
+        .as_ref()
+        .and_then(|outcome| outcome.agrees_with(direction));
+    qip_agents::finding::BriefPrecedent::new(
+        digest,
+        nearest.similarity,
+        prior_outcome,
+        now.since(nearest.episode.known_at),
+    )
+    .map(Some)
+}
+
+/// The precedent recorded beside a hypothesis: the resolved episodes nearest
+/// to the situation when REASON asked, and how their outcomes sat against
+/// the claim's direction.
+///
+/// Evidence context, not an input. `confidence` is a copy of what review
+/// produced, kept here so a reader sees the two side by side and a test can
+/// prove the digest did not move it. The route by which precedent could
+/// later bear on confidence is ADR 0005's evidence-weighted update — a
+/// digest entering as an `Evidence` item with a stated diagnosticity — and
+/// not a multiplier applied after review.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HypothesisPrecedent {
+    pub hypothesis_id: String,
+    pub cycle: u64,
+    /// The hypothesis's effective confidence after review, as recorded.
+    pub confidence: f64,
+    /// Candidates the index examined before re-ranking; never above the
+    /// memory's bound.
+    pub examined: usize,
+    /// Episodes in memory when the question was asked.
+    pub memory_size: usize,
+    /// The nearest, best first.
+    pub nearest: Vec<PrecedentEntry>,
+    /// The share of the nearest whose outcome went the claim's way.
+    pub digest: PrecedentDigest,
+}
+
+/// One recalled episode, as the precedent record keeps it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PrecedentEntry {
+    pub episode_id: String,
+    pub instrument: String,
+    /// When the earlier situation was true, and when its outcome became
+    /// knowable — the second is what made it recallable now.
+    pub at: Timestamp,
+    pub known_at: Timestamp,
+    pub similarity: f32,
+    pub claim: String,
+    pub decision: DecisionTaken,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub realised_move_bps: Option<f64>,
+    /// Whether the outcome went the current claim's way; `None` where
+    /// either side has no sign.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub agreed: Option<bool>,
 }
 
 /// What absorbing a batch of chain observations did.
@@ -850,6 +1390,12 @@ pub struct CycleJournalEntry {
     /// nothing. Defaulted so an older journal replays.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub counterfactuals: Option<CounterfactualJournal>,
+    /// The strategies LEARN reviewed this cycle on the sessions their cells
+    /// realised, and what became of them. Absent on a cycle in which no cell
+    /// had closed a session since its strategy's baseline. Defaulted so an
+    /// older journal replays.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub strategy_review: Option<StrategyReviewJournal>,
 }
 
 /// What the LEARN stage's counterfactual pass left in the journal.
@@ -861,6 +1407,35 @@ pub struct CounterfactualJournal {
     pub regrets: usize,
     /// Declined paths due for pricing and left for a later cycle by the cap.
     pub deferred: usize,
+}
+
+/// What the LEARN stage's strategy review left in the journal: how many
+/// strategies the demotion monitor judged on the sessions their cells
+/// realised, and what became of them.
+///
+/// Counts rather than the verdicts themselves, because the verdicts are
+/// already in the record — a move is in the lifecycle ledger with its
+/// rationale, and a retirement's disposition is journaled by
+/// [`Platform::learn_from_cells`] in the call that retired it. What the entry
+/// adds is the fact that the review *ran* this cycle and over how much: a
+/// cycle whose entry carries no review is one in which no cell had closed a
+/// session, and that is distinguishable from a cycle in which the review
+/// found nothing to do.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StrategyReviewJournal {
+    /// Strategies judged against their pilot baseline this cycle.
+    pub reviewed: usize,
+    /// Of those, pushed down a rung and still on the ladder.
+    pub demoted: usize,
+    /// Of those, retired — sustained decay at the floor, without a human.
+    pub retired: usize,
+    /// Retirements whose positions were scheduled for unwinding.
+    pub dispositioned: usize,
+    /// Retirements whose positions the centre refused to guess at, because
+    /// the attribution and a cell's own book disagree.
+    pub dispositions_refused: usize,
+    /// Observations with no baseline to be judged against.
+    pub skipped: usize,
 }
 
 /// One refused order, kept until the twin can price what refusing it cost.
@@ -928,6 +1503,11 @@ pub struct LearningOutcome {
     /// The calibration and lessons over the whole window, or `None` where
     /// nothing in the window was informative.
     pub report: Option<FeedbackReport>,
+    /// Theses that were graded and joined the window but could not be
+    /// charged to a component — a class the self-model cannot key, a
+    /// confidence it cannot score — one line each, so the self-model's
+    /// silence about them is visible rather than the whole pass aborting.
+    pub problems: Vec<String>,
 }
 
 /// The universe a platform was assembled from — the first record on its
@@ -989,10 +1569,195 @@ impl UniverseAssembled {
     }
 }
 
+/// How an attributed fill reached the user books, on the record.
+///
+/// One variant per choice the kernel can make, so a reader of the log can
+/// group on the choice rather than parse a sentence for it: the desk booked
+/// whole, with why; a pro-rata split, with every share and where the
+/// rounding unit went; or a refusal, with the ledger's own reason and no
+/// book moved.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "basis", rename_all = "snake_case")]
+pub enum BookingBasis {
+    /// Booked to the desk whole.
+    DeskWhole { user: UserId, reason: String },
+    /// Split across users in proportion to what each had at work.
+    ProRata {
+        shares: Vec<UserShare>,
+        entitlement_total: Decimal,
+        remainder: Decimal,
+        remainder_to: UserId,
+    },
+    /// Not booked. The fill has happened and the strategy lot holds it; the
+    /// user books do not, and this record says so.
+    Refused { reason: String },
+}
+
+/// One entry the kernel made in the per-user ledger, as the event log keeps
+/// it: a funding of a user's book from their mandate, or the booking of an
+/// attributed fill under a [`BookingBasis`].
+///
+/// Journalled so the per-user books are reproducible from the log alone
+/// (`rules/10-product-direction.md`): a booking that lived only in the
+/// ledger's memory would be a second source of truth for who was attributed
+/// what, and the one that survives a restart would be the strategy lot,
+/// which does not know.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "entry", rename_all = "snake_case")]
+pub enum LedgerEntry {
+    /// [`UserLedger::fund`]: capital moved from a mandate into one book.
+    Funded {
+        user: UserId,
+        strategy: StrategyId,
+        currency: Currency,
+        amount: Decimal,
+    },
+    /// An attributed fill booked, or refused, under the stated basis.
+    Booked {
+        strategy: StrategyId,
+        source: String,
+        currency: Currency,
+        amount: Decimal,
+        basis: BookingBasis,
+    },
+    /// A funding the eligibility registry refused before any book moved.
+    /// `gate` is the [`qip_capital::ledger::Ineligible`] name — the stable
+    /// token — and `reason` the sentence; on the record because a refusal
+    /// that leaves no trace is indistinguishable from a request never made.
+    FundingRefused {
+        user: UserId,
+        strategy: StrategyId,
+        amount: Decimal,
+        gate: String,
+        reason: String,
+    },
+}
+
+impl EventBody for LedgerEntry {
+    /// The last link of the attribution chain: what the centre's exact
+    /// attribution said a strategy realised, booked to whose capital it was.
+    /// The topic sits in the Learn group, which the log never evicts, so a
+    /// user's booking cannot be dropped from the working set to make room
+    /// for a tick.
+    const TOPIC: Topic = Topic::AttributionCompleted;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 impl EventBody for UniverseAssembled {
     // Reference data is what an instrument catalogue is. See the type's
     // comment for the retention consequence of the topic.
     const TOPIC: Topic = Topic::ReferenceDataUpdated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// Where an eligibility decision came from. Two sources and no third: the
+/// committed configuration, or an authenticated operator at runtime. ADR
+/// 0021 names what may never be one — a model output, an agent finding, a
+/// blueprint revision — and there is no variant for any of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EligibilitySource {
+    Configuration,
+    Operator,
+}
+
+/// One eligibility decision as the event log keeps it: the record the
+/// registry applied, where it came from, and the reason stated.
+///
+/// Journalled so the registry is reproducible from the log alone:
+/// [`Platform::replay_eligibility`] rebuilds it from these records and
+/// nothing else, and a decision that lived only in the registry's memory
+/// would be a second source of truth for who was allowed to be funded.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EligibilityEntry {
+    pub record: EligibilityRecord,
+    pub source: EligibilitySource,
+    pub reason: String,
+}
+
+impl EventBody for EligibilityEntry {
+    /// A compliance decision about a person, in the Decide group the log
+    /// never evicts. Shared with the fabric journal's records, which are
+    /// told apart by producer — see [`ELIGIBILITY_ORIGIN`].
+    const TOPIC: Topic = Topic::ComplianceEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// One product offering as the event log keeps it: which family compliance
+/// cleared, where, who took the determination and why.
+///
+/// Journalled so the catalogue is reproducible from the log alone:
+/// [`Platform::replay_products`] rebuilds it from these records and nothing
+/// else. A clearance that lived only in the catalogue's memory would be a
+/// second source of truth for which product a user's capital was allowed
+/// into, and the one that survived a restart would be the empty catalogue,
+/// which refuses everything and would look like the determination had never
+/// been taken.
+///
+/// There is no withdrawal arm here and no field one could be added to: the
+/// record clears a family for *investment*, and ADR 0021 keeps the other
+/// half in [`qip_capital::ledger::WithdrawalEntitlement`], which has one
+/// variant.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProductEntry {
+    pub product: ProductEligibility,
+    pub by: DecidedBy,
+    pub reason: String,
+}
+
+impl EventBody for ProductEntry {
+    /// A compliance determination about what may be sold where, in the
+    /// Decide group the log never evicts. Shared with the eligibility,
+    /// registration and fabric records, which are told apart by producer —
+    /// see [`PRODUCT_ORIGIN`].
+    const TOPIC: Topic = Topic::ComplianceEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// Where a venue registration came from: committed in the deployment's
+/// configuration, or approved by an authenticated operator at runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistrationSource {
+    Configuration,
+    Operator,
+}
+
+impl RegistrationSource {
+    /// The stable token a journal or a metric label carries. The match is
+    /// exhaustive over the enum, so the label set of
+    /// [`names::CENTRAL_REGISTRATIONS`] is bounded by this type and a third
+    /// source could not be added without naming it here.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Configuration => "configuration",
+            Self::Operator => "operator",
+        }
+    }
+}
+
+/// One venue registration as the event log keeps it: the record the
+/// registry adopted and where it came from.
+///
+/// Journalled so the registry is reproducible from the log alone:
+/// [`Platform::replay_registrations`] rebuilds it from these records and
+/// nothing else. A registration that lived only in the registry's memory
+/// would be a second source of truth for whose name is on a credential the
+/// platform reads, and the credential's value is deliberately nowhere in
+/// this record — the [`RegistrationRecord`] carries the deployment variable
+/// it is read under, screened for shape, and nothing else.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistrationEntry {
+    pub record: RegistrationRecord,
+    pub source: RegistrationSource,
+}
+
+impl EventBody for RegistrationEntry {
+    /// A compliance decision about who is bound by a venue's terms, in the
+    /// Decide group the log never evicts. Shared with the eligibility and
+    /// fabric records, which are told apart by producer — see
+    /// [`REGISTRATION_ORIGIN`].
+    const TOPIC: Topic = Topic::ComplianceEvaluated;
     const SCHEMA_VERSION: u32 = 1;
 }
 
@@ -1189,6 +1954,34 @@ impl Platform {
         universe: Universe,
         limits: LimitSet,
     ) -> Result<Self> {
+        Self::with_language_model(
+            config,
+            context,
+            telemetry,
+            universe,
+            limits,
+            Arc::new(DeterministicModel::new()),
+        )
+    }
+
+    /// Assemble a platform whose organisation narrates through the given
+    /// language model.
+    ///
+    /// The seam ADR 0037 needs: the deep brain — and only the deep brain —
+    /// hands in a `FallbackChain` with a hosted adapter ahead of the
+    /// deterministic model, so a provider outage degrades to templates rather
+    /// than stopping reasoning. Every other root takes [`Self::new`], which is
+    /// this with the deterministic model alone. The model is not on
+    /// `PlatformConfig` because that is a serialisable record of how the
+    /// platform was assembled, and a credential-bearing adapter must not be.
+    pub fn with_language_model(
+        config: PlatformConfig,
+        context: Context,
+        telemetry: Telemetry,
+        universe: Universe,
+        limits: LimitSet,
+        language_model: Arc<dyn LanguageModel>,
+    ) -> Result<Self> {
         let now = context.now();
 
         // Opened here, before anything else is built, for the same reason the
@@ -1245,17 +2038,69 @@ impl Platform {
                 )
             })
             .collect();
+        // Where each instrument sits on the liquidity ladder and what leaving
+        // it costs, taken here for the same reason as the axes above and, like
+        // them, closing a limit that could not fire: `MinLiquidity` ships in
+        // `LimitSet::conservative_default` and reads a map nothing in this
+        // kernel filled, so "most of the book must be exitable within a week"
+        // was a rationale attached to a control that never evaluated. Fallible
+        // because a record stating an impossible spread should stop assembly
+        // rather than silently take the book's liquidity read with it later.
+        let liquidity_reference: BTreeMap<String, LadderReference> = universe
+            .iter()
+            .map(ladder_reference_of)
+            .collect::<Result<_>>()?;
+        // The lot and tick grid of every instrument, taken here for the same
+        // reason and installed on the order manager below, so the central
+        // path refuses an order the venue could not express before any
+        // downstream control treats its size as real (blueprint §18.1).
+        let instrument_grids: BTreeMap<String, qip_execution_engine::VenueFeasibility> = universe
+            .iter()
+            .map(|object| {
+                instrument_grid_of(object).map(|grid| (object.object_id.as_str().to_string(), grid))
+            })
+            .collect::<Result<_>>()?;
         // What in this universe may not drive a decision, and why, taken here
         // for the same reason: `Universe::not_decision_grade` said the kernel
         // logged it at start-up, and nothing did, so a universe assembled
         // entirely from research-only or synthetic instruments looked exactly
         // like one fit to trade. Kept as (object, reason) pairs for the
         // overview and recorded as a gauge once the registry exists below.
-        let not_decision_grade: Vec<(String, String)> = universe
+        let mut not_decision_grade: Vec<(String, String)> = universe
             .not_decision_grade()
             .into_iter()
             .map(|(object, reason)| (object.object_id.as_str().to_string(), reason))
             .collect();
+        // The valuation plane's sweep, taken here for the same reason as the
+        // exposure axes above: a control derived after assembly is a control
+        // the first cycle runs without. `Universe::not_decision_grade` already
+        // catches an instrument with no positive price, but a private asset
+        // can carry a stale price and still be unmarkable, and an unmarkable
+        // instrument is exactly one no capital may be sized into.
+        let (commitments, illiquid_marks, unmarkable) = private_holdings_of(&universe, now)?;
+        let illiquid_unmarkable: BTreeMap<String, String> = unmarkable.into_iter().collect();
+        for (id, refusal) in &illiquid_unmarkable {
+            not_decision_grade.push((id.clone(), format!("no defensible mark: {refusal}")));
+        }
+        not_decision_grade.sort();
+        not_decision_grade.dedup();
+        // The credit half of the valuation plane, derived here for the same
+        // reason as the sweep above and from the same universe: the sovereign
+        // curve and every obligor's profile are facts about the instruments,
+        // known at assembly, and a register built later is one the first cycle
+        // reasons without. This is the only production construction of
+        // `qip_market::curve::TermStructure` in the tree — it was built,
+        // tested and called by nothing — and the only one of
+        // `qip_financial::credit::CreditProfile`.
+        //
+        // It deliberately does not feed `not_decision_grade`. An unquantified
+        // credit claim is reported as an UNDERSTAND-stage problem, not as a
+        // trading disqualification, because disqualifying every bond that
+        // carries neither a rating nor a stated default probability would
+        // silently stop the research node trading its own synthetic sovereign
+        // — a change to what the platform trades, which belongs in a change
+        // that says so rather than arriving inside a valuation engine.
+        let credit = crate::valuation::CreditRegister::from_universe(&universe, now);
         // What the log's first record will say. Taken here, before the
         // universe moves into the desk, and appended below once the log and
         // the journal both exist — but before this function returns, so no
@@ -1269,10 +2114,21 @@ impl Platform {
             assembled_at: now,
         };
 
-        let desk = Arc::new(Desk::new(
+        // The two facilities the platform feeds, held as their writing ends.
+        // The desk is built by `Desk::new` so the facility-to-capability
+        // pairing stays where that constructor's documentation says it lives,
+        // and the two gates are then re-pointed at these slots under the
+        // capability and label `Desk::new` itself chose — not a second
+        // spelling of either.
+        let world = Upstream::new(WorldModel::new());
+        let market = Upstream::new(MarketView {
+            snapshot: MarketSnapshot::new(now),
+            universe,
+        });
+        let mut desk = Desk::new(
             MarketView {
                 snapshot: MarketSnapshot::new(now),
-                universe,
+                universe: Universe::new(),
             },
             WorldModel::new(),
             BookView {
@@ -1296,14 +2152,17 @@ impl Platform {
             ComplianceView::default(),
             ResearchMemory::new(),
             SearchIndex::new(),
-        ));
+        );
+        desk.world = world.gate(desk.world.required(), desk.world.label());
+        desk.market = market.gate(desk.market.required(), desk.market.label());
+        let desk = Arc::new(desk);
 
         let organisation = Organisation::standard(
             desk.clone(),
             now,
             now,
             config.seed,
-            Some(Arc::new(DeterministicModel::new())),
+            Some(language_model),
             config.licensed_datasets.clone(),
             config.quantum_enabled,
         )?;
@@ -1366,6 +2225,24 @@ impl Platform {
             SettlementCalendar::weekday(SettlementConvention::T1)?,
         );
 
+        // The desk first, under a mandate sized to the book's opening equity
+        // — the ceiling — and then every user mandate the configuration
+        // names, each admitted against that ceiling. A refused enrolment
+        // stops assembly with the term named: a platform that opened a book
+        // under a mandate the registry refused would be promising capital
+        // the desk does not have.
+        let mut user_ledger =
+            UserLedger::with_desk(UserId::new(DESK_USER)?, initial_equity, Currency::USD)?;
+        for enrolment in &config.user_mandates {
+            user_ledger.enrol(
+                enrolment.user.clone(),
+                enrolment.id.clone(),
+                enrolment.mandate.clone(),
+                now,
+            )?;
+        }
+        let fabric = Self::resume_fabric(&event_log, config.seed)?;
+
         let mut platform = Self {
             central,
             insights: crate::central::insights::CellInsights::new(config.seed),
@@ -1377,11 +2254,13 @@ impl Platform {
             predictions: Vec::new(),
             evaluations: Vec::new(),
             last_calibration: None,
+            self_model: SelfModel::new(),
             cycle_calibration: None,
             bar_history: BTreeMap::new(),
             declined: Vec::new(),
             declined_scores: Vec::new(),
             cycle_counterfactuals: None,
+            cycle_strategy_review: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
             outcomes: OutcomeCapture::new(),
             counterfactuals,
@@ -1392,10 +2271,15 @@ impl Platform {
             cost_router: Router::default(),
             reason_routing: None,
             universe_not_decision_grade: not_decision_grade,
+            commitments,
+            illiquid_marks,
+            illiquid_unmarkable,
+            credit,
             universe_assembled,
             inherited_through,
             asset_classes,
             exposure_axes,
+            liquidity_reference,
             cycle_ledger: None,
             compute_spend: Decimal::ZERO,
             data_reads: DataReads::new(),
@@ -1403,12 +2287,21 @@ impl Platform {
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
             pending_theses: Vec::new(),
+            episodes: EpisodicMemory::default(),
+            pending_episodes: Vec::new(),
+            precedents: Vec::new(),
             reasoning: ReasoningEngine::new(config.review),
             opportunities: OpportunityEngine::new(
                 DetectorRegistry::standard(),
                 EngineConfig::default(),
             ),
-            orders: OrderManager::new(PreTradeChecker::new(limits.clone())),
+            // Every instrument's grid installed at assembly, keyed on the
+            // object id an order carries, so the feasibility gate is a
+            // control that can fire rather than a module nothing reaches.
+            orders: instrument_grids.into_iter().fold(
+                OrderManager::new(PreTradeChecker::new(limits.clone())),
+                |orders, (object_id, grid)| orders.with_instrument_feasibility(object_id, grid),
+            ),
             broker: Box::new(SimulatedBroker::new(
                 SimulationSettings::default(),
                 config.seed,
@@ -1419,6 +2312,12 @@ impl Platform {
             // pass; zero here is one honest cycle of refusals at worst.
             reservations: ReservationLedger::new(Decimal::ZERO)
                 .unwrap_or_else(|_| unreachable!("zero is not negative")),
+            user_ledger,
+            products: ProductCatalogue::new(),
+            registrations: RegistrationRegistry::shipped(),
+            fabric,
+            holdings_observed: BTreeMap::new(),
+            wallet_tolerances: TolerancePolicy::new(),
             attributor: Attributor::new(),
             evaluator: ThesisEvaluator::default(),
             feedback: FeedbackEngine::default(),
@@ -1433,7 +2332,8 @@ impl Platform {
             volume_history: BTreeMap::new(),
             spread_history: BTreeMap::new(),
             observation_history: BTreeMap::new(),
-            world: WorldModel::new(),
+            world,
+            market,
             liquidity: LiquidityTopology::default(),
             market_events: Vec::new(),
             capital: TrackedCapital::new(initial_equity),
@@ -1459,6 +2359,39 @@ impl Platform {
         // a platform running cycles whose log never says what universe they
         // ran over — is the state this record exists to end.
         platform.record_universe_assembled(now)?;
+        // The committed eligibility decisions, after the universe record and
+        // after every mandate is enrolled, through the same journaled path
+        // an operator's runtime decision takes. A decision the registry
+        // refuses — a user with no mandate, a blank operator — stops
+        // assembly with the user named, because a platform that assembled
+        // anyway would either fund that user on nobody's say-so or silently
+        // hold a configuration it did not apply.
+        for committed in platform.config.user_eligibilities.clone() {
+            platform.apply_eligibility(
+                EligibilityRecord {
+                    user: committed.user,
+                    decision: EligibilityDecision::Granted {
+                        eligibility: committed.eligibility,
+                    },
+                    by: committed.decided_by,
+                    decided_at: now,
+                },
+                EligibilitySource::Configuration,
+                "committed in the deployment's configuration".to_string(),
+                now,
+            )?;
+        }
+        // The committed venue registrations, through the same journaled path
+        // an operator's runtime approval takes. A record the registry refuses
+        // — a source with no declared requirement — stops assembly with the
+        // source named, for the same reason an eligibility refusal does: a
+        // platform that assembled anyway would silently hold a configuration
+        // it did not apply, and a connector admitted before assembly against
+        // `PlatformConfig::registration_registry` would have been admitted
+        // on a record the platform then does not hold.
+        for committed in platform.config.venue_registrations.clone() {
+            platform.apply_registration(committed, RegistrationSource::Configuration, now)?;
+        }
         Ok(platform)
     }
 
@@ -1606,6 +2539,10 @@ impl Platform {
         metrics.describe(
             names::PERMISSION_DENIALS,
             "agent attempts at something the agent's manifest does not grant",
+        );
+        metrics.describe(
+            names::AGENT_MANIFESTS_EXPIRED,
+            "roster manifests past their review interval; non-zero means every agent run is refused",
         );
         metrics.describe(
             names::RESERVATION_SHORTFALL,
@@ -1883,7 +2820,853 @@ impl Platform {
         } = self;
         let ingestion = central.ingest(report, autonomy.kill_switch_mut(), now)?;
         self.charge_cell_fills(&ingestion.cell, &ingestion.settlement.absorbed);
+        self.book_settlement(&ingestion.settlement, now);
         Ok(ingestion)
+    }
+
+    /// Book what the settlement's exact attribution said each strategy
+    /// realised into the per-user books (blueprint §43.4: `Strategy →
+    /// Mandate → User`), and journal how.
+    ///
+    /// Fed from the attribution and not from the report, so the user books
+    /// carry only what the centre accepted and closed to the last unit (ADR
+    /// 0007); a fill the centre refused reaches no user. A position graded
+    /// under other than exactly one strategy is recorded as a capture
+    /// problem rather than split, because a split the attribution did not
+    /// state would be a guess in the one record that must not carry one.
+    ///
+    /// Whose books: with no user mandate registered the desk is the only
+    /// holder and takes the fill whole. With users registered the fill is
+    /// split pro rata across the users with capital at work at the strategy
+    /// by [`UserLedger::journal_pro_rata`], every share and the rounding
+    /// unit's destination on the record; where no user has capital at work
+    /// at that strategy the strategy was trading the desk's capital and the
+    /// desk takes it whole, explicitly — the ledger's own stated path for
+    /// that case — under a basis that says so, so the desk-whole booking
+    /// that used to be the only one never survives silently. A split the
+    /// ledger refuses (overflow, a share nobody holds) books nothing and is
+    /// journalled as refused. The fill has already happened, so a refusal is
+    /// a problem on the record and not an error to the caller — the same
+    /// reasoning as [`Self::charge_cell_fills`].
+    fn book_settlement(&mut self, settlement: &crate::central::plane::Settlement, now: Timestamp) {
+        let Some(attribution) = &settlement.attribution else {
+            return;
+        };
+        let desk = self.user_ledger.desk().clone();
+        for position in &attribution.positions {
+            let [strategy] = position.hypotheses.as_slice() else {
+                self.capture_problems.push(format!(
+                    "the attributed position {} names {} strategies and was not journalled \
+                     to the user books; the ledger books exactly one per position",
+                    position.object_id,
+                    position.hypotheses.len()
+                ));
+                continue;
+            };
+            let fill = AttributedFill {
+                strategy: StrategyId::new(strategy.as_str()),
+                source: position.object_id.clone(),
+                currency: Currency::USD,
+                amount: position.total,
+            };
+            let basis = self.book_fill(&desk, &fill, now);
+            if let BookingBasis::Refused { reason } = &basis {
+                self.capture_problems.push(format!(
+                    "the attributed position {} was settled and not booked to any user: \
+                     {reason}",
+                    position.object_id
+                ));
+            }
+            let entry = LedgerEntry::Booked {
+                strategy: fill.strategy.clone(),
+                source: fill.source.clone(),
+                currency: fill.currency,
+                amount: fill.amount,
+                basis,
+            };
+            if let Err(error) = self.journal_record(entry, "kernel/ledger", now) {
+                self.capture_problems.push(format!(
+                    "the booking of the attributed position {} was made and not journalled: {}",
+                    position.object_id,
+                    error.message()
+                ));
+            }
+        }
+    }
+
+    /// Book one attributed fill and say on what basis. See
+    /// [`Self::book_settlement`] for the choice.
+    fn book_fill(&mut self, desk: &UserId, fill: &AttributedFill, now: Timestamp) -> BookingBasis {
+        let users_registered = self.user_ledger.mandates().keys().any(|user| user != desk);
+        let desk_whole =
+            |ledger: &mut UserLedger, reason: String| match ledger.journal_to(desk, fill, now) {
+                Ok(()) => BookingBasis::DeskWhole {
+                    user: desk.clone(),
+                    reason,
+                },
+                Err(error) => BookingBasis::Refused {
+                    reason: error.message().to_string(),
+                },
+            };
+        if !users_registered {
+            return desk_whole(
+                &mut self.user_ledger,
+                "no user mandate is registered; the desk is the only holder".to_string(),
+            );
+        }
+        if !self.has_entitlement_at(&fill.strategy, fill.currency) {
+            return desk_whole(
+                &mut self.user_ledger,
+                format!(
+                    "no user has {} at work at {}; the strategy was trading the desk's capital",
+                    fill.currency, fill.strategy
+                ),
+            );
+        }
+        match self.user_ledger.journal_pro_rata(fill, now) {
+            Ok(split) => BookingBasis::ProRata {
+                shares: split.shares,
+                entitlement_total: split.entitlement_total,
+                remainder: split.remainder,
+                remainder_to: split.remainder_to,
+            },
+            Err(error) => BookingBasis::Refused {
+                reason: error.message().to_string(),
+            },
+        }
+    }
+
+    /// Whether any user holds positive settled cash at the strategy in the
+    /// currency — the entitlement [`UserLedger::pro_rata_shares`] splits on.
+    /// Asked here, before the split, so the desk-whole fallback is a stated
+    /// choice rather than a reaction to the ledger's refusal message.
+    fn has_entitlement_at(&self, strategy: &StrategyId, currency: Currency) -> bool {
+        self.user_ledger
+            .books()
+            .iter()
+            .filter(|((_, at), _)| at == strategy)
+            .any(|(_, book)| {
+                book.cash(currency)
+                    .is_some_and(|cash| cash.settled().is_positive())
+            })
+    }
+
+    /// Move capital from a user's mandate into one strategy's book, and
+    /// journal it.
+    ///
+    /// The one way a user comes to have capital at work — and so a share of
+    /// what the strategy realises. The eligibility registry is consulted
+    /// first, through [`UserLedger::eligibility_of`], and a user it does not
+    /// admit is refused with the registry's own reason and the refusal
+    /// journalled as [`LedgerEntry::FundingRefused`] — before any book is
+    /// touched, which is where a limit belongs. Every other refusal is
+    /// [`UserLedger::fund`]'s: a non-positive amount, or a total past the
+    /// mandate's investable capital. `fund` consults the registry again on
+    /// its own; the check here is what puts the refusal on the record, and
+    /// the check there is what makes the gate hold for a caller that did
+    /// not ask.
+    ///
+    /// The second gate is the product one, added because the first was only
+    /// half the question: the eligibility registry says an operator verified
+    /// *this user*, and said nothing about whether the *family* their capital
+    /// was going into may be offered where they are. Until the
+    /// [`ProductCatalogue`] existed this method funded on the mandate and the
+    /// user's own clearance alone, and a user verified in one jurisdiction
+    /// could be funded into any family whatever compliance had cleared it
+    /// for. See [`Platform::product_refusal`] for what it asks and for the
+    /// one case it states rather than answers.
+    pub fn fund_user(
+        &mut self,
+        user: &UserId,
+        strategy: &StrategyId,
+        amount: Decimal,
+        now: Timestamp,
+    ) -> Result<()> {
+        let Some(mandate) = self.user_ledger.mandate(user) else {
+            return Err(Error::denied(format!(
+                "{user} holds no mandate; enrol one in the configuration before funding"
+            )));
+        };
+        let currency = mandate.currency();
+        if let Err(why) = self.user_ledger.eligibility_of(user, now) {
+            let reason = why.describe(user);
+            return self.refuse_funding(user, strategy, amount, why.name(), reason, now);
+        }
+        if let Some((gate, reason)) = self.product_refusal(user, strategy, now) {
+            return self.refuse_funding(user, strategy, amount, gate, reason, now);
+        }
+        self.user_ledger.fund(user, strategy, amount, now)?;
+        self.journal_record(
+            LedgerEntry::Funded {
+                user: user.clone(),
+                strategy: strategy.clone(),
+                currency,
+                amount,
+            },
+            "kernel/ledger",
+            now,
+        )
+    }
+
+    /// Whether the product gate refuses this user this strategy, and under
+    /// which gate name.
+    ///
+    /// The [`Entitlement`] is evaluated under [`Role::Investor`], because
+    /// funding is an investment act: evaluating it as a viewer would refuse
+    /// on the role before the product was reached and report a gate that is
+    /// not the one that matters. What it is evaluated *against* is the
+    /// catalogue's standing offering for the strategy's family — the record
+    /// compliance took, or, for a family nobody has cleared, an offering
+    /// eligible in no jurisdiction, which is the same answer and the honest
+    /// one. Nothing here invents an eligibility to get past the gate; that
+    /// was the state this replaced.
+    ///
+    /// The one case this states rather than answers: a strategy the factory
+    /// has registered no family for. There is no family to look an offering
+    /// up by, so the product arm cannot be evaluated at all. A mandate that
+    /// permits only some families is refused — it cannot be shown that the
+    /// strategy is one of them, and the restrictive answer is the one a
+    /// safety default takes — while [`PermittedFamilies::Any`], the desk's
+    /// arm, has consented to every family and so has no family gate left to
+    /// fail. That second path is the gap: an `Any` mandate funding an
+    /// unregistered strategy is not gated on product eligibility, because
+    /// there is nothing to ask about. Registering the strategy's family
+    /// closes it; inventing a family for it would not.
+    fn product_refusal(
+        &self,
+        user: &UserId,
+        strategy: &StrategyId,
+        now: Timestamp,
+    ) -> Option<(&'static str, String)> {
+        let mandate = self.user_ledger.mandate(user)?;
+        let jurisdiction = mandate.jurisdiction();
+        let Some(family) = self.strategy_family(strategy) else {
+            return match mandate.permitted_families() {
+                PermittedFamilies::Any => None,
+                PermittedFamilies::Only(families) => Some((
+                    "unregistered_family",
+                    format!(
+                        "funding {strategy} for {user} is refused: the mandate permits only the \
+                         famil(ies) {} in {jurisdiction} and the factory has registered no family \
+                         for {strategy}, so nothing can show it is one of them. Register the \
+                         strategy's family before funding it",
+                        families
+                            .iter()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                )),
+            };
+        };
+        let product = self.products.offering(&family);
+        let entitlement = Entitlement::evaluate(user, mandate, Role::Investor, &product, now);
+        match entitlement.can_invest() {
+            Capability::Granted { .. } => None,
+            Capability::Refused { reason } => Some((
+                "entitlement",
+                format!(
+                    "funding {strategy} for {user} is refused: the entitlement for the family \
+                     {family} in {jurisdiction} does not grant investing — {reason}"
+                ),
+            )),
+        }
+    }
+
+    /// The family the factory registered this strategy under, if any.
+    ///
+    /// Owned rather than borrowed so the caller's borrow of the factory ends
+    /// here: what follows journals, which needs the platform mutably.
+    fn strategy_family(&self, strategy: &StrategyId) -> Option<String> {
+        self.central()
+            .factory()
+            .candidate(strategy)
+            .map(|candidate| candidate.family().to_string())
+    }
+
+    /// Journal a funding refusal, count it, and return it as the error.
+    ///
+    /// One place, so a refusal cannot reach a caller without both the record
+    /// and the series moving: the log is what an auditor replays and the
+    /// series is what an operator charts, and a refusal visible in one and
+    /// not the other is two accounts of the same fact that will disagree.
+    fn refuse_funding(
+        &mut self,
+        user: &UserId,
+        strategy: &StrategyId,
+        amount: Decimal,
+        gate: &str,
+        reason: String,
+        now: Timestamp,
+    ) -> Result<()> {
+        self.journal_record(
+            LedgerEntry::FundingRefused {
+                user: user.clone(),
+                strategy: strategy.clone(),
+                amount,
+                gate: gate.to_string(),
+                reason: reason.clone(),
+            },
+            "kernel/ledger",
+            now,
+        )?;
+        // The gate is deliberately not a label. It is journalled, where an
+        // auditor reads it; as a label it would be one more dimension on a
+        // series whose point is how often funding was turned away at all.
+        self.telemetry.metrics.count(
+            names::CENTRAL_ELIGIBILITY_DECISIONS,
+            labels([("decision", "refused_funding")]),
+        );
+        Err(Error::denied(reason))
+    }
+
+    /// Which family may be sold where, as compliance determined it —
+    /// read-only; an offering reaches it through
+    /// [`Platform::offer_product`] and nothing else.
+    pub fn products(&self) -> &ProductCatalogue {
+        &self.products
+    }
+
+    /// Clear a strategy family for sale in the jurisdictions named, as an
+    /// authenticated operator.
+    ///
+    /// The one path into the catalogue, holding the same two conditions an
+    /// eligibility decision is held to — a stated reason and a credential
+    /// fresh within [`ELIGIBILITY_CREDENTIAL_AGE`] — because it is the same
+    /// kind of act: a person widening what the platform may do with a user's
+    /// capital. There is no overload taking a family name and a flag, and
+    /// nothing a model, an agent or a configuration file produces can clear a
+    /// product. The offering is journalled before the catalogue adopts it, so
+    /// the log never lacks a clearance the platform is funding on.
+    pub fn offer_product(
+        &mut self,
+        product: ProductEligibility,
+        operator: &OperatorIdentity,
+        reason: impl Into<String>,
+        now: Timestamp,
+    ) -> Result<()> {
+        let reason = reason.into();
+        if reason.trim().len() < 10 {
+            return Err(Error::denied(
+                "a product offering needs a stated reason; which family may be sold where is a \
+                 compliance determination, and the audit trail is the point",
+            ));
+        }
+        if !operator.is_fresh(now, ELIGIBILITY_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to clear a \
+                 product for sale",
+                operator.subject(),
+                ELIGIBILITY_CREDENTIAL_AGE
+            )));
+        }
+        let mut by = DecidedBy::operator(operator.subject(), operator.method())?;
+        if let Some(approver) = operator.second_approver() {
+            by = by.with_second_approver(approver);
+        }
+        // Checked on a scratch copy first so an offering the catalogue would
+        // refuse is never written to the log as though it stood; then
+        // journalled; then the scratch becomes the live catalogue. The same
+        // discipline [`Platform::apply_eligibility`] keeps.
+        let mut scratch = self.products.clone();
+        scratch.offer(product.clone())?;
+        self.journal_record(
+            ProductEntry {
+                product,
+                by,
+                reason,
+            },
+            PRODUCT_ORIGIN,
+            now,
+        )?;
+        self.products = scratch;
+        Ok(())
+    }
+
+    /// Rebuild the product catalogue from the event log alone.
+    ///
+    /// Selects this kernel's product records by topic and producer and
+    /// replays them in log order. The result is what the log says stands; a
+    /// caller compares it to [`Platform::products`] to prove the platform
+    /// funded against no clearance the log does not hold.
+    pub fn replay_products(&self) -> Result<ProductCatalogue> {
+        let mut products = Vec::new();
+        for record in self.event_log.records() {
+            if record.event.topic != ProductEntry::TOPIC
+                || record.event.lineage.producer != PRODUCT_ORIGIN
+            {
+                continue;
+            }
+            let envelope = StreamEnvelope::from_frame(&record.event)?;
+            products.push(envelope.decode::<ProductEntry>()?.body.product);
+        }
+        ProductCatalogue::replay(products)
+    }
+
+    // --- eligibility ------------------------------------------------------------
+
+    /// Decide a user's eligibility, as an authenticated operator.
+    ///
+    /// The one runtime path, and it takes the same identity type an autonomy
+    /// change does, held to the same two conditions: a stated reason and a
+    /// credential fresh within [`ELIGIBILITY_CREDENTIAL_AGE`]. There is no
+    /// overload taking a subject string, a flag, or anything an agent or a
+    /// model could produce — an [`OperatorIdentity`] is constructed only
+    /// where a credential was verified, and that is the point of taking it.
+    /// The decision is journalled before the registry adopts it, so the log
+    /// never lacks a decision the platform is acting on.
+    pub fn decide_eligibility(
+        &mut self,
+        user: &UserId,
+        decision: EligibilityDecision,
+        operator: &OperatorIdentity,
+        reason: impl Into<String>,
+        now: Timestamp,
+    ) -> Result<EligibilityRecord> {
+        let reason = reason.into();
+        if reason.trim().len() < 10 {
+            return Err(Error::denied(
+                "an eligibility decision needs a stated reason; the audit trail is the point",
+            ));
+        }
+        if !operator.is_fresh(now, ELIGIBILITY_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to decide \
+                 eligibility",
+                operator.subject(),
+                ELIGIBILITY_CREDENTIAL_AGE
+            )));
+        }
+        let mut by = DecidedBy::operator(operator.subject(), operator.method())?;
+        if let Some(approver) = operator.second_approver() {
+            by = by.with_second_approver(approver);
+        }
+        let record = EligibilityRecord {
+            user: user.clone(),
+            decision,
+            by,
+            decided_at: now,
+        };
+        self.apply_eligibility(record.clone(), EligibilitySource::Operator, reason, now)?;
+        Ok(record)
+    }
+
+    /// Journal an eligibility decision and apply it — in that order, and
+    /// only after the registry has been shown to accept it.
+    ///
+    /// Checked on a scratch copy first so a decision the registry would
+    /// refuse is never written to the log as though it stood; then
+    /// journalled; then applied to the live registry. The same discipline
+    /// the fabric journal keeps: the log has the record before the state
+    /// moves, and never a record of a state that did not.
+    ///
+    /// This is also where the decision is counted, rather than in
+    /// [`Platform::decide_eligibility`]: both the operator's runtime path and
+    /// the deployment's committed one end here, and a series that counted
+    /// only the first would disagree with the registry it claims to describe
+    /// on every platform that committed a decision at assembly. Counted after
+    /// the registry has taken it, so a decision the registry refused charts
+    /// nothing.
+    fn apply_eligibility(
+        &mut self,
+        record: EligibilityRecord,
+        source: EligibilitySource,
+        reason: String,
+        now: Timestamp,
+    ) -> Result<()> {
+        let mut scratch = self.user_ledger.clone();
+        scratch.decide_eligibility(record.clone())?;
+        // The decision's own enum supplies the label, so the series is
+        // bounded by the type: a third arm could not be added without this
+        // match failing to compile.
+        let decision = match record.decision {
+            EligibilityDecision::Granted { .. } => "granted",
+            EligibilityDecision::Revoked { .. } => "revoked",
+        };
+        self.journal_record(
+            EligibilityEntry {
+                record: record.clone(),
+                source,
+                reason,
+            },
+            ELIGIBILITY_ORIGIN,
+            now,
+        )?;
+        self.user_ledger.decide_eligibility(record)?;
+        self.telemetry.metrics.count(
+            names::CENTRAL_ELIGIBILITY_DECISIONS,
+            labels([("decision", decision)]),
+        );
+        Ok(())
+    }
+
+    /// Rebuild the eligibility registry from the event log alone.
+    ///
+    /// Selects this kernel's eligibility records by topic and producer and
+    /// replays them in log order through [`EligibilityRegistry::replay`],
+    /// which refuses one out of order. The result is what the log says
+    /// stands; a caller compares it to [`UserLedger::eligibility`] to prove
+    /// the platform acted on nothing the log does not hold.
+    pub fn replay_eligibility(&self) -> Result<EligibilityRegistry> {
+        let mut records = Vec::new();
+        for record in self.event_log.records() {
+            if record.event.topic != EligibilityEntry::TOPIC
+                || record.event.lineage.producer != ELIGIBILITY_ORIGIN
+            {
+                continue;
+            }
+            // The kernel appends the stream envelope's frame, so the body
+            // is one envelope down from the log record — the same path
+            // `replay_journal` takes, read here from the log rather than
+            // the transport because the log is the record.
+            let envelope = StreamEnvelope::from_frame(&record.event)?;
+            records.push(envelope.decode::<EligibilityEntry>()?.body.record);
+        }
+        EligibilityRegistry::replay(records)
+    }
+
+    // --- venue registrations --------------------------------------------------
+
+    /// Record that an authenticated operator registered with a venue.
+    ///
+    /// The one runtime path, and it takes the same identity type an autonomy
+    /// change and an eligibility decision do, held to the same freshness:
+    /// the record's operator is the identity's subject, so there is no
+    /// overload taking a name string, and nothing a model, an agent or a
+    /// request body produces can put a name on a registration. `terms` is
+    /// the URL or document the operator read; `secret` is the deployment
+    /// variable the credential is read under, already screened for shape by
+    /// [`SecretRef`], so the credential's value cannot be passed here at all.
+    /// The record is journalled before the registry adopts it, so the log
+    /// never lacks a registration the platform is admitting a source on.
+    pub fn approve_registration(
+        &mut self,
+        source_id: &str,
+        operator: &OperatorIdentity,
+        terms: &str,
+        secret: SecretRef,
+        now: Timestamp,
+    ) -> Result<RegistrationRecord> {
+        if !operator.is_fresh(now, REGISTRATION_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to approve a \
+                 venue registration",
+                operator.subject(),
+                REGISTRATION_CREDENTIAL_AGE
+            )));
+        }
+        let record = RegistrationRecord::new(source_id, operator.subject(), now, terms, secret)?;
+        self.apply_registration(record.clone(), RegistrationSource::Operator, now)?;
+        Ok(record)
+    }
+
+    /// Journal a registration and adopt it — in that order, and only after
+    /// the registry has been shown to accept it.
+    ///
+    /// Checked on a scratch copy first so a record the registry would refuse
+    /// is never written to the log as though it stood; then journalled; then
+    /// the scratch becomes the live registry. The same discipline
+    /// [`Platform::apply_eligibility`] keeps.
+    ///
+    /// Counted here, after the registry has taken it and by the source that
+    /// brought it, so a registration that appeared at runtime under nobody's
+    /// review is a different series from the committed set rather than
+    /// indistinguishable from it. A record the registry refused charts
+    /// nothing.
+    fn apply_registration(
+        &mut self,
+        record: RegistrationRecord,
+        source: RegistrationSource,
+        now: Timestamp,
+    ) -> Result<()> {
+        let scratch = self.registrations.clone().with_record(record.clone())?;
+        self.journal_record(
+            RegistrationEntry { record, source },
+            REGISTRATION_ORIGIN,
+            now,
+        )?;
+        self.registrations = scratch;
+        self.telemetry.metrics.count(
+            names::CENTRAL_REGISTRATIONS,
+            labels([("source", source.name())]),
+        );
+        Ok(())
+    }
+
+    /// Rebuild the registration registry from the event log alone.
+    ///
+    /// The requirement table is the shipped one — a source-file literal,
+    /// reviewed like code — and every record is read back from this kernel's
+    /// registration entries in log order. The result is what the log says
+    /// stands; a caller compares it to [`Platform::registrations`] to prove
+    /// the platform admits no source on a record the log does not hold.
+    pub fn replay_registrations(&self) -> Result<RegistrationRegistry> {
+        let mut registry = RegistrationRegistry::shipped();
+        for record in self.event_log.records() {
+            if record.event.topic != RegistrationEntry::TOPIC
+                || record.event.lineage.producer != REGISTRATION_ORIGIN
+            {
+                continue;
+            }
+            let envelope = StreamEnvelope::from_frame(&record.event)?;
+            registry = registry.with_record(envelope.decode::<RegistrationEntry>()?.body.record)?;
+        }
+        Ok(registry)
+    }
+
+    /// Who registered with which venue — read-only; a record reaches it
+    /// through [`Platform::approve_registration`] and the configuration
+    /// applied at assembly, and nothing else.
+    pub fn registrations(&self) -> &RegistrationRegistry {
+        &self.registrations
+    }
+
+    /// Where one source stands: keyless, registered by a named person, or a
+    /// refusal naming who must register. The registry's own answer, so the
+    /// feed's admission gate and a route reading this cannot disagree.
+    pub fn registration_standing(&self, source_id: &str) -> Result<RegistrationStanding> {
+        self.registrations.standing(source_id)
+    }
+
+    // --- the fabric journal ---------------------------------------------------
+
+    /// Resume the fabric journal from what the platform's log already holds.
+    ///
+    /// A fresh journal when the log holds no fabric record. Otherwise the
+    /// log is replayed — chain, hashes and every recorded outcome checked by
+    /// [`qip_capital_fabric::replay::replay`] — and each fabric command is
+    /// decided again into a fresh journal, which must arrive at the replayed
+    /// state or assembly is refused. Without this a process restarted on a
+    /// file-backed log would journal a corridor's proposal a second time,
+    /// and a replay from genesis would refuse that record as claiming an
+    /// outcome the control does not produce — the log the platform kept
+    /// would stop being one it could read.
+    ///
+    /// Refused, naming the alternative, when fabric records exist but the
+    /// in-memory log no longer starts at genesis: the log evicts replaceable
+    /// records at capacity, and a replay that stepped over the gap would
+    /// produce a state that reads as rebuilt from the log and is not.
+    fn resume_fabric(log: &EventLog, seed: u64) -> Result<FabricJournal> {
+        let correlation = CorrelationId::from_string(FABRIC_CORRELATION);
+        let mut fabric = FabricJournal::new(seed, correlation);
+        let fabric_records: Vec<FabricRecord> = log
+            .records()
+            .iter()
+            .filter(|record| Self::is_fabric_record(record))
+            .map(|record| record.event.decode::<FabricRecord>().map(|e| e.body))
+            .collect::<Result<_>>()?;
+        if fabric_records.is_empty() {
+            return Ok(fabric);
+        }
+        if log
+            .records()
+            .first()
+            .is_some_and(|first| first.sequence != 1)
+        {
+            return Err(Error::invalid(format!(
+                "the event log holds {} fabric record(s) but no longer starts at genesis, so \
+                 the fabric journal cannot be resumed from it; archive the log and start a \
+                 new one, or open it with a capacity that keeps every record",
+                fabric_records.len()
+            )));
+        }
+        let replayed = qip_capital_fabric::replay::replay(log.records())?;
+        for record in fabric_records {
+            fabric.decide(record.command)?;
+        }
+        if *fabric.state() != replayed.state {
+            return Err(Error::invalid(
+                "the fabric journal decided the log's commands again and arrived at a state the \
+                 log's replay does not hold; the log was written by something other than this \
+                 kernel's controls",
+            ));
+        }
+        Ok(fabric)
+    }
+
+    /// Whether a log record is one of the fabric's, by the same rule the
+    /// replay uses: the fabric topic and the fabric producer, both.
+    fn is_fabric_record(record: &qip_events::log::LogRecord) -> bool {
+        record.event.topic == FabricRecord::TOPIC
+            && record.event.lineage.producer == FABRIC_PRODUCER
+    }
+
+    /// Route one fabric command through the journal and the platform's log.
+    ///
+    /// The journal decides — executing on a scratch copy of the state,
+    /// writing its own record, then adopting — and the same record is then
+    /// appended to the platform's event log in the plain envelope form
+    /// [`qip_capital_fabric::replay::replay`] decodes, under the fabric
+    /// producer, and published to the cycle journal. A refusal by the
+    /// control is an `Outcome::Refused` inside an `Ok` record, because the
+    /// refusal is a decision and belongs in the log; an `Err` here is the
+    /// journal or the log refusing to take the record at all, and the
+    /// caller sees it as the failure it is.
+    ///
+    /// Public so an operator, a composition root or a test can propose a
+    /// destination or a corridor, step one through its life, or have the
+    /// gate assess an intent — each a record, none a movement: the gate's
+    /// admitted verdict carries no way to execute (ADR 0021), and nothing
+    /// in this process consumes one.
+    pub fn decide_fabric(
+        &mut self,
+        command: FabricCommand,
+        now: Timestamp,
+    ) -> Result<FabricRecord> {
+        let at = command.at();
+        let record = self.fabric.decide(command)?;
+        let correlation_id = self
+            .context
+            .ids()
+            .generate::<qip_core::lineage::CorrelationKind>(now);
+        let event_id = self.context.ids().generate::<EventKind>(now);
+        let lineage = Lineage::root(correlation_id, FABRIC_PRODUCER);
+        // The plain envelope, not the stream frame: the replay decodes the
+        // record straight out of the log's payload, and a frame wraps the
+        // payload in the stream envelope's wire form.
+        let plain =
+            qip_events::Envelope::new(event_id.clone(), at, now, lineage.clone(), record.clone());
+        self.event_log.append(&plain.erase()?)?;
+        let facts = EventFacts::derived(
+            SourceIdentity::new(
+                SourceId::new("qip-kernel"),
+                SourceType::Internal,
+                StreamRegion::new(HOME_REGION),
+            ),
+            Subject::unattributed(),
+            FabricRecord::TOPIC,
+        );
+        let sealed = StreamEnvelope::seal(event_id, lineage, record.clone(), at, now, facts)?;
+        self.journal.publish(sealed, now)?;
+        Ok(record)
+    }
+
+    /// Hand in a statement of one balance at one venue, with the tolerance
+    /// its reconciliation is judged against.
+    ///
+    /// The one observation channel this process can honestly attest. The
+    /// kernel holds no read-only API key, no watch-only address and no view
+    /// key — structurally: no field could hold one — so the only provenance
+    /// it can record is a statement a person handed it, and the provenance
+    /// is fixed here rather than taken from the caller. A statement for a
+    /// venue-asset already held replaces it; one for a new venue-asset past
+    /// [`MAX_OBSERVED_VENUE_ASSETS`] is refused. The tolerance is refused
+    /// unless strictly positive, by [`TolerancePolicy::with_tolerance`].
+    /// Nothing is assembled here: the wallet is assembled in the LEARN
+    /// stage, against the ledger as the cycle left it.
+    pub fn observe_statement(
+        &mut self,
+        venue: VenueId,
+        asset: &str,
+        observed: Decimal,
+        tolerance: Decimal,
+        observed_at: Timestamp,
+    ) -> Result<()> {
+        let asset = Asset::new(asset)?;
+        let key = VenueAsset {
+            venue: venue.clone(),
+            asset: asset.clone(),
+        };
+        if !self.holdings_observed.contains_key(&key)
+            && self.holdings_observed.len() >= MAX_OBSERVED_VENUE_ASSETS
+        {
+            return Err(Error::denied(format!(
+                "a statement for {key} would be the {}th venue-asset observed against a bound \
+                 of {MAX_OBSERVED_VENUE_ASSETS}; retire one before adding another",
+                self.holdings_observed.len() + 1
+            )));
+        }
+        self.wallet_tolerances = self
+            .wallet_tolerances
+            .clone()
+            .with_tolerance(asset.clone(), tolerance)?;
+        self.holdings_observed.insert(
+            key,
+            HoldingObservation::new(
+                venue,
+                asset,
+                observed,
+                observed_at,
+                HoldingProvenance::Statement,
+            ),
+        );
+        Ok(())
+    }
+
+    /// Assemble the wallet from every statement held and the ledger's view,
+    /// and reconcile it, through the fabric journal.
+    ///
+    /// Reached from the LEARN stage, after ACT has moved cash, so the
+    /// ledger view is the book the cycle left. Nothing is assembled while no
+    /// statement is held — a wallet of zero holdings reads as an empty
+    /// account rather than an unobserved one. The ledger's view is one
+    /// entry, the desk's cash at the broker's venue, with the capital
+    /// ledger's reservations against it; it is supplied only when a
+    /// statement names that venue-asset, because the wallet refuses a
+    /// ledger view nobody has observed. In-flight is zero and stated so:
+    /// this process instructs no transfer (ADR 0021), so nothing is ever in
+    /// flight towards its book. A stale statement makes the assembly a
+    /// refused record, which the journal keeps; reconciliation then finds
+    /// no wallet and is a refused record too. Both are decisions the log
+    /// shows rather than a stage failure.
+    fn reconcile_wallet(&mut self, now: Timestamp) -> Result<()> {
+        if self.holdings_observed.is_empty() {
+            return Ok(());
+        }
+        let observations: Vec<HoldingObservation> =
+            self.holdings_observed.values().cloned().collect();
+        let desk_venue = VenueId::new(self.broker.name());
+        let desk_key = VenueAsset {
+            venue: desk_venue.clone(),
+            asset: Asset::new(Currency::USD.to_string())?,
+        };
+        let ledger_views = if self.holdings_observed.contains_key(&desk_key) {
+            vec![LedgerView::new(
+                desk_venue,
+                desk_key.asset,
+                self.capital.cash,
+                self.reservations.reserved_total(),
+                Decimal::ZERO,
+            )?]
+        } else {
+            Vec::new()
+        };
+        self.decide_fabric(
+            FabricCommand::Wallet(WalletCommand::Assemble {
+                observations,
+                ledger_views,
+                freshness: STATEMENT_FRESHNESS,
+                now,
+            }),
+            now,
+        )?;
+        self.decide_fabric(
+            FabricCommand::Wallet(WalletCommand::Reconcile {
+                tolerances: self.wallet_tolerances.clone(),
+                at: now,
+            }),
+            now,
+        )?;
+        Ok(())
+    }
+
+    /// The fabric's state as the records built it — the wallet as last
+    /// assembled, the reconciliation outcomes, every corridor and
+    /// destination, every gate assessment. Read-only; the way in is
+    /// [`Platform::decide_fabric`].
+    pub fn fabric_state(&self) -> &FabricState {
+        self.fabric.state()
+    }
+
+    /// The fabric journal's own record count, for a caller checking that
+    /// the platform's log and the journal agree.
+    pub fn fabric_records(&self) -> usize {
+        self.fabric.records().len()
+    }
+
+    /// The statements held, latest per venue-asset.
+    pub fn holdings_observed(&self) -> &BTreeMap<VenueAsset, HoldingObservation> {
+        &self.holdings_observed
     }
 
     /// Charge one cell's absorbed fills into the running risk counters.
@@ -1933,12 +3716,71 @@ impl Platform {
     /// which scores resolved theses. A thesis resolves on its own horizon; a
     /// strategy is judged against the baseline it was promoted on, and the two
     /// answer different questions with different evidence.
+    ///
+    /// Reached every cycle from the LEARN stage, over the outcomes
+    /// [`CentralPlane::live_outcomes`] derives from the sessions each cell's
+    /// fills were attributed to. Public as well, for a caller holding an
+    /// observation the sessions cannot express; the stage's call is the one
+    /// a deployed process makes.
     pub fn learn_from_cells(
         &mut self,
         outcomes: &[CellOutcome],
         now: Timestamp,
     ) -> Result<LearningReport> {
-        self.central.learn(outcomes, None, now)
+        let report = self.central.learn(outcomes, None, now)?;
+        // Blueprint §35.2. A retirement's disposition — or the refusal to
+        // guess one — reaches the log in the same call that retired the
+        // strategy, so the instruction is reproducible from the log and a
+        // retirement with no disposition record is a retirement that did not
+        // happen here. Written before the report is returned: a caller that
+        // read the report and then failed to journal it would leave the
+        // ledger saying retired and the log saying nothing about the lots.
+        for disposition in &report.dispositions {
+            match disposition {
+                DispositionOutcome::Dispositioned(record) => {
+                    self.journal_record(record.clone(), "kernel/retirement", now)?;
+                }
+                DispositionOutcome::Refused(refusal) => {
+                    self.journal_record(refusal.clone(), "kernel/retirement", now)?;
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    /// Append one record to the event log and publish it to the journal,
+    /// exactly as a cycle's entry is: the same frame reaches both, so neither
+    /// can hold a record the other does not.
+    fn journal_record<B: EventBody>(
+        &mut self,
+        body: B,
+        origin: &str,
+        now: Timestamp,
+    ) -> Result<()> {
+        let correlation_id = self
+            .context
+            .ids()
+            .generate::<qip_core::lineage::CorrelationKind>(now);
+        let facts = EventFacts::derived(
+            SourceIdentity::new(
+                SourceId::new("qip-kernel"),
+                SourceType::Internal,
+                StreamRegion::new(HOME_REGION),
+            ),
+            Subject::unattributed(),
+            B::TOPIC,
+        );
+        let envelope = StreamEnvelope::seal(
+            self.context.ids().generate::<EventKind>(now),
+            Lineage::root(correlation_id, origin),
+            body,
+            now,
+            now,
+            facts,
+        )?;
+        self.event_log.append(&envelope.to_frame()?)?;
+        self.journal.publish(envelope, now)?;
+        Ok(())
     }
 
     pub fn context(&self) -> &Context {
@@ -2005,6 +3847,63 @@ impl Platform {
         &self.reservations
     }
 
+    /// The per-user, per-strategy books — read-only; fills reach them
+    /// through [`Platform::ingest_cell_report`] and nothing else.
+    pub fn user_ledger(&self) -> &UserLedger {
+        &self.user_ledger
+    }
+
+    /// What every enrolled user may do, evaluated fresh under the viewer
+    /// role against every product the central factory has registered.
+    ///
+    /// Evaluated here rather than in the API because the API is forbidden
+    /// the capital crate (`api_boundary.rs`, `FORBIDDEN_CRATES`) and so
+    /// cannot name the evaluator; what it may do is read the result. The
+    /// products are the registered strategies' families, each under the
+    /// clearance the [`ProductCatalogue`] holds for it — the same offering
+    /// [`Platform::fund_user`] gates on, so the page and the gate cannot
+    /// disagree about what a family is cleared for. A family nobody has
+    /// cleared is eligible in no jurisdiction, which is refused everywhere
+    /// and is the honest answer for a determination nobody has taken. The
+    /// viewer role is fixed rather than mapped from the caller's
+    /// API role: an operator credential on the API is not an investor in the
+    /// ledger, and the surface that reads this is the viewer's. Ordered by
+    /// user then family, so a report renders the same on every machine.
+    /// Empty when no strategy is registered, which the caller states rather
+    /// than fills in.
+    pub fn viewer_entitlements(&self, now: Timestamp) -> Vec<Entitlement> {
+        let products: Vec<ProductEligibility> = self
+            .central()
+            .factory()
+            .candidates()
+            .map(|candidate| candidate.family().as_str())
+            .collect::<std::collections::BTreeSet<&str>>()
+            .into_iter()
+            .map(|family| self.products.offering(family))
+            .collect();
+        self.user_ledger
+            .mandates()
+            .iter()
+            .flat_map(|(user, mandate)| {
+                products.iter().map(move |product| {
+                    Entitlement::evaluate(user, mandate, Role::Viewer, product, now)
+                })
+            })
+            .collect()
+    }
+
+    /// The seven checks of the transfer gate, in the order it runs them.
+    ///
+    /// Passed through from the fabric so the API, which may not depend on
+    /// the fabric, lists the checks the gate actually runs rather than a
+    /// copy that would drift the day an eighth was added. The gate runs
+    /// only when an intent is routed through [`Platform::decide_fabric`],
+    /// and its assessments are read from [`Platform::fabric_state`]; this
+    /// returns the roster, not an assessment.
+    pub fn transfer_gate_checks() -> &'static [qip_capital_fabric::gate::GateCheck; 7] {
+        &qip_capital_fabric::gate::GateCheck::ALL
+    }
+
     pub fn proposals(&self) -> &[Proposal] {
         &self.proposals
     }
@@ -2024,12 +3923,31 @@ impl Platform {
         &self.desk
     }
 
-    /// The platform's world model — the one [`Platform::observe`] feeds.
+    /// The platform's world model — the one [`Platform::observe`] feeds, and
+    /// the one the agents read through the desk's `read_world_model` gate.
     ///
     /// Read-only: `observe` is the writer, and a second writer would be a
-    /// second story about what the platform believes.
-    pub fn world(&self) -> &WorldModel {
-        &self.world
+    /// second story about what the platform believes. The borrow is a read
+    /// lock on the shared slot, so hold it for a statement, not a cycle.
+    pub fn world(&self) -> Reading<'_, WorldModel> {
+        self.world.read()
+    }
+
+    /// The market view the agents read through the desk's `read_market_data`
+    /// gate, as [`Platform::observe`] has fed it.
+    pub fn market_view(&self) -> Reading<'_, MarketView> {
+        self.market.read()
+    }
+
+    /// Whether the desk the agents hold reads the platform's own world model
+    /// and market view rather than a copy.
+    ///
+    /// Answered by pointer identity on the shared slots, so a regression to
+    /// a cold copy — the wiring this platform ran with for its whole life
+    /// before this seam existed — is a `false` here and not a `no_data`
+    /// finding somebody has to notice in a cycle report.
+    pub fn desk_is_fed(&self) -> bool {
+        self.world.feeds(&self.desk.world) && self.market.feeds(&self.desk.market)
     }
 
     /// Where liquidity lives, per instrument across venues, as fed from the
@@ -2052,6 +3970,19 @@ impl Platform {
     /// the decide stage read.
     pub fn equity(&self) -> Decimal {
         self.capital.equity()
+    }
+
+    /// The realised drawdown of the book from its running peak — the
+    /// figure the allocator sizes under.
+    ///
+    /// Exposed so the API's policy producer reads the same number the
+    /// allocator does: the region shares it ships and the envelopes the
+    /// centre issues then come from one drawdown, rather than from two
+    /// readings that could differ by a fill. A statistic, so `f64`; it
+    /// scales nothing here, and the crossing to money happens where the
+    /// allocator applies its schedule.
+    pub fn drawdown(&self) -> f64 {
+        self.capital.drawdown()
     }
 
     /// P&L realised by position-reducing fills, cumulative.
@@ -2102,6 +4033,46 @@ impl Platform {
             self.evaluations.drain(..excess);
         }
 
+        // Charge every graded outcome to the components that produced the
+        // thesis: the detector whose kind is the hypothesis class, and each
+        // analyst whose run is among the contributors. Then hand the REASON
+        // stage the factors the record now supports. Replaced whole every
+        // time, so an origin whose window rolled below the minimum sample
+        // loses its factor rather than keeping a stale one.
+        //
+        // An evaluation the self-model cannot charge — a class that is empty
+        // or carries the key separator, a confidence outside `[0, 1]` — is
+        // skipped with a problem line and the rest are charged. It used to
+        // abort the pass with `?`, which threw away every other thesis that
+        // resolved this cycle, the calibration over the window and the
+        // factors REASON was owed, because one class string was malformed;
+        // and it aborted after the evaluations had already joined the
+        // window, so the window and the self-model disagreed about what had
+        // been graded.
+        let roster: Vec<String> = self
+            .organisation
+            .roster()
+            .iter()
+            .map(|manifest| manifest.id.clone())
+            .collect();
+        let mut problems = Vec::new();
+        for evaluation in &evaluations {
+            let charged = match Self::components_of(evaluation, &roster) {
+                Ok(components) => self.self_model.absorb(evaluation, &components),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = charged {
+                problems.push(format!(
+                    "thesis {} (class {:?}) was graded but charged to no component: {}",
+                    evaluation.hypothesis_id,
+                    evaluation.class,
+                    error.message()
+                ));
+            }
+        }
+        self.reasoning
+            .set_origin_factors(self.self_model.origin_factors());
+
         let informative = self
             .evaluations
             .iter()
@@ -2134,12 +4105,19 @@ impl Platform {
             evaluations,
             skipped,
             report,
+            problems,
         })
     }
 
     /// The most recent calibration, if any thesis has resolved informatively.
     pub fn calibration(&self) -> Option<&CalibrationReport> {
         self.last_calibration.as_ref()
+    }
+
+    /// What the platform has measured of its own components, for the API and
+    /// the tests. Empty until a thesis has resolved informatively.
+    pub fn self_model(&self) -> &SelfModel {
+        &self.self_model
     }
 
     /// Every thesis evaluation in the calibration window, oldest first.
@@ -2221,6 +4199,19 @@ impl Platform {
                         self.bar_history.entry(key).or_default(),
                         bar.as_ref().clone(),
                     );
+                    // The desk's series, from the same bar at the same
+                    // instant. The guard is taken and released before the
+                    // rebuild below asks for the write lock again.
+                    let overflowed = self.market.update(|market| {
+                        market.snapshot.apply_bar(bar.as_ref().clone());
+                        market
+                            .snapshot
+                            .get(&bar.object_id)
+                            .is_some_and(|state| state.bars.len() >= DESK_SERIES_REBUILD_AT)
+                    });
+                    if overflowed {
+                        self.rebuild_desk_snapshot();
+                    }
                     bars.push(bar);
                     absorbed += 1;
                 }
@@ -2228,24 +4219,32 @@ impl Platform {
                     self.ensure_world_object(trade.object_id.as_str(), trade.at);
                     // "Last traded price" is the feature store's own
                     // definition of `close`, and a trade is exactly that.
-                    self.world.features_mut().record(
-                        "close",
-                        trade.object_id.as_str(),
-                        FeatureValue::new(trade.price.to_f64(), trade.at, trade.at),
-                    );
+                    self.world.update(|world| {
+                        world.features_mut().record(
+                            "close",
+                            trade.object_id.as_str(),
+                            FeatureValue::new(trade.price.to_f64(), trade.at, trade.at),
+                        );
+                    });
+                    self.market
+                        .update(|market| market.snapshot.apply_trade(trade));
                     absorbed += 1;
                 }
                 SensedRecord::Tick(tick) => {
                     self.ensure_world_object(tick.object_id.as_str(), tick.at);
-                    self.world.features_mut().record(
-                        "close",
-                        tick.object_id.as_str(),
-                        FeatureValue::new(tick.price.to_f64(), tick.at, tick.at),
-                    );
+                    self.world.update(|world| {
+                        world.features_mut().record(
+                            "close",
+                            tick.object_id.as_str(),
+                            FeatureValue::new(tick.price.to_f64(), tick.at, tick.at),
+                        );
+                    });
                     absorbed += 1;
                 }
                 SensedRecord::Quote(quote) => {
                     self.ensure_world_object(quote.object_id.as_str(), quote.at);
+                    self.market
+                        .update(|market| market.snapshot.apply_quote(quote.clone()));
                     if let Some(bps) = spread_bps(quote.bid, quote.ask) {
                         push_bounded(
                             self.spread_history
@@ -2284,6 +4283,8 @@ impl Platform {
                     let observation =
                         DepthObservation::from_book(&book, BOOK_DEPTH_LEVELS, VenueStatus::Open);
                     self.absorb_depth(observation, book.at);
+                    self.market
+                        .update(|market| market.snapshot.apply_book(*book));
                     absorbed += 1;
                 }
                 SensedRecord::News(item) => {
@@ -2291,7 +4292,8 @@ impl Platform {
                     // records sentiment at the item's published instant; the
                     // context supplies only entity-resolution bookkeeping,
                     // never a knowability stamp.
-                    self.world.absorb_news(&item, &self.context);
+                    let context = &self.context;
+                    self.world.update(|world| world.absorb_news(&item, context));
                     for event in MarketEvent::from_news(&item) {
                         self.push_market_event(event);
                     }
@@ -2299,7 +4301,7 @@ impl Platform {
                 }
                 SensedRecord::Fundamental(update) => {
                     self.define_fundamental_features(&update.metric, &update.provenance.source);
-                    self.world.absorb_fundamental(&update);
+                    self.world.update(|world| world.absorb_fundamental(&update));
                     if let Some(surprise) = update.surprise() {
                         // The surprise series the observation detector scans,
                         // keyed the way `SensedRecord::subject` names it.
@@ -2314,7 +4316,7 @@ impl Platform {
                     absorbed += 1;
                 }
                 SensedRecord::Macro(observation) => {
-                    self.world.absorb_macro(&observation);
+                    self.world.update(|world| world.absorb_macro(&observation));
                     self.push_market_event(MarketEvent::from_macro(&observation));
                     absorbed += 1;
                 }
@@ -2341,29 +4343,22 @@ impl Platform {
                     absorbed += 1;
                 }
                 SensedRecord::AlternativeData(point) => {
-                    let feature = format!("alt/{}/{}", point.dataset, point.metric);
-                    if self.world.features().definition(&feature).is_none() {
-                        self.world.features_mut().define(
-                            Feature::new(
-                                &feature,
-                                "alternative data series",
-                                point.provenance.source.clone(),
-                            )
-                            .with_staleness(Duration::from_days(30)),
-                        );
+                    // The world model owns the name and the key, from the
+                    // vocabulary the analyst reads by. A reading it refuses —
+                    // a licensed metric from an unlicensed dataset — is not
+                    // absorbed and is reported, for the same reason a refused
+                    // depth observation is: a reading quietly dropped looks
+                    // exactly like a dataset that never published.
+                    let outcome = self
+                        .world
+                        .update(|world| world.absorb_alternative_data(&point));
+                    match outcome {
+                        Ok(()) => absorbed += 1,
+                        Err(error) => self.capture_problems.push(format!(
+                            "an alternative-data reading was refused: {}",
+                            error.message()
+                        )),
                     }
-                    self.world.features_mut().record(
-                        &feature,
-                        &point.subject_id,
-                        FeatureValue {
-                            value: point.value,
-                            valid_at: point.observed_at,
-                            available_at: point.provenance.ingestion_time,
-                            confidence: point.quality.score(),
-                            imputed: false,
-                        },
-                    );
-                    absorbed += 1;
                 }
                 SensedRecord::ReferenceData(update) => {
                     self.ensure_world_object(&update.object_id, update.provenance.ingestion_time);
@@ -2381,36 +4376,39 @@ impl Platform {
                         && value.is_finite()
                     {
                         let feature = format!("reference/{}", update.field);
-                        if self.world.features().definition(&feature).is_none() {
-                            self.world.features_mut().define(
-                                Feature::new(
-                                    &feature,
-                                    "reference data field",
-                                    update.provenance.source.clone(),
-                                )
-                                // Reference values persist until restated;
-                                // ten years is "no staleness bound" said
-                                // with a number.
-                                .with_staleness(Duration::from_days(3_650)),
+                        self.world.update(|world| {
+                            if world.features().definition(&feature).is_none() {
+                                world.features_mut().define(
+                                    Feature::new(
+                                        &feature,
+                                        "reference data field",
+                                        update.provenance.source.clone(),
+                                    )
+                                    // Reference values persist until
+                                    // restated; ten years is "no staleness
+                                    // bound" said with a number.
+                                    .with_staleness(Duration::from_days(3_650)),
+                                );
+                            }
+                            world.features_mut().record(
+                                &feature,
+                                &update.object_id,
+                                FeatureValue::new(
+                                    value,
+                                    update.effective_from,
+                                    update.provenance.ingestion_time,
+                                ),
                             );
-                        }
-                        self.world.features_mut().record(
-                            &feature,
-                            &update.object_id,
-                            FeatureValue::new(
-                                value,
-                                update.effective_from,
-                                update.provenance.ingestion_time,
-                            ),
-                        );
+                        });
                     }
                     absorbed += 1;
                 }
             }
         }
         if !bars.is_empty() {
-            self.world
-                .absorb_bars(bars.iter().map(|bar| (bar.as_ref(), bar.close_time())));
+            self.world.update(|world| {
+                world.absorb_bars(bars.iter().map(|bar| (bar.as_ref(), bar.close_time())));
+            });
         }
         absorbed
     }
@@ -2422,14 +4420,55 @@ impl Platform {
     /// rewrite that. `recorded_at` is the record's own knowable instant, never
     /// the wall clock.
     fn ensure_world_object(&mut self, object_id: &str, recorded_at: Timestamp) {
-        if self.world.graph().node(object_id).is_none() {
-            self.world.graph_mut().add_node(Node::new(
-                object_id,
-                NodeKind::FinancialObject,
-                object_id,
-                recorded_at,
-            ));
-        }
+        self.world.update(|world| {
+            if world.graph().node(object_id).is_none() {
+                world.graph_mut().add_node(Node::new(
+                    object_id,
+                    NodeKind::FinancialObject,
+                    object_id,
+                    recorded_at,
+                ));
+            }
+        });
+    }
+
+    /// Hold the desk's bar series to the platform's own bound by rebuilding
+    /// the snapshot from `bar_history`.
+    ///
+    /// `BarSeries` has no bound of its own and `MarketSnapshot` no mutable
+    /// path to one instrument, so the whole snapshot is rebuilt: every
+    /// instrument's latest quote, book and trade are re-applied from the old
+    /// view, and its bars are re-applied from the platform's bounded history
+    /// rather than from the old series — so what the desk reads afterwards is
+    /// derived from the platform's record and not from its own past. Bars
+    /// arrive in order, so each re-application lands at the end of its series
+    /// and the rebuild is linear. The one figure not preserved is
+    /// `session_volume`, which a re-applied last trade restarts at that
+    /// trade's size; nothing on the desk reads it, and it is said here rather
+    /// than left to be discovered. Without this the desk would grow with
+    /// uptime — the failure [`SERIES_HISTORY`] exists to prevent, reached
+    /// through the one series that constant did not cover.
+    fn rebuild_desk_snapshot(&self) {
+        let history = &self.bar_history;
+        self.market.update(|market| {
+            let as_of = market.snapshot.as_of;
+            let old = std::mem::replace(&mut market.snapshot, MarketSnapshot::new(as_of));
+            for (object_id, state) in old.instruments() {
+                if let Some(quote) = &state.quote {
+                    market.snapshot.apply_quote(quote.clone());
+                }
+                if let Some(book) = &state.book {
+                    market.snapshot.apply_book(book.clone());
+                }
+                if let Some(trade) = &state.last_trade {
+                    market.snapshot.apply_trade(trade.clone());
+                }
+                for bar in history.get(object_id).into_iter().flatten() {
+                    market.snapshot.apply_bar(bar.clone());
+                }
+            }
+            market.snapshot.advance_to(as_of);
+        });
     }
 
     /// Hand a depth observation to the topology, surfacing a refusal.
@@ -2457,13 +4496,15 @@ impl Platform {
             (metric, "reported fundamental"),
             (surprise.as_str(), "reported fundamental against consensus"),
         ] {
-            if self.world.features().definition(name).is_none() {
-                self.world.features_mut().define(
-                    Feature::new(name, description, source)
-                        .with_lag(Duration::from_days(30))
-                        .with_staleness(Duration::from_days(200)),
-                );
-            }
+            self.world.update(|world| {
+                if world.features().definition(name).is_none() {
+                    world.features_mut().define(
+                        Feature::new(name, description, source)
+                            .with_lag(Duration::from_days(30))
+                            .with_staleness(Duration::from_days(200)),
+                    );
+                }
+            });
         }
     }
 
@@ -2779,6 +4820,7 @@ impl Platform {
             summary: report.summarise(),
             calibration: self.cycle_calibration.clone(),
             counterfactuals: self.cycle_counterfactuals.clone(),
+            strategy_review: self.cycle_strategy_review.clone(),
         };
 
         let facts = EventFacts::derived(
@@ -2838,8 +4880,10 @@ impl Platform {
         // dimensions — not the price-history count this line used to quote
         // while the model sat empty. A coverage line that cannot go down when
         // absorption stops is not a coverage line.
-        let state = self.world.state_at(now, now);
-        let documents = self.world.index().len();
+        let (state, documents) = {
+            let world = self.world.read();
+            (world.state_at(now, now), world.index().len())
+        };
         let liquidity = if self.liquidity.observation_count() == 0 {
             String::new()
         } else {
@@ -2879,13 +4923,22 @@ impl Platform {
             ),
             (None, _) => String::new(),
         };
-        StageOutcome::ran(
+        // The valuation plane's credit half, as the assembly derived it. An
+        // obligor whose covenant has gone, a currency the platform holds
+        // credit in and has no curve for, and a credit claim whose terms will
+        // not support a default probability are each raised as problems: a
+        // register that computed an expected loss and told nobody would be
+        // the control-that-cannot-fire shape this platform already records one
+        // example of.
+        let credit = self.credit.summary();
+        let credit_problems = self.credit.problems();
+        let mut outcome = StageOutcome::ran(
             Stage::Understand,
             state.object_count + state.entity_count,
             format!(
                 "world model holds {} instrument(s), {} entity(ies), {} relationship(s), \
                  {} causal claim(s), {} readable feature value(s), {} document(s)\
-                 {liquidity}{events}{chain}",
+                 {liquidity}{events}{chain}{credit}",
                 state.object_count,
                 state.entity_count,
                 state.relationship_count,
@@ -2893,7 +4946,11 @@ impl Platform {
                 state.features.len(),
                 documents
             ),
-        )
+        );
+        for problem in credit_problems {
+            outcome = outcome.with_problem(problem);
+        }
+        outcome
     }
 
     fn stage_discover(&mut self, now: Timestamp) -> StageOutcome {
@@ -2990,15 +5047,57 @@ impl Platform {
         // worthless however good it is.
         let latency_budget = opportunity.expires_at.since(self.context.now());
 
+        // How sure the answer has to be. This is the one place
+        // [`PlatformConfig::reasoning_confidence_bar`] is read, and until it
+        // was read here the field was a documented control nothing consulted —
+        // the `MaxExpectedShortfall` shape `.claude/rules` names by example.
+        //
+        // The requirement is `rank.importance`, how much the observation
+        // matters if it is real. `DecisionContext::required_confidence_f64` is
+        // a statement about the consequence of acting, so the consequence is
+        // what belongs in it. It was `rank.confidence`, and that was wrong
+        // twice over. Once as arithmetic: `confidence` is already inside
+        // `value_at_stake` above, because `share = importance * confidence`,
+        // so a flimsy observation both lowered the budget and lowered the bar
+        // — one fact counted twice in the same direction — while `importance`
+        // was never used as a requirement at all. Once as argument: the
+        // comment that stood here said reusing the detectors' own figure kept
+        // the platform from investigating something it had already judged not
+        // credible enough to look at, and this number cannot do that. A
+        // requirement no rung reaches yields `TierVerdict::Incapable`, the one
+        // verdict that climbs rather than refuses (`qip_cost_router::router`),
+        // so lowering it only ever widens the ladder. What declines an
+        // incredible observation is `value_at_stake`, which already carries
+        // the credibility.
+        //
+        // Capped by the configured bar, and the cap is load-bearing rather
+        // than decorative. Importance saturates at one and the top rung
+        // reaches 0.99, so an uncapped requirement of 1.0 is unroutable: the
+        // platform would refuse to reason about exactly the observation it
+        // rated most consequential. The shipped 0.90 is
+        // `IntelligenceTier::MultiAgentReasoning`'s own resolving power, and
+        // the panel is the only reasoner this platform implements, so the
+        // router is never asked for a rung nothing here could have run.
+        //
+        // Refused rather than clamped, naming the field. A bar outside `(0, 1]`
+        // is not a probability, and `min` would swallow one above one silently
+        // — `importance` is at most one, so the invalid setting would simply
+        // never bind and the operator would never learn the configuration was
+        // nonsense.
+        let bar = self.config.reasoning_confidence_bar;
+        if !bar.is_finite() || bar <= 0.0 || bar > 1.0 {
+            return Err(Error::invalid(format!(
+                "reasoning_confidence_bar is {bar}, which is not a probability; set it in (0, 1] \
+                 before this platform routes anything — the REASON stage will not place a decision \
+                 against a requirement nobody could have meant"
+            )));
+        }
+
         Ok(DecisionContext::new(
             subject,
             value_at_stake,
             latency_budget,
-            // The bar the detectors already had to clear for the opportunity to
-            // be queued at all, reused rather than reinvented: a separate
-            // constant here would let the platform investigate something it had
-            // already decided was not credible enough to look at.
-            opportunity.rank.confidence,
+            opportunity.rank.importance.min(bar),
             // A thesis is an estimate. It is not a pre-trade risk check, and
             // the router's `Required` arm returns a type that cannot name a
             // model rung — see `qip_cost_router::router`, where that is the
@@ -3211,7 +5310,60 @@ impl Platform {
         self.reason_routing = Some(routing);
     }
 
+    /// The REASON stage: the organisation's authorisation first, then the
+    /// queue.
+    ///
+    /// The authorisation is checked and recorded on every cycle, whether or
+    /// not anything is in the queue, because it is a state of the
+    /// organisation and not of the question: an operator who sees the gauge
+    /// rise on a quiet cycle learns the same fact a day earlier than one who
+    /// waits for the next opportunity to be refused eighteen times.
     fn stage_reason(&mut self, now: Timestamp, lineage: &Lineage) -> StageOutcome {
+        let expired = self.expired_manifests(now);
+        let roster = self.organisation.roster().len();
+        self.telemetry.metrics.gauge(
+            names::AGENT_MANIFESTS_EXPIRED,
+            labels([]),
+            expired.len() as f64,
+        );
+        let outcome = self.reason_about_the_queue(now, lineage);
+        if expired.is_empty() {
+            return outcome;
+        }
+        // Up to three addresses in the line, the rest as a count: the
+        // journal keeps every problem of every cycle, and a roster's worth of
+        // ids on every cycle of a ninety-day lapse is a record nobody reads.
+        let named: Vec<&str> = expired.iter().take(3).map(String::as_str).collect();
+        let others = expired.len().saturating_sub(named.len());
+        let addresses = if others == 0 {
+            named.join(", ")
+        } else {
+            format!("{} and {others} more", named.join(", "))
+        };
+        outcome.with_problem(format!(
+            "the organisation is unauthorised: {} of {roster} agent manifest(s) are past \
+             their review interval ({addresses}); every run is refused until an operator \
+             re-reviews them, and nothing here renews one",
+            expired.len()
+        ))
+    }
+
+    /// Manifests on the roster whose review interval has lapsed at `now`, in
+    /// roster order.
+    ///
+    /// Read from the manifests themselves rather than from the governance
+    /// review's rule name, so a rewording of that review cannot silently
+    /// leave this count at zero.
+    fn expired_manifests(&self, now: Timestamp) -> Vec<String> {
+        self.organisation
+            .roster()
+            .iter()
+            .filter(|manifest| manifest.is_expired(now))
+            .map(|manifest| manifest.id.clone())
+            .collect()
+    }
+
+    fn reason_about_the_queue(&mut self, now: Timestamp, lineage: &Lineage) -> StageOutcome {
         let Some(opportunity) = self.queue.first().cloned() else {
             return StageOutcome::ran(Stage::Reason, 0, "nothing in the queue to reason about");
         };
@@ -3332,7 +5484,18 @@ impl Platform {
             Some(PANEL),
         ));
 
-        let brief = qip_agents::finding::AgentBrief::new(
+        // Precedent: the nearest resolved episodes memory holds for this
+        // situation, as known before `now`. Recorded beside the hypothesis
+        // as evidence context, and handed to the panel through the brief's
+        // *typed* field only — never through `brief.context`, which is the
+        // string the reviewer's lesson matcher substring-matches against. A
+        // precedent block written there could change which objections are
+        // raised and, through their count, the confidence, which is the one
+        // thing this record must not do. `BriefPrecedent` cannot be passed
+        // where a `&str` is, so the panel can cite it and cannot count it;
+        // see `HypothesisPrecedent` and `qip_agents::finding::BriefPrecedent`.
+        let precedent = self.recall_precedent(&opportunity, now);
+        let mut brief = qip_agents::finding::AgentBrief::new(
             opportunity.headline.clone(),
             now,
             opportunity.horizon,
@@ -3340,16 +5503,50 @@ impl Platform {
         .with_context(opportunity.historical_context.clone())
         .about_objects(opportunity.affected_objects.clone())
         .about_entities(opportunity.affected_entities.clone());
+        // A precedent the brief refuses is a kernel bug — the store already
+        // filters to `known_at < now` — so it is reported as a problem and
+        // the panel is convened without it, rather than with a precedent
+        // that fails the point-in-time rule.
+        let mut briefing_problem = None;
+        match precedent
+            .as_ref()
+            .map(|(query, recall)| brief_precedent(query, recall, now))
+        {
+            Some(Ok(Some(briefed))) => brief = brief.with_precedent(briefed),
+            Some(Ok(None)) | None => {}
+            Some(Err(error)) => {
+                briefing_problem = Some(format!(
+                    "the recalled precedent could not be briefed to the panel: {}",
+                    error.message()
+                ));
+            }
+        }
 
         let report = self.organisation.dispatch(&brief, now, lineage);
         self.telemetry
             .metrics
             .increment(names::AGENT_RUNS, labels([]), report.runs.len() as u64);
+        // A run the host refused before the agent ran is reported with the
+        // host's reason, not as `failed`: an expired manifest and a bug in the
+        // analyst are different problems with different owners, and for
+        // ninety days after assembly they read identically.
+        let refused: BTreeMap<&str, &str> = report
+            .runs
+            .iter()
+            .filter_map(|run| match &run.status {
+                RunStatus::Refused { reason } => Some((run.agent_id.as_str(), reason.as_str())),
+                _ => None,
+            })
+            .collect();
         let mut problems: Vec<String> = report
             .failed
             .iter()
-            .map(|agent| format!("{agent} failed"))
+            .map(|agent| match refused.get(agent.as_str()) {
+                Some(reason) => format!("{agent} refused to run: {reason}"),
+                None => format!("{agent} failed"),
+            })
             .collect();
+        problems.extend(briefing_problem);
         if !report.failed.is_empty() {
             self.telemetry.metrics.increment(
                 names::AGENT_FAILURES,
@@ -3419,9 +5616,10 @@ impl Platform {
                         error.message()
                     ));
                 }
-                if !approved {
+                let decision = if !approved {
                     outcome = outcome
                         .with_problem(format!("rejected on review: {}", reasoned.review.rationale));
+                    DecisionTaken::RejectedOnReview
                 } else {
                     match self.thesis_from(&opportunity, &reasoned) {
                         Ok(thesis) => {
@@ -3433,6 +5631,7 @@ impl Platform {
                                 self.pending_theses
                                     .drain(..self.pending_theses.len() - PROPOSAL_HISTORY);
                             }
+                            DecisionTaken::Approved
                         }
                         // An approved thesis that cannot be sized is reported,
                         // not dropped silently — the difference between "we
@@ -3443,7 +5642,34 @@ impl Platform {
                                 "approved but not sizeable: {}",
                                 reason.message()
                             ));
+                            DecisionTaken::NotSizeable
                         }
+                    }
+                };
+                // The episode this cycle is, written down with what was
+                // decided, and the precedent it was decided beside. The
+                // episode waits in `pending_episodes` until LEARN resolves
+                // the claim; only then does it enter memory.
+                match self.record_precedent(
+                    &opportunity,
+                    &reasoned,
+                    &report,
+                    precedent.as_ref(),
+                    decision,
+                    now,
+                ) {
+                    Ok(Some(digest)) => {
+                        outcome.detail.push_str(&format!(
+                            "; precedent: {} nearest, {} resolved, {} agreed",
+                            digest.nearest, digest.resolved, digest.agreeing
+                        ));
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        outcome = outcome.with_problem(format!(
+                            "the episode could not be recorded: {}",
+                            error.message()
+                        ));
                     }
                 }
                 outcome
@@ -3469,6 +5695,206 @@ impl Platform {
             .fold(outcome, |acc, problem| acc.with_problem(problem))
     }
 
+    /// The regime in force for `subject`, as the labels memory encodes.
+    fn regime_label(&self, subject: &str) -> RegimeLabel {
+        RegimeLabel {
+            market: self.market_regime(subject).as_str().to_string(),
+            volatility: self.volatility_regime(subject).as_str().to_string(),
+        }
+    }
+
+    /// The situation as REASON sees it before the panel reports — the
+    /// instrument, the regime, the claim the anomaly implies and the
+    /// horizon — and the precedent memory holds for it at `now`.
+    ///
+    /// The query carries no stances, no findings and a zero confidence,
+    /// because none of those exist yet; the encoding leaves those blocks at
+    /// zero rather than guessing them. `None` where the opportunity names no
+    /// instrument, which is also where no hypothesis can be formed.
+    fn recall_precedent(
+        &self,
+        opportunity: &Opportunity,
+        now: Timestamp,
+    ) -> Option<(EpisodeQuery, Recall)> {
+        let subject = opportunity.affected_objects.first()?;
+        let claim = opportunity.anomalies.first().and_then(|anomaly| {
+            mechanism_for(anomaly).map(|(_, claim)| ClaimRecord {
+                class: anomaly.kind.as_str().to_string(),
+                claim: claim.as_str().to_string(),
+                direction: claim.implied_sign().unwrap_or(0.0),
+                confidence: 0.0,
+            })
+        });
+        let query = EpisodeQuery {
+            instrument: subject.as_str().to_string(),
+            regime: self.regime_label(subject.as_str()),
+            claim,
+            findings: None,
+            stances: Vec::new(),
+            horizon: opportunity.horizon,
+        };
+        let recall = self.episodes.recall(&query, now, PRECEDENT_K);
+        Some((query, recall))
+    }
+
+    /// Write the precedent beside the hypothesis and hold the episode until
+    /// its claim resolves.
+    ///
+    /// Returns the digest where a precedent was recorded, `None` where the
+    /// opportunity names no instrument, and an error where the episode would
+    /// not validate — a finding with a conviction outside `[0, 1]`, say —
+    /// which the stage reports rather than remembering a record the memory
+    /// would refuse at resolution.
+    fn record_precedent(
+        &mut self,
+        opportunity: &Opportunity,
+        reasoned: &ReasoningOutcome,
+        report: &qip_investment_agents::OrganisationReport,
+        precedent: Option<&(EpisodeQuery, Recall)>,
+        decision: DecisionTaken,
+        now: Timestamp,
+    ) -> Result<Option<PrecedentDigest>> {
+        let Some(subject) = opportunity.affected_objects.first() else {
+            return Ok(None);
+        };
+        let hypothesis = &reasoned.hypothesis;
+        let direction = hypothesis.claim.implied_sign().unwrap_or(0.0);
+        let claim = ClaimRecord {
+            class: hypothesis.class.clone(),
+            claim: hypothesis.claim.as_str().to_string(),
+            direction,
+            confidence: hypothesis.effective_confidence(),
+        };
+        // Agent-id order, so the same panel encodes identically whatever
+        // order its runs returned in.
+        let stances: Vec<AnalystStance> = report
+            .findings
+            .iter()
+            .map(|finding| {
+                (
+                    finding.agent_id.clone(),
+                    AnalystStance {
+                        agent_id: finding.agent_id.clone(),
+                        direction: match finding.direction {
+                            qip_agents::finding::Direction::Positive => StanceDirection::Positive,
+                            qip_agents::finding::Direction::Negative => StanceDirection::Negative,
+                            qip_agents::finding::Direction::Ambiguous => StanceDirection::Ambiguous,
+                            qip_agents::finding::Direction::Neutral => StanceDirection::Neutral,
+                        },
+                        conviction: finding.conviction,
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+            .into_values()
+            .collect();
+
+        let empty = Recall {
+            examined: 0,
+            probed: 0,
+            nearest: Vec::new(),
+        };
+        let recall = precedent.map_or(&empty, |(_, recall)| recall);
+        let digest = PrecedentDigest::of(&recall.nearest, direction);
+        let nearest = recall
+            .nearest
+            .iter()
+            .map(|recalled| PrecedentEntry {
+                episode_id: recalled.episode.episode_id.clone(),
+                instrument: recalled.episode.instrument.clone(),
+                at: recalled.episode.at,
+                known_at: recalled.episode.known_at,
+                similarity: recalled.similarity,
+                claim: recalled.episode.claim.claim.clone(),
+                decision: recalled.episode.decision,
+                realised_move_bps: recalled
+                    .episode
+                    .outcome
+                    .as_ref()
+                    .map(|outcome| outcome.realised_move_bps),
+                agreed: recalled
+                    .episode
+                    .outcome
+                    .as_ref()
+                    .and_then(|outcome| outcome.agrees_with(direction)),
+            })
+            .collect();
+        self.precedents.push(HypothesisPrecedent {
+            hypothesis_id: hypothesis.hypothesis_id.as_str().to_string(),
+            cycle: self.cycle,
+            confidence: claim.confidence,
+            examined: recall.examined,
+            memory_size: self.episodes.len(),
+            nearest,
+            digest: digest.clone(),
+        });
+        if self.precedents.len() > PREDICTION_HISTORY {
+            self.precedents
+                .drain(..self.precedents.len() - PREDICTION_HISTORY);
+        }
+
+        let draft = Episode {
+            episode_id: episode_id_for(hypothesis.hypothesis_id.as_str()),
+            instrument: subject.as_str().to_string(),
+            regime: self.regime_label(subject.as_str()),
+            findings: FindingsSummary {
+                runs: report.runs.len(),
+                findings: report.findings.len(),
+                coverage: report.coverage(),
+                contested: report.is_contested(),
+            },
+            stances,
+            claim,
+            horizon: hypothesis.horizon,
+            decision,
+            outcome: None,
+            // Knowable at formation for now; LEARN restamps `known_at` to
+            // the resolution instant when the outcome arrives, and nothing
+            // reads a pending episode before then.
+            at: now,
+            known_at: now,
+        };
+        draft.validate()?;
+        self.pending_episodes.push(draft);
+        if self.pending_episodes.len() > PREDICTION_HISTORY {
+            self.pending_episodes
+                .drain(..self.pending_episodes.len() - PREDICTION_HISTORY);
+        }
+        Ok(Some(digest))
+    }
+
+    /// Move each resolved thesis's episode from pending into memory, with its
+    /// outcome and knowable from `now`.
+    ///
+    /// Called from the LEARN stage's resolve path, which is the only place an
+    /// outcome exists. A thesis whose episode is no longer pending — evicted
+    /// as stale, or formed before this field existed — is skipped: memory
+    /// holds what was reasoned, and a record reconstructed from the claim
+    /// alone would not be that. Returns how many entered memory.
+    fn remember_resolved(&mut self, outcomes: &[ThesisOutcome], now: Timestamp) -> Result<usize> {
+        let mut remembered = 0usize;
+        for outcome in outcomes {
+            let wanted = episode_id_for(&outcome.hypothesis_id);
+            let Some(index) = self
+                .pending_episodes
+                .iter()
+                .position(|episode| episode.episode_id == wanted)
+            else {
+                continue;
+            };
+            let mut episode = self.pending_episodes.remove(index);
+            episode.outcome = Some(EpisodeOutcome {
+                resolved_at: outcome.observed_at,
+                realised_move_bps: outcome.realised_move_bps,
+                realised_pnl: outcome.realised_pnl,
+            });
+            episode.known_at = now;
+            self.episodes.remember(episode)?;
+            remembered += 1;
+        }
+        Ok(remembered)
+    }
+
     /// Turn an approved hypothesis into the thesis construction can size.
     ///
     /// Every number here is traceable to something observed: the direction is
@@ -3488,12 +5914,296 @@ impl Platform {
     /// naming the count, not a guess: a covariance from a handful of points
     /// is a number wearing the costume of an estimate, and the mandate's risk
     /// bound would be enforced against the costume.
+    /// The §6.2 degradation table as the centre reads it at `now`, for the
+    /// central sizing path.
+    ///
+    /// Three rows are measured, each from the one fact its object records
+    /// at the seam where it changes. Row 6, the self-model, from
+    /// [`SelfModel::sample_facts`] against the engine's own minimum sample
+    /// and [`SELF_MODEL_HORIZON`]: a model that has never absorbed an
+    /// outcome reads unavailable, one thin or older than the horizon reads
+    /// stale. Row 2, the causal graph, from the world model's
+    /// `CausalGraph::last_updated` against [`CAUSAL_GRAPH_HORIZON`]: a graph
+    /// that has never absorbed a claim reads unavailable and one whose
+    /// newest claim is older than a quarter reads stale. Row 4, the belief
+    /// state, from the reasoning engine's `BeliefState::last_updated`
+    /// against [`BELIEF_HORIZON`]: before the first belief is formed in a
+    /// process it reads unavailable, and one formed more than a session ago
+    /// reads stale. Each narrows by its own multiplier, and every reading
+    /// is the object's own fact rather than a constant. An earlier version
+    /// of this method started rows 2 and 4 fresh, on the argument that the
+    /// centre holds the live objects and has no shipped age to judge them
+    /// on; that was true of the age and false of the freshness — a graph
+    /// seeded from claims a year old is the live object and is stale, and
+    /// the demo seed backdates every claim by a year, so the centre sized
+    /// at full budget against relationships a year's evidence has not
+    /// re-estimated. The edge cell's table is untouched: a cell never holds
+    /// a self-model, and its floor is its own.
+    ///
+    /// Fallible on purpose: a record claiming outcomes with no newest
+    /// instant, or an instant after `now`, is the reporter's bug, and sizing
+    /// as though the row were fresh would hide it.
+    pub fn central_degradation(
+        &self,
+        now: Timestamp,
+    ) -> Result<qip_contracts::degradation::DegradationState> {
+        use qip_contracts::degradation::{
+            BELIEF_HORIZON, BeliefFreshness, CAUSAL_GRAPH_HORIZON, Capability,
+            CausalGraphFreshness, DegradationState, SELF_MODEL_HORIZON, SelfModelFreshness,
+        };
+        let mut state = DegradationState::fully_available();
+        let self_model = SelfModelFreshness::assess(
+            self.self_model.sample_facts(),
+            qip_learning_engine::self_model::MINIMUM_SAMPLE,
+            SELF_MODEL_HORIZON,
+            now,
+        )?;
+        state.observe(Capability::SelfModel, self_model.freshness());
+        let causal = CausalGraphFreshness::assess(
+            self.world.read().causal().last_updated(),
+            CAUSAL_GRAPH_HORIZON,
+            now,
+        )?;
+        state.observe(Capability::CausalGraph, causal.freshness());
+        let belief =
+            BeliefFreshness::assess(self.reasoning.beliefs().last_updated(), BELIEF_HORIZON, now)?;
+        state.observe(Capability::BeliefState, belief.freshness());
+        Ok(state)
+    }
+
+    /// The credit register derived from the universe at assembly: one profile
+    /// per obligor, the sovereign curve per currency, and the reason for every
+    /// claim whose terms would not support one.
+    pub fn credit_register(&self) -> &crate::valuation::CreditRegister {
+        &self.credit
+    }
+
+    /// The unfunded private commitments this book is on the hook for.
+    pub fn commitments(&self) -> &qip_financial::cashflow::CommitmentBook {
+        &self.commitments
+    }
+
+    /// The mark on a private asset, with the method and confidence it was
+    /// arrived at by, or `None` where the universe holds no private record
+    /// for the id.
+    pub fn illiquid_mark(&self, object_id: &str) -> Option<&qip_financial::AssetValuation> {
+        self.illiquid_marks.get(object_id)
+    }
+
+    /// Private assets the valuation plane refused to mark, with the refusal.
+    pub fn illiquid_unmarkable(&self) -> &BTreeMap<String, String> {
+        &self.illiquid_unmarkable
+    }
+
+    /// The theses a construction can size, how far their marks narrow it, and
+    /// the refusal for each one that has to be left out.
+    ///
+    /// One multiplier rather than one per thesis, because the constructor
+    /// takes a single budget: the weakest mark in the *retained* set governs,
+    /// which is the conservative reading and the only one that cannot be gamed
+    /// by pairing a venture position with a liquid one.
+    ///
+    /// A thesis on an instrument the valuation plane refused to mark, or whose
+    /// mark is past its review date, is not narrowed — it is left out. Sizing
+    /// it at some reduced fraction of a fabricated or expired mark would still
+    /// be sizing against a number nobody observed.
+    ///
+    /// **It used to take the rest of the cycle with it.** This was
+    /// `weakest = weakest.min(self.sizing_confidence(...)?)`, so one refusal
+    /// aborted the whole construction, `stage_decide` recorded `nothing_to_do`,
+    /// and every co-constructed thesis was dropped without being requeued. The
+    /// blast radius was invisible while a mark's `as_of` was the read instant,
+    /// because `next_review` was then always ahead of `now` and `is_stale`
+    /// could not fire inside one assembly. Since `9fe3df4` a mark decays from
+    /// when its evidence was observed and the review interval is 180 days
+    /// (`DiscountedCashflow`) or 365 (`LastRound`, `Cost`), so an administrator
+    /// report older than six months — routine under quarterly reporting with a
+    /// 45-to-90-day lag — refuses. Refusing the private thesis is right.
+    /// Refusing an unrelated liquid thesis approved in the same cycle is a
+    /// blast radius nothing argues for.
+    ///
+    /// The refusals are returned rather than swallowed here, so `stage_decide`
+    /// puts each on the cycle report with the object named. A thesis that
+    /// vanished silently and a cycle in which nobody had an idea are two states
+    /// this platform must never let read alike.
+    fn sizeable_theses(
+        &self,
+        theses: &[qip_portfolio_engine::construction::ApprovedThesis],
+        now: Timestamp,
+    ) -> (
+        Vec<qip_portfolio_engine::construction::ApprovedThesis>,
+        Decimal,
+        Vec<String>,
+    ) {
+        let mut retained = Vec::with_capacity(theses.len());
+        let mut weakest = Decimal::ONE;
+        let mut refusals = Vec::new();
+        for thesis in theses {
+            match self.sizing_confidence(thesis.object_id.as_str(), now) {
+                Ok(confidence) => {
+                    weakest = weakest.min(confidence);
+                    retained.push(thesis.clone());
+                }
+                // The message already names the object and what to do about
+                // it — see [`Self::sizing_confidence`] — so it is carried
+                // whole rather than summarised into a count.
+                Err(refusal) => refusals.push(refusal.message().to_string()),
+            }
+        }
+        (retained, weakest, refusals)
+    }
+
+    /// How far a position in `object_id` must be narrowed for the quality of
+    /// the mark behind it, as a fraction in `(0, 1]`.
+    ///
+    /// One for an instrument the valuation plane has no view on — a listed
+    /// equity is priced by the market and needs no haircut from here. A
+    /// refusal for an instrument it declined to mark, and for one whose mark
+    /// has passed its review date: sizing at some reduced fraction of a
+    /// fabricated or expired mark is still sizing against a number nobody
+    /// observed.
+    ///
+    /// Read by [`Self::sizeable_theses`] on every construction, so this is the
+    /// production path rather than a query beside it.
+    pub fn sizing_confidence(&self, object_id: &str, now: Timestamp) -> Result<Decimal> {
+        if let Some(refusal) = self.illiquid_unmarkable.get(object_id) {
+            return Err(Error::invalid(format!(
+                "{object_id} cannot be sized because the valuation plane holds no defensible mark \
+                 for it: {refusal}"
+            )));
+        }
+        let Some(mark) = self.illiquid_marks.get(object_id) else {
+            return Ok(Decimal::ONE);
+        };
+        if mark.is_stale(now) {
+            return Err(Error::invalid(format!(
+                "the {} mark on {object_id} was due for review at {} and is not fit to size \
+                 against as of {}; refresh the mark before sizing into it",
+                mark.method().label(),
+                mark.next_review().to_rfc3339(),
+                now.to_rfc3339()
+            )));
+        }
+        let confidence = mark.confidence_at(now)?;
+        // Statistic meets money here: `confidence` is a decayed weight, an
+        // `f64`, and it crosses into `Decimal` exactly once so that the budget
+        // it narrows stays exact decimal money from this point on.
+        Decimal::from_f64(confidence).ok_or_else(|| {
+            Error::numeric(format!(
+                "the decayed mark confidence {confidence} on {object_id} cannot be represented at \
+                 decimal scale"
+            ))
+        })
+    }
+
+    /// Free capital after every unfunded private commitment has been taken
+    /// off it, refused whenever that leaves nothing to deploy.
+    ///
+    /// Read by `construct_from` before anything is sized, so this is the
+    /// figure the platform actually deploys against rather than a second
+    /// opinion about it.
+    ///
+    /// **The refusal covers both branches, and used to cover only one.** A
+    /// book whose obligations meet or exceed its free capital was refused; a
+    /// book with no private commitments at all and nothing free returned
+    /// `Ok(0)` — the case this doc claimed to prevent, in the commoner of the
+    /// two. A zero budget then travelled on: the constructor refused it as
+    /// "no equity", which is a false statement about a book that has equity
+    /// and cannot reach it, and the DECIDE stage recorded the pass as though
+    /// no thesis had cleared the action bar. Two states that must never read
+    /// alike — nobody had an idea, and everybody's idea was unfundable — read
+    /// identically. Both are now refusals naming the capital state, and
+    /// `stage_decide` puts a construction refusal on the cycle as a problem
+    /// rather than as silence.
+    ///
+    /// **Anchored here rather than trusted to a caller**, which is why this
+    /// takes `&mut self`. The ledger's free balance is derived from equity
+    /// less the active holds, and only [`ReservationLedger::resync_free`]
+    /// re-derives it; a caller who read this before that ran got the last
+    /// mutation's balance instead of the book's — zero on a platform that had
+    /// never sized anything, and stale in whichever direction the book had
+    /// moved since. A public answer to "how much will this platform deploy"
+    /// must not depend on who called what first. `stage_decide` still resyncs
+    /// at the top of every pass, including the quiet ones this is never
+    /// reached on, and counts the shortfall where the alerts look; re-deriving
+    /// the same identity from the same two numbers twice is not a second claim
+    /// about the balance.
+    ///
+    /// A drawdown that leaves the holds above equity is propagated rather than
+    /// read through: `resync_free` floors free at zero there, and a floor read
+    /// as a budget is a clamp entering a sizing decision.
+    pub fn deployable_capital(&mut self, now: Timestamp) -> Result<Decimal> {
+        self.reservations
+            .resync_free(self.capital.equity(), now)
+            .map_err(|error| {
+                Error::invalid(format!(
+                    "the capital available to deploy cannot be established: {}",
+                    error.message()
+                ))
+            })?;
+        let free = self.reservations.free(now);
+        let obligations = self.commitments.unfunded_total(now)?;
+        if obligations.is_positive() {
+            return free
+                .checked_sub(obligations)
+                .filter(|remaining| remaining.is_positive())
+                .ok_or_else(|| {
+                    Error::invalid(format!(
+                        "unfunded capital commitments of {obligations} meet or exceed the free \
+                         capital {free}; fund the reserve or reduce the commitment before sizing \
+                         anything — a called commitment that cannot be met forfeits the position"
+                    ))
+                });
+        }
+        if !free.is_positive() {
+            return Err(Error::invalid(format!(
+                "there is no capital free to deploy: tracked equity of {equity} less {held} on \
+                 active reservations leaves {free}; fund the book, release a hold or let one \
+                 expire before sizing anything — a budget of zero sizes nothing and would be \
+                 recorded as an ordinary quiet cycle",
+                equity = self.capital.equity(),
+                held = self.reservations.reserved_total(),
+            )));
+        }
+        Ok(free)
+    }
+
+    /// Size the approved theses, and say which of them had to be left out.
+    ///
+    /// The second half of the return is the point. A thesis whose mark cannot
+    /// be sized against removes itself — see [`Self::sizeable_theses`] — and
+    /// the refusal travels back to `stage_decide`, which puts it on the cycle
+    /// report with the object named. Returning it rather than logging it here
+    /// is what keeps one claim about what happened: the stage that reports the
+    /// cycle is the stage that reports the removal.
+    ///
+    /// Still a refusal when *every* thesis is left out. That is the honest
+    /// answer for a construction with nothing left to size, and it keeps the
+    /// one-thesis case — the only shape `run_cycle` reaches today, since REASON
+    /// approves at most one opportunity per pass — reading exactly as it did:
+    /// `stage_decide` records the refusal as a problem and the proposal's
+    /// rationale names the instrument.
     fn construct_from(
         &mut self,
         theses: &[qip_portfolio_engine::construction::ApprovedThesis],
         now: Timestamp,
-    ) -> Result<qip_portfolio_engine::construction::ConstructionOutcome> {
+    ) -> Result<(
+        qip_portfolio_engine::construction::ConstructionOutcome,
+        Vec<String>,
+    )> {
         const MIN_SHARED_RETURNS: usize = 20;
+
+        // Before any history is read, because a thesis that is not going to be
+        // sized must not be able to refuse the construction for want of a
+        // price series either.
+        let (sizeable, mark_confidence, unsizeable) = self.sizeable_theses(theses, now);
+        if sizeable.is_empty() {
+            return Err(Error::invalid(format!(
+                "no approved thesis rests on a mark it can be sized against: {}",
+                unsizeable.join("; ")
+            )));
+        }
+        let theses = sizeable.as_slice();
 
         let mut returns: Vec<Vec<f64>> = Vec::with_capacity(theses.len());
         for thesis in theses {
@@ -3544,13 +6254,39 @@ impl Platform {
         // minus every active hold, as `stage_decide` anchored it this pass.
         // This is the line that makes a second proposal unable to pass
         // against capital a first one already claimed.
-        let free = self.reservations.free(now);
+        // Every unfunded private commitment comes off the free budget before
+        // anything else touches it (blueprint §16.4). A commitment can be
+        // called on somebody else's schedule and failing the call typically
+        // forfeits the position, so promised capital is not available capital.
+        let free = self.deployable_capital(now)?;
+        // Narrowed by §6.2 as the centre reads it — the self-model row
+        // measured from the learning engine's own record. A refused
+        // assessment refuses the construction: nothing is sized against a
+        // table that could not be read, rather than sized as though it read
+        // fresh.
+        let multiplier = self.central_degradation(now)?.central_sizing_multiplier();
+        // And narrowed again by the weakest mark any thesis still in this
+        // construction rests on. §16.3: confidence enters position sizing, so
+        // an uncertain mark cannot silently support leverage. A thesis on an
+        // instrument the valuation plane refused to mark is not in
+        // `sizeable` at all, so it neither narrows this nor is sized.
+        let multiplier = multiplier.checked_mul(mark_confidence).ok_or_else(|| {
+            Error::numeric(
+                "narrowing the sizing multiplier by mark confidence overflows".to_string(),
+            )
+        })?;
+        let budget = free.checked_mul(multiplier).ok_or_else(|| {
+            Error::numeric(format!(
+                "the free budget {free} narrowed by the degradation multiplier {multiplier} \
+                 overflows; nothing is sized against a number that cannot be represented"
+            ))
+        })?;
 
         let outcome = self.constructor.construct(
             theses,
             &covariance,
             &current,
-            Money::new(free, Currency::USD),
+            Money::new(budget, Currency::USD),
             now,
             now,
             ProposalId::from_string(format!("prop-{}", self.cycle)),
@@ -3574,7 +6310,7 @@ impl Platform {
                 Duration::from_hours(24),
             )?;
         }
-        Ok(outcome)
+        Ok((outcome, unsizeable))
     }
 
     fn thesis_from(
@@ -3879,6 +6615,21 @@ impl Platform {
         // the queue every cycle would pyramid the same idea until the mandate
         // cap alone stopped it.
         let theses = std::mem::take(&mut self.pending_theses);
+        let approved = theses.len();
+        // The refusal, kept so the stage itself carries it. A construction
+        // that was attempted and refused is not a quiet cycle, and until this
+        // was recorded the two read alike: DECIDE reported "no thesis cleared
+        // the action bar" with no problems whether nobody had an idea or every
+        // idea was unfundable, and only the proposal's rationale — one level
+        // further in — told them apart.
+        let mut refusal: Option<String> = None;
+        // Theses the construction had to leave out because nothing could size
+        // them, each carrying the valuation plane's own refusal with the object
+        // named. Kept beside `refusal` rather than folded into it: "one of
+        // these three could not be marked and the other two were sized" and
+        // "none of them was sized" are different cycles, and the second used to
+        // be the only one the stage could report.
+        let mut unsizeable: Vec<String> = Vec::new();
         let proposal = if theses.is_empty() {
             self.constructor.nothing_to_do(
                 ProposalId::from_string(format!("prop-{}", self.cycle)),
@@ -3889,23 +6640,28 @@ impl Platform {
             )
         } else {
             match self.construct_from(&theses, now) {
-                Ok(outcome) => outcome.proposal,
+                Ok((outcome, left_out)) => {
+                    unsizeable = left_out;
+                    outcome.proposal
+                }
                 // A refusal is a normal state, and it is *this* cycle's
                 // record: the proposal says why nothing was sized, and the
                 // theses are not requeued — an idea that could not be sized
                 // against this history will not size better against the same
                 // history next cycle, and the event log keeps the attempt.
-                Err(error) => self.constructor.nothing_to_do(
-                    ProposalId::from_string(format!("prop-{}", self.cycle)),
-                    Money::new(self.capital.equity(), Currency::USD),
-                    now,
-                    now,
-                    format!(
-                        "{} thesis(es) approved and none sized: {}",
-                        theses.len(),
-                        error.message()
-                    ),
-                ),
+                Err(error) => {
+                    refusal = Some(error.message().to_string());
+                    self.constructor.nothing_to_do(
+                        ProposalId::from_string(format!("prop-{}", self.cycle)),
+                        Money::new(self.capital.equity(), Currency::USD),
+                        now,
+                        now,
+                        format!(
+                            "{approved} thesis(es) approved and none sized: {}",
+                            error.message()
+                        ),
+                    )
+                }
             }
         };
         let legs = proposal.len();
@@ -3937,15 +6693,36 @@ impl Platform {
             )
         };
 
-        StageOutcome::ran(
-            Stage::Decide,
-            legs,
-            if legs == 0 {
+        let mut detail = match (legs, &refusal) {
+            (0, None) => {
                 format!("no thesis cleared the action bar; nothing to propose{funding}")
-            } else {
-                format!("{legs} leg(s) proposed{funding}")
-            },
-        )
+            }
+            (0, Some(_)) => {
+                format!("{approved} approved thesis(es) and none sized{funding}")
+            }
+            _ => format!("{legs} leg(s) proposed{funding}"),
+        };
+        if !unsizeable.is_empty() {
+            detail.push_str(&format!(
+                "; {} of {approved} thesis(es) left out for want of a mark to size against",
+                unsizeable.len()
+            ));
+        }
+        let mut outcome = StageOutcome::ran(Stage::Decide, legs, detail);
+        // Named, one problem per thesis. A removal folded into a count would
+        // tell an operator that something was dropped without saying what, and
+        // the object is the only part of it they can act on.
+        for left_out in unsizeable {
+            outcome = outcome.with_problem(format!(
+                "a thesis was left out of the construction and is not requeued: {left_out}"
+            ));
+        }
+        match refusal {
+            Some(message) => outcome.with_problem(format!(
+                "{approved} approved thesis(es) could not be sized: {message}"
+            )),
+            None => outcome,
+        }
     }
 
     fn stage_act(&mut self, now: Timestamp, correlation: &CorrelationId) -> StageOutcome {
@@ -3981,7 +6758,31 @@ impl Platform {
             .metrics
             .gauge(names::LIMIT_BREACHES, labels([]), blocking as f64);
 
+        // Problems raised before anything is released. Both exits of this
+        // stage drain it, so a refusal recorded here reaches the cycle report
+        // whether or not there was a proposal to sign.
         let mut sign_off_problems: Vec<String> = Vec::new();
+        // Why the liquidity floor may not have been evaluated. Read off the
+        // risk state the monitor just ruled on, not recomputed: the ladder
+        // used to be built a second time here purely to obtain the message,
+        // and two independent claims about one fact will eventually disagree
+        // — the state could carry a floor it had evaluated while this line
+        // said it had not, or the reverse.
+        //
+        // The gauge is set on both arms, including to zero. A gauge only
+        // written when something is wrong never falls back, so an operator
+        // reading it could not tell a floor that is evaluating from one that
+        // has not run since the process started. `figure` is a source literal,
+        // so the series has exactly one label value.
+        let unevaluated = risk_state.unevaluated.get(LIQUIDITY_FIGURE).cloned();
+        self.telemetry.metrics.gauge(
+            names::RISK_FIGURES_UNEVALUATED,
+            labels([("figure", LIQUIDITY_FIGURE)]),
+            f64::from(u8::from(unevaluated.is_some())),
+        );
+        if let Some(refusal) = &unevaluated {
+            sign_off_problems.push(format!("the liquidity floor was not evaluated: {refusal}"));
+        }
         // Sign off the drafts, or do not. `Proposal::approve` requires two
         // controls because a single approver is a single point of failure, and
         // until this call existed nothing in the platform called it at all:
@@ -3999,15 +6800,28 @@ impl Platform {
             report.require_fully_enforced()?;
             Ok(())
         });
-        let signable = action.permits_new_risk() && compliance.is_ok();
+        //
+        // A book whose liquidity could not be read is not signable either,
+        // and that is a third condition rather than a restatement of the
+        // first two. The monitor above ruled on a `LimitCheck` in which
+        // `MinLiquidity` and `MaxDaysToLiquidate` recorded nothing — not
+        // because the book passed them but because the figures they read were
+        // never computed — so `permits_new_risk` would be a signature on a
+        // control that did not run. `submit_order` refuses each order for the
+        // same reason, which makes this the second layer rather than the only
+        // one; it is the layer that states the reason once on the cycle
+        // report instead of once per order.
+        let signable = action.permits_new_risk() && compliance.is_ok() && unevaluated.is_none();
         if !signable {
-            let reason = if action.permits_new_risk() {
+            let reason = if !action.permits_new_risk() {
+                format!("the risk monitor is at {}", action.as_str())
+            } else if let Some(refusal) = &unevaluated {
+                format!("the liquidity floor was not evaluated: {refusal}")
+            } else {
                 compliance
                     .err()
                     .map(|error| error.message().to_string())
                     .unwrap_or_else(|| "compliance did not sign".to_string())
-            } else {
-                format!("the risk monitor is at {}", action.as_str())
             };
             // Said once per cycle, not once per proposal: a stage that repeats
             // the same refusal for every draft buries the reason in its own
@@ -4024,10 +6838,12 @@ impl Platform {
                 names::PROPOSALS_UNSIGNED,
                 labels([(
                     "control",
-                    if action.permits_new_risk() {
-                        "compliance"
-                    } else {
+                    if !action.permits_new_risk() {
                         "risk-monitor"
+                    } else if unevaluated.is_some() {
+                        "liquidity-read"
+                    } else {
+                        "compliance"
                     },
                 )]),
             );
@@ -4139,6 +6955,11 @@ impl Platform {
         // every control in the paragraph above.
         let mut released = 0usize;
         let mut refused = 0usize;
+        // Legs whose order carries fewer units than the leg sized, because the
+        // instrument's lot does not divide the target. Counted into the
+        // stage's summary so the residual is on the record rather than a
+        // silent difference between the proposal and the book.
+        let mut sized_to_lots = 0usize;
         let mut problems: Vec<String> = sign_off_problems.clone();
 
         let approved: Vec<Proposal> = self
@@ -4172,11 +6993,35 @@ impl Platform {
                 let order_id =
                     OrderId::from_string(format!("ord-{}-{index}", proposal.proposal_id.as_str()));
 
+                // The leg's size is a continuous target the optimiser's
+                // weight produced; the order's is a whole number of the
+                // instrument's lots. Expressed here, where the leg becomes an
+                // order, from the same grid the order manager judges it
+                // against below — so a leg that rounds to nothing is stopped
+                // before a control decision is spent on it, and one that
+                // does not is submitted at a size the gate will admit rather
+                // than refused on every cycle for a grid the sizer never saw.
+                let quantity = self.whole_lots(leg.object_id.as_str(), leg.quantity);
+                if !quantity.is_positive() {
+                    refused += 1;
+                    problems.push(format!(
+                        "{} leg {index} was refused: {} of {} is less than one lot; nothing to \
+                         release",
+                        proposal.proposal_id.as_str(),
+                        leg.quantity,
+                        leg.object_id.as_str()
+                    ));
+                    continue;
+                }
+                if quantity != leg.quantity {
+                    sized_to_lots += 1;
+                }
+
                 let order = Order::new(
                     order_id,
                     leg.object_id.clone(),
                     Self::release_side(leg.side),
-                    leg.quantity,
+                    quantity,
                     // Market, because the simulated broker fills against the
                     // book it was given and a limit price invented here would
                     // be a number with no source. A working-algo order type is
@@ -4279,8 +7124,8 @@ impl Platform {
             Stage::Act,
             released,
             format!(
-                "{released} order(s) released from {} approved proposal(s), {refused} refused; \
-                 risk monitor says {}",
+                "{released} order(s) released from {} approved proposal(s), {refused} refused, \
+                 {sized_to_lots} sized down to whole lots; risk monitor says {}",
                 approved.len(),
                 action.as_str()
             ),
@@ -4289,6 +7134,21 @@ impl Platform {
             outcome = outcome.with_problem(problem);
         }
         outcome
+    }
+
+    /// The largest whole number of the instrument's lots that does not exceed
+    /// `quantity`, or `quantity` itself for an instrument with no grid.
+    ///
+    /// Read from the order manager's installed grid rather than a second copy
+    /// of the lot, so the size released and the size judged are the same
+    /// fact. Floors toward zero, as `Decimal::floor_to_step` does, because a
+    /// sized leg is a ceiling the risk projection approved and a lot rounded
+    /// up would be exposure nobody sized.
+    fn whole_lots(&self, object_id: &str, quantity: Decimal) -> Decimal {
+        match self.orders.instrument_feasibility(object_id) {
+            Some(grid) => quantity.floor_to_step(grid.lot_size()),
+            None => quantity,
+        }
     }
 
     /// Carry a proposal leg's direction across to the execution engine's own.
@@ -4313,6 +7173,16 @@ impl Platform {
     fn stage_learn(&mut self, now: Timestamp) -> StageOutcome {
         self.cycle_calibration = None;
         self.cycle_counterfactuals = None;
+        // The wallet, against the book ACT left. A refusal by the control is
+        // a record the journal keeps; an error here is the journal or the
+        // log refusing the record, which is a problem on the cycle's record
+        // rather than a reason to skip scoring what resolved.
+        if let Err(error) = self.reconcile_wallet(now) {
+            self.capture_problems.push(format!(
+                "the wallet was not journalled this cycle: {}",
+                error.message()
+            ));
+        }
         let (outcome, by_hypothesis) = self.attribute(now);
         // What the platform did and what it declined, side by side. The tally
         // is the answer to the question a report of trades alone cannot
@@ -4359,10 +7229,139 @@ impl Platform {
         for problem in problems {
             outcome = outcome.with_problem(problem);
         }
+        // Judge every strategy on what its cells have realised since it was
+        // promoted. Blueprint §20.3: retirement is as automated as promotion,
+        // and until this call existed it was not — the review seam and the
+        // triggers behind it were reached only by tests, so a strategy could
+        // decay at the floor for a year in a deployed process and nothing
+        // would notice.
+        let (reviewed, problem) = self.review_strategies(now);
+        if let Some(reviewed) = reviewed {
+            let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        if let Some(problem) = problem {
+            outcome = outcome.with_problem(problem);
+        }
         for problem in std::mem::take(&mut self.capture_problems) {
             outcome = outcome.with_problem(problem);
         }
         outcome
+    }
+
+    /// Run the demotion monitor over the sessions every cell has realised,
+    /// through [`Self::learn_from_cells`], and say what it did.
+    ///
+    /// Returns `(None, None)` when no cell has closed a session for any
+    /// strategy since that strategy's baseline was established — most cycles
+    /// on a platform whose central plane holds no live strategy, and every
+    /// cycle before the first full session. A stage that said "0 reviewed"
+    /// on those would make the additive property of the central plane false
+    /// in the journal: a cycle on a platform with no cells must read exactly
+    /// as it did before this existed.
+    ///
+    /// A failure is returned as a problem rather than an error for the reason
+    /// every LEARN step gives: the cycle has happened, and a review that
+    /// could not run is a fact about this cycle to record, not a reason to
+    /// lose the rest of the stage's account.
+    fn review_strategies(&mut self, now: Timestamp) -> (Option<String>, Option<String>) {
+        self.cycle_strategy_review = None;
+        let outcomes = self.central.live_outcomes(now);
+        if outcomes.is_empty() {
+            return (None, None);
+        }
+        let report = match self.learn_from_cells(&outcomes, now) {
+            Ok(report) => report,
+            Err(error) => {
+                return (
+                    None,
+                    Some(format!(
+                        "{} strategy observation(s) could not be reviewed: {}",
+                        outcomes.len(),
+                        error.message()
+                    )),
+                );
+            }
+        };
+        let retired = report
+            .learnings
+            .iter()
+            .filter(|learning| {
+                learning.review.stage_after == qip_contracts::gate::GateStage::Retired
+                    && learning.review.stage_before != qip_contracts::gate::GateStage::Retired
+            })
+            .count();
+        let demoted = report
+            .learnings
+            .iter()
+            .filter(|learning| {
+                learning.review.moved()
+                    && learning.review.stage_after != qip_contracts::gate::GateStage::Retired
+            })
+            .count();
+        let (dispositioned, dispositions_refused) =
+            report
+                .dispositions
+                .iter()
+                .fold(
+                    (0, 0),
+                    |(scheduled, refused), disposition| match disposition {
+                        DispositionOutcome::Dispositioned(_) => (scheduled + 1, refused),
+                        DispositionOutcome::Refused(_) => (scheduled, refused + 1),
+                    },
+                );
+        let journal = StrategyReviewJournal {
+            reviewed: report.learnings.len(),
+            demoted,
+            retired,
+            dispositioned,
+            dispositions_refused,
+            skipped: report.skipped.len(),
+        };
+        let detail = format!(
+            "{} strategy(ies) reviewed on realised sessions ({} demoted, {} retired, {} \
+             dispositioned, {} disposition(s) refused, {} skipped)",
+            journal.reviewed,
+            journal.demoted,
+            journal.retired,
+            journal.dispositioned,
+            journal.dispositions_refused,
+            journal.skipped
+        );
+        self.cycle_strategy_review = Some(journal);
+        (Some(detail), None)
+    }
+
+    /// The components a graded thesis is charged to.
+    ///
+    /// The detector is the hypothesis class — [`Self::synthesise`] sets the
+    /// class to the anomaly's kind, and the direct evidence's origin is the
+    /// detector that raised it, so the class is the key the REASON factor is
+    /// looked up under. Each analyst is recovered from its contributor run
+    /// id, which the chief mints as `run-<manifest id>-<sequence>`, matched
+    /// against the roster rather than parsed: an id with a hyphen in it —
+    /// every analyst on this roster has one — would split wrong, and a run
+    /// of an agent no longer on the roster is charged to nobody rather than
+    /// to whichever prefix happened to fit.
+    fn components_of(evaluation: &Evaluation, roster: &[String]) -> Result<Vec<ComponentKey>> {
+        let mut components = vec![ComponentKey::detector(&evaluation.class)?];
+        for contributor in &evaluation.contributors {
+            let Some(rest) = contributor.strip_prefix("run-") else {
+                continue;
+            };
+            let analyst = roster.iter().find(|id| {
+                rest.strip_prefix(id.as_str())
+                    .and_then(|tail| tail.strip_prefix('-'))
+                    .is_some_and(|sequence| sequence.parse::<u64>().is_ok())
+            });
+            if let Some(analyst) = analyst {
+                let key = ComponentKey::analyst(analyst)?;
+                if !components.contains(&key) {
+                    components.push(key);
+                }
+            }
+        }
+        Ok(components)
     }
 
     /// Settle the claims whose horizon has passed against the platform's own
@@ -4456,6 +7455,11 @@ impl Platform {
         }
 
         let learned = self.learn_from(&claims, &outcomes, now)?;
+        // A thesis graded but charged to nobody is a stage problem, not a
+        // stage failure: the pass went on without it, and the outcome says so
+        // through the same drain every other LEARN-time problem reaches.
+        self.capture_problems
+            .extend(learned.problems.iter().cloned());
         let mut summary = format!(
             "{} thesis(es) resolved, {} graded",
             scored.len(),
@@ -4479,6 +7483,12 @@ impl Platform {
                 });
             }
             None => summary.push_str("; nothing informative yet to calibrate on"),
+        }
+        // Each resolved thesis's episode enters memory here, knowable from
+        // now, so the next REASON can recall it as precedent.
+        let remembered = self.remember_resolved(&outcomes, now)?;
+        if remembered > 0 {
+            summary.push_str(&format!("; {remembered} episode(s) remembered"));
         }
         Ok(Some(summary))
     }
@@ -4667,10 +7677,198 @@ impl Platform {
     /// away from a limit that silently never evaluates. The return series is
     /// the crossing from the book's `Decimal` equity to a statistic, made in
     /// `equity_returns`.
+    ///
+    /// The liquidity figures are filled from the book's own liquidity ladder
+    /// — see [`Self::liquidity_ladder`] — for the same reason the tail
+    /// statistics are filled above: `LimitKind::MinLiquidity` ships in
+    /// `LimitSet::conservative_default` and looks its figure up in a map that
+    /// nothing in this kernel wrote, so the floor took its `None` arm on every
+    /// book.
+    ///
+    /// **A refused ladder leaves both maps empty and says so in the state.**
+    /// Empty rather than zero because an unmeasured book must not read as one
+    /// measured and found perfectly illiquid — the rule `with_tail_risk`
+    /// follows for a return series too short to have a tail. But empty on its
+    /// own was a fail-open: `RiskState::liquidatable_within` with no key is
+    /// exactly what a passing floor also produces, and `Self::submit_order`
+    /// re-reads this state per order and would have accepted every one of
+    /// them. It did: a book that refused ten orders out of ten accepted ten
+    /// out of ten when one instrument's quoted spread moved from 5bps to
+    /// 300bps and took the ladder's monotonicity proof down with it. The
+    /// refusal is therefore recorded through `RiskState::with_unevaluated`,
+    /// which `PreTradeChecker::check` turns into a refusal at the venue path,
+    /// and `stage_act` also puts its message on the cycle report and its
+    /// presence on a gauge.
     #[doc(hidden)]
     pub fn risk_state_from(&self, figures: &impl AggregateFigures) -> RiskState {
         let returns = self.equity_returns();
-        RiskState::from_figures(figures).with_tail_risk(self.monitor.limits(), &returns)
+        let state =
+            RiskState::from_figures(figures).with_tail_risk(self.monitor.limits(), &returns);
+        // Both maps or neither. The fractions are a sum over the same ladder
+        // the day counts come from, so filling one from a ladder whose totals
+        // could not be computed would leave the two halves of one liquidity
+        // read disagreeing about which book they described.
+        match self.liquidity_ladder(figures).and_then(|ladder| {
+            let fractions = self.liquidatable_within(&ladder)?;
+            Ok((Self::days_to_liquidate_of(&ladder), fractions))
+        }) {
+            Ok((days_to_liquidate, liquidatable_within)) => RiskState {
+                days_to_liquidate,
+                liquidatable_within,
+                ..state
+            },
+            Err(error) => state.with_unevaluated(LIQUIDITY_FIGURE, error.message()),
+        }
+    }
+
+    /// The book as a liquidity ladder, or a refusal naming what stopped it.
+    ///
+    /// Every position the aggregate carries, at the absolute value of its
+    /// at-cost notional, on the rung its reference record places it on, with a
+    /// full exit priced at the record's own quoted spread. Cash is
+    /// deliberately not an entry: `LimitKind::MinLiquidity` is a fraction of
+    /// *the portfolio*, and the derivation it replaces
+    /// (`RiskState::with_liquidity_horizons`) totals position notionals alone,
+    /// so adding the cash balance here would quietly redefine a shipped limit
+    /// from "most of the book must be exitable within a week" to "most of the
+    /// book plus the cash we are already holding must be", which every book
+    /// passes for the wrong reason.
+    ///
+    /// Two refusals rather than a shrug, because both mean the read would lie:
+    ///
+    /// * a position in an instrument the platform holds no reference record
+    ///   for. Dropping it would leave it out of the numerator *and* the
+    ///   denominator, so a book made entirely of unknown holdings would report
+    ///   itself perfectly liquid. It cannot happen from a fill the platform
+    ///   placed — every order is on a universe instrument — which is exactly
+    ///   why it is worth refusing loudly if it ever does.
+    /// * a non-monotonic ladder, which [`LiquidityLadder::new`] finds: a lower
+    ///   rung cheaper to exit than a higher one means the reference data
+    ///   contradicts the rung assignment, and a liquidity floor computed over
+    ///   rungs nobody can trust is a number with a control attached.
+    ///
+    /// This is a risk read and nothing else. It hands no
+    /// `qip_financial::ladder::LiquidationPlan` to anything, and there is no
+    /// path from here to an order: ADR 0021 refuses the route by which capital
+    /// leaves the platform and `qip_capital`'s `WithdrawalEntitlement` has one
+    /// variant, `Refused`. The ladder answers "how much of this book becomes
+    /// cash inside a week", which is worth knowing whether or not anything is
+    /// ever withdrawn.
+    pub fn liquidity_ladder(&self, figures: &impl AggregateFigures) -> Result<LiquidityLadder> {
+        let mut entries = Vec::new();
+        for (instrument, notional) in figures.position_notionals() {
+            let value = notional.abs();
+            // A position that has been closed is not a holding. `LadderEntry`
+            // refuses a non-positive value, and this is not a correction of a
+            // bad input: a flat instrument is one the book no longer holds.
+            if !value.is_positive() {
+                continue;
+            }
+            let Some(reference) = self.liquidity_reference.get(instrument) else {
+                return Err(Error::invalid(format!(
+                    "the book holds {instrument}, which this platform was not assembled to trade \
+                     and holds no liquidity record for; assemble the platform over a universe \
+                     containing it — a liquidity read that omitted it would report the book more \
+                     exitable than it is"
+                )));
+            };
+            entries.push(
+                LadderEntry::new(
+                    instrument.clone(),
+                    reference.rung,
+                    value,
+                    // The one crossing from a rate to money: a spread in basis
+                    // points of mid becomes the `Decimal` cost of leaving the
+                    // whole holding.
+                    value.apply_bps(reference.spread_bps),
+                )
+                // The record's own exit time, carried onto the entry so the
+                // limits read what the catalogue says rather than the boundary
+                // of the rung's bucket. Without this a holding the record
+                // states takes forty-five days reported two, and both
+                // liquidity limits passed it.
+                .exiting_over_days(reference.days_to_liquidate),
+            );
+        }
+        LiquidityLadder::new(entries)
+    }
+
+    /// Days to exit each holding, as the ladder carries it.
+    ///
+    /// `LadderEntry::days_to_exit` — the larger of the reference record's own
+    /// stated exit time and the rung's own floor. It reads into
+    /// `LimitKind::MaxDaysToLiquidate`, which is a ceiling, so a number that
+    /// is never above the truth can only understate a breach and never invent
+    /// one.
+    ///
+    /// This was `entry.rung.horizon().least_days()`, the rung's floor alone,
+    /// and that was not a floor on the holding at all. `Rung::classify` puts
+    /// every non-negotiated holding stated at more than a day on the same
+    /// rung, whose horizon floors at two days, so a record stating forty-five
+    /// days reported 2.0: `MaxDaysToLiquidate { limit: 10.0 }` compared 2.0
+    /// against 10 and recorded nothing, and the same holding counted toward
+    /// the fraction exitable within a week.
+    ///
+    /// Derived from the same ladder as [`Self::liquidatable_within`] and
+    /// through the same accessor, so the two cannot disagree about how fast
+    /// one holding leaves.
+    fn days_to_liquidate_of(ladder: &LiquidityLadder) -> BTreeMap<String, f64> {
+        ladder
+            .entries()
+            .map(|entry| (entry.object_id.clone(), entry.days_to_exit()))
+            .collect()
+    }
+
+    /// The fraction of the book reachable inside each configured liquidity
+    /// floor's horizon, keyed exactly as the limit keys its own lookup.
+    ///
+    /// `LiquidityLadder::reachable_within` answers this directly, over a
+    /// structure whose construction *proved* that cost rises as the ladder
+    /// descends. `RiskState::with_liquidity_horizons` computes the same ratio
+    /// by refiltering a flat map of day counts and cannot detect that the
+    /// classification underneath it is wrong; this kernel therefore takes the
+    /// ladder's answer and does not call that method, so there is one writer
+    /// of `liquidatable_within` on this path rather than two claims about one
+    /// fact.
+    ///
+    /// A book with nothing in it records nothing. An empty ladder has no
+    /// denominator, and a fabricated `1.0` would read as a measurement that
+    /// found the book perfectly liquid.
+    ///
+    /// A limit whose horizon is not a number of days is a **refusal**, not a
+    /// skip. It used to be skipped — `LiquidationHorizon::deepest_within`
+    /// answered `None` and the loop moved on — which left the map without the
+    /// key that limit reads, and a limit whose key is absent records no breach
+    /// and is indistinguishable at the venue from one that passed. The
+    /// refusal now travels out through [`Self::risk_state_from`] and stops
+    /// orders instead. `LiquidityLadder::reachable_within` raises it, so the
+    /// rule lives with the arithmetic rather than being restated here.
+    ///
+    /// A book whose value does not add up inside the decimal range refuses for
+    /// the same reason rather than dividing by a sum that dropped a holding.
+    fn liquidatable_within(&self, ladder: &LiquidityLadder) -> Result<BTreeMap<String, f64>> {
+        let mut fractions = BTreeMap::new();
+        let total = ladder.total_value()?;
+        if !total.is_positive() {
+            return Ok(fractions);
+        }
+        for limit in &self.monitor.limits().limits {
+            let qip_risk::limits::LimitKind::MinLiquidity { days, .. } = limit.kind else {
+                continue;
+            };
+            // Days against days. The limit's own horizon goes straight to the
+            // ladder, which compares it against each holding's own exit time;
+            // it used to be mapped onto a categorical horizon first, and both
+            // ends of that mapping rounded to a bucket boundary.
+            //
+            // The crossing from money to a statistic: two `Decimal` sums
+            // become one ratio, because the limit is stated as a fraction.
+            fractions.insert(
+                format!("{days:.0}"),
+                ladder.reachable_within(days)?.to_f64() / total.to_f64(),
+            );
+        }
+        Ok(fractions)
     }
 
     /// Submit one order through the full control path.
@@ -5244,9 +8442,39 @@ impl Platform {
 
     // --- predictions --------------------------------------------------------
 
+    /// The precedent recorded beside each hypothesis, most recent last.
+    pub fn precedents(&self) -> &[HypothesisPrecedent] {
+        &self.precedents
+    }
+
     /// Every falsifiable claim the platform has made, open and resolved.
     pub fn predictions(&self) -> &[RecordedPrediction] {
         &self.predictions
+    }
+
+    /// How many claims [`Self::predictions`] can hold before the oldest is
+    /// evicted.
+    ///
+    /// Published beside the slice so a reader of the working set can say how
+    /// much of the record it is looking at. A count served without its bound
+    /// reads as the whole history, and the bound exists precisely because the
+    /// whole history is not what the process holds.
+    pub const fn prediction_window() -> usize {
+        PREDICTION_HISTORY
+    }
+
+    // --- the price tape -----------------------------------------------------
+
+    /// Each instrument's closes as the platform absorbed them, oldest first,
+    /// bounded by [`SERIES_HISTORY`].
+    ///
+    /// Read-only, and the only way out for the series the detectors and the
+    /// simulate stage read. A consumer that wants a statistic over these —
+    /// the API's correlation view is the one that exists — computes it from
+    /// the same tape the cycle did, so the number it reports is reproducible
+    /// against this process rather than against a copy it kept itself.
+    pub fn price_history(&self) -> &BTreeMap<String, Vec<f64>> {
+        &self.price_history
     }
 
     /// Score the predictions whose horizon has passed against what was
@@ -5719,7 +8947,10 @@ impl Platform {
 /// description would fragment the moment a message was reworded.
 fn gate_of(refusal: &RefusalReason) -> String {
     match refusal {
-        RefusalReason::Malformed { .. } => "order-validation",
+        // A feasibility veto is carried as `Malformed` and named by its own
+        // gate literal — the same four the edge plane charts under — so an
+        // off-lot order and an order tracing to no hypothesis are not one bar.
+        RefusalReason::Malformed { .. } => refusal.feasibility_gate().unwrap_or("order-validation"),
         RefusalReason::Halted { .. } => "kill-switch",
         RefusalReason::AutonomyTooLow { .. } => "autonomy",
         RefusalReason::LiveVenueBelowLiveAutonomy { .. } => "autonomy-live-venue",
@@ -5777,6 +9008,17 @@ fn push_bounded_bars(series: &mut Vec<Bar>, bar: Bar) {
         series.drain(..series.len() - SERIES_HISTORY);
     }
 }
+
+/// The desk's bar series length at which the snapshot is rebuilt from the
+/// platform's own bounded history.
+///
+/// Twice [`SERIES_HISTORY`] rather than the bound itself because a
+/// `MarketSnapshot` offers no mutable path to one instrument's series — it
+/// can only be rebuilt whole, at a cost linear in instruments times the
+/// bound — so the rebuild is amortised over a bound's worth of bars. Between
+/// rebuilds the desk holds at most this many bars per instrument; after each
+/// it holds exactly `bar_history`.
+const DESK_SERIES_REBUILD_AT: usize = 2 * SERIES_HISTORY;
 
 fn push_bounded(series: &mut Vec<f64>, value: f64) {
     series.push(value);
@@ -5846,6 +9088,12 @@ fn central_signing_secret(seed: u64) -> [u8; 32] {
 /// A volume spike is a fact about volume; it does not on its own imply a
 /// direction, and mapping it to one would be inventing a mechanism to fill a
 /// gap — which is exactly what the reasoning stage exists to prevent.
+/// The episode id a hypothesis's episode is kept under, on both sides of
+/// the resolve seam.
+fn episode_id_for(hypothesis_id: &str) -> String {
+    format!("ep-{hypothesis_id}")
+}
+
 fn mechanism_for(
     anomaly: &qip_opportunity_engine::detector::Anomaly,
 ) -> Option<(
@@ -5948,6 +9196,37 @@ mod decide_tests {
         .expect("the platform assembles")
     }
 
+    /// A platform whose book is large enough that one sized leg exceeds the
+    /// conservative single-order notional limit under the centre's own
+    /// degradation table.
+    ///
+    /// The limit is untouched, as in [`small_book_platform`]. The default
+    /// ten-million book used to serve this purpose, when the table started
+    /// the causal-graph and belief-state rows fresh; now that both are
+    /// measured, a platform that has seeded no world and formed no belief
+    /// sizes against 0.1875 of its free balance, and a leg off ten million
+    /// lands at 150k — inside the 250k cap. Forty million puts the same leg
+    /// at 600k. Every test that uses this fixture asserts that premise
+    /// before asserting the refusal, so a future narrowing cannot turn a
+    /// refusal test into a release test silently.
+    fn over_limit_order_notional() -> Decimal {
+        Decimal::from_int(250_000)
+    }
+
+    fn over_limit_book_platform() -> Platform {
+        let config = PlatformConfig::default().with_initial_equity(Decimal::from_int(40_000_000));
+        let (context, _clock) =
+            qip_core::Context::deterministic(Timestamp::from_secs(1_760_000_000), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
     fn thesis(object: &str, conviction: f64) -> ApprovedThesis {
         ApprovedThesis {
             hypothesis_id: format!("HYP-{object}"),
@@ -5970,6 +9249,135 @@ mod decide_tests {
             let wiggle = if index % 2 == 0 { 0.7 } else { -0.5 };
             series.push(100.0 + index as f64 * 0.1 + wiggle);
         }
+    }
+
+    /// The small-book platform over a universe whose two names each state a
+    /// lot, so the order manager holds a grid for them.
+    ///
+    /// The fixtures above assemble over `Universe::new()`, which installs no
+    /// grid at all — honest for what they test, and exactly the state in
+    /// which the release path could submit any fraction the optimiser
+    /// produced.
+    fn gridded_small_book_platform(lot: Decimal) -> Platform {
+        use qip_financial::asset_class::{InstrumentType, Sector};
+        use qip_financial::object::FinancialObject;
+        use qip_financial::quality::Provenance;
+
+        let now = Timestamp::from_secs(1_760_000_000);
+        let mut universe = Universe::new();
+        for symbol in ["AAPL", "MSFT"] {
+            universe
+                .insert(
+                    FinancialObject::builder(
+                        qip_core::ObjectId::from_string(symbol),
+                        symbol,
+                        InstrumentType::CommonStock,
+                    )
+                    .venue("XNAS")
+                    .sector(Sector::InformationTechnology)
+                    .price(Decimal::from_int(100))
+                    .lot_size(lot)
+                    .provenance(Provenance::synthetic("test", now))
+                    .build(now)
+                    .expect("valid object"),
+                )
+                .expect("insertable");
+        }
+        let config = PlatformConfig::default().with_initial_equity(Decimal::from_int(200_000));
+        let (context, _clock) = qip_core::Context::deterministic(now, config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            universe,
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    #[test]
+    fn a_sized_leg_is_released_as_whole_lots_and_the_installed_gate_admits_it() {
+        // The optimiser sizes a leg as notional over price, a fraction; the
+        // venue accepts whole lots. With the grid installed on the order
+        // manager and nothing expressing the leg at it, every sized leg
+        // would be refused on every cycle — a gate that fires on everything
+        // reads as a platform that never trades, not as a control.
+        let lot = Decimal::from_int(7);
+        let mut platform = gridded_small_book_platform(lot);
+        feed_history(&mut platform, "AAPL", 30);
+        feed_history(&mut platform, "MSFT", 30);
+        platform.pending_theses.push(thesis("AAPL", 0.6));
+        platform.pending_theses.push(thesis("MSFT", -0.4));
+
+        let now = Timestamp::from_secs(1_760_000_100);
+        platform.stage_decide(now);
+
+        // The premise: at least one leg was sized off the grid, so the
+        // assertion below is about expression and not about legs that
+        // happened to land on it.
+        let sized_legs = platform
+            .proposals
+            .last()
+            .expect("a proposal is recorded")
+            .legs
+            .clone();
+        assert!(
+            !sized_legs.is_empty(),
+            "the premise failed: no legs were sized"
+        );
+        let off_grid: Vec<_> = sized_legs
+            .iter()
+            .filter(|leg| leg.quantity.floor_to_step(lot) != leg.quantity)
+            .cloned()
+            .collect();
+        assert!(
+            !off_grid.is_empty(),
+            "every sized leg sat on a lot of seven by chance; the test measures nothing"
+        );
+        let legs = sized_legs.len();
+
+        let correlation = CorrelationId::from_string("corr-lots");
+        let outcome = platform.stage_act(now, &correlation);
+
+        assert_eq!(
+            outcome.produced, legs,
+            "{legs} leg(s) were sized and {} order(s) were released: {} :: problems={:?}",
+            outcome.produced, outcome.detail, outcome.problems
+        );
+        assert!(
+            platform.orders.refusals().is_empty(),
+            "the gate refused a leg the stage was meant to have expressed at its lot: {:?}",
+            platform.orders.refusals()
+        );
+        for order in platform.orders.orders() {
+            assert_eq!(
+                order.quantity.floor_to_step(lot),
+                order.quantity,
+                "order {} was released at {} — not a whole number of lots of {lot}",
+                order.order_id,
+                order.quantity
+            );
+            let leg = sized_legs
+                .iter()
+                .find(|leg| leg.object_id == order.object_id)
+                .expect("an order names a sized leg");
+            assert!(
+                order.quantity <= leg.quantity && leg.quantity - order.quantity < lot,
+                "order {} at {} is not the largest whole-lot size under the sized {}",
+                order.order_id,
+                order.quantity,
+                leg.quantity
+            );
+        }
+        // The residual is on the record: the summary counts the legs whose
+        // order carries fewer units than were sized.
+        assert!(
+            outcome
+                .detail
+                .contains(&format!("{} sized down to whole lots", off_grid.len())),
+            "the stage summary does not say how many legs were expressed at the lot: {}",
+            outcome.detail
+        );
     }
 
     #[test]
@@ -6206,16 +9614,17 @@ mod decide_tests {
     #[test]
     fn an_order_over_the_notional_limit_is_refused_and_recorded() {
         // The other half of the release path, and the more important half. The
-        // controls are not decoration: a leg sized against the default test
-        // book is 800k against a 250k single-order notional cap, and the
+        // controls are not decoration: a leg sized against the over-limit
+        // book is 600k against a 250k single-order notional cap, and the
         // deterministic pre-trade check refuses it before it reaches the
         // broker.
         //
         // This test is why `a_sized_proposal_is_signed_by_two_controls_and_released_as_orders`
         // uses a smaller book rather than a larger limit. Both paths are real
         // and both are asserted; relaxing the limit would have deleted this
-        // one silently.
-        let mut platform = platform();
+        // one silently — and so would a narrowing of the budget that took
+        // the leg under the cap, which is why the premise is asserted.
+        let mut platform = over_limit_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
         platform.pending_theses.push(thesis("AAPL", 0.6));
@@ -6228,6 +9637,15 @@ mod decide_tests {
         assert!(
             !sized.is_empty(),
             "the premise failed: nothing was sized, so nothing could be refused"
+        );
+        assert!(
+            sized
+                .legs
+                .iter()
+                .any(|leg| leg.quantity * leg.reference_price > over_limit_order_notional()),
+            "the premise failed: no leg exceeds the {} cap, so a release below would not be \
+             the control failing",
+            over_limit_order_notional()
         );
 
         let outcome = platform.stage_act(now, &correlation);
@@ -6295,10 +9713,24 @@ mod decide_tests {
         // The exact property: the second proposal was budgeted the equity
         // minus the first one's hold, not the equity. `proposal.equity` is
         // the budget `construct` was handed, so the assertion reads the seam
-        // directly rather than inferring it from sizes.
+        // directly rather than inferring it from sizes. The budget is the
+        // free balance narrowed by the central degradation table — this
+        // platform's self-model has never absorbed an outcome, so the table
+        // reads it unavailable — and the multiplier is read from the same
+        // table rather than restated, so the assertion stays about the
+        // reservation and not about the constant.
+        let multiplier = platform
+            .central_degradation(Timestamp::from_secs(1_760_000_160))
+            .expect("the table reads")
+            .central_sizing_multiplier();
+        assert!(
+            multiplier < Decimal::ONE,
+            "the premise: a never-absorbed self-model narrows, so the budget below is the \
+             narrowed free balance and not the free balance by coincidence"
+        );
         assert_eq!(
             second.equity.amount,
-            equity - first.traded_notional(),
+            (equity - first.traded_notional()) * multiplier,
             "the second proposal was sized against capital the first still \
              holds — the double-spend the reservation ledger exists to refuse"
         );
@@ -6339,20 +9771,24 @@ mod decide_tests {
         );
 
         // Refused: the over-limit book, every leg refused, the hold releases.
-        let mut refused = platform();
+        let mut refused = over_limit_book_platform();
         feed_history(&mut refused, "AAPL", 30);
         feed_history(&mut refused, "MSFT", 30);
         refused.pending_theses.push(thesis("AAPL", 0.6));
         refused.pending_theses.push(thesis("MSFT", -0.4));
         refused.stage_decide(now);
+        let sized = refused.proposals.last().expect("a proposal");
         assert!(
-            refused
-                .proposals
-                .last()
-                .expect("a proposal")
-                .traded_notional()
-                .is_positive(),
+            sized.traded_notional().is_positive(),
             "the premise failed: nothing sized, so nothing could be refused"
+        );
+        assert!(
+            sized
+                .legs
+                .iter()
+                .any(|leg| leg.quantity * leg.reference_price > over_limit_order_notional()),
+            "the premise failed: no leg exceeds the {} cap",
+            over_limit_order_notional()
         );
         let outcome = refused.stage_act(now, &correlation);
         assert_eq!(outcome.produced, 0, "the over-limit book placed an order");
@@ -6453,6 +9889,194 @@ mod decide_tests {
         assert!(
             platform.pending_theses.is_empty(),
             "an unsizeable thesis was requeued; it will not size better against the same history"
+        );
+    }
+
+    /// A book that can reach none of its equity refuses to size, and the
+    /// cycle says so rather than reading like a cycle where nobody had an
+    /// idea.
+    ///
+    /// The failure this prevents was live until this test was written.
+    /// `deployable_capital` returned `Ok(0)` whenever the book carried no
+    /// unfunded private commitment — the commoner of its two branches —
+    /// although its own doc claimed it refused precisely so that "sizing
+    /// against a budget of zero" could not "report that as an ordinary quiet
+    /// cycle". The zero travelled on to `PortfolioConstructor::construct`,
+    /// which refused it as `cannot size a proposal against no equity`: a
+    /// false statement about a book holding 200,000 it simply could not
+    /// reach. DECIDE then recorded `no thesis cleared the action bar;
+    /// nothing to propose` with an empty problem list — verbatim what a
+    /// cycle records when nothing was approved at all. Two states an
+    /// operator must be able to tell apart read identically.
+    ///
+    /// Every assertion below is on what the cycle recorded rather than on
+    /// what `deployable_capital` returns. An accessor-level assertion is
+    /// what let this seam go unguarded in the first place.
+    #[test]
+    fn a_cycle_that_can_reach_none_of_its_equity_refuses_rather_than_reading_as_quiet() {
+        let now = Timestamp::from_secs(1_760_000_100);
+
+        // Premise, and the admitting half of the gate: the identical fixture
+        // with its capital free sizes a real proposal and reports no problem.
+        // Without this the refusal below could be the history, the mandate or
+        // the theses rather than the capital, and a control that refuses
+        // everything is an outage rather than a control.
+        let mut funded = small_book_platform();
+        feed_history(&mut funded, "AAPL", 30);
+        feed_history(&mut funded, "MSFT", 30);
+        funded.pending_theses.push(thesis("AAPL", 0.6));
+        funded.pending_theses.push(thesis("MSFT", -0.4));
+        let funded_decide = funded
+            .run_cycle(now)
+            .stage(Stage::Decide)
+            .cloned()
+            .expect("DECIDE ran");
+        assert!(
+            funded_decide.produced > 0,
+            "the premise failed: the funded book sized nothing either, so the refusal below \
+             proves nothing — {}",
+            funded_decide.detail
+        );
+        assert!(
+            funded_decide.problems.is_empty(),
+            "the premise failed: the funded book already reports a problem: {:?}",
+            funded_decide.problems
+        );
+
+        // The sentence a genuinely quiet cycle records, read off a platform
+        // that was given nothing to think about rather than restated as a
+        // literal here. It is the string the subject below must *not* match.
+        let quiet = small_book_platform()
+            .run_cycle(now)
+            .stage(Stage::Decide)
+            .cloned()
+            .expect("DECIDE ran")
+            .detail;
+
+        // The subject: the same book, every unit of its equity held by a
+        // standing reservation, so the resync at the top of DECIDE leaves
+        // nothing free and no commitment is involved at all.
+        let mut held = small_book_platform();
+        feed_history(&mut held, "AAPL", 30);
+        feed_history(&mut held, "MSFT", 30);
+        let equity = held.capital.equity();
+        assert!(
+            equity.is_positive(),
+            "the premise failed: the fixture's book is empty, so 'no equity' would be true"
+        );
+        held.reservations
+            .resync_free(equity, now)
+            .expect("holds are zero, so free is the whole equity");
+        held.reservations
+            .reserve("standing-hold", equity, now, Duration::from_hours(24))
+            .expect("the whole equity is free to hold");
+        held.pending_theses.push(thesis("AAPL", 0.6));
+        held.pending_theses.push(thesis("MSFT", -0.4));
+
+        let report = held.run_cycle(now);
+        let decide = report.stage(Stage::Decide).expect("DECIDE ran");
+
+        // Premise: the book still holds its equity. What it cannot do is
+        // reach it, so a refusal naming an empty book would be the wrong
+        // refusal.
+        assert_eq!(
+            held.capital.equity(),
+            equity,
+            "the premise failed: the cycle moved the book, so the refusal may be about that"
+        );
+        assert_eq!(
+            decide.produced, 0,
+            "a book with nothing free sized {} leg(s)",
+            decide.produced
+        );
+
+        // The consequence an operator experiences: the cycle carries the
+        // refusal, and it names the capital state.
+        let problem = decide
+            .problems
+            .iter()
+            .find(|problem| problem.contains("no capital free to deploy"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the cycle recorded no funding refusal; DECIDE said {:?} with problems {:?}",
+                    decide.detail, decide.problems
+                )
+            });
+        assert!(
+            problem.contains(&format!("tracked equity of {equity}")),
+            "the refusal does not name the equity the book cannot reach: {problem}"
+        );
+
+        // And it does not read as the quiet cycle. Compared against the idle
+        // platform's own sentence rather than a literal, so a reword of that
+        // sentence cannot silently make the two match again.
+        assert_ne!(
+            decide.detail, quiet,
+            "a cycle that could fund none of two approved theses recorded the same DECIDE line \
+             as one where nothing was approved"
+        );
+
+        // The proposal must not tell an operator this book has no equity.
+        let proposal = held
+            .proposals
+            .last()
+            .expect("every cycle records a proposal");
+        assert!(
+            !proposal.rationale.contains("no equity"),
+            "the cycle told an operator that a book of {equity} has no equity: {}",
+            proposal.rationale
+        );
+        assert_eq!(
+            held.reservations.reserved_total(),
+            equity,
+            "the cycle took a further hold against capital it did not have"
+        );
+
+        // The boundary: everything above happened against the simulator.
+        assert!(!held.orders.has_live_fills());
+        assert!(!held.is_live_capable());
+    }
+
+    /// The capital the platform says it will deploy is read from the book,
+    /// not from whether a sizing pass happened to run first.
+    ///
+    /// `ReservationLedger` holds a *derived* free balance — equity less the
+    /// active holds — and `Platform::new` opens it at zero, leaving
+    /// `resync_free` to re-derive it at each sizing pass. A public caller
+    /// asking how much this platform would deploy before any pass had run
+    /// therefore got zero from a book of ten million: not an approximate
+    /// answer, a wrong one, and one that reads as "this platform will deploy
+    /// nothing". `deployable_capital` now anchors before it reads.
+    #[test]
+    fn the_capital_the_platform_will_deploy_is_read_from_the_book_not_from_who_called_first() {
+        let mut platform = platform();
+        let now = Timestamp::from_secs(1_760_000_100);
+        let equity = platform.capital.equity();
+        assert!(
+            equity.is_positive(),
+            "the premise failed: the fixture's book is empty, so zero would be the right answer"
+        );
+        assert_eq!(
+            platform.reservations.reserved_total(),
+            Decimal::ZERO,
+            "the premise failed: capital is already held, so the whole book is not deployable"
+        );
+        assert_eq!(
+            platform
+                .commitments()
+                .unfunded_total(now)
+                .expect("an empty commitment book totals"),
+            Decimal::ZERO,
+            "the premise failed: a commitment would come off the answer below"
+        );
+
+        assert_eq!(
+            platform
+                .deployable_capital(now)
+                .expect("a book with nothing held and nothing promised deploys all of it"),
+            equity,
+            "a platform that has run no sizing pass reported a deployable budget other than its \
+             whole book"
         );
     }
 
@@ -6767,5 +10391,1884 @@ mod retention_tests {
             (recorded - 1) as u64,
             "the newest claim did not survive eviction"
         );
+    }
+
+    // --- the desk -----------------------------------------------------------
+
+    /// The desk the agents read is the platform's own world model and market
+    /// view, not a copy taken at assembly.
+    ///
+    /// The failure this prevents ran in every deployed binary until this seam
+    /// existed: `Platform::observe` absorbed three hundred and twenty tape
+    /// periods into the platform's fields while the desk held a
+    /// `WorldModel::new()` and an empty `MarketSnapshot`, so every analyst
+    /// answered `no_data` and no hypothesis could gather a second origin.
+    #[test]
+    fn the_desk_reads_what_the_platform_absorbed_and_stays_within_the_bound() {
+        let mut platform = platform();
+        let object = ObjectId::from_string("obj-AAA");
+
+        // The premise, structurally: the gates share the platform's slots.
+        assert!(
+            platform.desk_is_fed(),
+            "the desk's world and market gates are not wired to the platform's upstreams"
+        );
+        // And before anything is absorbed the desk is honestly empty, so a
+        // populated desk below is absorption and not assembly.
+        assert!(platform.market_view().snapshot.get(&object).is_none());
+
+        // Enough bars to cross the rebuild threshold and then some, so the
+        // test sees the desk both before and after a rebuild.
+        let extra = 5;
+        platform.observe(counting_bars(DESK_SERIES_REBUILD_AT + extra));
+
+        let history = platform
+            .bar_history
+            .get("obj-AAA")
+            .expect("the platform holds the instrument's bars");
+        assert_eq!(
+            history.len(),
+            SERIES_HISTORY,
+            "the platform's own bound moved"
+        );
+
+        let market = platform.market_view();
+        let state = market
+            .snapshot
+            .get(&object)
+            .expect("the desk holds market state for the instrument the platform absorbed");
+        // Bounded: never more than the rebuild threshold, and after the
+        // rebuild exactly the platform's history plus what arrived since.
+        assert!(
+            state.bars.len() < DESK_SERIES_REBUILD_AT,
+            "the desk holds {} bars; it grows with uptime",
+            state.bars.len()
+        );
+        assert_eq!(
+            state.bars.len(),
+            SERIES_HISTORY + extra,
+            "the rebuild did not leave the desk holding the platform's history plus the bars since"
+        );
+        // Derived from the platform's record: the newest SERIES_HISTORY
+        // closes on the desk are the platform's, in order.
+        let desk_closes = state.bars.closes();
+        let platform_closes: Vec<f64> = history.iter().map(|bar| bar.close.to_f64()).collect();
+        assert_eq!(
+            desk_closes[desk_closes.len() - SERIES_HISTORY..],
+            platform_closes[..],
+            "the desk's newest bars are not the platform's bars"
+        );
+        // The last bar absorbed is the last bar the desk shows, and the
+        // snapshot's clock followed it.
+        let newest = 100.0 + (DESK_SERIES_REBUILD_AT + extra - 1) as f64;
+        assert_eq!(
+            state.bars.last().map(|bar| bar.close.to_f64()),
+            Some(newest)
+        );
+        assert_eq!(
+            market.snapshot.as_of,
+            history[history.len() - 1].close_time()
+        );
+        drop(market);
+
+        // The world model the agents read through the other gate saw the
+        // same absorption: its `close` feature for the instrument is readable
+        // at the newest bar's close.
+        let world = platform.world();
+        let closes = world.features().history("close", "obj-AAA", start());
+        assert!(
+            !closes.is_empty(),
+            "the world model behind the desk's gate holds no close series"
+        );
+        assert_eq!(closes.last().map(|value| value.value), Some(newest));
+    }
+
+    /// The other market records reach the desk too, so an agent reading the
+    /// book or the last trade is reading what the platform absorbed.
+    #[test]
+    fn quotes_reach_the_desk_snapshot_as_they_are_absorbed() {
+        let mut platform = platform();
+        let object = ObjectId::from_string("obj-AAA");
+        assert!(platform.market_view().snapshot.get(&object).is_none());
+
+        platform.observe(counting_quotes(3));
+
+        let market = platform.market_view();
+        let state = market
+            .snapshot
+            .get(&object)
+            .expect("the desk holds the quoted instrument");
+        let quote = state.quote.as_ref().expect("the desk holds the quote");
+        // The newest quote of the three: half-spread 0.03 either side of 100.
+        assert_eq!(quote.ask - quote.bid, Decimal::from_f64(0.06).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod user_ledger_tests {
+    //! The §43.4 chain reaching a user: a fill the centre settles is booked
+    //! to the desk's per-strategy books. A unit test because the seam is
+    //! `Platform::journal_to_desk`, which is private on purpose — the only
+    //! road into the user books is a report the centre accepted.
+
+    use super::*;
+    use qip_contracts::intent::Contributor;
+    use qip_contracts::wire::{FillRecord, FillShare};
+    use qip_core::dec;
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    use qip_financial::universe::Universe;
+    use qip_mesh::delta::DeltaOrder;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::{Limit, LimitKind, LimitSet};
+
+    const CELL: &str = "cell-lon-1";
+    const INSTRUMENT: &str = "obj-AAA";
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn platform() -> Platform {
+        let mut universe = Universe::new();
+        universe
+            .insert(
+                FinancialObject::builder(
+                    ObjectId::from_string(INSTRUMENT),
+                    "AAA",
+                    InstrumentType::CommonStock,
+                )
+                .venue("XNYS")
+                .sector(Sector::InformationTechnology)
+                .price(dec!("100"))
+                .provenance(Provenance::synthetic("test", start()))
+                .build(start())
+                .expect("valid object"),
+            )
+            .expect("insertable");
+        let limits = LimitSet::new("kernel-test").with(
+            Limit::new("max-leverage", LimitKind::MaxLeverage { limit: 2.0 })
+                .with_rationale("gross exposure is capped at 2x equity"),
+        );
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(config, context, Telemetry::silent(), universe, limits)
+            .expect("the platform assembles")
+    }
+
+    /// One order sent and filled whole for a single strategy, as the cell
+    /// reports it: the order registered as sent and the venue's fill beside
+    /// it, attributed entirely to `strategy`.
+    fn report(order_id: &str, side: BookSide, quantity: Decimal, price: Decimal) -> CellReport {
+        let strategy = StrategyId::new("alpha");
+        let order = DeltaOrder {
+            order_id: order_id.to_string(),
+            strategy: strategy.clone(),
+            object_id: ObjectId::from_string(INSTRUMENT),
+            venue: VenueId::new("XNYS"),
+            side,
+            quantity,
+            price,
+            simulated: true,
+            contributors: vec![Contributor {
+                strategy: strategy.clone(),
+                signed_size: quantity,
+                inputs: vec![("alpha-feature".to_string(), 1)],
+            }],
+        };
+        let fill = FillRecord {
+            order_id: order_id.to_string(),
+            object_id: ObjectId::from_string(INSTRUMENT),
+            venue: VenueId::new("XNYS"),
+            side,
+            quantity,
+            price,
+            simulated: true,
+            at: start(),
+            shares: vec![FillShare { strategy, quantity }],
+        };
+        CellReport::new(CELL, start())
+            .with_orders(vec![order])
+            .with_fills(vec![fill])
+    }
+
+    #[test]
+    fn a_fill_the_centre_settles_is_booked_to_the_desk_users_per_strategy_balance() {
+        // The failure this closes: the platform's books were per strategy
+        // and not per user, so the attribution chain stopped at the lot and
+        // nothing could say whose capital `alpha` was trading. Premise
+        // first: the desk holds a mandate and no book, and the round trip
+        // below genuinely realises something — a buy at 50 and a sell at 60
+        // is a thousand, which a ledger that booked nothing would not show.
+        let mut platform = platform();
+        let desk = UserId::new(DESK_USER).expect("the desk user id is valid");
+        let alpha = StrategyId::new("alpha");
+        assert!(
+            platform.user_ledger().mandate(&desk).is_some(),
+            "the premise is a desk with a mandate"
+        );
+        assert!(platform.user_ledger().book(&desk, &alpha).is_none());
+        assert_eq!(platform.user_ledger().fills_journalled(), 0);
+
+        let bought = platform
+            .ingest_cell_report(
+                report("ord-1", BookSide::Ask, dec!("100"), dec!("50")),
+                start(),
+            )
+            .expect("the buy is ingested");
+        assert_eq!(
+            bought.settlement.fills_settled, 1,
+            "the premise is a settled fill"
+        );
+        assert!(
+            bought.settlement.refused.is_empty(),
+            "nothing was refused: {:?}",
+            bought.settlement.refused
+        );
+        let opened = platform
+            .user_ledger()
+            .book(&desk, &alpha)
+            .expect("the buy opened the desk's book at alpha");
+        assert_eq!(opened.entries(), 1, "the opening buy is one entry");
+        assert_eq!(
+            opened
+                .cash(Currency::USD)
+                .map(qip_capital::ledger::CashBalance::settled),
+            Some(Decimal::ZERO),
+            "an opening buy realises nothing yet"
+        );
+
+        let sold = platform
+            .ingest_cell_report(
+                report("ord-2", BookSide::Bid, dec!("100"), dec!("60")),
+                start(),
+            )
+            .expect("the sell is ingested");
+        assert_eq!(sold.settlement.fills_settled, 1);
+        let attributed = sold
+            .settlement
+            .by_strategy()
+            .get("alpha")
+            .copied()
+            .expect("the sell is attributed to alpha");
+        assert_eq!(
+            attributed,
+            dec!("1000"),
+            "the premise is a realised thousand"
+        );
+
+        let closed = platform
+            .user_ledger()
+            .book(&desk, &alpha)
+            .expect("the desk's book at alpha persists");
+        assert_eq!(closed.entries(), 2);
+        assert_eq!(
+            closed
+                .cash(Currency::USD)
+                .map(qip_capital::ledger::CashBalance::settled),
+            Some(dec!("1000")),
+            "the desk's per-strategy balance carries what alpha realised"
+        );
+        assert_eq!(platform.user_ledger().fills_journalled(), 2);
+        assert!(
+            platform.capture_problems.is_empty(),
+            "nothing was left unjournalled: {:?}",
+            platform.capture_problems
+        );
+    }
+}
+
+#[cfg(test)]
+mod central_sizing_tests {
+    //! §6.2 row 6 on the central path: the self-model's freshness narrows
+    //! the budget every proposal is sized against. A unit test because the
+    //! seam is `Platform::construct_from`, private on purpose, and the
+    //! budget it hands the constructor is readable off the proposal.
+
+    use super::*;
+    use qip_core::dec;
+    use qip_financial::universe::Universe;
+    use qip_observability::Telemetry;
+    use qip_portfolio_engine::construction::ApprovedThesis;
+    use qip_risk::limits::LimitSet;
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn platform() -> Platform {
+        let config = PlatformConfig::default().with_initial_equity(Decimal::from_int(200_000));
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    fn thesis(object: &str, conviction: f64) -> ApprovedThesis {
+        ApprovedThesis {
+            hypothesis_id: format!("HYP-{object}"),
+            object_id: qip_core::ObjectId::from_string(object),
+            conviction,
+            expected_return: 0.04 * conviction.signum(),
+            price: Decimal::from_int(100),
+        }
+    }
+
+    fn feed_history(platform: &mut Platform, object: &str, closes: usize) {
+        let series = platform
+            .price_history
+            .entry(object.to_string())
+            .or_default();
+        for index in 0..closes {
+            let wiggle = if index % 2 == 0 { 0.7 } else { -0.5 };
+            series.push(100.0 + index as f64 * 0.1 + wiggle);
+        }
+    }
+
+    /// Size one proposal and return the budget `construct` was handed and
+    /// the notional it traded.
+    fn size(platform: &mut Platform, now: Timestamp) -> (Decimal, Decimal) {
+        feed_history(platform, "AAPL", 30);
+        feed_history(platform, "MSFT", 30);
+        platform.pending_theses.push(thesis("AAPL", 0.6));
+        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.stage_decide(now);
+        let proposal = platform.proposals.last().expect("a proposal is recorded");
+        (proposal.equity.amount, proposal.traded_notional())
+    }
+
+    /// Grade `count` vindicated theses on one detector, so the self-model
+    /// carries a component at the minimum sample with a newest outcome at
+    /// `resolves_at`.
+    fn feed_self_model(platform: &mut Platform, count: usize, resolves_at: Timestamp) {
+        for n in 1..=count {
+            let id = format!("hyp-{n}");
+            let claim = ThesisClaim {
+                hypothesis_id: id.clone(),
+                class: "price_dislocation".to_string(),
+                subject: "obj-AAA".to_string(),
+                formed_at: start(),
+                resolves_at,
+                direction: 1.0,
+                expected_move_bps: 200.0,
+                falsifiers: vec!["it reverts".to_string()],
+                confidence: 0.7,
+                contributors: Vec::new(),
+            };
+            let outcome = ThesisOutcome {
+                hypothesis_id: id,
+                observed_at: resolves_at,
+                realised_move_bps: 180.0,
+                realised_pnl: 0.0,
+                falsifiers_triggered: Vec::new(),
+                mechanism_confirmed: None,
+            };
+            platform
+                .learn_from(&[claim], &[outcome], resolves_at)
+                .expect("a resolvable claim grades");
+        }
+    }
+
+    #[test]
+    fn a_never_absorbed_self_model_sizes_at_the_unavailable_multiplier_and_a_fed_one_sizes_wider() {
+        // The failure this guards: the centre sizing every proposal at full
+        // budget while its self-model — the record of which of its own
+        // components can be trusted — has never absorbed an outcome, so a
+        // platform with no evidence about itself sized exactly as one with
+        // a week of graded theses. Row 6 of §6.2 exists to narrow on that
+        // absence, and until this seam it narrowed nothing at the centre.
+        let now = Timestamp::from_secs(1_760_000_100);
+
+        // Premise: the fresh platform's self-model is empty and the table
+        // reads it unavailable — the reading the sizing below must follow.
+        // The other two measured rows are unavailable on a fresh platform
+        // too: the causal graph has absorbed no claim (this test seeds no
+        // world) and no belief has been formed before the first `reason()`
+        // in a process, so the shared multiplier is 0.75 × 0.5 = 0.375 and
+        // the self-model's unavailable halving takes it to 0.1875. Until
+        // rows 2 and 4 were measured this read 0.5, which was the table
+        // reading two absent objects as fresh.
+        let mut unfed = platform();
+        assert!(
+            unfed.self_model().is_empty(),
+            "the premise is an empty self-model"
+        );
+        let unfed_multiplier = unfed
+            .central_degradation(now)
+            .expect("the table reads")
+            .central_sizing_multiplier();
+        assert_eq!(
+            unfed_multiplier,
+            dec!("0.1875"),
+            "unavailable self-model halves the 0.375 that an unavailable causal graph and \
+             belief state already narrowed to"
+        );
+        // With no hold active the free balance `stage_decide` anchors is
+        // the whole equity.
+        let free_before = unfed.capital.equity();
+        let (unfed_budget, unfed_notional) = size(&mut unfed, now);
+        assert!(
+            unfed_notional.is_positive(),
+            "the premise failed: nothing was sized on the unfed platform"
+        );
+        assert_eq!(
+            unfed_budget,
+            free_before * unfed_multiplier,
+            "the unfed budget is the free balance at the unavailable multiplier"
+        );
+
+        // A platform whose self-model holds a component at the minimum
+        // sample, graded within the horizon of the sizing instant.
+        let mut fed = platform();
+        let resolves_at = start().saturating_add(Duration::from_days(5));
+        feed_self_model(
+            &mut fed,
+            qip_learning_engine::self_model::MINIMUM_SAMPLE,
+            resolves_at,
+        );
+        assert!(
+            !fed.self_model().is_empty(),
+            "the premise is a fed self-model"
+        );
+        let sized_at = resolves_at.saturating_add(Duration::from_secs(100));
+        let fed_multiplier = fed
+            .central_degradation(sized_at)
+            .expect("the table reads")
+            .central_sizing_multiplier();
+        // A fresh self-model narrows nothing of its own: the 0.375 is the
+        // two rows this test leaves unavailable — no causal claim absorbed,
+        // no belief formed — and is the same shared factor the unfed
+        // platform carried, so the difference between the two multipliers
+        // is the self-model row alone.
+        assert_eq!(
+            fed_multiplier,
+            dec!("0.375"),
+            "a fresh self-model narrows nothing beyond the unavailable causal graph and \
+             belief state"
+        );
+        assert_eq!(
+            fed_multiplier,
+            unfed_multiplier * dec!("2"),
+            "the self-model row is exactly the halving between the two platforms"
+        );
+        let fed_free = fed.capital.equity();
+        let (fed_budget, fed_notional) = size(&mut fed, sized_at);
+        assert_eq!(
+            fed_budget,
+            fed_free * fed_multiplier,
+            "the fed budget is the free balance at the fed multiplier"
+        );
+        assert!(
+            fed_notional > unfed_notional,
+            "a fed self-model sized {fed_notional}, not wider than the unfed {unfed_notional}"
+        );
+    }
+
+    #[test]
+    fn a_backdated_causal_graph_narrows_the_central_multiplier_to_the_stale_value_and_a_fresh_one_does_not()
+     {
+        // The failure this closes: the centre's table started row 2 fresh
+        // on the argument that the live graph has no shipped age, so a
+        // graph whose every claim was a year old — which is what the demo
+        // seed builds — sized at full budget. Premise: the fresh platform's
+        // graph has absorbed nothing and reads unavailable, and the two
+        // platforms below differ only in when their one claim was recorded.
+        use qip_contracts::degradation::{Capability, Freshness};
+        use qip_world_model::causal::{CausalEdge, Mechanism};
+
+        let now = Timestamp::from_secs(1_760_000_100);
+        let claim = |recorded_at: Timestamp| {
+            CausalEdge::new(
+                "ent-cause",
+                "ent-effect",
+                Mechanism::SupplyChain,
+                0.5,
+                Duration::from_days(1),
+                recorded_at,
+            )
+        };
+        let unseeded = platform();
+        assert!(
+            unseeded.world().causal().last_updated().is_none(),
+            "the premise is a graph that has absorbed nothing"
+        );
+        let unseeded_state = unseeded.central_degradation(now).expect("the table reads");
+        assert_eq!(
+            unseeded_state.freshness(Capability::CausalGraph),
+            Freshness::Unavailable
+        );
+
+        let fresh = platform();
+        fresh
+            .world
+            .update(|world| world.claim_causal(claim(now.saturating_sub(Duration::from_days(1)))));
+        let fresh_state = fresh.central_degradation(now).expect("the table reads");
+        assert_eq!(
+            fresh_state.freshness(Capability::CausalGraph),
+            Freshness::Fresh,
+            "a claim absorbed yesterday is inside the quarter horizon"
+        );
+
+        let stale = platform();
+        stale.world.update(|world| {
+            world.claim_causal(claim(now.saturating_sub(Duration::from_days(365))));
+        });
+        let stale_state = stale.central_degradation(now).expect("the table reads");
+        assert_eq!(
+            stale_state.freshness(Capability::CausalGraph),
+            Freshness::Stale,
+            "a claim absorbed a year ago is past the quarter horizon"
+        );
+
+        // The multipliers: the stale graph narrows by exactly the row 2
+        // factor against the fresh one, and reads the same as no graph at
+        // all — the table does not distinguish stale from unavailable on
+        // this row, which is stated here so nobody reads it as a bug.
+        let fresh_multiplier = fresh_state.central_sizing_multiplier();
+        let stale_multiplier = stale_state.central_sizing_multiplier();
+        assert_eq!(
+            fresh_multiplier,
+            dec!("0.25"),
+            "belief unavailable (0.5) and self-model unavailable (0.5); the graph narrows nothing"
+        );
+        assert_eq!(
+            stale_multiplier,
+            fresh_multiplier * dec!("0.75"),
+            "the stale graph narrows by the row 2 factor and nothing else"
+        );
+        assert_eq!(stale_multiplier, unseeded_state.central_sizing_multiplier());
+
+        // And the demo seed itself, as a deployed process would carry it:
+        // every claim backdated a year from the context's clock, so the
+        // graph the demo reasons over reads stale and the centre narrows.
+        let demo = platform();
+        demo.world.update(|world| {
+            qip_world_model::world::seed_demo_world(world, &demo.context).expect("the demo seeds")
+        });
+        let seeded_at = demo
+            .world()
+            .causal()
+            .last_updated()
+            .expect("the demo seed absorbed a claim");
+        assert!(
+            now.since(seeded_at) > qip_contracts::degradation::CAUSAL_GRAPH_HORIZON,
+            "the premise: the demo's newest claim is older than the horizon"
+        );
+        assert_eq!(
+            demo.central_degradation(now)
+                .expect("the table reads")
+                .freshness(Capability::CausalGraph),
+            Freshness::Stale,
+            "the demo seed's year-old claims read stale at the centre"
+        );
+    }
+}
+
+#[cfg(test)]
+mod self_model_tests {
+    //! The LEARN stage charging a graded thesis to the components that
+    //! produced it. A unit test because the attribution seam is
+    //! `Platform::components_of`, private on purpose: the only road into the
+    //! self-model is an evaluation the learning engine graded.
+
+    use super::*;
+    use qip_financial::universe::Universe;
+    use qip_learning_engine::self_model::ComponentKind;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn platform() -> Platform {
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    #[test]
+    fn a_graded_thesis_is_charged_to_its_detector_and_to_every_roster_analyst_that_ran_on_it() {
+        // The failure this guards: a thesis resolved, the calibration moved,
+        // and no component was charged — so the self-model stayed empty and
+        // the REASON stage kept weighting a detector that had been wrong
+        // sixty times at full weight. The run id of an analyst no longer on
+        // the roster, and a contributor that is not a run id at all, must
+        // charge nobody rather than whichever roster prefix happened to fit.
+        let mut platform = platform();
+        let roster: Vec<String> = platform
+            .organisation
+            .roster()
+            .iter()
+            .map(|manifest| manifest.id.clone())
+            .collect();
+        // Premise: the roster carries the analyst the claim will name, and
+        // its id contains a hyphen — the case a naive split gets wrong.
+        let analyst = "macro-analyst";
+        assert!(
+            roster.iter().any(|id| id == analyst),
+            "the fixture analyst is not on the roster: {roster:?}"
+        );
+        assert!(
+            platform.self_model().is_empty(),
+            "the premise is an empty self-model"
+        );
+
+        let resolves_at = start().saturating_add(Duration::from_days(5));
+        let claim = ThesisClaim {
+            hypothesis_id: "hyp-1".to_string(),
+            class: "price_dislocation".to_string(),
+            subject: "obj-AAA".to_string(),
+            formed_at: start(),
+            resolves_at,
+            direction: 1.0,
+            expected_move_bps: 200.0,
+            confidence: 0.7,
+            falsifiers: vec!["it reverts".to_string()],
+            contributors: vec![
+                format!("run-{analyst}-7"),
+                "run-retired-analyst-3".to_string(),
+                "not-a-run-id".to_string(),
+            ],
+        };
+        let outcome = ThesisOutcome {
+            hypothesis_id: "hyp-1".to_string(),
+            observed_at: resolves_at,
+            realised_move_bps: 180.0,
+            realised_pnl: 0.0,
+            falsifiers_triggered: Vec::new(),
+            mechanism_confirmed: None,
+        };
+        let learned = platform
+            .learn_from(&[claim], &[outcome], resolves_at)
+            .expect("a resolvable claim grades");
+        assert_eq!(
+            learned.evaluations.len(),
+            1,
+            "the premise is one graded thesis"
+        );
+        assert!(
+            learned.evaluations[0].verdict.is_informative(),
+            "an informative verdict is the premise; got {:?}",
+            learned.evaluations[0].verdict
+        );
+
+        let charged: Vec<String> = platform
+            .self_model()
+            .iter()
+            .map(|(key, _)| key.to_string())
+            .collect();
+        assert_eq!(
+            charged,
+            vec![
+                "detector:price_dislocation".to_string(),
+                format!("analyst:{analyst}"),
+            ],
+            "the wrong components were charged"
+        );
+        let detector = ComponentKey::new(ComponentKind::Detector, "price_dislocation")
+            .expect("a named component");
+        let record = platform
+            .self_model()
+            .get(&detector)
+            .expect("the detector was charged");
+        assert_eq!(record.sample_count(), 1);
+        assert_eq!(record.hits(), 1, "a vindicated thesis is a hit");
+        assert_eq!(record.last_updated(), Some(resolves_at));
+        // One outcome is below the minimum sample, so the REASON stage was
+        // handed no factor: an unmeasured component stays at full weight.
+        assert!(
+            platform.reasoning.origin_factors().is_empty(),
+            "a factor was handed over on one outcome: {:?}",
+            platform.reasoning.origin_factors()
+        );
+
+        // Nine more misses reach the minimum sample, and the factors the
+        // record now supports reach the reasoning engine — the handover
+        // that makes the self-model something REASON uses rather than
+        // something LEARN reports. One hit in ten: (1 + 2) / (10 + 4).
+        for n in 2..=qip_learning_engine::self_model::MINIMUM_SAMPLE {
+            let id = format!("hyp-{n}");
+            let claim = ThesisClaim {
+                hypothesis_id: id.clone(),
+                class: "price_dislocation".to_string(),
+                subject: "obj-AAA".to_string(),
+                formed_at: start(),
+                resolves_at,
+                direction: 1.0,
+                expected_move_bps: 200.0,
+                confidence: 0.7,
+                falsifiers: vec!["it reverts".to_string()],
+                contributors: vec![format!("run-{analyst}-{n}")],
+            };
+            let outcome = ThesisOutcome {
+                hypothesis_id: id,
+                observed_at: resolves_at,
+                realised_move_bps: -180.0,
+                realised_pnl: 0.0,
+                falsifiers_triggered: Vec::new(),
+                mechanism_confirmed: None,
+            };
+            platform
+                .learn_from(&[claim], &[outcome], resolves_at)
+                .expect("a resolvable claim grades");
+        }
+        let handed = platform.reasoning.origin_factors();
+        let expected = 3.0 / 14.0;
+        for origin in ["price_dislocation", analyst] {
+            let factor = handed.get(origin).unwrap_or_else(|| {
+                panic!("{origin} reached the minimum and REASON holds no factor for it: {handed:?}")
+            });
+            assert!(
+                (factor - expected).abs() < 1e-12,
+                "{origin} was handed {factor}, not the {expected} its record supports"
+            );
+        }
+        assert_eq!(
+            handed.len(),
+            2,
+            "an origin nobody measured was handed a factor: {handed:?}"
+        );
+    }
+
+    #[test]
+    fn a_thesis_the_self_model_cannot_key_is_skipped_with_a_problem_and_the_rest_are_charged() {
+        // The failure this guards, found in review: `learn_from` charged
+        // each graded thesis with `?`, so one whose class the self-model
+        // could not key aborted the whole calibration pass — every other
+        // thesis resolved that cycle went uncharged, the window and the
+        // self-model disagreed about what had been graded, and the stage
+        // reported a failure rather than which thesis was the problem.
+        let mut platform = platform();
+        assert!(
+            platform.self_model().is_empty(),
+            "the premise is an empty self-model"
+        );
+        let resolves_at = start().saturating_add(Duration::from_days(5));
+        let claim = |id: &str, class: &str| ThesisClaim {
+            hypothesis_id: id.to_string(),
+            class: class.to_string(),
+            subject: "obj-AAA".to_string(),
+            formed_at: start(),
+            resolves_at,
+            direction: 1.0,
+            expected_move_bps: 200.0,
+            confidence: 0.7,
+            falsifiers: vec!["it reverts".to_string()],
+            contributors: Vec::new(),
+        };
+        let outcome = |id: &str| ThesisOutcome {
+            hypothesis_id: id.to_string(),
+            observed_at: resolves_at,
+            realised_move_bps: 180.0,
+            realised_pnl: 0.0,
+            falsifiers_triggered: Vec::new(),
+            mechanism_confirmed: None,
+        };
+        // Premise: the bad class is one `ComponentKey` refuses — it carries
+        // the serialised key's separator — and the good one is accepted.
+        let unkeyable = "price:dislocation";
+        assert!(ComponentKey::detector(unkeyable).is_err());
+        assert!(ComponentKey::detector("price_dislocation").is_ok());
+
+        // The unkeyable thesis first, so a pass that aborted on it would
+        // leave the good one uncharged.
+        let learned = platform
+            .learn_from(
+                &[
+                    claim("hyp-bad", unkeyable),
+                    claim("hyp-good", "price_dislocation"),
+                ],
+                &[outcome("hyp-bad"), outcome("hyp-good")],
+                resolves_at,
+            )
+            .expect("one unkeyable thesis must not abort the pass");
+        assert_eq!(
+            learned.evaluations.len(),
+            2,
+            "the premise is two graded theses: {:?}",
+            learned.skipped
+        );
+        assert_eq!(
+            learned.problems.len(),
+            1,
+            "one problem for the one unkeyable thesis: {:?}",
+            learned.problems
+        );
+        assert!(
+            learned.problems[0].contains("hyp-bad")
+                && learned.problems[0].contains("charged to no component"),
+            "the problem does not name the thesis it skipped: {}",
+            learned.problems[0]
+        );
+        assert!(
+            !learned.problems[0].contains("hyp-good"),
+            "the problem names a thesis that was charged: {}",
+            learned.problems[0]
+        );
+        // The good thesis was charged and the bad one was not.
+        let charged: Vec<String> = platform
+            .self_model()
+            .iter()
+            .map(|(key, _)| key.to_string())
+            .collect();
+        assert_eq!(charged, vec!["detector:price_dislocation".to_string()]);
+        // And the window still holds both, as it did before the fix — the
+        // self-model's silence about one is stated, not hidden.
+        assert_eq!(platform.evaluations.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod liquidity_ladder_tests {
+    //! The liquidity floor stops being a rationale attached to nothing.
+    //!
+    //! `LimitKind::MinLiquidity` — the `liquidity` limit in
+    //! `LimitSet::conservative_default`, rationale "most of the book must be
+    //! exitable within a week" — reads `RiskState::liquidatable_within`.
+    //! Nothing in this kernel wrote that map: `RiskAggregates::mark_liquidity`
+    //! had no caller outside its own crate's tests, and `risk_state_from`
+    //! never called `RiskState::with_liquidity_horizons`. The limit took its
+    //! `None` arm on every book of every cycle. That is the failure
+    //! `.claude/rules/domains/risk-and-execution.md` names by example, and it
+    //! has already happened twice here — `MaxExpectedShortfall` and
+    //! `MaxConcentration` were the same defect wearing different names.
+    //!
+    //! Wiring it produced a third version of the same failure, which is why
+    //! half of what follows is about the wiring rather than about the limit.
+    //! A ladder the book refused left the map empty again and the floor
+    //! abstained again — but now only *sometimes*, on one field of reference
+    //! data about one instrument, which is worse than never, because an
+    //! operator has grounds to trust a control that runs on some books and
+    //! not on others. And the exit time the ladder reported was the boundary
+    //! of a rung's bucket rather than the record's own figure, so a holding
+    //! stated at forty-five days read as two. Both are pinned below at the
+    //! venue path, not in the risk state alone: a figure missing from the
+    //! state is what a passing control also produces, and `submit_order` is
+    //! the only reader whose opinion reaches a venue.
+    //!
+    //! Unit tests because `risk_state` and `liquidity_reference` are private:
+    //! the seam is inside the kernel, and asserting it from outside would
+    //! prove only that a public wrapper exists.
+
+    use super::*;
+    use qip_core::dec;
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::costs::LiquidityProfile;
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    use qip_financial::universe::Universe;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    const FAST: &str = "obj-FAST";
+    const SLOW: &str = "obj-SLOW";
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    /// Two names, one on each side of a week.
+    ///
+    /// `FAST` is an ordinary listed equity: `Rung::classify` puts it on
+    /// `ListedEquityAndFutures`, whose horizon is same-day. `SLOW` is the same
+    /// instrument type carrying a negotiated liquidity profile, which
+    /// `Rung::classify` pushes down to `PrivateCreditAndRealAssets` — months.
+    /// Nothing about the *class* differs, so the test cannot pass by accident
+    /// on an asset-class comparison that ignored the liquidity record.
+    ///
+    /// The spreads rise as the ladder descends (5bps against 250bps), because
+    /// `LiquidityLadder::new` refuses a ladder where they do not, and a
+    /// fixture that tripped that refusal would be testing the refusal instead
+    /// of the floor.
+    fn platform_with(fast_notional: Decimal, slow_notional: Decimal) -> Platform {
+        platform_quoting(5.0, fast_notional, slow_notional)
+    }
+
+    /// The same two names, with the listed one's quoted spread as a parameter.
+    ///
+    /// The spread is the only difference between a book whose ladder assembles
+    /// and one whose ladder refuses, and it is reference data about one
+    /// instrument rather than anything about the book: `LiquidityLadder::new`
+    /// proves cost rises as the ladder descends, and a listed name quoted
+    /// wider than the negotiated one below it breaks that. 250bps is
+    /// `LiquidityProfile::illiquid`'s own hardcoded figure, so any listed
+    /// instrument quoted above it takes the whole ladder down.
+    fn platform_quoting(
+        fast_spread_bps: f64,
+        fast_notional: Decimal,
+        slow_notional: Decimal,
+    ) -> Platform {
+        let mut universe = Universe::new();
+        for (id, liquidity) in [
+            (
+                FAST,
+                LiquidityProfile::listed(Decimal::from_int(10_000_000), fast_spread_bps),
+            ),
+            (SLOW, LiquidityProfile::illiquid(30.0)),
+        ] {
+            universe
+                .insert(
+                    FinancialObject::builder(
+                        ObjectId::from_string(id),
+                        id,
+                        InstrumentType::CommonStock,
+                    )
+                    .venue("XNYS")
+                    .sector(Sector::InformationTechnology)
+                    .price(Decimal::from_int(100))
+                    .liquidity(liquidity)
+                    .provenance(Provenance::synthetic("test", start()))
+                    .build(start())
+                    .expect("valid object"),
+                )
+                .expect("insertable");
+        }
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            universe,
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles");
+        for (id, notional) in [(FAST, fast_notional), (SLOW, slow_notional)] {
+            platform
+                .aggregates
+                .apply_fill("alpha", id, &BTreeMap::new(), notional)
+                .expect("the fill applies");
+        }
+        platform
+    }
+
+    #[test]
+    fn the_liquidity_floor_limit_can_actually_fire() {
+        // A book nine tenths of which takes months to leave. The conservative
+        // default demands 0.80 exitable within five days; this book offers
+        // 0.10, so the floor must breach. Before the ladder was wired the
+        // identical book produced no breach at all, because the map the limit
+        // reads was empty.
+        let platform = platform_with(dec!("100000"), dec!("900000"));
+        let state = platform.risk_state();
+
+        // The premise, before the conclusion. An empty map is exactly the
+        // state this test exists to end, and a `check` against it would report
+        // no breach for the wrong reason — which is what it did.
+        let fraction = state
+            .liquidatable_within
+            .get("5")
+            .copied()
+            .unwrap_or_else(|| {
+                panic!(
+                    "the fraction exitable within five days was not computed for the horizon the \
+                     default limit names; the map holds {:?}",
+                    state.liquidatable_within.keys().collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            (fraction - 0.10).abs() < 1e-9,
+            "a book of 100k same-day against 900k months should read 0.10 exitable within a \
+             week, not {fraction}"
+        );
+
+        let check = LimitSet::conservative_default().check(&state);
+        let breach = check
+            .breaches
+            .iter()
+            .find(|breach| breach.limit_name == "liquidity")
+            .unwrap_or_else(|| {
+                panic!(
+                    "the liquidity floor recorded no breach against a book 90% of which takes \
+                     months to leave; the check recorded {:?}",
+                    check
+                        .breaches
+                        .iter()
+                        .map(|breach| breach.limit_name.as_str())
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            breach.blocks(),
+            "a liquidity floor missed by seven tenths should block, not warn: {breach:?}"
+        );
+    }
+
+    #[test]
+    fn a_book_that_is_exitable_within_the_week_does_not_breach_the_liquidity_floor() {
+        // The other half of a working gate. A floor that refuses every book is
+        // not a control, it is an outage, and a test that only ever proves the
+        // refusal cannot tell the two apart.
+        // Comfortably clear, not marginally: the conservative default warns
+        // at 0.85 of its floor — 0.941 exitable — so a book at 0.90 would
+        // still raise a warning, and a test written against that number would
+        // be asserting the warning band rather than the pass.
+        let platform = platform_with(dec!("990000"), dec!("10000"));
+        let state = platform.risk_state();
+
+        let fraction = state
+            .liquidatable_within
+            .get("5")
+            .copied()
+            .expect("the fraction exitable within five days is computed");
+        assert!(
+            (fraction - 0.99).abs() < 1e-9,
+            "a book of 990k same-day against 10k months should read 0.99, not {fraction}"
+        );
+
+        let check = LimitSet::conservative_default().check(&state);
+        assert!(
+            !check
+                .breaches
+                .iter()
+                .any(|breach| breach.limit_name == "liquidity"),
+            "a book 90% exitable within a week breached a floor set at 80%: {:?}",
+            check.breaches
+        );
+    }
+
+    #[test]
+    fn the_days_to_exit_each_holding_are_filled_from_the_same_ladder_as_the_fraction() {
+        // `LimitKind::MaxDaysToLiquidate` reads this map per instrument. It is
+        // filled from the same ladder, through the same accessor, as the
+        // fraction above, so the two cannot disagree about how fast one
+        // holding leaves — which they would if the kernel derived one from
+        // rungs and the other from the record's own stated day count.
+        //
+        // Both fixtures state an exit time no slower than their rung's floor,
+        // so both answer the floor;
+        // `a_holdings_days_to_exit_are_the_records_own_figure_and_not_its_rungs_boundary`
+        // is the case that tells the two apart.
+        let platform = platform_with(dec!("100000"), dec!("900000"));
+        let state = platform.risk_state();
+
+        assert_eq!(
+            state.days_to_liquidate.get(FAST).copied(),
+            Some(1.0),
+            "a listed equity stated at one day sits on the same-day rung, whose floor is also one"
+        );
+        assert_eq!(
+            state.days_to_liquidate.get(SLOW).copied(),
+            Some(30.0),
+            "a negotiated holding stated at thirty days sits on the private-credit rung, whose \
+             floor is a month"
+        );
+    }
+
+    #[test]
+    fn a_holding_the_platform_has_no_liquidity_record_for_refuses_the_ladder_rather_than_omitting_it()
+     {
+        // Dropping the unknown holding would take it out of the numerator and
+        // the denominator together, so a book made entirely of unknowns would
+        // report itself perfectly exitable. The refusal names the instrument.
+        let mut platform = platform_with(dec!("100000"), dec!("900000"));
+        platform
+            .aggregates
+            .apply_fill("alpha", "obj-UNKNOWN", &BTreeMap::new(), dec!("500000"))
+            .expect("the fill applies");
+
+        let error = platform
+            .liquidity_ladder(&platform.aggregates)
+            .expect_err("a book holding an instrument with no liquidity record is refused");
+        assert!(
+            error.message().contains("obj-UNKNOWN"),
+            "the refusal must name the holding it could not place: {}",
+            error.message()
+        );
+
+        // And the refusal leaves the map empty rather than a fabricated zero,
+        // which would read as a book measured and found completely illiquid.
+        let state = platform.risk_state();
+        assert!(
+            state.liquidatable_within.is_empty(),
+            "a refused ladder recorded a liquidity fraction anyway: {:?}",
+            state.liquidatable_within
+        );
+    }
+
+    #[test]
+    fn a_refused_ladder_puts_the_unevaluated_liquidity_floor_on_the_cycle_report() {
+        // The refusal above is silent inside `risk_state`, and a silent
+        // liquidity floor is the defect this wiring closes, not a smaller
+        // version of it. ACT names it, so an operator reading the cycle sees
+        // that the floor went unevaluated and why.
+        let mut platform = platform_with(dec!("100000"), dec!("900000"));
+        let correlation = CorrelationId::from_string("test-correlation");
+
+        let clean = platform.stage_act(start(), &correlation);
+        assert!(
+            !clean
+                .problems
+                .iter()
+                .any(|problem| problem.contains("liquidity floor")),
+            "a book the ladder accepts reported the floor unevaluated: {:?}",
+            clean.problems
+        );
+
+        platform
+            .aggregates
+            .apply_fill("alpha", "obj-UNKNOWN", &BTreeMap::new(), dec!("500000"))
+            .expect("the fill applies");
+        let outcome = platform.stage_act(start(), &correlation);
+        assert!(
+            outcome.problems.iter().any(|problem| problem
+                .contains("the liquidity floor was not evaluated")
+                && problem.contains("obj-UNKNOWN")),
+            "ACT did not report the unevaluated liquidity floor: {:?}",
+            outcome.problems
+        );
+    }
+
+    /// A cycle whose liquidity read refused signs nothing, and says so once.
+    ///
+    /// The second layer. `submit_order` refuses each order while the floor is
+    /// unevaluated — that is the one on the path to a venue — and ACT
+    /// withholds the signature that would have released them, so the cycle
+    /// report carries the reason once rather than once per order. A risk
+    /// signature is a statement that the monitor ruled on this book, and the
+    /// monitor's ruling did not include the two limits that read the ladder:
+    /// their figures were never computed, so they recorded nothing.
+    #[test]
+    fn a_cycle_whose_liquidity_read_refused_withholds_the_sign_off_and_names_it() {
+        let correlation = CorrelationId::from_string("test-correlation");
+        // The premise, and the half that proves this is a control rather than
+        // an outage: the identical book with a readable ladder signs off.
+        // 150k of listed against 5k of negotiated is 0.968 exitable within a
+        // week — clear of the floor at 0.80 and of its warning band at 0.941
+        // — and 155k against ten million of equity is inside every other
+        // default limit, so nothing else is withholding the signature.
+        let mut readable = platform_quoting(5.0, dec!("150000"), dec!("5000"));
+        let clean = readable.stage_act(start(), &correlation);
+        assert!(
+            !clean
+                .problems
+                .iter()
+                .any(|problem| problem.starts_with("no proposal was signed off")),
+            "the premise failed: this book withholds the signature for another reason: {:?}",
+            clean.problems
+        );
+
+        // The same book, one instrument quoted at 300bps.
+        let mut unreadable = platform_quoting(300.0, dec!("150000"), dec!("5000"));
+        let outcome = unreadable.stage_act(start(), &correlation);
+        let withheld: Vec<&String> = outcome
+            .problems
+            .iter()
+            .filter(|problem| problem.starts_with("no proposal was signed off"))
+            .collect();
+        assert_eq!(
+            withheld.len(),
+            1,
+            "ACT signed off, or refused more than once, while the liquidity floor was \
+             unevaluated: {:?}",
+            outcome.problems
+        );
+        assert!(
+            withheld[0].contains("the liquidity floor was not evaluated")
+                && withheld[0].contains("costs more to liquidate than the lower rung"),
+            "the withheld signature does not name the liquidity read as the reason: {}",
+            withheld[0]
+        );
+        // And the count is labelled by which signature was withheld, not by
+        // the reason text: the sentence above names a rung and a number and
+        // would mint a series per distinct failure. A third control means a
+        // third label value, and a label value nothing proves is a bar on a
+        // dashboard nobody has seen appear.
+        assert_eq!(
+            unreadable.telemetry().metrics.snapshot().counter(
+                names::PROPOSALS_UNSIGNED,
+                &labels([("control", "liquidity-read")])
+            ),
+            1,
+            "the withheld signature was counted under another control, or not at all"
+        );
+    }
+
+    #[test]
+    fn a_reference_record_stating_an_impossible_spread_stops_assembly() {
+        // A spread at or beyond the whole value of the holding makes an exit
+        // cost more than it raises, which `LiquidityLadder::new` refuses. Left
+        // to be discovered there it would take the whole book's liquidity read
+        // down every cycle for a reason no risk report could show. Refused at
+        // start-up instead, naming the record.
+        let mut universe = Universe::new();
+        universe
+            .insert(
+                FinancialObject::builder(
+                    ObjectId::from_string(FAST),
+                    FAST,
+                    InstrumentType::CommonStock,
+                )
+                .venue("XNYS")
+                .sector(Sector::InformationTechnology)
+                .price(Decimal::from_int(100))
+                .liquidity(LiquidityProfile::listed(
+                    Decimal::from_int(10_000_000),
+                    10_000.0,
+                ))
+                .provenance(Provenance::synthetic("test", start()))
+                .build(start())
+                .expect("valid object"),
+            )
+            .expect("insertable");
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        let error = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            universe,
+            LimitSet::conservative_default(),
+        )
+        .expect_err("a record stating a 100% spread stops assembly");
+        assert!(
+            error.message().contains(FAST) && error.message().contains("10000"),
+            "the refusal must name the record and the spread it stated: {}",
+            error.message()
+        );
+    }
+
+    /// A universe assembles over a stated `days_to_liquidate` and refuses one
+    /// it cannot read.
+    ///
+    /// Every record in the universe is classified here, at assembly, so a
+    /// figure the ladder cannot read stops the process rather than producing
+    /// a liquidity floor computed over an instrument nobody measured. That is
+    /// a deliberate change of behaviour: an equity whose exit time was `NaN`
+    /// used to classify same-day, and one stated to take forever used to
+    /// classify at two days, both of which entered
+    /// `RiskState::liquidatable_within` and therefore the shipped `liquidity`
+    /// limit that vetoes new risk.
+    #[test]
+    fn a_reference_record_whose_exit_time_is_not_a_number_of_days_stops_assembly() {
+        let assemble = |days: f64| -> Result<Platform> {
+            let mut universe = Universe::new();
+            universe
+                .insert(
+                    FinancialObject::builder(
+                        ObjectId::from_string(FAST),
+                        FAST,
+                        InstrumentType::CommonStock,
+                    )
+                    .venue("XNYS")
+                    .sector(Sector::InformationTechnology)
+                    .price(Decimal::from_int(100))
+                    .liquidity(LiquidityProfile {
+                        days_to_liquidate: days,
+                        ..LiquidityProfile::listed(Decimal::from_int(10_000_000), 5.0)
+                    })
+                    .provenance(Provenance::synthetic("test", start()))
+                    .build(start())
+                    .expect("valid object"),
+                )
+                .expect("insertable");
+            let config = PlatformConfig::default();
+            let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+            Platform::new(
+                config,
+                context,
+                Telemetry::silent(),
+                universe,
+                LimitSet::conservative_default(),
+            )
+        };
+
+        // The premise and the admitting half: the identical universe with a
+        // stated number of days assembles. A gate that refused every record
+        // would stop every platform, which is an outage rather than a control.
+        assert!(
+            assemble(30.0).is_ok(),
+            "the premise failed: a record stating thirty days was refused too"
+        );
+
+        for (label, days) in [
+            ("not a number", f64::NAN),
+            ("infinite", f64::INFINITY),
+            ("negative", -7.0),
+        ] {
+            let error = assemble(days)
+                .err()
+                .unwrap_or_else(|| panic!("a {label} exit time assembled a platform"));
+            assert!(
+                error.message().contains(FAST),
+                "the {label} refusal does not name the record: {}",
+                error.message()
+            );
+            assert!(
+                error.message().contains("days to liquidate"),
+                "the {label} refusal does not name the figure it could not read: {}",
+                error.message()
+            );
+        }
+    }
+
+    /// A book whose ladder refuses stops accepting orders instead of
+    /// accepting every one of them.
+    ///
+    /// The failure this prevents, reproduced against the tree before the fix
+    /// and printed by the probe that found it:
+    ///
+    /// ```text
+    /// FAST spread 5bps   => accepted 0/10, liquidatable_within={"5": 0.1}
+    /// FAST spread 300bps => accepted 10/10, liquidatable_within={}
+    /// ```
+    ///
+    /// One field of reference data on one instrument — a quoted spread wider
+    /// than the 250bps `LiquidityProfile::illiquid` hardcodes for the rung
+    /// below it — broke `LiquidityLadder::new`'s monotonicity proof, which
+    /// left `liquidatable_within` empty, which made the shipped `liquidity`
+    /// floor take its `None` arm, which admitted every order. The floor was
+    /// not evaluated and the venue path could not tell that apart from a floor
+    /// that passed. `stage_act` did say so on the cycle report, but a cycle
+    /// report is a string: `submit_order` re-reads the risk state per order
+    /// and never saw it.
+    #[test]
+    fn a_book_whose_liquidity_could_not_be_read_refuses_orders_rather_than_admitting_them() {
+        // The premise, and the half that proves this is a control and not an
+        // outage: the identical universe and book, differing only in FAST's
+        // quoted spread, evaluates the floor and prices the book at a tenth
+        // exitable within the week.
+        let mut readable = platform_quoting(5.0, dec!("100000"), dec!("900000"));
+        let evaluated = readable.risk_state();
+        assert_eq!(
+            evaluated.liquidatable_within.get("5").copied(),
+            Some(0.10),
+            "the premise failed: the readable book did not evaluate the floor"
+        );
+        assert!(
+            evaluated.unevaluated.is_empty(),
+            "the premise failed: the readable book filed a figure as unevaluated: {:?}",
+            evaluated.unevaluated
+        );
+
+        let mut unreadable = platform_quoting(300.0, dec!("100000"), dec!("900000"));
+        let refused = unreadable.risk_state();
+        assert!(
+            refused.liquidatable_within.is_empty(),
+            "a refused ladder recorded a liquidity fraction anyway: {:?}",
+            refused.liquidatable_within
+        );
+        let why = refused
+            .unevaluated
+            .get(LIQUIDITY_FIGURE)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the liquidity read failed and the state does not say so; it files {:?}",
+                    refused.unevaluated.keys().collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            why.contains("costs more to liquidate than the lower rung"),
+            "the state carries the wrong reason for the unevaluated floor: {why}"
+        );
+
+        // The order path, which is the only thing that matters here. Same
+        // order, same size, same instrument, on both platforms.
+        let order_on = |platform: &mut Platform, index: usize| {
+            let order = platform.order_from(
+                ObjectId::from_string(FAST),
+                Side::Buy,
+                dec!("100"),
+                dec!("100"),
+                &format!("prop-{index}"),
+                vec![format!("hyp-{index}")],
+                start(),
+            );
+            platform.submit_order(order, start())
+        };
+
+        let error = order_on(&mut unreadable, 1)
+            .expect_err("an order was admitted while the liquidity floor could not be evaluated");
+        assert!(
+            error.message().contains(LIQUIDITY_FIGURE)
+                && error.message().contains("could not be evaluated"),
+            "the refusal does not tell the desk which control did not run: {}",
+            error.message()
+        );
+
+        // And the admitting half at the venue path: a book whose ladder reads
+        // and whose floor passes still trades. Without this the assertion
+        // above is satisfied by a platform that refuses everything.
+        let mut liquid = platform_quoting(5.0, dec!("990000"), dec!("10000"));
+        assert!(
+            liquid.risk_state().unevaluated.is_empty(),
+            "the premise failed: the liquid book filed a figure as unevaluated"
+        );
+        order_on(&mut liquid, 2).expect("a book whose floor evaluates and passes still trades");
+        // The refusal above is a judgement about the liquidity read and not
+        // about this fixture's book: the same 90%-illiquid book trades when
+        // its ladder can be read, and is stopped by the floor rather than by
+        // the unevaluated figure.
+        let refusal = order_on(&mut readable, 3)
+            .expect_err("a book a tenth exitable within a week passed a floor set at four fifths");
+        assert!(
+            refusal.message().contains("liquidity:"),
+            "the readable book was refused by something other than the floor: {}",
+            refusal.message()
+        );
+    }
+
+    /// The unevaluated floor reaches a gauge, not only a sentence.
+    ///
+    /// `stage_act` puts the reason on the cycle report, and nothing reads a
+    /// cycle report on a schedule. The gauge is written on both arms — one
+    /// while the figure is missing, zero while it is being computed — because
+    /// a gauge only written when something is wrong never falls back, and an
+    /// operator could not then tell a floor that is running from one that has
+    /// not run since the process started.
+    #[test]
+    fn the_unevaluated_liquidity_floor_is_recorded_on_a_gauge_and_falls_back() {
+        let correlation = CorrelationId::from_string("test-correlation");
+        let mut platform = platform_quoting(5.0, dec!("100000"), dec!("900000"));
+        platform.stage_act(start(), &correlation);
+        assert_eq!(
+            platform.telemetry().metrics.snapshot().gauge(
+                names::RISK_FIGURES_UNEVALUATED,
+                &labels([("figure", LIQUIDITY_FIGURE)])
+            ),
+            Some(0.0),
+            "a floor that evaluated must report zero, not report nothing: a series that never \
+             appears and one that is lit are told apart by nobody"
+        );
+
+        // The same platform, one holding it has no liquidity record for.
+        platform
+            .aggregates
+            .apply_fill("alpha", "obj-UNKNOWN", &BTreeMap::new(), dec!("500000"))
+            .expect("the fill applies");
+        platform.stage_act(start(), &correlation);
+        assert_eq!(
+            platform.telemetry().metrics.snapshot().gauge(
+                names::RISK_FIGURES_UNEVALUATED,
+                &labels([("figure", LIQUIDITY_FIGURE)])
+            ),
+            Some(1.0),
+            "the liquidity floor went unevaluated and the gauge did not say so"
+        );
+    }
+
+    /// How long a holding takes to leave comes from the record, not from the
+    /// boundary of its rung's bucket.
+    ///
+    /// The failure this prevents, reproduced against the tree before the fix:
+    ///
+    /// ```text
+    /// record says days_to_liquidate=45.0, is_negotiated=false
+    ///   => ladder {"obj-SLOG": 2.0}, exitable_5d {"5": 1.0}, breaches [], accepted 9/9
+    /// ```
+    ///
+    /// `Rung::classify` puts every non-negotiated holding stated at more than
+    /// one day on `BondsAndLessLiquidListed`, whose horizon floors at two
+    /// days. The kernel read that floor as the exit time, so a record stating
+    /// forty-five days reported two: the book read as wholly exitable within a
+    /// week, and a `MaxDaysToLiquidate` ceiling of ten compared 2.0 against 10
+    /// and recorded nothing.
+    #[test]
+    fn a_holdings_days_to_exit_are_the_records_own_figure_and_not_its_rungs_boundary() {
+        const SLOG: &str = "obj-SLOG";
+        let liquidity = LiquidityProfile {
+            days_to_liquidate: 45.0,
+            ..LiquidityProfile::listed(Decimal::from_int(10_000_000), 5.0)
+        };
+        // The premise, stated against the classifier itself: this holding is
+        // on the rung whose floor is two days, so a kernel that answered 2.0
+        // would be answering the rung. Without this the assertions below pass
+        // on any instrument that happens to sit deeper.
+        assert!(!liquidity.is_negotiated);
+        let rung = Rung::classify(AssetClass::Equity, &liquidity).expect("a readable record");
+        assert_eq!(rung, Rung::BondsAndLessLiquidListed);
+        assert!(
+            (rung.horizon().least_days() - 2.0).abs() < f64::EPSILON,
+            "the premise moved: the rung's own floor is no longer two days"
+        );
+
+        let mut universe = Universe::new();
+        universe
+            .insert(
+                FinancialObject::builder(
+                    ObjectId::from_string(SLOG),
+                    SLOG,
+                    InstrumentType::CommonStock,
+                )
+                .venue("XNYS")
+                .sector(Sector::InformationTechnology)
+                .price(Decimal::from_int(100))
+                .liquidity(liquidity)
+                .provenance(Provenance::synthetic("test", start()))
+                .build(start())
+                .expect("valid object"),
+            )
+            .expect("insertable");
+        let limits = LimitSet::conservative_default().with(
+            qip_risk::limits::Limit::new(
+                "days-to-exit",
+                qip_risk::limits::LimitKind::MaxDaysToLiquidate { limit: 10.0 },
+            )
+            .with_rationale("nothing may take longer than this to leave the book"),
+        );
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            universe,
+            limits.clone(),
+        )
+        .expect("the platform assembles");
+        platform
+            .aggregates
+            .apply_fill("alpha", SLOG, &BTreeMap::new(), dec!("500000"))
+            .expect("the fill applies");
+
+        let state = platform.risk_state();
+        assert_eq!(
+            state.days_to_liquidate.get(SLOG).copied(),
+            Some(45.0),
+            "the ladder answered the rung's boundary instead of the record's own figure"
+        );
+        assert_eq!(
+            state.liquidatable_within.get("5").copied(),
+            Some(0.0),
+            "a book that takes forty-five days to leave read as exitable within a week"
+        );
+
+        let check = limits.check(&state);
+        let breach = check
+            .breaches
+            .iter()
+            .find(|breach| breach.limit_name == "days-to-exit")
+            .unwrap_or_else(|| {
+                panic!(
+                    "a ten-day ceiling recorded no breach against a forty-five-day holding; the \
+                     check recorded {:?}",
+                    check
+                        .breaches
+                        .iter()
+                        .map(|breach| breach.limit_name.as_str())
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            (breach.observed - 45.0).abs() < f64::EPSILON,
+            "the breach was recorded against {} days rather than the forty-five the record \
+             states",
+            breach.observed
+        );
+
+        // And at the venue path, which is the point of all of it.
+        let order = platform.order_from(
+            ObjectId::from_string(SLOG),
+            Side::Buy,
+            dec!("100"),
+            dec!("100"),
+            "prop-1",
+            vec!["hyp-1".to_string()],
+            start(),
+        );
+        let error = platform
+            .submit_order(order, start())
+            .expect_err("an order was admitted into a book nothing can be exited from");
+        assert!(
+            error.message().contains("days-to-exit") || error.message().contains("liquidity"),
+            "the refusal names neither liquidity limit: {}",
+            error.message()
+        );
+    }
+}
+
+#[cfg(test)]
+mod unsizeable_thesis_tests {
+    //! One thesis nothing can size must not take the rest of the construction
+    //! with it.
+    //!
+    //! `mark_confidence_multiplier` used to fold every thesis's
+    //! [`Platform::sizing_confidence`] through `?`, so a single refusal aborted
+    //! `construct_from` entirely; `stage_decide` then recorded `nothing_to_do`
+    //! and deliberately did not requeue, so every co-constructed thesis was
+    //! discarded on a fact about somebody else's instrument. Refusing the
+    //! private thesis is right and is what "refuse rather than guess" asks for.
+    //! Discarding the liquid ones beside it is a blast radius nothing argues
+    //! for, and it became reachable at `9fe3df4`: before it a mark's `as_of`
+    //! was the read instant, so `next_review` was always ahead of `now` and
+    //! `is_stale` could not fire inside one assembly; after it a mark decays
+    //! from when its evidence was observed, and a private-fund administrator's
+    //! report older than the 365-day review interval — routine under quarterly
+    //! reporting with a 45-to-90-day lag — refuses.
+    //!
+    //! **A unit test, and the reason is worth stating rather than assuming.**
+    //! Two approved theses in one construction is not reachable through
+    //! `run_cycle` today: `reason_about_the_queue` works `self.queue.first()`
+    //! and so pushes at most one thesis per pass, and `stage_decide` drains
+    //! `pending_theses` on every pass including quiet ones, so the vector never
+    //! holds two in production. That is a fact about today's REASON stage, not
+    //! a property anything holds — `construct_from` takes a slice, the vector
+    //! is bounded by [`PROPOSAL_HISTORY`] as though it accumulated, and five
+    //! existing unit tests in this file already push two. The seam is private,
+    //! so this is where it can be driven.
+
+    use super::*;
+    use qip_core::dec;
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::extensions::{Extension, PrivateAssetDetails};
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    use qip_financial::universe::Universe;
+    use qip_observability::Telemetry;
+    use qip_portfolio_engine::construction::ApprovedThesis;
+    use qip_risk::limits::LimitSet;
+
+    const LIQUID: &str = "obj-AAA";
+    const PRIVATE: &str = "obj-PRIV";
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    /// Long enough before [`start`] that a `LastRound` mark's 365-day review
+    /// interval has lapsed, and short enough that the mark still decays to a
+    /// positive confidence — so a run in which the staleness refusal were
+    /// deleted would size, rather than fail for some other reason.
+    fn reported_at() -> Timestamp {
+        start().saturating_sub(Duration::from_days(400))
+    }
+
+    /// A private fund whose administrator reported at `observed`, marked at its
+    /// reported residual.
+    fn fund(observed: Timestamp) -> FinancialObject {
+        FinancialObject::builder(
+            ObjectId::from_string(PRIVATE),
+            "PRIV",
+            InstrumentType::PrivateEquityFund,
+        )
+        .venue("OTC")
+        .geography("US")
+        .price(dec!("100"))
+        .extension(Extension::PrivateAsset(PrivateAssetDetails {
+            vintage_year: 2024,
+            // Committed equals called, so the book carries no unfunded
+            // commitment and nothing below can pass on the commitment engine.
+            committed_capital: dec!("400000"),
+            called_capital: dec!("400000"),
+            distributed_capital: Decimal::ZERO,
+            residual_value: dec!("500000"),
+            stage: "buyout".to_string(),
+            lockup_years: 7.0,
+            capital_call_notice_days: 10,
+        }))
+        .provenance(Provenance::synthetic("administrator", observed))
+        .build(start())
+        .expect("a private fund record")
+    }
+
+    fn listed() -> FinancialObject {
+        FinancialObject::builder(
+            ObjectId::from_string(LIQUID),
+            "AAA",
+            InstrumentType::CommonStock,
+        )
+        .venue("XNYS")
+        .geography("US")
+        .sector(Sector::InformationTechnology)
+        .price(dec!("100"))
+        .provenance(Provenance::synthetic("test", start()))
+        .build(start())
+        .expect("a listed record")
+    }
+
+    /// A platform over one listed name and one private fund whose evidence was
+    /// observed at `observed`.
+    fn platform_marking_the_fund_from(observed: Timestamp) -> Platform {
+        let mut universe = Universe::new();
+        universe.insert(listed()).expect("insertable");
+        universe.insert(fund(observed)).expect("insertable");
+        let config = PlatformConfig::default().with_initial_equity(Decimal::from_int(200_000));
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            universe,
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles");
+        feed_history(&mut platform, LIQUID, 30);
+        feed_history(&mut platform, PRIVATE, 30);
+        platform
+    }
+
+    fn feed_history(platform: &mut Platform, object: &str, closes: usize) {
+        let series = platform
+            .price_history
+            .entry(object.to_string())
+            .or_default();
+        for index in 0..closes {
+            let wiggle = if index % 2 == 0 { 0.7 } else { -0.5 };
+            series.push(100.0 + index as f64 * 0.1 + wiggle);
+        }
+    }
+
+    fn thesis(object: &str, conviction: f64) -> ApprovedThesis {
+        ApprovedThesis {
+            hypothesis_id: format!("HYP-{object}"),
+            object_id: ObjectId::from_string(object),
+            conviction,
+            expected_return: 0.04 * conviction.signum(),
+            price: Decimal::from_int(100),
+        }
+    }
+
+    /// Push both theses and run DECIDE, returning the stage's own outcome and
+    /// the proposal it recorded.
+    fn decide(platform: &mut Platform, now: Timestamp) -> (StageOutcome, Proposal) {
+        platform.pending_theses.push(thesis(LIQUID, 0.6));
+        platform.pending_theses.push(thesis(PRIVATE, 0.5));
+        assert_eq!(
+            platform.pending_theses.len(),
+            2,
+            "the premise failed: the construction is not being handed two theses"
+        );
+        let outcome = platform.stage_decide(now);
+        let proposal = platform
+            .proposals
+            .last()
+            .cloned()
+            .expect("every DECIDE records a proposal");
+        (outcome, proposal)
+    }
+
+    #[test]
+    fn a_thesis_whose_mark_is_past_review_leaves_itself_out_and_the_liquid_thesis_beside_it_is_still_sized()
+     {
+        let now = start().saturating_add(Duration::from_secs(100));
+
+        // Premise, and the whole reason this test can say anything: with the
+        // administrator's report fresh, the same two theses size a real
+        // proposal that includes the private name. Without this the assertions
+        // below would pass on a fixture that never sized the fund anyway.
+        let mut fresh = platform_marking_the_fund_from(start());
+        assert!(
+            fresh.sizing_confidence(PRIVATE, now).is_ok(),
+            "the premise failed: the control fund's mark is not sizeable either"
+        );
+        let (_, control) = decide(&mut fresh, now);
+        assert!(
+            control
+                .legs
+                .iter()
+                .any(|leg| leg.object_id.as_str() == PRIVATE),
+            "the premise failed: a fresh mark produced no leg on the fund, so its absence below \
+             proves nothing — rationale: {}",
+            control.rationale
+        );
+
+        // The case: the identical universe with the administrator's report
+        // dated past the mark's review interval.
+        let mut stale = platform_marking_the_fund_from(reported_at());
+        // Premise: it is the mark that refuses, and it refuses for staleness
+        // rather than for being unmarkable — two different refusals with two
+        // different remedies.
+        let refusal = stale
+            .sizing_confidence(PRIVATE, now)
+            .expect_err("a mark past its review date is not sizeable")
+            .message()
+            .to_string();
+        assert!(
+            refusal.contains("due for review"),
+            "the premise failed: the fund was refused for some other reason: {refusal}"
+        );
+        // Premise: the liquid name takes no haircut, so it is the thesis that
+        // must survive.
+        assert_eq!(
+            stale.sizing_confidence(LIQUID, now),
+            Ok(Decimal::ONE),
+            "the premise failed: the listed name is itself narrowed or refused"
+        );
+
+        let (outcome, proposal) = decide(&mut stale, now);
+
+        // The consequence, stated first because it is the one an operator
+        // experiences: the cycle still sized the thesis that had nothing to do
+        // with the fund. With the refusal folded back through `?` this is zero
+        // legs and a `nothing_to_do` proposal.
+        assert!(
+            !proposal.legs.is_empty(),
+            "a stale private mark took the whole construction with it: {} leg(s), rationale: {}, \
+             problems: {:?}",
+            proposal.len(),
+            proposal.rationale,
+            outcome.problems
+        );
+        assert!(
+            proposal
+                .legs
+                .iter()
+                .all(|leg| leg.object_id.as_str() == LIQUID),
+            "a leg was sized against a mark the platform refused: {:?}",
+            proposal
+                .legs
+                .iter()
+                .map(|leg| leg.object_id.as_str())
+                .collect::<Vec<_>>()
+        );
+
+        // And the removal is on the record with the object named, matched on
+        // the whole id rather than found inside a longer one. A thesis that
+        // vanished silently and a cycle in which nobody had an idea must not
+        // read alike.
+        let left_out: Vec<&String> = outcome
+            .problems
+            .iter()
+            .filter(|problem| {
+                problem
+                    .starts_with("a thesis was left out of the construction and is not requeued:")
+            })
+            .collect();
+        assert_eq!(
+            left_out.len(),
+            1,
+            "DECIDE reported {} removals for one unsizeable thesis: {:?}",
+            left_out.len(),
+            outcome.problems
+        );
+        assert!(
+            left_out[0].contains(PRIVATE) && left_out[0].contains("due for review"),
+            "the removal does not name the instrument and why: {}",
+            left_out[0]
+        );
+        assert!(
+            outcome
+                .detail
+                .contains("1 of 2 thesis(es) left out for want of a mark to size against"),
+            "the stage summary does not say a thesis was left out: {}",
+            outcome.detail
+        );
+
+        // Not requeued, so the removed idea cannot pyramid onto the next
+        // cycle's construction and refuse that one too.
+        assert!(
+            stale.pending_theses.is_empty(),
+            "the removed thesis was left pending and will refuse the next construction as well"
+        );
+
+        // The boundary: nothing here reached a venue, on either platform.
+        for platform in [&fresh, &stale] {
+            assert!(!platform.orders.has_live_fills());
+            assert!(!platform.is_live_capable());
+        }
     }
 }

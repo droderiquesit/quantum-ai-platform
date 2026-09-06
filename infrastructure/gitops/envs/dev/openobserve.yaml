@@ -1,0 +1,95 @@
+# Generated shape, reviewed content. One file per environment rather than a
+# kustomize base with replacements, so a reader — and the acceptance suite's
+# parity test, which reads these files without a kustomize binary — sees
+# every concrete value the running service must carry. The catalogue entry
+# in infrastructure/terraform/catalogue.tf is the source of truth for each
+# value here; a disagreement fails the build, not the sync (ADR 0036).
+apiVersion: run.cnrm.cloud.google.com/v1beta1
+kind: RunService
+metadata:
+  name: qip-dev-openobserve
+  annotations:
+    cnrm.cloud.google.com/deletion-policy: abandon
+    cnrm.cloud.google.com/project-id: algorik-dev
+  labels:
+    platform: qip
+    environment: dev
+    managed_by: config-connector
+    live_capable: 'false'
+    qip-plane: data-and-observability
+    qip-trust-zone: management
+    qip-traffic-class: platform
+    qip-workload: openobserve
+spec:
+  projectRef:
+    external: projects/algorik-dev
+  location: us-east4
+  ingress: INGRESS_TRAFFIC_ALL
+  binaryAuthorization:
+    useDefault: true
+  template:
+    serviceAccountRef:
+      external: qip-openobserve-dev@algorik-dev.iam.gserviceaccount.com
+    vpcAccess:
+      egress: ALL_TRAFFIC
+      networkInterfaces:
+      - networkRef:
+          external: projects/algorik-dev/global/networks/qip-dev
+        subnetworkRef:
+          external: projects/algorik-dev/regions/us-east4/subnetworks/qip-dev-tz-management
+        tags:
+        - qip-dev-tz-management
+    scaling:
+      minInstanceCount: 0
+      maxInstanceCount: 4
+    maxInstanceRequestConcurrency: 20
+    timeout: 300s
+    executionEnvironment: EXECUTION_ENVIRONMENT_GEN2
+    containers:
+    - name: openobserve
+      image: openobserve
+      ports:
+      - containerPort: 5080
+      resources:
+        limits:
+          cpu: '2'
+          memory: 2Gi
+        cpuIdle: true
+        startupCpuBoost: true
+      env:
+      - name: ZO_LOCAL_MODE
+        value: 'true'
+      - name: ZO_LOCAL_MODE_STORAGE
+        value: disk
+      - name: ZO_ROOT_USER_EMAIL
+        valueSource:
+          secretKeyRef:
+            secretRef:
+              external: qip-openobserve-root-email-dev
+            versionRef:
+              external: latest
+      - name: ZO_ROOT_USER_PASSWORD
+        valueSource:
+          secretKeyRef:
+            secretRef:
+              external: qip-openobserve-root-password-dev
+            versionRef:
+              external: latest
+      startupProbe:
+        initialDelaySeconds: 2
+        periodSeconds: 3
+        timeoutSeconds: 2
+        failureThreshold: 10
+        httpGet:
+          path: /healthz
+          port: 5080
+      livenessProbe:
+        periodSeconds: 30
+        timeoutSeconds: 5
+        failureThreshold: 3
+        httpGet:
+          path: /healthz
+          port: 5080
+  traffic:
+  - type: TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST
+    percent: 100

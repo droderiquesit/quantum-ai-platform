@@ -3,10 +3,14 @@
 # This is the workflow that lets an operator — or an agent working for one —
 # iterate the infrastructure from the repository: plan a change, apply it,
 # and shut the execution nodes down when nobody is testing, which is where
-# the money goes — every Cloud Run service scales to zero and costs nothing
-# standing. It authenticates by workload identity federation as the
-# `qip-infra` account `modules/cicd` creates; no key exists anywhere in this
-# path.
+# most of the money goes — every Cloud Run service scales to zero and costs
+# nothing standing. The control-plane cluster of ADR 0036 does not: Autopilot
+# bills for the controllers it schedules and for its control plane while
+# idle, and `down` deliberately leaves it standing, because tearing it down
+# takes Argo CD, Kargo and both App credentials with it. That standing cost
+# is named in the ADR rather than hidden here. The workflow authenticates by
+# workload identity federation as the `qip-infra` account `modules/cicd`
+# creates; no key exists anywhere in this path.
 #
 # **Manual dispatch only, and never prod.** The automatic paths belong to
 # deploy.yml, which cannot touch infrastructure. Production infrastructure is
@@ -119,6 +123,10 @@ jobs:
           service_account: ${{ steps.identity.outputs.account }}
 
       - uses: google-github-actions/setup-gcloud@v2
+        with:
+          # The bootstrap's kubectl authenticates to GKE through this plugin;
+          # gcloud no longer embeds the credential in the kubeconfig itself.
+          install_components: gke-gcloud-auth-plugin
 
       # Overwriting Terraform state needs storage.objects.delete, and the
       # project-level role this account holds deliberately lacks it so nothing
@@ -242,19 +250,17 @@ jobs:
           terraform -chdir=infrastructure/terraform init -input=false \
             -backend-config="bucket=${{ steps.identity.outputs.project }}-qip-tfstate"
 
-      # Two var-files: the reviewed configuration, and the digests deploy.yml
-      # last recorded. An environment nothing has deployed to has no
-      # images.tfvars, and catalogue.tf then refuses the plan naming the run
-      # that is missing — which is the right refusal, so the file is passed
-      # only when it exists rather than stubbed.
+      # One var-file: the reviewed configuration. There used to be a second,
+      # images.tfvars, holding the digests deploy.yml last moved the
+      # services to; the services are Config Connector's now and the digest
+      # is in infrastructure/gitops/envs/<env>/kustomization.yaml (ADR 0036),
+      # so Terraform is not told a digest at all and cannot plan a service
+      # at one.
       - name: the var-files this environment has
         id: vars
         run: |
           set -euo pipefail
           files="-var-file=../environments/${{ inputs.environment }}/terraform.tfvars"
-          if [ -f "infrastructure/environments/${{ inputs.environment }}/images.tfvars" ]; then
-            files="$files -var-file=../environments/${{ inputs.environment }}/images.tfvars"
-          fi
           echo "files=$files" >> "$GITHUB_OUTPUT"
 
       - name: plan
@@ -263,79 +269,16 @@ jobs:
           terraform -chdir=infrastructure/terraform plan -input=false \
             ${{ steps.vars.outputs.files }}
 
-      # Repair a service that exists rather than replacing it.
-      #
-      # A Cloud Run service whose first revision is refused — an unattested
-      # sidecar, a bad digest — is created as an object and then fails to
-      # serve, so Terraform marks it tainted, and a tainted resource is
-      # planned destroy-then-create. `modules/cloudrun` sets
-      # `deletion_protection = true` and deliberately offers no way to turn it
-      # off, so the destroy half is refused and the environment is stuck with
-      # a broken service Terraform can neither repair nor remove:
-      #
-      #   Error: cannot destroy service without setting
-      #   deletion_protection=false and running `terraform apply`
-      #
-      # This is the GKE deadlock of August in a new place, and it takes the
-      # same answer rather than the tempting one. Making the flag a variable
-      # would reopen the teardown hole `a_cloud_run_service_cannot_be_deleted_by_a_plan_nobody_read`
-      # closed on purpose; untainting costs no safety property at all, because
-      # an in-place update fully specifies the service and creates a new
-      # revision — which is exactly what the run that found this did to the
-      # fast brain, in the same apply that refused the other two.
-      #
-      # On evidence, never on assumption: a service is untainted only when
-      # Cloud Run says it still has it. Anything else keeps its taint and is
-      # replaced, which is what taint is for.
-      - name: repair a tainted service Cloud Run still has
-        if: inputs.action == 'up'
-        run: |
-          set -euo pipefail
-          cat >"${RUNNER_TEMP}/tainted-services.py" <<'PYEOF'
-          import json
-          import sys
-
-          # `terraform show -json` marks each state resource, and the flag is
-          # the only place the taint is visible: `state list` does not show it
-          # and the plan only says "must be replaced", which is also what a
-          # genuine configuration change says.
-          def walk(module, out):
-              for resource in module.get("resources", []):
-                  if resource.get("type") != "google_cloud_run_v2_service":
-                      continue
-                  if not resource.get("tainted"):
-                      continue
-                  name = resource.get("values", {}).get("name")
-                  if name:
-                      out.append((resource["address"], name))
-              for child in module.get("child_modules", []):
-                  walk(child, out)
-
-          found = []
-          walk(json.load(sys.stdin).get("values", {}).get("root_module", {}), found)
-          for address, name in found:
-              print(address, name)
-          PYEOF
-          region="$(sed -n 's/^region[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' \
-            "infrastructure/environments/${{ inputs.environment }}/terraform.tfvars" | head -1)"
-          [ -n "$region" ] || { echo "the tfvars name no region" >&2; exit 1; }
-          tainted="$(terraform -chdir=infrastructure/terraform show -json \
-            | python3 "${RUNNER_TEMP}/tainted-services.py")"
-          if [ -z "$tainted" ]; then
-            echo "no Cloud Run service is tainted; nothing to repair."
-          else
-            printf '%s\n' "$tainted" | while read -r address name; do
-              [ -n "$address" ] || continue
-              if gcloud run services describe "$name" \
-                --project "${{ steps.identity.outputs.project }}" \
-                --region "$region" --format='value(name)' >/dev/null 2>&1; then
-                echo "$name exists in Cloud Run; untainting $address so the apply updates it in place."
-                terraform -chdir=infrastructure/terraform untaint "$address"
-              else
-                echo "$name is tainted and Cloud Run does not have it; keeping the taint so the apply recreates it."
-              fi
-            done
-          fi
+      # There is no "repair a tainted service" step here any more. It untainted
+      # a `google_cloud_run_v2_service` Cloud Run still had, so an apply
+      # updated it in place rather than being refused by its deletion
+      # protection. Terraform declares no such resource since ADR 0036 — the
+      # service is a Config Connector manifest and the root's `removed`
+      # blocks release the ones state held — so a step that untaints one is
+      # dead, and its presence would be the first sign of a service being
+      # put back into Terraform. The deadlock it closed is recorded in the
+      # acceptance suite's history; the deletion guard it kept is now
+      # `cnrm.cloud.google.com/deletion-policy: abandon` on every manifest.
 
       # Seed a first version into a secret that terraform declared and
       # nothing has ever written to.
@@ -422,6 +365,165 @@ jobs:
         run: |
           terraform -chdir=infrastructure/terraform apply -input=false -auto-approve \
             ${{ steps.vars.outputs.files }}
+
+      # ── The GitOps bootstrap (ADR 0036) ─────────────────────────────────
+      #
+      # After `up`, and only where the tfvars say `gitops_enabled = true`:
+      # reach the control-plane cluster and apply infrastructure/gitops/
+      # bootstrap/ in the order its README gives — cert-manager, Argo CD,
+      # Kargo, the Config Connector operator, then Config Connector's one
+      # object — then the two App-key Secrets,
+      # then the environment's Argo CD project and Application and its Kargo
+      # chain. A cluster that is absent is refused, never created: the
+      # cluster is Terraform's, and a bootstrap that found none has been
+      # dispatched before the apply that makes one, or that apply failed and
+      # its output says why.
+      #
+      # Through the fleet's Connect gateway, because the endpoint is private
+      # and its only authorised network is the management zone's. ADR 0036
+      # decision 2 says `gcloud container clusters get-credentials`; that
+      # writes an address this runner cannot route to, and the gateway is
+      # the same identity reaching the same API server by the one path that
+      # exists — a Google API call, authorised by roles/gkehub.gatewayEditor
+      # and the custom role modules/gitops-control-plane grants this
+      # account, carrying the container.* verbs these manifests need and not
+      # roles/container.admin. Stated here and not yet proven: no bootstrap
+      # has run.
+      #
+      # Server-side apply throughout, because Argo CD's ApplicationSet CRD
+      # is larger than the last-applied annotation client-side apply would
+      # have to write to record it, and Kubernetes refuses the annotation.
+      #
+      # The two App-key Secrets are the one place a value moves. Each is
+      # read from Secret Manager into a mode-600 file in a private directory
+      # removed on every exit path, turned into a Kubernetes Secret by a
+      # script that reads the file and writes another, applied, and
+      # removed. Nothing is echoed, nothing reaches a step output or the
+      # summary. What the account running this can do is the same honest
+      # statement the seeding step makes: it holds secretmanager.admin from
+      # modules/cicd and could read any secret; this step reads two.
+      - name: bootstrap the GitOps controllers
+        if: inputs.action == 'up'
+        env:
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          tfvars="infrastructure/environments/${ENVIRONMENT}/terraform.tfvars"
+          if ! grep -Eq '^gitops_enabled[[:space:]]*=[[:space:]]*true' "$tfvars"; then
+            echo "gitops_enabled is not true in ${tfvars}; this environment has no control plane and nothing to bootstrap."
+            exit 0
+          fi
+          region="$(sed -n 's/^region[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          repository="$(sed -n 's/^github_repository[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          [ -n "$region" ] && [ -n "$repository" ] || {
+            echo "the tfvars name no region or no github_repository; the bootstrap cannot say which cluster or which repository" >&2
+            exit 1
+          }
+          # modules/gitops-control-plane names the cluster; derived here the
+          # way every other name is, so nothing is pasted from an output.
+          cluster="qip-${ENVIRONMENT}-control-plane"
+          if ! gcloud container clusters describe "$cluster" \
+            --project "${GCP_PROJECT}" --region "$region" --format='value(name)' >/dev/null 2>&1; then
+            echo "${cluster} does not exist in ${GCP_PROJECT}/${region}." >&2
+            echo "Terraform creates the control-plane cluster; this step only bootstraps one the apply above created. Read the apply's output for why it did not." >&2
+            exit 1
+          fi
+          gcloud container fleet memberships get-credentials "$cluster" \
+            --project "${GCP_PROJECT}" --location "$region"
+
+          gitops="infrastructure/gitops"
+          apply() {
+            kubectl apply --server-side --force-conflicts --field-manager=qip-bootstrap -k "$1"
+          }
+
+          # 1. cert-manager, and wait for its webhook: Kargo's render names a
+          #    Certificate the webhook must admit.
+          apply "${gitops}/bootstrap/cert-manager/overlays/${ENVIRONMENT}"
+          kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=300s
+          # 2. Argo CD.
+          apply "${gitops}/bootstrap/argocd/overlays/${ENVIRONMENT}"
+          kubectl -n argocd rollout status deployment/argocd-server --timeout=300s
+          kubectl -n argocd rollout status deployment/argocd-repo-server --timeout=300s
+          # 3. Kargo.
+          apply "${gitops}/bootstrap/kargo/overlays/${ENVIRONMENT}"
+          kubectl -n kargo rollout status deployment/kargo-api --timeout=300s
+          kubectl -n kargo rollout status deployment/kargo-controller --timeout=300s
+          # 4. The Config Connector operator, vendored, and its CRDs. Run 34
+          #    found the addon refused on Autopilot (`addons
+          #    {"config-connector"} are not supported for Autopilot
+          #    clusters`), so the operator arrives here like the three
+          #    controllers above it. Its `ConfigConnector` CRD must be
+          #    established before the object below names it, or the apply
+          #    fails on a kind the API server does not know yet.
+          apply "${gitops}/bootstrap/config-connector-operator/overlays/${ENVIRONMENT}"
+          kubectl -n configconnector-operator-system rollout status statefulset/configconnector-operator --timeout=300s
+          kubectl wait --for=condition=Established crd/configconnectors.core.cnrm.cloud.google.com --timeout=300s
+          # 5. Config Connector's one object, and the namespace the manifests
+          #    land in; then wait for the controller the operator installs to
+          #    pick up the identity. The four cnrm-system images are the
+          #    operator's own, from gcr.io/gke-release, and this wait is
+          #    where an admission policy that does not admit them says so —
+          #    bootstrap/config-connector-operator/SOURCE.md.
+          apply "${gitops}/bootstrap/config-connector/overlays/${ENVIRONMENT}"
+          kubectl -n cnrm-system wait --for=condition=Ready pod \
+            -l cnrm.cloud.google.com/component=cnrm-controller-manager --timeout=300s
+
+          # 6. The two credentials, from Secret Manager, as Kubernetes
+          #    Secrets. Kargo's lands in the project's namespace, so the
+          #    project goes first and is waited for.
+          kubectl apply --server-side --force-conflicts --field-manager=qip-bootstrap \
+            -f "${gitops}/kargo/base/project.yaml"
+          kubectl wait --for=condition=Ready project/qip --timeout=300s
+          umask 077
+          scratch="$(mktemp -d)"
+          trap 'rm -rf "$scratch"' EXIT
+          for controller in argocd kargo; do
+            gcloud secrets versions access latest \
+              --secret "qip-github-app-${controller}-${ENVIRONMENT}" \
+              --project "${GCP_PROJECT}" --out-file "${scratch}/${controller}.json"
+          done
+          python3 - "$scratch" "https://github.com/${repository}.git" <<'PY'
+          import json, sys
+          scratch, repo_url = sys.argv[1], sys.argv[2]
+          def read(controller):
+              with open(f"{scratch}/{controller}.json", encoding="utf-8") as handle:
+                  payload = json.load(handle)
+              for key in ("app_id", "installation_id", "private_key"):
+                  if not payload.get(key):
+                      sys.exit(f"the {controller} App payload carries no {key}; seed it as bootstrap/README.md describes")
+              return payload
+          argocd = read("argocd")
+          kargo = read("kargo")
+          secrets = [
+              {"apiVersion": "v1", "kind": "Secret",
+               "metadata": {"name": "qip-repository", "namespace": "argocd",
+                            "labels": {"argocd.argoproj.io/secret-type": "repository"}},
+               "stringData": {"type": "git", "url": repo_url,
+                              "githubAppID": str(argocd["app_id"]),
+                              "githubAppInstallationID": str(argocd["installation_id"]),
+                              "githubAppPrivateKey": argocd["private_key"]}},
+              {"apiVersion": "v1", "kind": "Secret",
+               "metadata": {"name": "qip-repository", "namespace": "qip",
+                            "labels": {"kargo.akuity.io/cred-type": "git"}},
+               "stringData": {"repoURL": repo_url,
+                              "githubAppID": str(kargo["app_id"]),
+                              "githubAppInstallationID": str(kargo["installation_id"]),
+                              "githubAppPrivateKey": kargo["private_key"]}},
+          ]
+          with open(f"{scratch}/secrets.json", "w", encoding="utf-8") as handle:
+              json.dump({"apiVersion": "v1", "kind": "List", "items": secrets}, handle)
+          PY
+          kubectl apply --server-side --force-conflicts --field-manager=qip-bootstrap \
+            -f "${scratch}/secrets.json" >/dev/null
+          rm -f "${scratch}"/*.json
+          echo "projected the two App credentials into argocd/qip-repository and qip/qip-repository; neither value was printed."
+
+          # 7. The Argo CD project and this environment's Application.
+          apply "${gitops}/argocd/overlays/${ENVIRONMENT}"
+          # 8. The Kargo chain, into the namespace the project created.
+          apply "${gitops}/kargo/overlays/${ENVIRONMENT}"
+          echo "bootstrapped ${cluster}; Argo CD reconciles ${gitops}/envs/${ENVIRONMENT} from here on."
 
       - name: down
         if: inputs.action == 'down'

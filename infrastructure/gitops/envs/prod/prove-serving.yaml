@@ -1,0 +1,109 @@
+# Generated shape, reviewed content. One file per environment rather than a
+# kustomize base with replacements, so a reader — and the acceptance suite's
+# parity test, which reads these files without a kustomize binary — sees
+# every concrete value the running service must carry. The catalogue entry
+# in infrastructure/terraform/catalogue.tf is the source of truth for each
+# value here; a disagreement fails the build, not the sync (ADR 0036).
+# ADR 0036 decision 7, the proof: after every sync, read the revision each
+# service routes traffic to and fail the sync unless its workload container
+# runs the digest the manifest names. Runs the vendored google-cloud-cli as
+# the Argo CD identity, which holds run.viewer and nothing that writes.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: qip-prove-serving
+  annotations:
+    iam.gke.io/gcp-service-account: qip-prod-argocd@unprovisioned.iam.gserviceaccount.com
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: qip-prove-serving
+rules:
+- apiGroups:
+  - run.cnrm.cloud.google.com
+  resources:
+  - runservices
+  verbs:
+  - get
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: qip-prove-serving
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: qip-prove-serving
+subjects:
+- kind: ServiceAccount
+  name: qip-prove-serving
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qip-prove-serving
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      serviceAccountName: qip-prove-serving
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: prove
+        image: google-cloud-cli
+        command:
+        - /bin/bash
+        - -c
+        - "set -euo pipefail\n# The two questions deploy.yml's prove-serving.py asked, asked again by\
+          \ the\n# reconciler (ADR 0036 decision 7): is every RunService in this namespace\n# Ready, and\
+          \ does the revision traffic actually routes to run, in the\n# workload's own container, the\
+          \ digest the manifest names? Read by name,\n# never by position: every service may carry the\
+          \ egress sidecar.\ntoken=\"$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)\"\nns=\"\
+          $(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)\"\ncurl -sSf --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt\
+          \ \\\n  -H \"Authorization: Bearer ${token}\" \\\n  \"https://kubernetes.default.svc/apis/run.cnrm.cloud.google.com/v1beta1/namespaces/${ns}/runservices\"\
+          \ \\\n  > /tmp/runservices.json\npython3 - <<'PY'\nimport json, subprocess, sys\nfailed = []\n\
+          for item in json.load(open(\"/tmp/runservices.json\")).get(\"items\", []):\n    name = item[\"\
+          metadata\"][\"name\"]\n    project = item[\"spec\"][\"projectRef\"][\"external\"].split(\"/\"\
+          )[-1]\n    region = item[\"spec\"][\"location\"]\n    workload = item[\"metadata\"][\"labels\"\
+          ][\"qip-workload\"]\n    wanted = next(c[\"image\"] for c in item[\"spec\"][\"template\"][\"\
+          containers\"] if c[\"name\"] == workload)\n    ready = next((c for c in item.get(\"status\"\
+          , {}).get(\"conditions\", []) if c.get(\"type\") == \"Ready\"), None)\n    if ready is None\
+          \ or ready.get(\"status\") != \"True\":\n        failed.append(f\"{name}: Config Connector reports\
+          \ {ready}\")\n        continue\n    described = json.loads(subprocess.check_output([\"gcloud\"\
+          , \"run\", \"services\", \"describe\", name,\n        \"--project\", project, \"--region\",\
+          \ region, \"--format=json\"]))\n    routed = [t for t in described.get(\"status\", {}).get(\"\
+          traffic\", []) if t.get(\"percent\")]\n    if not routed:\n        failed.append(f\"{name}:\
+          \ Ready and routes traffic to no revision\")\n        continue\n    for entry in routed:\n \
+          \       revision = entry.get(\"revisionName\")\n        rev = json.loads(subprocess.check_output([\"\
+          gcloud\", \"run\", \"revisions\", \"describe\", revision,\n            \"--project\", project,\
+          \ \"--region\", region, \"--format=json\"]))\n        containers = rev.get(\"spec\", {}).get(\"\
+          containers\", [])\n        named = [c for c in containers if c.get(\"name\") == workload]\n\
+          \        if not named:\n            failed.append(f\"{name}: {revision} runs no container named\
+          \ {workload}; it runs {[c.get('name') for c in containers]}\")\n            continue\n     \
+          \   serving = named[0][\"image\"]\n        if serving != wanted:\n            failed.append(f\"\
+          {name}: {revision} serves {serving}; the manifest names {wanted}\")\n        else:\n       \
+          \     print(f\"{name} serves {wanted} from {revision}\")\nif failed:\n    sys.exit(\"\\n\".join(failed))\n\
+          PY"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 250m
+            memory: 256Mi

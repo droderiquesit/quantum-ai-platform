@@ -22,6 +22,25 @@
 //!   that matters most here: a model with no observations in a regime must not
 //!   read as good in it, and the safest-looking way to get that wrong is to
 //!   default an unseen cell to the model's global average.
+//!
+//! The book cannot be written to with a bare [`Conditions`]. [`ReputationBook::observe`]
+//! takes a [`Judgement`], which is minted by [`ReputationBook::rank`] and
+//! [`ReputationBook::select`] at the moment a model is chosen and carries the
+//! conditions of *that* moment. The gap this closes is a timing one: an outcome
+//! is resolved at the end of the decision's [`crate::Horizon`], by which point
+//! the market is in some other regime, and a caller holding an outcome and a
+//! free `Conditions` parameter will fill it from the market in front of it.
+//! Scoring a crisis call under the quiet tape it resolved in is not a small
+//! error — it is the one error that makes the whole book say the opposite of
+//! what it means, because it credits every model for surviving conditions it
+//! was never asked about.
+//!
+//! A judgement read back from the log is the second mint, and it is honest
+//! about being one: it carries the conditions the document names, and nothing
+//! in a document says when they were captured. It runs the same check the
+//! in-process mint runs — see [`Judgement`] for what that establishes and what
+//! it does not — and what makes the document itself trustworthy is the hash
+//! chain on the log, not this module.
 
 use crate::context::Conditions;
 use qip_ai::registry::{ModelCard, ModelRegistry};
@@ -30,6 +49,136 @@ use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+/// A model was chosen, under these conditions, and its answer can be scored
+/// later.
+///
+/// The only thing [`ReputationBook::observe`] accepts. Its fields are private
+/// and there is no constructor taking a [`Conditions`], so **no expression in
+/// this process builds a judgement out of the market in front of it**: the only
+/// in-process mint is [`Rated::judgement`], and the conditions it hands over
+/// are the ones the ranking was performed under. That is the timing gap this
+/// type exists to close, and it is closed.
+///
+/// Serialisable on purpose. The outcome arrives after the process that made the
+/// decision has gone, so the judgement has to survive in the event log between
+/// the two, and a token that could not be written down would force the caller
+/// back to rebuilding the key from parts.
+///
+/// **Deserialisation is a second mint, and what it does and does not
+/// establish.** This doc used to say both mints "carry decision-time conditions
+/// by construction". They do not: a `#[derive(Deserialize)]` reading straight
+/// into the private fields took whatever conditions the document named, so a
+/// resolution-time caller could build a `Conditions` from the market in front
+/// of it — [`Conditions::new`] is public — round-trip it through
+/// `serde_json::from_value::<Judgement>`, and hand the result to
+/// [`ReputationBook::observe`]. The claim was a comment, not a guarantee, and
+/// this is what replaces it:
+///
+/// * `serde(try_from)` routes the wire through [`Judgement::minted`], the same
+///   constructor [`Rated::judgement`] uses. A document cannot introduce a model
+///   reference no [`qip_ai::ModelCard`] could have produced — an empty name, or
+///   anything that is not `name@version` — because the book is keyed on that
+///   exact string and read back through `card.reference()`, so a token naming
+///   anything else writes observations into a cell no lookup will ever reach.
+///   An accumulating record nobody reads is worse than none: it looks like a
+///   reputation.
+/// * It cannot establish *when* the conditions were captured. Nothing in a
+///   document distinguishes a judgement journalled at the decision from one
+///   fabricated at the outcome, and no check inside this type could. What
+///   distinguishes them is the hash chain on the log the judgement was read
+///   from; the type's job is that a caller cannot get one any other way.
+/// * `model` is **not** checked against a live [`ModelRegistry`], deliberately
+///   rather than for want of a way. The registry is not in scope at
+///   deserialisation and could not be threaded there without giving up
+///   `Deserialize` — but the stronger reason is that it would be wrong. A
+///   judgement replayed a year later names the model that made the call, and
+///   that model may since have been retired or dropped; refusing to read it
+///   back would erase exactly the losing history the book exists to keep. The
+///   registry decides which models may *decide*, in [`ReputationBook::rank`].
+///   It does not get to edit what was decided.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "JudgementWire")]
+pub struct Judgement {
+    model: String,
+    conditions: Conditions,
+}
+
+/// The on-disk shape. Every field arrives unchecked and neither reaches a
+/// [`Judgement`] without passing [`Judgement::minted`].
+#[derive(Deserialize)]
+struct JudgementWire {
+    model: String,
+    conditions: Conditions,
+}
+
+impl TryFrom<JudgementWire> for Judgement {
+    type Error = Error;
+
+    fn try_from(wire: JudgementWire) -> Result<Self> {
+        Judgement::minted(wire.model, wire.conditions)
+    }
+}
+
+impl Judgement {
+    /// The one constructor, shared by [`Rated::judgement`] and deserialisation.
+    ///
+    /// `model` must be a [`qip_ai::ModelCard::reference`] — `name@version`,
+    /// both halves non-empty, no surrounding whitespace. Not a style rule: the
+    /// book is keyed on this string and every read goes through
+    /// [`ReputationBook::competence`] with a `card.reference()`, so a judgement
+    /// naming anything else books observations into a cell that is never
+    /// consulted and never emptied. The two mints run this one check rather
+    /// than two that could drift, because a token the decision path can write
+    /// and the replay path refuses is a decision that cannot be scored twice
+    /// the same way.
+    fn minted(model: String, conditions: Conditions) -> Result<Self> {
+        if model.trim().is_empty() {
+            return Err(Error::invalid(
+                "a judgement names no model, so there is nothing to credit or blame; carry the \
+                 reference of the model that was chosen — the empty string is a cell in the \
+                 reputation book that no ranking will ever read back",
+            ));
+        }
+        if model.trim() != model {
+            return Err(Error::invalid(format!(
+                "the judgement names the model '{model}' with surrounding whitespace; supply the \
+                 reference exactly as ModelCard::reference produces it, because the book is keyed \
+                 on the string and a padded key is a different cell"
+            )));
+        }
+        // Split at the last `@`: a model name may itself contain one, and
+        // `ModelCard::reference` is `format!("{name}@{version}")`, so the
+        // version is whatever follows the final separator.
+        let Some((name, version)) = model.rsplit_once('@') else {
+            return Err(Error::invalid(format!(
+                "the judgement names the model '{model}', which is not a model reference; supply \
+                 name@version as ModelCard::reference produces it — a reputation keyed on a bare \
+                 name credits every retrained version with the record of the one before it"
+            )));
+        };
+        if name.is_empty() || version.is_empty() {
+            return Err(Error::invalid(format!(
+                "the judgement names the model '{model}', which has no {}; supply name@version as \
+                 ModelCard::reference produces it, because a version is what keeps a regression \
+                 from inheriting the record of the model it replaced",
+                if name.is_empty() { "name" } else { "version" }
+            )));
+        }
+        Ok(Self { model, conditions })
+    }
+
+    /// The model that was chosen — a [`qip_ai::ModelCard::reference`].
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// The conditions it was chosen under, which is the cell its record is kept
+    /// in.
+    pub fn conditions(&self) -> &Conditions {
+        &self.conditions
+    }
+}
 
 /// A model's record in one cell of the context space.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,9 +235,12 @@ impl ModelReputation {
         &self.model
     }
 
-    /// Record one outcome in one context.
-    pub fn observe(&mut self, conditions: Conditions, correct: bool) {
-        let record = self.records.entry(conditions).or_default();
+    /// Record one outcome in the context the judgement was made in.
+    pub fn observe(&mut self, judgement: &Judgement, correct: bool) {
+        let record = self
+            .records
+            .entry(judgement.conditions.clone())
+            .or_default();
         record.observations = record.observations.saturating_add(1);
         if correct {
             record.correct = record.correct.saturating_add(1);
@@ -119,12 +271,33 @@ impl ModelReputation {
 pub struct Rated<'a> {
     pub card: &'a ModelCard,
     pub competence: Conviction,
+    /// The conditions this rating was produced under. Private so that a caller
+    /// cannot rewrite the key between the decision and its outcome; read it
+    /// through [`Rated::judgement`], which is also the only way to write to the
+    /// book.
+    conditions: Conditions,
 }
 
 impl Rated<'_> {
     /// The shrunk figure, which is the only one a caller should compare.
     pub fn shrunk(&self) -> f64 {
         self.competence.shrunk()
+    }
+
+    /// The token that scores this model when its answer resolves.
+    ///
+    /// Minted here, at the decision, rather than assembled at the outcome. That
+    /// is the whole point: the caller that learns whether the answer was right
+    /// is running later, under a different market, and this is what it carries
+    /// forward instead of rebuilding the key from what it can see then.
+    ///
+    /// Fallible for one reason: [`qip_ai::ModelCard::new`] does not require a
+    /// name or a version, so a card carrying neither yields a reference of
+    /// `@` — and the refusal belongs here, at the decision, rather than a year
+    /// later when the replay path meets a token the decision path was willing
+    /// to write. One predicate, both mints.
+    pub fn judgement(&self) -> Result<Judgement> {
+        Judgement::minted(self.card.reference(), self.conditions.clone())
     }
 }
 
@@ -147,12 +320,17 @@ impl ReputationBook {
         self.models.is_empty()
     }
 
-    /// Record one outcome for one model in one context.
-    pub fn observe(&mut self, model: &str, conditions: Conditions, correct: bool) {
+    /// Record one outcome against the judgement that produced it.
+    ///
+    /// There is no overload taking a model name and a [`Conditions`]. A caller
+    /// resolving an outcome has the outcome and the market in front of it, and
+    /// the market in front of it is the wrong key — see [`Judgement`].
+    pub fn observe(&mut self, judgement: &Judgement, correct: bool) {
+        let model = judgement.model();
         self.models
             .entry(model.to_string())
             .or_insert_with(|| ModelReputation::new(model))
-            .observe(conditions, correct);
+            .observe(judgement, correct);
     }
 
     pub fn reputation(&self, model: &str) -> Option<&ModelReputation> {
@@ -192,6 +370,7 @@ impl ReputationBook {
             .map(|card| Rated {
                 card,
                 competence: self.competence(&card.reference(), conditions),
+                conditions: conditions.clone(),
             })
             .collect();
         rated.sort_by(|left, right| {

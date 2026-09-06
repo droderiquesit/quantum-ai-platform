@@ -81,6 +81,8 @@ pub enum Stop {
     CycleLimit,
     /// The configured runtime was reached.
     TimeLimit,
+    /// A tape ran out of periods. The session is over, not broken.
+    FeedExhausted,
     /// Somebody asked, through the quiesce endpoint.
     Requested,
 }
@@ -90,6 +92,7 @@ impl Stop {
         match self {
             Self::CycleLimit => "the configured cycle count was reached",
             Self::TimeLimit => "the configured runtime was reached",
+            Self::FeedExhausted => "the tape has no periods left",
             Self::Requested => "a quiesce was requested",
         }
     }
@@ -288,7 +291,22 @@ pub fn run(
             break reason;
         }
 
-        let now = clock.now();
+        // The engine says when the cycle is, if its source owns time: a tape
+        // is read one period per cycle on its own clock, because a tape read
+        // on the wall clock is swallowed whole in one poll and nothing that
+        // takes tape time — a horizon resolving — ever happens. A spent tape
+        // ends the run rather than falling back to the wall clock and cycling
+        // on an empty feed while looking busy.
+        let owns_time = evolution
+            .as_deref()
+            .is_some_and(|engine| engine.owns_time());
+        let now = match evolution.as_deref_mut() {
+            Some(engine) if owns_time => match engine.advance() {
+                Some(instant) => instant,
+                None => break Stop::FeedExhausted,
+            },
+            _ => clock.now(),
+        };
         set_status(status, |status| status.cycle_started(now));
 
         // Sense before thinking: the engine's adapter feeds the platform the
@@ -342,7 +360,9 @@ pub fn run(
 
         let record = CycleRecord {
             started_at: now,
-            finished_at: clock.now(),
+            // On the clock the cycle started on. A tape cycle begins and ends
+            // at one tape instant; `elapsed` below is the machine time.
+            finished_at: if owns_time { now } else { clock.now() },
             elapsed: outcome.elapsed,
             traversed_every_stage: outcome.report.traversed_every_stage(),
             problems: outcome.problems(),
@@ -366,7 +386,14 @@ pub fn run(
         // out of a five-minute interval waits three, so the schedule does not
         // drift by the cost of the work. A cycle that outran its interval waits
         // not at all and the next one starts immediately.
-        wait(config.cycle_interval - outcome.elapsed, stop, QUIESCE_POLL);
+        //
+        // Not on a tape. The cadence is a schedule held against a live feed;
+        // a tape's periods are its own, and waiting five wall-clock minutes
+        // between two tape hours would make a thirteen-day tape a day's run
+        // for no reason a reader of the log could reconstruct.
+        if !owns_time {
+            wait(config.cycle_interval - outcome.elapsed, stop, QUIESCE_POLL);
+        }
     };
 
     set_status(status, NodeStatus::stopping);
@@ -968,6 +995,105 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_tape_drives_one_cycle_per_period_on_tape_time_and_ends_the_run_when_it_is_spent() {
+        // Two properties, and the mutation each catches. A tape read on the
+        // wall clock is swallowed whole in one poll — the loop would run its
+        // twelve permitted cycles over an empty feed and stop on the cycle
+        // bound, not on the tape. And a tape that did not own the platform's
+        // clock would have the platform reasoning at assembly time while the
+        // bars it absorbed were dated a day later.
+        use qip_market_ingestion::tape::{SCHEMA_VERSION, Tape, TapeDocument, TapeObservation};
+
+        let first = Timestamp::parse_rfc3339("2025-01-06T21:00:00Z").expect("an instant");
+        let observations = (0..3_i64)
+            .map(|day| {
+                let at = first.saturating_add(Duration::from_days(day));
+                TapeObservation {
+                    object_id: "OBJ-TAPE".to_string(),
+                    venue: "XNYS".to_string(),
+                    at: at.to_rfc3339(),
+                    known_at: at.saturating_add(Duration::from_mins(15)).to_rfc3339(),
+                    open: qip_core::Decimal::from_int(100),
+                    high: qip_core::Decimal::from_int(101),
+                    low: qip_core::Decimal::from_int(99),
+                    close: qip_core::Decimal::from_int(100),
+                    volume: qip_core::Decimal::from_int(1_000),
+                }
+            })
+            .collect();
+        let tape = Tape::from_document(TapeDocument {
+            schema_version: SCHEMA_VERSION,
+            name: "node".to_string(),
+            description: "a node-test tape".to_string(),
+            interval: qip_market::bar::Interval::Day,
+            observations,
+            macro_releases: Vec::new(),
+            alternative_data: Vec::new(),
+            dividend_declarations: Vec::new(),
+        })
+        .expect("the tape loads");
+        assert_eq!(tape.periods(), 3, "the premise: three knowable instants");
+        let feed = qip_market_ingestion::tape::TapeFeed::new(tape);
+        let tape_clock = feed.clock();
+        let assembled_at = tape_clock.now();
+
+        // The platform on the tape's clock, the loop on a wall clock that
+        // stands well after the tape — the shape `main` builds.
+        let mut platform = platform(tape_clock.clone());
+        let wall: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
+        assert!(
+            start() > assembled_at,
+            "the premise: the wall clock is after the tape, so wall time would swallow it"
+        );
+        let config = DeepBrainConfig {
+            max_cycles: Some(12),
+            ..brisk()
+        };
+        let status = shared(&config);
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut engine = crate::evolution::EvolutionEngine::new(
+            crate::evolution::EvolutionConfig {
+                every_cycles: 0,
+                ..crate::evolution::EvolutionConfig::default()
+            },
+            Box::new(feed),
+            7,
+            Universe::new(),
+        )
+        .expect("the engine assembles");
+
+        let mut observed = 0usize;
+        let summary = run(
+            &mut platform,
+            &archive(),
+            &config,
+            &status,
+            &stop,
+            &wall,
+            0,
+            Some(&mut engine),
+            |outcome| observed += outcome.observed,
+        )
+        .expect("the loop runs");
+
+        assert_eq!(
+            summary.stopped_because,
+            Stop::FeedExhausted,
+            "the run did not end on the tape: {summary:?}"
+        );
+        assert_eq!(
+            summary.cycles, 3,
+            "one cycle per period, no more and no fewer"
+        );
+        assert_eq!(observed, 3, "each period fed exactly its one bar");
+        assert_eq!(
+            tape_clock.now().since(assembled_at),
+            Duration::from_days(2),
+            "the platform's clock did not follow the tape to its last period"
+        );
     }
 
     #[test]

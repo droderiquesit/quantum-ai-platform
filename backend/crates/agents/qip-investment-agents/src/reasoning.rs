@@ -66,13 +66,18 @@ impl Agent for CausalAnalyst {
         let world = self.desk.world.get(ctx)?;
         let causal = world.causal();
 
+        // No absorb arm records a causal edge, so on any deployed platform
+        // this is the arm taken for every origin; the finding names the
+        // record kind that would change that rather than only that the graph
+        // is empty here.
         if causal.outgoing(origin, brief.as_of).is_empty() {
             return Ok(no_data(
                 ctx,
                 brief.as_of,
                 format!(
-                    "the causal graph records no mechanism out of {origin} as of {}",
-                    brief.as_of
+                    "the causal graph records no mechanism out of {origin} as of {}; needs {}",
+                    brief.as_of,
+                    qip_world_model::vocabulary::CAUSAL_CLAIM_NEEDED
                 ),
             ));
         }

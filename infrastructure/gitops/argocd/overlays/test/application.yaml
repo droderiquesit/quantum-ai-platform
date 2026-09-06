@@ -1,0 +1,30 @@
+# The test Application (ADR 0036 decision 7): synced only when a person syncs it.
+#
+# No finalizer, deliberately: Argo CD's resources-finalizer deletes every
+# resource an Application owns when the Application is deleted, and even
+# with `deletion-policy: abandon` on each RunService that is a cascade
+# nobody should be one `kubectl delete` from. `Validate=true` is what
+# makes a field the Config Connector schema does not know a refused sync
+# rather than a silently pruned mount — see envs/README.md on `gcs`.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: qip-test
+  namespace: argocd
+  annotations:
+    kargo.akuity.io/authorized-stage: qip:test
+  finalizers: []
+spec:
+  project: qip
+  source:
+    repoURL: https://github.com/droderiquesit/quantum-ai-platform.git
+    targetRevision: claude/autonomous-investment-platform-76gt4y
+    path: infrastructure/gitops/envs/test
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: qip-run
+  syncPolicy:
+    syncOptions:
+    - Validate=true
+    - PruneLast=true
+    - ApplyOutOfSyncOnly=true

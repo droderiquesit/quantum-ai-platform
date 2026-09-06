@@ -603,6 +603,19 @@ pub mod names {
     pub const AGENT_TOKENS: &str = "qip_agent_tokens_total";
     pub const AGENT_TOOL_CALLS: &str = "qip_agent_tool_calls_total";
     pub const AGENT_PERMISSION_DENIALS: &str = "qip_agent_permission_denials_total";
+    /// How many of the roster's manifests are past their review interval at
+    /// the instant the REASON stage ran — a gauge, because it is a state of
+    /// the organisation and not a rate of anything.
+    ///
+    /// The failure this makes visible: every manifest is reviewed at
+    /// assembly and expires ninety days later, whereupon `AgentHost::run`
+    /// refuses every agent and the cycle reports eighteen `failed` lines,
+    /// indistinguishable on a dashboard from eighteen bugs. Nothing halted
+    /// and nothing paged, because there was no series in which "the
+    /// organisation is unauthorised" was a number. Non-zero here is that
+    /// number; renewing a manifest is an operator's review, and nothing in
+    /// the kernel does it.
+    pub const AGENT_MANIFESTS_EXPIRED: &str = "qip_agent_manifests_expired";
 
     // Optimisation
     pub const OPTIMIZATION_RUNS: &str = "qip_optimization_runs_total";
@@ -612,6 +625,18 @@ pub mod names {
 
     // Risk and execution
     pub const RISK_EVALUATIONS: &str = "qip_risk_evaluations_total";
+    /// Figures a risk read set out to compute and could not, by `figure`:
+    /// `1` while the figure is missing and `0` while it is being computed.
+    ///
+    /// A gauge rather than a counter because the question is "is a control
+    /// running right now", not "how often has it failed". It exists because
+    /// the answer used to be visible nowhere: a liquidity ladder the book
+    /// refused left `RiskState::liquidatable_within` empty, the shipped
+    /// `MinLiquidity` floor took its `None` arm, every order was accepted, and
+    /// the only trace was a sentence on one cycle report that nothing read.
+    /// A control that is not running looks exactly like a control that passed
+    /// unless something says otherwise, and this is the something.
+    pub const RISK_FIGURES_UNEVALUATED: &str = "qip_risk_figures_unevaluated";
     pub const RISK_REJECTIONS: &str = "qip_risk_rejections_total";
     pub const KILL_SWITCH_ENGAGED: &str = "qip_kill_switch_engaged_total";
     pub const ORDERS_SUBMITTED: &str = "qip_orders_submitted_total";
@@ -837,6 +862,34 @@ pub mod names {
     /// A fill is booked only from a delta's `fills`; a sent order books
     /// nothing, whatever contributors it names.
     pub const CENTRAL_FILLS_ATTRIBUTED: &str = "qip_central_fills_attributed_total";
+    /// What the platform decided about who may have capital put to work, by
+    /// `decision`: `granted` and `revoked` are the two arms of the
+    /// eligibility registry's own decision enum, recorded where the registry
+    /// adopts one; `refused_funding` is a funding a gate turned away before
+    /// any book moved, recorded where that refusal is journalled.
+    ///
+    /// The user is deliberately not a label. A compliance decision is about a
+    /// person, and a series labelled by person is a person's identity in
+    /// every scrape, every retention window and every dashboard — the audit
+    /// trail for that is the hash-chained event log, which is access
+    /// controlled, and not a metric anything may read. The three values are
+    /// fixed here and at the call sites, so the series is bounded whatever
+    /// the deployment enrols.
+    pub const CENTRAL_ELIGIBILITY_DECISIONS: &str = "qip_central_eligibility_decisions_total";
+    /// Venue registrations the platform adopted, by `source`: `configuration`
+    /// for one the deployment committed and `operator` for one an
+    /// authenticated person approved at runtime — the two arms of the
+    /// kernel's `RegistrationSource`, and there is no third.
+    ///
+    /// The failure this makes visible: the two paths differ in who is
+    /// accountable, and both ended in the same registry with nothing to tell
+    /// them apart afterwards. A registration that appeared at runtime under
+    /// nobody's review is the one an operator needs to see; a series in which
+    /// it is indistinguishable from the committed set cannot show it. Neither
+    /// the source id nor the operator is a label, for the reason
+    /// [`CENTRAL_ELIGIBILITY_DECISIONS`] gives about people, and because the
+    /// source list is a fleet a deployment can grow.
+    pub const CENTRAL_REGISTRATIONS: &str = "qip_central_registrations_total";
     /// Internal crosses settled to both contributors' books at the mid.
     pub const CENTRAL_CROSSES_SETTLED: &str = "qip_central_crosses_settled_total";
     /// Orders and crosses the centre refused to settle, by `kind`. A cross naming

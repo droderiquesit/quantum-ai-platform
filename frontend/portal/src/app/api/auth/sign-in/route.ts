@@ -5,6 +5,16 @@ import { signIn } from "@/lib/server/identity";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/**
+ * Password sign-in.
+ *
+ * @deprecated Passkeys are the recorded destination (ADR 0038, proposed, not
+ * applied): an account will have no password, and this route is retired —
+ * `410 Gone`, naming the sign-in page — once a passkey can be enrolled and
+ * asserted on a deployment. Until then it is the working credential path and
+ * must not be weakened; the note exists so nobody extends it as the standing
+ * method.
+ */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const refused = requireCsrf(request);
   if (refused) return refused;

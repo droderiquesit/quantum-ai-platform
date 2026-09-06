@@ -1,0 +1,18 @@
+apiVersion: core.cnrm.cloud.google.com/v1beta1
+kind: ConfigConnector
+metadata:
+  # The name is fixed by the operator; any other is refused.
+  name: configconnector.core.cnrm.cloud.google.com
+spec:
+  # One controller for the cluster, acting as the identity the overlay names
+  # through Workload Identity — the `cnrm-system/cnrm-controller-manager`
+  # binding in modules/gitops-control-plane. Namespaced mode would give each
+  # namespace its own identity and a second binding to review; there is one
+  # namespace here and one identity that may touch Cloud Run.
+  mode: cluster
+  googleServiceAccount: overlay-sets-this
+  # Never copy server state back into spec. A `RunService` whose spec quietly
+  # absorbs what Cloud Run defaulted is a manifest that no longer says what
+  # its author wrote, and the parity test would then be reading Config
+  # Connector's opinion of the service rather than the reviewer's.
+  stateIntoSpec: Absent

@@ -124,6 +124,32 @@ variable "boot_image" {
     condition     = !can(regex("/family/", var.boot_image))
     error_message = "An image family is a moving pointer, not an immutable image. Name the image itself."
   }
+
+  # The family check was the only one, and it admitted every short form
+  # Compute Engine also accepts: `debian-12`, `debian-cloud/debian-12`,
+  # `global/images/whatever`. Those resolve against a project the plan never
+  # names — the *provider's* project for a bare name — so the value in the
+  # tfvars stops identifying the image, and a node booting a general-purpose
+  # image is caught only at boot, by the startup script finding a container
+  # runtime. That is a refusal after the subnet, the identity and four IAM
+  # bindings exist. This moves it to plan time, where the operator reads the
+  # mistake instead of a node that came up quiet.
+  #
+  # Both spellings of a full self-link are admitted, because both are what the
+  # API and `gcloud` hand back and refusing one would refuse a legitimate
+  # value. The project segment is Google's own 6-30 rule and the image segment
+  # is its RFC 1035 name rule.
+  validation {
+    condition     = can(regex("^(https://www\\.googleapis\\.com/compute/v1/)?projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/global/images/[a-z]([a-z0-9-]{0,61}[a-z0-9])?$", var.boot_image))
+    error_message = <<-EOT
+      boot_image must be a full image self-link — `projects/<project>/global/images/<image>`,
+      optionally prefixed with `https://www.googleapis.com/compute/v1/`. A bare
+      name or a partial URL resolves against a project this configuration never
+      states, so it names a different image depending on who plans it; and this
+      node has no admission controller between the image and the kernel, so the
+      image reference is the whole of the identity check.
+    EOT
+  }
 }
 
 variable "node_count" {
@@ -547,8 +573,10 @@ variable "strategy_plan_path" {
 
 variable "region_allocation" {
   description = <<-EOT
-    The capital this node may hold in reservation across all its strategies,
-    written into `node.env` as `QIP_REGION_ALLOCATION`.
+    The ceiling on the capital this node may hold in reservation across all
+    its strategies, written into `node.env` as `QIP_REGION_ALLOCATION`. The
+    node opens unfunded under it and funds its region table only from the
+    share the centre ships (ADR 0039); the ceiling bounds the share.
 
     Required, with no default, because a default is a number nobody chose.
     `qip-edge-node` refuses to start without it (ADR 0008: a cell that has

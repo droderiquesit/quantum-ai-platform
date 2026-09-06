@@ -19,6 +19,7 @@ use qip_core::ids::{HypothesisId, ObjectId, OpportunityId};
 use qip_core::time::{Duration, Timestamp};
 use qip_world_model::causal::Mechanism;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// One step in the causal story a hypothesis tells.
@@ -280,6 +281,21 @@ pub struct Hypothesis {
     pub confidence: f64,
     /// The full update, so the confidence can be audited step by step.
     pub belief: BeliefUpdate,
+    /// The self-model factor each evidence origin's supporting weight was
+    /// scaled by, for exactly the origins present in the evidence and only
+    /// where the self-model had a sufficient sample to say. An absent origin
+    /// was left at full weight, and an origin's contrary evidence is never
+    /// scaled (see `strengths`), so a factor recorded here for an origin
+    /// that only dissented was recorded and had no effect — kept anyway,
+    /// because what a replay must reproduce is the rule and its inputs, not
+    /// a guess at which inputs turned out to matter.
+    ///
+    /// Recorded on the hypothesis rather than looked up at replay time
+    /// because the self-model moves every cycle: a replay that read today's
+    /// factors would recompute a different confidence from the same evidence,
+    /// and [`Hypothesis::validate`] would then reject the record as drifted.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub origin_factors: BTreeMap<String, f64>,
     /// Observations that would falsify the hypothesis. Required.
     pub falsifiers: Vec<String>,
     /// The competing explanation the author considered most credible, and why
@@ -321,12 +337,46 @@ impl Hypothesis {
     /// There is no constructor that accepts a confidence. The only way to a
     /// higher number is more or better evidence.
     pub fn form(draft: HypothesisDraft) -> Result<Self> {
+        Self::form_with_factors(draft, &BTreeMap::new())
+    }
+
+    /// Form a hypothesis with each evidence origin's weight scaled by the
+    /// self-model's estimate of that origin's accuracy.
+    ///
+    /// `factors` is keyed by evidence origin — the detector name on a market
+    /// observation, the agent id on a finding — and an origin it does not
+    /// name is left at full weight. Only the factors for origins actually
+    /// present in the evidence are recorded on the hypothesis, so the record
+    /// is what was applied and not the whole table the platform held.
+    ///
+    /// The factor multiplies the item's signed weight before the log-odds
+    /// update, so a component estimated at 0.6 accuracy contributes sixty
+    /// percent of the evidence it would have at full weight, in either
+    /// direction. It is a scaling of *contribution* and not of confidence:
+    /// the prior, the review bar and the action bar are untouched, and a
+    /// hypothesis with every origin discounted falls back toward its base
+    /// rate, not toward zero.
+    pub fn form_with_factors(
+        draft: HypothesisDraft,
+        factors: &BTreeMap<String, f64>,
+    ) -> Result<Self> {
         // Evidence is filtered to the as-of time before anything is computed,
         // so a hypothesis cannot be built on facts it could not have known.
         let evidence = draft.evidence.as_of(draft.as_of);
         evidence.validate()?;
 
-        let belief = update(draft.prior, &strengths(&evidence));
+        let origin_factors: BTreeMap<String, f64> = evidence
+            .origins()
+            .into_iter()
+            .filter_map(|origin| {
+                factors
+                    .get(origin)
+                    .map(|factor| (origin.to_string(), *factor))
+            })
+            .collect();
+        validate_factors(&origin_factors)?;
+
+        let belief = update(draft.prior, &strengths(&evidence, &origin_factors));
         let chain_weight = draft.chain.confidence().max(MINIMUM_CHAIN_WEIGHT);
         let hypothesis = Self {
             hypothesis_id: draft.hypothesis_id,
@@ -347,6 +397,7 @@ impl Hypothesis {
             // base rate rather than toward zero.
             confidence: attenuate(draft.prior, belief.posterior, chain_weight),
             belief,
+            origin_factors,
             falsifiers: draft.falsifiers,
             leading_alternative: draft.leading_alternative,
             horizon: draft.horizon,
@@ -359,7 +410,7 @@ impl Hypothesis {
 
     /// Recompute confidence after the evidence set changed.
     pub fn revise(&mut self) {
-        self.belief = update(self.prior, &strengths(&self.evidence));
+        self.belief = update(self.prior, &strengths(&self.evidence, &self.origin_factors));
         let chain = self.chain.confidence().max(MINIMUM_CHAIN_WEIGHT);
         self.confidence = attenuate(self.prior, self.belief.posterior, chain);
     }
@@ -481,8 +532,14 @@ impl Hypothesis {
                 self.hypothesis_id.as_str()
             )));
         }
+        // A factor outside (0, 1] is not an accuracy: above one it would let
+        // a component raise its own weight, and at or below zero it would
+        // silence or invert the evidence rather than discount it.
+        validate_factors(&self.origin_factors)?;
         // The stated confidence must be the one the evidence implies. This is
-        // what stops a confidence being edited in isolation.
+        // what stops a confidence being edited in isolation. The recorded
+        // factors are part of that arithmetic, which is why a replay carries
+        // them rather than re-reading a self-model that has since moved.
         let expected = attenuate(
             self.prior,
             self.belief.posterior,
@@ -506,14 +563,50 @@ impl Hypothesis {
 /// information rather than discounting it.
 const MINIMUM_CHAIN_WEIGHT: f64 = 0.30;
 
-fn strengths(evidence: &EvidenceSet) -> Vec<EvidenceStrength> {
+/// Refuse a self-model factor that is not an accuracy in `(0, 1]`.
+fn validate_factors(factors: &BTreeMap<String, f64>) -> Result<()> {
+    for (origin, factor) in factors {
+        if !(factor.is_finite() && *factor > 0.0 && *factor <= 1.0) {
+            return Err(Error::invalid(format!(
+                "self-model factor {factor} for origin {origin:?} is not an accuracy in (0, 1]; \
+                 a factor above one would let a component raise its own weight and one at zero \
+                 would silence it rather than discount it"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The evidence as the belief updater sees it, each *supporting* item's
+/// weight scaled by its origin's self-model factor where one was recorded.
+///
+/// Contrary evidence is never discounted. A factor is an origin's measured
+/// accuracy, and applying it to a dissent as well as to a claim would let a
+/// poorly-calibrated dissenter be talked down: an analyst measured at 0.15
+/// would have its objection cut to fifteen percent, the posterior would
+/// *rise* relative to the unweighted computation, and a hypothesis could
+/// cross the action bar because the voice against it had a bad record. The
+/// self-model exists so that being wrong costs a component influence over
+/// what the platform believes; it must not buy a hypothesis the benefit of
+/// its critics' doubt. So the conservative reading: a factor can only ever
+/// lower a posterior, and the worst a discounted origin can do to a thesis
+/// it opposes is oppose it at full weight.
+fn strengths(evidence: &EvidenceSet, factors: &BTreeMap<String, f64>) -> Vec<EvidenceStrength> {
     evidence
         .iter()
         .filter(|e| e.stance != Stance::Contextual)
-        .map(|e| EvidenceStrength {
-            id: e.evidence_id.as_str().to_string(),
-            signed_weight: e.signed_weight(),
-            origin: e.origin.clone(),
+        .map(|e| {
+            let signed_weight = e.signed_weight();
+            let factor = if signed_weight > 0.0 {
+                factors.get(&e.origin).copied().unwrap_or(1.0)
+            } else {
+                1.0
+            };
+            EvidenceStrength {
+                id: e.evidence_id.as_str().to_string(),
+                signed_weight: signed_weight * factor,
+                origin: e.origin.clone(),
+            }
         })
         .collect()
 }

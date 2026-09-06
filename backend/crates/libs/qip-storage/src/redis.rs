@@ -88,9 +88,12 @@ pub const ADDRESS_VARIABLE: &str = "QIP_MEMORYSTORE_ADDRESS";
 /// The environment variable carrying the instance's AUTH string.
 ///
 /// The instance is provisioned with `auth_enabled = true`, so this is not
-/// optional in a real deployment. It is read from the environment and never
-/// from a file in the repository, and it is redacted from every `Debug` output
-/// and every error message this module produces.
+/// optional in a real deployment. It is resolved by the composition root
+/// through [`crate::managed::ManagedSettings::from_env`] — never read here,
+/// and never from a file in the repository — so `QIP_MEMORYSTORE_AUTH_FILE`
+/// is honoured the way every other secret's `_FILE` variant is, and it is
+/// redacted from every `Debug` output and every error message this module
+/// produces.
 pub const AUTH_VARIABLE: &str = "QIP_MEMORYSTORE_AUTH";
 
 /// The port Redis listens on when an address does not name one.
@@ -226,15 +229,18 @@ impl RedisConfig {
 
     /// Resolve from explicit values.
     ///
-    /// Separate from [`Self::from_env`] for the same reason
-    /// [`crate::StorageSettings::from_values`] is: tests that set process
-    /// environment variables race each other under the default parallel
-    /// harness, and a racy test of a refusal is worse than no test of it.
+    /// Values, not variables: this crate does not read the process
+    /// environment. The composition root resolves [`ADDRESS_VARIABLE`] and
+    /// [`AUTH_VARIABLE`] — the latter through `qip_core::secret`, so it may be
+    /// a mounted file — and passes them in, which is also what lets a test of
+    /// a refusal run without mutating a process-global that every other test
+    /// in the binary shares.
     ///
-    /// An empty or whitespace-only value is treated as unset. A deployment
+    /// An empty or whitespace-only address is treated as unset. A deployment
     /// template that expands a missing value to `""` is common enough that
     /// reading it as "the operator asked for the empty address" would turn a
-    /// templating mistake into a connection to nowhere.
+    /// templating mistake into a connection to nowhere. An empty AUTH string
+    /// is refused before it reaches here, by the caller that resolved it.
     pub fn from_values(address: Option<&str>, auth: Option<&str>) -> Result<Self> {
         let address = address
             .map(str::trim)
@@ -254,14 +260,6 @@ impl RedisConfig {
             config = config.with_auth(secret);
         }
         Ok(config)
-    }
-
-    /// Read [`ADDRESS_VARIABLE`] and [`AUTH_VARIABLE`].
-    pub fn from_env() -> Result<Self> {
-        Self::from_values(
-            std::env::var(ADDRESS_VARIABLE).ok().as_deref(),
-            std::env::var(AUTH_VARIABLE).ok().as_deref(),
-        )
     }
 
     /// Authenticate with an AUTH string (Memorystore's default: no username).
@@ -1988,6 +1986,61 @@ mod tests {
             witness.connections(),
             0,
             "neither refusal opened a socket to anything"
+        );
+    }
+
+    #[test]
+    fn a_store_built_from_settings_authenticates_with_the_string_the_composition_root_resolved() {
+        // The whole path a binary takes: an environment the root looks
+        // variables up in, `StorageSettings::from_env`, the provider, and a
+        // connection. Until this crate stopped reading `std::env` itself, the
+        // AUTH string was fetched three calls below the root at the moment the
+        // adapter was built, which is why no test could drive this path
+        // without mutating the process environment — and why a deployment
+        // could not mount the string as a file.
+        let server = RespServer::start();
+        server.always("AUTH", ok());
+        let environment = |name: &str| -> Option<String> {
+            match name {
+                crate::settings::TARGET_VARIABLE => Some("memorystore".to_string()),
+                ADDRESS_VARIABLE => Some(server.address.clone()),
+                AUTH_VARIABLE => Some("the-string-the-root-resolved".to_string()),
+                _ => None,
+            }
+        };
+
+        let settings = crate::StorageSettings::from_values(Some("memorystore"), None)
+            .expect("the premise: memorystore resolves without a root");
+        assert!(
+            settings.managed().is_empty(),
+            "the premise: from_values alone carries no credential, so whatever the store \
+             authenticates with below came through from_env"
+        );
+
+        let settings = crate::StorageSettings::from_env(&environment)
+            .expect("an address and an AUTH string are a complete Memorystore configuration");
+        assert!(
+            settings
+                .managed()
+                .redis_config()
+                .is_ok_and(|c| c.is_authenticated()),
+            "the resolved settings carry the credential: {:?}",
+            settings.managed()
+        );
+        let store = settings
+            .key_value("quotes")
+            .expect("the provider builds the store from what it was given");
+        drop(store);
+
+        let commands = server.commands();
+        assert_eq!(
+            commands.first(),
+            Some(&vec![
+                "AUTH".to_string(),
+                "the-string-the-root-resolved".to_string()
+            ]),
+            "the first command on the wire is AUTH with the string the root resolved: \
+             {commands:?}"
         );
     }
 

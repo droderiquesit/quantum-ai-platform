@@ -12,6 +12,7 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_contracts::capital::CapitalEnvelope;
+use qip_contracts::policy::{GrantManifest, PolicyPayload, Slot};
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::VenueId;
 use qip_core::error::Result;
@@ -20,6 +21,7 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Decimal, SystemClock, dec};
 use qip_edge::cell::{CellConfig, PricingPolicy, WorkReport};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
+use qip_edge::policy::VerifiedPolicy;
 use qip_edge_node::allocation::{ALLOCATION_VARIABLE, RegionCapital};
 use qip_edge_node::feed::SimulatedFeed;
 use qip_edge_node::gateway::SimulatedGateway;
@@ -95,8 +97,11 @@ fn grant(strategy: &str) -> Result<VerifiedEnvelope> {
 }
 
 /// The node's pieces, assembled the way `main.rs` assembles them — through
-/// `RegionCapital::read` and `assemble` — with a two-sided book at the venue
-/// and the named strategies deployed marketable under signed grants.
+/// `RegionCapital::read` and `assemble` — with a two-sided book at the venue,
+/// the named strategies deployed marketable under signed grants, and the
+/// share the centre would then ship: a payload naming every one of those
+/// grants. The table opened unfunded under `allocation` (ADR 0039), so the
+/// bound the tests hold against is `min(sum of the grants, allocation)`.
 fn node_with(
     allocation: &str,
     strategies: &[&str],
@@ -110,11 +115,18 @@ fn node_with(
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let feed = SimulatedFeed::new(venue());
     feed.attach(&mut node.cell)?;
+    let mut named = Vec::new();
     for id in strategies {
         let (compiled, program) = firing_strategy(id)?;
+        let envelope = grant(id)?;
+        named.push(envelope.signature().to_string());
         node.cell
-            .deploy_with_pricing(compiled, program, grant(id)?, PricingPolicy::Marketable)?;
+            .deploy_with_pricing(compiled, program, envelope, PricingPolicy::Marketable)?;
     }
+    let mut payload = PolicyPayload::unproduced(1, CELL, t(5));
+    payload.capital_grants = Slot::produced(GrantManifest { live_grants: named }, t(5));
+    let share = VerifiedPolicy::verify(payload.signed(ENVELOPE_KEY)?, ENVELOPE_KEY, CELL, t(5))?;
+    node.cell.apply_policy(share, t(5))?;
     Ok((node, gateway, feed))
 }
 
@@ -138,7 +150,14 @@ fn spent_by_one_strategy() -> Result<Decimal> {
     let opening = "100000000";
     let (mut node, mut gateway, mut feed) = node_with(opening, &["alpha"])?;
     let mut stats = PassStats::default();
-    let outcome = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(10))?;
+    let outcome = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(10),
+    )?;
     let PassOutcome::Ran { report, .. } = outcome else {
         panic!("the probe node reported its pass as halted: {outcome:?}");
     };
@@ -148,11 +167,21 @@ fn spent_by_one_strategy() -> Result<Decimal> {
         "the probe premise failed: the pass placed no order: {:?}",
         report.refusals
     );
+    // Against the bound the share set — the grant's gross, under a ceiling
+    // far above it — not the ceiling: the ceiling funds nothing.
+    let bound = node
+        .cell
+        .region_allocation_bound()
+        .expect("a node assembled by this root holds an allocation");
     let free = node
         .cell
         .region_allocation_free()
         .expect("a node assembled by this root holds an allocation");
-    Ok(Decimal::parse(opening).expect("a decimal literal") - free)
+    assert!(
+        bound < Decimal::parse(opening).expect("a decimal literal"),
+        "the probe premise failed: the share did not bound the node below its ceiling ({bound})"
+    );
+    Ok(bound - free)
 }
 
 #[test]
@@ -244,7 +273,14 @@ fn a_node_built_with_the_allocation_refuses_a_second_strategy_once_it_is_spent()
     );
 
     let mut stats = PassStats::default();
-    let outcome = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(10))?;
+    let outcome = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(10),
+    )?;
     let PassOutcome::Ran { report, breaks, .. } = outcome else {
         panic!("a running node reported its pass as halted: {outcome:?}");
     };

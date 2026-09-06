@@ -300,6 +300,18 @@ impl EvolutionEngine {
         self.config.every_cycles > 0
     }
 
+    /// Whether the adapter owns time — a tape — so the loop takes each
+    /// cycle's instant from [`Self::advance`] rather than the wall clock.
+    pub fn owns_time(&self) -> bool {
+        self.adapter.owns_time()
+    }
+
+    /// Move a time-owning adapter to its next instant and return it, or
+    /// `None` when it is spent. See `DataAdapter::advance`.
+    pub fn advance(&mut self) -> Option<Timestamp> {
+        self.adapter.advance()
+    }
+
     /// Poll the adapter, feed the platform, tee the bars. Returns how many
     /// records the platform absorbed, for the cycle line.
     pub fn sense(&mut self, platform: &mut Platform, until: Timestamp) -> Result<usize> {

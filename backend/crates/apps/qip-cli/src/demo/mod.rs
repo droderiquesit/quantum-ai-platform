@@ -70,11 +70,14 @@
 //!   reports its authority, and its own trading is not part of this walk. The
 //!   alternative was to copy `RestGateway` into this crate, which would put a
 //!   second, untested answer to "may this cell reach a venue" in the tree.
-//! * **Nothing decodes a cell delta into the central plane's `CellReport`.**
-//!   `qip_mesh::spine` says the composition root is where that decode belongs
-//!   and the composition root does not do it. Layer 5 reads the delta the
-//!   centre received and prints it; it does not invent the mapping, because a
-//!   mapping invented in a demonstration would be a mapping nothing else uses.
+//!
+//! A third gap was recorded here and is closed: nothing decoded a cell delta
+//! into the central plane's `CellReport` when this walk was written, and
+//! `qip_api::mesh` — the composition root `qip-api` serves the mesh from —
+//! now performs that decode on every `POST /cycle`. Layer 5 still reads the
+//! delta its own mesh peer received and prints it, because that peer is a
+//! double in this process and not the API's backbone; what it no longer does
+//! is tell an operator the seam is missing.
 
 pub mod doubles;
 mod script;
@@ -1154,7 +1157,16 @@ impl LiveDemo {
 /// A constant so that the operator's output and this crate's tests quote the
 /// same list, and so that closing one means deleting a line here rather than
 /// hoping somebody notices the prose.
-pub const GAPS: [&str; 3] = [
+///
+/// A third entry once said that nothing decoded a cell delta into the central
+/// plane's `CellReport`. `qip_api::mesh` — the composition root `qip-api`
+/// serves the mesh from — now does exactly that on every `POST /cycle`, and
+/// this list kept saying otherwise for as long as no test compared it with
+/// the code: `the_walk_no_longer_reports_the_delta_decode_the_api_composition_root_performs`
+/// in this crate's `demo` suite drains a real delta through that backbone and
+/// refuses the retired sentence, so the list cannot fall behind the same way
+/// again.
+pub const GAPS: [&str; 2] = [
     "Platform fixes its broker at construction. There is a set_central and no set_broker, so the \
      kernel's own submit_order can never reach a live venue adapter. Layer 6 submits through the \
      same OrderManager, PreTradeChecker and AutonomyController the platform uses internally.",
@@ -1162,9 +1174,6 @@ pub const GAPS: [&str; 3] = [
      its venue module already holds the refusal that decides whether it may be built. Neither is \
      in [workspace.dependencies], so no other binary can name them; this cell therefore has no \
      gateway and does not trade.",
-    "Nothing decodes a cell delta into the central plane's CellReport. qip_mesh::spine says the \
-     composition root is where that belongs and the composition root does not do it, so layer 5 \
-     prints the delta the centre received rather than inventing the mapping.",
 ];
 
 fn describe_dispatch(dispatch: &CapitalDispatch) -> String {

@@ -1,0 +1,20 @@
+# The warehouse: the environment's Artifact Registry repository, one
+# subscription per catalogue binary. The overlay fills in the registry and
+# the freight-creation criteria, because both name the environment; what is
+# fixed here is the cadence and the policy. `NewestBuild` selects by the
+# image's own creation time and records the digest; `deploy.yml` labels
+# each image with `org.opencontainers.image.created` implicitly through
+# docker's build metadata and explicitly with the source revision, and the
+# tag it pushes is the commit sha, immutable in the registry — so "newest"
+# is "the latest commit the pipeline attested" (ADR 0036 decision 6).
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Warehouse
+metadata:
+  name: qip-images
+  namespace: qip
+spec:
+  interval: 5m0s
+  freightCreationPolicy: Automatic
+  # Set by the overlay: the three subscriptions and the criteria refusing
+  # freight whose images came from different commits.
+  subscriptions: []

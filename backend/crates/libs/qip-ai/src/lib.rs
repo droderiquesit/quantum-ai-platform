@@ -9,6 +9,9 @@
 //!   investment decision references the models that produced it.
 //! * [`evaluation`] scores probabilistic predictions and detects drift.
 //! * [`language`] is the port for language models.
+//! * [`memory`] is episodic memory: compressed episodes with outcomes, and a
+//!   bounded, deterministic approximate-nearest-neighbour recall over them,
+//!   readable only from the instant each became knowable.
 //!
 //! The boundary is in [`language`]: a language model may produce narrative,
 //! structure and claims, but never a number that a calculation depends on.
@@ -19,6 +22,7 @@
 pub mod embedding;
 pub mod evaluation;
 pub mod language;
+pub mod memory;
 pub mod registry;
 pub mod retrieval;
 

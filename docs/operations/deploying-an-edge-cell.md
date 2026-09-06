@@ -90,8 +90,12 @@ it can promise:
    `shadow_mode` is true (`main.tf:551-552`). The passes the node runs in the meantime are priced
    off the in-process simulator, not off any of these venues.
 
-6. **Set `region_allocation`.** The capital this node may hold in reservation
-   across all of its strategies, as a positive decimal string. It is required
+6. **Set `region_allocation`.** The ceiling on the capital this node may hold
+   in reservation across all of its strategies, as a positive decimal string.
+   Since ADR 0039's second slice the node opens *unfunded* under this ceiling
+   and funds its region table only from the share the centre ships it in the
+   signed `capital_grants` slot; the ceiling bounds that share, it does not
+   fund anything by itself. It is required
    per entry with no default anywhere, and the module refuses an empty or zero
    value at plan time (`modules/execution-node/variables.tf`,
    `region_allocation`). The startup script writes it as

@@ -1,0 +1,13 @@
+# Config Connector for dev: the operator's one object, naming the identity
+# it reconciles as, and the namespace the RunService manifests land in.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../../base
+- namespace.yaml
+patches:
+- target:
+    kind: ConfigConnector
+    name: configconnector.core.cnrm.cloud.google.com
+  patch: "apiVersion: core.cnrm.cloud.google.com/v1beta1\nkind: ConfigConnector\nmetadata:\n  name: configconnector.core.cnrm.cloud.google.com\n\
+    spec:\n  googleServiceAccount: qip-dev-kcc@algorik-dev.iam.gserviceaccount.com\n"

@@ -250,6 +250,10 @@ variable "external_egress" {
       * `optimisation` — `ibm-quantum`. This is the only place in the module
         where an IBM destination can be declared, so no other zone can reach
         IBM by any spelling of any tfvars file.
+      * `management` — `source-control`. The control-plane cluster's two
+        reconcilers (ADR 0036) clone and commit to this repository, and
+        GitHub's published ranges on 443 are the whole of what that zone may
+        reach outside the VPC.
       * every other zone — nothing. An entry naming one is refused.
 
     Ranges are not guessed here. They come from the counterparty's own
@@ -288,9 +292,10 @@ variable "external_egress" {
         "custodian-read",
         "withdrawal-api",
         "ibm-quantum",
+        "source-control",
       ], entry.purpose)
     ])
-    error_message = "An egress purpose is one of information-source, venue, venue-read, chain, custodian, custodian-read, withdrawal-api, ibm-quantum. The purpose decides which zone may hold the entry, so an unrecognised one cannot be checked against anything."
+    error_message = "An egress purpose is one of information-source, venue, venue-read, chain, custodian, custodian-read, withdrawal-api, ibm-quantum, source-control. The purpose decides which zone may hold the entry, so an unrecognised one cannot be checked against anything."
   }
 
   validation {

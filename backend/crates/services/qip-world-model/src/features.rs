@@ -116,6 +116,13 @@ impl Feature {
         self.max_staleness = staleness;
         self
     }
+
+    /// What the series is keyed by, from the vocabulary rather than a string
+    /// a caller spelled.
+    pub fn with_subject_kind(mut self, kind: crate::vocabulary::SubjectKind) -> Self {
+        self.subject_kind = kind.as_str().into();
+        self
+    }
 }
 
 /// One `(feature, subject)` series: a bounded window, plus what it discarded.

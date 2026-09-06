@@ -116,39 +116,57 @@ variable "autonomy_ceiling" {
   }
 }
 
-# --- The runtime (ADR 0022, ADR 0024) ------------------------------------------
+# --- The runtime (ADR 0022, ADR 0024, ADR 0036) ---------------------------------
 #
-# Every warm binary is a Cloud Run service from `catalogue.tf`; the execution
-# node is a Compute Engine machine from `execution_nodes`; both attach to the
-# trust zones declared below. There is no cluster variable left here, and
-# none may return without an ADR: the GKE runtime and everything that
-# configured it were retired under ADR 0024.
+# Every warm binary is a Cloud Run service — its identity and grants from
+# `catalogue.tf`, its `RunService` manifest under
+# `infrastructure/gitops/envs/<env>/` — and the execution node is a Compute
+# Engine machine from `execution_nodes`; both attach to the trust zones
+# declared below. The one cluster in this configuration runs controllers and
+# no trading binary; it is the module behind `gitops_enabled`, and ADR 0036
+# is the record that brought it back after ADR 0024 retired the last one.
+#
+# There is no `image_digests` variable any more. The digest a service runs at
+# is in its manifest, written by Kargo's promotion commit and reconciled by
+# Argo CD; `environments/<env>/images.tfvars` left with it.
 
-variable "image_digests" {
+variable "gitops_enabled" {
   description = <<-EOT
-    The image digest each catalogue binary is deployed at, keyed by binary
-    name, as `sha256:<64 hex>`.
+    Whether this environment has a GitOps control plane (ADR 0036): a GKE
+    Autopilot cluster in the management trust zone running Config Connector,
+    Argo CD and Kargo, and the three identities they act as.
 
-    Written by `.github/workflows/deploy.yml` into
-    `infrastructure/environments/<env>/images.tfvars` after it has built,
-    scanned, signed and attested the image and moved the service to it —
-    never typed by a person. Terraform creates a service at the digest
-    recorded here and thereafter ignores the image, because the pipeline owns
-    it; `modules/cloudrun` says why. A binary with no entry is refused at
-    plan time by `catalogue.tf`, which names the pipeline run that is
-    missing.
-
-    Empty by default: an environment nothing has ever deployed to has no
-    digest to record, and inventing one would be a service created at bytes
-    nobody attested.
+    False by default, and false is the closed state: no cluster, no
+    controller identity, no bootstrap. Nothing about the trading runtime
+    reads this — Cloud Run services and execution nodes are what they are
+    either way — but with it false nothing reconciles a `RunService`
+    manifest into the environment, so the services in it are whatever they
+    were before the release. Turning it on needs the `management` zone
+    declared in `trust_zones` and a `gitops_master_ipv4_cidr_block`; the plan
+    refuses either missing by name.
   EOT
+  type        = bool
+  default     = false
+}
 
-  type    = map(string)
-  default = {}
+variable "gitops_master_ipv4_cidr_block" {
+  description = <<-EOT
+    The /28 the control-plane cluster's private endpoint is allocated from,
+    or null where `gitops_enabled` is false.
+
+    No default, because an address range chosen as a convenience is the one
+    that collides: it must overlap neither a trust zone, the console's
+    subnet nor an execution node's block (environments/README.md has the
+    ladder). Null is admitted so an environment without a control plane
+    need not invent one; the module's precondition refuses null the moment
+    a cluster is asked for.
+  EOT
+  type        = string
+  default     = null
 
   validation {
-    condition     = alltrue([for digest in values(var.image_digests) : can(regex("^sha256:[a-f0-9]{64}$", digest))])
-    error_message = "Every image digest is `sha256:<64 hex>`. A tag is a name someone can move after the attestation was signed."
+    condition     = var.gitops_master_ipv4_cidr_block == null || can(regex("/28$", coalesce(var.gitops_master_ipv4_cidr_block, "0.0.0.0/0")))
+    error_message = "GKE allocates the private endpoint from exactly a /28; any other size is refused at apply, after the network peering exists."
   }
 }
 
@@ -292,18 +310,32 @@ variable "egress_allowed_upstreams" {
     The hosts the egress proxy may dial, checked at plan time against the
     hosts `infrastructure/egress/envoy.yaml` actually dials. The two must be
     the same set, so widening the proxy is an edit to the bootstrap and an
-    edit here, reviewed together. The default is the six hosts the adapters
+    edit here, reviewed together. The default is the seven hosts the adapters
     name and the bootstrap declares; an environment that needs fewer narrows
     the bootstrap, not this list.
 
-    Five of the six are Google's or IBM's — infrastructure this platform runs
-    on. `api.frankfurter.app` is the first that is neither: a market-data
+    Five of the seven are Google's or IBM's — infrastructure this platform
+    runs on. `api.frankfurter.dev` is the first that is neither: a market-data
     vendor, reached on one path by one connector whose licensing posture is
-    evaluated in `qip-fastbrain`'s catalogue before the feed opens. It is
+    evaluated in `qip-data-finder`'s catalogue before the feed opens. It is
     listed here rather than folded in silently because it is the entry that
     changes what this list *is* — no longer only the platform's own
     dependencies — and the acceptance suite fails if this set and the
     bootstrap disagree in either direction.
+
+    `router.huggingface.co` is the first that is a model vendor (ADR 0037):
+    Hugging Face Inference Providers' router, reached on one path and one
+    method — `POST /v1/chat/completions` — by `HuggingFaceModel` in
+    `qip-reasoning-engine`, which only the deep brain constructs. What
+    crosses it is the REASON stage's evidence blocks for the instruments
+    under review, never a credential in the URL and never anything from
+    risk, execution, capital or the edge; what comes back is narrative that
+    `NumericGuard` refuses to read a number from. It is listed while nothing
+    sets the three `QIP_LANGUAGE_MODEL_*` variables or mounts `QIP_HF_TOKEN`
+    on any environment, so the route exists and is dark; the terms of the
+    providers a chosen model resolves to are read before any environment
+    turns it on, and `HuggingFaceModel::UPSTREAM_HOST`, this entry and the
+    bootstrap's cluster are held to one value by the acceptance suite.
   EOT
 
   type = list(string)
@@ -313,7 +345,8 @@ variable "egress_allowed_upstreams" {
     "europe-west2-aiplatform.googleapis.com",
     "quantum.cloud.ibm.com",
     "api.quantum.ibm.com",
-    "api.frankfurter.app",
+    "api.frankfurter.dev",
+    "router.huggingface.co",
   ]
 }
 
@@ -381,6 +414,71 @@ variable "market_data_connector" {
   validation {
     condition     = var.market_data_connector == null ? true : startswith(var.market_data_connector.base_url, "http://127.0.0.1:")
     error_message = "The connector's base URL is the egress proxy on loopback, http://127.0.0.1:<port>. `qip_transport::http` refuses https by name, and an address off the instance is a route that does not exist."
+  }
+}
+
+variable "venue_registrations_file" {
+  description = <<-EOT
+    A committed JSON file of `RegistrationRecord`s the API mounts and reads as
+    `QIP_VENUE_REGISTRATIONS_PATH`, or null for a deployment where nobody has
+    registered with a venue.
+
+    A path in this repository, read with `file()` at plan time exactly as the
+    instrument universe is, so the records a revision carries are the records
+    a reviewer read and the plan names them by hash. Null renders no
+    configuration file and therefore no variable at all, and an unset variable
+    is what makes the API's shipped registry hold nobody: every source whose
+    requirement is an account stays refused, which is the honest state of a
+    deployment where nobody registered.
+
+    Setting this does not register anybody. `docs/operations/registering-a-venue.md`
+    is the order: a named person reads the venue's terms, registers under
+    their own identity, writes the credential into its Secret Manager slot
+    with `gcloud secrets versions add`, and only then commits the record —
+    whose `secret` field names the deployment variable the credential is read
+    under and never the value. `RegistrationRecord`'s only constructor refuses
+    a blank operator and its deserialiser goes through that constructor, so a
+    file this names cannot say "registered" and name nobody: the API refuses
+    to start on it, naming the field.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.venue_registrations_file == null ? true : can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.venue_registrations_file))
+    error_message = "The venue registrations file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read."
+  }
+}
+
+variable "wallet_statement_file" {
+  description = <<-EOT
+    A committed JSON wallet statement the API mounts and reads as
+    `QIP_WALLET_STATEMENT_PATH`, or null where no custodian has reported.
+
+    Same convention as the universe and the registrations above: a path in
+    this repository, read with `file()`, null renders no variable and the API
+    then says in its banner that there is no feed and answers `/wallet` with
+    `assembled: false` — the truthful answer for a process nothing has
+    reported to.
+
+    What a person setting this must know, because the platform will not soften
+    it: a statement is a dated document from a counterparty, the kernel holds
+    one fresh for a day, and the API refuses to start on a statement it
+    considers stale or dated in the future. So a committed statement is a
+    same-day act — commit the day's file, apply, and expect the refusal the
+    day after — and no environment leaves it set. Every environment trades on
+    the in-process simulated venue (ADR 0003), which issues no statement, so
+    every tfvars leaves this null for a reason recorded there rather than
+    because nobody thought about it.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.wallet_statement_file == null ? true : can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.wallet_statement_file))
+    error_message = "The wallet statement file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read."
   }
 }
 
@@ -727,11 +825,13 @@ variable "vendored_openobserve_image_digest" {
     `"vendored"`, so the upstream repository cannot be named here and an
     unmirrored image cannot reach a plan.
 
-    Null by default and null is the closed state: no OpenObserve service, in
-    any environment, until an operator has reviewed the mirrored digest for
-    that environment and named it here. Unlike the metrics collector, this is
-    not a sidecar attached to an existing workload — it is its own top-level
-    Cloud Run service, created only once this is set.
+    Null by default and null is the closed state: no OpenObserve identity or
+    grant in any environment until an operator has reviewed the mirrored
+    digest for that environment and named it here. The service itself is
+    the `RunService` manifest at infrastructure/gitops/envs/<env>/openobserve.yaml
+    (ADR 0036), which must name this same digest; the parity test refuses
+    the two disagreeing, and a manifest applied where this is null names an
+    identity that does not exist.
   EOT
 
   type    = string
@@ -765,4 +865,27 @@ variable "console_egress_cidr" {
   description = "CIDR of the subnet Cloud Run attaches the console to for direct VPC egress. Null means the console has no route to the platform and says so on every page, which is the state this variable exists to end."
   type        = string
   default     = null
+}
+
+variable "image_bake_subnet_cidr" {
+  description = <<-EOT
+    CIDR of the subnet the throwaway machine `.github/workflows/image.yml`
+    bakes the execution node's boot image on. Null means this environment
+    bakes no image, and `modules/image-bake` creates nothing at all — no
+    bucket, no identity, no subnet.
+
+    Null everywhere by default and on purpose. Three of the four environments
+    will never bake an image: ADR 0035 authorises one node, in dev. A default
+    range would create a subnet, a bucket and a service account in all four
+    because a variable had a value, which is the shape `console_egress_cidr`
+    already refuses.
+
+    Setting it is what unblocks the boot image ADR 0035 needs and ADR 0024
+    records as remaining work. The bake's own preflight refuses with this
+    variable's name and the file to edit rather than failing on a bucket that
+    is not there.
+  EOT
+
+  type    = string
+  default = null
 }

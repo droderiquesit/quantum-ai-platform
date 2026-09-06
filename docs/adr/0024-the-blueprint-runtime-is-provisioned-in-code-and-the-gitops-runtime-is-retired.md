@@ -1,6 +1,13 @@
 # 0024 — The blueprint runtime is provisioned in code and the GitOps runtime is retired
 
-**Status:** accepted
+**Status:** accepted; **applied in `dev` on 2026-09-05** and nowhere else —
+see "That last paragraph is stale" at the end of "What it costs", which
+corrects this record's own closing claim that nothing runs anywhere.
+**Partially superseded by:** ADR 0036, for the controllers only — decision 2
+("the GitOps runtime is retired") is re-taken there on a control-plane cluster
+that runs no trading binary, and decision 3's *mechanism* is replaced by a
+Kargo promotion and an Argo CD sync. Decisions 1, 4 and 5, and decision 3's
+*proof*, stand.
 **Supersedes:** ADR 0011 (the "on Kubernetes" half) and ADR 0017 entirely.
 Amends ADR 0020: its sequence was executed in code rather than step by step,
 and the correction appended to that record says how.
@@ -193,6 +200,37 @@ repository now has one runtime in its Terraform and none observed. Until a
 plan is read and applied by a person, "the platform runs on Cloud Run" is a
 statement about a configuration, and the honest sentence is that the
 platform is not running anywhere.
+
+### That last paragraph is stale — corrected 2026-09-05
+
+It was true when written and is not now, and it was the last file in the tree
+to hear so. Under ADR 0040's authorisation, `dev` was planned and applied:
+`infra.yml` runs 34 through 38 against `algorik-dev`, taking state from 163 to
+237 resources. On 2026-09-04, from outside the project and with no credential,
+`qip-dev-api`, `qip-dev-fastbrain` and `qip-dev-deepbrain` each answered Google
+Frontend's `404 Not Found` on their `run.app` hostnames — the signature of a
+service that exists with internal ingress, distinguished from the credential-less
+`404 Page not found` with no `server` header that a nonexistent hostname
+returns. The portal and the landing answered 200, and OpenObserve answered a
+`308` to `/web/` and `200` there. The evidence and
+its limits are in
+[the missing-infrastructure register](../ops/missing-infrastructure-register.md),
+"Observed on 2026-09-04, from outside the project", which is careful to say
+what it did *not* see: no digest, no serving revision, no attestation, no
+secret version, no execution node, no scrape.
+
+So "the platform is not running anywhere" is replaced by a narrower sentence
+that is still true. Three central binaries and two browser surfaces are
+serving in `dev`. **No execution node exists** — `execution_nodes = {}` in
+every environment — so the blueprint's central topological claim is still
+unproven by observation, which is what the paragraph above was mostly about.
+**Nothing has been observed scraping or ingesting from any process.** And
+nothing at all has been applied in `test`, `stage` or `prod`.
+
+What did *not* change: this record's "Nothing was applied" section above
+remains an accurate account of the commits it describes. It said no plan had
+been produced *by those commits*, and none had. Read it as history, not as the
+present tense.
 
 ## What would make this wrong
 

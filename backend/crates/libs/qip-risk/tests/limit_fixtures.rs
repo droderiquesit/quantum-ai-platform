@@ -69,6 +69,10 @@ fn state() -> RiskState {
         counterparty_exposures: BTreeMap::from([("prime".to_string(), Decimal::from_int(200_000))]),
         order_notional: Some(Decimal::from_int(50_000)),
         order_subject: Some("AAPL".to_string()),
+        // Every map above holds the figure its limit reads, so none is filed
+        // as unevaluated. That is what makes each fixture below a statement
+        // about a limit rather than about a missing number.
+        unevaluated: BTreeMap::new(),
     }
 }
 

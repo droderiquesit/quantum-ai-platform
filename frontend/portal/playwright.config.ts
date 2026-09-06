@@ -33,6 +33,18 @@ const AUTH_PORT = Number(process.env.PLAYWRIGHT_AUTH_PORT ?? 3314);
 const AUTH_BASE_URL = `http://127.0.0.1:${AUTH_PORT}`;
 
 /**
+ * A fifth instance with ALGORIK_AUTH_REQUIRED deliberately UNSET, for the
+ * gate's default. The instances above say which posture they want in so many
+ * words; this one says nothing, which is what a deployment that forgot the
+ * variable says, and the suite against it proves that silence is the closed
+ * gate. It cannot share the auth instance: that one writes `"true"`, and a
+ * test of the default that runs where the default is overridden proves the
+ * override.
+ */
+const GATE_PORT = Number(process.env.PLAYWRIGHT_GATE_PORT ?? 3315);
+const GATE_BASE_URL = `http://127.0.0.1:${GATE_PORT}`;
+
+/**
  * `next start` runs as NODE_ENV=production, where the session signer refuses
  * to invent a key (replicas could not verify each other's cookies). The test
  * key is set here, visibly a test value, and long enough to pass the length
@@ -61,10 +73,11 @@ export default defineConfig({
     {
       name: "desktop-chromium",
       use: { ...devices["Desktop Chrome"], viewport: { width: 1600, height: 1000 } },
-      // worker.spec needs the instance with a real upstream behind it, and
-      // auth.spec needs the instance with authentication required; running
-      // either here would test the wrong server.
-      testIgnore: /(worker|auth)\.spec\.ts/,
+      // worker.spec needs the instance with a real upstream behind it,
+      // auth.spec needs the instance with authentication required, and
+      // gate.spec needs the one where nothing was said about it; running any
+      // of them here would test the wrong server.
+      testIgnore: /(worker|auth|gate)\.spec\.ts/,
     },
     {
       name: "tablet-chromium",
@@ -80,6 +93,11 @@ export default defineConfig({
       name: "auth-chromium",
       use: { ...devices["Desktop Chrome"], baseURL: AUTH_BASE_URL, viewport: { width: 1280, height: 900 } },
       testMatch: /auth\.spec\.ts/,
+    },
+    {
+      name: "gate-chromium",
+      use: { ...devices["Desktop Chrome"], baseURL: GATE_BASE_URL },
+      testMatch: /gate\.spec\.ts/,
     },
   ],
   webServer: [
@@ -98,6 +116,10 @@ export default defineConfig({
         QIP_API_TIMEOUT_MS: "1500",
         NEXT_PUBLIC_QIP_ENVIRONMENT: "test",
         ALGORIK_SESSION_SECRET: TEST_SESSION_SECRET,
+        // The explicit kiosk opt-out. These suites predate accounts and
+        // exercise the console anonymously; the gate is closed unless a
+        // deployment writes this, and this is a deployment writing it.
+        ALGORIK_AUTH_REQUIRED: "false",
       },
     },
     {
@@ -121,6 +143,9 @@ export default defineConfig({
         QIP_API_TIMEOUT_MS: "2000",
         NEXT_PUBLIC_QIP_ENVIRONMENT: "test",
         ALGORIK_SESSION_SECRET: TEST_SESSION_SECRET,
+        // The worker suite reads the gateway anonymously through a real
+        // socket; same explicit opt-out as the first instance.
+        ALGORIK_AUTH_REQUIRED: "false",
       },
     },
     {
@@ -143,6 +168,22 @@ export default defineConfig({
         // Playwright serves plain HTTP on 127.0.0.1, where Chromium refuses
         // to store a Secure cookie at all. This is the one explicit downgrade
         // — production defaults to the strict __Host- form.
+        ALGORIK_COOKIE_SECURE: "false",
+      },
+    },
+    {
+      // ALGORIK_AUTH_REQUIRED is not in this env on purpose. See GATE_PORT.
+      command: `npm run start -- --port ${GATE_PORT} --hostname 127.0.0.1`,
+      url: `${GATE_BASE_URL}/welcome`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+      stdout: "ignore",
+      stderr: "pipe",
+      env: {
+        QIP_API_BASE_URL: "http://127.0.0.1:9",
+        QIP_API_TIMEOUT_MS: "1500",
+        NEXT_PUBLIC_QIP_ENVIRONMENT: "test",
+        ALGORIK_SESSION_SECRET: TEST_SESSION_SECRET,
         ALGORIK_COOKIE_SECURE: "false",
       },
     },

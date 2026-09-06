@@ -1,0 +1,33 @@
+# The dev Application (ADR 0036 decision 7): automated, with prune and self-heal, so a service edited by hand is put back on the next reconcile.
+#
+# No finalizer, deliberately: Argo CD's resources-finalizer deletes every
+# resource an Application owns when the Application is deleted, and even
+# with `deletion-policy: abandon` on each RunService that is a cascade
+# nobody should be one `kubectl delete` from. `Validate=true` is what
+# makes a field the Config Connector schema does not know a refused sync
+# rather than a silently pruned mount — see envs/README.md on `gcs`.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: qip-dev
+  namespace: argocd
+  annotations:
+    kargo.akuity.io/authorized-stage: qip:dev
+  finalizers: []
+spec:
+  project: qip
+  source:
+    repoURL: https://github.com/droderiquesit/quantum-ai-platform.git
+    targetRevision: claude/autonomous-investment-platform-76gt4y
+    path: infrastructure/gitops/envs/dev
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: qip-run
+  syncPolicy:
+    syncOptions:
+    - Validate=true
+    - PruneLast=true
+    - ApplyOutOfSyncOnly=true
+    automated:
+      prune: true
+      selfHeal: true

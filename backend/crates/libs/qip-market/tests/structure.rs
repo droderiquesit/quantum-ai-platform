@@ -702,6 +702,354 @@ fn an_empty_curve_is_rejected() {
     assert!(TermStructure::new("X", Currency::USD, now(), Vec::new()).is_err());
 }
 
+#[test]
+fn a_curve_with_a_duplicated_maturity_is_refused_naming_the_tenor() {
+    // The failure this prevents, which was live in this file: `new` used to
+    // `dedup_by` any tenor within 1e-12 of its neighbour, so a vendor
+    // publishing the 10y point twice at two different yields had one silently
+    // dropped — and which one survived depended on a sort that is not stable
+    // across the two orders the same file can arrive in. A curve that
+    // interpolates differently on a replay than it did live is not a replay.
+    let points = vec![
+        CurvePoint {
+            tenor_years: 2.0,
+            value: 0.0450,
+        },
+        CurvePoint {
+            tenor_years: 10.0,
+            value: 0.0435,
+        },
+        CurvePoint {
+            tenor_years: 10.0,
+            value: 0.0461,
+        },
+    ];
+    // The premise: the same three points with the duplicate resolved do build
+    // a curve, so what is refused below is the duplication and not the shape.
+    let mut resolved = points.clone();
+    resolved[2].tenor_years = 30.0;
+    assert!(
+        TermStructure::new("UST", Currency::USD, now(), resolved).is_ok(),
+        "the fixture is refused for some other reason, so this proves nothing"
+    );
+
+    let refusal = TermStructure::new("UST", Currency::USD, now(), points)
+        .expect_err("a maturity quoted twice was accepted");
+    let message = refusal.to_string();
+    // Match the whole clause, not a bare "10": every yield in the fixture
+    // contains a digit that would satisfy a looser assertion.
+    assert!(
+        message.contains("tenor 10 is quoted twice"),
+        "the refusal does not name the duplicated tenor: {message}"
+    );
+    assert!(
+        message.contains("0.0435") && message.contains("0.0461"),
+        "the refusal does not name both quoted values: {message}"
+    );
+}
+
+#[test]
+fn a_curve_with_a_negative_tenor_is_refused_rather_than_re_anchored() {
+    // A point before the curve's own as-of instant has no meaning, and the
+    // monotone interpolator accepted it as the new front end — silently
+    // re-anchoring flat extrapolation onto a rate nobody quoted.
+    let good = vec![
+        CurvePoint {
+            tenor_years: 1.0,
+            value: 0.02,
+        },
+        CurvePoint {
+            tenor_years: 5.0,
+            value: 0.03,
+        },
+    ];
+    assert!(
+        TermStructure::new("X", Currency::USD, now(), good.clone()).is_ok(),
+        "the premise fails: the curve without the bad point is already refused"
+    );
+
+    let mut bad = good;
+    bad.push(CurvePoint {
+        tenor_years: -0.5,
+        value: 0.09,
+    });
+    let refusal =
+        TermStructure::new("X", Currency::USD, now(), bad).expect_err("a negative tenor was taken");
+    assert!(
+        refusal.to_string().contains("tenor -0.5 is negative"),
+        "the refusal does not name the tenor: {refusal}"
+    );
+}
+
+#[test]
+fn a_curve_point_that_is_not_a_finite_number_is_refused() {
+    // NaN compared `Equal` under the sort, so it landed wherever the input
+    // happened to put it and poisoned every interpolated rate downstream.
+    let anchor = CurvePoint {
+        tenor_years: 1.0,
+        value: 0.02,
+    };
+    assert!(
+        TermStructure::new("X", Currency::USD, now(), vec![anchor]).is_ok(),
+        "the premise fails: the anchor alone does not build a curve"
+    );
+
+    let nan_tenor = TermStructure::new(
+        "X",
+        Currency::USD,
+        now(),
+        vec![
+            anchor,
+            CurvePoint {
+                tenor_years: f64::NAN,
+                value: 0.03,
+            },
+        ],
+    )
+    .expect_err("a NaN tenor was taken");
+    assert!(
+        nan_tenor
+            .to_string()
+            .contains("is not a finite number of years"),
+        "the refusal does not say what is wrong: {nan_tenor}"
+    );
+
+    let nan_value = TermStructure::new(
+        "X",
+        Currency::USD,
+        now(),
+        vec![
+            anchor,
+            CurvePoint {
+                tenor_years: 5.0,
+                value: f64::INFINITY,
+            },
+        ],
+    )
+    .expect_err("an infinite rate was taken");
+    assert!(
+        nan_value.to_string().contains("is not a finite rate"),
+        "the refusal does not say what is wrong: {nan_value}"
+    );
+}
+
+#[test]
+fn a_present_value_is_the_amount_scaled_by_the_curves_own_discount_factor() {
+    // The money/statistics crossing: the rate and the factor are `f64`, the
+    // answer is `Decimal`. The property is that the two agree — a
+    // `present_value` computed off a different rate than `rate_at` reports
+    // would be a valuation nobody could reproduce from the published curve.
+    let curve = treasury_curve();
+    let factor = curve.discount_factor(10.0);
+    // The premise: ten years of discounting actually moves the number, so an
+    // implementation returning the amount unchanged would not pass.
+    assert!(
+        factor < 0.95,
+        "the fixture curve barely discounts at all ({factor}), so this proves nothing"
+    );
+
+    let present = curve
+        .present_value(dec!("1000000"), 10.0)
+        .expect("a positive tenor on a well-formed curve");
+    let expected = Decimal::from_f64(factor).expect("a discount factor between zero and one")
+        * dec!("1000000");
+    assert_eq!(
+        present, expected,
+        "the present value does not match the curve's own discount factor"
+    );
+    assert!(present < dec!("1000000"), "discounting did not reduce it");
+
+    // Zero tenor is the identity, not a refusal: a cashflow due now is worth
+    // its face.
+    assert_eq!(
+        curve
+            .present_value(dec!("1000000"), 0.0)
+            .expect("a zero tenor is discountable"),
+        dec!("1000000")
+    );
+}
+
+#[test]
+fn discounting_to_a_tenor_that_has_already_passed_is_refused() {
+    // Refuse rather than clamp to zero: a negative tenor reaching here is a
+    // caller that computed a time to maturity from a stale clock, and a
+    // present value returned for it would flow into a valuation as though a
+    // matured claim were still outstanding.
+    let curve = treasury_curve();
+    assert!(
+        curve.present_value(dec!("100"), 1.0).is_ok(),
+        "the premise fails: the curve discounts nothing at all"
+    );
+    let refusal = curve
+        .present_value(dec!("100"), -1.0)
+        .expect_err("a past tenor was discounted");
+    assert!(
+        refusal.to_string().contains("already received is booked"),
+        "the refusal does not say what to do instead: {refusal}"
+    );
+    assert!(
+        curve.present_value(dec!("100"), f64::NAN).is_err(),
+        "a non-finite tenor was discounted"
+    );
+}
+
+#[test]
+fn a_yield_quoted_in_percent_is_refused_rather_than_discounting_a_claim_to_zero() {
+    // The failure this prevents, and it was live in this file: a vendor
+    // quoting `yield_to_maturity` as 4.35 rather than 0.0435 built a perfectly
+    // valid curve, and `present_value` returned exactly 0 for every amount at
+    // every tenor — because `Decimal::from_f64` rounds to nine decimal places
+    // rather than failing, so `exp(-4.35 * 10) = 1.9e-19` arrived as
+    // `Decimal::ZERO`. Zero is not a small valuation, it is the absence of
+    // one, and a credit register printing "worst claim at 0 of discounted
+    // expected loss" reads as a universe carrying no credit risk.
+    let percent_quoted = TermStructure::new(
+        "UST-percent",
+        Currency::USD,
+        now(),
+        vec![
+            CurvePoint {
+                tenor_years: 2.0,
+                value: 4.50,
+            },
+            CurvePoint {
+                tenor_years: 10.0,
+                value: 4.35,
+            },
+        ],
+    )
+    .expect("the curve itself is well-formed; it is the unit that is wrong");
+
+    // The premise, asserted before the refusal: the arithmetic really does
+    // collapse. Without this the test would pass on an implementation that
+    // refused every present value for some unrelated reason.
+    let factor = percent_quoted.discount_factor(10.0);
+    assert!(
+        factor > 0.0 && factor < 1e-15,
+        "the fixture does not underflow ({factor}), so this proves nothing"
+    );
+    assert_eq!(
+        Decimal::from_f64(factor),
+        Some(Decimal::ZERO),
+        "the premise fails: the factor no longer rounds to zero, so the \
+         manufactured-zero path this guards does not exist"
+    );
+
+    let refusal = percent_quoted
+        .present_value(dec!("1000000"), 10.0)
+        .expect_err("a million was discounted to zero and returned as a valuation");
+    let message = refusal.to_string();
+    assert!(
+        message.contains("rounds to zero at the scale money is held at"),
+        "the refusal does not name what went wrong: {message}"
+    );
+    assert!(
+        message.contains("quoted in percent rather than as a fraction"),
+        "the refusal does not say what to do instead: {message}"
+    );
+
+    // And the other half of a working gate: the same curve in the right unit
+    // is admitted and discounts to a real number. A guard that refused both
+    // would be indistinguishable from one that refused everything.
+    let fraction_quoted = TermStructure::new(
+        "UST-fraction",
+        Currency::USD,
+        now(),
+        vec![
+            CurvePoint {
+                tenor_years: 2.0,
+                value: 0.0450,
+            },
+            CurvePoint {
+                tenor_years: 10.0,
+                value: 0.0435,
+            },
+        ],
+    )
+    .expect("a curve quoted as fractions");
+    let present = fraction_quoted
+        .present_value(dec!("1000000"), 10.0)
+        .expect("a curve at 4.35% must still discount");
+    assert!(
+        present > dec!("600000") && present < dec!("700000"),
+        "a million discounted ten years at 4.35% is not {present}"
+    );
+}
+
+#[test]
+fn a_stored_curve_is_refitted_from_its_own_points_rather_than_read_by_a_second_method() {
+    // The failure this prevents: the interpolator is `serde(skip)`, because a
+    // fitted spline is derived state and storing it would give a replay a
+    // second source of truth. While the field was an `Option`, a curve read
+    // back from the log carried `None` and answered every query by *nearest
+    // neighbour* — a different interpolation from the monotone cubic the live
+    // curve used, on the same points. A curve that interpolates differently on
+    // a replay than it did live is not a replay.
+    let live = treasury_curve();
+    // The premise: the two methods actually disagree somewhere, so a
+    // round-trip that silently switched would be detectable at all. Halfway
+    // between the 5y and 10y knots, nearest-neighbour returns one endpoint and
+    // the cubic does not.
+    let midpoint = 7.5;
+    let cubic = live.rate_at(midpoint);
+    assert!(
+        (cubic - 0.0420).abs() > 1e-6 && (cubic - 0.0435).abs() > 1e-6,
+        "the fixture's midpoint {cubic} coincides with a knot, so a switch of \
+         method would not show"
+    );
+
+    let json = serde_json::to_string(&live).expect("a curve serialises");
+    let replayed: TermStructure = serde_json::from_str(&json).expect("a stored curve loads");
+    assert!(
+        approx_eq(replayed.rate_at(midpoint), cubic, 1e-12),
+        "the replayed curve reads {} where the live one read {cubic}",
+        replayed.rate_at(midpoint)
+    );
+
+    // And a stored payload that would not form a curve is refused at load,
+    // rather than becoming a curve with no points that answers every tenor
+    // with a rate of zero — a discount factor of one, an amount returned
+    // undiscounted as a present value. Built by emptying the points of a
+    // payload that has just been proven to load, so the refusal is about the
+    // points and not about a field name this test guessed wrong.
+    let mut payload: serde_json::Value = serde_json::from_str(&json).expect("the payload parses");
+    assert!(
+        payload
+            .get("points")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|points| points.len() == 5),
+        "the premise fails: the stored shape has no `points` array to empty: {payload}"
+    );
+    payload["points"] = serde_json::Value::Array(Vec::new());
+    let empty = serde_json::from_value::<TermStructure>(payload);
+    assert!(
+        empty.is_err(),
+        "a stored curve with no points was accepted and will answer every query"
+    );
+}
+
+#[test]
+fn the_curve_publishes_the_tenors_it_was_actually_quoted_at() {
+    // Published so a caller that must not accept flat extrapolation can tell
+    // an observed rate from an extended one. Without it `rate_at(40.0)` on a
+    // single 10y point returns the 10y rate and is indistinguishable from an
+    // observation.
+    let curve = treasury_curve();
+    let (shortest, longest) = curve.tenor_range();
+    assert!(
+        approx_eq(shortest, 0.25, 1e-12),
+        "the front end is {shortest}"
+    );
+    assert!(approx_eq(longest, 30.0, 1e-12), "the long end is {longest}");
+    // The premise that makes the range worth publishing: outside it the curve
+    // answers anyway, with the endpoint value.
+    assert!(approx_eq(
+        curve.rate_at(longest + 20.0),
+        curve.rate_at(longest),
+        1e-12
+    ));
+}
+
 // --- microstructure ---------------------------------------------------------
 
 #[test]

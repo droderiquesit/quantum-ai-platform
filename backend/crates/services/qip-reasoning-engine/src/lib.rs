@@ -22,17 +22,25 @@
 //!   checks against the thesis's own structure. It is deterministic on
 //!   purpose: a language model asked whether a well-written thesis is
 //!   convincing will usually say yes.
+//!
+//! A hosted language model, when one is configured, is reached through
+//! [`providers`] — for narrative only, behind `NumericGuard`, and only from
+//! the deep brain (ADR 0037).
 
 pub mod bayes;
+pub mod belief;
 pub mod engine;
 pub mod evidence;
 pub mod hypothesis;
+pub mod providers;
 pub mod redteam;
 
 pub use bayes::{BaseRate, BeliefUpdate, EvidenceStrength};
+pub use belief::BeliefState;
 pub use engine::{ReasoningEngine, ReasoningOutcome, SynthesisInput};
 pub use evidence::{Evidence, EvidenceKind, EvidenceSet, Stance};
 pub use hypothesis::{
     CausalChain, CausalStep, Claim, Hypothesis, HypothesisDraft, HypothesisStatus,
 };
+pub use providers::{HuggingFaceConfig, HuggingFaceModel, HuggingFaceToken};
 pub use redteam::{Challenge, ChallengeKind, RedTeam, ReviewOutcome, ReviewPolicy, Severity};

@@ -261,28 +261,16 @@ terraform -chdir="${TF_DIR}" init -backend-config="bucket=${STATE_BUCKET}"
 # No -auto-approve, deliberately. The plan terraform prints and the yes you
 # type are the review; a bootstrap script that skips them is a script one bad
 # tfvars away from applying the wrong environment.
-# Both var-files, on the rule infra.yml already follows: the reviewed
-# configuration, and the digests deploy.yml last recorded. Without the second
-# this apply stops at catalogue.tf's precondition — "No digest is recorded for
-# qip-api, qip-deepbrain, qip-fastbrain" — because `image_digests` defaults to
-# empty, and the Cloud Run services this bootstrap exists to create are never
-# made. That was a deadlock: the services could not be created without the
-# pipeline, and the pipeline moves services that must already exist. An
-# environment nothing has ever deployed to still has no images.tfvars, and
-# there the refusal is the right one, so the file is passed only when it
-# exists rather than stubbed.
+#
+# One var-file: the reviewed configuration. There used to be a second,
+# images.tfvars, holding the digests deploy.yml last moved the services to,
+# passed here so the apply could create a service at attested bytes. Under
+# ADR 0036 Terraform creates no Cloud Run service at all — the service is a
+# Config Connector manifest under infrastructure/gitops/envs/<env>/, and
+# the digest lives in that directory's kustomization.yaml — so there is no
+# digest to hand this apply and no deadlock for a second file to break.
 tf_var_files=(-var-file="${TFVARS}")
-# Declared and assigned separately: `readonly x="$(cmd)"` takes the exit
-# status of `readonly`, not of the substitution, so a failing `dirname`
-# would leave a plausible-looking path and carry on under `set -e`.
-IMAGES_TFVARS="$(dirname "${TFVARS}")/images.tfvars"
-readonly IMAGES_TFVARS
-if [[ -f "${IMAGES_TFVARS}" ]]; then
-  tf_var_files+=(-var-file="${IMAGES_TFVARS}")
-  echo "[5/7] applying with the digests in ${IMAGES_TFVARS}"
-else
-  echo "[5/7] no images.tfvars for ${ENVIRONMENT}; the Cloud Run services will be refused until the pipeline writes one"
-fi
+echo "[5/7] applying ${TFVARS}; the Cloud Run services are Config Connector's and are not created here (ADR 0036)"
 
 terraform -chdir="${TF_DIR}" apply "${tf_var_files[@]}"
 

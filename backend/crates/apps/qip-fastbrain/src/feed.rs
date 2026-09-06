@@ -13,10 +13,31 @@
 //! Every record is validated before the platform sees it. A record that fails
 //! is counted and reported rather than dropped: bad data must never silently
 //! become an investment input, and a rejection nobody counts is a silent one.
+//!
+//! # Two gates before a connector opens
+//!
+//! A catalogued connector passes the data finder's licensing evaluation and
+//! then its registration registry, in that order, before anything is
+//! constructed. The registry is the one the node's own configuration stands
+//! for — [`qip_kernel::PlatformConfig::registration_registry`] — so a source
+//! whose venue demands an account opens here only when the owner recorded the
+//! registration they made, and is refused **by name** when they did not. The
+//! node used to ask [`qip_data_finder::admission::admit`], which consults the
+//! shipped table and holds nobody's record: that door could never admit an
+//! account-gated source however the deployment was configured, and it was the
+//! wrong answer for the right reason.
+//!
+//! Both gates are table reads. **Nothing here consults a language model, and
+//! nothing may** — ADR 0008 puts no model on the fast path at all, and a
+//! licence and a registration are facts somebody wrote down and reviewed, not
+//! judgements to be inferred at start-up. A model asked whether a source may
+//! be traded on would answer, plausibly, without having read anything.
 
 use crate::config::{ConnectorFeedSettings, LiveFeedSettings};
 use qip_core::error::{Error, Result};
-use qip_core::{Duration, ObjectId, Timestamp};
+use qip_core::{Clock, Duration, ManualClock, ObjectId, Timestamp};
+use qip_data_finder::admission::{self, CatalogueEntry};
+use qip_data_finder::registration::RegistrationRegistry;
 use qip_financial::quality::LicensingClass;
 use qip_market::bar::Interval;
 use qip_market_ingestion::adapter::{DataAdapter, SensedRecord, SourceDescriptor};
@@ -24,6 +45,8 @@ use qip_market_ingestion::connector_feed::ConnectorFeed;
 use qip_market_ingestion::replay::ReplayAdapter;
 use qip_market_ingestion::rest::{RestFeedConfig, RestInstrument, RestMarketDataAdapter};
 use qip_market_ingestion::synthetic::{EnvironmentConfig, SyntheticEnvironment};
+use qip_market_ingestion::tape::{Tape, TapeFeed};
+use std::sync::Arc;
 
 /// One poll's worth of records, split by whether they may be believed.
 #[derive(Debug, Default)]
@@ -53,6 +76,11 @@ pub enum Feed {
     Synthetic(Box<SyntheticEnvironment>),
     /// Recorded records from a JSONL file.
     Replay(Box<ReplayAdapter>),
+    /// A committed bitemporal tape, run one period per cycle on the tape's
+    /// own clock. The difference from `Replay` is the clock: a replay on the
+    /// wall clock is swallowed in one poll, so nothing that takes tape time
+    /// — a horizon resolving, a claim being scored — ever happens.
+    Tape(Box<TapeFeed>),
     /// A licensed vendor, polled over the in-cluster egress proxy.
     ///
     /// No environment in this repository configures one. The variant exists so
@@ -61,9 +89,12 @@ pub enum Feed {
     /// decisions this code deliberately does not make.
     Live(Box<RestMarketDataAdapter>),
     /// A worked connector from the ingestion SDK, opened through the egress
-    /// proxy after the licensing catalogue admitted it. See
-    /// [`crate::licensing::admit`] — the gate runs before construction, and
-    /// [`Self::open`] is shaped so there is no path to this arm around it.
+    /// proxy after the licensing catalogue admitted it and the registration
+    /// registry named who registered. See
+    /// [`qip_data_finder::admission::admit_registered`] — both gates run
+    /// before construction, and the only constructors that reach this arm are
+    /// [`Self::connector`] and [`Self::connector_admitted_by`], each of which
+    /// runs them.
     Connector(Box<ConnectorFeed>),
 }
 
@@ -99,6 +130,14 @@ impl Feed {
             )));
         }
         Ok(Self::Replay(Box::new(adapter)))
+    }
+
+    /// Open a committed tape on its own clock.
+    ///
+    /// Every refusal — leakage, disorder, an incoherent bar, an empty file —
+    /// is the tape loader's and is not restated here.
+    pub fn tape(path: &str) -> Result<Self> {
+        Ok(Self::Tape(Box::new(TapeFeed::new(Tape::open(path)?))))
     }
 
     /// Open a licensed vendor through the egress proxy.
@@ -139,13 +178,57 @@ impl Feed {
 
     /// Open a catalogued connector source through the egress proxy.
     ///
-    /// The licensing gate runs here, before anything is constructed and
-    /// before any socket is touched: the rule is evaluation *then* use, and
-    /// putting the call inside the constructor makes the ordering a property
-    /// of the code path rather than of the caller's memory.
-    pub fn connector(settings: &ConnectorFeedSettings, at: Timestamp) -> Result<Self> {
+    /// Both gates run here, before anything is constructed and before any
+    /// socket is touched: the rule is evaluation *then* use, and putting the
+    /// call inside the constructor makes the ordering a property of the code
+    /// path rather than of the caller's memory. The catalogue is the data
+    /// finder's, shared with `qip-api`: this root once carried its own copy
+    /// of the same entries, and two catalogues that must say the same thing
+    /// about one licence are one catalogue plus a drift nobody has found yet.
+    ///
+    /// `registrations` is the registry the node's configuration stands for,
+    /// so a source is admitted here only on a record the platform — assembled
+    /// afterwards from the same configuration — also holds. Passed in rather
+    /// than reached for: a constructor that built its own registry would
+    /// answer from a table nothing else in the process shares.
+    ///
+    /// Both questions are answered by reading a table. Nothing on this path
+    /// asks a model anything (ADR 0008); see the module documentation for why
+    /// that is a rule and not an omission.
+    pub fn connector(
+        settings: &ConnectorFeedSettings,
+        registrations: &RegistrationRegistry,
+        at: Timestamp,
+    ) -> Result<Self> {
         let class = qip_market_ingestion::connector_feed::shipped_class(&settings.source_id)?;
-        crate::licensing::admit(&settings.source_id, class, at)?;
+        admission::admit_registered(registrations, &settings.source_id, class, at)?;
+        Self::admitted_connector(settings, at)
+    }
+
+    /// The same opening against a caller-supplied licensing catalogue.
+    ///
+    /// Split from [`Self::connector`] so a test can hold the registration
+    /// question against an entry the real catalogue must never contain —
+    /// today every account-gated source is refused on its unread terms first,
+    /// so without this the registration gate could only be proven by the
+    /// refusal it does not produce.
+    pub fn connector_admitted_by(
+        entries: &[CatalogueEntry],
+        registrations: &RegistrationRegistry,
+        settings: &ConnectorFeedSettings,
+        at: Timestamp,
+    ) -> Result<Self> {
+        let class = qip_market_ingestion::connector_feed::shipped_class(&settings.source_id)?;
+        admission::admit_from_registered(entries, registrations, &settings.source_id, class, at)?;
+        Self::admitted_connector(settings, at)
+    }
+
+    /// Construct the connector arm, once something has admitted it.
+    ///
+    /// Private, and the two callers above are the whole set: a public
+    /// constructor here would be a door into the arm that skips both gates,
+    /// which is the thing the ordering exists to prevent.
+    fn admitted_connector(settings: &ConnectorFeedSettings, at: Timestamp) -> Result<Self> {
         Ok(Self::Connector(Box::new(ConnectorFeed::open(
             &settings.source_id,
             &settings.base_url,
@@ -161,30 +244,45 @@ impl Feed {
     /// the synthetic exchange anyway would be the worst outcome available
     /// here, because nothing downstream can tell the two tapes apart once the
     /// records look the same.
+    ///
+    /// `registrations` reaches only the connector arm, and it is a parameter
+    /// rather than a default so the one registry the process holds is the one
+    /// the gate reads. Every other arm needs no account: a tape, a replay and
+    /// the synthetic exchange are this repository's own files.
     pub fn open(
         live: Option<&LiveFeedSettings>,
         connector: Option<&ConnectorFeedSettings>,
         replay_path: Option<&str>,
+        tape_path: Option<&str>,
+        registrations: &RegistrationRegistry,
         seed: u64,
         step: Duration,
         start: Timestamp,
     ) -> Result<Self> {
-        match (live, connector, replay_path) {
+        match (live, connector, replay_path, tape_path) {
             // Two live sources at once is not a precedence question, it is a
             // configuration contradiction: whichever this code preferred, the
             // operator meant the other one somewhere. Refused outright.
-            (Some(_), Some(_), _) => Err(Error::invalid(
+            (Some(_), Some(_), _, _) => Err(Error::invalid(
                 "both a live vendor (QIP_MARKET_DATA_*) and a connector source \
                  (QIP_CONNECTOR_*) are configured. One node reads one live source; \
                  unset one of them",
             )),
-            (Some(settings), None, _) => {
+            (Some(settings), None, _, _) => {
                 let venue = settings.venue.clone();
                 Self::live(settings, &venue)
             }
-            (None, Some(settings), _) => Self::connector(settings, start),
-            (None, None, Some(path)) => Self::replay(path),
-            (None, None, None) => Ok(Self::synthetic(seed, step, start)),
+            (None, Some(settings), _, _) => Self::connector(settings, registrations, start),
+            // The same contradiction one rung down: two recordings, and the
+            // two run on different clocks, so there is no answer that is
+            // right for both.
+            (None, None, Some(_), Some(_)) => Err(Error::invalid(
+                "both QIP_FASTBRAIN_REPLAY_PATH and QIP_FASTBRAIN_TAPE_PATH are set. A replay \
+                 runs on the wall clock and a tape on its own; unset one of them",
+            )),
+            (None, None, Some(path), None) => Self::replay(path),
+            (None, None, None, Some(path)) => Self::tape(path),
+            (None, None, None, None) => Ok(Self::synthetic(seed, step, start)),
         }
     }
 
@@ -192,6 +290,7 @@ impl Feed {
         match self {
             Self::Synthetic(environment) => environment.as_mut(),
             Self::Replay(adapter) => adapter.as_mut(),
+            Self::Tape(adapter) => adapter.as_mut(),
             Self::Live(adapter) => adapter.as_mut(),
             Self::Connector(adapter) => adapter.as_mut(),
         }
@@ -201,9 +300,99 @@ impl Feed {
         match self {
             Self::Synthetic(environment) => environment.descriptor(),
             Self::Replay(adapter) => adapter.descriptor(),
+            Self::Tape(adapter) => adapter.descriptor(),
             Self::Live(adapter) => adapter.descriptor(),
             Self::Connector(adapter) => adapter.descriptor(),
         }
+    }
+
+    /// The clock this source owns, if it owns one.
+    ///
+    /// A tape does; everything else runs on the wall clock. The platform's
+    /// `Context` must be built on the clock returned here, or the platform
+    /// prices every opportunity as of today while observing last year — and
+    /// the cost router, asked for a latency budget that ended months ago,
+    /// declines to convene anything.
+    pub fn owned_clock(&self) -> Option<Arc<ManualClock>> {
+        match self {
+            Self::Tape(adapter) => Some(adapter.clock()),
+            Self::Synthetic(_) | Self::Replay(_) | Self::Live(_) | Self::Connector(_) => None,
+        }
+    }
+
+    /// The instant the next cycle runs at.
+    ///
+    /// The wall clock for every source but a tape, which is moved one period
+    /// forward and read. `None` only for a spent tape, which the loop has
+    /// already stopped on through [`Self::is_exhausted`].
+    pub fn cycle_instant(&mut self, wall: &dyn Clock) -> Option<Timestamp> {
+        match self {
+            Self::Tape(adapter) => adapter.advance(),
+            Self::Synthetic(_) | Self::Replay(_) | Self::Live(_) | Self::Connector(_) => {
+                Some(wall.now())
+            }
+        }
+    }
+
+    /// The current instant on whichever clock this source runs on.
+    pub fn now(&self, wall: &dyn Clock) -> Timestamp {
+        match self.owned_clock() {
+            Some(clock) => clock.now(),
+            None => wall.now(),
+        }
+    }
+
+    /// Refuse a tape that outlasts the organisation's authorisation.
+    ///
+    /// The platform stamps every manifest reviewed at assembly, which on a
+    /// tape is the tape's first instant, and refuses to run an agent once
+    /// `now` reaches the review interval. A tape longer than the interval
+    /// therefore runs its remaining periods with every panel refused — the
+    /// 320-day daily tape this was written against convened its first panel
+    /// on tape day 103 and reported eighteen agents `failed` on every panel
+    /// after, which read as an agent defect and was governance working as
+    /// designed. Refused at start-up instead, naming the two spans, because
+    /// nothing inside a replay can re-review a roster. A source that owns no
+    /// clock has nothing to check.
+    pub fn refuse_tape_beyond(&self, review_interval: Duration) -> Result<()> {
+        let Self::Tape(adapter) = self else {
+            return Ok(());
+        };
+        let Some((first, last)) = adapter.tape().span() else {
+            return Ok(());
+        };
+        let span = last.since(first);
+        if span >= review_interval {
+            return Err(Error::invalid(format!(
+                "the tape spans {:.1} day(s), from {} to {}, and the organisation's authorisation \
+                 lapses {:.1} day(s) after assembly; every panel after that would be refused. \
+                 Shorten the tape or use a finer interval; a roster cannot be re-reviewed \
+                 inside a replay",
+                span.as_days_f64(),
+                first.to_rfc3339(),
+                last.to_rfc3339(),
+                review_interval.as_days_f64()
+            )));
+        }
+        Ok(())
+    }
+
+    /// One line on the tape, for the banner: what is on it and when.
+    pub fn tape_summary(&self) -> Option<String> {
+        let Self::Tape(adapter) = self else {
+            return None;
+        };
+        let tape = adapter.tape();
+        let (first, last) = tape.span()?;
+        Some(format!(
+            "{} observation(s) across {} instrument(s) in {} period(s), {} to {}; tape time \
+             drives the platform clock, one period per cycle",
+            tape.len(),
+            tape.instruments().len(),
+            tape.periods(),
+            first.to_rfc3339(),
+            last.to_rfc3339()
+        ))
     }
 
     /// Whether records from this source may drive a real capital decision.
@@ -224,6 +413,7 @@ impl Feed {
         match self {
             Self::Synthetic(_) => false,
             Self::Replay(adapter) => adapter.remaining() == 0,
+            Self::Tape(adapter) => adapter.remaining() == 0,
             // A vendor stops answering; it does not run out.
             Self::Live(_) | Self::Connector(_) => false,
         }
@@ -247,6 +437,43 @@ impl Feed {
         }
         Ok(batch)
     }
+}
+
+/// Where every catalogued source stands, one banner line each.
+///
+/// Read off the registry the process holds, so the line describes the table
+/// the gate above reads rather than a second one assembled for display. Every
+/// catalogued source is named, not only the admitted ones: a banner listing
+/// what opened would read as a node with nothing to register, and the source
+/// an operator needs to see is the one that is refused.
+///
+/// A refusal is reported as its requirement rather than as the registry's
+/// whole sentence — the sentence names the runbook, the credential and the
+/// venue, and four of them would bury the banner. The full refusal is what a
+/// configured-but-unregistered source stops the process with, which is where
+/// an operator meets it.
+///
+/// This is a table read and nothing else. No model is asked what a source's
+/// standing is, here or anywhere on this node (ADR 0008).
+pub fn source_standings(registrations: &RegistrationRegistry) -> Result<Vec<String>> {
+    let mut lines = Vec::new();
+    for entry in admission::catalogue()? {
+        let standing = match registrations.standing(entry.source_id) {
+            Ok(standing) => standing.describe(),
+            Err(_) => match registrations.requirement(entry.source_id) {
+                Some(requirement) => format!(
+                    "not registered, so refused: it needs {}",
+                    requirement.describe()
+                ),
+                None => "refused: no registration requirement is declared for it".to_string(),
+            },
+        };
+        lines.push(format!(
+            "  registration:     {}: {standing}",
+            entry.source_id
+        ));
+    }
+    Ok(lines)
 }
 
 /// The finest bar a step of this size can close.
@@ -388,6 +615,192 @@ mod tests {
 }
 
 #[cfg(test)]
+mod tape_tests {
+    use super::*;
+    use qip_core::SystemClock;
+    use qip_market_ingestion::tape::{SCHEMA_VERSION, TapeDocument, TapeObservation};
+
+    /// A tape of `days` daily bars on one instrument, written to a file.
+    fn tape_file(name: &str, days: i64) -> (std::path::PathBuf, std::path::PathBuf) {
+        let first = Timestamp::parse_rfc3339("2025-01-06T21:00:00Z").expect("an instant");
+        let observations = (0..days)
+            .map(|day| {
+                let at = first.saturating_add(Duration::from_days(day));
+                TapeObservation {
+                    object_id: "OBJ-TAPE".to_string(),
+                    venue: "XNYS".to_string(),
+                    at: at.to_rfc3339(),
+                    known_at: at.saturating_add(Duration::from_mins(15)).to_rfc3339(),
+                    open: qip_core::Decimal::from_int(100),
+                    high: qip_core::Decimal::from_int(101),
+                    low: qip_core::Decimal::from_int(99),
+                    close: qip_core::Decimal::from_int(100),
+                    volume: qip_core::Decimal::from_int(1_000),
+                }
+            })
+            .collect();
+        let document = TapeDocument {
+            schema_version: SCHEMA_VERSION,
+            name: name.to_string(),
+            description: "a feed test tape".to_string(),
+            interval: Interval::Day,
+            observations,
+            macro_releases: Vec::new(),
+            alternative_data: Vec::new(),
+            dividend_declarations: Vec::new(),
+        };
+        let directory =
+            std::env::temp_dir().join(format!("qip-fastbrain-tape-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("the directory is created");
+        let path = directory.join("tape.json");
+        std::fs::write(
+            &path,
+            serde_json::to_string(&document).expect("the tape serialises"),
+        )
+        .expect("the tape is written");
+        (directory, path)
+    }
+
+    #[test]
+    fn a_tape_runs_on_its_own_clock_and_not_the_wall_clock() {
+        // The property the tape arm exists for. A cycle instant taken from
+        // the wall clock would release the whole tape in one poll and no
+        // horizon would ever pass on it.
+        let (directory, path) = tape_file("clock", 3);
+        let mut feed = Feed::tape(&path.display().to_string()).expect("the tape opens");
+        let wall = SystemClock;
+        let owned = feed.owned_clock().expect("a tape owns a clock");
+
+        let first = feed
+            .cycle_instant(&wall)
+            .expect("an unread tape has a first period");
+        assert_eq!(
+            first,
+            Timestamp::parse_rfc3339("2025-01-06T21:15:00Z").expect("an instant"),
+            "the first cycle is not at the first knowable instant"
+        );
+        assert_eq!(
+            owned.now(),
+            first,
+            "the owned clock did not follow the tape"
+        );
+        assert_eq!(feed.now(&wall), first, "`now` did not read the owned clock");
+        assert!(
+            first < wall.now(),
+            "the premise: the tape is in the past, so wall time would have swallowed it"
+        );
+        assert_eq!(
+            feed.poll(first).expect("polls").accepted.len(),
+            1,
+            "one period released other than one bar"
+        );
+        assert!(!feed.is_exhausted());
+
+        let second = feed.cycle_instant(&wall).expect("a second period");
+        assert_eq!(second.since(first), Duration::from_days(1));
+        let _ = feed.poll(second);
+        let _ = feed.cycle_instant(&wall);
+        let _ = feed.poll(Timestamp::MAX);
+        assert!(
+            feed.is_exhausted(),
+            "a fully read tape still claims records"
+        );
+        assert!(feed.cycle_instant(&wall).is_none());
+
+        // The other arms answer the wall clock and own nothing.
+        let mut synthetic = Feed::synthetic(1, Duration::from_secs(1), first);
+        assert!(synthetic.owned_clock().is_none());
+        assert!(
+            synthetic
+                .cycle_instant(&wall)
+                .is_some_and(|now| now > first)
+        );
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_tape_that_outlasts_the_roster_review_interval_is_refused_at_start_up() {
+        // The run that showed why: a 320-day daily tape convened its first
+        // panel on tape day 103 and eighteen agents were refused on every
+        // panel after, reported as `failed`. Governance working as designed,
+        // read as a defect, because nothing said the tape was too long.
+        let (directory, long) = tape_file("long", 100);
+        let feed = Feed::tape(&long.display().to_string()).expect("the tape opens");
+        let refusal = feed
+            .refuse_tape_beyond(Duration::from_days(90))
+            .expect_err("a 100-day tape was admitted against a 90-day review interval");
+        assert!(
+            refusal.message().contains("lapses") && refusal.message().contains("Shorten"),
+            "the refusal does not say what lapses or what to do: {}",
+            refusal.message()
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+
+        // And the premise on the other side: a tape inside the window is
+        // admitted, or the gate refuses everything and proves nothing.
+        let (directory, short) = tape_file("short", 10);
+        let feed = Feed::tape(&short.display().to_string()).expect("the tape opens");
+        feed.refuse_tape_beyond(Duration::from_days(90))
+            .expect("a 10-day tape is inside a 90-day review interval");
+        // A source with no clock has nothing to check.
+        Feed::synthetic(
+            1,
+            Duration::from_secs(1),
+            Timestamp::from_secs(1_760_000_000),
+        )
+        .refuse_tape_beyond(Duration::ZERO)
+        .expect("the synthetic exchange owns no tape to measure");
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_replay_and_a_tape_together_are_a_contradiction_and_refused() {
+        // A replay runs on the wall clock and a tape on its own. Whichever
+        // this code preferred, the operator meant the other one somewhere.
+        let (directory, path) = tape_file("both", 2);
+        let refusal = Feed::open(
+            None,
+            None,
+            Some(&path.display().to_string()),
+            Some(&path.display().to_string()),
+            // No arm reached here needs an account; the registry is the
+            // shipped table because a tape is this repository's own file.
+            &RegistrationRegistry::shipped(),
+            7,
+            Duration::from_secs(1),
+            Timestamp::from_secs(1_760_000_000),
+        )
+        .expect_err("two recordings on two clocks were opened as one feed");
+        assert!(
+            refusal.message().contains("QIP_FASTBRAIN_REPLAY_PATH")
+                && refusal.message().contains("QIP_FASTBRAIN_TAPE_PATH"),
+            "the refusal does not name both variables: {}",
+            refusal.message()
+        );
+
+        // Alone, the tape opens through the same door.
+        let feed = Feed::open(
+            None,
+            None,
+            None,
+            Some(&path.display().to_string()),
+            &RegistrationRegistry::shipped(),
+            7,
+            Duration::from_secs(1),
+            Timestamp::from_secs(1_760_000_000),
+        )
+        .expect("a tape alone opens");
+        assert!(matches!(feed, Feed::Tape(_)));
+        assert!(
+            !feed.is_production_grade(),
+            "a tape claimed to be admissible for a capital decision"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+}
+
+#[cfg(test)]
 mod source_choice_tests {
     use super::*;
 
@@ -423,6 +836,8 @@ mod source_choice_tests {
             Some(&live),
             None,
             Some("/tmp/some-recorded-session.jsonl"),
+            None,
+            &RegistrationRegistry::shipped(),
             7,
             Duration::from_secs(1),
             start(),
@@ -457,8 +872,17 @@ mod source_choice_tests {
         // source were production-grade, that test would pass without checking
         // anything — and the synthetic exchange must never be mistaken for a
         // tape, which is the whole reason the descriptor carries the class.
-        let feed = Feed::open(None, None, None, 7, Duration::from_secs(1), start())
-            .expect("the synthetic exchange opens");
+        let feed = Feed::open(
+            None,
+            None,
+            None,
+            None,
+            &RegistrationRegistry::shipped(),
+            7,
+            Duration::from_secs(1),
+            start(),
+        )
+        .expect("the synthetic exchange opens");
         assert!(matches!(feed, Feed::Synthetic(_)));
         assert!(
             !feed.is_production_grade(),
@@ -508,6 +932,8 @@ mod connector_feed_tests {
             Some(&live_settings()),
             Some(&connector_settings()),
             None,
+            None,
+            &RegistrationRegistry::shipped(),
             7,
             Duration::from_secs(1),
             start(),
@@ -531,6 +957,8 @@ mod connector_feed_tests {
             None,
             Some(&settings),
             None,
+            None,
+            &RegistrationRegistry::shipped(),
             7,
             Duration::from_secs(1),
             start(),

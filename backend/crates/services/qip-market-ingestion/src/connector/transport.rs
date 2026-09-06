@@ -17,9 +17,23 @@
 //! the manifest's [`SecretRef`] once at construction and applies it as it
 //! writes the request, so a request logged, serialised or compared in a test
 //! cannot carry a credential — and neither can a connector, which never sees
-//! one.
+//! one. A source that reads two headers gets both, in the order the manifest
+//! names them: the primary header first, its companion second, after the
+//! transport's own `accept`.
+//!
+//! # And never leaves in a response
+//!
+//! A vendor's error page, a debugging endpoint or a misrouted proxy can echo
+//! the request's headers back in the body. `SourceResponse::body_excerpt` is
+//! quoted into health details and failure reports by design — an operator
+//! needs the vendor's words — so a body that carried the credential would
+//! carry it into every line those reach. The transport replaces each
+//! credential value in a body with a marker before the body leaves it,
+//! because it is the only component that holds the values to look for.
+//!
+//! [`SecretRef`]: super::manifest::SecretRef
 
-use super::manifest::{AuthScheme, SourceManifest};
+use super::manifest::{AuthScheme, SecretRef, SecretResolver, SourceManifest};
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
 use qip_transport::{HttpClient, HttpRequest, Method, Url};
@@ -162,20 +176,32 @@ pub struct HttpSourceTransport {
     endpoint: Url,
     client: HttpClient,
     /// Resolved once, held here and nowhere else. Never in a request, never
-    /// in a log, never in `Debug`.
-    credential: Option<(String, String)>,
+    /// in a log, never in `Debug`. In the order they are written to the
+    /// wire: the manifest's `header`, then its `companion`.
+    credentials: Vec<(String, String)>,
+    /// The raw secret values, for scrubbing a body that echoes one. Distinct
+    /// from the header values because a bearer header carries `Bearer <x>`
+    /// and the body would echo `<x>`.
+    secrets: Vec<String>,
     source_id: String,
 }
+
+/// What a credential becomes in a response body that echoed it.
+pub const REDACTED: &str = "[credential redacted]";
 
 impl std::fmt::Debug for HttpSourceTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpSourceTransport")
             .field("source_id", &self.source_id)
             .field("endpoint", &self.endpoint.to_string())
-            // Present or absent is worth knowing; the value never is.
+            // Which headers are sent is worth knowing; their values never are.
             .field(
-                "credential",
-                &self.credential.as_ref().map(|(header, _)| header.as_str()),
+                "credential_headers",
+                &self
+                    .credentials
+                    .iter()
+                    .map(|(header, _)| header.as_str())
+                    .collect::<Vec<_>>(),
             )
             .finish_non_exhaustive()
     }
@@ -204,7 +230,18 @@ impl HttpSourceTransport {
     /// credential should fail while somebody is watching the rollout, not an
     /// hour later inside a poll loop.
     pub fn connect(manifest: &SourceManifest) -> Result<Self> {
-        let missing = manifest.missing_configuration();
+        Self::connect_with(manifest, &SecretRef::resolve)
+    }
+
+    /// [`Self::connect`] with the credentials read through `resolve` instead
+    /// of the deployment's environment.
+    ///
+    /// The production path passes [`SecretRef::resolve`]; a test passes a
+    /// closure over a map and two files, which is the only way the `_FILE`
+    /// indirection and the two-header emission can be proven in a build that
+    /// cannot write its own environment.
+    pub fn connect_with(manifest: &SourceManifest, resolve: SecretResolver<'_>) -> Result<Self> {
+        let missing = manifest.missing_configuration_with(resolve);
         if !missing.is_empty() {
             return Err(Error::unavailable(format!(
                 "`{}` cannot open a socket and will not substitute recorded data: {}",
@@ -214,32 +251,57 @@ impl HttpSourceTransport {
         }
         let base = manifest.endpoint.base_url.as_deref().unwrap_or_default();
         let endpoint = Url::parse(base).map_err(Error::from)?;
-        let credential = match manifest.auth.scheme {
-            AuthScheme::None => None,
+        let mut credentials = Vec::new();
+        let mut secrets = Vec::new();
+        match manifest.auth.scheme {
+            AuthScheme::None => {}
             AuthScheme::Header => {
                 let header = manifest.auth.header.clone().ok_or_else(|| {
                     Error::invalid("a header credential with no header survived validation")
                 })?;
-                Some((header, Self::require_secret(manifest)?))
+                let primary = manifest.auth.secret.as_ref().ok_or_else(|| {
+                    Error::invalid(
+                        "an authenticated manifest with no secret reference survived validation",
+                    )
+                })?;
+                let value = Self::require_secret(manifest, primary, resolve)?;
+                secrets.push(value.clone());
+                credentials.push((header, value));
+                // Second on the wire, as in the manifest. The order is fixed
+                // here rather than left to a map so a packet capture reads
+                // the same way the manifest does.
+                if let Some(companion) = &manifest.auth.companion {
+                    let value = Self::require_secret(manifest, &companion.secret, resolve)?;
+                    secrets.push(value.clone());
+                    credentials.push((companion.header.clone(), value));
+                }
             }
-            AuthScheme::Bearer => Some((
-                "authorization".to_string(),
-                format!("Bearer {}", Self::require_secret(manifest)?),
-            )),
-        };
+            AuthScheme::Bearer => {
+                let primary = manifest.auth.secret.as_ref().ok_or_else(|| {
+                    Error::invalid(
+                        "an authenticated manifest with no secret reference survived validation",
+                    )
+                })?;
+                let value = Self::require_secret(manifest, primary, resolve)?;
+                credentials.push(("authorization".to_string(), format!("Bearer {value}")));
+                secrets.push(value);
+            }
+        }
         Ok(Self {
             endpoint,
             client: HttpClient::new(Self::LIMITS),
-            credential,
+            credentials,
+            secrets,
             source_id: manifest.source_id.clone(),
         })
     }
 
-    fn require_secret(manifest: &SourceManifest) -> Result<String> {
-        let reference = manifest.auth.secret.as_ref().ok_or_else(|| {
-            Error::invalid("an authenticated manifest with no secret reference survived validation")
-        })?;
-        let value = reference.resolve()?.ok_or_else(|| {
+    fn require_secret(
+        manifest: &SourceManifest,
+        reference: &SecretRef,
+        resolve: SecretResolver<'_>,
+    ) -> Result<String> {
+        let value = resolve(reference)?.ok_or_else(|| {
             Error::unavailable(format!(
                 "`{}` names the credential variable `{}`, which the deployment has not set",
                 manifest.source_id,
@@ -253,7 +315,39 @@ impl HttpSourceTransport {
                 reference.variable()
             )));
         }
+        if value.trim().is_empty() {
+            // Beyond being no credential, an empty value would make the body
+            // scrub below match everywhere.
+            return Err(Error::invalid(format!(
+                "the credential in `{}` is blank; an empty header authenticates nothing and \
+                 would be sent as if it did",
+                reference.variable()
+            )));
+        }
         Ok(value)
+    }
+
+    /// The credential headers this transport writes, in the order it writes
+    /// them: the manifest's `header`, then its `companion`. Names only.
+    ///
+    /// The same vector [`SourceTransport::request`] iterates, so what this
+    /// reports is the wire order and not a description of it.
+    pub fn credential_headers(&self) -> Vec<&str> {
+        self.credentials
+            .iter()
+            .map(|(header, _)| header.as_str())
+            .collect()
+    }
+
+    /// The body with every credential value replaced by [`REDACTED`].
+    ///
+    /// Applied before the body leaves the transport, so no caller — the
+    /// runtime's excerpt, a health detail, a test's assertion message — can
+    /// write a credential the vendor echoed.
+    fn scrub(&self, body: String) -> String {
+        self.secrets
+            .iter()
+            .fold(body, |body, secret| body.replace(secret, REDACTED))
     }
 }
 
@@ -271,7 +365,7 @@ impl SourceTransport for HttpSourceTransport {
         let mut http = HttpRequest::new(Method::Get, &target)
             .map_err(Error::from)?
             .with_header("accept", "application/json");
-        if let Some((header, value)) = &self.credential {
+        for (header, value) in &self.credentials {
             http = http.with_header(header, value);
         }
         // The socket's own elapsed time, not the platform clock: this measures
@@ -285,6 +379,7 @@ impl SourceTransport for HttpSourceTransport {
             .map_err(Error::from)
             .map(str::to_string)
             .unwrap_or_else(|_| String::new());
+        let body = self.scrub(body);
         Ok(SourceResponse {
             status: response.status,
             media_type: response.header("content-type").map(str::to_string),

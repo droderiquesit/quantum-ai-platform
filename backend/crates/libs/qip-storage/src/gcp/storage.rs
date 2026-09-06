@@ -80,28 +80,11 @@ impl CloudStorageConfig {
         }
     }
 
-    /// Read the bucket and access from the environment.
+    /// Supply the endpoint and credential.
     ///
-    /// `QIP_CLOUD_STORAGE_BUCKET` names the bucket; the endpoint and
-    /// credential come from [`GcpAccess::from_env`]. An unset bucket is an
-    /// error rather than a default, because a default that happened to name a
-    /// real bucket would be written to successfully and nobody would find out
-    /// until they went looking for the archive somewhere else.
-    pub fn from_env(clock: std::sync::Arc<dyn qip_core::Clock>) -> Result<Self> {
-        let bucket = std::env::var(super::BUCKET_VARIABLE)
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-            .ok_or_else(|| {
-                Error::unavailable(format!(
-                    "no Cloud Storage bucket: set {}. There is no default, because a default \
-                     naming a real bucket would be written to successfully",
-                    super::BUCKET_VARIABLE
-                ))
-            })?;
-        Ok(Self::new(bucket).with_access(GcpAccess::from_env(clock)?))
-    }
-
+    /// A deployment's bucket and access are resolved by the composition root
+    /// through [`crate::managed::ManagedSettings::cloud_storage_config`];
+    /// this crate reads no environment variable itself.
     pub fn with_access(mut self, access: GcpAccess) -> Self {
         self.access = access;
         self
