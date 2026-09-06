@@ -14,6 +14,126 @@
 
 use qip_acceptance::{files_with_extension, read, repository_root};
 
+// --- reading a document without being fooled by it ---------------------------
+
+/// Does `text` name `token` on its own, rather than inside a longer word?
+///
+/// Two assertions in this file were carried by a bare `contains` and each was
+/// satisfied by something other than the thing it was written to check:
+/// `contains("serde")` is true of a document naming only `serde_json`, and
+/// `contains("18 ")` is true of one that says `118 `. They are the third and
+/// fourth of their kind here — `5028b82` fixed
+/// `contains("autonomous_live")`, which is true of
+/// `limited_autonomous_live`, in this file, and the same defect was still
+/// live in `infrastructure.rs` until it was found alongside these two. A value
+/// that is a substring of its neighbour survives the mutation that deletes it,
+/// and `.claude/rules/architecture/01-testing-strategy.md` records that class
+/// as having already cost this repository a test.
+///
+/// A token is named when the characters on either side of it are not part of
+/// the same word. That admits every form these documents actually use — ``
+/// `serde` ``, "eighteen-agent", "18 governed" — while refusing `serde_json`
+/// and `118`. Underscore counts as part of a word on purpose: `serde_json` is
+/// one identifier and a document naming it has not named `serde`.
+fn names_token(text: &str, token: &str) -> bool {
+    token_positions(text, token).next().is_some()
+}
+
+/// Where `text` names `token` as a word of its own, by byte offset.
+///
+/// The positions rather than a yes/no, so that a caller needing to look at what
+/// follows an occurrence — `states_agent_count` below does — asks the same
+/// question about word boundaries as `names_token` does, rather than a second
+/// question that could drift from it.
+fn token_positions<'a>(text: &'a str, token: &'a str) -> impl Iterator<Item = usize> + 'a {
+    assert!(
+        !token.is_empty(),
+        "the empty token is named by every text; this is a caller bug, not a documentation failure"
+    );
+    fn is_boundary(character: Option<char>) -> bool {
+        character.is_none_or(|character| !character.is_alphanumeric() && character != '_')
+    }
+    text.match_indices(token).filter_map(move |(at, _)| {
+        (is_boundary(text[..at].chars().next_back())
+            && is_boundary(text[at + token.len()..].chars().next()))
+        .then_some(at)
+    })
+}
+
+/// The small numbers as the words a person writes them with.
+///
+/// The documents state counts and thresholds in words at least as often as in
+/// numerals — "the eighteen-agent investment organisation", "Third consecutive
+/// breach", "Three consecutive observations" — and a test that can only match a
+/// numeral either misses those or, worse, matches something else that happens
+/// to be a digit. Both happened here.
+const CARDINALS: [&str; 21] = [
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
+];
+
+/// The same numbers as the ordinals a runbook writes a threshold with.
+const ORDINALS: [&str; 8] = [
+    "zeroth", "first", "second", "third", "fourth", "fifth", "sixth", "seventh",
+];
+
+/// `n` as the word a person writes it with.
+///
+/// Panics outside the table rather than returning a default. A silent empty
+/// string would be named by every document, which is how a check that cannot
+/// express its subject turns into a check that passes on everything.
+fn cardinal(n: usize) -> &'static str {
+    CARDINALS.get(n).copied().unwrap_or_else(|| {
+        panic!(
+            "no word for {n} in this test's table; extend CARDINALS rather than dropping to a \
+             numeral, because the documents write this count as a word"
+        )
+    })
+}
+
+/// `n` as the ordinal a runbook writes a threshold with. Panics outside the
+/// table, for the same reason `cardinal` does.
+fn ordinal(n: usize) -> &'static str {
+    ORDINALS.get(n).copied().unwrap_or_else(|| {
+        panic!(
+            "no ordinal for {n} in this test's table; extend ORDINALS rather than dropping to a \
+             numeral, because the runbook writes this threshold as a word"
+        )
+    })
+}
+
+/// The number a word names, or `None` if it names none.
+///
+/// Both spellings, because a runbook writes the same threshold as "Third" in a
+/// table and "Three" in the prose beneath it, and the point of reading them
+/// separately is that they can disagree with each other and with the code.
+fn number_named_by(word: &str) -> Option<usize> {
+    let word = word.trim().to_lowercase();
+    CARDINALS
+        .iter()
+        .position(|candidate| *candidate == word)
+        .or_else(|| ORDINALS.iter().position(|candidate| *candidate == word))
+}
+
 // --- claims about the loop --------------------------------------------------
 
 #[test]
@@ -197,6 +317,53 @@ fn no_agent_holds_the_capability_the_readme_says_none_holds() {
     // The README claims no agent of any role may hold `change_autonomy_level`.
     // The roster is the check.
     let roster = qip_investment_agents::manifests::roster(qip_core::Timestamp::from_secs(0));
+
+    // Premise one: there is an organisation to check. Every assertion below is
+    // an `is_empty()`, and an empty roster satisfies all of them — proved by
+    // deleting all eighteen agents from `manifests::roster`, at which point
+    // this test went on passing while the README's central safety claim was
+    // being verified against nobody.
+    assert!(
+        !roster.is_empty(),
+        "the roster holds no agents, so \"no agent holds this capability\" is true of nothing and \
+         this test constrains nothing"
+    );
+
+    // Premise two: `holding` discriminates. A `holding` that returned an empty
+    // vector whatever it was asked would satisfy the assertions below exactly
+    // as a roster that genuinely withholds the capability does, and nothing
+    // here could tell the two apart. `SubmitOrder` is the sharpest available
+    // probe: separation of duties means exactly one agent on this roster may
+    // hold it, so an answer of one agent proves `holding` both finds and
+    // filters.
+    let submitters = roster.holding(qip_agents::capability::Capability::SubmitOrder);
+    assert_eq!(
+        submitters.len(),
+        1,
+        "`holding` does not report exactly the one agent allowed to submit an order, so its empty \
+         answers below say nothing about the roster"
+    );
+    assert_eq!(
+        submitters[0].id,
+        qip_investment_agents::manifests::ids::EXECUTION,
+        "the agent holding submit_order is not the execution trader"
+    );
+
+    // Premise three: the README still makes the claim this is checking. A
+    // README that dropped control 3 would leave the assertions below true and
+    // pointless.
+    let readme = read("README.md");
+    assert!(
+        readme.contains("`change_autonomy_level`"),
+        "the README no longer names change_autonomy_level, so this test is checking a promise \
+         nobody makes"
+    );
+    assert!(
+        readme.contains("No agent, of any role, may hold"),
+        "the README no longer claims that no agent may hold the capability; this test proves the \
+         roster withholds something the documentation has stopped promising"
+    );
+
     assert!(
         roster
             .holding(qip_agents::capability::Capability::ChangeAutonomyLevel)
@@ -206,22 +373,108 @@ fn no_agent_holds_the_capability_the_readme_says_none_holds() {
     assert!(
         roster
             .holding(qip_agents::capability::Capability::OverrideRiskLimit)
-            .is_empty()
+            .is_empty(),
+        "an agent holds override_risk_limit; a risk limit an agent can raise is not a limit"
     );
+}
+
+/// Does `text` state `count` as the number of agents, adjacent to the noun?
+///
+/// Adjacency is the whole of it. The old check asked only whether the numeral
+/// appeared anywhere in the document, with `|| content.contains("eighteen")`
+/// beside it — and that literal, being hardcoded rather than derived from the
+/// roster, carried `README.md` on its own. Growing the roster to nineteen left
+/// the README's assertion passing on the word "eighteen"; only the *other*
+/// document failed. Verified by adding a nineteenth agent.
+///
+/// The window is a stated limit rather than a discovered one: a document that
+/// separates the count from the noun by more than a short phrase reads as not
+/// stating it, and fails loudly.
+fn states_agent_count(text: &str, count: usize) -> bool {
+    const WINDOW: usize = 32;
+    [count.to_string(), cardinal(count).to_string()]
+        .iter()
+        .any(|form| {
+            token_positions(text, form).any(|at| {
+                text[at + form.len()..]
+                    .chars()
+                    .take(WINDOW)
+                    .collect::<String>()
+                    .contains("agent")
+            })
+        })
 }
 
 #[test]
 fn the_documented_agent_count_matches_the_roster() {
     let roster = qip_investment_agents::manifests::roster(qip_core::Timestamp::from_secs(0));
     let count = roster.len();
+    // The premise. A roster of nobody is documented by any document at all.
+    assert!(
+        count > 0,
+        "the roster holds no agents, so there is no count for a document to state"
+    );
 
+    // Both forms, and both derived from the roster. The documents disagree
+    // about which to use — the README writes "the eighteen-agent investment
+    // organisation" and the architecture document writes "18 governed agents"
+    // — so accepting either is honest. Accepting a *hardcoded* word was not:
+    // it made one of the two assertions independent of the number it was
+    // checking.
     for document in ["README.md", "docs/architecture/README.md"] {
         let content = read(document).to_lowercase();
         assert!(
-            content.contains(&format!("{count} ")) || content.contains("eighteen"),
-            "{document} does not state the agent count of {count}"
+            states_agent_count(&content, count),
+            "{document} states neither {count} nor \"{}\" as its agent count, and the roster holds \
+             {count}",
+            cardinal(count)
         );
     }
+}
+
+#[test]
+fn the_delimited_check_would_reject_a_count_inside_a_longer_number_or_a_dependency_inside_a_longer_name()
+ {
+    // Written out rather than left to a manual mutation, because these are the
+    // mutations a bare `contains` survives and the documents cannot be edited
+    // into the shapes that would prove it. Both premises assert that the bare
+    // form *does* match, so a delimiter that stopped discriminating fails here
+    // rather than going unnoticed in the tests that depend on it.
+    assert!(
+        "118 governed agents".contains("18 "),
+        "the premise of this test is that the bare substring matches a longer number; if it no \
+         longer does, the check below discriminates nothing"
+    );
+    assert!(
+        !names_token("118 governed agents", "18"),
+        "the delimited check accepted a count inside a longer number"
+    );
+    assert!(
+        "the platform depends on `serde_json`".contains("serde"),
+        "the premise of this test is that the bare substring matches the longer dependency name; \
+         if it no longer does, the check below discriminates nothing"
+    );
+    assert!(
+        !names_token("the platform depends on `serde_json`", "serde"),
+        "the delimited check accepted a dependency named only inside a longer one"
+    );
+
+    // And the other direction, which matters just as much: a delimiter that
+    // refused everything would satisfy every assertion above and turn every
+    // check built on it into a permanent failure that somebody eventually
+    // deletes. These are the exact forms the two documents use.
+    assert!(
+        names_token("the eighteen-agent investment organisation", "eighteen"),
+        "the delimited check refuses a count the README actually writes"
+    );
+    assert!(
+        names_token("18 governed agents with", "18"),
+        "the delimited check refuses a count the architecture document actually writes"
+    );
+    assert!(
+        names_token("depends on `serde` and `serde_json`", "serde"),
+        "the delimited check refuses a dependency the README actually names"
+    );
 }
 
 // --- claims about dependencies ----------------------------------------------
@@ -248,13 +501,30 @@ fn the_documented_dependencies_are_the_ones_in_the_manifest() {
         "the third-party dependencies have changed; the README and ADR 0002 need updating"
     );
 
+    // Named as tokens of their own, and iterated from the manifest rather than
+    // written out again. Both halves matter and both were wrong.
+    //
+    // `contains("serde")` is satisfied by a document naming only `serde_json`,
+    // so the two assertions this replaces were one assertion wearing two hats:
+    // an ADR that dropped standalone `serde` and kept `serde_json` passed both.
+    // Verified by editing ADR 0002 to say exactly that, at which point the test
+    // stayed green — and `serde` is the dependency, not `serde_json`; a
+    // document that has stopped naming it has stopped documenting the policy
+    // `./scripts/check-dependencies.sh` enforces.
+    //
+    // Deriving the loop from `dependencies` is the other half: a hardcoded pair
+    // says nothing about a third dependency, and the equality above would then
+    // be the only thing standing between a new crate and two documents that
+    // never mention it.
     for document in ["README.md", "docs/adr/0002-two-dependencies.md"] {
         let content = read(document);
-        assert!(content.contains("serde"), "{document} does not name serde");
-        assert!(
-            content.contains("serde_json"),
-            "{document} does not name serde_json"
-        );
+        for dependency in &dependencies {
+            assert!(
+                names_token(&content, dependency),
+                "{document} does not name {dependency} as a token of its own; naming it only \
+                 inside a longer dependency name is not documenting it"
+            );
+        }
     }
 }
 
@@ -327,16 +597,80 @@ fn the_documented_role_names_are_the_ones_the_code_defines() {
 
 // --- claims about the escalation policy -------------------------------------
 
+/// The threshold a line of the runbook states, read as the number it names.
+///
+/// `locator` selects the line and the cell or clause the number opens. The
+/// number is read *out of the prose* and compared with the policy, rather than
+/// the policy being formatted into a `contains` — because the runbook writes
+/// the threshold in words, and searching it for a numeral finds something else.
+///
+/// Every step panics rather than returning a default. A `None` absorbed into a
+/// `unwrap_or(0)` would compare cleanly against nothing and pass whenever the
+/// runbook stopped stating a threshold at all.
+fn threshold_stated_by(runbook: &str, locator: &str, cell: usize) -> usize {
+    let line = runbook
+        .lines()
+        .find(|line| line.contains(locator))
+        .unwrap_or_else(|| {
+            panic!(
+                "docs/operations/limit-breach.md no longer contains a line saying {locator:?}, so \
+                 nothing here can read the threshold it used to state"
+            )
+        });
+    let clause = line
+        .split('|')
+        .nth(cell)
+        .unwrap_or_else(|| panic!("the line saying {locator:?} has no cell {cell}: {line:?}"));
+    let word = clause.split_whitespace().next().unwrap_or_else(|| {
+        panic!("the clause stating the threshold in {locator:?} is empty: {line:?}")
+    });
+    number_named_by(word).unwrap_or_else(|| {
+        panic!(
+            "the runbook opens its {locator:?} statement with {word:?}, which names no number this \
+             test can read; state the threshold as a word or extend the table in this file"
+        )
+    })
+}
+
 #[test]
 fn the_runbook_describes_the_escalation_the_monitor_actually_performs() {
     let runbook = read("docs/operations/limit-breach.md");
     let policy = qip_risk_engine::monitor::MonitorPolicy::default();
 
-    assert!(
-        runbook.contains(&format!("{}", policy.breaches_before_halt)),
-        "the runbook does not state the {} consecutive breaches before a halt",
-        policy.breaches_before_halt
+    // The threshold, read from the two places the runbook states it and
+    // compared with the monitor's own value.
+    //
+    // This used to be `runbook.contains(&format!("{}", breaches_before_halt))`,
+    // and it passed on a markdown ordered-list marker. Every digit in that
+    // runbook is a list marker — `grep -on '[0-9]\+'` gives `5:1 7:1 9:2 19:3
+    // 22:4` — so `contains("3")` found list item 3 in the "Do this" section,
+    // and the threshold could have been anything. Verified by changing
+    // `breaches_before_halt` to 4, at which point the check found list item 4
+    // and stayed green while the runbook still said "Third consecutive breach".
+    //
+    // Reading the number out of the prose rather than formatting the policy
+    // into a search is what makes the failure legible: the message names what
+    // the runbook says and what the monitor does, so a reader knows which of
+    // the two is wrong.
+    let in_the_table = threshold_stated_by(&runbook, "consecutive breach |", 1);
+    assert_eq!(
+        in_the_table,
+        policy.breaches_before_halt,
+        "the runbook's escalation table says a scope halts on the {} consecutive breach and the \
+         monitor halts on the {}",
+        ordinal(in_the_table),
+        ordinal(policy.breaches_before_halt)
     );
+    let in_the_prose = threshold_stated_by(&runbook, "consecutive observations", 0);
+    assert_eq!(
+        in_the_prose,
+        policy.breaches_before_halt,
+        "the runbook's prose says {} consecutive observations are the threshold and the monitor \
+         halts on {}",
+        cardinal(in_the_prose),
+        cardinal(policy.breaches_before_halt)
+    );
+
     assert!(
         runbook.contains("Reduce-only"),
         "the runbook does not describe the reduce-only state"
@@ -482,10 +816,39 @@ fn every_internal_link_resolves() {
     assert!(checked > 5, "only {checked} internal links were checked");
 }
 
+/// Assert that a walk of the documentation tree actually found the tree.
+///
+/// `files_with_extension` returns an empty vector for a directory it cannot
+/// read — `read_dir` fails, the loop `continue`s, and the caller gets `[]` with
+/// no error. Every test below iterates such a walk and asserts a property of
+/// each file, so a renamed directory turns all of them into loops over nothing
+/// that pass forever. Verified by making the walk look one level below where
+/// the documents are, at which point all three went green with 51 decision
+/// records and 113 documents unexamined.
+///
+/// Anchored on a named file rather than on a count, deliberately. A count has
+/// to be lowered by hand whenever a document is withdrawn, and lowering a
+/// number to obtain a pass is the move this repository forbids; a named anchor
+/// tracks the tree on its own and fails only when the walk stops working.
+fn assert_walk_found(paths: &[std::path::PathBuf], anchor: &str, walked: &str) {
+    assert!(
+        paths
+            .iter()
+            .any(|path| path.file_name().is_some_and(|name| name == anchor)),
+        "the walk of {walked} did not find {anchor}, so it is examining {} files and the property \
+         asserted of each of them is being asserted of nothing",
+        paths.len()
+    );
+}
+
 #[test]
 fn every_decision_record_states_what_it_costs() {
     // A decision with no stated cost has not been thought about.
-    for path in files_with_extension("docs/adr", "md") {
+    let records = files_with_extension("docs/adr", "md");
+    assert_walk_found(&records, "0002-two-dependencies.md", "docs/adr");
+
+    let mut examined = 0usize;
+    for path in records {
         if path.file_name().is_some_and(|name| name == "README.md") {
             continue;
         }
@@ -500,13 +863,24 @@ fn every_decision_record_states_what_it_costs() {
             "{} states no condition under which it should be revisited",
             path.display()
         );
+        examined += 1;
     }
+    // The second premise. The anchor proves the walk saw the directory; this
+    // proves the filter above did not then discard everything it saw.
+    assert!(
+        examined > 1,
+        "only {examined} decision records were examined, and there are more than that"
+    );
 }
 
 #[test]
 fn every_decision_record_is_listed_in_the_index() {
     let index = read("docs/adr/README.md");
-    for path in files_with_extension("docs/adr", "md") {
+    let records = files_with_extension("docs/adr", "md");
+    assert_walk_found(&records, "0002-two-dependencies.md", "docs/adr");
+
+    let mut examined = 0usize;
+    for path in records {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
@@ -517,7 +891,13 @@ fn every_decision_record_is_listed_in_the_index() {
             index.contains(name),
             "{name} is not listed in the decision index"
         );
+        examined += 1;
     }
+    assert!(
+        examined > 1,
+        "only {examined} decision records were checked against the index, and there are more than \
+         that"
+    );
 }
 
 #[test]
@@ -525,11 +905,21 @@ fn no_document_promises_something_the_platform_does_not_do() {
     // A narrow check for the specific overclaims that matter: anything
     // presenting the platform as production-ready or as having demonstrated
     // quantum advantage.
-    for path in files_with_extension("docs", "md")
+    //
+    // `ops` does not exist in this tree and `files_with_extension` returns
+    // nothing for it without complaining. That is left in place rather than
+    // removed — the directory is named in `every_internal_link_resolves` too —
+    // but it is the reason the premise below is anchored on `docs`, which does
+    // exist and holds every document this is about.
+    let documents: Vec<std::path::PathBuf> = files_with_extension("docs", "md")
         .into_iter()
         .chain(files_with_extension("ops", "md"))
         .chain([repository_root().join("README.md")])
-    {
+        .collect();
+    assert_walk_found(&documents, "0002-two-dependencies.md", "docs and ops");
+
+    let mut examined = 0usize;
+    for path in documents {
         let content = std::fs::read_to_string(&path).expect("readable");
         let lowered = content.to_lowercase();
         for claim in [
@@ -546,7 +936,15 @@ fn no_document_promises_something_the_platform_does_not_do() {
                 path.display()
             );
         }
+        examined += 1;
     }
+    // The README alone would satisfy the loop above, and does when the walk of
+    // `docs` finds nothing: the chained path is a literal and exists whatever
+    // the walk returns.
+    assert!(
+        examined > 1,
+        "only {examined} documents were read, which is the README and nothing else"
+    );
 }
 
 // --- the final system report ------------------------------------------------

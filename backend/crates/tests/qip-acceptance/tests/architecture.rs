@@ -636,7 +636,35 @@ fn the_agent_organisation_cannot_reach_execution_at_all() {
     // one an enthusiastic change is most likely to break: the eighteen agents
     // reach the desk, and the desk is read-only.
     let graph = dependency_graph();
+
+    // The vacuity guards, all three of which this test needed and none of which
+    // it had. `reachable_from` answers with the empty set for a root that is
+    // not in the graph, so a rename of either crate turns the assertion below
+    // into a claim about nothing. Verified by renaming `qip-investment-agents`
+    // throughout the graph, at which point this test passed while asserting the
+    // absence of an edge between two crates neither of which it could see.
+    //
+    // Its siblings carry the same guards —
+    // `nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver`
+    // names the crate it forbids and anchors on the one edge that must exist —
+    // and tests are separate functions, so one test's anchor protects only
+    // itself.
+    assert!(
+        graph.contains_key("qip-investment-agents"),
+        "there is no crate called qip-investment-agents, so the absence asserted below is \
+         trivially true and this test constrains nothing"
+    );
+    assert!(
+        graph.contains_key("qip-execution-engine"),
+        "there is no crate called qip-execution-engine, so nothing can reach it under that name \
+         and this test constrains nothing"
+    );
+
     let reachable = reachable_from(&graph, "qip-investment-agents");
+    assert!(
+        !reachable.is_empty(),
+        "the agent organisation reaches nothing at all, so this test proves nothing"
+    );
     assert!(
         !reachable.contains("qip-execution-engine"),
         "an investment agent can reach the order manager: {reachable:?}"
@@ -661,6 +689,28 @@ fn edge_crates() -> BTreeSet<String> {
     names
 }
 
+/// Assert that every crate a reachability test names is a crate the graph has.
+///
+/// Every such test asserts that an edge is *absent*, and `reachable_from`
+/// answers with the empty set for a root it has never heard of. So a rename on
+/// either side of a forbidden edge — the root, or the crate the root must not
+/// reach — makes the assertion trivially true, and the test goes on passing
+/// while the boundary it names has moved somewhere this file does not look.
+/// Verified by renaming `qip-investment-agents`, `qip-ai` and `qip-lifecycle`
+/// in turn: each rename left the test that names it green.
+fn assert_named_crates_exist<'a>(
+    graph: &BTreeMap<String, BTreeSet<String>>,
+    names: impl IntoIterator<Item = &'a str>,
+) {
+    for name in names {
+        assert!(
+            graph.contains_key(name),
+            "there is no crate called {name} in this workspace, so every absence asserted about \
+             it is trivially true and the test naming it constrains nothing"
+        );
+    }
+}
+
 #[test]
 fn no_edge_cell_can_reach_a_language_model() {
     // ADR 0008's third consequence, made total: nothing on the hot path can
@@ -675,7 +725,26 @@ fn no_edge_cell_can_reach_a_language_model() {
     // stripped of exactly that dependency, and this test is what keeps it
     // stripped once the reason has been forgotten.
     let graph = dependency_graph();
-    for crate_name in edge_crates() {
+    let cells = edge_crates();
+
+    // Both sides of the forbidden edge must exist under the names used here.
+    // `edge_crates` proves the directory holds at least eight crates but says
+    // nothing about `qip-edge-node`, which it adds as a literal, and nothing at
+    // all about `qip-ai`.
+    assert_named_crates_exist(&graph, ["qip-ai"]);
+    assert_named_crates_exist(&graph, cells.iter().map(String::as_str));
+
+    // The anchor. Absence proves something only if the graph can show presence:
+    // `qip-reasoning-engine` is the crate whose whole purpose is to consult a
+    // model, so if even it cannot reach `qip-ai` the walk is not working and
+    // the absences above mean nothing.
+    assert!(
+        reachable_from(&graph, "qip-reasoning-engine").contains("qip-ai"),
+        "the reasoning engine no longer reaches a language model, so the absences this test \
+         asserts elsewhere prove nothing"
+    );
+
+    for crate_name in cells {
         let reachable = reachable_from(&graph, &crate_name);
         assert!(
             !reachable.contains("qip-ai"),
@@ -732,9 +801,32 @@ fn no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy() {
     // decide whether it may trade at all. Cells receive envelopes and
     // promotions; they never mint them.
     let graph = dependency_graph();
-    for crate_name in edge_crates() {
+    let cells = edge_crates();
+    let issuers = ["qip-lifecycle", "qip-capital"];
+
+    // The vacuity guards. Renaming `qip-lifecycle` throughout the graph left
+    // this test green, because a name the graph does not hold is a name nothing
+    // reaches. Both issuers and every cell are asserted to exist before any
+    // absence is claimed about them.
+    assert_named_crates_exist(&graph, issuers);
+    assert_named_crates_exist(&graph, cells.iter().map(String::as_str));
+
+    // The anchor. The issuers are reached by the central plane and by nothing
+    // regional, so the kernel is where the edge that must exist lives. Without
+    // it, a graph that had stopped resolving edges entirely would satisfy every
+    // absence below.
+    let central = reachable_from(&graph, "qip-kernel");
+    for issuer in issuers {
+        assert!(
+            central.contains(issuer),
+            "the central plane no longer reaches {issuer}, so the absences this test asserts of \
+             the cells prove nothing"
+        );
+    }
+
+    for crate_name in cells {
         let reachable = reachable_from(&graph, &crate_name);
-        for issuer in ["qip-lifecycle", "qip-capital"] {
+        for issuer in issuers {
             assert!(
                 !reachable.contains(issuer),
                 "the edge crate {crate_name} can reach {issuer}, so a cell could grant itself \
@@ -1007,7 +1099,17 @@ fn no_crate_that_vetoes_or_executes_reaches_a_solver_through_its_dev_dependencie
     // transitive walk over dev edges is exactly the cyclic graph the main
     // parser excludes them to avoid; the direct edge is the one somebody
     // writes.
+    //
+    // The manifest is found by guessing a path under six directory names, and
+    // an unreadable one is skipped without a word. That is the failure this
+    // test's premise now covers: `backend/crates/quant` is a seventh directory
+    // this list does not name, and moving `qip-capital` there — with
+    // `qip-quantum` in its `[dev-dependencies]`, which fails this test where it
+    // sits today — made the offence invisible and the test green. Verified by
+    // doing exactly that. So every crate named must be *found*, and the set of
+    // crates found is compared with the set named rather than counted.
     let mut offenders = Vec::new();
+    let mut located: BTreeSet<&str> = BTreeSet::new();
     for crate_name in NO_SOLVER_AUTHORITY {
         for directory in ["libs", "services", "edge", "runtime", "apps", "agents"] {
             let manifest = repository_root().join(format!(
@@ -1016,15 +1118,43 @@ fn no_crate_that_vetoes_or_executes_reaches_a_solver_through_its_dev_dependencie
             let Ok(content) = std::fs::read_to_string(&manifest) else {
                 continue;
             };
+            located.insert(crate_name);
             let Some(dev) = content.split("[dev-dependencies]").nth(1) else {
                 continue;
             };
             let dev = dev.split("\n[").next().unwrap_or(dev);
-            if dev.contains("qip-quantum") {
+            // The delimited name, not the bare one. `qip-quantum` is a prefix
+            // of any `qip-quantum-*` a split of that crate would create, and a
+            // bare `contains` would then report a dev edge to a crate that is
+            // not the solver — the substring trap this file has already been
+            // caught by four times, in the manifest parser rather than here.
+            if dev
+                .lines()
+                .map(|line| {
+                    // `qip-quantum.workspace = true` and `qip-quantum = { … }`
+                    // are the two forms this workspace writes, and a quoted key
+                    // is a third Cargo accepts. The crate is what the key names
+                    // before its first dot.
+                    let key = line.split('=').next().unwrap_or_default().trim();
+                    key.split('.').next().unwrap_or_default().trim_matches('"')
+                })
+                .any(|name| name == "qip-quantum")
+            {
                 offenders.push(format!("{crate_name} (dev)"));
             }
         }
     }
+    // The premise, as a set difference rather than a count. A count would have
+    // to be edited down whenever a crate is reclassified, and a crate this
+    // scan cannot find is exactly a crate it reports nothing about.
+    let named: BTreeSet<&str> = NO_SOLVER_AUTHORITY.iter().copied().collect();
+    let unfound: BTreeSet<&&str> = named.difference(&located).collect();
+    assert!(
+        unfound.is_empty(),
+        "no manifest was found for {unfound:?} under any of the six directories this scan looks \
+         in, so a dev dependency on the solver in one of them would be reported by nothing"
+    );
+
     assert!(
         offenders.is_empty(),
         "a crate that vetoes, executes, transfers or issues reaches a quantum \

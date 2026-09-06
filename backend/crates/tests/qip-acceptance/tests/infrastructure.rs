@@ -3587,34 +3587,151 @@ fn no_environment_authorises_the_whole_internet() {
     }
 }
 
+/// The list of levels the `autonomy_ceiling` variable will *admit*, as its own
+/// region of `variables.tf`.
+///
+/// Scoping matters as much as the delimiter does, and both were missing.
+/// `variables.tf` names these levels in two validations — one listing the six
+/// spellings the variable admits, and one refusing the three that reach a real
+/// venue — so a whole-file search reports a level as accepted when what it
+/// actually found was the clause forbidding it. The refusal is
+/// `no_environment_can_be_applied_at_a_ceiling_that_reaches_a_real_venue`
+/// below; this region is what the variable lets through.
+///
+/// Every extraction step panics rather than degrading to a default. The
+/// assertions built on this ask whether a name is *present*, so a region that
+/// silently widened back to the whole file would answer yes to everything —
+/// which is the failure being removed, reintroduced through the back door.
+///
+/// `documentation.rs` carries the same extraction under the name
+/// `admitted_ceiling_levels`. Each `tests/*.rs` is its own binary and cannot
+/// call into another, so the duplication is the language's, not a choice.
+fn admitted_ceiling_levels(variables: &str) -> &str {
+    let block = variables
+        .split_once("variable \"autonomy_ceiling\" {")
+        .unwrap_or_else(|| {
+            panic!(
+                "infrastructure/terraform/variables.tf no longer declares an autonomy_ceiling \
+                 variable"
+            )
+        })
+        .1;
+    // The variable block ends at the first brace in column zero; the nested
+    // `validation` blocks close indented.
+    let block = block.split_once("\n}").map_or(block, |(head, _)| head);
+    // `condition = contains([` is the admitting validation. The refusing one
+    // spells it `condition = !contains([`, which this does not match.
+    let list = block
+        .split_once("condition = contains([")
+        .unwrap_or_else(|| {
+            panic!(
+                "the autonomy_ceiling variable no longer validates against a list of admitted \
+                 levels, so nothing here can say which levels it accepts"
+            )
+        })
+        .1;
+    list.split_once("], var.autonomy_ceiling)")
+        .unwrap_or_else(|| {
+            panic!("the admitted-levels list does not close on var.autonomy_ceiling")
+        })
+        .0
+}
+
 #[test]
 fn the_autonomy_ceiling_variable_accepts_only_the_declared_levels() {
     // The six levels the application declares, and no seventh that would be
-    // silently ignored.
+    // silently ignored. "Only" is in this test's name, so both directions are
+    // checked: every declared level admitted, and every admitted spelling
+    // declared.
+    //
+    // Matched on the quoted, comma-terminated entry inside the admitting
+    // validation, not on the bare name anywhere in the file. Neither half of
+    // that was true before, and each half alone still passes the mutation that
+    // matters. `"limited_autonomous_live"` contains `autonomous_live`, so
+    // deleting the `autonomous_live` entry from the admitted list outright left
+    // the earlier `variables.contains(level)` green — verified by doing it, and
+    // the test that stayed green is this one. That entry is one of the three
+    // live rungs layer one of the paper-trading boundary exists to stop at plan
+    // time, and it is the same class of defect
+    // `.claude/rules/architecture/01-testing-strategy.md` records as having
+    // already happened in this repository once, on a value that was a substring
+    // of its neighbour. `documentation.rs` had the identical defect and it was
+    // fixed there in `5028b82`; this copy outlived that fix.
+    //
+    // The discipline is `paper_boundary.rs`'s, where
+    // `the_delimited_check_on_the_refusal_would_reject_a_message_naming_the_neighbouring_rung`
+    // states it as a test of its own.
     let variables = read("infrastructure/terraform/variables.tf");
-    for level in [
-        "observation",
-        "advisory",
-        "paper_trading",
-        "supervised_live",
-        "limited_autonomous_live",
-        "autonomous_live",
-    ] {
-        assert!(
-            variables.contains(level),
-            "the ceiling variable does not accept {level}"
-        );
-    }
-    // And the same six the code knows about, so the two cannot drift.
+    let admitted = admitted_ceiling_levels(&variables);
+
     let levels = qip_risk_engine::autonomy::AutonomyLevel::all();
-    assert_eq!(levels.len(), 6);
-    for level in levels {
+    assert_eq!(
+        levels.len(),
+        6,
+        "the ladder no longer has six rungs; this test's premise needs rewriting"
+    );
+    for level in &levels {
         assert!(
-            variables.contains(level.as_str()),
-            "{} is a level in the code that the infrastructure does not accept",
+            admitted.contains(&format!("\"{}\",", level.as_str())),
+            "{} is a level in the code that the ceiling variable does not admit",
             level.as_str()
         );
     }
+
+    // The other direction, and an equality rather than a floor. A seventh
+    // spelling in Terraform is a ceiling an operator can set that the code has
+    // never heard of, and no per-level loop can see one. It is also the half
+    // that makes the word "only" in this test's name true.
+    let mut admitted_names: Vec<&str> = admitted.split('"').skip(1).step_by(2).collect();
+    admitted_names.sort_unstable();
+    let mut declared: Vec<&str> = levels.iter().map(|level| level.as_str()).collect();
+    declared.sort_unstable();
+    assert_eq!(
+        admitted_names, declared,
+        "the levels the Terraform ceiling variable admits are not the levels the code declares"
+    );
+}
+
+#[test]
+fn the_delimited_check_on_the_admitted_levels_would_reject_a_list_missing_the_widest_rung() {
+    // Written out rather than left to a manual mutation, because the mutation
+    // that matters here is one a bare `contains` survives, and this file
+    // carried that bare `contains` for the entire life of the check above.
+    //
+    // The synthetic list is the real one with `"autonomous_live",` deleted —
+    // the exact edit that would let an operator set the widest live rung past a
+    // gate that no longer refuses it. `autonomous_live` is still a substring of
+    // the `limited_autonomous_live` entry left behind, so the old form reports
+    // the deleted level as admitted.
+    let with_the_rung_deleted = "\n      \"observation\",\n      \"advisory\",\n      \
+                                 \"paper_trading\",\n      \"supervised_live\",\n      \
+                                 \"limited_autonomous_live\",\n    ";
+    let widest = qip_risk_engine::autonomy::AutonomyLevel::AutonomousLive.as_str();
+    assert!(
+        with_the_rung_deleted.contains(widest),
+        "the premise of this test is that the bare substring matches a list the rung was deleted \
+         from; if it no longer does, the two level names have changed and the discipline above \
+         needs re-deriving"
+    );
+    assert!(
+        !with_the_rung_deleted.contains(&format!("\"{widest}\",")),
+        "the quoted, comma-terminated form matched a list the rung had been deleted from, so the \
+         check above discriminates nothing"
+    );
+    // And the extraction that scopes it: fed the whole file, the admitting
+    // region must not contain the refusing validation, or the scoping is
+    // decorative and a level would read as admitted because it was forbidden.
+    let variables = read("infrastructure/terraform/variables.tf");
+    assert!(
+        variables.contains("condition = !contains(["),
+        "the refusing validation is gone, so there is nothing for the extraction to exclude and \
+         this test's premise needs rewriting"
+    );
+    assert!(
+        !admitted_ceiling_levels(&variables).contains("!contains(["),
+        "the admitted-levels region has widened to include the refusing validation, so a level \
+         reads as admitted because it is forbidden"
+    );
 }
 
 #[test]
