@@ -294,9 +294,41 @@ pub struct RiskState {
     pub drawdown: f64,
     /// Loss today as a fraction of equity, positive for a loss.
     pub daily_loss: f64,
-    /// Days to liquidate each position.
+    /// Days to liquidate each position, as the caller's liquidity model has
+    /// marked it. Supplied, never derived here: a day count comes from average
+    /// daily volume and market depth, and this crate holds neither.
     pub days_to_liquidate: BTreeMap<String, f64>,
-    /// Fraction of the portfolio liquidatable within a given number of days.
+    /// Fraction of the portfolio liquidatable within a given number of days,
+    /// keyed by `{days:.0}` — exactly as [`LimitKind::MinLiquidity`] formats
+    /// its own lookup.
+    ///
+    /// **Filled by one producer, and that producer is not this crate.**
+    /// `qip-kernel`'s `Platform::liquidatable_within` sums a
+    /// `qip_financial::ladder::LiquidityLadder` whose construction *proved*
+    /// that exit cost rises as the ladder descends, and files
+    /// [`Self::unevaluated`] when it cannot. This crate held a second
+    /// derivation — `RiskState::with_liquidity_horizons`, which refiltered
+    /// `days_to_liquidate` into the same ratio — and it is gone rather than
+    /// repaired, for two reasons that are worth keeping written down because
+    /// the obvious fix was to repair it:
+    ///
+    /// * It could not file an honest refusal. Handed a book with holdings and
+    ///   no marks, it returned the state unchanged, so a reader saw the same
+    ///   empty map a passing floor produces. Filing [`Self::unevaluated`]
+    ///   instead would have meant *guessing why* somebody else's liquidity
+    ///   model produced nothing — "never run" and "run and refused" are the
+    ///   caller's facts, not this crate's, and [`Self::with_unevaluated`]
+    ///   exists precisely so the producer states its own reason.
+    /// * Two derivations of one number disagree eventually, and the louder one
+    ///   is wrong. A refilter of a flat map cannot notice that the rung
+    ///   classification underneath it contradicts the reference data; the
+    ///   ladder refuses on exactly that.
+    ///
+    /// So a state whose producer computes no liquidity leaves this empty, and
+    /// [`LimitKind::MinLiquidity`] records nothing — which is safe only
+    /// because that producer files [`Self::unevaluated`] and
+    /// `PreTradeChecker::check` refuses on it. Anything that fills this map
+    /// without being able to explain its own silence re-opens the gap.
     pub liquidatable_within: BTreeMap<String, f64>,
     /// Gross exposure per counterparty.
     pub counterparty_exposures: BTreeMap<String, Decimal>,
@@ -417,70 +449,6 @@ impl RiskState {
                     self.volatility = crate::metrics::annualised_volatility(returns);
                 }
                 _ => {}
-            }
-        }
-        self
-    }
-
-    /// Populate the fraction of the book liquidatable within each configured
-    /// [`LimitKind::MinLiquidity`] horizon, from `days_to_liquidate` and
-    /// `position_notionals` this state already carries.
-    ///
-    /// [`LimitKind::MinLiquidity`] looks its figure up in `liquidatable_within`,
-    /// keyed by horizon, and records nothing when the key is absent — the same
-    /// shape of failure [`Self::with_tail_risk`] closed for the tail limits.
-    /// [`LimitSet::conservative_default`] has shipped a `liquidity` limit since
-    /// before this method existed, and nothing filled the map it reads: the
-    /// limit took its `None` arm on every book. A control that cannot fire
-    /// reads as protection and is not.
-    ///
-    /// An instrument with no entry in `days_to_liquidate` is **not** treated
-    /// as liquidatable — its notional still counts in the denominator, so it
-    /// pulls the ratio down rather than being dropped from both sides. A
-    /// fraction computed only over the positions with a known exit time would
-    /// read more liquid the less anyone had told it, which is the wrong
-    /// direction for a floor to fail in; refusing to guess an unknown exit
-    /// time is the fail-closed choice.
-    ///
-    /// The key is `{days:.0}`, formatted exactly as the limit's own lookup
-    /// formats it when it reads — one rule, not two copies of the same
-    /// format a rounding boundary could separate.
-    ///
-    /// Leaves `liquidatable_within` untouched when the book holds no
-    /// positions: an empty book has nothing to be illiquid, and recording a
-    /// fabricated `1.0` for a ratio nobody measured is the same mistake in
-    /// the other direction.
-    ///
-    /// Also leaves it untouched when `days_to_liquidate` itself is empty —
-    /// nobody has marked a single instrument, which is a book that has never
-    /// been measured, not a book with zero liquid positions. The fail-closed
-    /// rule above governs *partial* coverage, once measurement has started;
-    /// it does not manufacture a floor-breaching `0.0` for a book a caller
-    /// has not marked at all, the same way an all-too-short return series
-    /// leaves the tail maps empty in [`Self::with_tail_risk`] rather than
-    /// recording a zero nobody computed.
-    pub fn with_liquidity_horizons(mut self, limits: &LimitSet) -> Self {
-        if self.days_to_liquidate.is_empty() {
-            return self;
-        }
-        let total: Decimal = self.position_notionals.values().map(|v| v.abs()).sum();
-        if !total.is_positive() {
-            return self;
-        }
-        for limit in &limits.limits {
-            if let LimitKind::MinLiquidity { days, .. } = limit.kind {
-                let liquidatable: Decimal = self
-                    .position_notionals
-                    .iter()
-                    .filter(|(instrument, _)| {
-                        self.days_to_liquidate
-                            .get(instrument.as_str())
-                            .is_some_and(|exit_days| *exit_days <= days)
-                    })
-                    .map(|(_, notional)| notional.abs())
-                    .sum();
-                self.liquidatable_within
-                    .insert(format!("{days:.0}"), liquidatable.to_f64() / total.to_f64());
             }
         }
         self

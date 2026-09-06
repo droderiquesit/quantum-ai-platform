@@ -15,12 +15,21 @@
 //!   updates per fill — the instrument's position, the book's gross and net,
 //!   cash, one bucket per exposure axis, and the contributing strategy's own
 //!   gross. No update walks the strategy set.
-//! * [`LimitSet::check_aggregates`] reads the book-level figures through
-//!   [`AggregateFigures`] and never calls [`AggregateFigures::strategies`] or
-//!   [`AggregateFigures::strategy_gross`]. Strategy-level budgets are checked
-//!   *before* netting, one strategy at a time, by
-//!   [`RiskAggregates::admit_contribution`]; every other level is checked on
-//!   the net, once.
+//! * [`RiskState::from_figures`] — the read side — reads the book-level
+//!   figures through [`AggregateFigures`] and never calls
+//!   [`AggregateFigures::strategies`] or [`AggregateFigures::strategy_gross`].
+//!   Strategy-level budgets are checked *before* netting, one strategy at a
+//!   time, by [`RiskAggregates::admit_contribution`]; every other level is
+//!   checked on the net, once.
+//!
+//! There is deliberately no `LimitSet::check_aggregates` convenience that
+//! builds the state and checks it in one call. There was, and it discarded
+//! the one thing a caller most needed: [`LimitSet::check`] answers with a
+//! [`crate::limits::LimitCheck`], which has nowhere to carry
+//! `RiskState::unevaluated`, so a figure the state said could not be computed
+//! came back out of that wrapper as "within all limits". A caller composes
+//! [`RiskState::from_figures`] with the producers it can actually vouch for
+//! and keeps the state, because the state is what carries a refusal.
 //!
 //! [`AggregateFigures`] is a trait rather than a struct so a test can wrap the
 //! aggregate in a probe that counts every figure the check consults. That test
@@ -28,7 +37,7 @@
 //! iterate — which is the only way the property "reads aggregates, never
 //! strategy lists" can be held by something stronger than a comment.
 
-use crate::limits::{LimitCheck, LimitSet, RiskState};
+use crate::limits::RiskState;
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -344,10 +353,13 @@ impl RiskState {
     /// The state the aggregate checks evaluate, from the book-level figures.
     ///
     /// Reads exactly eight figures and neither strategy-level accessor. The
-    /// tail maps are left for [`RiskState::with_tail_risk`] and the liquidity
-    /// map for [`RiskState::with_liquidity_horizons`], which need the return
-    /// series and the configured horizons respectively — neither of which
-    /// the aggregate holds.
+    /// tail maps are left for [`RiskState::with_tail_risk`], which needs a
+    /// return series the aggregate does not hold.
+    ///
+    /// `RiskState::liquidatable_within` is left empty and there is no method
+    /// here that fills it. The figure the liquidity floor reads has one
+    /// producer, `qip-kernel`'s ladder, and the argument for that being one
+    /// rather than two is on the field itself.
     pub fn from_figures(figures: &impl AggregateFigures) -> Self {
         Self {
             equity: figures.equity(),
@@ -364,23 +376,5 @@ impl RiskState {
             days_to_liquidate: figures.days_to_liquidate(),
             ..Self::default()
         }
-    }
-}
-
-impl LimitSet {
-    /// Evaluate every limit against the aggregate — on the net, once.
-    ///
-    /// `returns` is the book's return series, so the tail limits are filled
-    /// in the same call and cannot be forgotten by a caller that builds the
-    /// state by hand, and the liquidity floor is filled from whatever the
-    /// aggregate has been marked with via [`RiskAggregates::mark_liquidity`].
-    /// Consults a fixed set of book-level figures regardless of how many
-    /// strategies contributed; `tests/aggregate.rs` counts them.
-    pub fn check_aggregates(&self, figures: &impl AggregateFigures, returns: &[f64]) -> LimitCheck {
-        self.check(
-            &RiskState::from_figures(figures)
-                .with_tail_risk(self, returns)
-                .with_liquidity_horizons(self),
-        )
     }
 }

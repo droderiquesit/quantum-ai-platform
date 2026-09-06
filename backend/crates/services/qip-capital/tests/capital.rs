@@ -324,7 +324,7 @@ fn capital_beyond_capacity_carries_negative_expected_edge() -> Result<()> {
 #[test]
 fn a_strategy_with_no_tradeable_volume_has_no_capacity_and_the_bound_is_named() -> Result<()> {
     let negotiated = CapacityModel::new(
-        LiquidityProfile::illiquid(21.0),
+        LiquidityProfile::illiquid(21.0, 900.0),
         TransactionCostModel::negotiated(),
         50.0,
         dec!("100"),
@@ -773,7 +773,10 @@ fn a_position_that_takes_weeks_to_exit_is_distinguished_from_one_that_takes_hour
         "THIN".to_string(),
         LiquidityProfile::listed(Decimal::from_int(35_000), 40.0),
     );
-    profiles.insert("NEGOTIATED".to_string(), LiquidityProfile::illiquid(60.0));
+    profiles.insert(
+        "NEGOTIATED".to_string(),
+        LiquidityProfile::illiquid(60.0, 900.0),
+    );
 
     let assessment = assess_liquidity(&positions, &profiles, 0.10)?;
 

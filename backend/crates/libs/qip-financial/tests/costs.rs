@@ -193,7 +193,7 @@ fn days_to_exit_scales_inversely_with_the_permitted_participation_rate() {
     assert!(approx_eq(short_days, days, 1e-9));
 
     // A negotiated instrument has no volume-based estimate at all.
-    let negotiated = LiquidityProfile::illiquid(30.0);
+    let negotiated = LiquidityProfile::illiquid(30.0, 900.0);
     assert!(negotiated.days_to_exit(quantity).is_none());
 
     // Zero participation policy (nobody may trade this) has no estimate either.
@@ -203,4 +203,47 @@ fn days_to_exit_scales_inversely_with_the_permitted_participation_rate() {
         ..LiquidityProfile::default()
     };
     assert!(frozen.days_to_exit(quantity).is_none());
+}
+
+/// A negotiated profile states the spread its caller measured. It used to
+/// invent one.
+///
+/// `LiquidityProfile::illiquid` hardcoded `typical_spread_bps: 250.0` and took
+/// only the exit time, so every negotiated holding asserted a quote nobody had
+/// measured — the `MaxExpectedShortfall` shape in a cost model, a figure that
+/// reads as evidence and is not.
+///
+/// It was not inert, which is why this is a test and not a note. The liquidity
+/// ladder proves cost rises as it descends and `Rung::classify` puts a
+/// negotiated holding below every listed one, so the invented 250 became the
+/// ceiling on what any listed instrument above it could be quoted at: one
+/// ordinary small-cap at 300bps inverted the per-rung rate, the ladder refused,
+/// and — once that refusal was made to fail closed — the desk stopped trading.
+/// Three percent is a spread a desk considers valid.
+#[test]
+fn a_negotiated_profile_carries_the_spread_its_caller_stated_and_invents_none() {
+    // Two callers, two measurements, two profiles. One value alone could be
+    // satisfied by a constructor that ignored its argument and happened to
+    // hardcode that number.
+    for stated in [12.5_f64, 900.0, 4000.0] {
+        let profile = LiquidityProfile::illiquid(30.0, stated);
+        assert_eq!(
+            profile.typical_spread_bps, stated,
+            "a negotiated profile asked for {stated}bps reported {}bps; the constructor is \
+             inventing a spread nobody measured, and whatever it invents becomes the ceiling on \
+             every listed quote above it",
+            profile.typical_spread_bps
+        );
+    }
+
+    // The rest of what the constructor vouches for is unchanged: this is a
+    // holding that trades by appointment, with no volume-based exit estimate.
+    let profile = LiquidityProfile::illiquid(30.0, 900.0);
+    assert!(profile.is_negotiated);
+    assert_eq!(profile.days_to_liquidate, 30.0);
+    assert!(
+        profile
+            .days_to_exit(qip_core::Decimal::from_int(1_000))
+            .is_none()
+    );
 }
