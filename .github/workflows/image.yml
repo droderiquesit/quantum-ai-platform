@@ -774,6 +774,35 @@ jobs:
       # the checkout, and that is the whole of the difference between a bake
       # whose root-level provisioning was reviewed and one where it was
       # whatever the dispatched branch said.
+      #
+      # `--max-run-duration` with `--instance-termination-action=DELETE` is the
+      # only thing here that outlives the runner. The retire step below is
+      # `if: always()`, which covers a failed step and a cancelled job and does
+      # not cover a runner that is killed, loses its network, or has its token
+      # expire mid-job — and what is left when that happens is an
+      # `e2-standard-2` running as `qip-<env>-image-builder`, holding a token
+      # that reads the staging bucket, billing until a person happens to look.
+      # Compute Engine bounds the machine now rather than this file, because
+      # this file stops executing at exactly the moment the leak begins.
+      #
+      # 45 minutes is read off this workflow rather than off a stopwatch: the
+      # wait step below gives up at 1800 seconds and no bake that passes that
+      # point produces an image, so a builder still running a quarter of an
+      # hour past the deadline the workflow itself enforces is a builder
+      # nothing is waiting on. (The bake's own figure is eight minutes, in
+      # `modules/image-bake/main.tf` and below.) The headroom is deliberate and
+      # one-sided: a duration shorter than a legitimate bake would delete the
+      # machine mid-provision and turn a cost mitigation into an outage, which
+      # is the worse failure of the two.
+      #
+      # The pairing is not a style choice. This instance names no
+      # `--provisioning-model`, so it is a standard VM, and for a VM that is
+      # not Spot `--instance-termination-action` is *required* whenever
+      # `--max-run-duration` is set — omitting it here would fail the create,
+      # which is the failure the objection to this mitigation was about. The
+      # boot disk is untouched by it: a disk created `--no-boot-disk-auto-delete`
+      # outlives its instance, so a termination that fired after provisioning
+      # finished would still leave the disk the image is made from.
       - name: create the builder
         id: builder
         env:
@@ -807,6 +836,8 @@ jobs:
             --metadata-from-file "startup-script=reviewed/provision.sh,qip-provenance=provenance.txt" \
             --metadata "qip-payload-url=${PAYLOAD_URL},qip-payload-sha256=${PAYLOAD_SHA256},qip-isolcpus=${ISOLCPUS},qip-hugepages-gb=${HUGEPAGES_GB}" \
             --labels "qip-role=image-bake,qip-environment=${TARGET_ENVIRONMENT}" \
+            --max-run-duration 45m \
+            --instance-termination-action DELETE \
             --quiet
 
       # The builder answers no port and has no external address, so the serial
