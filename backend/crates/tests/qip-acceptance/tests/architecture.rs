@@ -415,6 +415,18 @@ fn no_safety_critical_engine_can_reach_a_language_model() {
     let graph = dependency_graph();
     for path in SAFETY_CRITICAL {
         let engine = path.rsplit('/').next().expect("a crate name");
+        // The vacuity guard, of the same shape as the one in
+        // `nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver`
+        // and for the same reason: the assertion below is that an edge is
+        // *absent*, and a name this list carries that is not a crate reaches
+        // nothing whatever, so it satisfies the assertion by not existing.
+        // Verified by renaming `backend/crates/edge/qip-routing` in the list
+        // above — this test passed.
+        assert!(
+            graph.contains_key(engine),
+            "SAFETY_CRITICAL names {engine}, which is not a crate in this \
+             workspace; the absence asserted of it below is trivially true"
+        );
         let reachable = reachable_from(&graph, engine);
         assert!(
             !reachable.contains("qip-ai"),
@@ -440,8 +452,26 @@ fn nothing_that_decides_or_executes_names_the_language_model_interface() {
     // because writing a thesis is what a model is for — and the next test is
     // what keeps that from mattering.
     let mut offenders = Vec::new();
+    let mut scanned: BTreeMap<&str, usize> = BTreeMap::new();
     for path in SAFETY_CRITICAL {
+        // The premise, first half. `files_with_extension` returns an empty
+        // list for a path that does not exist rather than failing, so a crate
+        // renamed or moved out from under this list makes the scan read zero
+        // files and report zero offenders however many its source holds — the
+        // check passes by checking nothing, which is the failure mode
+        // `nothing_outside_a_composition_root_holds_an_order_manager` already
+        // guards against below. Verified by renaming
+        // `backend/crates/edge/qip-routing` in the list above: this test
+        // passed.
+        let source_directory = repository_root().join(path).join("src");
+        assert!(
+            source_directory.is_dir(),
+            "SAFETY_CRITICAL names {path}, which has no src directory at {}; \
+             nothing under it is scanned and this test says nothing about it",
+            source_directory.display()
+        );
         for file in qip_acceptance::files_with_extension(&format!("{path}/src"), "rs") {
+            *scanned.entry(path).or_default() += 1;
             let content = std::fs::read_to_string(&file).expect("readable source");
             for interface in ["qip_ai::language", "LanguageModel"] {
                 if content.contains(interface) {
@@ -449,6 +479,18 @@ fn nothing_that_decides_or_executes_names_the_language_model_interface() {
                 }
             }
         }
+    }
+
+    // The premise, second half. A directory that exists and holds no Rust file
+    // is the same vacuity wearing a different hat, and the check above cannot
+    // see it: the assertion that follows would still be about eight crates
+    // while reading as though it were about nine.
+    for path in SAFETY_CRITICAL {
+        assert!(
+            scanned.get(path).copied().unwrap_or_default() > 0,
+            "no Rust source was read under {path}/src, so the assertion below \
+             says nothing about {path}"
+        );
     }
     assert!(
         offenders.is_empty(),

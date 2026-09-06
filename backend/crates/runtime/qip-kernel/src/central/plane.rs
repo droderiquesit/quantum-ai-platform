@@ -1084,6 +1084,52 @@ impl CentralPlane {
     /// evidence and two willing approvers still gets nothing, because the
     /// stage it stands at is what decides, and the stage is the ledger's to
     /// say.
+    ///
+    /// # This has no production caller, and the cycle must not become one
+    ///
+    /// Every call site is a test — `qip-kernel/tests/central.rs`,
+    /// `qip-acceptance/tests/region_share.rs`, `qip-api/tests/mesh.rs`. No
+    /// `src/` file in any binary reaches it, which is the opposite of
+    /// [`Self::ingest`] beside it: that one is called from
+    /// `Platform::ingest_cell_report`, which `qip_api::mesh`'s delta sink
+    /// drives on every frame a cell ships.
+    ///
+    /// **The missing caller is an operator-authenticated route on `qip-api`**
+    /// — a fifth mutating row of its route table, beside
+    /// `/ledger/users/:user/eligibility` and `/registrations/:source/approve`,
+    /// raising a typed kernel intent the way those raise
+    /// `Platform::decide_eligibility` and `Platform::approve_registration`.
+    /// Three things have to exist first, and only that surface has any of
+    /// them: an [`Approval`] naming two humans, neither the requester; one
+    /// [`OperatorCredential`] per name, minted by the API's authentication
+    /// middleware, which `qip_compliance::approval` documents as the one place
+    /// `OperatorCredential::verified` may be called; and the platform's own
+    /// `Platform::drawdown` for the `drawdown` argument, because the manifests
+    /// in `qip_api::mesh::pending_policy` are partitioned under that figure
+    /// and an envelope sized under a different one would make the grant and
+    /// the share two numbers instead of one. Every test here passes `0.0`,
+    /// which is a fixture's answer and not a deployment's.
+    ///
+    /// **A cycle stage must not be that caller.** It would have to manufacture
+    /// the approval and the credentials, which is forging control 4, human
+    /// capital approval — `qip-compliance`'s own first line is that capital is
+    /// not granted by code. It would also defeat the bound this platform
+    /// relies on most where it can see least: `MAXIMUM_ENVELOPE_VALIDITY` is
+    /// the only revocation there is for a cell the centre cannot reach, and an
+    /// expiry a process renews for itself every cycle is not an expiry.
+    ///
+    /// **What stays dead until the route exists**, because this is the only
+    /// writer of `self.envelopes`: `retain_grants` retains no day, so the
+    /// realised calendar is empty and the LEARN stage's family measurement
+    /// (blueprint §23.1) records nothing on any cycle, however much the cells
+    /// settle — pinned by
+    /// `the_learn_stage_measures_no_family_structure_on_a_corpus_the_centre_never_granted`
+    /// in `tests/central.rs`; [`Self::cycle_whitelist_for`] answers
+    /// `NoLiveGrant` for every cell; `recall_for` has no live grant to recall
+    /// when the exposure aggregate finds a concentration; and
+    /// [`Self::grant_manifests`], which *does* have a production caller,
+    /// partitions an empty book. That list is what arrives with the route. It
+    /// is not an argument for reaching this from the cycle instead.
     pub fn issue(
         &mut self,
         strategy: &StrategyId,
