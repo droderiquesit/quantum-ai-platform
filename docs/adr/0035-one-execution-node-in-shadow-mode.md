@@ -5,12 +5,29 @@
   reads only "accepted" is read as a node that exists.
   `grep -n execution_nodes infrastructure/environments/*/terraform.tfvars`
   returns `execution_nodes = {}` in all four environments, `dev` included, and
-  `dev/terraform.tfvars:11-16` names what blocks it: no boot image exists and
-  nothing in this repository builds one, and nobody has chosen the node's
-  capital allocation. Both are values a person supplies and neither is a value
-  Terraform can derive, so the empty map is "a working configuration, not an
-  incomplete one". The authorisation this record gives stands and is unused;
-  the whole edge plane still runs only under `cargo test`.
+  `dev/terraform.tfvars` names what blocks it: no boot image exists, and
+  nobody has chosen the node's capital allocation. Both are values a person
+  supplies and neither is a value Terraform can derive, so the empty map is
+  "a working configuration, not an incomplete one". The authorisation this
+  record gives stands and is unused; the whole edge plane still runs only
+  under `cargo test`.
+- **Correction of fact, 2026-09-06 (the status and the decision are
+  unchanged).** The clause above read "no boot image exists **and nothing in
+  this repository builds one**", and the second half stopped being true at
+  `5ccaea9`, which added `.github/workflows/image.yml`,
+  `infrastructure/images/execution-node/` and
+  `infrastructure/terraform/modules/image-bake/`. An agent reading the old
+  sentence would conclude the bake still has to be written; it does not. What
+  has not changed is the blocker itself, and a careless reading of the
+  correction is worse than the stale sentence was: **the workflow has never
+  been dispatched** — GitHub knows of four workflows in this repository and
+  `image` is not among them, so `actions/workflows/image.yml/runs` answers
+  `404` — **`image_bake_subnet_cidr` is commented out** in
+  `environments/dev/terraform.tfvars`, so `module.image_bake` has `count = 0`
+  (`terraform/main.tf:631`) and creates nothing, and **`boot_image` still has
+  no value in any environment**; every occurrence in a tfvars file is inside
+  a comment. So: a bake exists, no image exists, and `execution_nodes = {}`
+  is unchanged and correct.
 - **Date:** 2026-09-04
 - **Decides:** whether to deploy execution nodes at all
 - **Relates to:** ADR 0024 (one node per region), ADR 0008 (cells decide

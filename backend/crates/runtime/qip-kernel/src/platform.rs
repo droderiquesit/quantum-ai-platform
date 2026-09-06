@@ -2050,6 +2050,22 @@ impl Platform {
             .iter()
             .map(ladder_reference_of)
             .collect::<Result<_>>()?;
+        // And the one property no single record can carry: that these records
+        // can sit on one ladder at all. `ladder_reference_of` above judges each
+        // record alone; monotonicity is a relation between two of them, and it
+        // was left to `LiquidityLadder::new` to discover per cycle. So a listed
+        // name quoted wider than something on a rung beneath it assembled in
+        // silence and then refused the whole liquidity read every cycle, with a
+        // sentence about rung arithmetic — and since that refusal fails closed,
+        // with the desk stopped. Refused here instead, naming both records,
+        // both rungs and both rates, for the reason the 10,000bps check above
+        // is here: an operator whose problem is a wrong reference record should
+        // be told which record.
+        qip_financial::ladder::prove_quotes_can_coexist(
+            liquidity_reference
+                .iter()
+                .map(|(id, reference)| (id.as_str(), reference.rung, reference.spread_bps)),
+        )?;
         // The lot and tick grid of every instrument, taken here for the same
         // reason and installed on the order manager below, so the central
         // path refuses an order the venue could not express before any
@@ -7824,12 +7840,13 @@ impl Platform {
     ///
     /// `LiquidityLadder::reachable_within` answers this directly, over a
     /// structure whose construction *proved* that cost rises as the ladder
-    /// descends. `RiskState::with_liquidity_horizons` computes the same ratio
-    /// by refiltering a flat map of day counts and cannot detect that the
-    /// classification underneath it is wrong; this kernel therefore takes the
-    /// ladder's answer and does not call that method, so there is one writer
-    /// of `liquidatable_within` on this path rather than two claims about one
-    /// fact.
+    /// descends. `qip-risk` held a second derivation of the same ratio —
+    /// `RiskState::with_liquidity_horizons`, a refilter of a flat map of day
+    /// counts that could not detect a rung classification contradicting the
+    /// reference data, and that abstained silently on a book nobody had
+    /// marked. This kernel already declined to call it; it has since been
+    /// removed, so there is now one writer of `liquidatable_within` in the
+    /// tree rather than one on this path and a loaded second elsewhere.
     ///
     /// A book with nothing in it records nothing. An empty ladder has no
     /// denominator, and a fabricated `1.0` would read as a measurement that
@@ -11290,35 +11307,63 @@ mod liquidity_ladder_tests {
     /// Nothing about the *class* differs, so the test cannot pass by accident
     /// on an asset-class comparison that ignored the liquidity record.
     ///
-    /// The spreads rise as the ladder descends (5bps against 250bps), because
-    /// `LiquidityLadder::new` refuses a ladder where they do not, and a
-    /// fixture that tripped that refusal would be testing the refusal instead
-    /// of the floor.
+    /// The spreads rise as the ladder descends (5bps against `SLOW_SPREAD`),
+    /// because `LiquidityLadder::new` refuses a ladder where they do not, and
+    /// a fixture that tripped that refusal would be testing the refusal
+    /// instead of the floor.
     fn platform_with(fast_notional: Decimal, slow_notional: Decimal) -> Platform {
         platform_quoting(5.0, fast_notional, slow_notional)
     }
 
+    /// What `SLOW`'s reference record states it costs to negotiate an exit.
+    ///
+    /// A stated figure, not a constructor default: `LiquidityProfile::illiquid`
+    /// used to hardcode 250bps, and because a negotiated holding classifies
+    /// below every listed one, that invented number was the ceiling on what
+    /// any listed instrument in the same universe could be quoted at. Nine
+    /// percent is wide enough that an ordinary small-cap above it — 300bps —
+    /// is not a contradiction, which is the whole point of the fixture.
+    const SLOW_SPREAD: f64 = 900.0;
+
     /// The same two names, with the listed one's quoted spread as a parameter.
     ///
-    /// The spread is the only difference between a book whose ladder assembles
-    /// and one whose ladder refuses, and it is reference data about one
-    /// instrument rather than anything about the book: `LiquidityLadder::new`
-    /// proves cost rises as the ladder descends, and a listed name quoted
-    /// wider than the negotiated one below it breaks that. 250bps is
-    /// `LiquidityProfile::illiquid`'s own hardcoded figure, so any listed
-    /// instrument quoted above it takes the whole ladder down.
+    /// The spread is reference data about one instrument, and it used to be
+    /// the difference between a book whose ladder assembles and one whose
+    /// ladder refuses every cycle: `LiquidityLadder::new` proves cost rises as
+    /// the ladder descends, and a listed name quoted wider than the negotiated
+    /// one below it breaks that. It is now the difference between a universe
+    /// `Platform::new` admits and one it refuses by name, which is why this
+    /// helper returns the platform rather than asserting on it — see
+    /// `platform_quoting_or_refusal`.
     fn platform_quoting(
         fast_spread_bps: f64,
         fast_notional: Decimal,
         slow_notional: Decimal,
     ) -> Platform {
+        platform_quoting_or_refusal(fast_spread_bps, SLOW_SPREAD, fast_notional, slow_notional)
+            .expect("the platform assembles")
+    }
+
+    /// The same two names with **both** quoted spreads as parameters, and the
+    /// assembly refusal handed back rather than unwrapped.
+    ///
+    /// Both are parameters because the property that decides whether these
+    /// records can coexist is relational: neither 300bps on a listed name nor
+    /// 250bps on a negotiated one is wrong alone, and a fixture that could
+    /// only vary one of them could not tell a bad record from a bad pair.
+    fn platform_quoting_or_refusal(
+        fast_spread_bps: f64,
+        slow_spread_bps: f64,
+        fast_notional: Decimal,
+        slow_notional: Decimal,
+    ) -> Result<Platform> {
         let mut universe = Universe::new();
         for (id, liquidity) in [
             (
                 FAST,
                 LiquidityProfile::listed(Decimal::from_int(10_000_000), fast_spread_bps),
             ),
-            (SLOW, LiquidityProfile::illiquid(30.0)),
+            (SLOW, LiquidityProfile::illiquid(30.0, slow_spread_bps)),
         ] {
             universe
                 .insert(
@@ -11345,14 +11390,39 @@ mod liquidity_ladder_tests {
             Telemetry::silent(),
             universe,
             LimitSet::conservative_default(),
-        )
-        .expect("the platform assembles");
+        )?;
         for (id, notional) in [(FAST, fast_notional), (SLOW, slow_notional)] {
             platform
                 .aggregates
                 .apply_fill("alpha", id, &BTreeMap::new(), notional)
                 .expect("the fill applies");
         }
+        Ok(platform)
+    }
+
+    /// The same platform holding one instrument it has no reference record
+    /// for, which is what a liquidity read that cannot be computed now looks
+    /// like.
+    ///
+    /// It used to be a listed name quoted at 300bps beside a negotiated
+    /// holding whose profile invented 250 — an ordinary small-cap, and it
+    /// stopped the desk. That pair is refused at assembly now, by name, so the
+    /// fail-closed behaviour below is driven through the arm that remains
+    /// reachable: a position in an instrument the platform was not assembled
+    /// to trade. It is not hypothetical — an aggregate restored across a
+    /// catalogue change holds exactly that — and it is the arm
+    /// `Platform::liquidity_ladder` refuses loudly rather than dropping,
+    /// because a dropped holding leaves the numerator and the denominator
+    /// together and a book of unknowns would report itself perfectly liquid.
+    fn platform_holding_an_unrecorded_instrument(
+        fast_notional: Decimal,
+        slow_notional: Decimal,
+    ) -> Platform {
+        let mut platform = platform_with(fast_notional, slow_notional);
+        platform
+            .aggregates
+            .apply_fill("alpha", "obj-UNKNOWN", &BTreeMap::new(), dec!("500000"))
+            .expect("the fill applies");
         platform
     }
 
@@ -11562,8 +11632,11 @@ mod liquidity_ladder_tests {
             clean.problems
         );
 
-        // The same book, one instrument quoted at 300bps.
-        let mut unreadable = platform_quoting(300.0, dec!("150000"), dec!("5000"));
+        // The same book, holding one instrument the platform has no reference
+        // record for. This was a listed name quoted at 300bps, until that pair
+        // of records started being refused at assembly instead.
+        let mut unreadable =
+            platform_holding_an_unrecorded_instrument(dec!("150000"), dec!("5000"));
         let outcome = unreadable.stage_act(start(), &correlation);
         let withheld: Vec<&String> = outcome
             .problems
@@ -11579,7 +11652,7 @@ mod liquidity_ladder_tests {
         );
         assert!(
             withheld[0].contains("the liquidity floor was not evaluated")
-                && withheld[0].contains("costs more to liquidate than the lower rung"),
+                && withheld[0].contains("obj-UNKNOWN"),
             "the withheld signature does not name the liquidity read as the reason: {}",
             withheld[0]
         );
@@ -11728,20 +11801,30 @@ mod liquidity_ladder_tests {
     /// ```
     ///
     /// One field of reference data on one instrument — a quoted spread wider
-    /// than the 250bps `LiquidityProfile::illiquid` hardcodes for the rung
-    /// below it — broke `LiquidityLadder::new`'s monotonicity proof, which
+    /// than the 250bps `LiquidityProfile::illiquid` used to hardcode for the
+    /// rung below it — broke `LiquidityLadder::new`'s monotonicity proof, which
     /// left `liquidatable_within` empty, which made the shipped `liquidity`
     /// floor take its `None` arm, which admitted every order. The floor was
     /// not evaluated and the venue path could not tell that apart from a floor
     /// that passed. `stage_act` did say so on the cycle report, but a cycle
     /// report is a string: `submit_order` re-reads the risk state per order
     /// and never saw it.
+    ///
+    /// **That trigger is gone and the fail-closed behaviour is not.** Making
+    /// the refusal fail closed inverted the consequence of the underlying
+    /// defect rather than removing it: the same ordinary small-cap that used to
+    /// walk past the floor came to stop the desk outright, on an invented
+    /// constant. `illiquid` no longer invents one and a pair of records that
+    /// cannot coexist is refused at assembly by name, so this test drives the
+    /// remaining reachable arm — a holding the platform has no reference record
+    /// for — and asserts the same property: an uncomputed liquidity figure
+    /// refuses orders rather than admitting them.
     #[test]
     fn a_book_whose_liquidity_could_not_be_read_refuses_orders_rather_than_admitting_them() {
         // The premise, and the half that proves this is a control and not an
-        // outage: the identical universe and book, differing only in FAST's
-        // quoted spread, evaluates the floor and prices the book at a tenth
-        // exitable within the week.
+        // outage: the identical universe and book, without the unrecorded
+        // holding, evaluates the floor and prices the book at a tenth exitable
+        // within the week.
         let mut readable = platform_quoting(5.0, dec!("100000"), dec!("900000"));
         let evaluated = readable.risk_state();
         assert_eq!(
@@ -11755,7 +11838,8 @@ mod liquidity_ladder_tests {
             evaluated.unevaluated
         );
 
-        let mut unreadable = platform_quoting(300.0, dec!("100000"), dec!("900000"));
+        let mut unreadable =
+            platform_holding_an_unrecorded_instrument(dec!("100000"), dec!("900000"));
         let refused = unreadable.risk_state();
         assert!(
             refused.liquidatable_within.is_empty(),
@@ -11772,7 +11856,7 @@ mod liquidity_ladder_tests {
                 )
             });
         assert!(
-            why.contains("costs more to liquidate than the lower rung"),
+            why.contains("obj-UNKNOWN"),
             "the state carries the wrong reason for the unevaluated floor: {why}"
         );
 
@@ -11989,8 +12073,158 @@ mod liquidity_ladder_tests {
             error.message()
         );
     }
-}
 
+    /// An ordinary small-cap quoted at three percent trades. It stopped the
+    /// desk.
+    ///
+    /// The half of the liquidity-floor repair that `5ccaea9` left open. Making
+    /// a refused liquidity read fail closed was right; what it did not touch
+    /// was *why* the read refused on ordinary reference data.
+    /// `LiquidityProfile::illiquid` hardcoded `typical_spread_bps: 250.0`, and
+    /// because `Rung::classify` puts a negotiated holding below every listed
+    /// one, that invented figure was the ceiling on what any listed instrument
+    /// in the same universe could be quoted at. Reproduced against the tree
+    /// before this fix, by a probe driving `Platform::new` and a cycle to
+    /// `submit_order` over one universe with one field differing:
+    ///
+    /// ```text
+    /// FAST listed at 5bps   beside illiquid(30.0) => assembled,
+    ///     liquidatable_within={"5": 0.967...}, unevaluated={}, accepted 10/10
+    /// FAST listed at 300bps beside illiquid(30.0) => assembled,
+    ///     liquidatable_within={}, accepted 0/10, refusal "risk refused:
+    ///     liquidity could not be evaluated ...: rung
+    ///     listed_equity_and_futures costs more to liquidate than the lower
+    ///     rung private_credit_and_real_assets (4500 on 150000 against 125 on
+    ///     5000)"
+    /// ```
+    ///
+    /// Three percent is a spread a desk considers valid. One such name stopped
+    /// every order in every instrument, and told the operator that a ladder was
+    /// not monotonic.
+    #[test]
+    fn an_ordinary_small_cap_quoted_at_three_hundred_bps_no_longer_stops_the_desk() {
+        // The record beneath states 900bps because somebody measured it, and
+        // 300bps above it is then not a contradiction at all.
+        let mut platform = platform_quoting(300.0, dec!("990000"), dec!("10000"));
+
+        let state = platform.risk_state();
+        // The premise, and it is the whole point: the floor was *evaluated*.
+        // A test that only asserted the order was accepted would pass just as
+        // well against the defect's other half, where the floor abstained and
+        // admitted everything.
+        assert!(
+            state.unevaluated.is_empty(),
+            "a listed name quoted at 300bps left the liquidity floor unevaluated: {:?}",
+            state.unevaluated
+        );
+        let fraction = state
+            .liquidatable_within
+            .get("5")
+            .copied()
+            .unwrap_or_else(|| {
+                panic!(
+                    "the fraction exitable within five days was not computed; the map holds {:?}",
+                    state.liquidatable_within.keys().collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            (fraction - 0.99).abs() < 1e-9,
+            "a book of 990k same-day against 10k months should read 0.99, not {fraction}"
+        );
+
+        let order = platform.order_from(
+            ObjectId::from_string(FAST),
+            Side::Buy,
+            dec!("100"),
+            dec!("100"),
+            "prop-1",
+            vec!["hyp-1".to_string()],
+            start(),
+        );
+        platform
+            .submit_order(order, start())
+            .expect("a listed name quoted at three percent is a valid quote and still trades");
+
+        // And the negative control that makes the 300 load-bearing: the same
+        // universe, the same 300bps quote, with the record beneath it back at
+        // the 250 the constructor used to invent, is refused — at assembly,
+        // where the records can be named, rather than at every order.
+        platform_quoting_or_refusal(300.0, 250.0, dec!("990000"), dec!("10000")).expect_err(
+            "a listed name quoted wider than the rung beneath it assembled; the pair cannot \
+             coexist on one ladder and the refusal has gone missing",
+        );
+    }
+
+    /// Two reference records that cannot coexist are refused at assembly, and
+    /// the refusal names both.
+    ///
+    /// `b060df2` argued exactly this for its own 10,000bps check: a record the
+    /// ladder cannot carry should stop `Platform::new`, where the refusal can
+    /// name the offending record, rather than surface each cycle as a total
+    /// order refusal whose message is about rung arithmetic. That argument
+    /// applies to a *pair* of records too, and the pair was left out — which is
+    /// how one ordinary small-cap came to stop the desk with a sentence about
+    /// the ladder's internal cost comparison.
+    ///
+    /// Named on both sides on purpose. Neither record is wrong alone: 300bps on
+    /// a small-cap is a real quote and 250bps on a negotiated holding is a real
+    /// quote. Only together are they impossible, so an operator handed one
+    /// identifier could not tell which of the two to correct.
+    #[test]
+    fn two_reference_records_whose_exit_costs_cannot_coexist_are_refused_at_assembly_naming_both() {
+        // The admitting half first. A gate that refused every universe would be
+        // an outage wearing a control's clothes, and this one is one line away
+        // from being exactly that.
+        platform_quoting_or_refusal(300.0, 900.0, dec!("990000"), dec!("10000")).expect(
+            "the premise failed: a universe whose quotes widen as the ladder descends \
+                     was refused too",
+        );
+
+        let error = platform_quoting_or_refusal(300.0, 250.0, dec!("990000"), dec!("10000"))
+            .expect_err("a listed name quoted wider than the rung beneath it assembled");
+        let message = error.message();
+
+        // Both records. Delimited, because an assertion that the message
+        // mentions one of them is satisfied by a refusal naming neither pair
+        // member usefully.
+        assert!(
+            message.contains(FAST) && message.contains(SLOW),
+            "the refusal must name both records; neither can be corrected without the other: \
+             {message}"
+        );
+        // Both rungs, matched with their surrounding words rather than bare:
+        // `listed_equity_and_futures` and `bonds_and_less_liquid_listed` share
+        // the token `listed`, and a bare `contains` would not tell a refusal
+        // about the right rung from one about its neighbour.
+        assert!(
+            message.contains("rung listed_equity_and_futures quoted"),
+            "the refusal does not name the rung the wider record sits on: {message}"
+        );
+        assert!(
+            message.contains("lower rung private_credit_and_real_assets at"),
+            "the refusal does not name the rung beneath: {message}"
+        );
+        // And both rates, delimited on each side: `250bps` is a substring of
+        // `1250bps`, which is the class of mistake mutation testing exists to
+        // catch and has already been made once in this repository.
+        assert!(
+            message.contains("at 300bps,"),
+            "the refusal does not state the wider record's quote: {message}"
+        );
+        assert!(
+            message.contains("at 250bps;"),
+            "the refusal does not state the tighter record's quote: {message}"
+        );
+        // What it must not be: the sentence the operator used to get, which is
+        // about the ladder's own arithmetic over a book rather than about a
+        // reference record.
+        assert!(
+            !message.contains("costs more to liquidate than the lower rung"),
+            "the operator is still being handed the ladder's internal comparison instead of the \
+             two records to correct: {message}"
+        );
+    }
+}
 #[cfg(test)]
 mod unsizeable_thesis_tests {
     //! One thesis nothing can size must not take the rest of the construction

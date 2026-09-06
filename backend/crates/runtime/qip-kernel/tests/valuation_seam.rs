@@ -882,7 +882,13 @@ fn a_cycle_over_a_book_that_cannot_be_exited_within_the_week_is_refused_new_risk
     // run.
     let desk = Decimal::from_int(10_000_000);
     let mut illiquid = platform_of(
-        liquidity_universe(LiquidityProfile::illiquid(30.0))?,
+        // 900bps is this record's own measured exit spread, stated rather than
+        // taken from a constructor default: `illiquid` no longer invents one,
+        // because the figure it used to invent became a ceiling on what every
+        // listed name above it could be quoted at. It has to stay wider than
+        // `FAST`'s 5bps above it or the two records cannot sit on one ladder
+        // and `Platform::new` refuses them by name.
+        liquidity_universe(LiquidityProfile::illiquid(30.0, 900.0))?,
         LimitSet::conservative_default(),
         desk,
     )?;

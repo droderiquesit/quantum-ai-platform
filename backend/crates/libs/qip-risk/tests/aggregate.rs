@@ -5,10 +5,16 @@
 //! on a fast machine with a slow algorithm, and fails on a slow machine with
 //! a fast one — by wrapping the aggregate in a probe that records every
 //! figure the check consults.
+//!
+//! The property is asserted against `RiskState::from_figures` composed with
+//! `LimitSet::check`, which is the composition `qip-kernel`'s
+//! `Platform::risk_state_from` performs. It used to be asserted against a
+//! `LimitSet::check_aggregates` wrapper that no production caller ever used,
+//! so the O(1) proof held for a convenience nothing ran.
 
 use qip_core::{Decimal, dec};
 use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
-use qip_risk::limits::{Limit, LimitKind, LimitSet};
+use qip_risk::limits::{Limit, LimitKind, LimitSet, RiskState};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
@@ -142,8 +148,11 @@ fn the_aggregate_check_reads_the_same_fixed_figures_at_eight_strategies_and_at_f
     let probe_small = CountingProbe::over(&small);
     let probe_large = CountingProbe::over(&large);
     let returns = [0.001, -0.002, 0.003, -0.001];
-    let check_small = limits().check_aggregates(&probe_small, &returns);
-    let check_large = limits().check_aggregates(&probe_large, &returns);
+    let limits = limits();
+    let check_small =
+        limits.check(&RiskState::from_figures(&probe_small).with_tail_risk(&limits, &returns));
+    let check_large =
+        limits.check(&RiskState::from_figures(&probe_large).with_tail_risk(&limits, &returns));
 
     // Premise: the check evaluated limits and consulted the aggregate at all.
     assert!(check_small.evaluated > 0);
@@ -389,15 +398,24 @@ fn an_aggregate_cannot_open_over_negative_equity() {
     assert!(RiskAggregates::new(dec!("-1"), Decimal::ZERO).is_err());
 }
 
-// --- the liquidity floor, read through the aggregate ------------------------
+// --- marked exit times, read through the aggregate --------------------------
 //
-// `MinLiquidity` reads `liquidatable_within`, which `check_aggregates` fills
-// from `RiskAggregates::mark_liquidity` via `RiskState::with_liquidity_horizons`.
-// Before that wiring existed, `check_aggregates` built a `RiskState` whose
-// `days_to_liquidate` was always empty — `AggregateFigures` had no accessor
-// for it at all — so `LimitSet::conservative_default`'s `liquidity` limit
-// took the `None` arm on every book `check_aggregates` ever checked. These
-// fixtures pin the wiring end to end, through the same call production uses.
+// `RiskAggregates::mark_liquidity` records what the caller's liquidity model
+// found, and `RiskState::from_figures` carries it into the state the limits
+// read. `LimitKind::MaxDaysToLiquidate` is the limit that reads it, and the
+// pair below is the fixture it admits and the fixture it vetoes.
+//
+// It used to be `MinLiquidity` that these fixtures drove, through a
+// `LimitSet::check_aggregates` wrapper that refiltered the marks into
+// `liquidatable_within`. Both are gone. That derivation was the second writer
+// of a figure `qip-kernel`'s liquidity ladder already produces, and it could
+// abstain — handed holdings and no marks it returned the state untouched, so
+// `MinLiquidity` took its `None` arm and the check answered "within all
+// limits" for a floor that had never run. It could not honestly file
+// `RiskState::unevaluated` either, because whether a caller's liquidity model
+// was never run or ran and refused is the caller's fact and not this crate's.
+// What survives is the input path — a mark reaching a limit that reads it —
+// which is what these two fixtures now pin.
 
 #[test]
 fn mark_liquidity_refuses_a_day_count_the_floor_cannot_compare() {
@@ -420,44 +438,96 @@ fn mark_liquidity_refuses_a_day_count_the_floor_cannot_compare() {
     assert!((book.days_to_liquidate()["AAA"] - 3.0).abs() < 1e-12);
 }
 
-#[test]
-fn a_book_checked_through_the_aggregate_path_is_refused_once_liquidity_is_marked_illiquid() {
-    let limits = LimitSet::conservative_default();
-    let mut book = RiskAggregates::new(dec!("140000"), dec!("140000")).expect("open");
+/// A ten-day ceiling on how long any one holding may take to exit, alone in
+/// its set so that nothing else in the check can be what bound.
+fn days_to_liquidate_ceiling() -> LimitSet {
+    LimitSet::new("fixture").with(
+        Limit::new(
+            "days-to-liquidate",
+            LimitKind::MaxDaysToLiquidate { limit: 10.0 },
+        )
+        .with_rationale("no holding may take longer than a fortnight's trading to exit"),
+    )
+}
+
+/// A two-name book with no marks on it.
+fn marked_book() -> RiskAggregates {
+    let mut book = RiskAggregates::new(dec!("1400000"), dec!("1400000")).expect("open");
     book.apply_fill("alpha", "AAA", &axes("AAA"), dec!("80000"))
         .expect("a well-formed fill");
     book.apply_fill("alpha", "BBB", &axes("BBB"), dec!("60000"))
         .expect("a well-formed fill");
-    let returns = [0.001, -0.002, 0.003, -0.001];
+    book
+}
 
-    // Premise: unmarked, the book passes — there is nothing yet to say it
-    // cannot exit, and an aggregate that refuses by default would pass this
-    // test for the wrong reason.
-    let before = limits.check_aggregates(&book, &returns);
+#[test]
+fn a_holding_marked_slower_than_the_ceiling_is_vetoed_through_the_state_built_from_the_aggregate() {
+    let limits = days_to_liquidate_ceiling();
+    let mut book = marked_book();
+
+    // Premise: unmarked, the state carries no exit time at all and the
+    // ceiling records nothing. Without this the veto below could be a limit
+    // that refuses every book, which is a different defect wearing the same
+    // green tick.
+    let unmarked = RiskState::from_figures(&book);
     assert!(
-        !before
-            .breaches
-            .iter()
-            .any(|b| b.limit_kind == "min_liquidity"),
-        "an unmarked book already breached the liquidity floor: {}",
-        before.reason()
+        unmarked.days_to_liquidate.is_empty(),
+        "the aggregate reported exit times nobody marked: {:?}",
+        unmarked.days_to_liquidate
+    );
+    assert!(
+        !limits.check(&unmarked).is_blocked(),
+        "an unmarked book was already vetoed: {}",
+        limits.check(&unmarked).reason()
     );
 
-    // AAA (80k) exits in a day; BBB (60k) is never marked, so it counts
-    // against the floor. 80k of 140k = 57%, under the default 80% floor.
-    book.mark_liquidity(BTreeMap::from([("AAA".to_string(), 1.0)]))
+    // Twelve days against a ten-day ceiling.
+    book.mark_liquidity(BTreeMap::from([("AAA".to_string(), 12.0)]))
         .expect("a well-formed mark");
-    let after = limits.check_aggregates(&book, &returns);
-    let breach = after
+    let marked = RiskState::from_figures(&book);
+    let check = limits.check(&marked);
+    let breach = check
         .blocking()
         .into_iter()
-        .find(|b| b.limit_kind == "min_liquidity")
+        .find(|b| b.limit_kind == "max_days_to_liquidate")
         .unwrap_or_else(|| {
             panic!(
-                "liquidity did not bind through the aggregate path: {}",
-                after.reason()
+                "a mark the ceiling should have refused never reached it: {}",
+                check.reason()
             )
         });
-    assert!(breach.observed < breach.bound, "a floor binds from below");
-    assert!(after.is_blocked());
+    assert!((breach.observed - 12.0).abs() < 1e-12, "{breach:?}");
+    assert!((breach.bound - 10.0).abs() < 1e-12, "{breach:?}");
+    assert_eq!(
+        breach.subject.as_deref(),
+        Some("AAA"),
+        "the breach named the wrong holding"
+    );
+    assert!(check.is_blocked());
+}
+
+#[test]
+fn a_holding_marked_faster_than_the_ceiling_is_admitted_through_the_same_state() {
+    let limits = days_to_liquidate_ceiling();
+    let mut book = marked_book();
+    book.mark_liquidity(BTreeMap::from([("AAA".to_string(), 5.0)]))
+        .expect("a well-formed mark");
+
+    // Premise: the mark reached the state, so the admission below is a limit
+    // that read a real figure and found it inside — not one that read nothing.
+    let state = RiskState::from_figures(&book);
+    assert!(
+        (state.days_to_liquidate["AAA"] - 5.0).abs() < 1e-12,
+        "the mark did not reach the state: {:?}",
+        state.days_to_liquidate
+    );
+    let check = limits.check(&state);
+    assert!(
+        !check
+            .breaches
+            .iter()
+            .any(|b| b.limit_kind == "max_days_to_liquidate"),
+        "a holding inside the ceiling was refused: {}",
+        check.reason()
+    );
 }

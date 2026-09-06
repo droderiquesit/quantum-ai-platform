@@ -871,150 +871,94 @@ fn a_series_too_short_to_measure_leaves_the_maps_empty_rather_than_recording_zer
     assert!(bare.value_at_risk.is_empty());
 }
 
-// --- liquidity horizons ------------------------------------------------------
+// --- liquidity horizons: this crate does not derive them ---------------------
 //
 // `LimitKind::MinLiquidity` reads `liquidatable_within`, keyed by horizon,
 // exactly the way `MaxExpectedShortfall` read `expected_shortfall` before
-// `RiskState::with_tail_risk` existed — and nothing filled it.
-// `LimitSet::conservative_default` has shipped a `liquidity` limit since
-// before `with_liquidity_horizons` existed. These fixtures pin the
-// derivation that fills the map from `days_to_liquidate` and
-// `position_notionals`, keyed the way the limit reads them.
+// `RiskState::with_tail_risk` existed. `with_tail_risk` closed that gap here
+// because the tail *is* derivable here: a return series in, a quantile out.
+//
+// The liquidity figure is not. It needs average daily volume and market
+// depth, which this crate has none of, so `RiskState::with_liquidity_horizons`
+// derived it by refiltering day counts a caller had supplied — and handed a
+// book with holdings and no counts it returned the state untouched. An
+// untouched state is the same state a passing floor produces: empty map, empty
+// `unevaluated`, `reason()` of "within all limits". It was the same fail-open
+// that shipped once already, in the derivation `qip-kernel` uses, and closing
+// it there cost sixty-one mutations.
+//
+// It is not repaired here, it is gone, and the reason it is gone rather than
+// repaired matters: filing `RiskState::unevaluated` from inside that method
+// would have meant inventing the reason. "Nobody ran a liquidity model" and
+// "the liquidity model ran and refused" are facts about the caller, and
+// `with_unevaluated`'s whole contract is that the producer states its own.
+// The producer is `qip-kernel`'s `Platform::liquidatable_within`, over a
+// ladder whose construction proved its own monotonicity, and it does file the
+// refusal.
+//
+// The test below is the guard against the second derivation coming back.
 
-/// The shared fixture with its liquidity map emptied, so a figure found
-/// under a key can only have been put there by the derivation under test.
-fn state_with_no_liquidity_figures() -> RiskState {
+#[test]
+fn nothing_in_this_crate_fills_the_figure_the_liquidity_floor_reads() {
+    // Every producer `qip-risk` offers, composed the way `qip-kernel`'s
+    // `Platform::risk_state_from` composes them, over a book that holds
+    // positions and has been marked with exit times inside the floor's own
+    // horizon. If a liquidity derivation is ever re-added here, this is the
+    // fixture that would fill the map, and this test fires.
+    let limits = LimitSet::conservative_default();
     let mut state = state();
+    state.value_at_risk.clear();
+    state.expected_shortfall.clear();
     state.liquidatable_within.clear();
-    state
-}
-
-#[test]
-fn a_book_whose_liquidity_falls_below_the_default_floor_is_refused_once_marked() {
-    let limits = LimitSet::conservative_default();
-    // AAPL (80k) exits in a day; MSFT (60k) has no declared exit time at
-    // all, which must count against the floor rather than drop out of it.
-    let mut state = state_with_no_liquidity_figures();
-    state.days_to_liquidate = BTreeMap::from([("AAPL".to_string(), 1.0)]);
-    let state = state.with_liquidity_horizons(&limits);
-
-    // Premise: the figure exists under the key the default limit reads. If
-    // the map is empty the breach assertion below measures nothing.
-    let fraction = state
-        .liquidatable_within
-        .get("5")
-        .copied()
-        .unwrap_or_else(|| {
-            panic!(
-                "no liquidatable fraction under the default limit's key; the map holds {:?}",
-                state.liquidatable_within.keys().collect::<Vec<_>>()
-            )
-        });
-    assert!(
-        (fraction - (80_000.0 / 140_000.0)).abs() < 1e-9,
-        "80k of 140k is liquid inside 5 days, MSFT has no declared exit time: got {fraction}"
-    );
-    assert!(
-        fraction < 0.80,
-        "premise: the fraction sits below the default 80% floor, got {fraction}"
-    );
-
-    let check = limits.check(&state);
-    let breach = check
-        .blocking()
-        .into_iter()
-        .find(|b| b.limit_kind == "min_liquidity")
-        .unwrap_or_else(|| panic!("liquidity did not bind: {}", check.reason()));
-    assert!(breach.observed < breach.bound, "a floor binds from below");
-    assert!(check.is_blocked());
-}
-
-#[test]
-fn a_book_whose_liquidity_sits_above_the_default_floor_passes() {
-    let limits = LimitSet::conservative_default();
-    // Both names exit well inside the 5-day horizon the default limit uses.
-    let mut state = state_with_no_liquidity_figures();
     state.days_to_liquidate =
         BTreeMap::from([("AAPL".to_string(), 1.0), ("MSFT".to_string(), 2.0)]);
-    let state = state.with_liquidity_horizons(&limits);
 
-    // Premise: computed, not skipped.
+    // Premise, in three parts, because an absence proves nothing on its own.
+    // The book holds something to be illiquid; the floor is in the set and
+    // would read the key `5`; and the composition below does fill the other
+    // keyed figures, so an empty liquidity map is a decision and not a
+    // no-op that emptied everything.
     assert!(
-        state.liquidatable_within.contains_key("5"),
-        "nothing was computed, so nothing can be said about passing"
+        !state.position_notionals.is_empty(),
+        "premise: the book holds positions"
     );
-    let check = limits.check(&state);
     assert!(
-        !check
+        limits.limits.iter().any(|limit| matches!(
+            limit.kind,
+            LimitKind::MinLiquidity { days, .. } if (days - 5.0).abs() < 1e-12
+        )),
+        "premise: the shipped set carries a five-day liquidity floor"
+    );
+    let derived = state.with_tail_risk(&limits, &[0.01, -0.02, 0.015, -0.03]);
+    assert!(
+        !derived.value_at_risk.is_empty() && !derived.expected_shortfall.is_empty(),
+        "premise: the crate's own producers did run and did fill what they can derive"
+    );
+
+    assert!(
+        derived.liquidatable_within.is_empty(),
+        "something in qip-risk derived the liquidity figure: {:?}. There is one producer of \
+         it — qip-kernel's ladder — and it is the one that can file a refusal when it cannot \
+         compute. A second writer here abstains silently, and MinLiquidity reads an abstention \
+         and a pass as the same event.",
+        derived.liquidatable_within
+    );
+    // And the floor therefore records nothing, which is only safe because the
+    // real producer files `unevaluated` and `PreTradeChecker::check` refuses
+    // on it. Asserted so that a future reader meets the whole bargain here
+    // rather than half of it.
+    assert!(
+        !limits
+            .check(&derived)
             .breaches
             .iter()
             .any(|b| b.limit_kind == "min_liquidity"),
-        "a fully liquid book breached the liquidity floor: {}",
-        check.reason()
+        "the floor bound on a figure nobody in this crate computed"
     );
-}
-
-#[test]
-fn an_instrument_with_no_declared_exit_time_counts_against_the_floor_not_outside_it() {
-    let limits = LimitSet::new("fixture").with(Limit::new(
-        "liquidity",
-        LimitKind::MinLiquidity {
-            days: 5.0,
-            fraction: 0.80,
-        },
-    ));
-    // AAPL and MSFT are equal-sized (80k, 60k in the shared fixture is
-    // uneven, so use a state where the split is exact): two 50k positions,
-    // one with a declared exit time inside the horizon and one without.
-    let mut state = state_with_no_liquidity_figures();
-    state.position_notionals = BTreeMap::from([
-        ("AAPL".to_string(), Decimal::from_int(50_000)),
-        ("MSFT".to_string(), Decimal::from_int(50_000)),
-    ]);
-    state.days_to_liquidate = BTreeMap::from([("AAPL".to_string(), 1.0)]);
-    let state = state.with_liquidity_horizons(&limits);
-
-    let fraction = state.liquidatable_within["5"];
-    // Had the undeclared name been dropped from both sides instead of
-    // counted illiquid, this would read 1.0 — fully liquid on half the
-    // information. Fail-closed keeps it at one half.
     assert!(
-        (fraction - 0.5).abs() < 1e-9,
-        "an unmeasured exit time was not counted against the floor: {fraction}"
-    );
-}
-
-#[test]
-fn an_empty_book_leaves_the_liquidity_map_untouched() {
-    let limits = LimitSet::conservative_default();
-    let mut state = state_with_no_liquidity_figures();
-    state.position_notionals = BTreeMap::new();
-    let state = state.with_liquidity_horizons(&limits);
-    assert!(
-        state.liquidatable_within.is_empty(),
-        "a book with no positions recorded a liquidity fraction nobody measured"
-    );
-}
-
-#[test]
-fn a_book_nobody_has_ever_marked_leaves_the_liquidity_map_untouched_rather_than_all_illiquid() {
-    // Held positions, but `days_to_liquidate` is empty: nobody has run a
-    // liquidity model over this book yet. That must read as "not measured",
-    // not as "everything is illiquid" — the latter would breach the default
-    // floor on every unmarked book in the platform, which is a much louder
-    // and much wronger failure than the one this derivation exists to fix.
-    let limits = LimitSet::conservative_default();
-    let mut state = state_with_no_liquidity_figures();
-    state.days_to_liquidate = BTreeMap::new();
-    assert!(
-        !state.position_notionals.is_empty(),
-        "premise: the book holds positions, so a wrongly-fired floor has something to bind on"
-    );
-    let state = state.with_liquidity_horizons(&limits);
-    assert!(
-        state.liquidatable_within.is_empty(),
-        "an unmarked book recorded a liquidity fraction nobody measured: {:?}",
-        state.liquidatable_within
+        derived.unevaluated.is_empty(),
+        "this crate filed a refusal on someone else's behalf: {:?}",
+        derived.unevaluated
     );
 }
 

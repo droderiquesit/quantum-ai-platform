@@ -143,9 +143,22 @@ the venue address ranges that `venues = {}` currently, correctly, declines to
 guess."
 
 It is also machines: one `execution_nodes` entry per region, each needing a
-boot image nothing in this repository builds
-(`modules/execution-node/README.md`, "No image bake exists") and a venue range
-nobody has recorded. Three of the nine cannot be a Google region at all.
+boot image that does not exist and a venue range nobody has recorded. Three of
+the nine cannot be a Google region at all.
+
+**This paragraph used to say the boot image was one "nothing in this
+repository builds", citing `modules/execution-node/README.md`'s sentence "No
+image bake exists". Both stopped being true at `5ccaea9`**, which added
+`.github/workflows/image.yml`, `infrastructure/images/execution-node/` and
+`infrastructure/terraform/modules/image-bake/`; that README's section is now
+headed "The image bake exists and has never been run". The correction does not
+move this document's conclusion, and the reason is worth stating rather than
+leaving to inference: the workflow has never been dispatched — GitHub knows of
+four workflows in this repository and `image` is not among them — and
+`image_bake_subnet_cidr` is commented out in every environment, so
+`module.image_bake` has `count = 0` and creates nothing. **No image exists, so
+`boot_image` still has no value anyone can write for even the first region,
+let alone nine.**
 
 Correcting the audit is that document's own change to make. It is recorded here
 so the two do not quietly disagree in the meantime.

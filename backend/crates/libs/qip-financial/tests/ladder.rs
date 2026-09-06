@@ -670,7 +670,7 @@ fn a_negotiated_instrument_cannot_sit_on_a_listed_rung_however_its_class_is_labe
     // A private placement in an equity is still an equity by class. It does
     // not settle same-day, and a ladder that says it does understates how long
     // the book takes to become cash.
-    let negotiated = LiquidityProfile::illiquid(90.0);
+    let negotiated = LiquidityProfile::illiquid(90.0, 900.0);
 
     // Premise: the same class with a listed profile is a listed rung.
     assert_eq!(
@@ -720,7 +720,7 @@ fn classification_never_returns_the_resting_rung_because_no_instrument_property_
     // put positions on a rung nobody chose.
     let profiles = [
         LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
-        LiquidityProfile::illiquid(30.0),
+        LiquidityProfile::illiquid(30.0, 900.0),
         LiquidityProfile::default(),
     ];
     // Premise: this really does cover every class.
@@ -963,5 +963,140 @@ fn a_rung_total_that_leaves_the_decimal_range_is_refused_rather_than_saturated()
     assert!(
         message.contains("monotonicity proof"),
         "the refusal does not say why a saturated rung total matters: {message}"
+    );
+}
+
+/// A catalogue whose quotes widen as the ladder descends can be held together.
+///
+/// The admitting half, and it is the half that matters most for this gate:
+/// `prove_quotes_can_coexist` refuses `Platform::new`, so a version of it that
+/// refused every catalogue would be an outage rather than a control, and a
+/// suite that only proved the refusal could not tell the two apart.
+///
+/// Deliberately includes two records on one rung quoted differently, and a
+/// pair quoted *identically* across adjacent rungs: monotonicity is
+/// `cost does not fall`, so equal rates coexist, and a gate written with `>=`
+/// would refuse an ordinary catalogue that prices two rungs the same.
+#[test]
+fn reference_records_whose_quotes_widen_as_the_ladder_descends_can_coexist() {
+    qip_financial::ladder::prove_quotes_can_coexist([
+        ("obj-usd", Rung::CashAtVenue, 0.0),
+        ("obj-btc", Rung::LiquidSpotAndPerpetual, 5.0),
+        ("obj-aapl", Rung::ListedEquityAndFutures, 20.0),
+        ("obj-smallcap", Rung::ListedEquityAndFutures, 300.0),
+        ("obj-corp", Rung::BondsAndLessLiquidListed, 300.0),
+        ("obj-credit", Rung::PrivateCreditAndRealAssets, 900.0),
+    ])
+    .expect("a catalogue whose quotes widen as the ladder descends was refused");
+}
+
+/// A record quoted wider than one on a rung beneath it is refused, and the
+/// refusal names both.
+///
+/// The failure this prevents was live and it inverted a control. A listed name
+/// quoted at 300bps beside a negotiated holding whose profile asserted 250
+/// assembled in silence, and then `LiquidityLadder::new` refused the whole book
+/// every cycle — and because that refusal was made to fail closed, one ordinary
+/// small-cap stopped the desk trading anything at all, telling the operator
+/// that a ladder was not monotonic. The property is relational: neither record
+/// is wrong alone, which is why both are named.
+#[test]
+fn a_record_quoted_wider_than_one_on_a_rung_beneath_it_is_refused_naming_both() {
+    // The premise, against this exact pair: each record is admissible on its
+    // own, so the refusal below is about the pair and not about either figure.
+    for lone in [
+        ("obj-smallcap", Rung::ListedEquityAndFutures, 300.0),
+        ("obj-credit", Rung::PrivateCreditAndRealAssets, 250.0),
+    ] {
+        qip_financial::ladder::prove_quotes_can_coexist([lone])
+            .expect("the premise failed: a single record was refused on its own");
+    }
+
+    let refusal = qip_financial::ladder::prove_quotes_can_coexist([
+        ("obj-smallcap", Rung::ListedEquityAndFutures, 300.0),
+        ("obj-credit", Rung::PrivateCreditAndRealAssets, 250.0),
+    ])
+    .expect_err("two records whose exit costs invert the ladder were admitted");
+    let message = refusal.message();
+    assert!(
+        message.contains("obj-smallcap") && message.contains("obj-credit"),
+        "the refusal must name both records; neither can be corrected without the other: \
+         {message}"
+    );
+    assert!(
+        message.contains("rung listed_equity_and_futures quoted"),
+        "the refusal does not name the rung the wider record sits on: {message}"
+    );
+    assert!(
+        message.contains("lower rung private_credit_and_real_assets at"),
+        "the refusal does not name the rung beneath: {message}"
+    );
+    // Delimited on both sides. `250bps` is a substring of `1250bps`, and a
+    // test in this repository has already passed a mutation that deleted the
+    // exact value it was written to protect for that reason.
+    assert!(
+        message.contains("at 300bps,") && message.contains("at 250bps;"),
+        "the refusal does not state both rates: {message}"
+    );
+
+    // And the pair really would have taken a book down, which is the reason
+    // this gate exists rather than a claim about it. The same two rates on the
+    // same two rungs, as one holding each.
+    LiquidityLadder::new(vec![
+        LadderEntry::new(
+            "obj-smallcap",
+            Rung::ListedEquityAndFutures,
+            dec!("10000"),
+            dec!("300"),
+        ),
+        LadderEntry::new(
+            "obj-credit",
+            Rung::PrivateCreditAndRealAssets,
+            dec!("10000"),
+            dec!("250"),
+        ),
+    ])
+    .expect_err(
+        "the premise failed: this pair does not actually break the ladder, so the assembly \
+         refusal above is refusing something harmless",
+    );
+}
+
+/// A rung is judged by its widest and its tightest quote, not by whichever
+/// record happened to arrive first.
+///
+/// A rung holding several records has a value-weighted rate, so the book that
+/// breaks the ladder is the one holding the widest above and the tightest
+/// below. A check that compared, say, the first record of each rung would
+/// admit a catalogue that a book drawable from it refuses — which is the exact
+/// shape of the defect this gate closes, one level down.
+#[test]
+fn a_rung_is_judged_by_its_widest_and_its_tightest_quote_and_not_by_one_record() {
+    // The tight record on the upper rung is listed first; only `obj-wide`
+    // inverts, and only against `obj-tight-below`, which is listed last.
+    let quotes = [
+        ("obj-narrow", Rung::ListedEquityAndFutures, 5.0),
+        ("obj-wide", Rung::ListedEquityAndFutures, 300.0),
+        ("obj-loose-below", Rung::PrivateCreditAndRealAssets, 900.0),
+        ("obj-tight-below", Rung::PrivateCreditAndRealAssets, 250.0),
+    ];
+    let refusal = qip_financial::ladder::prove_quotes_can_coexist(quotes)
+        .expect_err("a rung was judged by one of its records rather than by its widest");
+    assert!(
+        refusal.message().contains("obj-wide") && refusal.message().contains("obj-tight-below"),
+        "the refusal names the wrong pair of records: {}",
+        refusal.message()
+    );
+
+    // The same four records in the reverse order name the same pair. A refusal
+    // a replay could attribute to a different record is not a replay.
+    let mut reversed = quotes;
+    reversed.reverse();
+    let again = qip_financial::ladder::prove_quotes_can_coexist(reversed)
+        .expect_err("the reversed catalogue was admitted");
+    assert_eq!(
+        again.message(),
+        refusal.message(),
+        "the same catalogue in a different order named a different pair"
     );
 }

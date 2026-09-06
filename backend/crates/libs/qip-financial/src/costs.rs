@@ -54,10 +54,45 @@ impl LiquidityProfile {
     }
 
     /// Instrument that trades only by negotiation: private credit, real assets.
-    pub fn illiquid(days_to_liquidate: f64) -> Self {
+    ///
+    /// **The spread is the caller's, exactly as [`Self::listed`] takes it.**
+    /// This constructor used to hardcode `typical_spread_bps: 250.0` and take
+    /// only the exit time, so every negotiated holding in the platform
+    /// asserted a two-and-a-half-percent quote that nobody had measured —
+    /// a number with a cost model attached, which is the
+    /// `MaxExpectedShortfall` shape: a figure that reads as evidence and is
+    /// not.
+    ///
+    /// It was not inert. The liquidity ladder proves that cost rises as it
+    /// descends, and `Rung::classify` puts a negotiated holding on
+    /// [`crate::ladder::Rung::PrivateCreditAndRealAssets`], below every listed
+    /// name. So the invented 250 became the ceiling on what any listed
+    /// instrument above it could be quoted at: one ordinary small-cap at
+    /// 300bps inverted the per-rung rate, `LiquidityLadder::new` refused the
+    /// whole ladder, `RiskState::liquidatable_within` came back empty, and —
+    /// once that refusal was made to fail closed — the desk stopped trading
+    /// entirely. Measured on one book, one field differing:
+    ///
+    /// ```text
+    /// FAST listed at 5bps   beside illiquid(30.0) => accepted 10/10
+    /// FAST listed at 300bps beside illiquid(30.0) => accepted  0/10
+    /// ```
+    ///
+    /// Widening the constant would have moved that ceiling without removing
+    /// it, which is clamping an invalid input one order of magnitude further
+    /// out. There is no honest default here: what a private-credit position
+    /// costs to leave is a fact about that position, and the caller holding
+    /// the record is the only one who has it.
+    ///
+    /// `spread_bps` is not validated here, for the reason [`Self::listed`]
+    /// does not validate its own: a profile is a value object, and the
+    /// refusals belong where the figure is read — `Rung::classify` for the
+    /// exit time, and `qip-kernel`'s `ladder_reference_of` for a spread that
+    /// is not a spread or is at or beyond the whole value of the holding.
+    pub fn illiquid(days_to_liquidate: f64, spread_bps: f64) -> Self {
         Self {
             average_daily_volume: Decimal::ZERO,
-            typical_spread_bps: 250.0,
+            typical_spread_bps: spread_bps,
             top_of_book_depth: Decimal::ZERO,
             days_to_liquidate,
             max_participation_rate: 0.0,

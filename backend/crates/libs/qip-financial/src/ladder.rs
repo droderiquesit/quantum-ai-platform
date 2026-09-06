@@ -43,6 +43,7 @@ use crate::costs::LiquidityProfile;
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 /// How long a rung takes to turn into cash.
@@ -262,6 +263,106 @@ impl Rung {
         };
         Ok(by_class.max(by_liquidity))
     }
+}
+
+/// Refuse a set of reference records whose quoted exit rates cannot sit on
+/// this ladder together, whatever a book comes to hold.
+///
+/// The same law [`LiquidityLadder::prove_monotonic`] enforces, asked one stage
+/// earlier and of the reference data rather than of a book. Each `(record,
+/// rung, spread_bps)` is what one catalogue record vouches for; a holding's
+/// exit cost is its mark times its own quoted spread, so a rung occupied by a
+/// single holding has exactly that holding's rate, and a rung occupied by
+/// several has a value-weighted mean of theirs — which is never above the
+/// widest of them nor below the tightest. Monotonicity therefore holds for
+/// **every** book drawable from these records exactly when, walking the
+/// occupied rungs downward, no rung's widest quote exceeds the next occupied
+/// rung's tightest. Adjacent comparisons suffice because the relation chains:
+/// widest(a) <= tightest(b) <= widest(b) <= tightest(c).
+///
+/// # Why this is asked at assembly and not left to the ladder
+///
+/// It was left to the ladder, and the operator met it in the wrong place. A
+/// listed name quoted at 300bps beside a negotiated holding whose profile
+/// claimed 250 assembled without complaint, and then every cycle refused the
+/// whole liquidity read with a sentence about rung arithmetic — "rung
+/// listed_equity_and_futures costs more to liquidate than the lower rung
+/// private_credit_and_real_assets (4500 on 150000 against 125 on 5000)" —
+/// given to someone whose actual problem was one wrong reference record. Since
+/// the refusal fails closed, that sentence was also the whole desk stopping.
+///
+/// This is deliberately **stricter than the ladder**: it refuses a catalogue
+/// where *some* drawable book would invert, not only the book presently held.
+/// That is the intended direction. A catalogue that trades until the day the
+/// desk first buys the offending name, and then stops the desk, is the failure
+/// this exists to prevent, and the two records are nameable now and not then.
+///
+/// The refusal names both records, both rungs and both rates, because the
+/// property is relational: neither record is wrong on its own, and an operator
+/// given one id could not tell which of the two to correct.
+///
+/// Ties are broken toward the lexicographically smaller identifier so that the
+/// same catalogue names the same pair on every run. A refusal a replay could
+/// attribute to a different record is not a replay.
+///
+/// Every comparison is [`f64::total_cmp`] rather than `>` and `==`, which
+/// gives a `NaN` quote an order instead of an answer of `false` in both
+/// directions. A `NaN` therefore sorts widest and is refused here, where `>`
+/// would have admitted it — and [`LiquidityLadder`] would have admitted it
+/// too, because `Decimal::apply_bps` turns a `NaN` rate into a zero cost, so
+/// the rung would have read as free to exit. `qip-kernel`'s
+/// `ladder_reference_of` refuses a non-finite spread before this is reached;
+/// this is the arm that keeps that refusal from being the only thing standing
+/// between a `NaN` and a liquidity floor.
+pub fn prove_quotes_can_coexist<'a>(
+    quotes: impl IntoIterator<Item = (&'a str, Rung, f64)>,
+) -> Result<()> {
+    // Widest and tightest quote on each occupied rung, with the record each
+    // came from. `BTreeMap` because the walk below has to be in ladder order
+    // and the pair named in a refusal has to be the same one on every replay.
+    let mut extremes: BTreeMap<Rung, (&'a str, f64, &'a str, f64)> = BTreeMap::new();
+    for (id, rung, spread_bps) in quotes {
+        let slot = extremes
+            .entry(rung)
+            .or_insert((id, spread_bps, id, spread_bps));
+        let (widest_id, widest_bps, tightest_id, tightest_bps) = *slot;
+        match spread_bps.total_cmp(&widest_bps) {
+            Ordering::Greater => *slot = (id, spread_bps, tightest_id, tightest_bps),
+            Ordering::Equal if id < widest_id => {
+                *slot = (id, spread_bps, slot.2, slot.3);
+            }
+            _ => {}
+        }
+        let (widest_id, widest_bps, tightest_id, tightest_bps) = *slot;
+        match spread_bps.total_cmp(&tightest_bps) {
+            Ordering::Less => *slot = (widest_id, widest_bps, id, spread_bps),
+            Ordering::Equal if id < tightest_id => {
+                *slot = (widest_id, widest_bps, id, spread_bps);
+            }
+            _ => {}
+        }
+    }
+
+    let mut above: Option<(Rung, &'a str, f64)> = None;
+    for (rung, (widest_id, widest_bps, tightest_id, tightest_bps)) in extremes {
+        if let Some((upper, upper_id, upper_bps)) = above
+            && upper_bps.total_cmp(&tightest_bps) == Ordering::Greater
+        {
+            return Err(Error::invalid(format!(
+                "reference records {upper_id} and {tightest_id} cannot both sit on this liquidity \
+                 ladder: {upper_id} is on rung {upper} quoted at {upper_bps}bps, wider than \
+                 {tightest_id} on the lower rung {lower} at {tightest_bps}bps; correct whichever \
+                 record is wrong, or place them on the rungs their exit cost actually puts them \
+                 on — the ladder proves cost rises as it descends, and a book holding both would \
+                 refuse the whole liquidity read with a sentence about rung arithmetic instead of \
+                 about these two records",
+                upper = upper.as_str(),
+                lower = rung.as_str()
+            )));
+        }
+        above = Some((rung, widest_id, widest_bps));
+    }
+    Ok(())
 }
 
 /// One holding placed on the ladder.
