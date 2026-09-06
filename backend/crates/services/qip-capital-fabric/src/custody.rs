@@ -16,10 +16,20 @@
 //! independent enforcement points — the venue's own allowlist configured out of
 //! band, the platform's corridor gate, and the custody policy — must all agree
 //! before capital leaves a venue, and trading authority and transfer authority
-//! never share an identity. [`EnforcementPoints::all_agree`] is that rule as a
-//! check over attestation records. A record is a claim that a point agreed,
-//! not a mechanism by which it did; three records that agree authorise nothing
-//! here, because there is nothing here for them to authorise.
+//! never share an identity. [`EnforcementPoints::all_agree`] and
+//! [`Agreement::disjoint_from_trading_authority`] are the two halves of that
+//! rule, paired as [`TransferAuthority`], and
+//! [`crate::gate::TransferGate::assess`] vetoes an intent whose authority
+//! fails either half. A record is still a claim that a point agreed and not a
+//! mechanism by which it did: three records that agree authorise no movement,
+//! because there is no movement here to authorise. What they decide is whether
+//! the gate refuses.
+//!
+//! Both halves were unreachable from any non-test caller until the gate was
+//! wired to them. That is the defect `risk-and-execution.md` names by its
+//! other instance — a limit that cannot fire reads as protection and is not —
+//! and it is why the check lives in the control that a replay re-runs rather
+//! than in a constructor a replay never calls.
 
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
@@ -586,7 +596,11 @@ impl EnforcementPoints {
 /// distinct identities.
 ///
 /// Evidence that the rule held, and only that. It is not a token and unlocks
-/// nothing: ADR 0021 leaves this platform with no path for it to unlock.
+/// nothing: ADR 0021 leaves this platform with no path for it to unlock, and
+/// the [`crate::gate::Approved`] that carries one still carries no way to
+/// execute. What carrying it buys is attribution — an admitted assessment
+/// names the three identities on whose agreement it was admitted, rather than
+/// asserting that three agreed and keeping no record of which.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Agreement {
     attestations: Vec<Attestation>,
@@ -626,5 +640,57 @@ impl Agreement {
             }
         }
         Ok(())
+    }
+}
+
+/// §37.4's closing rule as one input to one assessment: who attested, and
+/// which identity trades.
+///
+/// The two halves travel together because either one alone is satisfied by
+/// the arrangement the rule forbids. Three attestations under three distinct
+/// identities are not a separation of duties if one of the three is the
+/// identity that trades; and an attestor that never trades authorises nothing
+/// if only two of the three points spoke.
+///
+/// **Nothing is validated at construction, deliberately.** A
+/// [`TransferAuthority`] is deserialised straight off the event log as part of
+/// [`crate::journal::GateCommand`], so a constructor that refused would be a
+/// check every replayed record walks past — and the replay is the thing that
+/// has to catch a record written by something other than the control.
+/// [`Self::agreement`] is therefore evaluated by
+/// [`crate::gate::TransferGate::assess`] on every assessment, live and
+/// replayed alike.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferAuthority {
+    points: EnforcementPoints,
+    trading: Identity,
+}
+
+impl TransferAuthority {
+    /// Pair the attestations gathered so far with the identity that trades.
+    pub fn new(points: EnforcementPoints, trading: Identity) -> Self {
+        Self { points, trading }
+    }
+
+    /// The attestations, exactly as gathered.
+    pub fn points(&self) -> &EnforcementPoints {
+        &self.points
+    }
+
+    /// The identity that trades, which none of the attestors may be.
+    pub fn trading(&self) -> &Identity {
+        &self.trading
+    }
+
+    /// Both halves of §37.4's closing rule, in order.
+    ///
+    /// Missing-point and shared-identity first, so a refusal names the point
+    /// that did not speak rather than the trading identity it happens not to
+    /// be; then the disjointness from trading authority, which is a question
+    /// only a complete agreement can be asked.
+    pub fn agreement(&self) -> std::result::Result<Agreement, Refusal> {
+        let agreement = self.points.all_agree()?;
+        agreement.disjoint_from_trading_authority(&self.trading)?;
+        Ok(agreement)
     }
 }

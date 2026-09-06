@@ -15,7 +15,10 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_capital_fabric::corridor::{CorridorCaps, CorridorId, CorridorStage, PermittedHours};
-use qip_capital_fabric::custody::{CorridorKind, CustodyClass, CustodyPolicy};
+use qip_capital_fabric::custody::{
+    Attestation, CorridorKind, CustodyClass, CustodyPolicy, EnforcementPoint, EnforcementPoints,
+    Identity, TransferAuthority,
+};
 use qip_capital_fabric::destination::{
     ACTIVATION_DELAY, Approver, Asset, DestinationKey, DestinationStatus, SignatureRecord,
 };
@@ -109,6 +112,30 @@ fn step(id: &CorridorId, step: CorridorStep) -> FabricCommand {
     })
 }
 
+/// §37.4's closing rule satisfied: three points, three distinct identities,
+/// none of them the identity that trades. The gate's check 1 refuses an
+/// assessment whose authority fails either half, so every journalled gate
+/// command needs one that holds or the mixed sequence would be all vetoes.
+fn authority() -> Result<TransferAuthority> {
+    let mut points = EnforcementPoints::new();
+    for (point, identity) in [
+        (EnforcementPoint::TransferGate, "gate-svc"),
+        (EnforcementPoint::CustodyPolicy, "custody-policy-svc"),
+        (EnforcementPoint::VenueAllowlist, "venue-ops-oob"),
+    ] {
+        points.attest(Attestation::new(
+            point,
+            Identity::new(identity)?,
+            format!("{}-record-1", point.as_str()),
+            signed_at(),
+        )?)?;
+    }
+    Ok(TransferAuthority::new(
+        points,
+        Identity::new("trading-svc")?,
+    ))
+}
+
 fn gate(
     kill_switch: KillSwitchState,
     corridor: CorridorId,
@@ -123,6 +150,7 @@ fn gate(
         )?,
         corridor,
         custody: CustodyPolicy::blueprint(),
+        authority: authority()?,
         history: TransferHistory::empty(),
         balances: SourceBalances::new(dec!("10000"), dec!("1000"), dec!("1000"), dec!("1000"))?,
         velocity: VelocityState::CLEAR,
@@ -606,6 +634,113 @@ fn a_gate_refusal_record_names_the_refusing_check_as_a_delimited_token() -> Resu
         admitted_json.contains(r#""checks_passed":["corridor_authority","#),
         "an admission lists the checks that passed: {admitted_json}"
     );
+    Ok(())
+}
+
+#[test]
+fn a_gate_command_whose_enforcement_points_are_not_independent_is_journalled_as_a_veto_and_replays_as_one()
+-> Result<()> {
+    // §37.4's closing rule is checked by the gate, which means it is checked
+    // again by the replay — the recorded outcome is recomputed, not copied.
+    // The failure this prevents is the one the module's own doc names: a
+    // `TransferAuthority` arrives deserialised from the log, so a rule
+    // enforced only where the attestations are assembled would be a rule no
+    // replay ever applies, and a record claiming an admission on two points
+    // under one identity would be laundered by a chain that verifies.
+    let mut commands = mixed_sequence()?;
+    // Premise: the sequence as written admits exactly one assessment and
+    // vetoes another on the kill switch, which is check 7. Without this the
+    // collapse below could be applied to a log that admits nothing, and the
+    // test would pass on a fixture that was already all vetoes.
+    let clean = journal_of(11, commands.clone())?;
+    let clean_bodies = decoded(clean.records())?;
+    assert_mixed(&clean_bodies);
+    assert_eq!(
+        clean_bodies
+            .iter()
+            .filter(|record| vetoed_by(record) == Some(GateCheck::KillSwitch))
+            .count(),
+        1,
+        "premise: one assessment reaches check 7 with three independent points"
+    );
+
+    // Collapse the custody policy onto the gate's identity in every gate
+    // command: two points under one identity are one point.
+    let mut collapsed = 0usize;
+    for command in &mut commands {
+        if let FabricCommand::Gate(gate) = command {
+            let mut points = EnforcementPoints::new();
+            for (point, identity) in [
+                (EnforcementPoint::TransferGate, "gate-svc"),
+                (EnforcementPoint::CustodyPolicy, "gate-svc"),
+                (EnforcementPoint::VenueAllowlist, "venue-ops-oob"),
+            ] {
+                points.attest(Attestation::new(
+                    point,
+                    Identity::new(identity)?,
+                    format!("{}-record-1", point.as_str()),
+                    signed_at(),
+                )?)?;
+            }
+            gate.authority = TransferAuthority::new(points, Identity::new("trading-svc")?);
+            collapsed += 1;
+        }
+    }
+    assert_eq!(
+        collapsed, 4,
+        "the fixture holds four gate commands: one admitted, two vetoed, one against a \
+         corridor the log never proposed"
+    );
+
+    let journal = journal_of(11, commands)?;
+    let bodies = decoded(journal.records())?;
+    // Nothing is admitted any more, and the check that refuses is check 1 —
+    // not check 7, which the kill-switch assessment used to reach. A veto is a
+    // veto, so an authority that does not hold stops the assessment before the
+    // caps, the balance or the switch are ever consulted.
+    assert!(
+        !bodies.iter().any(|record| matches!(
+            record.outcome,
+            FabricOutcome::Gate(Outcome::Applied(GateVerdict::Admitted(_)))
+        )),
+        "an assessment was admitted on two enforcement points under one identity"
+    );
+    assert_eq!(
+        bodies
+            .iter()
+            .filter(|record| vetoed_by(record) == Some(GateCheck::CorridorAuthority))
+            .count(),
+        3,
+        "expected the suspended corridor and both previously-later verdicts to refuse on \
+         corridor authority"
+    );
+    assert_eq!(
+        bodies
+            .iter()
+            .filter(|record| vetoed_by(record) == Some(GateCheck::KillSwitch))
+            .count(),
+        0,
+        "check 7 must not be reached once check 1 refuses"
+    );
+
+    // The record says so as a delimited JSON token, and the replay recomputes
+    // the same verdict from the log alone.
+    let vetoed = bodies
+        .iter()
+        .position(|record| match &record.outcome {
+            FabricOutcome::Gate(Outcome::Applied(GateVerdict::Vetoed(vetoed))) => {
+                vetoed.reason.contains("(shared_identity)")
+            }
+            _ => false,
+        })
+        .expect("a shared-identity veto is in the collapsed fixture");
+    let veto_json = canonical_json(&journal.records()[vetoed].event.payload);
+    assert!(
+        veto_json.contains(r#""check":"corridor_authority""#),
+        "the veto record must carry the check as a field: {veto_json}"
+    );
+    let replayed = replay(journal.records())?;
+    assert_eq!(replayed.state, *journal.state());
     Ok(())
 }
 
