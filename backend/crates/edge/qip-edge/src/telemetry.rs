@@ -26,7 +26,13 @@
 //! **Cardinality is bounded by construction.** `cell` and `region` are fixed
 //! for the life of the process. `venue` is bounded by the cell's configured
 //! venue set. `gate` is bounded by the string literals `Cell::refuse` is
-//! called with. `source`, `kind` and `outcome` are enums, and `capability` is
+//! called with, plus `qip_edge::cell::GATE_LIVE_VENUE` — the one gate the cell
+//! also records outside `Cell::refuse`, from `Cell::send`, which refuses a
+//! live-class venue at the seam where an order would leave and has no
+//! `WorkReport` to push a refusal onto. A constant, so the bound holds; said
+//! here because "the literals `Cell::refuse` is called with" was the whole
+//! list until that seam gained a refusal. `source`, `kind` and `outcome` are
+//! enums, and `capability` is
 //! the three policy-fed variants of one. Nothing here is labelled by
 //! instrument, strategy or order id, and that is deliberate: a series per
 //! order id is a memory leak wearing a dashboard. Each `with(...)` call below
