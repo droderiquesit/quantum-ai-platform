@@ -14,7 +14,11 @@
 //! seven checks, and the question "may this corridor carry this at all" is
 //! [`GateCheck::CorridorAuthority`]'s whether the answer comes from the
 //! corridor's own signature, from the allowlist, from the custody table, or
-//! from who attested to it.
+//! from who attested to it. §37.4's unconditional rules about the table
+//! itself ([`crate::custody::CustodyPolicy::conforms`]) are asked there too,
+//! for the reason that method gives: every input to this gate arrives
+//! deserialised on a replay, so a rule only a constructor holds is a rule the
+//! replay never re-derives.
 //!
 //! An [`Approved`] carries no way to execute. There is no transfer engine in
 //! this crate, no method that takes an `Approved` and does something with it,
@@ -176,18 +180,48 @@ impl TransferHistory {
     /// Build a history. Refuses a non-positive amount, which would make the
     /// cumulative cap count a refund it never saw.
     pub fn new(carried: Vec<CarriedTransfer>) -> Result<Self> {
-        for transfer in &carried {
+        let mut carried = carried;
+        carried.sort_by_key(|transfer| transfer.at);
+        let history = Self { carried };
+        history.well_formed().map_err(Error::invalid)?;
+        Ok(history)
+    }
+
+    /// Whether this history is one the caps and the interval can be measured
+    /// against: every amount positive, and oldest first.
+    ///
+    /// Re-derived by [`TransferGate::assess`] for the reason
+    /// [`crate::custody::CustodyPolicy::conforms`] gives at length — a
+    /// `TransferHistory` arrives inside a [`crate::journal::GateCommand`]
+    /// deserialised off the log, where [`TransferHistory::new`] never runs.
+    /// Both halves are load-bearing and neither is cosmetic: a non-positive
+    /// amount makes [`TransferHistory::carried_total`] under-count, so the
+    /// cumulative cap admits a transfer that exhausts it, and an
+    /// out-of-order list makes [`TransferHistory::last_carried_at`] name a
+    /// transfer that is not the last one, so the minimum-interval check
+    /// measures from the wrong instant and passes.
+    pub fn well_formed(&self) -> std::result::Result<(), String> {
+        let mut previous: Option<Timestamp> = None;
+        for transfer in &self.carried {
             if !transfer.amount.is_positive() {
-                return Err(Error::invalid(format!(
+                return Err(format!(
                     "a carried transfer at {} of {} is not positive; history records what \
                      left, and nothing else",
                     transfer.at, transfer.amount
-                )));
+                ));
             }
+            if let Some(previous) = previous
+                && transfer.at < previous
+            {
+                return Err(format!(
+                    "a carried transfer at {} follows one at {previous}; a history is oldest \
+                     first, and out of order the last transfer is not the latest one",
+                    transfer.at
+                ));
+            }
+            previous = Some(transfer.at);
         }
-        let mut carried = carried;
-        carried.sort_by_key(|transfer| transfer.at);
-        Ok(Self { carried })
+        Ok(())
     }
 
     /// Everything carried at or after `since`.
@@ -240,23 +274,38 @@ impl SourceBalances {
         in_flight_settlement: Decimal,
         commitments: Decimal,
     ) -> Result<Self> {
-        for (name, value) in [
-            ("reserved", reserved),
-            ("in_flight_settlement", in_flight_settlement),
-            ("commitments", commitments),
-        ] {
-            if value.is_negative() {
-                return Err(Error::invalid(format!(
-                    "{name} is {value}; a claim on a balance cannot be negative"
-                )));
-            }
-        }
-        Ok(Self {
+        let balances = Self {
             balance,
             reserved,
             in_flight_settlement,
             commitments,
-        })
+        };
+        balances.well_formed().map_err(Error::invalid)?;
+        Ok(balances)
+    }
+
+    /// Whether every claim on the balance is a claim rather than a credit.
+    ///
+    /// Re-derived by [`TransferGate::assess`], because a `SourceBalances`
+    /// arrives inside a [`crate::journal::GateCommand`] deserialised off the
+    /// log and [`SourceBalances::new`] never runs on that path. A negative
+    /// claim is subtracted in [`SourceBalances::free`] and therefore *adds* to
+    /// the free balance: the sufficiency check would then admit a transfer of
+    /// money the source does not have, which is the one thing check 5 exists
+    /// to refuse.
+    pub fn well_formed(&self) -> std::result::Result<(), String> {
+        for (name, value) in [
+            ("reserved", self.reserved),
+            ("in_flight_settlement", self.in_flight_settlement),
+            ("commitments", self.commitments),
+        ] {
+            if value.is_negative() {
+                return Err(format!(
+                    "{name} is {value}; a claim on a balance cannot be negative"
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// What is actually free after every claim.
@@ -322,9 +371,9 @@ pub enum KillSwitchState {
 pub enum GateCheck {
     /// Corridor active, signature record present and covering the current
     /// definition, destination allowlisted and usable, the custody table
-    /// permitting the class through this kind of corridor, and §37.4's three
-    /// enforcement points agreeing under three identities none of which
-    /// trades.
+    /// conforming to §37.4's unconditional rules and permitting the class
+    /// through this kind of corridor, and §37.4's three enforcement points
+    /// agreeing under three identities none of which trades.
     CorridorAuthority,
     /// Within per-transfer, hourly, daily and cumulative caps, and inside
     /// permitted hours.
@@ -528,7 +577,13 @@ impl TransferGate {
             ));
         }
 
-        // 5. Source balance sufficient after every claim.
+        // 5. Source balance sufficient after every claim. The claims are
+        //    re-checked for sign here rather than trusted from
+        //    `SourceBalances::new`, which a replayed record never calls: a
+        //    negative claim is subtracted and so raises the free balance.
+        balances
+            .well_formed()
+            .map_err(|reason| veto(GateCheck::SourceBalance, reason))?;
         let free = balances.free();
         if intent.amount() > free {
             return Err(veto(
@@ -646,6 +701,22 @@ impl TransferGate {
         registry
             .usable(intent.destination(), now)
             .map_err(|err| err.message().to_string())?;
+        // §37.4's unconditional rules, asked of the table before the table is
+        // asked anything. A `CustodyPolicy` reaches the gate deserialised —
+        // from a `GateCommand` on the event log on every replay — and serde
+        // does not call `from_constraints`, so a table that constructor
+        // refuses could otherwise reach `permits` and answer *yes* for
+        // collateral, the one class §37.4 says never moves at all. The failure
+        // prevented is a custody policy that reads as a boundary and is only a
+        // record: the veto has to be re-derived by the control the replay
+        // re-runs, not asserted by a constructor the replay never calls.
+        custody.conforms().map_err(|refusal| {
+            format!(
+                "corridor {} would be assessed against a custody table that contradicts §37.4, \
+                 and the {refusal}; correct the table rather than the corridor",
+                corridor.id()
+            )
+        })?;
         // §37.4: the custody policy is the second of the three enforcement
         // points, and a corridor a human signed for a class the policy says
         // never transfers — collateral, say — must still be refused here.
@@ -690,6 +761,20 @@ impl TransferGate {
     ) -> std::result::Result<(), String> {
         let caps = corridor.caps();
         let amount = intent.amount();
+        // The two well-formedness rules `TransferIntent::new` and
+        // `TransferHistory::new` hold, re-derived here because neither
+        // constructor runs on a record replayed off the log. Both are
+        // conditions for the caps below meaning anything: a non-positive
+        // amount is under every cap vacuously, and a mis-ordered or
+        // negative-amount history under-counts the ones that are cumulative.
+        if !amount.is_positive() {
+            return Err(format!(
+                "the intent's amount is {amount}, and every cap admits it vacuously; a transfer \
+                 of nothing is not a transfer, and capital comes back through \
+                 qip_capital::RecallOrder rather than through a negative one"
+            ));
+        }
+        history.well_formed()?;
         if amount > caps.max_per_transfer() {
             return Err(format!(
                 "{amount} exceeds the per-transfer cap of {}; split it across the minimum \

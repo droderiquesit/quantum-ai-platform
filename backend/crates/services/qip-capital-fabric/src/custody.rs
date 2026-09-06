@@ -190,6 +190,47 @@ pub enum RefusalReason {
         /// Which point.
         point: EnforcementPoint,
     },
+    /// The table itself contradicts a rule §37.4 states unconditionally, so
+    /// no answer it gives about that class can be relied on.
+    PolicyContradictsBlueprint {
+        /// The row that contradicts it.
+        class: CustodyClass,
+        /// Which rule.
+        rule: PolicyRule,
+    },
+}
+
+/// A rule §37.4 states unconditionally, which no custody table may contradict
+/// whatever else it says.
+///
+/// Named rather than described so a refusal, a log line and a metric can all
+/// say which rule was broken with the same token.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyRule {
+    /// Self-custody requires multi-party release: no single component can sign.
+    SelfCustodyIsMultiParty,
+    /// Collateral and margin are inventory and never a transfer source.
+    CollateralNeverTransfers,
+    /// A class that is not a transfer source lists no corridors.
+    CorridorsImplyATransferSource,
+}
+
+impl PolicyRule {
+    /// A stable label for logs and refusals.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::SelfCustodyIsMultiParty => "self_custody_is_multi_party",
+            Self::CollateralNeverTransfers => "collateral_never_transfers",
+            Self::CorridorsImplyATransferSource => "corridors_imply_a_transfer_source",
+        }
+    }
+}
+
+impl fmt::Display for PolicyRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 impl RefusalReason {
@@ -204,6 +245,7 @@ impl RefusalReason {
             Self::TradingIdentityHoldsTransferAuthority { .. } => {
                 "trading_identity_holds_transfer_authority"
             }
+            Self::PolicyContradictsBlueprint { .. } => "policy_contradicts_blueprint",
         }
     }
 }
@@ -244,6 +286,13 @@ impl fmt::Display for Refusal {
 /// unconditionally: self-custody always requires multi-party release, and
 /// collateral is never a transfer source and has no corridor. A policy that
 /// could be configured to relax either would be a control that reads as one.
+///
+/// Neither constructor is where those rules are *enforced*, because neither is
+/// on the path a replayed record takes: this type is `Deserialize`, it travels
+/// inside [`crate::journal::GateCommand`], and serde builds it from its fields.
+/// [`CustodyPolicy::conforms`] states the rules, `from_constraints` calls it,
+/// and [`crate::gate::TransferGate::assess`] calls it again on every
+/// assessment, live and replayed alike.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustodyPolicy {
     classes: BTreeMap<CustodyClass, ClassConstraints>,
@@ -316,33 +365,96 @@ impl CustodyPolicy {
     /// is marked single-party, or collateral is given a corridor, reaching
     /// [`CustodyPolicy::permits`] and answering yes.
     pub fn from_constraints(classes: BTreeMap<CustodyClass, ClassConstraints>) -> Result<Self> {
-        if let Some(row) = classes.get(&CustodyClass::CryptoSelfCustody)
+        let policy = Self { classes };
+        if let Err(refusal) = policy.conforms() {
+            // The rule is stated once, in `conforms`; this maps its refusal to
+            // the error class the caller sees. A contradiction of one of
+            // §37.4's two named rules is `denied` — the table asked for
+            // something the blueprint forbids outright — while a row that
+            // lists corridors it also says can never be used is `invalid`:
+            // internally inconsistent, and the policy will not guess which
+            // half the caller meant.
+            return Err(match refusal.reason {
+                RefusalReason::PolicyContradictsBlueprint {
+                    rule: PolicyRule::CorridorsImplyATransferSource,
+                    ..
+                } => Error::invalid(refusal.detail),
+                _ => Error::denied(refusal.detail),
+            });
+        }
+        Ok(policy)
+    }
+
+    /// Whether the table contradicts any rule §37.4 states unconditionally.
+    ///
+    /// **This is a check on the policy, not on a question asked of it, and it
+    /// is re-run by [`crate::gate::TransferGate::assess`] on every assessment
+    /// rather than only by [`CustodyPolicy::from_constraints`].** The reason
+    /// is the one [`TransferAuthority`] already documents: a `CustodyPolicy`
+    /// is carried inside [`crate::journal::GateCommand`] and so arrives
+    /// deserialised straight off the event log, where a validating constructor
+    /// is a check every replayed record walks past. `serde` builds this struct
+    /// from its fields directly, so before the gate re-ran this rule a table
+    /// that `from_constraints` refuses — collateral marked transferable with a
+    /// corridor listed — could be written into a gate record, would make
+    /// [`CustodyPolicy::permits`] answer *yes* for a class §37.4 says never
+    /// moves, and would then be *confirmed* by the replay, because the replay
+    /// re-executes the control and the control did not look. A hash chain
+    /// proves a record has not changed; only the control re-asking the
+    /// question proves it was true.
+    ///
+    /// Checked in §37.4's own order, so a table breaking more than one rule
+    /// is named by the rule the blueprint states most narrowly.
+    pub fn conforms(&self) -> std::result::Result<(), Refusal> {
+        if let Some(row) = self.classes.get(&CustodyClass::CryptoSelfCustody)
             && !row.requires_multi_party_release
         {
-            return Err(Error::denied(
-                "self-custody must require multi-party release; §37.4 says no single \
-                 component can sign, and a policy that says otherwise is refused rather \
-                 than recorded",
-            ));
+            return Err(Refusal {
+                class: Some(CustodyClass::CryptoSelfCustody),
+                corridor: None,
+                reason: RefusalReason::PolicyContradictsBlueprint {
+                    class: CustodyClass::CryptoSelfCustody,
+                    rule: PolicyRule::SelfCustodyIsMultiParty,
+                },
+                detail: "self-custody must require multi-party release; §37.4 says no single \
+                         component can sign, and a policy that says otherwise is refused rather \
+                         than recorded"
+                    .to_string(),
+            });
         }
-        if let Some(row) = classes.get(&CustodyClass::CollateralAndMargin)
+        if let Some(row) = self.classes.get(&CustodyClass::CollateralAndMargin)
             && (row.may_be_transfer_source || !row.permitted_corridors.is_empty())
         {
-            return Err(Error::denied(
-                "collateral and margin are inventory and never a transfer source; remove \
-                 the corridor rather than the rule",
-            ));
+            return Err(Refusal {
+                class: Some(CustodyClass::CollateralAndMargin),
+                corridor: None,
+                reason: RefusalReason::PolicyContradictsBlueprint {
+                    class: CustodyClass::CollateralAndMargin,
+                    rule: PolicyRule::CollateralNeverTransfers,
+                },
+                detail: "collateral and margin are inventory and never a transfer source; remove \
+                         the corridor rather than the rule"
+                    .to_string(),
+            });
         }
-        for (class, row) in &classes {
+        for (class, row) in &self.classes {
             if !row.may_be_transfer_source && !row.permitted_corridors.is_empty() {
-                return Err(Error::invalid(format!(
-                    "{class} is marked as never a transfer source yet lists {} corridor(s); \
-                     one of the two is wrong and the policy will not guess which",
-                    row.permitted_corridors.len()
-                )));
+                return Err(Refusal {
+                    class: Some(*class),
+                    corridor: None,
+                    reason: RefusalReason::PolicyContradictsBlueprint {
+                        class: *class,
+                        rule: PolicyRule::CorridorsImplyATransferSource,
+                    },
+                    detail: format!(
+                        "{class} is marked as never a transfer source yet lists {} corridor(s); \
+                         one of the two is wrong and the policy will not guess which",
+                        row.permitted_corridors.len()
+                    ),
+                });
             }
         }
-        Ok(Self { classes })
+        Ok(())
     }
 
     /// The constraints for a class, if the policy has a row for it.

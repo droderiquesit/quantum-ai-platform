@@ -20,8 +20,8 @@ use qip_capital_fabric::corridor::{
     Corridor, CorridorCaps, CorridorId, CorridorStage, PermittedHours,
 };
 use qip_capital_fabric::custody::{
-    Attestation, CorridorKind, CustodyClass, CustodyPolicy, EnforcementPoint, EnforcementPoints,
-    Identity, RefusalReason, TransferAuthority,
+    Attestation, ClassConstraints, CorridorKind, CustodyClass, CustodyPolicy, EnforcementPoint,
+    EnforcementPoints, Identity, PolicyRule, RefusalReason, TransferAuthority,
 };
 use qip_capital_fabric::destination::{
     ACTIVATION_DELAY, Approver, Asset, DestinationKey, DestinationRegistry, DestinationStatus,
@@ -35,6 +35,7 @@ use qip_capital_fabric::location::{CapitalLocation, Region};
 use qip_contracts::venue::VenueId;
 use qip_core::error::Result;
 use qip_core::{Currency, Decimal, Duration, Timestamp, dec};
+use std::collections::BTreeMap;
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -1314,4 +1315,388 @@ fn permitted_hours_refuse_an_empty_inverted_or_overlong_window() {
     );
     assert!(PermittedHours::new(17, 9).is_err(), "an inverted window");
     assert!(PermittedHours::new(0, 25).is_err(), "a 25th hour");
+}
+
+// --- inputs that arrive deserialised, past their own constructors -----------
+//
+// Every argument the gate takes is supplied by the caller, and on a replay the
+// caller is `crate::replay` handing back a `GateCommand` decoded from the
+// event log. `serde` builds each of those types from its fields and calls no
+// constructor, so a rule held only by `CustodyPolicy::from_constraints`,
+// `TransferHistory::new`, `SourceBalances::new` or `TransferIntent::new` is a
+// rule the replay never re-derives — and the replay is the thing that has to
+// catch a record written by something other than the control. Worse than
+// merely uncaught: the replay *re-executes* the command and compares
+// outcomes, so a gate that did not re-ask would confirm the forged admission
+// and the chain would verify.
+//
+// Each test below therefore builds the tampered value the only way it can be
+// built — through serde — asserts as its premise that the old checks admit
+// it, and asserts the gate now vetoes on the named check.
+
+/// The blueprint table as rows, for a test that wants to break one.
+fn blueprint_rows() -> BTreeMap<CustodyClass, ClassConstraints> {
+    let blueprint = CustodyPolicy::blueprint();
+    CustodyClass::ALL
+        .into_iter()
+        .filter_map(|class| blueprint.constraints(class).map(|row| (class, row.clone())))
+        .collect()
+}
+
+/// Round-trip `value` through JSON into `T`, which is the path every gate
+/// input takes on a replay: serialised into the log, deserialised out of it,
+/// no constructor in between.
+fn off_the_log<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T> {
+    Ok(serde_json::from_value(value)?)
+}
+
+/// A custody table as a JSON object, so a test can hand the gate one that
+/// `CustodyPolicy::from_constraints` refuses to build.
+fn policy_json(rows: &BTreeMap<CustodyClass, ClassConstraints>) -> Result<serde_json::Value> {
+    let mut object = serde_json::Map::new();
+    object.insert("classes".to_string(), serde_json::to_value(rows)?);
+    Ok(serde_json::Value::Object(object))
+}
+
+#[test]
+fn a_custody_table_off_the_log_that_makes_collateral_transferable_is_vetoed_rather_than_believed()
+-> Result<()> {
+    // The sharpest instance, because here the pre-existing check answers
+    // *yes*: `permits` reads the row it is given, and the row says collateral
+    // may leave through an institution approval flow. §37.4 says collateral is
+    // inventory and never a transfer source at all, `from_constraints` refuses
+    // to record a table saying otherwise, and before `conforms` was re-run by
+    // the gate that refusal lived only in a constructor no replayed record
+    // calls. A forged gate record carrying this table would have been admitted
+    // by the control and then confirmed by the replay.
+    let mut rows = blueprint_rows();
+    let collateral = rows
+        .get_mut(&CustodyClass::CollateralAndMargin)
+        .expect("the blueprint table has a collateral row");
+    collateral.may_be_transfer_source = true;
+    collateral
+        .permitted_corridors
+        .insert(CorridorKind::InstitutionApprovalFlow);
+    // Premise: no constructor in this crate will build this table, so serde is
+    // the only way it can reach the gate — which is exactly the replay path.
+    assert!(
+        CustodyPolicy::from_constraints(rows.clone()).is_err(),
+        "premise: from_constraints refuses a transferable collateral row"
+    );
+    let tampered: CustodyPolicy = off_the_log(policy_json(&rows)?)?;
+    // Premise: the per-question check admits it. Without this the test could
+    // pass on `permits` refusing, and would then prove nothing about
+    // `conforms`.
+    assert!(
+        tampered
+            .permits(
+                CustodyClass::CollateralAndMargin,
+                CorridorKind::InstitutionApprovalFlow
+            )
+            .is_ok(),
+        "premise: permits answers yes on the tampered table"
+    );
+
+    let mut inputs = Inputs::satisfied()?;
+    let mut corridor = Corridor::propose(
+        CorridorId::new("treasury-to-xyz")?,
+        treasury(),
+        CustodyClass::CollateralAndMargin,
+        CorridorKind::InstitutionApprovalFlow,
+        destination()?,
+        caps()?,
+        "release posted collateral to the bank",
+        alice()?,
+        proposed_at(),
+    )?;
+    corridor.review(
+        bob()?,
+        proposed_at().saturating_add(Duration::from_hours(1)),
+    )?;
+    corridor.record_signature(signature(signed_at(), "vault/corridor/collateral")?)?;
+    corridor.begin_delay(signed_at())?;
+    corridor.activate(signed_at().saturating_add(ACTIVATION_DELAY))?;
+    assert_eq!(corridor.stage(), CorridorStage::Active);
+    inputs.corridor = corridor;
+    inputs.custody = tampered;
+
+    let veto = inputs.veto();
+    assert_eq!(veto.check, GateCheck::CorridorAuthority);
+    assert!(veto.alert);
+    // The delimited token, and the rule by name. `contains` on a bare word
+    // would match the neighbouring reasons; the parenthesised form cannot.
+    assert!(
+        veto.reason.contains("(policy_contradicts_blueprint)"),
+        "{}",
+        veto.reason
+    );
+    assert!(
+        veto.reason
+            .contains("collateral and margin are inventory and never a transfer source"),
+        "{}",
+        veto.reason
+    );
+    // And it is the table that was refused, not the question: `class_never_transfers`
+    // is what the *untampered* table would have said, and it cannot fire here.
+    assert!(
+        !veto.reason.contains("(class_never_transfers)"),
+        "the veto must come from the table's own rules, not from the row it no longer has: {}",
+        veto.reason
+    );
+    assert_eq!(
+        CustodyPolicy::blueprint()
+            .conforms()
+            .map_err(|refusal| refusal.reason),
+        Ok(()),
+        "premise: the blueprint table conforms, so conforms() is not refusing everything"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_custody_table_off_the_log_marking_self_custody_single_party_vetoes_even_an_unrelated_fiat_transfer()
+-> Result<()> {
+    // §37.4's self-custody rule is "no single component can sign". A table
+    // that denies it is not a table with one bad row to be routed around: it
+    // is a table this platform will not answer questions from, including
+    // questions about fiat whose own row is untouched. The failure prevented
+    // is a policy edited to single-party in one row and relied on in another,
+    // which reads as a custody boundary and is a record of one.
+    let mut inputs = Inputs::satisfied()?;
+    // Premise: with the blueprint table these exact inputs are admitted, so
+    // the veto below is caused by the table and by nothing else.
+    assert!(
+        inputs.assess().is_ok(),
+        "premise: the satisfied fixture is admitted before the table is broken"
+    );
+
+    let mut rows = blueprint_rows();
+    rows.get_mut(&CustodyClass::CryptoSelfCustody)
+        .expect("the blueprint table has a self-custody row")
+        .requires_multi_party_release = false;
+    let tampered: CustodyPolicy = off_the_log(policy_json(&rows)?)?;
+    // Premise: the fiat row still answers yes, so nothing about this
+    // corridor's own question has changed.
+    assert!(
+        tampered
+            .permits(
+                CustodyClass::FiatAtInstitutionOfRecord,
+                CorridorKind::InstitutionApprovalFlow
+            )
+            .is_ok(),
+        "premise: the fiat row is untouched and still permits the corridor"
+    );
+    inputs.custody = tampered;
+
+    let veto = inputs.veto();
+    assert_eq!(veto.check, GateCheck::CorridorAuthority);
+    assert!(veto.alert);
+    assert!(
+        veto.reason.contains("no single component can sign"),
+        "{}",
+        veto.reason
+    );
+    // The rule is named as a token an operator can grep and a metric can
+    // label, not only as prose.
+    assert_eq!(
+        PolicyRule::SelfCustodyIsMultiParty.as_str(),
+        "self_custody_is_multi_party"
+    );
+    match CustodyPolicy::from_constraints(rows) {
+        Err(_) => {}
+        Ok(_) => panic!("from_constraints must refuse the same table the gate refuses"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_carried_history_off_the_log_in_the_wrong_order_vetoes_instead_of_clearing_the_interval()
+-> Result<()> {
+    // `TransferHistory::new` sorts, so oldest-first is an invariant nothing
+    // states once the value is deserialised — and `last_carried_at` takes the
+    // last element. Reversed, the history names a transfer two hours old as
+    // the latest one, and the fifteen-minute minimum interval is cleared by a
+    // corridor that moved capital ten minutes ago.
+    let recent = CarriedTransfer {
+        at: now().saturating_sub(Duration::from_mins(10)),
+        amount: dec!("900"),
+    };
+    let older = CarriedTransfer {
+        at: now().saturating_sub(Duration::from_hours(2)),
+        amount: dec!("900"),
+    };
+    let mut inputs = Inputs::satisfied()?;
+    inputs.history = TransferHistory::new(vec![recent, older])?;
+    // Premise: in the right order this history vetoes on check 3, so the
+    // interval check is live and the tampering below has something to defeat.
+    let ordered_veto = inputs.veto();
+    assert_eq!(ordered_veto.check, GateCheck::MinimumInterval);
+
+    let mut json = serde_json::to_value(&inputs.history)?;
+    let carried = json
+        .get_mut("carried")
+        .and_then(serde_json::Value::as_array_mut)
+        .expect("a history serialises with a carried array");
+    assert_eq!(carried.len(), 2, "premise: both transfers were serialised");
+    carried.reverse();
+    let tampered: TransferHistory = off_the_log(json)?;
+    // Premise: the tampering does exactly one thing — it moves the latest
+    // transfer out of last place, which is what the interval check reads.
+    assert_eq!(
+        tampered.last_carried_at(),
+        Some(older.at),
+        "premise: the reversed history names the older transfer as the last one"
+    );
+    assert_eq!(tampered.carried_total(), dec!("1800"));
+    inputs.history = tampered;
+
+    let veto = inputs.veto();
+    assert_eq!(
+        veto.check,
+        GateCheck::Caps,
+        "a history that is not oldest-first is refused before the caps it would distort \
+         are measured, not silently re-sorted"
+    );
+    assert!(
+        veto.reason.contains("a history is oldest first"),
+        "{}",
+        veto.reason
+    );
+    Ok(())
+}
+
+#[test]
+fn a_carried_history_off_the_log_recording_a_refund_vetoes_instead_of_freeing_the_cumulative_cap()
+-> Result<()> {
+    // A negative carried amount subtracts from `carried_total`, and
+    // `carried_total` is what the cumulative cap is measured against. An
+    // exhausted corridor would come back to life.
+    let mut inputs = Inputs::satisfied()?;
+    // Three days back, so the rolling hour and the rolling day are empty and
+    // the cumulative cap is the only one this history can reach.
+    let spent = CarriedTransfer {
+        at: now().saturating_sub(Duration::from_days(3)),
+        amount: dec!("49800"),
+    };
+    inputs.history = TransferHistory::new(vec![spent])?;
+    // Premise: the corridor is exhausted — 49,800 carried against a 50,000
+    // cumulative cap leaves no room for the 500 the intent asks for.
+    let exhausted = inputs.veto();
+    assert_eq!(exhausted.check, GateCheck::Caps);
+    assert!(
+        exhausted.reason.contains("cumulative cap"),
+        "{}",
+        exhausted.reason
+    );
+
+    let mut json = serde_json::to_value(&inputs.history)?;
+    let entry = json
+        .get_mut("carried")
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|carried| carried.first_mut())
+        .expect("a history serialises with a carried array");
+    entry
+        .as_object_mut()
+        .expect("a carried transfer serialises as an object")
+        .insert("amount".to_string(), serde_json::to_value(dec!("-49800"))?);
+    let tampered: TransferHistory = off_the_log(json)?;
+    // Premise: flipped, the cumulative cap has room again, so nothing but the
+    // well-formedness rule can be what refuses.
+    assert_eq!(tampered.carried_total(), dec!("-49800"));
+    assert!(
+        tampered.carried_total() + dec!("500") < dec!("50000"),
+        "premise: the tampered history leaves the cumulative cap unreached"
+    );
+    inputs.history = tampered;
+
+    let veto = inputs.veto();
+    assert_eq!(veto.check, GateCheck::Caps);
+    assert!(
+        veto.reason
+            .contains("history records what left, and nothing else"),
+        "{}",
+        veto.reason
+    );
+    Ok(())
+}
+
+#[test]
+fn source_balances_off_the_log_with_a_negative_claim_veto_instead_of_funding_the_transfer()
+-> Result<()> {
+    // A claim on a balance is subtracted by `free`, so a negative one is
+    // added. `SourceBalances::new` refuses it and a replayed record never
+    // calls `new`: the sufficiency check — the one thing standing between an
+    // intent and a source that cannot fund it — would admit a transfer of
+    // money that is not there.
+    let mut inputs = Inputs::satisfied()?;
+    inputs.balances = SourceBalances::new(dec!("100"), dec!("0"), dec!("0"), dec!("0"))?;
+    // Premise: with an honest balance of 100 the 500 the intent asks for is
+    // refused by check 5.
+    let poor = inputs.veto();
+    assert_eq!(poor.check, GateCheck::SourceBalance);
+
+    let mut json = serde_json::to_value(inputs.balances)?;
+    json.as_object_mut()
+        .expect("balances serialise as an object")
+        .insert(
+            "reserved".to_string(),
+            serde_json::to_value(dec!("-10000"))?,
+        );
+    let tampered: SourceBalances = off_the_log(json)?;
+    // Premise: the negative claim has made the source look funded, so an
+    // admission here would be the gate believing arithmetic it was handed.
+    assert!(
+        tampered.free() > inputs.intent.amount(),
+        "premise: the tampered balances free {} against an intent of {}",
+        tampered.free(),
+        inputs.intent.amount()
+    );
+    inputs.balances = tampered;
+
+    let veto = inputs.veto();
+    assert_eq!(veto.check, GateCheck::SourceBalance);
+    assert!(
+        veto.reason
+            .contains("a claim on a balance cannot be negative"),
+        "{}",
+        veto.reason
+    );
+    assert!(
+        veto.reason.contains("reserved is -10000"),
+        "{}",
+        veto.reason
+    );
+    Ok(())
+}
+
+#[test]
+fn an_intent_off_the_log_asking_for_nothing_vetoes_instead_of_passing_every_cap_vacuously()
+-> Result<()> {
+    // Every cap is an upper bound, so an amount of zero is under all four of
+    // them and inside any balance. `TransferIntent::new` refuses a
+    // non-positive amount; a record decoded off the log does not go through
+    // it, and the assessment would be admitted — an approval on the record
+    // for a transfer nobody asked for, against a corridor's signature.
+    let mut inputs = Inputs::satisfied()?;
+    let mut json = serde_json::to_value(&inputs.intent)?;
+    json.as_object_mut()
+        .expect("an intent serialises as an object")
+        .insert("amount".to_string(), serde_json::to_value(dec!("0"))?);
+    let tampered: TransferIntent = off_the_log(json)?;
+    // Premise: the amount really is zero and really is under the per-transfer
+    // cap, so no other check can be what refuses.
+    assert_eq!(tampered.amount(), dec!("0"));
+    assert!(tampered.amount() < caps()?.max_per_transfer());
+    assert!(tampered.amount() < inputs.balances.free());
+    inputs.intent = tampered;
+
+    let veto = inputs.veto();
+    assert_eq!(veto.check, GateCheck::Caps);
+    assert!(
+        veto.reason
+            .contains("a transfer of nothing is not a transfer"),
+        "{}",
+        veto.reason
+    );
+    Ok(())
 }

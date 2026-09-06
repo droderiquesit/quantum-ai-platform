@@ -16,8 +16,8 @@
 
 use qip_capital_fabric::corridor::{CorridorCaps, CorridorId, CorridorStage, PermittedHours};
 use qip_capital_fabric::custody::{
-    Attestation, CorridorKind, CustodyClass, CustodyPolicy, EnforcementPoint, EnforcementPoints,
-    Identity, TransferAuthority,
+    Attestation, ClassConstraints, CorridorKind, CustodyClass, CustodyPolicy, EnforcementPoint,
+    EnforcementPoints, Identity, TransferAuthority,
 };
 use qip_capital_fabric::destination::{
     ACTIVATION_DELAY, Approver, Asset, DestinationKey, DestinationStatus, SignatureRecord,
@@ -42,6 +42,7 @@ use qip_events::envelope::canonical_json;
 use qip_events::log::{GENESIS_HASH, LogRecord};
 use qip_events::{Envelope, EventBody, EventLog, Topic};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -884,5 +885,117 @@ fn the_journal_adopts_a_decision_only_after_the_log_has_it() -> Result<()> {
     );
     assert_eq!(journal.state(), &before);
     assert_eq!(journal.records().len(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_gate_command_whose_custody_table_contradicts_the_blueprint_is_journalled_as_a_veto_and_replays_as_one()
+-> Result<()> {
+    // §37.4's table reaches the gate inside the `GateCommand`, which means it
+    // reaches the gate deserialised on every replay — and `serde` calls no
+    // constructor, so `CustodyPolicy::from_constraints`'s refusal of a
+    // contradictory table was, until the gate re-ran `conforms`, a rule no
+    // replay ever applied. That is worse than an unchecked input: the replay
+    // recomputes each outcome and compares, so a record admitting a transfer
+    // against a table saying collateral may move would have been *confirmed*
+    // by a chain that verifies. The custody policy has to be enforced by the
+    // control the replay re-runs, or it is only a policy record.
+    let mut commands = mixed_sequence()?;
+    // Premise: as written the sequence admits exactly one assessment. Without
+    // this the tampering below could be applied to a log that admits nothing.
+    let clean = journal_of(23, commands.clone())?;
+    assert_mixed(&decoded(clean.records())?);
+
+    // The table only serde can build: collateral marked transferable, with a
+    // corridor listed, which `from_constraints` refuses outright.
+    let blueprint = CustodyPolicy::blueprint();
+    let mut rows: BTreeMap<CustodyClass, ClassConstraints> = CustodyClass::ALL
+        .into_iter()
+        .filter_map(|class| blueprint.constraints(class).map(|row| (class, row.clone())))
+        .collect();
+    let collateral = rows
+        .get_mut(&CustodyClass::CollateralAndMargin)
+        .expect("the blueprint table has a collateral row");
+    collateral.may_be_transfer_source = true;
+    collateral
+        .permitted_corridors
+        .insert(CorridorKind::InstitutionApprovalFlow);
+    assert!(
+        CustodyPolicy::from_constraints(rows.clone()).is_err(),
+        "premise: no constructor in this crate builds this table"
+    );
+    let mut object = serde_json::Map::new();
+    object.insert("classes".to_string(), serde_json::to_value(&rows)?);
+    let tampered: CustodyPolicy = serde_json::from_value(serde_json::Value::Object(object))?;
+    // Premise: the fiat row the fixture's corridor uses is untouched, so the
+    // veto below is the table being refused as a whole and not this corridor's
+    // own question being answered differently.
+    assert!(
+        tampered
+            .permits(
+                CustodyClass::FiatAtInstitutionOfRecord,
+                CorridorKind::InstitutionApprovalFlow
+            )
+            .is_ok(),
+        "premise: the fiat row still permits the fixture's corridor"
+    );
+
+    let mut swapped = 0usize;
+    for command in &mut commands {
+        if let FabricCommand::Gate(gate) = command {
+            gate.custody = tampered.clone();
+            swapped += 1;
+        }
+    }
+    assert_eq!(
+        swapped, 4,
+        "the fixture holds four gate commands: one admitted, two vetoed, one against a \
+         corridor the log never proposed"
+    );
+
+    let journal = journal_of(23, commands)?;
+    let bodies = decoded(journal.records())?;
+    assert!(
+        !bodies.iter().any(|record| matches!(
+            record.outcome,
+            FabricOutcome::Gate(Outcome::Applied(GateVerdict::Admitted(_)))
+        )),
+        "an assessment was admitted against a table §37.4 forbids"
+    );
+    assert_eq!(
+        bodies
+            .iter()
+            .filter(|record| vetoed_by(record) == Some(GateCheck::CorridorAuthority))
+            .count(),
+        3,
+        "every assessment against a proposed corridor must refuse on check 1"
+    );
+    let vetoed = bodies
+        .iter()
+        .find_map(|record| match &record.outcome {
+            FabricOutcome::Gate(Outcome::Applied(GateVerdict::Vetoed(vetoed)))
+                if vetoed.reason.contains("(policy_contradicts_blueprint)") =>
+            {
+                Some(vetoed.clone())
+            }
+            _ => None,
+        })
+        .expect("a table-contradiction veto is in the tampered fixture");
+    assert!(vetoed.alert, "check 1 pairs its veto with an alert");
+
+    // The log keeps the table exactly as it was asked about — the record is
+    // what was submitted, not what the control wished had been — and the
+    // replay reaches the same verdict from the log alone.
+    let commanded = bodies.iter().find_map(|record| match &record.command {
+        FabricCommand::Gate(gate) => Some(gate.custody.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        commanded.as_ref(),
+        Some(&tampered),
+        "the record must carry the table that was assessed, unrepaired"
+    );
+    let replayed = replay(journal.records())?;
+    assert_eq!(replayed.state, *journal.state());
     Ok(())
 }
