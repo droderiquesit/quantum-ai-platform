@@ -212,11 +212,21 @@ impl Portfolio {
     }
 
     /// Exposure along every axis, using the universe for classification.
+    ///
+    /// Fallible for one reason: a factor loading is an `f64` on a reference
+    /// record and the exposure it scales is money, and a loading that is not a
+    /// number cannot be turned into money. It used to be read as
+    /// `Decimal::ZERO`, which is the same defect as dropping the position — the
+    /// comment in the loop below already argues that an unclassified instrument
+    /// is bucketed rather than dropped *because dropping it would understate
+    /// gross exposure*, and then the line beneath it understated one axis of the
+    /// same position to nothing. A factor the book is running and the breakdown
+    /// reports as flat is an exposure nobody hedges.
     pub fn exposures(
         &self,
         universe: &Universe,
         prices: &BTreeMap<String, Decimal>,
-    ) -> ExposureBreakdown {
+    ) -> Result<ExposureBreakdown> {
         let mut breakdown = ExposureBreakdown::default();
         for position in self.positions() {
             let Some(price) = prices.get(position.object_id.as_str()) else {
@@ -245,11 +255,35 @@ impl Portfolio {
             );
             breakdown.by_venue.add(&object.venue, value);
             for (factor, loading) in &object.risk.factor_exposures.loadings {
-                let contribution = Decimal::from_f64(*loading).unwrap_or(Decimal::ZERO) * value;
+                // The crossing point from statistic to money: a loading is a
+                // regression coefficient and the value it multiplies is a
+                // Decimal. Both halves of the crossing are refused rather than
+                // absorbed — `from_f64` for a loading that is not a finite
+                // number of the representable size, and `checked_mul` for a
+                // product that does not fit. The multiplication was `*`, which
+                // panics on overflow; a refusal names the record instead.
+                let scaled = Decimal::from_f64(*loading).ok_or_else(|| {
+                    Error::invalid(format!(
+                        "{} states a loading of {loading} on factor {factor}, which is not a \
+                         number a position value can be multiplied by; correct the reference \
+                         record — this exposure was previously reported as zero, and a factor \
+                         the book is running and the breakdown calls flat is one nobody hedges",
+                        object.object_id.as_str()
+                    ))
+                })?;
+                let contribution = scaled.checked_mul(value).ok_or_else(|| {
+                    Error::numeric(format!(
+                        "{} states a loading of {loading} on factor {factor}, and its \
+                         contribution to a position worth {value} is not representable; correct \
+                         the reference record — the breakdown will not report a truncated \
+                         exposure as the whole one",
+                        object.object_id.as_str()
+                    ))
+                })?;
                 breakdown.by_factor.add(factor, contribution);
             }
         }
-        breakdown
+        Ok(breakdown)
     }
 
     /// Total return since inception, on contributed capital.

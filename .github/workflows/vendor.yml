@@ -76,6 +76,20 @@ jobs:
         id: identity
         run: |
           set -euo pipefail
+          # Character set first, before the value names a path or a registry
+          # repository. `environment` is a `choice`, so GitHub's own dispatch
+          # validation is what normally holds it — and a guard that depends on
+          # a validation this file does not perform is a guard on loan.
+          # `image.yml` says the same of its own choice input for the same
+          # reason: one edit turning `type: choice` into `type: string` arms
+          # every use below at once, and the account this workflow holds signs
+          # with the environment's attestor.
+          case "$TARGET_ENVIRONMENT" in
+            ''|*[!a-z0-9-]*)
+              echo "environment is not an environment name: lowercase letters, digits and - only." >&2
+              exit 1
+              ;;
+          esac
           tfvars="infrastructure/environments/${TARGET_ENVIRONMENT}/terraform.tfvars"
           [ -f "$tfvars" ] || { echo "no tfvars at $tfvars" >&2; exit 1; }
           project="$(sed -n 's/^project_id[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
@@ -86,6 +100,21 @@ jobs:
             echo "$tfvars carries no project_id/project_number" >&2
             exit 1
           }
+          # The character set of what was read, before any of it is pasted into
+          # a gcloud argument or a registry path. `${{ steps.identity.outputs.region }}`
+          # is substituted into the next step's script as source text, so a
+          # region carrying a quote and a semicolon is a command rather than a
+          # malformed region — and this job holds the key version that signs
+          # for the environment's attestor. Emptiness is refused above.
+          for value in "$project" "$region"; do
+            case "$value" in
+              *[!a-z0-9-]*)
+                echo "$tfvars names a project or a region containing a character neither can contain: '$value'" >&2
+                echo "Permitted: lowercase letters, digits and -" >&2
+                exit 1
+                ;;
+            esac
+          done
           # Refused before authenticating, not after. An environment still
           # carrying the marker has no project, so every value derived below —
           # the workload-identity audience, the service account, the attestor,

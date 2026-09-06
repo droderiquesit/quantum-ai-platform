@@ -51,7 +51,7 @@
 //! records.
 
 use crate::corridor::{Corridor, CorridorCaps, CorridorId, CorridorStage};
-use crate::custody::{CorridorKind, CustodyClass, CustodyPolicy};
+use crate::custody::{CorridorKind, CustodyClass, CustodyPolicy, TransferAuthority};
 use crate::destination::{
     Approver, DestinationKey, DestinationRegistry, DestinationStatus, SignatureRecord,
 };
@@ -336,14 +336,21 @@ pub enum WalletOutcome {
 /// The corridor and the destination allowlist are named rather than carried,
 /// because the replay has rebuilt both from the records before this one and
 /// a copy inside the record would be a second claim about them. Everything
-/// else the gate reads — the custody table, the carried history, the source
-/// balances, the breaker and the kill switch — is carried, because the
-/// fabric holds none of it and the log is the only place it is written down.
+/// else the gate reads — the custody table, §37.4's three attestations and
+/// the identity that trades, the carried history, the source balances, the
+/// breaker and the kill switch — is carried, because the fabric holds none of
+/// it and the log is the only place it is written down.
+///
+/// `authority` is carried rather than validated on the way in: the replay
+/// re-runs the gate over it, so a record naming three attestations that are
+/// not independent is refused by the control rather than trusted because its
+/// chain verified.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateCommand {
     pub intent: TransferIntent,
     pub corridor: CorridorId,
     pub custody: CustodyPolicy,
+    pub authority: TransferAuthority,
     pub history: TransferHistory,
     pub balances: SourceBalances,
     pub velocity: VelocityState,
@@ -352,11 +359,17 @@ pub struct GateCommand {
 }
 
 /// What the gate said.
+///
+/// The admitted arm is boxed. An [`Approved`] carries the intent, the
+/// signature reference and §37.4's three attestations, and a [`Vetoed`] is a
+/// check and a sentence; leaving the two inline would make every veto record
+/// as large as the largest admission. `Box` is transparent to serde, so the
+/// record on the log is unchanged by it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GateVerdict {
     /// All seven checks passed. The record carries no way to execute.
-    Admitted(Approved),
+    Admitted(Box<Approved>),
     /// A check refused, and the record names it.
     Vetoed(Vetoed),
 }
@@ -659,13 +672,14 @@ impl FabricState {
             corridor,
             &self.destinations,
             &command.custody,
+            &command.authority,
             &command.history,
             &command.balances,
             command.velocity,
             command.kill_switch,
             command.now,
         ) {
-            Ok(approved) => GateVerdict::Admitted(approved),
+            Ok(approved) => GateVerdict::Admitted(Box::new(approved)),
             Err(vetoed) => GateVerdict::Vetoed(vetoed),
         };
         self.assessments.push(GateAssessment {

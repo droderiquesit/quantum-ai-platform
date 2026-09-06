@@ -475,7 +475,7 @@ fn a_split_halves_prior_prices_so_the_series_stays_continuous() {
         },
         announced_at: now(),
     };
-    assert_eq!(action.price_adjustment_factor(dec!("200")), dec!("0.5"));
+    assert_eq!(action.price_adjustment_factor(dec!("200")), Ok(dec!("0.5")));
     assert_eq!(action.quantity_adjustment_factor(), Decimal::from_int(2));
 
     let prices = vec![
@@ -483,7 +483,7 @@ fn a_split_halves_prior_prices_so_the_series_stays_continuous() {
         (now().saturating_add(Duration::from_days(4)), dec!("210")),
         (ex, dec!("105")),
     ];
-    let adjusted = adjust_prices(&prices, &[action]);
+    let adjusted = adjust_prices(&prices, &[action]).expect("a two-for-one split is priceable");
     assert_eq!(adjusted[0].1, dec!("100"));
     assert_eq!(adjusted[1].1, dec!("105"));
     assert_eq!(
@@ -504,7 +504,10 @@ fn a_cash_dividend_adjusts_by_the_yield_it_paid() {
         announced_at: now(),
     };
     // A 2.00 dividend from a 100.00 price scales prior prices by 0.98.
-    assert_eq!(action.price_adjustment_factor(dec!("100")), dec!("0.98"));
+    assert_eq!(
+        action.price_adjustment_factor(dec!("100")),
+        Ok(dec!("0.98"))
+    );
     assert_eq!(action.cash_per_share(), dec!("2"));
     assert_eq!(action.quantity_adjustment_factor(), Decimal::ONE);
 }
@@ -536,7 +539,10 @@ fn structural_actions_do_not_rewrite_history() {
             kind,
             announced_at: now(),
         };
-        assert_eq!(action.price_adjustment_factor(dec!("100")), Decimal::ONE);
+        assert_eq!(
+            action.price_adjustment_factor(dec!("100")),
+            Ok(Decimal::ONE)
+        );
         assert_eq!(action.is_terminal(), terminal);
     }
 }
@@ -570,10 +576,187 @@ fn several_actions_compound_in_the_right_order() {
         (dividend_date, dec!("99")),
         (split_date, dec!("50")),
     ];
-    let adjusted = adjust_prices(&prices, &actions);
+    let adjusted = adjust_prices(&prices, &actions).expect("both actions are priceable");
     // The earliest price absorbs both the split and the dividend.
     assert!(adjusted[0].1 < dec!("50"), "got {}", adjusted[0].1);
     assert_eq!(adjusted[2].1, dec!("50"), "the latest price is unchanged");
+}
+
+fn spinoff(value_fraction: f64) -> CorporateAction {
+    CorporateAction {
+        object_id: id("obj-x"),
+        ex_date: now().saturating_add(Duration::from_days(5)),
+        record_date: None,
+        payment_date: None,
+        kind: CorporateActionKind::Spinoff {
+            spun_entity: "NEWCO".into(),
+            value_fraction,
+        },
+        announced_at: now(),
+    }
+}
+
+#[test]
+fn a_spinoff_fraction_outside_the_unit_interval_is_refused_rather_than_clamped() {
+    // `value_fraction.clamp(0.0, 1.0)` is the clamp the core-Rust rules
+    // prohibit by name, and both ends of it did harm: 4.0 became 1.0, whose
+    // factor of zero erases the entire prior series rather than adjusting it,
+    // and `NaN` survived the clamp untouched, failed `Decimal::from_f64` and
+    // landed on the shared `unwrap_or(Decimal::ONE)` — no adjustment at all,
+    // which is indistinguishable from the honest answer a merger gives.
+    for fraction in [f64::NAN, f64::INFINITY, 4.0, 1.0, -0.5] {
+        let Err(refusal) = spinoff(fraction).price_adjustment_factor(dec!("100")) else {
+            panic!("a fraction of {fraction} is not a share of value and must not be priced");
+        };
+        assert_eq!(refusal.code(), "invalid", "at {fraction}: {refusal}");
+        assert!(
+            refusal.message().contains("NEWCO"),
+            "the refusal must name the spun entity so the record can be found, at \
+             {fraction}: {refusal}"
+        );
+    }
+
+    // The admitting half: a quarter of the value leaving is an ordinary
+    // spinoff, it is priced at 0.75, and the series moves by it. Without this
+    // the refusals above would be satisfied by a function that refused
+    // everything.
+    let action = spinoff(0.25);
+    assert_eq!(
+        action.price_adjustment_factor(dec!("100")),
+        Ok(dec!("0.75"))
+    );
+    let prices = vec![(now(), dec!("100")), (action.ex_date, dec!("75"))];
+    let adjusted = adjust_prices(&prices, &[action]).expect("a quarter is a share of value");
+    assert_eq!(
+        adjusted[0].1,
+        dec!("75"),
+        "the prior price loses the spun value"
+    );
+    assert_eq!(adjusted[1].1, dec!("75"), "the ex-date price is untouched");
+}
+
+#[test]
+fn an_action_that_cannot_be_priced_is_refused_rather_than_reported_as_no_adjustment() {
+    // Every arm used to fall through to `Decimal::ONE`, which `adjust_prices`
+    // then skipped — so a corrupt record and a merger produced the same
+    // outcome, and the split stayed in the series. An unadjusted split reads
+    // as a crash, and every volatility, drawdown and return taken from that
+    // series inherits it.
+    let cases: Vec<(&str, CorporateActionKind, Decimal)> = vec![
+        (
+            "a split into zero shares",
+            CorporateActionKind::Split {
+                ratio: Decimal::ZERO,
+            },
+            dec!("100"),
+        ),
+        (
+            "a stock dividend that pays away the whole holding",
+            CorporateActionKind::StockDividend {
+                ratio: Decimal::from_int(-1),
+            },
+            dec!("100"),
+        ),
+        (
+            "a dividend larger than the price it was paid from",
+            CorporateActionKind::CashDividend {
+                amount: dec!("150"),
+            },
+            dec!("100"),
+        ),
+        (
+            "a rights issue against no reference price",
+            CorporateActionKind::RightsIssue {
+                ratio: Decimal::ONE,
+                price: dec!("80"),
+            },
+            Decimal::ZERO,
+        ),
+    ];
+    for (described, kind, reference) in cases {
+        let action = CorporateAction {
+            object_id: id("obj-x"),
+            ex_date: now(),
+            record_date: None,
+            payment_date: None,
+            kind,
+            announced_at: now(),
+        };
+        let refusal = action
+            .price_adjustment_factor(reference)
+            .expect_err(described);
+        assert_eq!(refusal.code(), "invalid", "{described}: {refusal}");
+        assert!(
+            refusal.message().contains("obj-x"),
+            "{described}: the refusal must name the instrument, got {refusal}"
+        );
+    }
+
+    // The admitting half, one legitimate value per refused arm, so that what
+    // separates the two is the figure and not the arm.
+    for (described, kind, reference, expected) in [
+        (
+            "a two-for-one split",
+            CorporateActionKind::Split {
+                ratio: Decimal::from_int(2),
+            },
+            dec!("100"),
+            dec!("0.5"),
+        ),
+        (
+            "a one-for-ten stock dividend",
+            CorporateActionKind::StockDividend { ratio: dec!("0.1") },
+            dec!("100"),
+            dec!("0.909090909"),
+        ),
+        (
+            "a two per cent dividend",
+            CorporateActionKind::CashDividend { amount: dec!("2") },
+            dec!("100"),
+            dec!("0.98"),
+        ),
+        (
+            "a one-for-one rights issue at 80",
+            CorporateActionKind::RightsIssue {
+                ratio: Decimal::ONE,
+                price: dec!("80"),
+            },
+            dec!("100"),
+            dec!("0.9"),
+        ),
+    ] {
+        let action = CorporateAction {
+            object_id: id("obj-x"),
+            ex_date: now(),
+            record_date: None,
+            payment_date: None,
+            kind,
+            announced_at: now(),
+        };
+        assert_eq!(
+            action.price_adjustment_factor(reference),
+            Ok(expected),
+            "{described} must still be priced"
+        );
+    }
+
+    // And the one thing `Decimal::ONE` is still allowed to mean: a rename
+    // leaves the history as traded. Refusal and "no adjustment" are now two
+    // answers rather than one.
+    let renamed = CorporateAction {
+        object_id: id("obj-x"),
+        ex_date: now(),
+        record_date: None,
+        payment_date: None,
+        kind: CorporateActionKind::Renamed {
+            new_symbol: "NEW".into(),
+        },
+        announced_at: now(),
+    };
+    assert_eq!(
+        renamed.price_adjustment_factor(dec!("100")),
+        Ok(Decimal::ONE)
+    );
 }
 
 // --- curves -----------------------------------------------------------------

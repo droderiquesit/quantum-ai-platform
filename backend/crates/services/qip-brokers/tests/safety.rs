@@ -39,6 +39,19 @@ use qip_financial::asset_class::InstrumentType;
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
 
+/// The liquidity every fixture in this file states, because nothing states it
+/// for them any more.
+///
+/// [`qip_financial::costs::LiquidityProfile`] has no `Default`: the one it had
+/// asserted a 10bp quote and a one-session exit for any instrument at all, and
+/// `MinLiquidity` and `MaxDaysToLiquidate` — controls whose job is to veto
+/// trading — read exactly those two figures. A fixture may state its own
+/// premise; it may not inherit one nobody wrote down. A liquid listed name on
+/// five million units a day, quoted at three basis points.
+fn fixture_liquidity() -> qip_financial::costs::LiquidityProfile {
+    qip_financial::costs::LiquidityProfile::listed(qip_core::Decimal::from_int(5_000_000), 3.0)
+}
+
 /// A marker that is not a credential and authenticates nothing.
 ///
 /// Its only job is to be findable. A test that searches output for a secret
@@ -587,15 +600,20 @@ fn authentication_refuses_a_credential_for_another_venue() -> Result<()> {
 // --- shared fixtures --------------------------------------------------------
 
 fn instrument() -> FinancialObject {
-    FinancialObject::builder(object(), "AAA", InstrumentType::CommonStock)
-        .name("Instrument A")
-        .venue(VENUE)
-        .price(dec!("100"))
-        .lot_size(Decimal::ONE)
-        .tick_size(dec!("0.01"))
-        .provenance(Provenance::synthetic("qip-brokers test", start()))
-        .build(start())
-        .expect("a structurally valid instrument")
+    FinancialObject::builder(
+        object(),
+        "AAA",
+        InstrumentType::CommonStock,
+        fixture_liquidity(),
+    )
+    .name("Instrument A")
+    .venue(VENUE)
+    .price(dec!("100"))
+    .lot_size(Decimal::ONE)
+    .tick_size(dec!("0.01"))
+    .provenance(Provenance::synthetic("qip-brokers test", start()))
+    .build(start())
+    .expect("a structurally valid instrument")
 }
 
 fn order(label: &str, side: Side, quantity: i64) -> Order {

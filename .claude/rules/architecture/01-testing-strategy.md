@@ -8,11 +8,23 @@
 | Crate contract | `backend/crates/<group>/<crate>/tests/` |
 | Cross-cutting behaviour | `backend/crates/tests/qip-acceptance/tests/` |
 
-The acceptance suites are `acceptance`, `architecture`, `chaos`,
-`compliance_proof`, `documentation`, `e2e`, `e2e_live`, `infrastructure`,
-`performance`, `resilience`, `security`, `stress`, `truth_loop`. Adding a
-fourteenth is fine; putting a cross-cutting assertion in a crate's own tests
-is not, because nothing there can see the other side of the seam.
+There are **21** acceptance suites on 2026-09-06 —
+`ls backend/crates/tests/qip-acceptance/tests/*.rs | wc -l`, and
+`ls backend/crates/tests/qip-acceptance/tests/*.rs | xargs -n1 basename` for
+the names. Adding a twenty-second is fine; putting a cross-cutting assertion
+in a crate's own tests is not, because nothing there can see the other side of
+the seam.
+
+**This paragraph listed thirteen suites and said "adding a fourteenth is
+fine", and it was wrong by eight.** The eight it never named are
+`api_boundary`, `console_route`, `egress`, `gitops`, `manifest_wiring`,
+`paper_boundary`, `region_share` and `terraform_contract` — which includes the
+suite that holds the paper-trading boundary and the one that holds the
+Terraform contract, the two an agent most needs to know exist before it
+decides a cross-cutting assertion has nowhere to live. A list is the wrong
+shape for this fact: it goes stale silently and every reader believes it,
+whereas a command goes stale loudly. Run the command; the enumeration is gone
+on purpose.
 
 ## How a test is written
 

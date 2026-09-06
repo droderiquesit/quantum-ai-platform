@@ -33,8 +33,15 @@
 //! catalogue data would size differently on a host up six months and on one
 //! restarted this morning, and a restart would refresh a mark from 2010.
 //! Confidence is `f64` because it is a statistic; the mark is [`Decimal`]
-//! because it is money. The crossing point is marked where a confidence
-//! multiplies a value.
+//! because it is money — and **the two never meet in this module**. The one
+//! place a confidence multiplies money is `Platform::sizing_confidence`, which
+//! reads [`AssetValuation::confidence_at`] and crosses there, narrowing the
+//! position rather than the mark. Two functions here used to cross it as well,
+//! `supportable_value` and `haircut`; neither had a caller anywhere outside one
+//! test in this crate, and both were deleted rather than wired up, because
+//! wiring them would have given one figure two derivations in two crates and
+//! the two would eventually have disagreed. Do not reintroduce a
+//! confidence-times-money helper here without first deleting the kernel's.
 //!
 //! **Every input is checked for knowability.** An input stamped after the
 //! valuation instant is refused. A mark struck as of January from a comparable
@@ -401,50 +408,6 @@ impl AssetValuation {
             )));
         }
         Ok(self.confidence * 0.5_f64.powf(age / half_life))
-    }
-
-    /// The mark reduced to the part of it the platform is willing to stand
-    /// behind at `now`.
-    ///
-    /// **Statistic meets money here.** Confidence is `f64`; the mark is
-    /// [`Decimal`]. The confidence crosses into `Decimal` once, at this
-    /// conversion, and the product is exact decimal arithmetic — a
-    /// risk-bearing figure is never carried through binary floating point.
-    /// This is the arithmetic behind §16.3's rule that an uncertain mark
-    /// cannot silently support leverage.
-    pub fn supportable_value(&self, now: Timestamp) -> Result<Decimal> {
-        let confidence = self.confidence_at(now)?;
-        let weight = Decimal::from_f64(confidence).ok_or_else(|| {
-            Error::numeric(format!(
-                "the decayed confidence {confidence} on {} cannot be represented at decimal scale",
-                self.asset
-            ))
-        })?;
-        self.value.checked_mul(weight).ok_or_else(|| {
-            Error::numeric(format!(
-                "weighting the mark {} on {} by {confidence} overflows",
-                self.value, self.asset
-            ))
-        })
-    }
-
-    /// A haircut on a notional, taken at this mark's decayed confidence.
-    ///
-    /// Money in, money out: the haircut is applied to a [`Decimal`] notional
-    /// and the result is [`Decimal`]. The confidence is the only `f64` and it
-    /// crosses in [`Self::supportable_value`]'s sibling conversion below.
-    pub fn haircut(&self, notional: Decimal, now: Timestamp) -> Result<Decimal> {
-        let confidence = self.confidence_at(now)?;
-        let weight = Decimal::from_f64(confidence).ok_or_else(|| {
-            Error::numeric(format!(
-                "the decayed confidence {confidence} on {} cannot be represented at decimal scale",
-                self.asset
-            ))
-        })?;
-        let supported = notional
-            .checked_mul(weight)
-            .ok_or_else(|| Error::numeric("the haircut computation overflows".to_string()))?;
-        Ok(notional - supported)
     }
 }
 

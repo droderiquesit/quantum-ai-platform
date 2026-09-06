@@ -34,6 +34,67 @@
 # which is a machine that cannot be replaced and a group that cannot heal.
 # The bake creates the image; a person names it in the tfvars; nothing in this
 # configuration can remove it.
+#
+# ## What nothing here reclaims, said plainly rather than discovered on a bill
+#
+# The staging bucket has a lifecycle rule and the payload expires. Two things
+# beside it do not, and neither has an owner yet:
+#
+#   * **Every image the bake ever produced stays.** Roughly 20 GB each, billed
+#     for as long as the project exists, including the ones from a bake that
+#     was retried and the ones for a machine shape nobody chose in the end.
+#     A lifecycle rule is not the answer and must not be added here: an image
+#     a node's instance template names cannot be deleted by a schedule that
+#     does not read the tfvars. What is needed is a person reading
+#     `gcloud compute images list --filter="labels.qip-environment=<env>"`
+#     against the `boot_image` values in `environments/*/terraform.tfvars`
+#     and deleting the rest by hand, with the approval this repository
+#     requires for deleting anything in a cloud project.
+#   * **A runner that dies rather than fails leaks a builder — the running
+#     half of that is now bounded at Compute Engine, and the stopped half is
+#     not.** `image.yml` deletes the instance and the disk in steps marked
+#     `if: always()`, which covers a failed step and a cancelled job — but not
+#     a runner that is killed, loses its network, or has its token expire
+#     mid-job, because at that moment the workflow is what has stopped
+#     running. So the create itself carries the bound:
+#     `--max-run-duration 45m --instance-termination-action DELETE`, in
+#     `.github/workflows/image.yml` under `- name: create the builder`.
+#     Compute Engine deletes an `e2-standard-2` that is still running long
+#     after any run could still be waiting on it, whether or not a runner is
+#     alive to ask.
+#
+#     45 minutes is read off that workflow rather than guessed: its serial
+#     wait gives up at 1800 seconds and no bake that passes that point creates
+#     an image, so a builder alive a quarter of an hour beyond the deadline
+#     the workflow enforces on itself is a builder nothing is waiting on. The
+#     headroom is one-sided on purpose — a duration shorter than a legitimate
+#     bake deletes the machine mid-provision, and an outage is the worse of
+#     the two failures.
+#
+#     This paragraph used to say the flags were not applied "because it has
+#     never been exercised against a real dispatch and a wrong flag would fail
+#     the first bake". The objection was about flag correctness, and flag
+#     correctness came from Google's published reference rather than from a
+#     dispatch: for a VM that is not Spot — this one names no
+#     `--provisioning-model` — `--instance-termination-action` is *required*
+#     whenever `--max-run-duration` is set, `DELETE` is one of its two values,
+#     and the duration limits are 30 seconds and 120 days. Omitting the action
+#     is what would have failed the create; the pair is what the reference
+#     documents.
+#
+#     What it does not cover, stated here so the mitigation is not read as
+#     larger than it is. A termination timestamp is cleared whenever a VM
+#     stops, and `provision.sh` shuts the builder down when it finishes — so a
+#     runner killed after that point leaves a `TERMINATED` instance that bills
+#     no CPU and that nothing here deletes. The disk is outside it by design:
+#     the boot disk is created `--no-boot-disk-auto-delete` because it is what
+#     the image is made from, so it survives its instance whether the instance
+#     went by this action or by the workflow's own delete. Both leave the same
+#     20 GB pd-balanced disk labelled `qip-role=image-bake`, and nothing
+#     watches for it. The check is therefore unchanged and still worth
+#     running:
+#     `gcloud compute instances list --filter="labels.qip-role=image-bake"`,
+#     which should be empty between bakes.
 
 locals {
   name = "qip-${var.environment}-image-bake"

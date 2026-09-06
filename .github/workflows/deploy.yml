@@ -100,12 +100,107 @@ jobs:
           echo "prod is not deployed automatically." >&2
           exit 1
 
+      # The two values every job below is built from, checked before anything
+      # is believed about either. This job gates the rest — `images` needs it
+      # and `deploy` needs `images` — so a refusal here is a refusal for the
+      # whole pipeline.
+      #
+      # Character sets, and before any pattern tool sees them. `image.yml`'s
+      # base-image guard states the reason at length and it is the same reason
+      # here: every pattern tool in a shell matches per LINE, so a value whose
+      # first line is well formed satisfies one while its second line is
+      # somebody else's command. `DEPLOY_SHA` becomes the ref `actions/checkout`
+      # is handed and part of the `gh api` query string below;
+      # `TARGET_ENVIRONMENT` names a directory, a registry path and a Google
+      # Cloud resource filter. Neither can wait for a later step.
+      - name: the values the pipeline is built from are the shapes they claim
+        run: |
+          set -euo pipefail
+          case "$TARGET_ENVIRONMENT" in
+            ''|*[!a-z0-9-]*)
+              echo "environment is not an environment name: lowercase letters, digits and - only." >&2
+              exit 1
+              ;;
+          esac
+          case "$DEPLOY_SHA" in
+            *[!0-9a-f]*)
+              echo "the commit being deployed is not a lowercase-hex commit sha." >&2
+              echo "Every image this pipeline pushes is tagged with exactly that, so anything else names a tag nothing downstream can resolve." >&2
+              exit 1
+              ;;
+          esac
+          if [ "${#DEPLOY_SHA}" -ne 40 ]; then
+            echo "the commit being deployed is ${#DEPLOY_SHA} characters; a full 40-character commit sha is what every image is tagged with." >&2
+            exit 1
+          fi
+          echo "deploying ${DEPLOY_SHA} to ${TARGET_ENVIRONMENT}"
+
+      # Whose commit this is, checked before its conclusion is believed.
+      #
+      # `workflow_run` fires for ANY completed run of `ci`, and `ci.yml`
+      # triggers on `pull_request:` — so a pull request opened from a fork
+      # starts a `ci` run, and this workflow wakes up when it finishes. The
+      # `branches:` filter above does not stop that: it matches the triggering
+      # run's HEAD branch, and a fork names its own branches, so a fork whose
+      # branch is called `main` satisfies it exactly.
+      #
+      # What that reaches is the whole pipeline. This file comes from the
+      # default branch and a fork cannot edit it — but `DEPLOY_SHA` is then the
+      # fork's commit and every job below checks that commit out. The images
+      # job runs `docker build` on the fork's Dockerfile and the fork's source,
+      # pushes the result, and has the environment's Binary Authorization
+      # attestor SIGN it, holding the WIF credential for `qip-ci-<env>` while it
+      # does. A stranger's unreviewed commit would come out of that admissible
+      # by the one policy rule that decides what may run at all. The `ci` gate
+      # is no obstacle to somebody who also wrote the tests.
+      #
+      # Two facts on the event close it and both are checked, because either
+      # alone leaves the door ajar: the triggering run was started by a push,
+      # and its head repository is this repository.
+      - name: the triggering ci run is this repository's own
+        if: github.event_name == 'workflow_run'
+        env:
+          TRIGGER_EVENT: ${{ github.event.workflow_run.event }}
+          TRIGGER_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          THIS_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          case "$TRIGGER_EVENT" in
+            ''|*[!a-z_]*)
+              echo "the triggering run names no event this workflow recognises." >&2
+              exit 1
+              ;;
+          esac
+          case "$TRIGGER_REPOSITORY" in
+            ''|*[!A-Za-z0-9._/-]*)
+              echo "the triggering run's head repository is not a repository name." >&2
+              exit 1
+              ;;
+          esac
+          if [ "$TRIGGER_EVENT" != "push" ]; then
+            echo "the ci run that triggered this was started by '${TRIGGER_EVENT}', not by a push to this repository." >&2
+            echo "A pull request's run builds the code in the pull request, which is not this repository's own act; deploying it would sign a stranger's commit with the environment's attestor." >&2
+            echo "Merge it, or dispatch this workflow against a commit ci has already passed." >&2
+            exit 1
+          fi
+          if [ "$TRIGGER_REPOSITORY" != "$THIS_REPOSITORY" ]; then
+            echo "the ci run that triggered this ran on ${TRIGGER_REPOSITORY}, not on ${THIS_REPOSITORY}." >&2
+            exit 1
+          fi
+          echo "the triggering ci run is a push to ${THIS_REPOSITORY}"
+
       - name: the triggering ci run succeeded
         if: github.event_name == 'workflow_run'
+        env:
+          # Through the environment rather than pasted into the script. The
+          # value is one of GitHub's own words today; an expression is source
+          # text whatever it holds, and this one used to be substituted inside
+          # a pair of single quotes, where one apostrophe ends the string.
+          CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
         run: |
-          conclusion='${{ github.event.workflow_run.conclusion }}'
-          if [ "$conclusion" != "success" ]; then
-            echo "ci concluded '$conclusion'; nothing is deployed." >&2
+          set -euo pipefail
+          if [ "$CI_CONCLUSION" != "success" ]; then
+            echo "ci concluded '${CI_CONCLUSION}'; nothing is deployed." >&2
             exit 1
           fi
 
@@ -116,10 +211,11 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
+          THIS_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           runs=$(gh api \
-            "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=${DEPLOY_SHA}&status=success" \
+            "repos/${THIS_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${DEPLOY_SHA}&status=success" \
             --jq '.total_count')
           if [ "$runs" -lt 1 ]; then
             echo "no successful ci run for ${DEPLOY_SHA}; nothing is deployed." >&2
@@ -206,6 +302,29 @@ jobs:
             echo "$tfvars carries no project_id/project_number" >&2
             exit 1
           }
+
+          # The character set of what was read, before any of it is pasted into
+          # a gcloud argument, a registry path or a workload-identity audience.
+          #
+          # The tfvars are reviewed configuration — but this job reads them out
+          # of the commit it was pointed at, not out of the reviewed branch, so
+          # "reviewed" is a property of the file's history rather than of the
+          # bytes in front of this step. A `project_id` carrying a quote and a
+          # semicolon would reach the shells below as source text, because
+          # `${{ steps.identity.outputs.project }}` is substituted into four of
+          # them before bash parses a byte. A project id and a region are
+          # lowercase letters, digits and hyphens; anything else is not a
+          # malformed name, it is somebody else's command. Emptiness is refused
+          # above, which is why this arm does not repeat it.
+          for value in "$project" "$region"; do
+            case "$value" in
+              *[!a-z0-9-]*)
+                echo "$tfvars names a project or a region containing a character neither can contain: '$value'" >&2
+                echo "Permitted: lowercase letters, digits and -" >&2
+                exit 1
+                ;;
+            esac
+          done
           # Refused before authenticating, not after. An environment still
           # carrying the marker has no project, so every value derived below —
           # the workload-identity audience, the service account, the attestor,
@@ -457,6 +576,29 @@ jobs:
             echo "$tfvars carries no project_id/project_number" >&2
             exit 1
           }
+
+          # The character set of what was read, before any of it is pasted into
+          # a gcloud argument, a registry path or a workload-identity audience.
+          #
+          # The tfvars are reviewed configuration — but this job reads them out
+          # of the commit it was pointed at, not out of the reviewed branch, so
+          # "reviewed" is a property of the file's history rather than of the
+          # bytes in front of this step. A `project_id` carrying a quote and a
+          # semicolon would reach the shells below as source text, because
+          # `${{ steps.identity.outputs.project }}` is substituted into four of
+          # them before bash parses a byte. A project id and a region are
+          # lowercase letters, digits and hyphens; anything else is not a
+          # malformed name, it is somebody else's command. Emptiness is refused
+          # above, which is why this arm does not repeat it.
+          for value in "$project" "$region"; do
+            case "$value" in
+              *[!a-z0-9-]*)
+                echo "$tfvars names a project or a region containing a character neither can contain: '$value'" >&2
+                echo "Permitted: lowercase letters, digits and -" >&2
+                exit 1
+                ;;
+            esac
+          done
           if [ "$project" = "unprovisioned" ]; then
             echo "environment '${TARGET_ENVIRONMENT}' is not provisioned." >&2
             exit 1

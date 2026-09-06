@@ -1,5 +1,5 @@
-//! The JSON shapes of the venue-registration surface: `GET /registrations`
-//! and `POST /registrations/{source}/approve`.
+//! The JSON shapes of the venue-registration surface: `GET /registrations`,
+//! `GET /registrations/slots` and `POST /registrations/{source}/approve`.
 //!
 //! The contract these serialise to is written out in
 //! `ROUTES-REGISTRATIONS.md` beside the crate manifest, and a page is built
@@ -15,14 +15,50 @@
 //! then records that the operator did those things, under the operator's
 //! own authenticated subject.
 //!
+//! # Why there are two lists and not one body that varies
+//!
+//! There are two read shapes here because the answer is split by authority,
+//! not because two pages wanted different fields.
+//!
+//! [`standings`] is `GET /registrations` at the viewer role: per catalogued
+//! source, what the venue demands, where the source stands and which terms
+//! to read. [`registrations`] is `GET /registrations/slots` at the operator
+//! role: the same rows with the credential slots beside them — the
+//! deployment variable each manifest reads the credential under, the one
+//! `gcloud` line that fills it, any companion variable, and the variable the
+//! registration record itself names.
+//!
+//! The split exists because a slot name is not a fact about a venue; it is a
+//! fact about this deployment's secret store. It names where a credential
+//! lives and, with [`secret_command`], the exact line that writes one. A
+//! viewer credential was serving both — a frontend review found
+//! `QIP_ALPACA_API_SECRET_KEY` and its `gcloud secrets versions add` line in
+//! the body of a viewer's `GET /registrations`, and correctly refused to
+//! strip them at the console's gateway, because a browser that can call the
+//! route itself loses nothing to a gateway that redacts.
+//!
+//! It is two routes rather than one route whose body depends on the caller
+//! because [`crate::routes`]'s table states each route's authority in one
+//! place, and a review reads that table instead of reading the handlers. A
+//! `Role::Viewer` row serving operator material to an operator and less to a
+//! viewer would make the table's own statement of what the API permits
+//! untrue, and the next field added to the struct would be served to
+//! whoever the struct is shared with rather than to whoever the field is
+//! for.
+//!
+//! Neither list is built twice. [`StandingSummaryView::of`] derives the
+//! viewer's standing from the operator's, so the two routes cannot come to
+//! different conclusions about who registered a source.
+//!
 //! Three properties are structural rather than asserted:
 //!
 //! * No body carries a credential value and no request body is accepted
 //!   that could be one. The approval body's `secret` goes through
 //!   [`SecretRef::new`] — the manifest's own shape screen — before anything
 //!   else reads it, and a refusal describes the shape of what was refused
-//!   and never its text. The list's `secret` fields are variable names read
-//!   off the manifests; a value is nowhere in this process to be shown.
+//!   and never its text. The operator list's `secret` fields are variable
+//!   names read off the manifests; a value is nowhere in this process to be
+//!   shown.
 //! * The operator on a record is the authenticated principal's subject. The
 //!   route builds an `OperatorIdentity` from the session exactly as the
 //!   kill-switch route does and the kernel takes the name from it, so
@@ -77,9 +113,13 @@ pub fn secret_command(variable: &str) -> String {
     )
 }
 
-// --- the list -----------------------------------------------------------------
+// --- the operator's list ------------------------------------------------------
+//
+// `GET /registrations/slots`, and the shape `qip registrations` prints on an
+// operator's own machine. Everything below carries a credential slot; the
+// viewer's shapes are further down.
 
-/// Where one source stands, as a page renders it.
+/// Where one source stands, with the slot the record names.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "standing", rename_all = "snake_case")]
 pub enum StandingView {
@@ -138,6 +178,12 @@ pub struct SecretSlotView {
 
 /// One catalogued source: what it demands, where it stands, and what an
 /// operator has to do.
+///
+/// Operator material, and served only at that role. Three of its fields name
+/// a deployment variable a credential is read under and one of them is the
+/// exact command that writes one, which is a fact about this deployment's
+/// secret store rather than about a venue. [`SourceStandingView`] is what a
+/// viewer is answered with.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SourceRegistrationView {
     pub source_id: String,
@@ -164,7 +210,7 @@ pub struct SourceRegistrationView {
     pub companion_secret_slots: Vec<SecretSlotView>,
 }
 
-/// The whole list.
+/// The whole operator list.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RegistrationsView {
     pub posture: &'static str,
@@ -173,7 +219,7 @@ pub struct RegistrationsView {
     pub sources: Vec<SourceRegistrationView>,
 }
 
-/// `GET /registrations`.
+/// `GET /registrations/slots`, and what `qip registrations` prints.
 ///
 /// Refuses — a 500 with the reason — when the catalogue or a shipped
 /// manifest does not build, because a list that silently omitted a source
@@ -211,16 +257,152 @@ pub fn source_view(
         .collect();
     SourceRegistrationView {
         source_id: entry.source_id.to_string(),
-        requirement: platform
-            .registrations()
-            .requirement(entry.source_id)
-            .map(|requirement| requirement.as_str().to_string()),
+        requirement: requirement_of(platform, entry.source_id),
         standing: StandingView::of(platform, entry.source_id),
         terms: terms_reference(&entry.posture),
         secret_slot: primary.map(|secret| secret.variable().to_string()),
         secret_command: primary.map(|secret| secret_command(secret.variable())),
         companion_secret_slots: companions,
     }
+}
+
+// --- the viewer's list ---------------------------------------------------------
+//
+// `GET /registrations`. What a viewer's question actually is: whether the
+// platform may read a source, and what stands between it and doing so.
+// Nothing below names a deployment variable or a command that writes one.
+
+/// Where one source stands, as `GET /registrations` answers a viewer.
+///
+/// [`StandingView`] without the `secret`. The registered arm's `secret` is
+/// the deployment variable the *record* names, so leaving it here would have
+/// closed the leak only until somebody registered: before an approval a
+/// viewer saw no slot for a source, and the moment an operator approved one
+/// the same viewer saw `QIP_ALPACA_API_SECRET_KEY` in the standing instead
+/// of in the row. A control that holds only while nobody has used the system
+/// is not one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "standing", rename_all = "snake_case")]
+pub enum StandingSummaryView {
+    /// The source needs no registration.
+    Keyless,
+    /// A named person registered: who, and when they read the terms.
+    Registered {
+        operator: String,
+        terms_read_at: String,
+    },
+    /// Nobody has registered and the source is refused until somebody does.
+    Pending {
+        who_must_register: String,
+        reason: String,
+    },
+}
+
+impl StandingSummaryView {
+    /// Derived from the operator's own standing rather than read out of the
+    /// registry a second time.
+    ///
+    /// Two independent derivations of one fact disagree eventually and the
+    /// louder one is wrong; here the fact is *who registered a source*, and
+    /// two routes answering it differently would be the worst possible
+    /// version of that. The compiler holds the property: an arm added to
+    /// [`StandingView`] is a non-exhaustive match here rather than a source
+    /// that silently vanishes from the viewer's list.
+    pub fn of(standing: &StandingView) -> Self {
+        match standing {
+            StandingView::Keyless => Self::Keyless,
+            StandingView::Registered {
+                operator,
+                terms_read_at,
+                // The slot the record names is exactly what this arm exists
+                // to drop. Bound and discarded by name rather than by `..`
+                // so that a second slot-shaped field added to `StandingView`
+                // is a compile error here and not a field that arrives on
+                // the viewer's list because the pattern was open-ended.
+                secret: _,
+            } => Self::Registered {
+                operator: operator.clone(),
+                terms_read_at: terms_read_at.clone(),
+            },
+            StandingView::Pending {
+                who_must_register,
+                reason,
+            } => Self::Pending {
+                who_must_register: who_must_register.clone(),
+                reason: reason.clone(),
+            },
+        }
+    }
+}
+
+/// One catalogued source as a viewer sees it: what the venue demands, where
+/// the source stands, and the terms the catalogue cites.
+///
+/// `terms` stays because it is a licence reference — a public URL or a
+/// licence identifier off the catalogue — and the compliance page's whole
+/// job is showing which licence each source is read under. It says nothing
+/// about this deployment.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SourceStandingView {
+    pub source_id: String,
+    /// The declared requirement (`keyless`, `self_service_api_key`,
+    /// `account`, `account_with_identity_verification`), or `null` when the
+    /// registry declares none — which the standing then reports as pending,
+    /// because an unasked question is not a keyless source.
+    pub requirement: Option<String>,
+    pub standing: StandingSummaryView,
+    /// The terms reference the catalogue carries: the licence identifier of
+    /// a declared posture, the URL an ambiguous posture's evidence names, or
+    /// `null`.
+    pub terms: Option<String>,
+}
+
+/// The whole viewer list.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RegistrationStandingsView {
+    pub posture: &'static str,
+    pub served_at: String,
+    /// Every source in the finder's catalogue, in catalogue order.
+    pub sources: Vec<SourceStandingView>,
+}
+
+/// `GET /registrations`.
+///
+/// Refuses — a 500 with the reason — when the finder's catalogue does not
+/// build, because a list that silently omitted a source would read as a
+/// source that needs nothing.
+///
+/// It reads no connector manifest, unlike [`registrations`]. Nothing in this
+/// body is derived from one, and refusing a viewer's list because a manifest
+/// would not build would be refusing on evidence the body never shows.
+pub fn standings(platform: &Platform, now: Timestamp) -> Result<RegistrationStandingsView, String> {
+    let catalogue = admission::catalogue().map_err(|error| error.message().to_string())?;
+    let sources = catalogue
+        .iter()
+        .map(|entry| SourceStandingView {
+            source_id: entry.source_id.to_string(),
+            requirement: requirement_of(platform, entry.source_id),
+            standing: StandingSummaryView::of(&StandingView::of(platform, entry.source_id)),
+            terms: terms_reference(&entry.posture),
+        })
+        .collect();
+    Ok(RegistrationStandingsView {
+        posture: POSTURE,
+        served_at: now.to_rfc3339(),
+        sources,
+    })
+}
+
+/// What the registry says a source demands, for both lists.
+///
+/// One reader rather than one per view: the requirement is the same fact on
+/// both routes, and the viewer's list is the one an operator is told to
+/// trust when deciding whether a registration is still outstanding.
+fn requirement_of(platform: &Platform, source_id: &str) -> Option<String> {
+    platform
+        .registrations()
+        .requirement(source_id)
+        .map(|requirement| requirement.as_str().to_string())
 }
 
 /// The shipped manifest of a catalogued source, or `None` for a source no
@@ -374,7 +556,8 @@ impl ApprovalRequest {
                             read, or nobody can re-read them when they change"
                     .to_string(),
                 _ => "`secret` is blank; name the deployment variable the manifest reads the \
-                      credential under (the `secret_slot` the list shows), never the value"
+                      credential under (the `secret_slot` on GET /registrations/slots), never \
+                      the value"
                     .to_string(),
             });
         }
@@ -478,8 +661,8 @@ pub fn declared_slots(source_id: &str) -> Result<Vec<String>, String> {
 ///   uppercase-alphanumeric access-key id passes it, and so does a venue key
 ///   id of the `PK…` form. A credential written into `secret` therefore
 ///   reached the hash-chained event log — which has no erase path — was
-///   shown to every viewer of `GET /registrations`, and was printed at each
-///   restart. Holding the submitted variable against the manifest's own
+///   shown to every reader of `GET /registrations/slots`, and was printed at
+///   each restart. Holding the submitted variable against the manifest's own
 ///   declared slots turns an open field into a choice from a list of two,
 ///   and the refusal names the list rather than what was sent.
 /// * **An approval that records nothing.** A source whose requirement does
@@ -525,8 +708,8 @@ pub fn screen_source(
              reads. It reads {}; name one of those. What you sent is not repeated: the shape \
              screen in front of this admits a real credential — an uppercase-alphanumeric \
              access-key id passes it — and a mis-paste recorded here would reach the \
-             hash-chained log, every reader of GET /registrations and the process banner, with \
-             no erase path",
+             hash-chained log, every reader of GET /registrations/slots and the process banner, \
+             with no erase path",
             declared.join(" and ")
         ));
     }

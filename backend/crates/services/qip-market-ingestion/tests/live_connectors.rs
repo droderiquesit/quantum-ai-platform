@@ -245,3 +245,130 @@ fn the_connector_feed_fetches_a_live_tick_through_the_same_egress() -> Result<()
     );
     Ok(())
 }
+
+#[test]
+fn the_connector_feed_fetches_live_reference_rates_that_were_already_knowable_when_they_arrived()
+-> Result<()> {
+    // The Frankfurter half of the test above, and one assertion more that
+    // matters more than the count: every record the bridge released was
+    // already *knowable* at the instant it was released.
+    //
+    // The two tests that exist either side of this one cannot see that. The
+    // runtime-level live test asserts three records arrived; the scripted
+    // `connector_feed_frankfurter.rs` runs on a frozen horizon sixty hours
+    // past a fixture's reference date, where the delay cannot be violated by
+    // accident. Neither reads the stamps on a record that came off the wire.
+    // A runtime that released an ECB rate at midnight on its own reference
+    // date would pass both and would have handed the decision loop the
+    // close to trade the open with — the leakage `.claude/rules/domains/
+    // data-and-streaming.md` puts first among the prohibitions.
+    //
+    // # When this test legitimately sees nothing, and why it still fails
+    //
+    // The vendor serves a reference date from about 14:00 UTC; the manifest
+    // withholds it until 16:00 UTC — midnight UTC on that date plus the
+    // sixteen-hour `publication_delay_ms`. A run started inside that window
+    // correctly receives a table and correctly releases no record from it.
+    // The assertion below is still `3`, because a test that accepted zero
+    // would accept a source that had stopped answering; the failure message
+    // names the window so the operator reads the right cause and re-runs
+    // after 16:00 UTC rather than going looking for a broken connector.
+    let Some(base_url) = egress(FRANKFURTER_BASE_URL) else {
+        return Ok(());
+    };
+    let manifest = FrankfurterRatesConnector::shipped_manifest()?;
+    // Premise: the source declares a dissemination delay at all. With a delay
+    // of zero every record is knowable at midnight on its own reference date
+    // and the leakage assertion below would hold vacuously — which is exactly
+    // the manifest mistake `FrankfurterRatesConnector::new` refuses.
+    assert!(
+        !manifest.publication_delay().is_zero(),
+        "the shipped manifest declares no publication delay, so `already knowable` below would \
+         be true of anything and this test would prove nothing"
+    );
+    let delay = manifest.publication_delay();
+
+    let released_at = horizon();
+    let mut feed = ConnectorFeed::open(
+        FrankfurterRatesConnector::SOURCE_ID,
+        &base_url,
+        7,
+        released_at,
+    )?;
+    let records = feed.poll(released_at)?;
+    assert_eq!(
+        records.len(),
+        3,
+        "the manifest asks for three currencies and {} arrived. If this is zero, check the clock \
+         before the connector: a table published today is withheld until midnight UTC on its \
+         reference date plus {} ms, and a run inside that window is the knowability gate working",
+        records.len(),
+        manifest.publication_delay_ms
+    );
+
+    let mut evidence = Vec::new();
+    for record in &records {
+        assert!(
+            record.validate().is_empty(),
+            "the live path produced a record the loop would reject: {record:?}"
+        );
+        let qip_market_ingestion::adapter::SensedRecord::Macro(observation) = record else {
+            panic!(
+                "a reference rate arrived as something other than a macro observation: {record:?}"
+            )
+        };
+        // The reference date is a *date*: midnight UTC, so the series is
+        // indexed by the day the ECB fixed the rate for and not by the
+        // instant this process happened to fetch it.
+        assert_eq!(
+            observation.reference_date,
+            qip_core::Timestamp::parse_rfc3339(&observation.reference_date.to_date_string())
+                .ok_or_else(|| qip_core::error::Error::invalid("a date string must re-parse"))?,
+            "the event time is not midnight UTC on a reference date: {}",
+            observation.reference_date.to_rfc3339()
+        );
+        // The assertion this test exists for.
+        let knowable = observation.reference_date.saturating_add(delay);
+        assert!(
+            knowable <= released_at,
+            "{} was released at {} but was not knowable until {} — a feature readable before its \
+             knowable instant",
+            observation.series_id,
+            released_at.to_rfc3339(),
+            knowable.to_rfc3339()
+        );
+        assert_eq!(observation.region, FrankfurterRatesConnector::REGION);
+        assert_eq!(observation.provenance.source, feed.descriptor().name);
+        assert_eq!(
+            observation.provenance.event_time, observation.reference_date,
+            "the provenance and the observation disagree about when the rate was true"
+        );
+        assert!(
+            observation.provenance.upstream_id.is_some(),
+            "a live record carries no upstream id, so nothing reconciles it against the vendor"
+        );
+        assert!(
+            observation.value.is_finite() && observation.value > 0.0,
+            "{} arrived as {}",
+            observation.series_id,
+            observation.value
+        );
+        evidence.push(format!(
+            "{}={} ({}), reference_date {}, knowable {}",
+            observation.series_id,
+            observation.value,
+            observation.unit,
+            observation.reference_date.to_date_string(),
+            knowable.to_rfc3339()
+        ));
+    }
+    eprintln!(
+        "live evidence: {} record(s) from {} ({:?}) polled at {}: {}",
+        records.len(),
+        feed.descriptor().name,
+        feed.descriptor().licensing,
+        released_at.to_rfc3339(),
+        evidence.join("; ")
+    );
+    Ok(())
+}

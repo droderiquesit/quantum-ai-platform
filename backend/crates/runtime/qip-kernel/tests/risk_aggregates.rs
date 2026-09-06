@@ -38,6 +38,19 @@ use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
+/// The liquidity every fixture in this file states, because nothing states it
+/// for them any more.
+///
+/// [`qip_financial::costs::LiquidityProfile`] has no `Default`: the one it had
+/// asserted a 10bp quote and a one-session exit for any instrument at all, and
+/// `MinLiquidity` and `MaxDaysToLiquidate` — controls whose job is to veto
+/// trading — read exactly those two figures. A fixture may state its own
+/// premise; it may not inherit one nobody wrote down. A liquid listed name on
+/// five million units a day, quoted at three basis points.
+fn fixture_liquidity() -> qip_financial::costs::LiquidityProfile {
+    qip_financial::costs::LiquidityProfile::listed(qip_core::Decimal::from_int(5_000_000), 3.0)
+}
+
 /// Wraps an aggregate and counts every figure the read side consults.
 ///
 /// The two strategy-level accessors are on the trait, so a read side that
@@ -118,13 +131,18 @@ fn universe() -> Universe {
     for symbol in INSTRUMENTS {
         universe
             .insert(
-                FinancialObject::builder(object(symbol), symbol, InstrumentType::CommonStock)
-                    .venue("XNYS")
-                    .sector(Sector::InformationTechnology)
-                    .price(dec!("100"))
-                    .provenance(Provenance::synthetic("test", start()))
-                    .build(start())
-                    .expect("valid object"),
+                FinancialObject::builder(
+                    object(symbol),
+                    symbol,
+                    InstrumentType::CommonStock,
+                    fixture_liquidity(),
+                )
+                .venue("XNYS")
+                .sector(Sector::InformationTechnology)
+                .price(dec!("100"))
+                .provenance(Provenance::synthetic("test", start()))
+                .build(start())
+                .expect("valid object"),
             )
             .expect("insertable");
     }
@@ -642,6 +660,166 @@ fn a_cells_fills_are_charged_into_the_aggregate_and_the_next_desk_order_is_refus
         refused.message().contains("leverage:"),
         "refused for another reason: {}",
         refused.message()
+    );
+    Ok(())
+}
+
+/// The counterparty bucket the cap reads, as the aggregate holds it, together
+/// with the name it is filed under.
+///
+/// Returned as a pair rather than looked up by a literal so the assertions
+/// below can check the *name* against the venue the fills actually came back
+/// from. A test that hardcoded "simulated-venue" would keep passing if the
+/// kernel started charging every fill to a counterparty nobody traded with.
+fn counterparty_bucket(platform: &Platform) -> Option<(String, Decimal)> {
+    platform
+        .risk_figures()
+        .axis_exposures()
+        .get(qip_risk::limits::COUNTERPARTY_AXIS)
+        .and_then(|buckets| buckets.iter().next())
+        .map(|(name, value)| (name.clone(), *value))
+}
+
+/// `limits()` plus a cap on exposure to any one counterparty at a tenth of
+/// equity.
+///
+/// Named `counterparty` so a refusal can be told from the `position-weight`
+/// cap, which is also a tenth of equity and which the second order below is
+/// kept under by being in a different name.
+fn limits_with_counterparty_cap() -> LimitSet {
+    limits().with(
+        Limit::new(
+            "counterparty",
+            LimitKind::MaxCounterpartyExposure { limit: 0.10 },
+        )
+        .with_rationale("no single counterparty may hold more than a tenth of the book"),
+    )
+}
+
+#[test]
+fn a_fill_is_charged_to_the_venue_that_executed_it_and_an_order_that_would_overfill_that_counterparty_is_refused()
+-> Result<()> {
+    // `LimitKind::MaxCounterpartyExposure` read a `RiskState::counterparty_exposures`
+    // map that no production code in this workspace ever wrote: the platform
+    // passed `None` for the counterparty at the only kernel call site of
+    // `OrderManager::submit`, and even had it named one, the sole writer —
+    // `PreTradeChecker::project` — added one instrument's delta to a balance
+    // that always started empty. So a deployment that configured a
+    // counterparty cap got no `LimitBreach`, ever, while the cap counted in
+    // `LimitCheck::evaluated` and read as a control that had run and passed.
+    //
+    // A tenth of a million is a hundred thousand: the cap. The first order
+    // fills most of it; the second, in a different name, sits under every
+    // per-name limit on its own and breaches only when projected onto the
+    // counterparty balance the first fill already holds.
+    let mut platform = platform_under(dec!("1000000"), limits_with_counterparty_cap())?;
+
+    // Premise: nothing has been charged to any counterparty before the first
+    // fill, so the refusal below cannot come from a bucket that was already
+    // there.
+    assert!(
+        counterparty_bucket(&platform).is_none(),
+        "a counterparty balance existed before any order was sent"
+    );
+    buy(&mut platform, "AAA", dec!("900"), "cp-open")?;
+
+    // Premise: the venue filled, and the fill reached a counterparty bucket
+    // named after the venue that reported it. Both halves matter — an empty
+    // map and a map filed under the wrong name are the two ways this cap goes
+    // back to never firing.
+    let fills = platform.orders().fills();
+    assert!(!fills.is_empty(), "the simulated venue filled nothing");
+    let venue = fills[0].venue.clone();
+    let at_cost: Decimal = fills
+        .iter()
+        .map(|fill| fill.quantity * fill.price)
+        .fold(Decimal::ZERO, |sum, notional| sum + notional);
+    let (name, balance) =
+        counterparty_bucket(&platform).expect("the fill was aggregated to no counterparty");
+    assert_eq!(
+        name, venue,
+        "the counterparty balance is filed under a name the venue never reported"
+    );
+    assert_eq!(
+        balance, at_cost,
+        "the counterparty balance holds something other than the fill"
+    );
+    let ceiling = dec!("100000");
+    assert!(
+        balance < ceiling,
+        "the first fill {balance} overfilled the counterparty by itself"
+    );
+
+    // An order that takes the counterparty over, and only the counterparty: a
+    // hundred shares more than the room left, well under the ten-percent
+    // per-name weight and the single-order notional cap.
+    let room = (ceiling - balance)
+        .checked_div(dec!("100"))
+        .expect("a hundred is not zero")
+        .truncate_dp(0);
+    let shares = room + Decimal::from_int(100);
+    assert!(
+        shares * dec!("100") < ceiling,
+        "the follow-on breaches per-name limits alone"
+    );
+    let refused = buy(&mut platform, "BBB", shares, "cp-over")
+        .expect_err("the order was admitted, so the pre-trade check never saw the counterparty");
+    // Matched with the delimiter the refusal formats after a limit name, so
+    // this cannot be satisfied by some other limit whose name merely contains
+    // the word.
+    assert!(
+        refused.message().contains("counterparty:"),
+        "refused for another reason: {}",
+        refused.message()
+    );
+    assert!(
+        !refused.message().contains("position-weight:"),
+        "the per-name cap fired too, so this run does not isolate the counterparty: {}",
+        refused.message()
+    );
+    // Nothing was charged for a refused order.
+    assert_eq!(
+        counterparty_bucket(&platform).map(|(_, value)| value),
+        Some(at_cost)
+    );
+    Ok(())
+}
+
+#[test]
+fn an_order_that_keeps_its_counterparty_under_the_cap_is_admitted() -> Result<()> {
+    // The half that makes the refusal above mean something. A cap that
+    // refuses everything is an outage, not a control, and a test that only
+    // ever asserts a breach cannot tell the two apart — which matters more
+    // here than usual, because a single-broker paper deployment routes the
+    // whole book through one counterparty and a cap set too low would stop it
+    // trading at all.
+    let mut platform = platform_under(dec!("1000000"), limits_with_counterparty_cap())?;
+    buy(&mut platform, "AAA", dec!("900"), "cp-open")?;
+    let (_, opened) =
+        counterparty_bucket(&platform).expect("the fill was aggregated to no counterparty");
+    // Premise: the balance is live, so the admission below is a limit that
+    // read a real figure and found it inside, not one that read nothing.
+    assert!(opened.is_positive());
+    let ceiling = dec!("100000");
+    assert!(opened < ceiling);
+
+    // Fifty shares more in another name: five thousand against the room left,
+    // so the counterparty ends under its cap.
+    let shares = dec!("50");
+    assert!(
+        opened + shares * dec!("100") < ceiling,
+        "the follow-on would breach the cap, so an admission proves nothing"
+    );
+    buy(&mut platform, "BBB", shares, "cp-under")?;
+    let (_, after) =
+        counterparty_bucket(&platform).expect("the second fill was aggregated to no counterparty");
+    assert!(
+        after > opened,
+        "the second fill did not reach the counterparty balance: {opened} then {after}"
+    );
+    assert!(
+        after < ceiling,
+        "the premise failed: the book ended over its own cap"
     );
     Ok(())
 }

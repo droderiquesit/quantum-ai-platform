@@ -80,11 +80,46 @@ jobs:
       id-token: write
     steps:
       - name: refuse what this workflow must never do
+        env:
+          # Through the environment, never pasted into the script below. An
+          # environment value reaches bash as data; an expression reaches it as
+          # source text, and the difference is whether a newline in the value
+          # is a character or a second command.
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           set -euo pipefail
+          # Character set first, and it must come before anything else reads
+          # the value — including the prod refusal below.
+          #
+          # That refusal used to read `[ "${{ inputs.environment }}" = "prod" ]`
+          # and the runner substitutes that text into this script before bash
+          # parses a byte of it. A value whose first line was `dev"` and whose
+          # second line was a command of its own would have run that command
+          # *inside the step whose whole job is to refuse prod* — with the WIF
+          # credential for `qip-infra-<env>`, which carries compute.admin,
+          # projectIamAdmin, secretmanager.admin and container.clusterAdmin.
+          # Seven further uses of the same value are below this line.
+          #
+          # `environment` is a `choice`, so GitHub's own dispatch validation is
+          # what stopped that in practice. A guard that depends on a validation
+          # this file does not perform is a guard on loan, and one edit from
+          # `type: choice` to `type: string` calls the loan in on all eight
+          # uses at once. `image.yml` argues the same point about its own
+          # choice input, and the acceptance suite pins it there.
+          #
+          # This step refuses before any other runs, so the guard holds for the
+          # whole job: nothing below it runs after a non-zero exit, and the one
+          # step carrying `always()` is additionally gated on an init that
+          # never happened.
+          case "$ENVIRONMENT" in
+            ''|*[!a-z0-9-]*)
+              echo "environment is not an environment name: lowercase letters, digits and - only." >&2
+              exit 1
+              ;;
+          esac
           # Defence in depth behind the choice list: a fork of this file with
           # prod added to the options still stops here.
-          if [ "${{ inputs.environment }}" = "prod" ]; then
+          if [ "$ENVIRONMENT" = "prod" ]; then
             echo "prod infrastructure is never changed from this workflow." >&2
             echo "A person runs scripts/bootstrap-deploy.sh prod." >&2
             exit 1
@@ -102,19 +137,83 @@ jobs:
       # bootstrap produces: the tfvars are reviewed, committed configuration.
       - name: derive the identity from the tfvars
         id: identity
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           set -euo pipefail
-          tfvars="infrastructure/environments/${{ inputs.environment }}/terraform.tfvars"
+          tfvars="infrastructure/environments/${ENVIRONMENT}/terraform.tfvars"
           project="$(sed -n 's/^project_id[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
           number="$(sed -n 's/^project_number[[:space:]]*=[[:space:]]*\([0-9]*\)/\1/p' "$tfvars" | head -1)"
           [ -n "$project" ] && [ -n "$number" ] || {
             echo "the tfvars carry no project_id/project_number; nothing to authenticate against" >&2
             exit 1
           }
+          # The character set of what was read, before any of it is pasted
+          # anywhere. The tfvars are reviewed configuration, but this step reads
+          # them out of the tree the dispatch checked out rather than out of the
+          # reviewed branch, and `${{ steps.identity.outputs.project }}` is
+          # substituted into five scripts below as source text. A project id is
+          # lowercase letters, digits and hyphens; anything else is not a
+          # malformed project id, it is somebody else's command. Emptiness is
+          # refused above.
+          case "$project" in
+            *[!a-z0-9-]*)
+              echo "$tfvars names a project containing a character no project id contains: '$project'" >&2
+              echo "Permitted: lowercase letters, digits and -" >&2
+              exit 1
+              ;;
+          esac
+          # An environment still carrying the marker is refused here, before
+          # anything authenticates. deploy.yml and vendor.yml already did this;
+          # this workflow did not, and the argument for leaving it out was real
+          # enough to be worth answering rather than deleting.
+          #
+          # The objection: `infra.yml` exists to recover a broken bootstrap. It
+          # deliberately reads nothing a failed bootstrap sets — no repository
+          # variable, only the committed tfvars — precisely so that an
+          # environment in a bad state can still be planned and applied from
+          # here. A refusal keyed on the tfvars looks like exactly the kind of
+          # gate that locks the recovery tool out of the case it was built for.
+          #
+          # The answer: `unprovisioned` is not a broken bootstrap. It is the
+          # state of an environment that has never had one, and every single
+          # thing this job needs is created *by* the bootstrap it has not had.
+          # `modules/cicd` creates the pool `qip-github-<env>` and the account
+          # `qip-infra-<env>`, so the audience two steps below and the identity
+          # beside it name resources that do not exist. The backend this job
+          # would initialise against further down is `<project>-qip-tfstate`, a
+          # bucket `scripts/bootstrap-deploy.sh` creates because state cannot
+          # bootstrap itself. And the plan itself would refuse anyway:
+          # `variables.tf`
+          # rejects `project_id == "unprovisioned"` by name. There is no action
+          # — not `plan`, not `up`, not `down` — that this workflow could
+          # complete for such an environment, so refusing costs no recovery
+          # path. It only moves where the run dies.
+          #
+          # Where it died mattered. A probe of this workflow emitted
+          # `account=qip-infra-dev@unprovisioned.iam.gserviceaccount.com` and
+          # the run then failed at the OIDC exchange with a message about an
+          # invalid audience — the same class of message an install advisory in
+          # a repository variable once produced, and the reason this workflow
+          # derives its identity from the tfvars at all. An operator reading it
+          # goes looking at workload identity federation, which is working. The
+          # truth is cheaper than that and it is in the file in front of them.
+          #
+          # The recovery path for this state is unchanged and named below: a
+          # person creates a project, records its id and number here, and runs
+          # `scripts/bootstrap-deploy.sh <env>`, which refuses the marker too
+          # rather than half-provisioning against a project that is not there.
+          # After that this workflow is the tool again, marker gone.
+          if [ "$project" = "unprovisioned" ]; then
+            echo "environment '${ENVIRONMENT}' is not provisioned: $tfvars carries the 'unprovisioned' marker." >&2
+            echo "There is nothing this workflow can plan, apply or tear down for it: the workload-identity pool and the qip-infra account it would authenticate with, and the state bucket it would init against, are all created by the first bootstrap, and terraform refuses this project id at plan time in any case." >&2
+            echo "Create a project for it (its own, never one another environment uses), record the id and number in $tfvars, then run scripts/bootstrap-deploy.sh ${ENVIRONMENT} as a person. Dispatch this workflow after that." >&2
+            exit 1
+          fi
           {
             echo "project=$project"
-            echo "provider=projects/$number/locations/global/workloadIdentityPools/qip-github-${{ inputs.environment }}/providers/github"
-            echo "account=qip-infra-${{ inputs.environment }}@$project.iam.gserviceaccount.com"
+            echo "provider=projects/$number/locations/global/workloadIdentityPools/qip-github-${ENVIRONMENT}/providers/github"
+            echo "account=qip-infra-${ENVIRONMENT}@$project.iam.gserviceaccount.com"
           } >> "$GITHUB_OUTPUT"
 
       - uses: google-github-actions/auth@v2
@@ -154,9 +253,11 @@ jobs:
       # second bucket with the same missing permission, not a wider deny that
       # one grant already closed. Idempotent, same shape as the grant above.
       - name: the egress bootstrap bucket grant
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           gcloud storage buckets add-iam-policy-binding \
-            "gs://qip-egress-${{ inputs.environment }}-${{ steps.identity.outputs.project }}" \
+            "gs://qip-egress-${ENVIRONMENT}-${{ steps.identity.outputs.project }}" \
             --member="serviceAccount:${{ steps.identity.outputs.account }}" \
             --role="roles/storage.objectAdmin" --quiet >/dev/null
 
@@ -256,18 +357,31 @@ jobs:
       # is in infrastructure/gitops/envs/<env>/kustomization.yaml (ADR 0036),
       # so Terraform is not told a digest at all and cannot plan a service
       # at one.
+      #
+      # The three steps that consume this read it from their own `env:` and
+      # expand it unquoted, which is deliberate on both counts. Unquoted,
+      # because a second var-file would be a second word and quoting would
+      # hand terraform one argument containing a space. From the environment,
+      # because that is what makes the unquoted expansion safe: an environment
+      # value is data, so word splitting and globbing apply to it and command
+      # substitution does not. The same text substituted as `${{ … }}` would be
+      # script.
       - name: the var-files this environment has
         id: vars
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           set -euo pipefail
-          files="-var-file=../environments/${{ inputs.environment }}/terraform.tfvars"
+          files="-var-file=../environments/${ENVIRONMENT}/terraform.tfvars"
           echo "files=$files" >> "$GITHUB_OUTPUT"
 
       - name: plan
         if: inputs.action == 'plan'
+        env:
+          VAR_FILES: ${{ steps.vars.outputs.files }}
         run: |
           terraform -chdir=infrastructure/terraform plan -input=false \
-            ${{ steps.vars.outputs.files }}
+            ${VAR_FILES}
 
       # There is no "repair a tainted service" step here any more. It untainted
       # a `google_cloud_run_v2_service` Cloud Run still had, so an apply
@@ -315,10 +429,12 @@ jobs:
       # discovered.
       - name: seed any credential that has no version
         if: inputs.action == 'up'
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           set -euo pipefail
           project="${{ steps.identity.outputs.project }}"
-          suffix="${{ inputs.environment }}"
+          suffix="${ENVIRONMENT}"
           seeded=0
           umask 077
           scratch="$(mktemp -d)"
@@ -362,9 +478,11 @@ jobs:
       # prod refusal above is what keeps that acceptable.
       - name: up
         if: inputs.action == 'up'
+        env:
+          VAR_FILES: ${{ steps.vars.outputs.files }}
         run: |
           terraform -chdir=infrastructure/terraform apply -input=false -auto-approve \
-            ${{ steps.vars.outputs.files }}
+            ${VAR_FILES}
 
       # ── The GitOps bootstrap (ADR 0036) ─────────────────────────────────
       #
@@ -527,6 +645,8 @@ jobs:
 
       - name: down
         if: inputs.action == 'down'
+        env:
+          VAR_FILES: ${{ steps.vars.outputs.files }}
         run: |
           set -euo pipefail
           # Targeted on purpose — see the header for why a full destroy is a
@@ -538,7 +658,7 @@ jobs:
           # as always.
           terraform -chdir=infrastructure/terraform destroy -input=false -auto-approve \
             -target=module.execution_node \
-            ${{ steps.vars.outputs.files }}
+            ${VAR_FILES}
 
       # Only where init succeeded, and only counting what was actually
       # listed. `state list | wc -l` printed 0 for a backend that could not
@@ -549,8 +669,10 @@ jobs:
       # the step with terraform's own message.
       - name: what exists now
         if: always() && steps.init.outcome == 'success'
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           set -euo pipefail
           listed="$(terraform -chdir=infrastructure/terraform state list)"
           count="$(printf '%s\n' "$listed" | grep -c . || true)"
-          echo "${count} resources in ${{ inputs.environment }} state"
+          echo "${count} resources in ${ENVIRONMENT} state"

@@ -254,6 +254,48 @@ jobs:
           terraform_version: "1.9.8"
       - name: format
         run: terraform -chdir=infrastructure/terraform fmt -check -recursive
+      # The per-environment inputs, which until now nothing read.
+      #
+      # `infrastructure/environments/` is a *sibling* of the directory the two
+      # steps around this one work in: the format step above is
+      # `-chdir=infrastructure/terraform` and recurses only under it, and
+      # `terraform validate` does not open a tfvars file at all — it checks the
+      # configuration, not the values handed to it. So a
+      # `terraform.tfvars` that was not even parseable passed this job, and the
+      # first thing to notice would have been the apply an operator dispatched.
+      #
+      # `terraform fmt` parses HCL to reformat it, which is exactly the check
+      # wanted, and it reads `.tfvars` as well as `.tf`. Pointed at the
+      # environments directory it covers all four files, so the parser this
+      # needs already exists and none is written here.
+      #
+      # Three exits, and they mean different things: 0 admits, 3 is valid HCL
+      # in non-canonical layout and prints only the file name, 2 is a parse
+      # error and prints terraform's own diagnostic. The message below exists
+      # because a bare file name with no explanation is the kind of red build
+      # people re-run rather than read.
+      #
+      # What this does **not** do, said plainly so the next reader does not
+      # retire the other half: it does not screen the *values*. A project id
+      # carrying `$(…)` or a backtick is a perfectly valid HCL string and is
+      # admitted here. What refuses that is the charset guard each workflow
+      # runs over what its own `sed` pulled out of this file before pasting it
+      # anywhere. Neither check subsumes the other — this one catches the file
+      # a workflow could not read at all, that one catches the file it could
+      # read too well.
+      - name: the environment tfvars parse
+        run: |
+          set -euo pipefail
+          if ! terraform fmt -check -recursive infrastructure/environments; then
+            echo >&2
+            echo "an environment's terraform.tfvars is not valid HCL, or is not in canonical format." >&2
+            echo "A parse error is printed above with its line; a bare file name means only that" >&2
+            echo "'terraform fmt infrastructure/environments' would rewrite it." >&2
+            echo "These files are what infra.yml, deploy.yml, vendor.yml and scripts/bootstrap-deploy.sh" >&2
+            echo "derive every identity value from, and what every plan is given as its var-file." >&2
+            exit 1
+          fi
+          echo "every environment's terraform.tfvars parses as HCL and is in canonical format"
       - name: validate
         run: |
           terraform -chdir=infrastructure/terraform init -backend=false

@@ -77,21 +77,95 @@ fn the_documented_default_autonomy_level_is_the_actual_default() {
     }
 }
 
+/// The list of levels the `autonomy_ceiling` variable will admit, as its own
+/// region of `variables.tf`.
+///
+/// Scoping matters as much as the delimiter does. `variables.tf` names these
+/// levels in two validations — one listing the six spellings the variable
+/// admits, and one refusing the three that reach a real venue — so a
+/// whole-file search reports a level as *accepted* when what it actually
+/// found was the clause forbidding it. The refusal is somebody else's test
+/// (`no_environment_can_be_applied_at_a_ceiling_that_reaches_a_real_venue`,
+/// in `infrastructure.rs`); this region is what the variable lets through.
+///
+/// Every extraction step panics rather than degrading to a default. Each
+/// assertion built on this asks whether a name is *present*, so a region that
+/// silently widened back to the whole file would answer yes to everything —
+/// which is the failure being removed, reintroduced through the back door.
+fn admitted_ceiling_levels(variables: &str) -> &str {
+    let block = variables
+        .split_once("variable \"autonomy_ceiling\" {")
+        .unwrap_or_else(|| {
+            panic!("infrastructure/terraform/variables.tf no longer declares an autonomy_ceiling variable")
+        })
+        .1;
+    // The variable block ends at the first brace in column zero; the nested
+    // `validation` blocks close indented.
+    let block = block.split_once("\n}").map_or(block, |(head, _)| head);
+    // `condition = contains([` is the admitting validation. The refusing one
+    // spells it `condition = !contains([`, which this does not match.
+    let list = block
+        .split_once("condition = contains([")
+        .unwrap_or_else(|| {
+            panic!(
+                "the autonomy_ceiling variable no longer validates against a list of admitted \
+                 levels, so nothing here can say which levels it accepts"
+            )
+        })
+        .1;
+    list.split_once("], var.autonomy_ceiling)")
+        .unwrap_or_else(|| {
+            panic!("the admitted-levels list does not close on var.autonomy_ceiling")
+        })
+        .0
+}
+
 #[test]
 fn the_documented_autonomy_levels_are_the_ones_the_code_declares() {
     let levels = qip_risk_engine::autonomy::AutonomyLevel::all();
     let variables = read("infrastructure/terraform/variables.tf");
     let operations = read("docs/operations/enabling-live-trading.md");
 
+    // Matched on the quoted, comma-terminated entry rather than the bare name.
+    // This is not hypothetical caution: `"limited_autonomous_live"` contains
+    // `autonomous_live`, so deleting the `autonomous_live` entry from the list
+    // outright left the earlier `variables.contains(level.as_str())` green —
+    // verified by doing it. That entry is one of the three live rungs layer one
+    // of the paper-trading boundary exists to stop at plan time, and it is the
+    // same class of defect `.claude/rules/architecture/01-testing-strategy.md`
+    // records as having already happened in this repository once, on a value
+    // that was a substring of its neighbour.
+    //
+    // The discipline is `paper_boundary.rs`'s, where
+    // `the_delimited_check_on_the_refusal_would_reject_a_message_naming_the_neighbouring_rung`
+    // states it as a test of its own.
+    let admitted = admitted_ceiling_levels(&variables);
     for level in &levels {
         assert!(
-            variables.contains(level.as_str()),
+            admitted.contains(&format!("\"{}\",", level.as_str())),
             "the Terraform ceiling variable does not accept {}",
             level.as_str()
         );
     }
-    // The runbook names the level it tells an operator to set.
-    assert!(operations.contains("supervised_live"));
+
+    // The other direction, and an equality rather than a floor. A seventh
+    // spelling in Terraform is a ceiling an operator can set that the code has
+    // never heard of, and no per-level loop can see one.
+    let mut admitted_names: Vec<&str> = admitted.split('"').skip(1).step_by(2).collect();
+    admitted_names.sort_unstable();
+    let mut declared: Vec<&str> = levels.iter().map(|level| level.as_str()).collect();
+    declared.sort_unstable();
+    assert_eq!(
+        admitted_names, declared,
+        "the levels the Terraform ceiling variable admits are not the levels the code declares"
+    );
+
+    // The runbook names the level it tells an operator to set. A bare match is
+    // honest for this one: `supervised_live` is a substring of no other rung.
+    assert!(
+        operations.contains("supervised_live"),
+        "the runbook does not name the level it tells an operator to set"
+    );
 }
 
 #[test]

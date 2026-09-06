@@ -2203,6 +2203,89 @@ fn every_connector_credential_slot_the_registrations_route_names_exists_and_reac
 }
 
 #[test]
+fn the_bearer_tokens_a_deployment_mounts_are_exactly_the_roles_the_route_table_requires() {
+    // A third way for the two sides of this seam to disagree, and the one the
+    // checks above cannot see: both halves are individually consistent and the
+    // *set* is wrong.
+    //
+    // It was real. `Role::Approver` sat in `qip_api::auth::Role`, was minted
+    // from QIP_TOKEN_APPROVER at start-up, and had `qip-token-approver` created
+    // by `main.tf`, mounted by `catalogue.tf` and rendered into all four
+    // environments' manifests — and no row of `qip_api::ROUTES` required it.
+    // Every check in this file passed: the deployment set a variable the binary
+    // did read, and the binary read a variable the deployment did set. The
+    // credential authorised nothing, and the deployment could not tell.
+    //
+    // So the comparison is against the route table rather than against the
+    // enum. A role is a credential's justification only if some row requires
+    // it; a role no row requires is a secret created, IAM-granted, seeded and
+    // rotated in every environment for a level of separation that does not
+    // exist. Equality in both directions, because each direction is a distinct
+    // failure: a token no role requires is the dead credential above, and a
+    // required role with no token is a route nobody in that deployment can
+    // call.
+    let required: BTreeSet<String> = qip_api::ROUTES
+        .iter()
+        .map(|route| route.required_role.as_str().to_string())
+        .collect();
+    // Premises. A route table that stopped being readable, or a role naming
+    // convention that stopped matching, would make every comparison below a
+    // comparison of two empty sets.
+    assert!(
+        required.len() >= 4,
+        "the route table requires only {required:?}; either the table is not \
+         being read or the roles have collapsed, and this check would then \
+         demand almost nothing of a deployment"
+    );
+
+    let mut compared = 0usize;
+    for (place, binary, set) in deployments() {
+        if binary != "qip-api" {
+            // Only the API authenticates a bearer token, so only the API has
+            // a role to justify one. A token variable appearing on any other
+            // workload is caught by the read-versus-set checks above.
+            assert!(
+                !set.iter().any(|name| name.starts_with("QIP_TOKEN_")),
+                "{place} runs {binary} and sets a QIP_TOKEN_ variable; no other \
+                 binary authenticates a bearer token, so this mounts a \
+                 credential nothing there can check"
+            );
+            continue;
+        }
+        // `<VARIABLE>` or the `_FILE` variant a secret mount projects, back to
+        // the role name `Role::as_str` produces.
+        let mounted: BTreeSet<String> = set
+            .iter()
+            .filter_map(|name| {
+                name.strip_suffix("_FILE")
+                    .unwrap_or(name.as_str())
+                    .strip_prefix("QIP_TOKEN_")
+            })
+            .map(str::to_ascii_lowercase)
+            .collect();
+        assert_eq!(
+            mounted, required,
+            "{place} mounts bearer tokens for {mounted:?} and the route table \
+             requires {required:?}. A token whose role no route requires \
+             authorises nothing — it is created in Secret Manager, granted, \
+             seeded and rotated, and grants its holder exactly what the role \
+             below it grants. A required role with no token is the opposite \
+             failure: routes at that authority that nobody deployed there can \
+             call. Land both halves of a role change or neither."
+        );
+        compared += 1;
+    }
+    // The catalogue entry plus one rendered manifest per environment.
+    let deployments_of_the_api = ENVIRONMENTS.len() + 1;
+    assert!(
+        compared >= deployments_of_the_api,
+        "only {compared} deployments of qip-api were compared and there are \
+         {deployments_of_the_api}; the walk is matching fewer deployments than \
+         exist, so a manifest could carry a token this never looked at"
+    );
+}
+
+#[test]
 fn the_centre_declares_no_mesh_listener_because_cloud_run_publishes_one_port() {
     // The mesh was the general property's first violation: complete, tested,
     // and configured by nothing. On this runtime it is unconfigured for a
@@ -2340,7 +2423,15 @@ fn every_metric_an_alert_policy_queries_is_one_the_platform_emits() {
 /// A second copy of the policy list on purpose: a test that read the list
 /// out of the policies it checks would agree with every deletion. Adding a
 /// series that pages is therefore two edits and a reviewer who sees both.
-const SERIES_THAT_MUST_PAGE: [(&str, &str); 7] = [
+///
+/// The last two entries are the odd ones and belong here for the same reason
+/// as the rest. They do not report a failure; they report a control refusing,
+/// which means the platform has stopped trading a book it could not price. A
+/// desk that is flat because a safety control fired is still a desk that is
+/// flat, and nobody chose it — so it is worth waking someone for, and a
+/// policy deleted as "it only fires when things are working" is the deletion
+/// this list exists to make somebody argue for.
+const SERIES_THAT_MUST_PAGE: [(&str, &str); 9] = [
     (
         "qip_kill_switch_tripped",
         "the platform has halted and no order will be sent until an operator clears it",
@@ -2368,6 +2459,16 @@ const SERIES_THAT_MUST_PAGE: [(&str, &str); 7] = [
     (
         "qip_central_reconciliation_breaks_total",
         "the central plane acted on a report whose exposure disagrees with the envelope it granted",
+    ),
+    (
+        "qip_risk_figures_unevaluated",
+        "a risk figure could not be computed, so the limits reading it recorded nothing and the \
+         platform withheld sign-off rather than trade on a control that did not run",
+    ),
+    (
+        "qip_proposals_unsigned_total",
+        "ACT signed nothing off, and the label says which control withheld; on liquidity-read it \
+         means the book could not be priced and the desk is flat without having chosen to be",
     ),
 ];
 
@@ -2452,4 +2553,121 @@ fn something_collects_the_metrics_the_alert_policies_depend_on_or_says_that_noth
             "{environment} sets workload_metrics_exist = true and nothing has been observed scraping a pod or a node"
         );
     }
+}
+
+#[test]
+fn every_metric_name_the_platform_declares_is_one_something_records() {
+    // The other half of the pair above, and the one the observability rule
+    // states in as many words: "a registered constant nothing calls would
+    // satisfy the acceptance test and still page nobody, so check the caller,
+    // not the name."
+    //
+    // `qip_observability::metrics::names` carried **twenty-six** constants no
+    // caller anywhere in the workspace referenced. That is not inert
+    // inventory. A name in that module reads as a series this platform
+    // publishes: an operator building a dashboard or a policy on
+    // `qip_kill_switch_engaged_total` or `qip_agent_permission_denials_total`
+    // — two of the twenty-six, and both second names for facts the kernel
+    // already publishes under `qip_kill_switch_tripped` and
+    // `qip_permission_denials_total` — would have queried a descriptor Cloud
+    // Monitoring has never ingested, and got a chart that stays empty because
+    // nothing is wrong.
+    //
+    // So the entry condition for this module is a caller. The twenty-one that
+    // named facts the platform does not compute were deleted; the five that
+    // named facts it computes and discarded are recorded in `Platform`.
+    let declared = read("backend/crates/libs/qip-observability/src/metrics.rs");
+    let names: Vec<String> = declared
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("pub const ")?;
+            let ident = rest.split(':').next()?.trim();
+            ident
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                .then(|| ident.to_string())
+        })
+        .collect();
+    // Assert the premise before asserting anything about it: a parse that
+    // found nothing would make every check below vacuously true, which is the
+    // exact shape of test this repository has already been bitten by.
+    assert!(
+        names.len() > 30,
+        "only {} metric name constant(s) were parsed out of metrics.rs; the scan is not reaching \
+         them and the assertions below prove nothing",
+        names.len()
+    );
+
+    // The three names with no recording site and a reason, stated here rather
+    // than left for a reader to rediscover. The exposition encoders have to be
+    // proven against *some* series, and a fabricated name in that module would
+    // be worse than one whose only caller is a test: it would read as a series
+    // the platform publishes and be neither published nor explained.
+    const FIXTURES_ONLY: [&str; 3] = [
+        "EXECUTION_LATENCY_MS",
+        "PORTFOLIO_VALUE",
+        "PORTFOLIO_LEVERAGE",
+    ];
+
+    let sources: Vec<std::path::PathBuf> = files_with_extension("backend/crates", "rs")
+        .into_iter()
+        .filter(|path| !path.ends_with("qip-observability/src/metrics.rs"))
+        .collect();
+    assert!(
+        sources.len() > 100,
+        "only {} Rust source file(s) were found to search for callers",
+        sources.len()
+    );
+    let corpus: String = sources
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    let mut uncalled: Vec<&str> = Vec::new();
+    for name in &names {
+        if FIXTURES_ONLY.contains(&name.as_str()) {
+            continue;
+        }
+        if !corpus.contains(&format!("names::{name}")) {
+            uncalled.push(name.as_str());
+        }
+    }
+    assert!(
+        uncalled.is_empty(),
+        "these metric names are declared and nothing records them: {uncalled:?}. A name in \
+         `names` reads as a series the platform publishes; delete it, or add the recording site \
+         in the same change. If it is genuinely a test fixture, say so beside it and add it to \
+         FIXTURES_ONLY, which is two edits and a reviewer who sees both."
+    );
+
+    // And the allow-list itself does not rot: an entry that gained a real
+    // caller must leave, or the next reader will believe a published series is
+    // only a fixture.
+    for fixture in FIXTURES_ONLY {
+        assert!(
+            declared.contains(&format!("pub const {fixture}:")),
+            "{fixture} is on the fixtures-only list and is no longer declared at all"
+        );
+        assert!(
+            !production_records(&sources, fixture),
+            "{fixture} is on the fixtures-only list and something outside a test now records it; \
+             move it off the list, because a published series described as a fixture is the same \
+             defect as a fixture described as a published series"
+        );
+    }
+}
+
+/// Whether any non-test source file records `name`.
+///
+/// "Non-test" is the crate's `src/` outside a `#[cfg(test)]` file and outside
+/// `tests/`; a fixture proven only by an exposition test is the case this
+/// distinguishes from a series the platform actually publishes.
+fn production_records(sources: &[std::path::PathBuf], name: &str) -> bool {
+    sources.iter().any(|path| {
+        let is_test = path.components().any(|c| c.as_os_str() == "tests");
+        !is_test
+            && std::fs::read_to_string(path)
+                .is_ok_and(|text| text.contains(&format!("names::{name}")))
+    })
 }

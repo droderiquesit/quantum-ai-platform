@@ -510,6 +510,19 @@ impl WorldModel {
     /// by the observation's region, which is the key the macro analyst reads
     /// by: the instrument's geography. Until this second write existed the
     /// macro analyst had never once found a series, on any deployment.
+    ///
+    /// # The raw write decides for the whole observation
+    ///
+    /// [`names::MACRO_LEVEL`] keyed by the series id is written first and its
+    /// outcome is the verdict: if the store will not key by this series, the
+    /// analyst's copy is not written, no surprise is recorded, and — the part
+    /// that matters most — nothing is journalled. A journal entry interpolates
+    /// the series id into a sentence that reaches the UNDERSTAND stage detail
+    /// and the console, so a key too hostile or too long to be a store key is
+    /// exactly a key too hostile to render. The store counts what it refused
+    /// ([`FeatureStore::refusals`], surfaced by [`Self::statistics`]); this is
+    /// where the refusal stops being about one map and becomes about the
+    /// record.
     pub fn absorb_macro(&mut self, observation: &MacroObservation) {
         let value = FeatureValue {
             value: observation.value,
@@ -518,12 +531,17 @@ impl WorldModel {
             confidence: observation.quality.score(),
             imputed: observation.quality.is_imputed,
         };
+        if self
+            .features
+            .record(names::MACRO_LEVEL, &observation.series_id, value.clone())
+            .is_refused()
+        {
+            return;
+        }
         if let Some(series) = MacroSeries::recognise(&observation.series_id, &observation.region) {
             self.features
-                .record(series.feature(), &observation.region, value.clone());
+                .record(series.feature(), &observation.region, value);
         }
-        self.features
-            .record(names::MACRO_LEVEL, &observation.series_id, value);
         if let Some(surprise) = observation.surprise() {
             self.features.record(
                 names::MACRO_SURPRISE,
@@ -816,6 +834,16 @@ impl WorldModel {
             ("causal_claims".to_string(), self.causal.len()),
             ("features".to_string(), self.features.feature_count()),
             ("feature_values".to_string(), self.features.value_count()),
+            // Both dimensions of the feature store, because they fail
+            // differently: `feature_values` grows within a series and is
+            // bounded by eviction, `feature_series` grows by key and is
+            // bounded by refusal. A store at its series limit reads exactly
+            // like a healthy one on the value count alone.
+            ("feature_series".to_string(), self.features.series_count()),
+            (
+                "feature_keys_refused".to_string(),
+                usize::try_from(self.features.refusals()).unwrap_or(usize::MAX),
+            ),
             ("entities".to_string(), self.resolver.len()),
             ("documents".to_string(), self.index.len()),
             ("changes".to_string(), self.journal.len()),

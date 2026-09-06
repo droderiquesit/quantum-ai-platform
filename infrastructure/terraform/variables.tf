@@ -769,10 +769,23 @@ variable "snapshot_retain_days" {
 variable "workload_metrics_exist" {
   description = <<-EOT
     Whether this project has ever ingested the platform's own Prometheus
-    metrics. False until the first deployment runs; the four workload alert
-    policies exist only when it is true, because Cloud Monitoring refuses a
-    policy naming a metric it has never seen. Flip it in the tfvars after the
-    first deployment and re-apply.
+    metrics. False until something is proven to have scraped a process; every
+    workload alert policy in `modules/observability` exists only when it is
+    true, because Cloud Monitoring refuses a policy naming a metric it has
+    never seen. Flip it in the tfvars once there is evidence of an ingested
+    descriptor — not once a deployment merely exists — and re-apply.
+
+    This paragraph said "the four workload alert policies" for long enough
+    that a reader could believe four was the number. It is not, and the count
+    moves as policies are added, so recount rather than trusting a number
+    written here:
+
+      grep -c '^resource "google_monitoring_alert_policy"' modules/observability/main.tf
+      grep -c 'count *=.*workload_metrics_exist'           modules/observability/main.tf
+
+    Both answered 9 on 2026-09-06. The second must equal the first: a policy
+    that escaped the gate is one that will fail the apply, and an operator
+    reading a stale count in this file is how the two drifted apart before.
   EOT
   type        = bool
   default     = false

@@ -14,17 +14,46 @@
 #
 # ## Where the trust comes from
 #
-# **The image is built from the signed artefact and never from source.** There
-# is no compiler step and no container build anywhere below — the acceptance
-# suite refuses either by name, and it reads this file whole, which is why the
-# names are not written out even in a comment saying they are absent.
-# `deploy.yml`
-# already builds, scans, pushes, signs and attests `qip-edge-node`; this job
-# resolves that image's digest, **refuses to continue unless the environment's
-# attestor has signed it**, and extracts the binary out of it with crane. An
-# image that recompiled the binary during the bake would have no relationship
-# to anything that was signed, and the attestation chain would end at the
-# container registry rather than at the machine.
+# **No binary is compiled here and none may be.** There is no compiler step and
+# no container build anywhere below — the acceptance suite refuses either by
+# name, and it reads this file whole, which is why the names are not written
+# out even in a comment saying they are absent. `deploy.yml` already builds,
+# scans, pushes, signs and attests `qip-edge-node`; this job resolves that
+# image's digest, **refuses to continue unless the environment's attestor has
+# signed it**, and extracts the binary out of it with crane. An image that
+# recompiled the binary during the bake would have no relationship to anything
+# that was signed, and the attestation chain would end at the container
+# registry rather than at the machine.
+#
+# That covers two of the four things this bake installs. The header used to
+# say "built from the signed artefact and never from source" and stop there,
+# which was false of the other two and false in the direction that matters:
+# `qip-fetch-secret` is the helper that reads the node's venue credential and
+# its capital-envelope key, and `provision.sh` runs as root on the builder.
+# Both come out of this repository, not out of a container image, so what each
+# payload member's custody actually rests on is written out here rather than
+# generalised:
+#
+#   * `qip-edge-node` and `envoy` — bytes the environment's attestor signed.
+#     The bake refuses a digest it has not.
+#   * `qip-fetch-secret` and `provision.sh` — bytes identical to the ones on
+#     this repository's **default branch**, checked against the remote below
+#     and taken from there rather than from the dispatched tree.
+#   * the Ops Agent `.deb` — pinned by version and sha256 in this file.
+#
+# The second line is not a weaker spelling of the first; it answers a question
+# the first cannot. `deploy.yml`'s `workflow_dispatch` path builds and attests
+# whatever ref it is dispatched against once ci has passed for that commit, so
+# an attestation says *the pipeline built these bytes from a commit whose tests
+# passed* — it does not say *a person reviewed them*. Moving these two files
+# into the attested image would therefore have signed the same unreviewed
+# bytes and made them look safer. What a dispatcher cannot choose is what is on
+# the default branch, so that is what they are held against.
+#
+# The cost of that, stated rather than discovered: a bake dispatched from a
+# branch that edits either file **refuses**, naming the file. Merge it first.
+# An image on a trading machine is not where a branch's version of the
+# credential reader gets its first outing.
 #
 # The same applies to Envoy. Its digest is read out of
 # `infrastructure/egress/vendored-images.txt` — the one file `vendor.yml`
@@ -149,6 +178,34 @@ jobs:
       - name: refuse what this workflow must never do
         run: |
           set -euo pipefail
+          # The two dispatch values that are in a shell variable before the
+          # checkout has even run, checked here because there is nowhere
+          # earlier: `environment` names a directory further down and `commit`
+          # is the ref `actions/checkout` is handed, so neither can wait for
+          # the input step below.
+          #
+          # Character sets, not patterns, and before anything else touches
+          # them — the base-image guard states the reason at length. Every
+          # pattern tool in this file matches per line, so a value whose first
+          # line is well formed satisfies one while its second line is
+          # somebody else's command.
+          case "$TARGET_ENVIRONMENT" in
+            ''|*[!a-z0-9-]*)
+              echo "environment is not an environment name: lowercase letters, digits and - only." >&2
+              exit 1
+              ;;
+          esac
+          case "$BAKE_SHA" in
+            *[!0-9a-f]*)
+              echo "commit must be a full 40-character commit sha, lowercase hex." >&2
+              echo "deploy.yml tags every image it attests with exactly that, so anything else names a tag no bake can resolve." >&2
+              exit 1
+              ;;
+          esac
+          if [ "${#BAKE_SHA}" -ne 40 ]; then
+            echo "commit is ${#BAKE_SHA} characters; a full 40-character commit sha is what deploy.yml tags with." >&2
+            exit 1
+          fi
           # Defence in depth behind the choice list: a fork of this file with
           # prod added to the options still stops here. ADR 0035 authorises
           # one node, in dev, and says explicitly that it authorises nothing
@@ -179,6 +236,32 @@ jobs:
           HUGEPAGES_GB: ${{ inputs.hugepages_gb }}
         run: |
           set -euo pipefail
+          # Character set first, and it must come before any grep.
+          #
+          # `grep` matches per LINE. A value whose first line is a well-formed
+          # self-link and whose second line is anything at all satisfies every
+          # pattern below, because grep never examines the second line. That is
+          # not hypothetical: an adversarial review drove
+          #   projects/debian-cloud/global/images/debian-12-bookworm-v20250101
+          #   "; echo INJECTED >&2; echo "
+          # through both checks below and out the other side, and the value is
+          # interpolated into a `gcloud` argument further down this file. The
+          # runner holds the WIF credential for qip-infra-<env> at that point,
+          # which carries compute.admin, iam.roleAdmin and
+          # binaryauthorization.attestorsAdmin — so the blast radius of one
+          # dispatch is the whole project, including signing artefacts the
+          # pipeline never built.
+          #
+          # A GCP image self-link contains only these characters. Anything else
+          # — a newline, a quote, a semicolon, a backtick, a dollar — is not a
+          # malformed self-link, it is someone else's shell command.
+          case "$BASE_IMAGE" in
+            *[!a-z0-9:/._-]*)
+              echo "base_image contains a character no image self-link contains." >&2
+              echo "Permitted: lowercase letters, digits, and : / . _ -" >&2
+              exit 1
+              ;;
+          esac
           if printf '%s' "$BASE_IMAGE" | grep -q '/family/'; then
             echo "base_image names an image family. A family is a moving pointer, not an immutable image; name the image itself." >&2
             echo "  gcloud compute images list --project debian-cloud --filter='family=debian-12' --format='value(selfLink)'" >&2
@@ -192,6 +275,21 @@ jobs:
             echo "base_image must be a full image self-link — projects/<project>/global/images/<image>." >&2
             exit 1
           fi
+          # The same reasoning as above, for the same reason, on the other
+          # free-text-shaped input. `machine_type` is a `choice`, so GitHub's
+          # own dispatch validation is what normally holds it — but the check
+          # below it is `grep -qx`, which matches per line, so a two-line value
+          # whose first line is a permitted shape passes it exactly as the
+          # two-line self-link passed the base-image regex. A guard that
+          # depends on a validation this file does not perform is a guard on
+          # loan.
+          case "$MACHINE_TYPE" in
+            *[!a-z0-9-]*)
+              echo "machine_type contains a character no machine type contains." >&2
+              echo "Permitted: lowercase letters, digits and -" >&2
+              exit 1
+              ;;
+          esac
           variables="infrastructure/terraform/modules/execution-node/variables.tf"
           permitted="$(sed -n '/variable "machine_type"/,/^}/p' "$variables" | sed -n 's/^ *"\([a-z0-9-]*\)",$/\1/p')"
           [ -n "$permitted" ] || { echo "no permitted machine types were read out of $variables; its shape has changed and this check has stopped checking" >&2; exit 1; }
@@ -212,11 +310,117 @@ jobs:
           case "$HUGEPAGES_GB" in
             ''|*[!0-9]*) echo "hugepages_gb must be a whole number of gigabytes" >&2; exit 1 ;;
           esac
-          [ "$HUGEPAGES_GB" -ge 1 ] || { echo "requiring zero huge pages is not a requirement; modules/execution-node refuses it too" >&2; exit 1; }
-          echo "building for $MACHINE_TYPE: isolcpus=$isolcpus, ${HUGEPAGES_GB} GiB of huge pages"
+          # Read out of the module, like the machine-type list above and for
+          # the identical reason. This was `-ge 1`, which is the module's
+          # default written a second time: raise `required_hugepages_gb` and
+          # the bake would still admit 1, and the disagreement would surface
+          # as a node that boots and refuses its own image at
+          # `startup.sh.tftpl`'s huge-page check — after the apply. The
+          # input's description already promises the module's number rather
+          # than a constant.
+          floor="$(sed -n '/variable "required_hugepages_gb"/,/^}/p' "$variables" | sed -n 's/^ *default *= *\([0-9][0-9]*\) *$/\1/p' | head -1)"
+          case "$floor" in
+            ''|*[!0-9]*)
+              echo "no required_hugepages_gb default was read out of $variables; its shape has changed and this check has stopped checking" >&2
+              exit 1
+              ;;
+          esac
+          [ "$HUGEPAGES_GB" -ge "$floor" ] || {
+            echo "hugepages_gb=${HUGEPAGES_GB}, and modules/execution-node requires ${floor} GiB before it lets a node serve." >&2
+            echo "An image with fewer preallocated pages than that is one every node built from it refuses to start on." >&2
+            exit 1
+          }
+          echo "building for $MACHINE_TYPE: isolcpus=$isolcpus, ${HUGEPAGES_GB} GiB of huge pages (the module requires ${floor})"
           {
             echo "isolcpus=$isolcpus"
             echo "vcpus=$vcpus"
+          } >> "$GITHUB_OUTPUT"
+
+      # The two payload members no attestation covers, held against the one
+      # reference value a dispatcher cannot choose.
+      #
+      # `qip-fetch-secret` becomes `/usr/local/bin/qip-fetch-secret` on the
+      # node and is the process that reads the venue credential and the
+      # capital-envelope key out of Secret Manager. `provision.sh` runs as root
+      # on the builder and decides what the image contains. Both used to be
+      # copied out of whatever tree the dispatcher named, with their sha256 in
+      # `MANIFEST.sha256` — and a digest with nothing to compare it to is a
+      # number, not a chain of custody. The failure that makes concrete: modify
+      # `qip-fetch-secret` on a branch, get `deploy.yml` to attest the
+      # `qip-edge-node` image built from that branch (which it does, on
+      # dispatch, for any commit whose ci passed and without touching this
+      # file), dispatch this workflow at that commit — both attestation checks
+      # below pass on their container images and the boot image ships a
+      # modified credential reader.
+      #
+      # So the bytes are compared to the default branch's and **taken from
+      # there**: `git cat-file` of the reviewed blob, into `reviewed/`, which
+      # is the only place later steps read them from. The comparison is not
+      # redundant with the extraction — without it a dispatcher testing a
+      # change to either file would get an image silently built from the
+      # reviewed version instead, and no message saying so.
+      #
+      # Read `git fetch` as the trust boundary: origin over HTTPS with the
+      # run's own token, not a value from the dispatch form.
+      - name: the files this bake takes from the source tree are the reviewed ones
+        id: reviewed
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          case "$DEFAULT_BRANCH" in
+            '')
+              echo "the event carries no default branch for this repository, so there is nothing to hold the two unattested files against." >&2
+              exit 1
+              ;;
+            *[!A-Za-z0-9/._-]*)
+              echo "the default branch name contains a character a ref name does not." >&2
+              exit 1
+              ;;
+          esac
+          git fetch --depth=1 --no-tags origin "${DEFAULT_BRANCH}"
+          reviewed="$(git rev-parse FETCH_HEAD)"
+          echo "holding the source-tree members against ${DEFAULT_BRANCH} at ${reviewed}"
+
+          # Every member is compared before any is written. A loop that wrote
+          # as it went would leave a half-populated `reviewed/` behind on a
+          # refusal, which is the shape a later step reads as a directory that
+          # was prepared for it.
+          members="infrastructure/images/execution-node/qip-fetch-secret
+          infrastructure/images/execution-node/provision.sh"
+          expected="$(printf '%s\n' $members | wc -l | tr -d ' ')"
+          [ "$expected" -ge 2 ] || { echo "the list of source-tree members is empty; this check has stopped checking" >&2; exit 1; }
+          differs=0
+          checked=0
+          for path in $members; do
+            here="$(git hash-object "$path")"
+            there="$(git rev-parse --verify --quiet "${reviewed}:${path}" || true)"
+            if [ -z "$there" ]; then
+              echo "${path} does not exist on ${DEFAULT_BRANCH}. Nothing this bake installs may be a file only the dispatched branch has." >&2
+              differs=1
+              continue
+            fi
+            if [ "$here" != "$there" ]; then
+              echo "${path} differs from ${DEFAULT_BRANCH}: this tree has ${here}, ${DEFAULT_BRANCH} has ${there}." >&2
+              echo "Nothing attests this file, so the reviewed branch is what it is held against. Merge the change and bake again." >&2
+              differs=1
+              continue
+            fi
+            echo "${path} is the reviewed file: blob ${here}"
+            checked=$((checked + 1))
+          done
+          [ "$differs" = "0" ] || exit 1
+          [ "$checked" = "$expected" ] || { echo "only ${checked} of ${expected} source-tree members were checked; the loop above is not reaching them" >&2; exit 1; }
+
+          mkdir -p reviewed
+          for path in $members; do
+            git cat-file blob "${reviewed}:${path}" > "reviewed/$(basename "$path")"
+          done
+          {
+            echo "commit=${reviewed}"
+            echo "branch=${DEFAULT_BRANCH}"
+            echo "fetch_secret_blob=$(git hash-object reviewed/qip-fetch-secret)"
+            echo "provision_blob=$(git hash-object reviewed/provision.sh)"
           } >> "$GITHUB_OUTPUT"
 
       # Identical derivation to deploy.yml and vendor.yml, from the same
@@ -296,10 +500,15 @@ jobs:
 
       # Pinned by version and checksum. A tool that copies bytes between
       # registries is exactly the wrong place to trust a moving tag.
+      #
+      # `-f`, and it is not decoration. Without it curl writes a 404 page to
+      # the destination and exits 0, so a moved release URL surfaces two lines
+      # later as a checksum mismatch — which reads as tampering and sends a
+      # reviewer looking for the wrong thing.
       - name: install crane
         run: |
           set -euo pipefail
-          curl -sSLo /tmp/crane.tar.gz \
+          curl -fsSLo /tmp/crane.tar.gz \
             "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz"
           echo "${CRANE_SHA256}  /tmp/crane.tar.gz" | sha256sum -c -
           sudo tar -C /usr/local/bin -xzf /tmp/crane.tar.gz crane
@@ -422,7 +631,10 @@ jobs:
       - name: stage the pinned ops agent
         run: |
           set -euo pipefail
-          curl -sSLo payload/google-cloud-ops-agent.deb \
+          # `-f` for the same reason as the crane download: an agent version
+          # that has been withdrawn from the pool answers 404, and without it
+          # the 404 body is what gets hashed and the run blames the checksum.
+          curl -fsSLo payload/google-cloud-ops-agent.deb \
             "https://packages.cloud.google.com/apt/${OPS_AGENT_PATH}"
           echo "${OPS_AGENT_SHA256}  payload/google-cloud-ops-agent.deb" | sha256sum -c -
           echo "staged google-cloud-ops-agent ${OPS_AGENT_VERSION}"
@@ -433,12 +645,20 @@ jobs:
       - name: build the payload
         id: payload
         env:
+          BASE_IMAGE: ${{ inputs.base_image }}
+          MACHINE_TYPE: ${{ inputs.machine_type }}
           NODE_DIGEST: ${{ steps.artefacts.outputs.node_digest }}
           ENVOY_DIGEST: ${{ steps.artefacts.outputs.envoy_digest }}
           ISOLCPUS: ${{ steps.inputs.outputs.isolcpus }}
+          REVIEWED_COMMIT: ${{ steps.reviewed.outputs.commit }}
+          REVIEWED_BRANCH: ${{ steps.reviewed.outputs.branch }}
         run: |
           set -euo pipefail
-          cp infrastructure/images/execution-node/qip-fetch-secret payload/qip-fetch-secret
+          # Out of `reviewed/`, never out of the checkout. The step that
+          # populated that directory refused unless the bytes matched the
+          # default branch's, so this copy cannot be the dispatcher's version
+          # of the helper that reads the node's credentials.
+          cp reviewed/qip-fetch-secret payload/qip-fetch-secret
           chmod 0755 payload/qip-fetch-secret
 
           # A digest per file, checked again on the builder. The outer hash
@@ -456,11 +676,16 @@ jobs:
             echo "commit=${BAKE_SHA}"
             echo "run=${GITHUB_RUN_ID}"
             echo "environment=${TARGET_ENVIRONMENT}"
-            echo "machine_type=${{ inputs.machine_type }}"
-            echo "base_image=${{ inputs.base_image }}"
+            echo "machine_type=${MACHINE_TYPE}"
+            echo "base_image=${BASE_IMAGE}"
             echo "qip_edge_node=${NODE_DIGEST}"
             echo "envoy=${ENVOY_DIGEST}"
             echo "ops_agent=${OPS_AGENT_VERSION} sha256:${OPS_AGENT_SHA256}"
+            # The reference the two unattested members were held against, so
+            # an operator on a node can check them without this run: the blob
+            # hashes are in boot-image-contents.sha256 beside it, and
+            # `git cat-file blob <commit>:<path>` reproduces the bytes.
+            echo "reviewed_source=${REVIEWED_BRANCH} ${REVIEWED_COMMIT}"
           } > provenance.txt
           cat provenance.txt
 
@@ -544,9 +769,44 @@ jobs:
       # this bake because nothing here replaces a signed binary: the drop-in
       # under /etc/default/grub.d and `update-grub` regenerate grub.cfg, and
       # the shim and grub images Debian signed are untouched.
+      #
+      # The startup script is `reviewed/provision.sh` rather than the file in
+      # the checkout, and that is the whole of the difference between a bake
+      # whose root-level provisioning was reviewed and one where it was
+      # whatever the dispatched branch said.
+      #
+      # `--max-run-duration` with `--instance-termination-action=DELETE` is the
+      # only thing here that outlives the runner. The retire step below is
+      # `if: always()`, which covers a failed step and a cancelled job and does
+      # not cover a runner that is killed, loses its network, or has its token
+      # expire mid-job — and what is left when that happens is an
+      # `e2-standard-2` running as `qip-<env>-image-builder`, holding a token
+      # that reads the staging bucket, billing until a person happens to look.
+      # Compute Engine bounds the machine now rather than this file, because
+      # this file stops executing at exactly the moment the leak begins.
+      #
+      # 45 minutes is read off this workflow rather than off a stopwatch: the
+      # wait step below gives up at 1800 seconds and no bake that passes that
+      # point produces an image, so a builder still running a quarter of an
+      # hour past the deadline the workflow itself enforces is a builder
+      # nothing is waiting on. (The bake's own figure is eight minutes, in
+      # `modules/image-bake/main.tf` and below.) The headroom is deliberate and
+      # one-sided: a duration shorter than a legitimate bake would delete the
+      # machine mid-provision and turn a cost mitigation into an outage, which
+      # is the worse failure of the two.
+      #
+      # The pairing is not a style choice. This instance names no
+      # `--provisioning-model`, so it is a standard VM, and for a VM that is
+      # not Spot `--instance-termination-action` is *required* whenever
+      # `--max-run-duration` is set — omitting it here would fail the create,
+      # which is the failure the objection to this mitigation was about. The
+      # boot disk is untouched by it: a disk created `--no-boot-disk-auto-delete`
+      # outlives its instance, so a termination that fired after provisioning
+      # finished would still leave the disk the image is made from.
       - name: create the builder
         id: builder
         env:
+          BASE_IMAGE: ${{ inputs.base_image }}
           GCP_PROJECT: ${{ steps.identity.outputs.project }}
           ZONE: ${{ steps.identity.outputs.zone }}
           SUBNET: ${{ steps.identity.outputs.subnet }}
@@ -555,6 +815,7 @@ jobs:
           PAYLOAD_URL: ${{ steps.staged.outputs.url }}
           PAYLOAD_SHA256: ${{ steps.payload.outputs.payload_sha256 }}
           ISOLCPUS: ${{ steps.inputs.outputs.isolcpus }}
+          HUGEPAGES_GB: ${{ inputs.hugepages_gb }}
         run: |
           set -euo pipefail
           instance="qip-image-bake-${GITHUB_RUN_ID}"
@@ -563,7 +824,7 @@ jobs:
           gcloud compute instances create "${instance}" \
             --project "${GCP_PROJECT}" --zone "${ZONE}" \
             --machine-type e2-standard-2 \
-            --image "${{ inputs.base_image }}" \
+            --image "${BASE_IMAGE}" \
             --boot-disk-size 20GB --boot-disk-type pd-balanced \
             --boot-disk-device-name "${instance}" \
             --no-boot-disk-auto-delete \
@@ -572,9 +833,11 @@ jobs:
             --service-account "${BUILDER_ACCOUNT}" \
             --scopes https://www.googleapis.com/auth/devstorage.read_only \
             --shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring \
-            --metadata-from-file "startup-script=infrastructure/images/execution-node/provision.sh,qip-provenance=provenance.txt" \
-            --metadata "qip-payload-url=${PAYLOAD_URL},qip-payload-sha256=${PAYLOAD_SHA256},qip-isolcpus=${ISOLCPUS},qip-hugepages-gb=${{ inputs.hugepages_gb }}" \
+            --metadata-from-file "startup-script=reviewed/provision.sh,qip-provenance=provenance.txt" \
+            --metadata "qip-payload-url=${PAYLOAD_URL},qip-payload-sha256=${PAYLOAD_SHA256},qip-isolcpus=${ISOLCPUS},qip-hugepages-gb=${HUGEPAGES_GB}" \
             --labels "qip-role=image-bake,qip-environment=${TARGET_ENVIRONMENT}" \
+            --max-run-duration 45m \
+            --instance-termination-action DELETE \
             --quiet
 
       # The builder answers no port and has no external address, so the serial
@@ -650,22 +913,26 @@ jobs:
       - name: create the image
         id: image
         env:
+          BASE_IMAGE: ${{ inputs.base_image }}
           GCP_PROJECT: ${{ steps.identity.outputs.project }}
           ZONE: ${{ steps.identity.outputs.zone }}
           DISK: ${{ steps.builder.outputs.disk }}
           NODE_DIGEST: ${{ steps.artefacts.outputs.node_digest }}
           ENVOY_DIGEST: ${{ steps.artefacts.outputs.envoy_digest }}
           ISOLCPUS: ${{ steps.inputs.outputs.isolcpus }}
+          MACHINE_TYPE: ${{ inputs.machine_type }}
+          HUGEPAGES_GB: ${{ inputs.hugepages_gb }}
+          REVIEWED_COMMIT: ${{ steps.reviewed.outputs.commit }}
         run: |
           set -euo pipefail
           short="$(printf '%s' "${BAKE_SHA}" | cut -c1-12)"
-          name="qip-execution-node-${{ inputs.machine_type }}-${short}-r${GITHUB_RUN_NUMBER}"
+          name="qip-execution-node-${MACHINE_TYPE}-${short}-r${GITHUB_RUN_NUMBER}"
           gcloud compute images create "${name}" \
             --project "${GCP_PROJECT}" \
             --source-disk "${DISK}" --source-disk-zone "${ZONE}" \
             --guest-os-features "UEFI_COMPATIBLE,GVNIC,VIRTIO_SCSI_MULTIQUEUE" \
-            --description "qip execution node. commit=${BAKE_SHA} run=${GITHUB_RUN_ID} base=${{ inputs.base_image }} qip-edge-node=${NODE_DIGEST} envoy=${ENVOY_DIGEST} ops-agent=${OPS_AGENT_VERSION} isolcpus=${ISOLCPUS} hugepages_gb=${{ inputs.hugepages_gb }}" \
-            --labels "qip-environment=${TARGET_ENVIRONMENT},qip-machine-type=${{ inputs.machine_type }},qip-commit=${short},qip-isolcpus=${ISOLCPUS},qip-hugepages-gb=${{ inputs.hugepages_gb }},qip-run=${GITHUB_RUN_ID}" \
+            --description "qip execution node. commit=${BAKE_SHA} run=${GITHUB_RUN_ID} base=${BASE_IMAGE} qip-edge-node=${NODE_DIGEST} envoy=${ENVOY_DIGEST} ops-agent=${OPS_AGENT_VERSION} isolcpus=${ISOLCPUS} hugepages_gb=${HUGEPAGES_GB} reviewed-source=${REVIEWED_COMMIT}" \
+            --labels "qip-environment=${TARGET_ENVIRONMENT},qip-machine-type=${MACHINE_TYPE},qip-commit=${short},qip-isolcpus=${ISOLCPUS},qip-hugepages-gb=${HUGEPAGES_GB},qip-run=${GITHUB_RUN_ID}" \
             --quiet
           echo "name=${name}" >> "$GITHUB_OUTPUT"
           echo "self_link=projects/${GCP_PROJECT}/global/images/${name}" >> "$GITHUB_OUTPUT"
@@ -698,6 +965,12 @@ jobs:
           NODE_DIGEST: ${{ steps.artefacts.outputs.node_digest }}
           ENVOY_DIGEST: ${{ steps.artefacts.outputs.envoy_digest }}
           ISOLCPUS: ${{ steps.inputs.outputs.isolcpus }}
+          MACHINE_TYPE: ${{ inputs.machine_type }}
+          HUGEPAGES_GB: ${{ inputs.hugepages_gb }}
+          REVIEWED_COMMIT: ${{ steps.reviewed.outputs.commit }}
+          REVIEWED_BRANCH: ${{ steps.reviewed.outputs.branch }}
+          FETCH_SECRET_BLOB: ${{ steps.reviewed.outputs.fetch_secret_blob }}
+          PROVISION_BLOB: ${{ steps.reviewed.outputs.provision_blob }}
         run: |
           set -euo pipefail
           {
@@ -710,10 +983,17 @@ jobs:
             echo "| qip-edge-node | \`${NODE_DIGEST}\` (attested) |"
             echo "| envoy | \`${ENVOY_DIGEST}\` (attested, vendored) |"
             echo "| ops agent | \`${OPS_AGENT_VERSION}\` |"
-            echo "| machine type | \`${{ inputs.machine_type }}\`, isolcpus=\`${ISOLCPUS}\` |"
-            echo "| huge pages | ${{ inputs.hugepages_gb }} GiB |"
+            echo "| qip-fetch-secret | blob \`${FETCH_SECRET_BLOB}\` |"
+            echo "| provision.sh | blob \`${PROVISION_BLOB}\` |"
+            echo "| both taken from | \`${REVIEWED_BRANCH}\` at \`${REVIEWED_COMMIT}\` |"
+            echo "| machine type | \`${MACHINE_TYPE}\`, isolcpus=\`${ISOLCPUS}\` |"
+            echo "| huge pages | ${HUGEPAGES_GB} GiB |"
             echo
-            echo "The image is valid for \`${{ inputs.machine_type }}\` and no other shape:"
+            echo "The two files no attestation covers are the default branch's, not this"
+            echo "run's tree: \`git cat-file blob ${REVIEWED_COMMIT}:infrastructure/images/execution-node/qip-fetch-secret\`"
+            echo "reproduces the credential reader that is on the image."
+            echo
+            echo "The image is valid for \`${MACHINE_TYPE}\` and no other shape:"
             echo "the isolated-core range is in its kernel command line, and a node on a"
             echo "different shape refuses to start rather than running unisolated."
             echo

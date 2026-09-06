@@ -12,8 +12,10 @@ that runs in the project without passing through this configuration.
 ## What counts as a gap here
 
 Not every absence is one. This tree is full of argued absences —
-`execution_nodes = {}` (`infrastructure/environments/dev/terraform.tfvars:75-77`),
-a null collector digest, `workload_metrics_exist = false` — and each carries a
+`execution_nodes = {}` (`infrastructure/environments/dev/terraform.tfvars:182`
+as of 2026-09-06; this register cited `:75-77` and the file has grown a
+ninety-line comment above the line since), a null collector digest,
+`workload_metrics_exist = false` — and each carries a
 paragraph at the point of absence saying why. A documented absence is a
 decision, and a decision is not a gap however inconvenient it is. The test
 applied to every row below is:
@@ -49,18 +51,28 @@ configuration is well-formed, is still read off a `count`, a `for_each`, a
 evaluate those against real state and no `plan` was run. Where that
 distinction changes the severity of a row, the row says it again.
 
-**No module is instantiated nowhere.** The audit that produced this file
-anticipated that class and it is empty: eighteen directories under
-`infrastructure/terraform/modules/`, seventeen `module` blocks in `main.tf`
-and two in `catalogue.tf`, `modules/cloudrun` being the one instantiated twice
-(`catalogue.tf:324` and `catalogue.tf:425`). Counted with
+**One module is instantiated nowhere, and this paragraph used to say none
+was.** Recounted 2026-09-06 with the three commands below: **twenty-one**
+directories under `infrastructure/terraform/modules/`, **nineteen** `module`
+blocks in `main.tf` and two in `catalogue.tf` — `module "cloud_run"`
+(`catalogue.tf:450`) and `module "openobserve"` (`:551`), both sourcing
+`./modules/cloudrun`, which is therefore the one directory instantiated twice.
+Nineteen directories from `main.tf` plus `cloudrun` is twenty of the
+twenty-one. The one **directory** no root instantiates is
+`modules/openobserve` — not to be read off the block of the same name in
+`catalogue.tf`, which is a Cloud Run service and not this module. That is the
+row *Re-scored at HEAD* already opened, and this recount confirms it rather
+than discovering it. The numbers this paragraph carried before — eighteen,
+seventeen, and `catalogue.tf:324`/`:425` — were correct when written and are
+all wrong now.
 
     ls infrastructure/terraform/modules/ | wc -l
     grep -c '^module "' infrastructure/terraform/main.tf
     grep -n 'source *= *"\./modules' infrastructure/terraform/main.tf infrastructure/terraform/catalogue.tf
 
 Recount before quoting those numbers; an earlier document in this repository
-carried a module count from a version of the file that no longer existed.
+carried a module count from a version of the file that no longer existed, and
+so, twice now, did this one.
 
 **One cited file moved while this was being written.**
 `infrastructure/environments/dev/terraform.tfvars` was edited by a concurrent
@@ -92,7 +104,7 @@ that is right. Nothing behaves differently; a reader is misled.
 | 2 | The landing runs as the project's default compute identity, and the test forbidding exactly that does not look where it happens | BLOCKING-A-GATE |
 | 3 | The console-egress subnet is the one subnet with no egress deny | BLOCKING-A-GATE |
 | 4 | The portal's session secret reaches the process as an environment value | BLOCKING-A-GATE |
-| 5 | `ledger_database` and `control_fabric_topic` are module inputs no root assigns | BLOCKING-DEPLOY |
+| 5 | `ledger_database` and `control_fabric_topic` are module inputs no root assigns — **the ledger half is wired; the fabric half is now argued rather than silent** | Was BLOCKING-DEPLOY; half closed in code, half converted to a decision |
 | 6 | The control fabric of §46.1 is Pub/Sub and no resource of any kind exists | BLOCKING-DEPLOY (decision, listed for completeness) |
 | 7 | `catalogue.tf`'s "deliberately not here" list omits the two workloads that are most deliberately not there | COSMETIC |
 | 8 | The §2.1 scorecard row still reads "no third-party SaaS at runtime" after ADR 0028 — OpenObserve is now deployed and serving | BLOCKING-A-GATE (promoted; was COSMETIC) |
@@ -346,6 +358,63 @@ it and no wire between them.
 The null default is argued and correct. What is missing is the argument for why
 nothing can ever set it — which nothing anywhere makes.
 
+### 5a. The ledger half — wired 2026-09-06
+
+**Closed in code; creates nothing today; not planned against a project.**
+
+`modules/data/outputs.tf` now publishes `spanner_instance` beside
+`spanner_database` — the instance was the missing half of the pair
+`google_spanner_database_iam_member` keys on — and `module "trust_zones"` in
+`infrastructure/terraform/main.tf` passes
+
+    ledger_database = var.enable_spanner ? {
+      instance = module.data.spanner_instance
+      database = module.data.spanner_database
+    } : null
+
+The condition is `var.enable_spanner`, the same switch `module.data` creates the
+instance under, rather than a second test on the outputs being null: two
+switches for one fact disagree eventually. Verified `terraform fmt -check
+-recursive .` exit 0 with no output and `terraform validate` `Success! The
+configuration is valid.` from `infrastructure/terraform` after the change.
+
+**What it does not do, said before somebody reads it as more than it is.**
+
+  * **It creates nothing in any environment today.** `enable_spanner = false`
+    in all four (`grep -rn enable_spanner infrastructure/environments/*/terraform.tfvars`),
+    so the expression is `null` and the four `for_each` blocks are empty — the
+    same plan as before, in every environment. This was **not** planned against
+    `algorik-dev`: no credential was present in the session that made the
+    change and none was sought.
+  * **It is necessary and not sufficient.** Even with `enable_spanner = true`,
+    the grants stay empty until a deployment also declares a `ledger` entry in
+    `trust_zones` and `read`/`append` paths to it in `permitted_paths`, both of
+    which are `{}` in every environment. That is how every other path in
+    `modules/trust-zones` works and is not a further gap; it is why the row
+    above was about the wire and not about the grants.
+  * **It does not make the append side append-only.** `modules/trust-zones`
+    grants `roles/spanner.databaseUser` for an `append` path, which can also
+    update and delete, and says so at the binding.
+    `modules/trust-zones/NOT-ENFORCED-HERE.md` is the record; wiring the input
+    does not narrow the role.
+
+**Checked and found not to be a problem, so the next reader does not re-check
+it: this is not a dependency cycle.** `module.cloud_run` reads
+`module.trust_zones.zone_network_tags` (`catalogue.tf`), and `module.data` reads
+`module.cloud_run["deepbrain"].service_account_email`, so the new edge
+`module.trust_zones` → `module.data` closes a ring at the level of *module
+calls*. Terraform's graph is finer than that: it carries one node per module
+variable and per module output, and `zone_network_tags` is `local.zone_tag`,
+derived from `var.zones` alone and from no resource and no other input. That
+`terraform validate` reports cycles at exactly that granularity was confirmed
+rather than assumed, against a two-module scratch configuration outside the
+repository:
+
+    Error: Cycle: module.b.output.out (expand), module.a.var.in (expand),
+    module.a.output.out (expand), module.b.var.in (expand)
+
+The real root validates clean, so there is no ring in it.
+
 ---
 
 ### 6. The control fabric of §46.1 is Pub/Sub and no resource of any kind exists
@@ -354,9 +423,10 @@ nothing can ever set it — which nothing anywhere makes.
 register of what is missing that omits the largest missing thing is not a
 register.**
 
-**Required.** Blueprint §46.1's control fabric, as ADR 0024:177-178 states:
-"The blueprint's control fabric is Pub/Sub (§46.1), and building it is work
-this record names and does not do."
+**Required.** Blueprint §46.1's control fabric, as ADR 0024:184-185 states
+(re-read 2026-09-06; this row cited `:177-178`): "The blueprint's control
+fabric is Pub/Sub (§46.1), and building it is work this record names and does
+not do."
 
 **Exists.** One Pub/Sub topic in the whole configuration, and it is not this
 one: `modules/secrets/main.tf:78`, the secret-rotation topic, whose own comment
@@ -364,11 +434,53 @@ one: `modules/secrets/main.tf:78`, the secret-rotation topic, whose own comment
 Pub/Sub as the *data* bus". `modules/services/main.tf:56` enables the API for
 that topic and no other.
 
-**The delta.** Nothing. There is no resource, and the absence is stated twice in
-the tree — ADR 0024:172-178 and `catalogue.tf:21-27` — which is what keeps it
-out of the gap list proper. Its consequence is gap 5: the fabric bindings in
-`modules/trust-zones` are written against a topic that does not exist and
-cannot be named. **This decision is not stale.**
+**The delta.** Nothing. There is no resource, and the absence is stated in the
+tree — ADR 0024:180-185 and `catalogue.tf:32-38` (both re-read 2026-09-06; this
+row cited `0024:172-178` and `catalogue.tf:21-27`, and the second has drifted by
+eleven lines) — which is what keeps it out of the gap list proper. Its
+consequence is gap 5: the fabric bindings in `modules/trust-zones` are written
+against a topic that does not exist and cannot be named. **This decision is not
+stale.**
+
+### 6a. The argument gap 5 said nobody made is now made, at the seam
+
+`module "trust_zones"` in `infrastructure/terraform/main.tf` passes
+`control_fabric_topic = null` explicitly, with the argument beside it, rather
+than inheriting the module's default two files away. Gap 5 says "the null
+default is argued and correct" and that "what is missing is the argument for why
+nothing can ever set it"; this is that argument, where a value would be passed.
+
+Three things stand between §46.1 and a topic in this configuration, and **not
+one of them is a value a person could choose**, which is why this row is not
+"declare everything else and name the missing value":
+
+  * **Nothing in this build can speak to it.** `qip-streaming`'s Pub/Sub
+    transport is a port that refuses rather than a client: `PubSubTransport`
+    returns `qip_core::Error::Unavailable` and its module doc
+    (`backend/crates/services/qip-streaming/src/pubsub.rs:1-24`) names what is
+    absent — "Reaching it needs a gRPC client, a TLS stack and a Google auth
+    flow", none of which this workspace has, and admitting them is ADR 0009's
+    decision to reopen. A topic created now is a topic no process can publish to
+    or pull from. `modules/data` already refuses exactly that shape by default:
+    "a provisioned database no adapter can open is a bill, an attack surface,
+    and a diagram that reads as a capability."
+  * **Whether the fabric is Pub/Sub at all is open.** ADR 0011 replaced Pub/Sub
+    with the in-tree HTTP mesh for the *data* bus; the centre-to-node path is
+    unwired for a different reason (`catalogue.tf:32-38`: a Cloud Run service
+    publishes one port and the mesh binds one listener per cell). Which of the
+    two carries the control fabric is the decision `docs/plan/PROJECT-PLAN.md`
+    records REG-6 as needing — "whether Pub/Sub is built or the blueprint row
+    is amended" — and it is an ADR, not an edit.
+  * **The only other shape available is forbidden.** A root variable naming a
+    topic somebody created by hand would put four IAM bindings on a resource
+    this repository did not create, which
+    `.claude/rules/domains/infrastructure.md` refuses by name.
+
+**So REG-6 is unchanged in fact and changed in record.** No resource was
+created and none was declared. What moved is that the absence is now stated at
+the seam where a reader looks for it, instead of only in an ADR and a comment
+on an unrelated variable, and the reason is stated as three named blockers
+rather than as "not done yet".
 
 ---
 
@@ -377,10 +489,11 @@ cannot be named. **This decision is not stale.**
 **Severity: COSMETIC.**
 
 **Required.** Nothing external. The list is the catalogue's own account of its
-boundary, `catalogue.tf:16-29`.
+boundary, `catalogue.tf:27-41` (re-read 2026-09-06; this row cited `:16-29`,
+which has drifted by eleven lines).
 
-**Exists.** Three entries: `qip-edge-node` (`:18-20`), `QIP_MESH_CELLS` on the
-API (`:21-27`), and a job (`:28-29`).
+**Exists.** Three entries: `qip-edge-node` (`:29-31`), `QIP_MESH_CELLS` on the
+API (`:32-38`), and a job (`:39-41`).
 
 **The delta.** The portal and the landing — the only two workloads this
 repository deploys outside the catalogue, by `scripts/deploy-frontends.sh` —
@@ -457,20 +570,37 @@ finds a row saying they are on Cloud Run and stops.
 Not gaps. Absences that are argued, where the argument no longer holds. The
 action is a paragraph, not a resource, and it belongs to the owner of the file.
 
-### `execution_nodes = {}` — half-stale
+### `execution_nodes = {}` — the decision holds, both of its original reasons are stale
 
-ADR 0024:186-187 gives one reason: "`execution_nodes` is empty in every
-environment, because a node needs a venue and no venue decision exists." Half of
-that has been overtaken. `6340610` gave the node a venue for the purpose of
-running a pass — the in-process simulated feed, written by
-`modules/execution-node/templates/startup.sh.tftpl:174`, with every other value
-stopping the process naming ADR 0003. What still holds is the other half, which
-the tfvars states and the ADR does not:
-`environments/dev/terraform.tfvars:75-76` points at
-`modules/execution-node/README.md` "for the entry a node needs when a venue's
-published ranges exist", and no venue's ranges have been recorded. The decision
-survives; one of its two reasons has expired, and the surviving one is written
-in the weaker of the two places.
+(This heading read "half-stale" and the paragraph under it said one of two
+reasons survived. Re-read 2026-09-06: neither does, and two different ones have
+replaced them.)
+
+ADR 0024:193-195 gives one reason: "`execution_nodes` is empty in every
+environment, because a node needs a venue and no venue decision exists."
+**That whole reason has now been overtaken**, and this paragraph — which said
+half of it still held — is corrected rather than left. `6340610` gave the node
+a venue for the purpose of running a pass: the in-process simulated feed,
+written by `modules/execution-node/templates/startup.sh.tftpl:174`, with every
+other value stopping the process naming ADR 0003. ADR 0035 then decided the
+node itself, and `environments/dev/terraform.tfvars:1-22` states in its own
+header that the venue reason "no longer holds" because the authorised node
+"prices from `QIP_VENUE_FEED=simulated` … so it needs no venue's published
+address ranges at all". The surviving reason this row used to cite —
+`:75-76` pointing at `modules/execution-node/README.md` "for the entry a node
+needs when a venue's published ranges exist" — is not at those lines any more
+and is not the argument any more either.
+
+**The decision survives on two different reasons, both named beside the
+commented entry at `:143-159`:** no boot image exists, and nobody has chosen
+`region_allocation`. The first changed shape rather than going away —
+`.github/workflows/image.yml` and `infrastructure/images/execution-node/` are
+the bake, and it has never been dispatched, so there is no self-link to write.
+The second gained a *proposed* value on 2026-09-06 in ADR 0045
+(`region_allocation = "1000000"`, one tenth of `PlatformConfig::initial_equity`,
+with its derivation) and that record marks itself **Proposed** precisely so
+nobody reads it as having set the value: "writing a number down is not choosing
+it". `execution_nodes = {}` is a working configuration and stays one.
 
 ### ADR 0024's closing sentence — stale
 
@@ -494,8 +624,15 @@ be the last file to hear about one.
 
 The gate is evidence that something scraped.
 `modules/observability/NOT-SCRAPED.md` holds the argument and nothing has
-changed it. All seven alert policies in `modules/observability/main.tf` remain
-gated on it (`grep -c 'resource "google_monitoring_alert_policy"'` returns 7).
+changed it. **Every** alert policy in `modules/observability/main.tf` remains
+gated on it. The number was seven when this was written and is **nine** as of
+2026-09-06, after `599daaa` added `risk_figure_unevaluated` and
+`sign_off_withheld_on_liquidity`; recount rather than quote —
+`grep -c '^resource "google_monitoring_alert_policy"' …/main.tf` returns 9 and
+`grep -c 'count *=.*workload_metrics_exist' …/main.tf` returns 9, and it is the
+*equality* of those two numbers, not either of them, that says nothing pages
+anybody. Exactly two of the nine query a `qip_edge_*` series
+(`grep -c 'query *= *"[^"]*qip_edge'`).
 
 ### Null image digests, no proxy on the fast brain, no Cloud Run job — not stale
 
@@ -656,7 +793,7 @@ reading two sides of a seam, which is where
 | F2 | Give the landing a named service account, created in `modules/secrets` beside `console` | `scripts/deploy-frontends.sh:133`, `modules/secrets/main.tf` | BLOCKING-A-GATE |
 | F3 | Cover the console-egress subnet with a deny-egress rule | `modules/network/main.tf:130` | BLOCKING-A-GATE |
 | F4 | Mount `ALGORIK_SESSION_SECRET` as a file; the portal reads it through the `_FILE` indirection its `secret.ts` already resolves | `scripts/deploy-frontends.sh:107` and `frontend/portal` | BLOCKING-A-GATE |
-| F5 | Wire `ledger_database` from `module.data.spanner_database`, or record why it can never be wired | `infrastructure/terraform/main.tf:305-325` | BLOCKING-DEPLOY |
+| F5 | ~~Wire `ledger_database` from `module.data.spanner_database`, or record why it can never be wired~~ **Done 2026-09-06** — see 5a. `modules/data` gained a `spanner_instance` output (the pair's other half) and `module "trust_zones"` takes both under `var.enable_spanner`. Creates nothing in any environment: Spanner is off in all four. The fabric half is not wireable and 6a says why | `infrastructure/terraform/main.tf`, `modules/data/outputs.tf` | Was BLOCKING-DEPLOY; closed in code, no plan run |
 | F6 | Rewrite ADR 0024:186-195 and traceability rows `:61` and `:301` | `docs/adr/`, `docs/architecture/` | COSMETIC |
 | F7 | One `docs/ops/README.md` edit adding both registers to the index — neither is listed today, so adding one alone makes the index more wrong | `docs/ops/README.md` | COSMETIC |
 | F8 | Decide whether the frontends join `catalogue.tf` or an ADR argues they stay out; either way `catalogue.tf:16-29` gains an entry | `catalogue.tf`, `docs/adr/` | COSMETIC to BLOCKING |
@@ -1046,6 +1183,71 @@ Pods on the first; and everything the previous section listed for the
 bootstrap. None of it has been observed. Every claim above about
 `algorik-dev` is read off run 37's log as reported to this record and off
 the tree at `3848a89` plus this commit.
+
+## The execution node has still never been in a plan — what was checked instead, 2026-09-06
+
+PHASE-B17 in `docs/plan/PROJECT-PLAN.md` states its own blocker: "no plan can
+exercise the module end to end while `execution_nodes = {}` and the boot image
+and `region_allocation` are unsupplied". That is still true. `execution_nodes`
+is `{}` in all four environments, so `module.execution_node`'s `for_each`
+expands to nothing and no plan has ever proposed a single resource of this
+module — the 164-resource dev plan recorded above, and runs 34 to 38, all ran
+against an empty map. **Nothing below changes that, and nothing below was run
+against `algorik-dev`** — the session that wrote it held no credential and
+sought none.
+
+What was done instead, because it can be done without one. A harness root
+outside the repository, with the google provider and **no** credential, state
+or backend, calls `modules/execution-node` with the complete entry
+`environments/dev/terraform.tfvars` carries as a comment (`newyork-1`,
+`us-east4`, `us-east4-a`, `10.67.0.0/20`, `c3-highcpu-8`, one simulated venue
+on `192.0.2.0/24:443`, `create_egress_nat = false`, `shadow_mode = true`, the
+real `infrastructure/egress/envoy.yaml`), plus the two values only a person may
+supply, written as literals **in the harness and nowhere in the tree**: a
+self-link of the shape `image.yml` prints, and ADR 0045's proposed
+`region_allocation = "1000000"`. `terraform validate` on that root answers
+
+    Success! The configuration is valid.
+
+Terraform evaluates a module's `validation` blocks during `validate` when the
+value is a literal at the call site, which is what makes this evidence rather
+than a syntax check — proven in the same harness by feeding it bad values:
+
+    region_allocation = "0"          -> Error: Invalid value for variable
+                                        var.region_allocation is "0"
+                                        region_allocation must be a positive decimal such as "250000.50" …
+    region_allocation = "1,000,000"  -> the same rule, naming the comma'd value
+    boot_image = "debian-12"         -> boot_image must be a full image self-link —
+    boot_image = ".../images/family/debian-12"
+                                     -> An image family is a moving pointer, not an immutable image.
+
+and by feeding it the other legal spelling, `https://www.googleapis.com/compute/v1/projects/…`,
+which is admitted. **The gate fires on a bad value and admits a good one**,
+which is the pair `.claude/rules/domains/infrastructure.md` asks for.
+
+The module's three `lifecycle` preconditions are **not** covered by that —
+`validate` evaluates none — so they were evaluated by hand with `terraform
+console` against the same values: the derived service account id
+`qip-exec-newyork-1-dev` is 22 characters against a limit of 30, `length(var.venues)`
+is 1, and `tonumber(regex("[0-9]+$", "c3-highcpu-8"))` is 8, giving
+`isolated_cpus = "2-7"` and satisfying `>= 8`. `templatefile` on
+`templates/startup.sh.tftpl` with the same sixteen values renders 53,835 bytes
+without error, which is the check `validate` also cannot make and which is well
+inside Compute Engine's per-metadata-value limit.
+
+**Nothing in the module was found that would fail a plan for a reason other
+than those two values, and nothing in it was changed.** That is a finding, not
+a fix, and it is weaker than a plan in three named ways: `validate` refreshes
+no state, calls no API, and evaluates no precondition; a plan does all three.
+The first plan carrying an entry is still the evidence ADR 0020 step 3 asks
+for, and `docs/operations/deploying-an-edge-cell.md` now carries the exact
+nine-act sequence that produces it — including the ordering trap, which is that
+`image.yml` refuses until `infra.yml` has applied `module.image_bake`, so the
+bake cannot be the first act.
+
+One claim this section does **not** make: that `image.yml` has never been
+dispatched. The runbook records `total_count: 0` checked on 2026-09-06 through
+the GitHub API; this session had no `gh` and no token and did not re-check it.
 
 ## The paper-trading boundary
 

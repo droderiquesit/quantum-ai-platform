@@ -40,13 +40,35 @@ is the point:
 - No service reads the environment. No lib performs I/O.
 - No new async runtime. Blocking I/O with explicit timeouts is a decision
   (ADR 0001, ADR 0011), not an omission.
-- No in-tree cryptography. ADR 0009 forbids hand-rolled crypto.
+- No hand-rolled protocol stack or asymmetric primitive. ADR 0009's actual
+  prohibition is on **clients** — "a gRPC implementation, a TLS stack and a
+  Google auth flow written in-tree, guarding real money, reviewed by nobody who
+  writes TLS for a living". ADR 0002's Decision section authorises the in-tree
+  hashing by name: "SHA-256 and HMAC, the random number generator". Both are
+  proven against published vectors (`qip-core/tests/hashing.rs` — FIPS 180-4
+  and RFC 4231, 6 tests; check with
+  `grep -c '#\[test\]' backend/crates/libs/qip-core/tests/hashing.rs`, which
+  printed `6` on 2026-09-06, and `cargo test -p qip-core --test hashing` for
+  the pass, since a count of declarations is not a count of passes and this
+  line previously conflated the two), which is what makes that narrow case defensible and
+  is exactly what a TLS or JWT implementation could never claim: those fail
+  silently against a live adversary and never against a fixture.
+  This line used to read "No in-tree cryptography. ADR 0009 forbids hand-rolled
+  crypto." It was a mis-citation, it contradicted ADR 0002 in the file agents
+  read first, and ADR 0043 found it. Do not read the correction as permission:
+  asymmetric signing, a CSPRNG, and anchoring the event-log chain are three
+  gaps no in-tree code may close — see ADR 0043 (proposed).
 - No crate added without an ADR (ADR 0002, ADR 0009).
 - No second source of truth for a fact the event log already holds.
 
 ## Recording a decision
 
 Consequential decisions go in `docs/adr/` as a numbered ADR, following the
-existing twelve. They do not live in chat history, a commit message, or an
+existing ones — **fifty on 2026-09-06**, counted with
+`ls docs/adr/ | grep -c '^0[0-9][0-9][0-9]-'`. This sentence said "the
+existing twelve" until then, understating the register by thirty-eight and
+telling a reader the corpus was small enough to have read. Run the command
+rather than trusting this number; it moves every time a decision is
+recorded, which is the point of it. They do not live in chat history, a commit message, or an
 agent's memory. If you find yourself explaining an architectural choice in a
 PR comment, it needed an ADR.

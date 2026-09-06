@@ -31,6 +31,49 @@
 > modules has been applied — `execution_nodes = {}` in every environment and
 > no `terraform` binary exists in this session either — so "wired" here means
 > "reachable from `main.tf`", not "running".
+>
+> **Second correction, 2026-09-06 — G9, step C5 and decision D23 have been
+> answered, and the rows below still read as though they had not.** Three
+> places say the node's boot image has no build: G9 ("No node boot image
+> build"), step C5 ("a boot image (G9) — no image pipeline exists in the tree
+> and Terraform cannot make one"), and D23 ("Whether the node's boot image is
+> built in CI or by hand, and with what tool | Not decided"). `5ccaea9` both
+> decided and built it: `.github/workflows/image.yml` over
+> `infrastructure/images/execution-node/` and
+> `infrastructure/terraform/modules/image-bake/`, taking the container image
+> `deploy.yml` has already attested and refusing to run on an artefact the
+> attestor did not sign. The rows are left as scored, like every other row
+> here. **What they still get right is the state of the world, and a careless
+> reading of this correction would lose it**: the workflow has never been
+> dispatched — `GET /repos/…/actions/workflows/image.yml/runs` answers
+> `total_count: 0` — `image_bake_subnet_cidr` is commented out in
+> `environments/dev/terraform.tfvars`, so `module.image_bake` has `count = 0`
+> and creates nothing, and `boot_image` has no value in any environment. A
+> pipeline exists; an image does not, and step C5's node step still cannot be
+> performed.
+>
+> **Third correction, 2026-09-06 — step C4's `qip-api` row says "five tokens"
+> and there are four.** That row maps the chart's secrets onto the `cloudrun`
+> module's `secret_mounts`, and it reads "five tokens + envelope key → the six
+> `_FILE` variables". `Role::Approver` was **retired at `665c506`**, in the
+> binary and the deployment at once — the enum arm, the composition root's
+> tuple, the Terraform secret container and the catalogue mount, the blocks
+> across the four rendered `RunService` manifests, the bootstrap seeding loop
+> and the credentials document. It was removed rather than wired because no
+> route ever required it (`grep -c 'required_role: Role::Approver'` over
+> `qip-api/src/routes.rs` was `0`) and the only approval the API exposes,
+> `POST /registrations/:source/approve`, already requires `Operator`, which is
+> strictly stronger. **The mapping a migration engineer should carry forward is
+> therefore four tokens + envelope key → five `_FILE` variables**, the four
+> being Monitor, Viewer, Analyst and Operator: check with
+> `grep -n 'QIP_TOKEN_' backend/crates/apps/qip-api/src/main.rs`, which shows
+> the four minted and `QIP_TOKEN_APPROVER` retained only as a named refusal
+> that stops a process still setting it. That refusal is the thing to notice —
+> a deployment carrying the fifth mount now **fails to start** rather than
+> mounting a credential nothing reads, so following the row as written is not a
+> harmless over-provision. The row is left as scored, like every other row here,
+> because it is the record of what the chart declared at `bcad2d3`; the file it
+> cites (`api.yaml`) no longer exists either, per the first correction above.
 
 
 **Scope.** The runtime this repository would produce if its committed
@@ -223,12 +266,14 @@ produces it; **UNWIRED MODULE** — Terraform exists under `modules/` and
 | Binary Authorization on Cloud Run | §45.1, §48 | Policy WIRED, cluster-pinned; Cloud Run evaluation UNWIRED | `modules/binaryauthorization/main.tf:188-240`; `modules/cloudrun/main.tf:275-277,431-433` |
 | Admission control for the node | §48 | ABSENT by nature | `modules/execution-node/main.tf:29-45`; `README.md:80-104` — the image build must attest what it packaged |
 | Artifact Registry | §45.1 | WIRED | `modules/registry/main.tf:19-40` |
-| Cloud Build, Cloud Deploy, OpenTofu | §45.1, §48 | ABSENT | GitHub Actions and Terraform 1.9.8 (`.github/workflows/ci.yml:252-254`; `deploy.yml`); frontends are built by Cloud Build through `gcloud` (`scripts/deploy-frontends.sh:6-8`) |
+| OpenTofu; plan reviewed before apply; state in Cloud Storage with locking; GCP resources only | §48, rule 77 | TOOL-SUBSTITUTED, properties met | Terraform 1.9.8 pinned by `.github/workflows/ci.yml:252-254`, with `hashicorp/google ~> 6.12` — the set `.claude/rules/domains/infrastructure.md` approves. Each property the tool was bought for is met: plan reviewed before apply (`infra.yml`'s split plan/up/down, plus the guard hook that refuses an unreviewed apply); state in Cloud Storage (`backend "gcs"`, `prefix = "qip/state"`, `infrastructure/terraform/main.tf:47-48`); GCP resources only (the provider set is `google` and `google-beta` and nothing else — the IBM integration is an API call, not a provisioned resource). Not CONTRADICTS, because no behaviour differs; not ALIGNED, because a reader looking for OpenTofu will not find it. ADR 0049 row 1 |
+| Cloud Build for build and test | §45.1, §48 | **PARTIAL** | §48's builder does run here, for two workloads: `scripts/deploy-frontends.sh` builds the portal and the landing with `gcloud builds submit` (`:227`, `:264`), signs each digest with the pipeline's own attestor and key version, and reads the routed revision back. The four Rust images are built by GitHub Actions (`deploy.yml`). **This line scored ABSENT while its own evidence column described Cloud Build building two services** — a score that reads as "the platform does not use Cloud Build", which is false in the direction that hides a live dependency on a Google service in the two workloads that face the internet. ADR 0049 row 2 |
+| Cloud Deploy, gradual rollout, automatic rollback on error rate | §45.1, §48 | ABSENT; property NOT REPRODUCED | Tool absent. The **guarantee** is not reproduced by ADR 0036's Kargo/Argo CD path either: it promotes by commit and its post-sync hook fails the sync when the revision is not Ready or the routed revision does not run the attested digest (`deploy.yml:397-432`) — a proof gate *before* traffic, which is a different thing from a rollback *after* it. **Blocked on observability rather than on a decision:** rolling back on an error rate needs an error rate. `grep -rn 'error_rate\|error rate' infrastructure/ --exclude-dir=.terraform` returns nothing (the `--exclude-dir` is load-bearing: without it the vendored provider binaries under `infrastructure/terraform/.terraform/` match and the command appears to contradict the sentence it is here to prove), and `workload_metrics_exist` is `false` in every environment (`terraform/variables.tf:769-779`; commented out in `environments/dev/terraform.tfvars:248`), so there is no series for a policy to read — the same ingestion gap ALIGN-A6 is blocked on. And none of it runs: the register records the dev control-plane cluster tainted at plan run 38 with its bootstrap not executed, and the mechanism that moved a Cloud Run service was released from the workflow and not yet taken up by a reconciler. ADR 0049 row 3 |
 | Cloud Armor, Global HTTPS LB, CDN in front of web and mobile only | §40.5, §45.1 | ABSENT | The only external load balancer is the Argo CD console's (`argocd/overlays/dev/console-ingress.yaml:25-55`), which the blueprint does not have. The portal is reached at its `run.app` hostname (`environments/dev/terraform.tfvars:136-137`) |
 | Pub/Sub control fabric shipping the twelve-item payload | §41.5, §45.1 | ABSENT | The only topic is secret rotation (`modules/secrets/main.tf:155-166`); the fabric is the in-tree mesh (`docs/adr/0011-everything-in-rust-on-kubernetes.md:23`) |
 | Spanner ledger | §45.1, §46.1 | ABSENT (flag exists) | `variables.tf:442-446` default `false`; every tfvars `enable_spanner = false` |
 | Managed Prometheus / Cloud Trace / OpenTelemetry | §45.1, §47 | WIRED on GKE (scrape); OTel spans ABSENT | `modules/cluster/main.tf:299-301`; `templates/monitoring.yaml:31-69`; `docs/architecture/algorik-blueprint-traceability.md:243` |
-| Alert policies | §47 | WIRED, gated off | `modules/observability/main.tf:19,55,93,127`; `workload_metrics_exist` commented out in `environments/dev/terraform.tfvars:126` |
+| Alert policies | §47 | WIRED (nine), gated off (nine) | **Recounted 2026-09-06 and corrected in both halves.** This row cited four line numbers — `main.tf:19,55,93,127` — which was the whole set when it was written and is now neither the count nor the lines. `grep -c '^resource "google_monitoring_alert_policy"' infrastructure/terraform/modules/observability/main.tf` prints `9`; `grep -c 'count *=.*workload_metrics_exist' …/main.tf` prints `9`, so every one is gated; `grep -c 'query *= *"[^"]*qip_edge' …/main.tf` prints `2`, so exactly two watch the edge plane. The nine are at `:23` `kill_switch`, `:59` `live_fill`, `:97` `persistent_breach`, `:131` `permission_violation`, `:182` `edge_halted`, `:222` `edge_reconciliation_break`, `:262` `central_reconciliation_break`, `:313` `risk_figure_unevaluated`, `:395` `sign_off_withheld_on_liquidity` (`grep -n '^resource "google_monitoring_alert_policy"' …/main.tf`). **Run the three commands; do not increment.** This count has been wrong in both directions inside this repository — `NOT-SCRAPED.md` once said three edge policies against a declared seven, and `.claude/rules/domains/observability.md` said seven for a day after the count reached nine. `workload_metrics_exist` is commented out at `environments/dev/terraform.tfvars:248` — this row said `:126`, and that file is edited often enough that the number is worth re-deriving with `grep -n workload_metrics_exist infrastructure/environments/*/terraform.tfvars` rather than read |
 | Security Command Center | §45.1 | WIRED, off | `main.tf:713-722` |
 | Environments `dev` / `sim` / `prod` | §48 | ABSENT as named | `variables.tf:52` admits `dev`, `test`, `stage`, `prod` |
 | A TLS-terminating egress path for a client that refuses `https` | (a consequence of ADR 0002, not a blueprint element) | GKE: described, not deployed; Cloud Run and node: ABSENT | `backend/crates/libs/qip-transport/src/http.rs:366-367`; `templates/egress.yaml:820,835`; `modules/execution-node/README.md:106-133`; `backend/crates/tests/qip-acceptance/tests/egress.rs:1155-1176` asserts the commented state |
@@ -608,7 +653,7 @@ instead.
 | egress proxy, `qip-egress` | No name — the blueprint's clients speak TLS | `templates/egress.yaml:1-16`; §46.2 | No; it is an ADR 0002 consequence, not a blueprint element |
 | `paper_trading` (ceiling) | shadow mode (a node that "connects, ingests, evaluates and gates, but discards orders") | `templates/config.yaml:12-14`; §48 line 4235; `modules/execution-node/variables.tf:146-165` | **No, and do not conflate them.** Shadow mode is a per-deployment observation state that a later diff ends; the ceiling is the platform's boundary. The node module keeps them apart on purpose (`main.tf:47-53`) |
 | environments `dev`/`test`/`stage`/`prod` | `dev`/`sim`/`prod` | `variables.tf:52`; §48 lines 4225-4231 | Not now; D17 |
-| Terraform, GitHub Actions | OpenTofu, Cloud Build, Cloud Deploy | `infra.yml:167-169`; §48 line 4199-4201 | No; D11 |
+| Terraform, GitHub Actions — and, for the two frontends, Cloud Build itself | OpenTofu, Cloud Build, Cloud Deploy | `infra.yml:167-169`; `scripts/deploy-frontends.sh:227,264`; §48 line 4199-4201 | No; D11. **Cloud Build is not only the blueprint's word for something the tree calls GitHub Actions**: `gcloud builds submit` builds the portal and the landing, so this row is a mapping for two of the three names and not for the middle one — see the PARTIAL score in the requires table |
 | `venues` map (`cidr`, `port`) | venue adapters, "credentials, region-scoped, IP-restricted at venue" | `variables.tf:355-358`; §36.1 line 2941 | No |
 
 ## Decisions this document does not make
@@ -625,7 +670,7 @@ silent one. Numbering continues `docs/plan/completion-plan.md:283-298`.
 | D5 | ADR 0020 steps 1–5, each approved by name | Writing Terraform that is unwired, or wired behind an empty map or a `false` flag so that the plan creates nothing, is not a step. A plan that creates compute, a service or a route is a step and waits for its approval |
 | D7 | K3 — what the application zone may reach | The DOCX's narrower reading (`blueprint-diagram-reconciliation.md:69-93`): `application-identity` reaches the ledger to read and raises intents; the zone module's `core_paths` already encodes it (`trust-zones/main.tf:80-84`) |
 | D9 | Market-data and chain hostnames and their licensing posture | None added. Those listeners stay absent from every rendering of the bootstrap |
-| D11 | Whether §48's OpenTofu / Cloud Build / Cloud Deploy row is CONTRADICTS or transitional | Transitional: GitHub Actions and Terraform stay; `gcloud run deploy` and a MIG update from the workflow stand in for Cloud Deploy's rollout. Cloud Deploy's gradual rollout with automatic rollback (§48) is not reproduced |
+| D11 | Whether §48's OpenTofu / Cloud Build / Cloud Deploy row is CONTRADICTS or transitional | **Corrected 2026-09-06, and the correction has two parts.** *The stale fact.* What stood here read "Transitional: GitHub Actions and Terraform stay; `gcloud run deploy` and a MIG update from the workflow stand in for Cloud Deploy's rollout" — and the workflow no longer does that. `deploy.yml:397-432` records that the rollout "belongs to the reconciler now" and that the job "no longer commits anything"; what remains in it for Cloud Run is a record of what was pushed. *The category error.* "Transitional" is a **verdict on the scoring**, and this table is headed "Decisions this document does not make" — so an assumption cell was carrying a decision, and the project plan's D11 row said no such decision existed. Two registers, one id, two answers. The scoring half is now taken, in ADR 0049, and its three rows are in the requires table above: OpenTofu TOOL-SUBSTITUTED with every rule 77 property met; Cloud Build **PARTIAL**, not ABSENT; Cloud Deploy ABSENT with its guarantee NOT REPRODUCED and blocked on the observability gap rather than on a decision. **What is left for this column is an assumption and nothing more:** the engineer proceeds with GitHub Actions and Terraform, and adopts none of the three. Adoption stays the owner's |
 | D13 | Identity model for the zones: one account per workload (`cloudrun`) or one per zone (`trust-zones`) | Per workload. The zone is a subnet and a tag; the zone module's per-zone account and KSA binding (`trust-zones/main.tf:234-257`) are removed and its ledger/fabric grants take workload account emails as members. One shared Cloud Run subnet per zone, not one per workload |
 | D14 | Which environment first | `dev`, the only one with a project (`environments/dev/terraform.tfvars:18`) |
 | D15 | Floors of one for the two brains versus the blueprint's scale-to-zero | Floor of one with `always_on_justification`; the blueprint's scale-to-zero is for request-driven services and these binaries run loops (`fastbrain.yaml:298-315`) |

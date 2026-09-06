@@ -1772,3 +1772,118 @@ fn a_product_offering_carries_no_withdrawal_field() {
         "nothing in the catalogue names a withdrawal"
     );
 }
+
+// --- custody of the record --------------------------------------------------
+
+#[test]
+fn the_books_report_in_ledger_key_order_however_they_were_funded_and_each_book_reports_its_own_balance()
+-> Result<()> {
+    // What this replaces, and why it is a test rather than a derive. The
+    // module documented the books as keyed in a `BTreeMap` "so a report of
+    // them is the same on every machine", and `UserLedger` derived
+    // `Serialize` as though that were the report. It was not: `LedgerKey` is
+    // `(UserId, StrategyId)`, `serde_json` refuses a map key that is not a
+    // string, and `serde_json::to_string` on a ledger holding one book
+    // returned `Error("key must be a string")` — while the same call on an
+    // empty ledger succeeded, which is why nothing noticed. The derive is
+    // gone and this is the report: `books()` iterated in key order, each book
+    // serialised on its own. If that ordering ever stopped holding, two
+    // machines would report one desk's capital in two orders and a
+    // reconciliation would be comparing rows nobody had aligned.
+    let mut ledger = ledger();
+    enrol(&mut ledger, "alice", "1000")?;
+    enrol(&mut ledger, "bob", "1000")?;
+    clear(&mut ledger, "alice")?;
+    clear(&mut ledger, "bob")?;
+
+    let momentum = strategy();
+    let carry = StrategyId::new("carry-v1");
+    // Funded in the reverse of the order they must report in, on both axes,
+    // so an implementation that reported insertion order would be visibly
+    // wrong here rather than accidentally right.
+    ledger.fund(&user("bob"), &carry, dec!("40"), now())?;
+    ledger.fund(&user("bob"), &momentum, dec!("30"), now())?;
+    ledger.fund(&user("alice"), &carry, dec!("20"), now())?;
+    ledger.fund(&user("alice"), &momentum, dec!("10"), now())?;
+
+    // Premise: there are four books to order, not one — an ordering assertion
+    // over a single entry passes on any implementation at all.
+    assert_eq!(
+        ledger.books().len(),
+        4,
+        "the premise: four books were funded"
+    );
+
+    let reported: Vec<(String, String)> = ledger
+        .books()
+        .keys()
+        .map(|(user, strategy)| (user.to_string(), strategy.as_str().to_string()))
+        .collect();
+    assert_eq!(
+        reported,
+        vec![
+            ("alice".to_string(), "carry-v1".to_string()),
+            ("alice".to_string(), "momentum-v3".to_string()),
+            ("bob".to_string(), "carry-v1".to_string()),
+            ("bob".to_string(), "momentum-v3".to_string()),
+        ],
+        "the books did not report in `(UserId, StrategyId)` order"
+    );
+
+    // And each book still serialises on its own, so removing the ledger's
+    // broken derive took no report with it.
+    let book = ledger
+        .book(&user("alice"), &momentum)
+        .expect("the premise: alice's momentum book exists");
+    let document = serde_json::to_string(book).expect("a strategy book reports");
+    assert!(
+        document.contains(r#""settled":"10""#),
+        "the book's report does not carry the settled balance: {document}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_settled_balance_is_reported_out_and_the_report_is_not_a_way_back_in() -> Result<()> {
+    // Custody of the record, stated as the property a paper-trading platform
+    // can actually enforce: the ways a number appears in a user's book are
+    // closed and each is gated. `serde` used to be an ungated sixth —
+    // `CashBalance` derived `Deserialize`, so a document naming a settled
+    // figure produced one, past the mandate ceiling, the operator's
+    // eligibility decision, the product catalogue and the exact-split rule.
+    // The absence of `Deserialize` is proven by the `compile_fail` doctest on
+    // `qip_capital::ledger::cash`, because a missing trait impl is not
+    // something a runtime assertion can see. What is asserted here is the
+    // half that must survive it: the figure still reports.
+    let mut ledger = ledger();
+    enrol(&mut ledger, "alice", "1000")?;
+    clear(&mut ledger, "alice")?;
+    ledger.fund(&user("alice"), &strategy(), dec!("250"), now())?;
+
+    let balance = ledger
+        .balance(&user("alice"), &strategy(), Currency::USD)
+        .expect("the premise: funding opened a book");
+    assert_eq!(balance.settled(), dec!("250"));
+
+    let document = serde_json::to_value(balance).expect("a balance reports");
+    let keys: Vec<&str> = document
+        .as_object()
+        .expect("a balance is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        ["currency", "expected", "reserved", "settled"],
+        "a reported balance is the four figures the ledger holds, and nothing else"
+    );
+    // ADR 0021, held here too: there is nothing on a balance through which a
+    // withdrawal could be described, requested or recorded.
+    assert!(
+        !serde_json::to_string(&document)
+            .expect("serialises")
+            .contains("withdraw"),
+        "nothing in a reported balance names a withdrawal"
+    );
+    Ok(())
+}

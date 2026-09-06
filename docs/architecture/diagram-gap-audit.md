@@ -27,6 +27,28 @@
 > full re-score is tracked work — so a row still describing a fill,
 > attribution or capital-demand outcome as reachable "only by tests" should
 > be treated as unverified rather than as re-confirmed.
+>
+> **Third correction, 2026-09-06 — the RBAC is four roles, not five.** The Zero
+> Trust row below reads "5-role RBAC (`qip-api/src/auth.rs` —
+> Monitor/Viewer/Analyst/Approver/Operator)". `Role::Approver` was **retired at
+> `665c506`**, in the binary and the deployment at once — the enum arm, the
+> composition root's tuple, the Terraform secret container and catalogue mount,
+> the blocks across the four rendered `RunService` manifests, the bootstrap
+> seeding loop and the credentials document. It was removed rather than wired
+> because no route ever required it (`grep -c 'required_role: Role::Approver'`
+> over `qip-api/src/routes.rs` was `0`), and the only approval this API exposes,
+> `POST /registrations/:source/approve`, already requires `Operator`, which is
+> **strictly stronger** — wiring Approver to it would have weakened a live
+> control to give a dead credential something to do. The set today is
+> Monitor · Viewer · Analyst · Operator: check with
+> `sed -n '/pub enum Role/,/^}/p' backend/crates/apps/qip-api/src/auth.rs`, and
+> `grep -n 'QIP_TOKEN_' backend/crates/apps/qip-api/src/main.rs` shows four
+> tokens minted and `QIP_TOKEN_APPROVER` kept only as a named refusal that stops
+> a process still setting it. **The row is left as scored**, per this document's
+> standing rule, because it is the record of what the audit found on 2026-08-24;
+> the count is corrected here, where a reader meets it before the row. Do not
+> read this as licence to re-add the role: `OperatorIdentity::with_second_approver`
+> is a *different* concept — the live-trading second person — and is untouched.
 
 Workspace state at audit time: `./scripts/count-tests.sh` reports **2,862 passed, 0 failed** ("the suite is green").
 Prior audit (`docs/architecture/current-state-audit.md`) was measured at 2,086 tests — it is stale and was treated
@@ -148,7 +170,7 @@ first two are now false, read against the current tree rather than the tree this
 | Risk Engine Real-Time VaR/CVaR | PARTIAL | VaR/CVaR math is real (`qip-risk/src/metrics.rs:24 historical_var, :37 parametric_var`; expected-shortfall limits, limits.rs:97,234,499) and the `RiskMonitor` runs every cycle (`stage_act`, platform.rs:1375-1380). **But the state it watches is a constant**: `Platform::risk_state()` returns hardcoded equity/cash 10M with defaults (platform.rs:1520-1526). Real-time in cadence, not in content. |
 | Hedge & Inventory Optimization | ABSENT | No hedging engine or inventory optimizer exists. Grep yields only doc comments (`qip-arbitrage/src/netedge.rs:20` "unhedged between the first leg and the last"), a scenario description, and the `/paths` route *summary string* promising "hedge state" (routes.rs:195) for a handler that answers `NO_ARBITRAGE_ENGINE`. |
 | Trade/No-Trade Decision | PARTIAL | The refusal machinery is genuinely wired (OMS `RefusalReason` gates: kill-switch, autonomy, venue, pre-trade risk — platform.rs:2180-2196 `gate_of`), and refusals are captured on the hash chain. The *trade* half never fires: decide is unconditionally no-trade (platform.rs:1321-1330). |
-| Actions (size, venues, TTL, …) | PARTIAL | Opportunity TTL wired (`queue.retain(|o| o.is_live(now))`, stage_discover); envelope expiry + recall backstops wired (routes.rs:1032-1052). Sizing/venue/hedge actions are never generated (no trade path). |
+| Actions (size, venues, TTL, …) | PARTIAL | Opportunity TTL wired (`queue.retain(\|o\| o.is_live(now))`, stage_discover); envelope expiry + recall backstops wired (routes.rs:1032-1052). Sizing/venue/hedge actions are never generated (no trade path). |
 | "Return − Costs − Risk − Slippage − Latency-Decay … = Expected Usable Alpha" | PARTIAL | Exactly the NetEdge nine-deduction contract (`qip-contracts/src/edge.rs`; kernel doc: "two of NetEdge's nine… the other seven are the market's", platform.rs:2158-2164). Computed in full only on the dormant cell path. |
 
 ## Layer 5 — Regional Execution Mesh (×7)

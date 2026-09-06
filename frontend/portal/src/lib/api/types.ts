@@ -1,12 +1,21 @@
 /**
- * The shapes the platform's REST surface actually returns.
+ * The shapes the platform's REST surface actually returns, as a browser here
+ * receives them.
  *
  * These are transcribed from the handler table in
  * `backend/crates/apps/qip-api/src/routes.rs`, field for field. Where the backend
  * answers a request with an explicit absence rather than data, that is modelled
  * as {@link Unavailable} instead of an optional field, because "no data and
  * here is why" is a different answer from "zero".
+ *
+ * One field is deliberately *not* the platform's own shape:
+ * {@link MeshCellStatus.address} is typed as {@link Redacted}, because the
+ * gateway replaces it before the body reaches this side. That is the point of
+ * typing it that way — a page cannot type-check its way to a cell's address,
+ * so the guarantee is held by the compiler rather than by a comment on a page.
  */
+
+import type { Redacted } from "./redaction";
 
 /** A subject this deployment has nothing behind, and the reason it does not. */
 export interface Unavailable {
@@ -59,7 +68,14 @@ export interface MeshCounters {
 
 export interface MeshCellStatus {
   readonly cell: string;
-  readonly address: string;
+  /**
+   * `MeshCellStatus.address` in `qip-api/src/mesh.rs` — the cell's base URL on
+   * the mesh transport, its identity there, from `QIP_MESH_PEER`. The platform
+   * serves it to `Role::Viewer`; the gateway replaces it with the marker
+   * before the body leaves this process (`./redaction`), so what arrives here
+   * is never an address and the type says so.
+   */
+  readonly address: Redacted;
   readonly spool_pending: number;
   readonly circuit: string;
 }

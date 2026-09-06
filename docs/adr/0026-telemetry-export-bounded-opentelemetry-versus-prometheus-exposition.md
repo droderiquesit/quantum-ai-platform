@@ -186,12 +186,17 @@ Not enforced, and worth the owner's eye against §44.2:
 
 ### What is collected, and what is not
 
-`infrastructure/terraform/modules/observability/main.tf` declares seven alert
-policies in PromQL — kill switch, live fill, persistent breach, permission
-violation, edge halted, edge reconciliation break, central reconciliation
-break (`main.tf:23,59,97,131,176,213,253`) — every one gated on
-`workload_metrics_exist` because Cloud Monitoring refuses a policy naming a
-descriptor it has never ingested (`main.tf:7-14`).
+`infrastructure/terraform/modules/observability/main.tf` declares its alert
+policies in PromQL — seven when this record was written, and **nine** as of
+2026-09-06: kill switch, live fill, persistent breach, permission violation,
+edge halted, edge reconciliation break, central reconciliation break, and the
+two `599daaa` added, `risk_figure_unevaluated` and
+`sign_off_withheld_on_liquidity`. Recount with
+`grep -c '^resource "google_monitoring_alert_policy"'` rather than quoting
+either number. Every one is gated on `workload_metrics_exist` because Cloud
+Monitoring refuses a policy naming a descriptor it has never ingested — that
+equality is the load-bearing fact and it is unchanged, so **no policy exists in
+any environment and a break on either plane pages nobody.**
 
 `NOT-SCRAPED.md` states the collector position exactly:
 
@@ -214,13 +219,37 @@ observable" — stands.
 
 ### The signals the blueprint names, and which exist by name
 
+> **Amended 2026-09-06. Two rows below claimed a recording site for a series
+> whose name no longer exists, and every `metrics.rs` line number in the table
+> is stale.** The rows are corrected in place and struck rather than deleted,
+> because this is a decision record and what it claimed is part of what it
+> decided. The parenthetical `:NNN` figures are `metrics.rs` line numbers as
+> measured when the table was written; `6ba104f` deleted twenty-one dead names
+> from that file and wired five others, so the numbers no longer land on the
+> constants they name. They are left in place rather than re-derived: the file
+> was under active edit on the day of this amendment and a fresh number would
+> have been wrong before it was read. Locate any constant with
+> `grep -n '"<series_name>"' backend/crates/libs/qip-observability/src/metrics.rs`,
+> and check it has a caller — not merely a declaration — with
+> `grep -rl 'names::<CONSTANT>' backend/crates --include=*.rs`. A registered
+> constant nothing calls satisfies the acceptance test and pages nobody.
+>
+> **Neither deleted series was named by an alert policy**, which was the one
+> thing that would have made this serious: all nine policies in
+> `infrastructure/terraform/modules/observability/main.tf` query a series that
+> still exists as a constant, and `SERIES_THAT_MUST_PAGE`
+> (`backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs`) names nine
+> series, none of them either of the two. Verified 2026-09-06 with
+> `grep -n 'query *= *"' …/observability/main.tf` against
+> `grep -n '"qip_…"' …/metrics.rs`, one series at a time.
+
 | Blueprint signal (§47, §6.2) | Exists by name in `metrics::names` | Where recorded | Missing |
 |---|---|---|---|
 | Policy freshness — age of the shipped items per region (`:4191`) | `qip_edge_policy_sequence` (`:614`), `qip_edge_capability_freshness{capability}` (`:608`) | Cell, per pass | The *age* as a duration; what exists is the applied sequence and a freshness class per capability. Nothing at the centre publishes what it believes it shipped, so the correlation the rule file describes is one-sided |
 | Belief calibration — the single most important metric (`:4163,4195`) | `qip_belief_brier_score` (`:679`), `qip_belief_confidence_adjustment` (`:682`), `qip_belief_evaluations` (`:685`), `qip_theses_evaluated_total` (`:688`) | Kernel LEARN, since `04738ee` | Calibration by confidence bucket ("seventy percent happens seventy percent") is one Brier number, not a curve |
-| Veto and counterfactual — veto profitability by rule, venue, regime; feasibility rejection distribution (`:4165`) | `qip_risk_rejections_total` (`:492`), `qip_orders_refused_total` (`:524`), `qip_edge_refusals_total{gate}` (`:603`), `qip_counterfactuals_scored_total`, `_regrets_total`, `_deferred_total`, `_unscored_total` (`:692-702`) | Kernel and cell | Regret *by rule and venue* is not a label set the tree carries; regime is not a label at all. The feasibility gate's eight literals are the `gate` label and do give the rejection distribution at the cell |
+| Veto and counterfactual — veto profitability by rule, venue, regime; feasibility rejection distribution (`:4165`) ~~`qip_risk_rejections_total` (`:492`)~~, `qip_orders_refused_total` (`:524`), `qip_edge_refusals_total{gate}` (`:603`), `qip_counterfactuals_scored_total`, `_regrets_total`, `_deferred_total`, `_unscored_total` (`:692-702`) | Kernel and cell — **for the four names that remain** | **`qip_risk_rejections_total` does not exist and this row said it was recorded in the kernel and the cell.** It was a constant nothing ever called, and `6ba104f` deleted the constant; `grep -rn 'RISK_REJECTIONS\|qip_risk_rejections_total' backend/` now returns nothing. So the row overstated the veto surface twice over — first by counting a name as a signal, then by asserting a recording site for it. The four survivors do each have a non-test caller (`ORDERS_REFUSED` and the four counterfactual constants in `qip-kernel/src/platform.rs`, `EDGE_REFUSALS` in `qip-edge/src/telemetry.rs`), checked 2026-09-06. Beyond that: regret *by rule and venue* is not a label set the tree carries; regime is not a label at all. The feasibility gate's eight literals are the `gate` label and do give the rejection distribution at the cell |
 | Reconciliation — deltas and breaks (`:4189`) | `qip_edge_reconciliation_breaks_total` (`:623`), `qip_central_reconciliation_breaks_total{direction}` (`:649`), `qip_central_cell_halts_total` (`:655`) | Cell finds; centre acts | The delta magnitude; only counts exist |
-| Degradation — reduced-capability modes (`:203`, `:2737-2743`) | `qip_edge_sizing_multiplier` (`:611`), `qip_edge_halted{source}` (`:602`), `qip_edge_mesh_circuit{state}` (`:633`), `qip_quantum_fallbacks_total` (`:488`), `qip_universe_not_decision_grade` (`:731`), `qip_stage_problems_total` (`:514`) | Cell and kernel | A single "mode" gauge per plane naming which §6.2 row the process is in |
+| Degradation — reduced-capability modes (`:203`, `:2737-2743`) | `qip_edge_sizing_multiplier` (`:611`), `qip_edge_halted{source}` (`:602`), `qip_edge_mesh_circuit{state}` (`:633`), ~~`qip_quantum_fallbacks_total` (`:488`)~~, `qip_universe_not_decision_grade` (`:731`), `qip_stage_problems_total` (`:514`) | Cell and kernel — **for the five names that remain** | **`qip_quantum_fallbacks_total` does not exist and this row said it was recorded.** Deleted with the constant at `6ba104f`; `grep -rn 'QUANTUM_FALLBACKS\|qip_quantum_fallbacks_total' backend/` returns nothing. It matters more here than in the veto row: ADR 0006 requires a classical baseline every time a quantum path runs, and a series named `quantum_fallbacks` reads as the evidence that requirement is being observed. It was never that. The five survivors each have a non-test caller, checked 2026-09-06. Still missing: a single "mode" gauge per plane naming which §6.2 row the process is in |
 | Cross-plane correlation ids | None as metrics — correctly | `Lineage` on every event (`lineage.rs:62-70`) | Spans. The event log answers "what happened in cycle X"; nothing answers "how long did hop Y take inside it" |
 | Self-model — coverage gaps, estimator error against bound (`:4167`) | None | — | No self-model exists in the tree (traceability, Plane 2) |
 | Spans with a stable `node_id` (`:4159`, rule 74) | The tracer, unused | — | A producer; a `node_id` scheme; a drain |

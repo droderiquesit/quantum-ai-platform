@@ -15,11 +15,16 @@
 # and `infrastructure/images/execution-node/` are now the bake — built from
 # the container image `deploy.yml` attested, refusing to run on an artefact
 # the attestor did not sign — but it has never been dispatched, so no image
-# self-link exists to write here. Producing one is three human acts:
-# uncomment `image_bake_subnet_cidr` below, dispatch `infra.yml` with
-# `action=up`, dispatch `image.yml`. The allocation is not like that: it is a
-# number a person chooses and no workflow may pick. So `execution_nodes = {}`
-# stays — a working configuration, not an incomplete one.
+# self-link exists to write here. Producing one is three human acts, and the
+# order matters because the obvious one is wrong: uncomment
+# `image_bake_subnet_cidr` below, dispatch `infra.yml` with `action=up` (which
+# is what creates the staging bucket, the builder identity and the /28), and
+# only then dispatch `image.yml`. A bake dispatched first refuses, naming this
+# file. The allocation is not like that at all: it is a number a person
+# chooses and no workflow may pick, and ADR 0045 proposes one without setting
+# it. So `execution_nodes = {}` stays — a working configuration, not an
+# incomplete one. `docs/operations/deploying-an-edge-cell.md` carries the whole
+# sequence, both values included, under "The exact sequence".
 
 # The project this environment lives in. An identifier, not a secret: it
 # appears in every resource name and in the pipeline's own configuration, so
@@ -157,6 +162,13 @@ gitops_master_ipv4_cidr_block = "10.0.36.0/28"
 #     reservation. It has no default anywhere on purpose: a default is a number
 #     nobody chose, and this is the one number in a cell's envelope a reviewer
 #     has to have read. An agent picking it would be exactly that failure.
+#     A number is now *proposed* — ADR 0045, `"1000000"`, one tenth of
+#     `PlatformConfig::initial_equity`, with its derivation, the alternatives
+#     it rejects and the concentration failure it is the last defence against.
+#     Proposed is not chosen: that record says so in its own first paragraph
+#     and states that this map stays `{}` until somebody edits this file in a
+#     reviewed diff. Reading the ADR is the act; writing the number here is a
+#     second one, and it is a person's.
 #
 # execution_nodes = {
 #   "newyork-1" = {

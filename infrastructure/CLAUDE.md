@@ -7,7 +7,17 @@ code under ADR 0024. **Not a cargo directory.**
 terraform fmt -check -recursive .
 terraform validate                       # needs `terraform init -backend=false` first
 make infra                               # both of the above from the repo root
+terraform fmt -check -recursive environments   # the tfvars; run from infrastructure/
 ```
+
+The fourth is a separate command because the first two do not reach the tfvars:
+`fmt` above is scoped to `terraform/`, and `validate` checks the configuration
+rather than the values handed to it — it never opens a `.tfvars` at all. So an
+environment file that was not valid HCL used to pass every gate here and fail
+at the moment somebody applied. `terraform fmt` parses HCL to reformat it, so
+pointing it at `environments/` is the whole check; `ci.yml`'s infrastructure
+job runs exactly that. `make infra` does **not** yet include it — the Makefile
+is outside this domain — so run it by hand or expect CI to find it.
 
 Rules: `.claude/rules/domains/infrastructure.md`.
 

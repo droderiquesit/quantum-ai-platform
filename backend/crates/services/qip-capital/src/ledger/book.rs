@@ -83,7 +83,11 @@ pub type LedgerKey = (UserId, StrategyId);
 /// Carries counts rather than the entries themselves: the event log is the
 /// record, and a ledger that kept every entry in memory would be the
 /// unbounded working set the retention rule forbids.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// Serialises and does not deserialise, for the reason [`super::CashBalance`]
+/// gives: a book is what the ledger's own gated operations made it, never
+/// what a document says it is.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct StrategyBook {
     cash: BTreeMap<Currency, CashBalance>,
     /// Attributed fills booked here, so "none were booked" and "the balance
@@ -129,14 +133,29 @@ impl StrategyBook {
 /// There is no empty ledger: one is opened with the desk, because the desk's
 /// mandate is the ceiling every other mandate is admitted under and a ledger
 /// with no ceiling would admit anything.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// **Not a document, in either direction, and the second half of that is a
+/// correction rather than a decision.** `Deserialize` is gone for the reason
+/// [`super::CashBalance`] gives — a balance is evidence of what the ledger
+/// did, never an input that decides what it holds. `Serialize` is gone
+/// because it never worked: [`LedgerKey`] is a tuple, `serde_json` refuses a
+/// map key that is not a string, and `serde_json::to_string` on a ledger
+/// holding a single book returned `Error("key must be a string")` while the
+/// same call on an empty one succeeded. Every test that exercised it had an
+/// empty ledger, so the derive read as a working report and would have failed
+/// the first time a user had money in it. Two claims about one fact, and the
+/// louder one was wrong.
+///
+/// A report of the books is built from [`Self::books`], which iterates in
+/// [`LedgerKey`] order and is what `qip-api`'s ledger views already read; the
+/// record of how the books got that way is the hash-chained event log, which
+/// is where the kernel journals every funding, refusal and attributed fill.
+#[derive(Clone, Debug, PartialEq)]
 pub struct UserLedger {
     registry: MandateRegistry,
-    /// Who an operator has verified. Defaulted on deserialisation to a
-    /// registry in which nobody is eligible, so a ledger stored before
-    /// eligibility existed comes back refusing every funding rather than
-    /// admitting everyone it used to.
-    #[serde(default)]
+    /// Who an operator has verified — rebuilt from the event log by
+    /// `Platform::replay_eligibility`, which is the only restore path the
+    /// ledger has and the only one it should have.
     eligibility: EligibilityRegistry,
     books: BTreeMap<LedgerKey, StrategyBook>,
     /// Fills journalled across every book, for the same reason each book

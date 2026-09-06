@@ -575,21 +575,43 @@ fn series_key(name: &str, labels: &Labels) -> String {
 
 /// The metric names the platform publishes. Centralised so dashboards, alerts
 /// and the documentation-drift test all read from one list.
+///
+/// # Every name here has a caller, and that is the entry condition
+///
+/// This list once held twenty-six constants nothing recorded. That is not a
+/// harmless surplus: a name in this module reads as a series the platform
+/// publishes, and the observability rule says so in as many words — "a
+/// registered constant nothing calls would satisfy the acceptance test and
+/// still page nobody, so check the caller, not the name". Two of the
+/// twenty-six were worse than dead. `KILL_SWITCH_ENGAGED`
+/// (`qip_kill_switch_engaged_total`) and `AGENT_PERMISSION_DENIALS`
+/// (`qip_agent_permission_denials_total`) were second names for facts the
+/// kernel already publishes as [`KILL_SWITCH_TRIPPED`] and
+/// [`PERMISSION_DENIALS`] — both on the list of series that must page — so an
+/// operator or a dashboard author who found the wrong one would have built an
+/// alert on a descriptor Cloud Monitoring has never ingested and could never
+/// evaluate.
+///
+/// The twenty-one that named facts this platform does not compute were
+/// deleted; the five that named facts it computes and threw away are now
+/// recorded, in `Platform::stage_discover` and `Platform::stage_reason`.
+/// **Add a name here in the same commit as its recording site**, never before
+/// it.
 pub mod names {
     // Streaming
     pub const EVENTS_PUBLISHED: &str = "qip_events_published_total";
-    pub const EVENTS_DISPATCHED: &str = "qip_events_dispatched_total";
-    pub const EVENT_HANDLER_FAILURES: &str = "qip_event_handler_failures_total";
-    pub const EVENT_DUPLICATES: &str = "qip_event_duplicates_suppressed_total";
     pub const EVENT_LAG_MS: &str = "qip_event_lag_milliseconds";
 
     // Data
-    pub const DATA_QUALITY_SCORE: &str = "qip_data_quality_score";
-    pub const DATA_FRESHNESS_SECONDS: &str = "qip_data_freshness_seconds";
     pub const DATA_VALIDATION_FAILURES: &str = "qip_data_validation_failures_total";
 
-    // Discovery and reasoning
-    pub const SIGNALS_GENERATED: &str = "qip_signals_generated_total";
+    // Discovery and reasoning. The funnel from "something looked odd" to "a
+    // hypothesis the platform will act on", recorded where each fact becomes
+    // known: DISCOVER counts what it found, REASON counts what it synthesised
+    // and how review ruled. Until these had callers the whole funnel existed
+    // only in a stage's prose detail, so nothing could chart a platform that
+    // had stopped finding anything, or one whose review rejected everything —
+    // and those two look identical from the order count, which is zero in both.
     pub const OPPORTUNITIES_DETECTED: &str = "qip_opportunities_detected_total";
     pub const HYPOTHESES_CREATED: &str = "qip_hypotheses_created_total";
     pub const HYPOTHESES_APPROVED: &str = "qip_hypotheses_approved_total";
@@ -599,10 +621,6 @@ pub mod names {
     // Agents
     pub const AGENT_RUNS: &str = "qip_agent_runs_total";
     pub const AGENT_FAILURES: &str = "qip_agent_failures_total";
-    pub const AGENT_DURATION_MS: &str = "qip_agent_duration_milliseconds";
-    pub const AGENT_TOKENS: &str = "qip_agent_tokens_total";
-    pub const AGENT_TOOL_CALLS: &str = "qip_agent_tool_calls_total";
-    pub const AGENT_PERMISSION_DENIALS: &str = "qip_agent_permission_denials_total";
     /// How many of the roster's manifests are past their review interval at
     /// the instant the REASON stage ran — a gauge, because it is a state of
     /// the organisation and not a rate of anything.
@@ -616,12 +634,6 @@ pub mod names {
     /// number; renewing a manifest is an operator's review, and nothing in
     /// the kernel does it.
     pub const AGENT_MANIFESTS_EXPIRED: &str = "qip_agent_manifests_expired";
-
-    // Optimisation
-    pub const OPTIMIZATION_RUNS: &str = "qip_optimization_runs_total";
-    pub const OPTIMIZATION_DURATION_MS: &str = "qip_optimization_duration_milliseconds";
-    pub const SOLVER_SELECTED: &str = "qip_solver_selected_total";
-    pub const QUANTUM_FALLBACKS: &str = "qip_quantum_fallbacks_total";
 
     // Risk and execution
     pub const RISK_EVALUATIONS: &str = "qip_risk_evaluations_total";
@@ -637,22 +649,18 @@ pub mod names {
     /// A control that is not running looks exactly like a control that passed
     /// unless something says otherwise, and this is the something.
     pub const RISK_FIGURES_UNEVALUATED: &str = "qip_risk_figures_unevaluated";
-    pub const RISK_REJECTIONS: &str = "qip_risk_rejections_total";
-    pub const KILL_SWITCH_ENGAGED: &str = "qip_kill_switch_engaged_total";
     pub const ORDERS_SUBMITTED: &str = "qip_orders_submitted_total";
     pub const ORDERS_FILLED: &str = "qip_orders_filled_total";
-    pub const SLIPPAGE_BPS: &str = "qip_slippage_basis_points";
+    /// Named by no recording site in the platform, and kept because the
+    /// exposition tests use it as the histogram fixture: the encoder has to be
+    /// proven against some name, and a fabricated one would be a name in this
+    /// module with no meaning at all. The same is true of [`PORTFOLIO_VALUE`]
+    /// and [`PORTFOLIO_LEVERAGE`] below.
     pub const EXECUTION_LATENCY_MS: &str = "qip_execution_latency_milliseconds";
 
-    // Portfolio
+    // Portfolio. Fixtures for the exposition tests; see EXECUTION_LATENCY_MS.
     pub const PORTFOLIO_VALUE: &str = "qip_portfolio_value";
     pub const PORTFOLIO_LEVERAGE: &str = "qip_portfolio_leverage";
-    pub const PORTFOLIO_VAR: &str = "qip_portfolio_value_at_risk";
-    pub const REALISED_PNL: &str = "qip_realised_pnl";
-    pub const UNREALISED_PNL: &str = "qip_unrealised_pnl";
-
-    // Cost
-    pub const COMPUTE_COST: &str = "qip_compute_cost_units_total";
 
     // The cycle. One turn of SENSE → … → LEARN, as the kernel runs it.
     pub const CYCLES_RUN: &str = "qip_cycles_total";

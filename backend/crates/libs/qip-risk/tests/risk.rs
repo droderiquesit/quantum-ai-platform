@@ -9,7 +9,10 @@ use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::testing::approx_eq;
 use qip_numerics::matrix::Matrix;
 use qip_risk::factor::FactorRisk;
-use qip_risk::limits::{Limit, LimitKind, LimitSet, RiskState, Severity};
+use qip_risk::limits::{
+    EXPECTED_SHORTFALL_FIGURE, Limit, LimitKind, LimitSet, RiskState, Severity,
+    VALUE_AT_RISK_FIGURE, VOLATILITY_FIGURE,
+};
 use qip_risk::metrics::{
     self, DrawdownProfile, RiskMetrics, TailRisk, drawdown_profile, expected_shortfall,
     historical_var, parametric_var,
@@ -514,7 +517,6 @@ fn state() -> RiskState {
         daily_loss: 0.01,
         days_to_liquidate: BTreeMap::from([("AAPL".to_string(), 1.0)]),
         liquidatable_within: BTreeMap::from([("5".to_string(), 0.95)]),
-        counterparty_exposures: BTreeMap::new(),
         order_notional: None,
         order_subject: None,
         // Every figure above was computed, so nothing is filed as
@@ -871,150 +873,94 @@ fn a_series_too_short_to_measure_leaves_the_maps_empty_rather_than_recording_zer
     assert!(bare.value_at_risk.is_empty());
 }
 
-// --- liquidity horizons ------------------------------------------------------
+// --- liquidity horizons: this crate does not derive them ---------------------
 //
 // `LimitKind::MinLiquidity` reads `liquidatable_within`, keyed by horizon,
 // exactly the way `MaxExpectedShortfall` read `expected_shortfall` before
-// `RiskState::with_tail_risk` existed — and nothing filled it.
-// `LimitSet::conservative_default` has shipped a `liquidity` limit since
-// before `with_liquidity_horizons` existed. These fixtures pin the
-// derivation that fills the map from `days_to_liquidate` and
-// `position_notionals`, keyed the way the limit reads them.
+// `RiskState::with_tail_risk` existed. `with_tail_risk` closed that gap here
+// because the tail *is* derivable here: a return series in, a quantile out.
+//
+// The liquidity figure is not. It needs average daily volume and market
+// depth, which this crate has none of, so `RiskState::with_liquidity_horizons`
+// derived it by refiltering day counts a caller had supplied — and handed a
+// book with holdings and no counts it returned the state untouched. An
+// untouched state is the same state a passing floor produces: empty map, empty
+// `unevaluated`, `reason()` of "within all limits". It was the same fail-open
+// that shipped once already, in the derivation `qip-kernel` uses, and closing
+// it there cost sixty-one mutations.
+//
+// It is not repaired here, it is gone, and the reason it is gone rather than
+// repaired matters: filing `RiskState::unevaluated` from inside that method
+// would have meant inventing the reason. "Nobody ran a liquidity model" and
+// "the liquidity model ran and refused" are facts about the caller, and
+// `with_unevaluated`'s whole contract is that the producer states its own.
+// The producer is `qip-kernel`'s `Platform::liquidatable_within`, over a
+// ladder whose construction proved its own monotonicity, and it does file the
+// refusal.
+//
+// The test below is the guard against the second derivation coming back.
 
-/// The shared fixture with its liquidity map emptied, so a figure found
-/// under a key can only have been put there by the derivation under test.
-fn state_with_no_liquidity_figures() -> RiskState {
+#[test]
+fn nothing_in_this_crate_fills_the_figure_the_liquidity_floor_reads() {
+    // Every producer `qip-risk` offers, composed the way `qip-kernel`'s
+    // `Platform::risk_state_from` composes them, over a book that holds
+    // positions and has been marked with exit times inside the floor's own
+    // horizon. If a liquidity derivation is ever re-added here, this is the
+    // fixture that would fill the map, and this test fires.
+    let limits = LimitSet::conservative_default();
     let mut state = state();
+    state.value_at_risk.clear();
+    state.expected_shortfall.clear();
     state.liquidatable_within.clear();
-    state
-}
-
-#[test]
-fn a_book_whose_liquidity_falls_below_the_default_floor_is_refused_once_marked() {
-    let limits = LimitSet::conservative_default();
-    // AAPL (80k) exits in a day; MSFT (60k) has no declared exit time at
-    // all, which must count against the floor rather than drop out of it.
-    let mut state = state_with_no_liquidity_figures();
-    state.days_to_liquidate = BTreeMap::from([("AAPL".to_string(), 1.0)]);
-    let state = state.with_liquidity_horizons(&limits);
-
-    // Premise: the figure exists under the key the default limit reads. If
-    // the map is empty the breach assertion below measures nothing.
-    let fraction = state
-        .liquidatable_within
-        .get("5")
-        .copied()
-        .unwrap_or_else(|| {
-            panic!(
-                "no liquidatable fraction under the default limit's key; the map holds {:?}",
-                state.liquidatable_within.keys().collect::<Vec<_>>()
-            )
-        });
-    assert!(
-        (fraction - (80_000.0 / 140_000.0)).abs() < 1e-9,
-        "80k of 140k is liquid inside 5 days, MSFT has no declared exit time: got {fraction}"
-    );
-    assert!(
-        fraction < 0.80,
-        "premise: the fraction sits below the default 80% floor, got {fraction}"
-    );
-
-    let check = limits.check(&state);
-    let breach = check
-        .blocking()
-        .into_iter()
-        .find(|b| b.limit_kind == "min_liquidity")
-        .unwrap_or_else(|| panic!("liquidity did not bind: {}", check.reason()));
-    assert!(breach.observed < breach.bound, "a floor binds from below");
-    assert!(check.is_blocked());
-}
-
-#[test]
-fn a_book_whose_liquidity_sits_above_the_default_floor_passes() {
-    let limits = LimitSet::conservative_default();
-    // Both names exit well inside the 5-day horizon the default limit uses.
-    let mut state = state_with_no_liquidity_figures();
     state.days_to_liquidate =
         BTreeMap::from([("AAPL".to_string(), 1.0), ("MSFT".to_string(), 2.0)]);
-    let state = state.with_liquidity_horizons(&limits);
 
-    // Premise: computed, not skipped.
+    // Premise, in three parts, because an absence proves nothing on its own.
+    // The book holds something to be illiquid; the floor is in the set and
+    // would read the key `5`; and the composition below does fill the other
+    // keyed figures, so an empty liquidity map is a decision and not a
+    // no-op that emptied everything.
     assert!(
-        state.liquidatable_within.contains_key("5"),
-        "nothing was computed, so nothing can be said about passing"
+        !state.position_notionals.is_empty(),
+        "premise: the book holds positions"
     );
-    let check = limits.check(&state);
     assert!(
-        !check
+        limits.limits.iter().any(|limit| matches!(
+            limit.kind,
+            LimitKind::MinLiquidity { days, .. } if (days - 5.0).abs() < 1e-12
+        )),
+        "premise: the shipped set carries a five-day liquidity floor"
+    );
+    let derived = state.with_tail_risk(&limits, &[0.01, -0.02, 0.015, -0.03]);
+    assert!(
+        !derived.value_at_risk.is_empty() && !derived.expected_shortfall.is_empty(),
+        "premise: the crate's own producers did run and did fill what they can derive"
+    );
+
+    assert!(
+        derived.liquidatable_within.is_empty(),
+        "something in qip-risk derived the liquidity figure: {:?}. There is one producer of \
+         it — qip-kernel's ladder — and it is the one that can file a refusal when it cannot \
+         compute. A second writer here abstains silently, and MinLiquidity reads an abstention \
+         and a pass as the same event.",
+        derived.liquidatable_within
+    );
+    // And the floor therefore records nothing, which is only safe because the
+    // real producer files `unevaluated` and `PreTradeChecker::check` refuses
+    // on it. Asserted so that a future reader meets the whole bargain here
+    // rather than half of it.
+    assert!(
+        !limits
+            .check(&derived)
             .breaches
             .iter()
             .any(|b| b.limit_kind == "min_liquidity"),
-        "a fully liquid book breached the liquidity floor: {}",
-        check.reason()
+        "the floor bound on a figure nobody in this crate computed"
     );
-}
-
-#[test]
-fn an_instrument_with_no_declared_exit_time_counts_against_the_floor_not_outside_it() {
-    let limits = LimitSet::new("fixture").with(Limit::new(
-        "liquidity",
-        LimitKind::MinLiquidity {
-            days: 5.0,
-            fraction: 0.80,
-        },
-    ));
-    // AAPL and MSFT are equal-sized (80k, 60k in the shared fixture is
-    // uneven, so use a state where the split is exact): two 50k positions,
-    // one with a declared exit time inside the horizon and one without.
-    let mut state = state_with_no_liquidity_figures();
-    state.position_notionals = BTreeMap::from([
-        ("AAPL".to_string(), Decimal::from_int(50_000)),
-        ("MSFT".to_string(), Decimal::from_int(50_000)),
-    ]);
-    state.days_to_liquidate = BTreeMap::from([("AAPL".to_string(), 1.0)]);
-    let state = state.with_liquidity_horizons(&limits);
-
-    let fraction = state.liquidatable_within["5"];
-    // Had the undeclared name been dropped from both sides instead of
-    // counted illiquid, this would read 1.0 — fully liquid on half the
-    // information. Fail-closed keeps it at one half.
     assert!(
-        (fraction - 0.5).abs() < 1e-9,
-        "an unmeasured exit time was not counted against the floor: {fraction}"
-    );
-}
-
-#[test]
-fn an_empty_book_leaves_the_liquidity_map_untouched() {
-    let limits = LimitSet::conservative_default();
-    let mut state = state_with_no_liquidity_figures();
-    state.position_notionals = BTreeMap::new();
-    let state = state.with_liquidity_horizons(&limits);
-    assert!(
-        state.liquidatable_within.is_empty(),
-        "a book with no positions recorded a liquidity fraction nobody measured"
-    );
-}
-
-#[test]
-fn a_book_nobody_has_ever_marked_leaves_the_liquidity_map_untouched_rather_than_all_illiquid() {
-    // Held positions, but `days_to_liquidate` is empty: nobody has run a
-    // liquidity model over this book yet. That must read as "not measured",
-    // not as "everything is illiquid" — the latter would breach the default
-    // floor on every unmarked book in the platform, which is a much louder
-    // and much wronger failure than the one this derivation exists to fix.
-    let limits = LimitSet::conservative_default();
-    let mut state = state_with_no_liquidity_figures();
-    state.days_to_liquidate = BTreeMap::new();
-    assert!(
-        !state.position_notionals.is_empty(),
-        "premise: the book holds positions, so a wrongly-fired floor has something to bind on"
-    );
-    let state = state.with_liquidity_horizons(&limits);
-    assert!(
-        state.liquidatable_within.is_empty(),
-        "an unmarked book recorded a liquidity fraction nobody measured: {:?}",
-        state.liquidatable_within
+        derived.unevaluated.is_empty(),
+        "this crate filed a refusal on someone else's behalf: {:?}",
+        derived.unevaluated
     );
 }
 
@@ -1098,4 +1044,223 @@ fn a_volatility_series_too_short_to_measure_leaves_the_field_untouched() {
         bare.volatility, 0.0,
         "a series too short to measure must leave the field alone, not record zero"
     );
+}
+
+// --- a figure that is not a number -------------------------------------------
+//
+// `Limit::assess` decided every breach with bare `<` and `>` on `f64`, and the
+// file held no finiteness check at all. IEEE-754 makes both comparisons false
+// against a `NaN`, so a poisoned figure came back as "no breach" while the
+// limit went on counting in `LimitCheck::evaluated` — an evaluated, passing
+// control that could not fire. This crate has shipped that shape twice
+// already: `MaxExpectedShortfall` over an always-empty map, and the
+// `daily-loss` cap over a field no producer wrote. A `NaN` is worse than
+// either, because it arrives from arithmetic rather than from a missing
+// writer, so it disarms whichever limit reads it on a book that is otherwise
+// fully populated and looks healthy.
+
+/// One poisoning of the shared fixture: the `limit_kind` label of the rule
+/// that reads the figure, and the mutation that makes the figure unreadable.
+type StatePoisoning = (&'static str, fn(&mut RiskState));
+
+/// One poisoning of a limit's own configuration: the field name, for the
+/// failure message, and the mutation.
+type LimitPoisoning = (&'static str, fn(&mut Limit));
+
+#[test]
+fn a_shipped_limit_refuses_a_figure_that_is_not_a_number_instead_of_passing_it() {
+    let limits = LimitSet::conservative_default();
+
+    // Premise: the fixture passes the whole shipped set, so anything that
+    // blocks below is the poisoned figure and not the fixture.
+    let clean = limits.check(&state());
+    assert!(
+        !clean.is_blocked(),
+        "premise: the clean fixture must pass, got {}",
+        clean.reason()
+    );
+
+    let poisonings: [StatePoisoning; 6] = [
+        ("max_volatility", |s| s.volatility = f64::NAN),
+        ("max_drawdown", |s| s.drawdown = f64::NAN),
+        ("max_daily_loss", |s| s.daily_loss = f64::NAN),
+        ("max_value_at_risk", |s| {
+            s.value_at_risk.insert("0.99".to_string(), f64::NAN);
+        }),
+        ("max_expected_shortfall", |s| {
+            s.expected_shortfall.insert("0.97".to_string(), f64::NAN);
+        }),
+        ("min_liquidity", |s| {
+            s.liquidatable_within.insert("5".to_string(), f64::NAN);
+        }),
+    ];
+
+    for (limit_kind, poison) in poisonings {
+        let mut poisoned = state();
+        poison(&mut poisoned);
+        let check = limits.check(&poisoned);
+        assert!(
+            check.is_blocked(),
+            "a {limit_kind} figure of NaN read as a passing check: {}",
+            check.reason()
+        );
+        let breach = check
+            .blocking()
+            .into_iter()
+            .find(|b| b.limit_kind == limit_kind)
+            .unwrap_or_else(|| {
+                panic!("{limit_kind} did not refuse its own poisoned figure: {check:?}")
+            });
+        assert_eq!(
+            breach.severity,
+            Severity::Critical,
+            "{limit_kind}: a figure nobody could compute is not fixed by sending less, which \
+             is what Breach means and Critical does not"
+        );
+        assert!(
+            breach.detail.contains("is not a comparison"),
+            "{limit_kind} reported an ordinary breach rather than a refusal: {}",
+            breach.detail
+        );
+        assert!(
+            breach.observed.is_nan(),
+            "{limit_kind} substituted {} for the figure it could not read; a substituted \
+             number reads downstream as a measurement",
+            breach.observed
+        );
+    }
+}
+
+#[test]
+fn a_limit_whose_own_threshold_is_not_a_number_refuses_rather_than_going_quiet() {
+    // The two thresholds are read by the same comparisons and fail the same
+    // way: `bound * NaN` is `NaN` and `observed > NaN` is false, so a warning
+    // threshold nobody validated silences the warning arm, and `ratio >= NaN`
+    // is false, so a critical multiple of `NaN` downgrades every critical
+    // breach to an ordinary one. Neither reads as wrong anywhere.
+    let poisonings: [LimitPoisoning; 2] = [
+        ("warning_threshold", |l| l.warning_threshold = f64::NAN),
+        ("critical_multiple", |l| l.critical_multiple = f64::NAN),
+    ];
+
+    for (field, poison) in poisonings {
+        let mut limit =
+            Limit::new("leverage", LimitKind::MaxLeverage { limit: 1.5 }).with_rationale("fixture");
+
+        // Premise: with both thresholds finite the fixture book (900k gross
+        // on 1m of equity) is inside this limit, so the block below is the
+        // threshold and not the book.
+        let premise = LimitSet::new("fixture").with(limit.clone()).check(&state());
+        assert_eq!(premise.evaluated, 1);
+        assert!(
+            !premise.is_blocked(),
+            "premise for {field}: {}",
+            premise.reason()
+        );
+
+        poison(&mut limit);
+        let check = LimitSet::new("fixture").with(limit).check(&state());
+        assert!(
+            check.is_blocked(),
+            "a limit whose {field} is NaN evaluated anyway and passed"
+        );
+    }
+}
+
+#[test]
+fn an_insolvent_book_no_longer_passes_the_cash_buffer_floor() {
+    // `RiskState::ratio` answers infinity when there is no equity to divide
+    // by. On a ceiling that breached by ordinary arithmetic, which is what
+    // the sentinel was for; on a floor it passed in silence, because `inf` is
+    // not less than a cash bound of 0.02. So the one limit that exists to
+    // notice a book has run out of money reported it inside its buffer.
+    // `a_zero_equity_book_is_blocked_rather_than_dividing_by_zero` above could
+    // not see this: the ceilings blocked, and the floor's abstention was
+    // invisible behind them.
+    let limits = LimitSet::conservative_default();
+
+    // Premise: a solvent book passes the floor, so the breach below is the
+    // insolvency and not a floor that refuses every book.
+    let solvent = limits.check(&state());
+    assert!(
+        !solvent
+            .breaches
+            .iter()
+            .any(|b| b.limit_kind == "min_cash_buffer"),
+        "premise: {}",
+        solvent.reason()
+    );
+
+    let mut insolvent = state();
+    insolvent.equity = Decimal::ZERO;
+    let check = limits.check(&insolvent);
+    assert!(
+        check
+            .blocking()
+            .iter()
+            .any(|b| b.limit_kind == "min_cash_buffer"),
+        "the cash floor abstained on a book with no equity: {}",
+        check.reason()
+    );
+}
+
+#[test]
+fn a_return_series_carrying_a_value_that_is_not_a_number_refuses_the_tail_figures() {
+    let limits = LimitSet::conservative_default();
+    let bare = || {
+        let mut state = state();
+        state.value_at_risk.clear();
+        state.expected_shortfall.clear();
+        state.volatility = 0.0;
+        state
+    };
+    let clean = [0.004, -0.09, 0.005, -0.11, 0.003, -0.13];
+
+    // Premise: on a series it can measure the derivation fills all three
+    // figures and files nothing, so an empty map below is a decision.
+    let measured = bare().with_tail_risk(&limits, &clean);
+    assert!(!measured.value_at_risk.is_empty());
+    assert!(!measured.expected_shortfall.is_empty());
+    assert!(measured.volatility > 0.0);
+    assert!(measured.unevaluated.is_empty());
+
+    let mut poisoned = clean.to_vec();
+    poisoned[2] = f64::NAN;
+    let refused = bare().with_tail_risk(&limits, &poisoned);
+
+    // The hazard this catches and `Limit::assess` cannot see:
+    // `qip_numerics::stats::quantile` *filters* non-finite values before it
+    // sorts, so a value at risk derived from this series comes back finite and
+    // plausible — a measurement of a book that does not exist — while
+    // `stats::stddev` propagates, so volatility comes back NaN. One poisoned
+    // series, two figures disagreeing about whether it could be measured at
+    // all, and only the second visible to any comparison downstream.
+    assert!(
+        refused.value_at_risk.is_empty() && refused.expected_shortfall.is_empty(),
+        "a tail figure was derived from a series that cannot be measured: {:?} / {:?}",
+        refused.value_at_risk,
+        refused.expected_shortfall
+    );
+    assert_eq!(
+        refused.volatility, 0.0,
+        "volatility was written from an unmeasurable series"
+    );
+
+    let named: Vec<&str> = refused.unevaluated.keys().map(String::as_str).collect();
+    assert_eq!(
+        named,
+        vec![
+            EXPECTED_SHORTFALL_FIGURE,
+            VALUE_AT_RISK_FIGURE,
+            VOLATILITY_FIGURE
+        ],
+        "the refusal must name every figure the limit set asked this producer for; an \
+         unnamed one is a control whose silence nothing explains"
+    );
+    for (figure, refusal) in &refused.unevaluated {
+        assert!(
+            refusal.contains("return 2 of 6"),
+            "{figure} does not say which return it could not use: {refusal}"
+        );
+    }
 }

@@ -73,8 +73,6 @@ spec:
         value: memory
       - name: QIP_TOKEN_ANALYST_FILE
         value: /var/run/secrets/qip/token-analyst/token-analyst
-      - name: QIP_TOKEN_APPROVER_FILE
-        value: /var/run/secrets/qip/token-approver/token-approver
       - name: QIP_TOKEN_MONITOR_FILE
         value: /var/run/secrets/qip/token-monitor/token-monitor
       - name: QIP_TOKEN_OPERATOR_FILE
@@ -92,8 +90,6 @@ spec:
         mountPath: /var/run/secrets/qip/capital-envelope-key
       - name: token-analyst
         mountPath: /var/run/secrets/qip/token-analyst
-      - name: token-approver
-        mountPath: /var/run/secrets/qip/token-approver
       - name: token-monitor
         mountPath: /var/run/secrets/qip/token-monitor
       - name: token-operator
@@ -179,16 +175,6 @@ spec:
         defaultMode: 256
         items:
         - path: token-analyst
-          mode: 256
-          versionRef:
-            external: latest
-    - name: token-approver
-      secret:
-        secretRef:
-          external: qip-token-approver-stage
-        defaultMode: 256
-        items:
-        - path: token-approver
           mode: 256
           versionRef:
             external: latest

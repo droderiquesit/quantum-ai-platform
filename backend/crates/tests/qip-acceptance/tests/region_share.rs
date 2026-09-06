@@ -69,6 +69,19 @@ use qip_strategy::ir::{Expr, Rule, StrategySpec, Type};
 use qip_strategy::program::Program;
 use std::collections::BTreeMap;
 
+/// The liquidity every fixture in this file states, because nothing states it
+/// for them any more.
+///
+/// [`qip_financial::costs::LiquidityProfile`] has no `Default`: the one it had
+/// asserted a 10bp quote and a one-session exit for any instrument at all, and
+/// `MinLiquidity` and `MaxDaysToLiquidate` — controls whose job is to veto
+/// trading — read exactly those two figures. A fixture may state its own
+/// premise; it may not inherit one nobody wrote down. A liquid listed name on
+/// five million units a day, quoted at three basis points.
+fn fixture_liquidity() -> qip_financial::costs::LiquidityProfile {
+    qip_financial::costs::LiquidityProfile::listed(qip_core::Decimal::from_int(5_000_000), 3.0)
+}
+
 // --- the trust root and the identities every test shares --------------------
 
 /// The one secret both ends hold: the plane signs envelopes and the API
@@ -347,12 +360,17 @@ fn issue(plane: &mut CentralPlane, id: &StrategyId, cell: &str) -> Result<Capita
 
 fn universe() -> Universe {
     let mut universe = Universe::new();
-    if let Ok(object) = FinancialObject::builder(object(), SYMBOL, InstrumentType::CommonStock)
-        .venue(VENUE)
-        .sector(Sector::InformationTechnology)
-        .price(dec!("100"))
-        .provenance(Provenance::synthetic("test", start()))
-        .build(start())
+    if let Ok(object) = FinancialObject::builder(
+        object(),
+        SYMBOL,
+        InstrumentType::CommonStock,
+        fixture_liquidity(),
+    )
+    .venue(VENUE)
+    .sector(Sector::InformationTechnology)
+    .price(dec!("100"))
+    .provenance(Provenance::synthetic("test", start()))
+    .build(start())
     {
         let _ = universe.insert(object);
     }

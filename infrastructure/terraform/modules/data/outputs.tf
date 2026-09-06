@@ -40,6 +40,24 @@ output "spanner_database" {
   value       = var.enable_spanner ? google_spanner_database.positions[0].name : null
 }
 
+# The instance the database above lives in, published for one caller.
+#
+# `google_spanner_database_iam_member` is keyed on the pair — an instance and a
+# database name — and `modules/trust-zones` declares two such resources,
+# `ledger_read` and `ledger_append`, each expanding over the zones that
+# declared a `read` or an `append` path to the ledger. Until this existed the
+# root could reach one half of the pair and not the other, so the
+# `ledger_database` input had no value it could be given and neither resource
+# could be created from this root in any environment (the
+# missing-infrastructure register's gap 5). Null with Spanner off, for the
+# reason every other output here is: a caller that renders these gets an honest
+# picture rather than a plausible-looking address for something that was never
+# created.
+output "spanner_instance" {
+  description = "The Spanner instance holding the positions database, or null when Spanner is not enabled."
+  value       = var.enable_spanner ? google_spanner_instance.global[0].name : null
+}
+
 # The gap, as data.
 #
 # A deployment can render this and get the list of services it has switched on

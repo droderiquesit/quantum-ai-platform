@@ -38,6 +38,19 @@ use qip_world_model::vocabulary::{AltMetric, MacroSeries};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+/// The liquidity every fixture in this file states, because nothing states it
+/// for them any more.
+///
+/// [`qip_financial::costs::LiquidityProfile`] has no `Default`: the one it had
+/// asserted a 10bp quote and a one-session exit for any instrument at all, and
+/// `MinLiquidity` and `MaxDaysToLiquidate` — controls whose job is to veto
+/// trading — read exactly those two figures. A fixture may state its own
+/// premise; it may not inherit one nobody wrote down. A liquid listed name on
+/// five million units a day, quoted at three basis points.
+fn fixture_liquidity() -> qip_financial::costs::LiquidityProfile {
+    qip_financial::costs::LiquidityProfile::listed(qip_core::Decimal::from_int(5_000_000), 3.0)
+}
+
 const ECONOMY: &str = "US";
 
 fn now() -> Timestamp {
@@ -63,14 +76,19 @@ fn brief() -> AgentBrief {
 }
 
 fn equity(geography: &str) -> FinancialObject {
-    FinancialObject::builder(object(), "ACME", InstrumentType::CommonStock)
-        .venue("XNYS")
-        .sector(Sector::InformationTechnology)
-        .geography(geography)
-        .price(Decimal::from_int(100))
-        .provenance(Provenance::synthetic("test", now()))
-        .build(now())
-        .expect("valid object")
+    FinancialObject::builder(
+        object(),
+        "ACME",
+        InstrumentType::CommonStock,
+        fixture_liquidity(),
+    )
+    .venue("XNYS")
+    .sector(Sector::InformationTechnology)
+    .geography(geography)
+    .price(Decimal::from_int(100))
+    .provenance(Provenance::synthetic("test", now()))
+    .build(now())
+    .expect("valid object")
 }
 
 /// Thirty-six monthly releases of one series, the last one `last_z` sigma
@@ -377,12 +395,17 @@ fn the_analysts_no_arm_can_feed_say_which_record_would_change_their_answer() -> 
     let mut universe = Universe::new();
     let wti = ObjectId::from_string("obj-WTI");
     universe.insert(
-        FinancialObject::builder(wti.clone(), "WTI", InstrumentType::CommoditySpot)
-            .venue("XNYM")
-            .sector(Sector::Energy)
-            .price(Decimal::from_int(80))
-            .provenance(Provenance::synthetic("test", now()))
-            .build(now())?,
+        FinancialObject::builder(
+            wti.clone(),
+            "WTI",
+            InstrumentType::CommoditySpot,
+            fixture_liquidity(),
+        )
+        .venue("XNYM")
+        .sector(Sector::Energy)
+        .price(Decimal::from_int(80))
+        .provenance(Provenance::synthetic("test", now()))
+        .build(now())?,
     )?;
     let mut org = organisation(desk(universe, WorldModel::new()), Vec::new())?;
     let brief = AgentBrief::new("is WTI backwardated", now(), Duration::from_days(30))

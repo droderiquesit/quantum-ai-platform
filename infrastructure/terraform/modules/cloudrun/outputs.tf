@@ -93,6 +93,38 @@ output "collector_config_bucket" {
   value       = one(google_storage_bucket.collector_config[*].name)
 }
 
+output "collector_mount_path" {
+  description = <<-EOT
+    The directory the collector's bucket must be mounted at in the manifest,
+    read-only, for the sidecar to find its document.
+
+    Exported for the reason `secret_root` is: the same path is written in the
+    `RunService`'s volume mount, and a path written twice is a path that will
+    eventually be written two ways. It already was — the mount was named in
+    one local, the object under a content hash in another, and the document
+    landed where nothing reads it. Both now come from
+    `local.collector_read_path`, and this is the half a manifest has to agree
+    with.
+  EOT
+
+  value = local.collector_mount
+}
+
+output "collector_config_path" {
+  description = <<-EOT
+    The full path the collector opens its scrape document at — the mount, and
+    the object's name under it.
+
+    This is not a setting: it is the only path the sidecar's entrypoint reads,
+    so a manifest or a bucket layout that puts the document anywhere else
+    produces a collector that starts, reads its built-in default and scrapes a
+    target nobody chose. Exported so a test can assert the object's name and
+    the mount still compose to it.
+  EOT
+
+  value = local.collector_read_path
+}
+
 output "egress_endpoints" {
   description = <<-EOT
     The loopback addresses this workload's egress proxy answers on, one per

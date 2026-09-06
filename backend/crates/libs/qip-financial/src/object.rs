@@ -78,12 +78,31 @@ pub struct FinancialObject {
 impl FinancialObject {
     /// Start building an object. Every required field must be supplied before
     /// [`ObjectBuilder::build`] will produce one.
+    ///
+    /// # Why liquidity is positional and not a setter
+    ///
+    /// It was a setter with a default behind it, and the default asserted a
+    /// 10bp quote and a one-day exit for anything at all. `MinLiquidity` and
+    /// `MaxDaysToLiquidate` read those two figures, so an object built without
+    /// calling the setter was vetoed — or declined to be vetoed — on a number
+    /// nobody had measured, and nothing about the call site said so. A setter
+    /// cannot be forgotten loudly; a parameter cannot be forgotten at all.
+    /// [`LiquidityProfile`] itself has no `Default` for the other half of the
+    /// same reason: there is now no value of that type that somebody did not
+    /// state.
+    ///
+    /// This is the one required field of the four that is *silently* wrong
+    /// when omitted. `provenance` is required too and is refused at
+    /// [`ObjectBuilder::build`] rather than taken here, and that asymmetry is
+    /// deliberate: an object with no provenance has no plausible substitute to
+    /// inherit, so its absence has always been loud.
     pub fn builder(
         object_id: ObjectId,
         symbol: impl Into<String>,
         instrument_type: InstrumentType,
+        liquidity: LiquidityProfile,
     ) -> ObjectBuilder {
-        ObjectBuilder::new(object_id, symbol, instrument_type)
+        ObjectBuilder::new(object_id, symbol, instrument_type, liquidity)
     }
 
     /// Notional value of `quantity` units, in the quote currency.
@@ -185,6 +204,14 @@ impl FinancialObject {
         if !self.risk.is_coherent() {
             issues.push("risk characteristics are incoherent".into());
         }
+        // The cost model is checked here and not only at its own wire, because
+        // this is the gate `Universe::insert` runs and a record can reach the
+        // world model without ever having been a document. Until this line
+        // existed, `transaction_costs` was the one block of a `FinancialObject`
+        // that nothing on the ingestion path looked at, so a spread of `NaN`
+        // reached `Decimal::apply_bps`, which has no answer for it — and the
+        // answer it gave was a cost of exactly zero.
+        issues.extend(self.transaction_costs.problems());
         if self.provenance.ingestion_time < self.provenance.event_time {
             issues.push("record was ingested before it happened".into());
         }
@@ -260,6 +287,7 @@ impl ObjectBuilder {
         object_id: ObjectId,
         symbol: impl Into<String>,
         instrument_type: InstrumentType,
+        liquidity: LiquidityProfile,
     ) -> Self {
         Self {
             object_id,
@@ -279,7 +307,7 @@ impl ObjectBuilder {
             contract_multiplier: Decimal::ONE,
             lot_size: Decimal::ONE,
             tick_size: Decimal::from_raw(10_000_000), // 0.01
-            liquidity: LiquidityProfile::default(),
+            liquidity,
             transaction_costs: TransactionCostModel::default(),
             regulatory: RegulatoryConstraints::unrestricted(),
             risk: RiskCharacteristics::default(),
@@ -344,10 +372,6 @@ impl ObjectBuilder {
     }
     pub fn tick_size(mut self, tick: Decimal) -> Self {
         self.tick_size = tick;
-        self
-    }
-    pub fn liquidity(mut self, liquidity: LiquidityProfile) -> Self {
-        self.liquidity = liquidity;
         self
     }
     pub fn transaction_costs(mut self, costs: TransactionCostModel) -> Self {

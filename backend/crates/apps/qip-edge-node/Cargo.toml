@@ -46,6 +46,14 @@ qip-orderbook.workspace = true
 # dependency; `serde_json` is one of the two permitted and parses the plan.
 qip-strategy.workspace = true
 serde_json.workspace = true
+# The instrument vocabulary, for one field of one record. `list_synthetic` on
+# the simulated venue takes the liquidity profile of the listing it invents,
+# because a simulator has no measurement of one and a defaulted profile is read
+# by controls whose job is to veto. Naming the type here is what makes this
+# binary — the composition that chose the simulated venue — say what it is
+# pretending. A workspace crate `qip-brokers` already depends on, not a third
+# external dependency; it was already here as a dev-dependency.
+qip-financial.workspace = true
 # The repricer: the parent/child conservation arithmetic and the
 # cancel-then-replace decision `qip_routing::reprice` holds, wired here into
 # the pass loop beneath the cell's placer seam. A workspace crate the edge's
@@ -58,7 +66,6 @@ qip-routing.workspace = true
 # against one this crate also produced. Dev-only: nothing in the binary needs
 # the event envelope directly.
 qip-events.workspace = true
-qip-financial.workspace = true
 
 [lints]
 workspace = true

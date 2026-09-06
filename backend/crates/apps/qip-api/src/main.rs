@@ -35,6 +35,41 @@ use qip_storage::ChainArchive;
 use qip_storage::settings::StorageSettings;
 use std::sync::{Arc, Mutex};
 
+/// Variables this binary used to read, with the refusal each now produces.
+///
+/// A retired variable has three possible fates and only one of them is safe.
+/// Deleting the read leaves a deployment setting it silently ineffective —
+/// the exact defect `manifest_wiring.rs` exists to catch, where an operator
+/// "sees a diff, a new revision and no effect whatsoever". Accepting it and
+/// mapping it onto something else guesses at intent. Refusing it by name, with
+/// the replacement stated, is the third: the process stops, the message says
+/// what to do, and `no_deployment_sets_a_variable_its_binary_refuses_to_start_with`
+/// proves no deployment in the tree still sets either spelling.
+///
+/// Both messages are phrased "`<NAME>` is no longer read" deliberately. That
+/// wording is what the acceptance walk reads a retired variable out of, so the
+/// refusal and the test that no deployment trips it are the same fact written
+/// once.
+const RETIRED_CREDENTIAL_VARIABLES: [(&str, &str); 2] = [
+    (
+        "QIP_TOKEN_APPROVER",
+        "configuration: QIP_TOKEN_APPROVER is no longer read. The approver role was removed \
+         because no route required it, so the token it minted authorised nothing beyond what an \
+         analyst token already grants. Unset this variable. Approving a venue registration is \
+         POST /registrations/:source/approve and takes QIP_TOKEN_OPERATOR; approving a proposal \
+         is not an API action at all and takes two kernel controls, risk and compliance.",
+    ),
+    (
+        "QIP_TOKEN_APPROVER_FILE",
+        "configuration: QIP_TOKEN_APPROVER_FILE is no longer read. The approver role was removed \
+         because no route required it. Remove the token-approver secret mount from this \
+         workload's catalogue entry and its rendered manifest: the Secret Manager container it \
+         projects is no longer created, so the volume would fail to mount before this process \
+         ever started. QIP_TOKEN_OPERATOR_FILE is the credential that approves a venue \
+         registration.",
+    ),
+];
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("qip-api: {}", error.message());
@@ -241,6 +276,29 @@ fn run() -> Result<()> {
         None => None,
     };
 
+    // A variable that used to mint a credential and now mints none.
+    //
+    // `QIP_TOKEN_APPROVER` produced a fifth bearer token, for a role no route
+    // ever required — `required_role: Role::Approver` was zero rows of a table
+    // in which the other four roles appeared 4, 38, 2 and 5 times. The role is
+    // gone (see `qip_api::auth::Role` for why it was removed rather than given
+    // a route), and with it the secret container and the mount in all four
+    // environments.
+    //
+    // Ignoring the variable would be the quieter failure and the worse one: an
+    // operator who had put a token behind it would believe a credential was
+    // issued, and every rotation of it would change nothing. So it is refused
+    // with the replacement named, the way `qip-edge-node` refuses
+    // `QIP_MIRROR_PATH`. Both spellings, because `qip_core::secret` resolves a
+    // mounted file through the `_FILE` variant and a deployment that mounted
+    // the secret sets only that one — a refusal naming the bare variable alone
+    // would miss every deployment that ever actually set it.
+    for (variable, refusal) in RETIRED_CREDENTIAL_VARIABLES {
+        if std::env::var(variable).is_ok_and(|value| !value.trim().is_empty()) {
+            return Err(Error::invalid(refusal));
+        }
+    }
+
     // Credentials from the environment. Nothing is defaulted: an API that
     // starts unauthenticated because a variable was missing is worse than one
     // that does not start.
@@ -249,7 +307,6 @@ fn run() -> Result<()> {
         ("QIP_TOKEN_MONITOR", Role::Monitor),
         ("QIP_TOKEN_VIEWER", Role::Viewer),
         ("QIP_TOKEN_ANALYST", Role::Analyst),
-        ("QIP_TOKEN_APPROVER", Role::Approver),
         ("QIP_TOKEN_OPERATOR", Role::Operator),
     ] {
         // Through `qip_core::secret`, so a deployment may mount the token as

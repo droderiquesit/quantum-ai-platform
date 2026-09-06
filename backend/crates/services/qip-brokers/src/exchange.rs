@@ -44,6 +44,7 @@ use qip_core::{Currency, Decimal};
 use qip_execution_engine::broker::{Broker, VenueCapabilities};
 use qip_execution_engine::order::{Fill, Order, OrderType, Side};
 use qip_financial::asset_class::InstrumentType;
+use qip_financial::costs::LiquidityProfile;
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
 pub use qip_market::book::BookLevel;
@@ -244,6 +245,16 @@ impl SimulatedExchange {
     /// it already speaks the vocabulary, and a listing is the venue's own
     /// record in any case. The provenance is stamped synthetic, because a
     /// listing invented by a simulator must never read as market data.
+    ///
+    /// **`liquidity` is the caller's and there is no figure this venue could
+    /// substitute for it.** A simulator knows its own grid, its own commission
+    /// and its own book; it does not know what an exit from the instrument
+    /// costs, and the listing it writes is a `FinancialObject` that a risk
+    /// engine will read like any other. This parameter used to be absent, and
+    /// absence meant `LiquidityProfile::default()` — a 10bp quote and a
+    /// one-session exit, on a record the simulator invented, in the direction
+    /// that permits trading. The composition that decides to run against a
+    /// simulated venue is the one that has to say what it is pretending about.
     pub fn list_synthetic(
         &mut self,
         object_id: ObjectId,
@@ -251,6 +262,7 @@ impl SimulatedExchange {
         price: Decimal,
         lot_size: Decimal,
         tick_size: Decimal,
+        liquidity: LiquidityProfile,
         at: Timestamp,
     ) -> Result<()> {
         if price <= Decimal::ZERO || lot_size <= Decimal::ZERO || tick_size <= Decimal::ZERO {
@@ -260,16 +272,17 @@ impl SimulatedExchange {
                 self.venue.as_str()
             )));
         }
-        let listing = FinancialObject::builder(object_id, symbol, InstrumentType::CommonStock)
-            .venue(self.venue.as_str())
-            .price(price)
-            .lot_size(lot_size)
-            .tick_size(tick_size)
-            .provenance(Provenance::synthetic(
-                format!("listed by the simulated venue {}", self.venue.as_str()),
-                at,
-            ))
-            .build(at)?;
+        let listing =
+            FinancialObject::builder(object_id, symbol, InstrumentType::CommonStock, liquidity)
+                .venue(self.venue.as_str())
+                .price(price)
+                .lot_size(lot_size)
+                .tick_size(tick_size)
+                .provenance(Provenance::synthetic(
+                    format!("listed by the simulated venue {}", self.venue.as_str()),
+                    at,
+                ))
+                .build(at)?;
         self.list(listing);
         Ok(())
     }

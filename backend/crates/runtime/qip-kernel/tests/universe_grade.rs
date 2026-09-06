@@ -23,6 +23,19 @@ use qip_observability::Telemetry;
 use qip_observability::metrics::{labels, names};
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 
+/// The liquidity every fixture in this file states, because nothing states it
+/// for them any more.
+///
+/// [`qip_financial::costs::LiquidityProfile`] has no `Default`: the one it had
+/// asserted a 10bp quote and a one-session exit for any instrument at all, and
+/// `MinLiquidity` and `MaxDaysToLiquidate` — controls whose job is to veto
+/// trading — read exactly those two figures. A fixture may state its own
+/// premise; it may not inherit one nobody wrote down. A liquid listed name on
+/// five million units a day, quoted at three basis points.
+fn fixture_liquidity() -> qip_financial::costs::LiquidityProfile {
+    qip_financial::costs::LiquidityProfile::listed(qip_core::Decimal::from_int(5_000_000), 3.0)
+}
+
 fn start() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
 }
@@ -32,6 +45,7 @@ fn object(symbol: &str, provenance: Provenance) -> FinancialObject {
         ObjectId::from_string(format!("obj-{symbol}")),
         symbol,
         InstrumentType::CommonStock,
+        fixture_liquidity(),
     )
     .venue("XNYS")
     .sector(Sector::InformationTechnology)
@@ -110,7 +124,15 @@ fn catalogue_text() -> String {
       "price": "100.00",
       "lot_size": "1",
       "tick_size": "0.01",
-      "licensing": "internal"
+      "licensing": "internal",
+      "liquidity": {
+        "average_daily_volume": "1000000",
+        "typical_spread_bps": 5.0,
+        "top_of_book_depth": "500",
+        "days_to_liquidate": 1.0,
+        "max_participation_rate": 0.1,
+        "is_negotiated": false
+      }
     }
   ]
 }"#

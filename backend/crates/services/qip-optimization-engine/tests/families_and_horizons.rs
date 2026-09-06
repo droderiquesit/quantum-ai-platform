@@ -26,8 +26,8 @@ use qip_core::ids::StrategyId;
 use qip_numerics::Matrix;
 use qip_numerics::stats;
 use qip_optimization_engine::families::{
-    FamilyClustering, FamilyId, Linkage, MAX_STRATEGIES, StrategyReturns, StressCorrelation,
-    StressWindow,
+    FamilyClustering, FamilyId, Linkage, MAX_STRATEGIES, StrategyReturns, StressAxis,
+    StressCorrelation, StressWindow,
 };
 use qip_optimization_engine::horizons::{
     CapitalPools, FamilyBudget, Horizon, family_horizons, reconcile,
@@ -307,6 +307,150 @@ fn the_clustering_does_not_depend_on_the_order_the_strategies_were_supplied_in()
     Ok(())
 }
 
+/// Three strategies whose stress matrix says the first and the third are one
+/// bet, in the row order the labels are given in.
+///
+/// The labels are deliberately not in sorted order: `z-first` is row 0 and
+/// `m-third` is row 2, and those two correlate 0.99 under stress while
+/// `a-second` is independent of both.
+fn unsorted_matrices() -> Result<(Vec<StrategyId>, Matrix, Matrix)> {
+    let rows = vec![
+        vec![1.0, 0.0, 0.99],
+        vec![0.0, 1.0, 0.0],
+        vec![0.99, 0.0, 1.0],
+    ];
+    let stress = Matrix::from_rows(&rows)?;
+    // Premise: the fixture is admissible on every other ground, so anything
+    // that goes wrong with it is about the row order and nothing else.
+    assert!(
+        stress.is_positive_semidefinite(1e-9),
+        "the fixture must be a real correlation matrix"
+    );
+    Ok((
+        vec![
+            strategy("z-first"),
+            strategy("a-second"),
+            strategy("m-third"),
+        ],
+        stress,
+        Matrix::identity(3),
+    ))
+}
+
+#[test]
+fn a_family_boundary_follows_the_strategy_and_not_the_row_the_caller_put_it_in() -> Result<()> {
+    // This is the failure the module exists to prevent, produced by the module
+    // itself. `from_matrices` sorted the labels and passed the matrices
+    // through untouched, so row 0 went on describing z-first while
+    // `strategies[0]` became a-second. The result: the two strategies that are
+    // one bet in a drawdown landed in different families, the two independent
+    // ones landed together, and the diagnostics looked entirely plausible.
+    // Both in-tree callers happened to hand their rows in sorted order, so no
+    // test could see it.
+    let (labels, stress, calm) = unsorted_matrices()?;
+    let correlation = StressCorrelation::from_matrices(labels, stress, calm, 20, 20)?;
+
+    // Premise: the canonical order really did move the labels, so an
+    // unpermuted matrix would now be mislabelled.
+    let ordered: Vec<&str> = correlation
+        .strategies()
+        .iter()
+        .map(qip_core::ids::Id::as_str)
+        .collect();
+    assert_eq!(
+        ordered,
+        vec!["a-second", "m-third", "z-first"],
+        "the canonical order is the sorted one"
+    );
+
+    // The 0.99 must have travelled with its strategies: it belongs at
+    // (m-third, z-first), which is now (1, 2).
+    assert!(
+        (correlation.stress().get(1, 2) - 0.99).abs() < 1e-12,
+        "the stress correlation between m-third and z-first is {}, not the 0.99 the caller stated",
+        correlation.stress().get(1, 2)
+    );
+    assert!(
+        correlation.stress().get(0, 2).abs() < 1e-12,
+        "a-second and z-first are independent; the matrix says {}",
+        correlation.stress().get(0, 2)
+    );
+
+    let assignment = FamilyClustering::new(2)?.cluster(&correlation)?;
+    assert_eq!(assignment.family_count(), 2);
+    assert_eq!(
+        assignment.family_of(&strategy("z-first")),
+        assignment.family_of(&strategy("m-third")),
+        "z-first and m-third are one bet in a drawdown and must be one family"
+    );
+    assert_ne!(
+        assignment.family_of(&strategy("a-second")),
+        assignment.family_of(&strategy("z-first")),
+        "a-second is independent of both and must not be filed with either"
+    );
+    Ok(())
+}
+
+#[test]
+fn matrices_supplied_in_two_row_orders_produce_the_same_families() -> Result<()> {
+    // The header claims family assignment is "a function of the *set*, not the
+    // sequence". Sorting the labels without permuting the matrices falsified
+    // that for every supplied estimate; this is the claim, asserted.
+    let (labels, stress, calm) = unsorted_matrices()?;
+    let one = FamilyClustering::new(2)?.cluster(&StressCorrelation::from_matrices(
+        labels, stress, calm, 20, 20,
+    )?)?;
+
+    // The same estimate with rows 0 and 1 exchanged, labels and all.
+    let swapped_rows = vec![
+        vec![1.0, 0.0, 0.0],
+        vec![0.0, 1.0, 0.99],
+        vec![0.0, 0.99, 1.0],
+    ];
+    let other = FamilyClustering::new(2)?.cluster(&StressCorrelation::from_matrices(
+        vec![
+            strategy("a-second"),
+            strategy("z-first"),
+            strategy("m-third"),
+        ],
+        Matrix::from_rows(&swapped_rows)?,
+        Matrix::identity(3),
+        20,
+        20,
+    )?)?;
+
+    assert_eq!(one.family_count(), 2, "a single family would hide a swap");
+    assert_eq!(
+        one.families(),
+        other.families(),
+        "the same estimate presented in two row orders is the same estimate — a replay that \
+         reorders is not a replay"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_strategy_labelling_two_rows_of_a_supplied_matrix_is_refused() -> Result<()> {
+    // With a duplicate label there is no answer to which row the family
+    // boundary was drawn from, and the sort alone would have silently kept
+    // both rows under one name.
+    let (_, stress, calm) = unsorted_matrices()?;
+    let error = StressCorrelation::from_matrices(
+        vec![strategy("s-a"), strategy("s-b"), strategy("s-a")],
+        stress,
+        calm,
+        20,
+        20,
+    )
+    .expect_err("one row per strategy");
+    assert!(
+        error.message().contains("labels two rows"),
+        "the refusal must name the defect: {}",
+        error.message()
+    );
+    Ok(())
+}
+
 #[test]
 fn family_names_sort_lexicographically_in_the_order_their_indices_sort_numerically() -> Result<()> {
     // The name is a journal key segment downstream, where sorting is textual.
@@ -576,6 +720,134 @@ fn a_stress_quantile_outside_the_open_unit_interval_is_refused() {
             error.message()
         );
     }
+}
+
+#[test]
+fn a_benchmark_whose_high_readings_are_the_stress_has_its_high_tail_cut() -> Result<()> {
+    // `worst_quantile`'s own doc names a volatility index and a funding spread
+    // as valid benchmarks, and both are worst at their *highest*. Taking the
+    // low tail of one selects the calmest sessions in the sample and labels
+    // them stress, and the families keyed on them are calm-keyed families
+    // reported as stress-keyed — the one outcome this module exists to
+    // prevent, arrived at from the other end.
+    let index: Vec<f64> = (0..OBSERVATIONS).map(|t| t as f64).collect();
+
+    // Premise: on this benchmark the two axes cannot agree, so the assertion
+    // below is about the axis and not about the series.
+    let low = StressWindow::worst_quantile(&index, 0.4, "fixture: a return series")?;
+    assert_eq!(low.stress_indices(), &(0..16).collect::<Vec<_>>()[..]);
+
+    let high = StressWindow::worst_quantile_on(
+        &index,
+        0.4,
+        StressAxis::HighReadingsAreStress,
+        "fixture: a volatility index",
+    )?;
+    assert_eq!(
+        high.stress_indices(),
+        &(24..40).collect::<Vec<_>>()[..],
+        "a volatility index is worst at its highest readings"
+    );
+    assert_eq!(high.calm_indices(), (0..24).collect::<Vec<_>>());
+
+    // And the record says which tail was cut, so a reader of the clustering
+    // does not have to know which constructor the caller reached for.
+    assert!(
+        high.provenance().contains("the highest readings"),
+        "the provenance must record the axis: {}",
+        high.provenance()
+    );
+    assert!(
+        low.provenance().contains("the lowest readings"),
+        "the provenance must record the axis: {}",
+        low.provenance()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_window_with_no_provenance_is_refused_before_the_axis_clause_could_supply_one() {
+    // The axis clause is appended to the provenance. If it were appended first
+    // it would be what made an empty provenance non-empty, and the guard
+    // asking how stress was decided would answer itself.
+    let benchmark: Vec<f64> = (0..OBSERVATIONS).map(|t| -(t as f64)).collect();
+    let error = StressWindow::worst_quantile(&benchmark, 0.4, "   ")
+        .expect_err("the record has to say how stress was decided");
+    assert!(
+        error.message().contains("needs a provenance"),
+        "the refusal must name what is missing: {}",
+        error.message()
+    );
+}
+
+#[test]
+fn a_strategy_that_does_not_move_outside_the_stress_window_is_refused() -> Result<()> {
+    // A tail hedge: it moves in the drawdown and sits still the rest of the
+    // time. `stats::correlation` fails soft — it returns exactly 0.0 when
+    // either series is flat — so the calm matrix recorded a correlation of
+    // zero that nobody estimated, and that zero is subtracted in
+    // `mean_stress_excess` and decides `pairs_calm_would_have_misfiled`. Those
+    // two numbers are what this design offers as its own evidence, so a
+    // non-measurement inside them is worse than a gap.
+    let stress: BTreeSet<usize> = stress_indices().into_iter().collect();
+    let idiosyncratic = noise(31, OBSERVATIONS);
+    let flat_in_calm: Vec<f64> = (0..OBSERVATIONS)
+        .map(|t| {
+            if stress.contains(&t) {
+                idiosyncratic[t]
+            } else {
+                0.0
+            }
+        })
+        .collect();
+
+    // Premise: the series is valid and moves inside the window, so the calm
+    // guard is the only thing that can refuse it — and the soft zero really is
+    // what the statistics would have produced.
+    let hedge = StrategyReturns::new(strategy("strategy-tail-hedge"), flat_in_calm.clone())?;
+    assert_eq!(hedge.len(), OBSERVATIONS);
+    let inside: Vec<f64> = stress_indices().iter().map(|t| flat_in_calm[*t]).collect();
+    assert!(
+        stats::stddev(&inside) > 0.0,
+        "the hedge must move inside the stress window or the stress guard refuses it first"
+    );
+    let outside: Vec<f64> = (STRESS_LENGTH..OBSERVATIONS)
+        .map(|t| flat_in_calm[t])
+        .collect();
+    // Compared exactly, through `total_cmp` rather than `==` because the
+    // exactness is the whole point: `stats::correlation` does not approximate
+    // zero here, it *returns the literal* when either side is flat, and a
+    // tolerance would let this premise hold for a real correlation that
+    // happened to be small.
+    assert_eq!(
+        stats::correlation(&outside, &noise(32, OBSERVATIONS - STRESS_LENGTH)).total_cmp(&0.0),
+        std::cmp::Ordering::Equal,
+        "the premise: a flat series correlates 0.0 with anything, which is a non-measurement \
+         wearing a measurement's clothes"
+    );
+
+    let mut population = decoupling_population()?;
+    population.push(hedge);
+    let error = StressCorrelation::from_returns(&population, &window()?)
+        .expect_err("a strategy with no calm variance has no measurable calm correlation");
+    assert!(
+        error
+            .message()
+            .contains("does not move outside the stress window"),
+        "the refusal must name the defect: {}",
+        error.message()
+    );
+    assert!(
+        error.message().contains("strategy-tail-hedge"),
+        "the refusal must name the strategy to exclude: {}",
+        error.message()
+    );
+
+    // The other half: the population without it is still admitted, so this is
+    // a guard on one strategy and not a refusal of the whole design.
+    let clean = StressCorrelation::from_returns(&decoupling_population()?, &window()?)?;
+    assert_eq!(clean.len(), 4);
+    Ok(())
 }
 
 #[test]

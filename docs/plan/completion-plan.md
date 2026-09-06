@@ -742,6 +742,48 @@ deliberately — that count is asserted against exactly 25 crates, so the
 deletion fails it on its premise, and lowering the number to make it pass
 would replace a guard with a tautology.
 
+> **Correction, 2026-09-06 — the blocker the paragraph above describes no
+> longer exists.** It is kept rather than deleted, because it is the record of
+> *why* the guard was changed and the argument is worth more than the row; but
+> it sends a maintainer at work that is already done, so what is false is said
+> here first. This document is superseded for status by
+> [`PROJECT-PLAN.md`](PROJECT-PLAN.md), which is why the paragraph survived this
+> long unread.
+>
+> **The `services.len() >= 25` assertion is gone.** It was replaced by an
+> equality against the crate directories on disk, inside
+> `every_service_crate_is_classified_for_money_authority` — locate it with
+> `grep -n 'fn every_service_crate_is_classified_for_money_authority'
+> backend/crates/tests/qip-acceptance/tests/architecture.rs` and read the
+> `assert_eq!(services, on_disk, …)` beneath the comment that records the
+> change: "This used to be a floor — `services.len() >= 25` — which protected
+> against `cargo metadata` returning a partial graph, but had to be lowered by
+> hand whenever a crate was removed (ADR 0029 removed one), and lowering a
+> number to obtain a pass is the move this repository forbids. Equality with the
+> directory cannot be lowered, tracks the tree on its own". There is nothing to
+> handle deliberately: the premise now tracks the tree, and it catches what the
+> floor never could — a crate on disk that nobody added to
+> `[workspace.members]`.
+>
+> **There are 24 service crates, not 25.** `ls backend/crates/services | wc -l`
+> printed `24` on 2026-09-06; the same command against the tree this paragraph
+> was written for would have printed `25`. **Old: 25 crates, floor at 25. New:
+> 24 crates, equality against the directory.** The reason for the difference is
+> the removal this whole section calls "not done, and deliberately" — ADR 0029's
+> deletion of `qip-normalization`. It **has been done**: `ls
+> backend/crates/services | grep -c normalization` prints `0`, and the re-score
+> paragraph a little below this one ("the normaliser half is done") is the
+> commit that did it. That paragraph and this one contradicted each other for as
+> long as both stood; this note is which of the two is current.
+>
+> **The `NO_MONEY_AUTHORITY` literal is the one part that survives.** It is
+> still hand-maintained and a new service crate still has to be classified into
+> it or its sibling. It is **not** at `architecture.rs:762`, and no replacement
+> line number is given here on purpose: that file is edited often enough that a
+> number written into this document is wrong before anyone reads it. Find it
+> with `grep -n 'NO_MONEY_AUTHORITY'
+> backend/crates/tests/qip-acceptance/tests/architecture.rs`.
+
 **B14, re-verified at `d703f4b` on evidence rather than on the prior audit:
 the "buildable now" claim for slots 2, 10 and 11 is withdrawn.** An agent read
 each of the nine unproduced slots against the workspace and every one lacks a

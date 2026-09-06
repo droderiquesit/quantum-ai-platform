@@ -15,6 +15,7 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Decimal, ObjectId, dec};
 use qip_execution_engine::order::Side;
 use qip_financial::asset_class::{InstrumentType, Sector};
+use qip_financial::intelligence::MacroObservation;
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
@@ -25,6 +26,7 @@ use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
 use qip_observability::metrics::{Snapshot, labels, names};
+use qip_opportunity_engine::AnomalyKind;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use qip_risk_engine::autonomy::{AutonomyLevel, OperatorIdentity};
 
@@ -36,18 +38,36 @@ fn object(symbol: &str) -> ObjectId {
     ObjectId::from_string(format!("obj-{symbol}"))
 }
 
+/// The liquidity every fixture in this file states, because nothing states it
+/// for them any more.
+///
+/// [`qip_financial::costs::LiquidityProfile`] has no `Default`: the one it had
+/// asserted a 10bp quote and a one-session exit for any instrument at all, and
+/// `MinLiquidity` and `MaxDaysToLiquidate` — controls whose job is to veto
+/// trading — read exactly those two figures. A fixture may state its own
+/// premise; it may not inherit one nobody wrote down. A liquid listed name on
+/// five million units a day, quoted at three basis points.
+fn fixture_liquidity() -> qip_financial::costs::LiquidityProfile {
+    qip_financial::costs::LiquidityProfile::listed(qip_core::Decimal::from_int(5_000_000), 3.0)
+}
+
 fn universe() -> Universe {
     let mut universe = Universe::new();
     for symbol in ["AAA", "BBB"] {
         universe
             .insert(
-                FinancialObject::builder(object(symbol), symbol, InstrumentType::CommonStock)
-                    .venue("XNYS")
-                    .sector(Sector::InformationTechnology)
-                    .price(dec!("100"))
-                    .provenance(Provenance::synthetic("test", start()))
-                    .build(start())
-                    .expect("valid object"),
+                FinancialObject::builder(
+                    object(symbol),
+                    symbol,
+                    InstrumentType::CommonStock,
+                    fixture_liquidity(),
+                )
+                .venue("XNYS")
+                .sector(Sector::InformationTechnology)
+                .price(dec!("100"))
+                .provenance(Provenance::synthetic("test", start()))
+                .build(start())
+                .expect("valid object"),
             )
             .expect("insertable");
     }
@@ -171,6 +191,74 @@ fn a_cycle_with_no_data_still_runs_every_stage_and_says_why_each_was_quiet() -> 
             .unwrap()
             .detail
             .contains("nothing in the queue")
+    );
+    Ok(())
+}
+
+/// Three reference rates in the shape the ECB connector releases them, which
+/// is the shape that exposed the defect below: a macro observation reaches the
+/// world model and the catalyst path and never touches the price series.
+fn rates() -> Vec<SensedRecord> {
+    let reference = start().saturating_sub(Duration::from_days(2));
+    ["USD", "GBP", "JPY"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, quote)| {
+            SensedRecord::Macro(Box::new(MacroObservation {
+                series_id: format!("FX.EUR.{quote}"),
+                region: "EA".to_string(),
+                value: 1.0 + index as f64,
+                unit: format!("{quote} per EUR"),
+                reference_date: reference,
+                consensus: None,
+                previous: None,
+                is_revision: false,
+                provenance: Provenance::new(
+                    "reference-rates",
+                    reference,
+                    reference.saturating_add(Duration::from_hours(16)),
+                ),
+                quality: DataQuality::clean(),
+            }))
+        })
+        .collect()
+}
+
+#[test]
+fn a_cycle_that_absorbed_reference_rates_reports_them_rather_than_calling_itself_blind()
+-> Result<()> {
+    // Not hypothetical: driven against the real ECB endpoint on 2026-09-06
+    // (`docs/ops/live-source-frankfurter-2026-09-06.md`) the cycle response
+    // carried `"released":3,"observed":3` and the SENSE stage on the same
+    // cycle carried `"produced":0` with "no observations have been fed in;
+    // the platform is running blind". The stage measured the price series
+    // alone and drew a conclusion about every record kind, so an operator
+    // reading the stage table would have called a working source dead.
+    let mut platform = platform(PlatformConfig::default())?;
+    let observed = platform.observe(rates());
+    assert_eq!(
+        observed, 3,
+        "premise: the platform took all three rates in, so a zero below is the stage's \
+         and not the feed's"
+    );
+
+    let report = platform.run_cycle(start());
+    let sense = report.stage(Stage::Sense).expect("sense ran");
+    assert_eq!(
+        sense.produced, observed,
+        "the stage table and the feed's own count are two readings of one fact and they \
+         disagree: {}",
+        sense.detail
+    );
+    assert!(
+        !sense.detail.contains("running blind"),
+        "a platform holding three observations described itself as blind: {}",
+        sense.detail
+    );
+    assert!(
+        sense.detail.contains("3 observation(s) held"),
+        "the stage did not say what it holds: {}",
+        sense.detail
     );
     Ok(())
 }
@@ -1292,6 +1380,318 @@ fn a_reasoning_confidence_bar_that_is_not_a_probability_stops_the_decision_and_n
         placement,
         vec![("none".to_string(), "declined".to_string())],
         "a decision the platform refused to price was still recorded as placed somewhere: {detail}"
+    );
+    Ok(())
+}
+
+// --- point-in-time: the catalyst path's coverage claim -----------------------
+
+/// A price series whose *last* return is the large one.
+///
+/// [`bars`] puts its jump two thirds of the way in, which is what the
+/// statistical detectors want. The catalyst detector reasons about the latest
+/// return against the distribution behind it, so a move it could be asked to
+/// explain has to be the most recent one.
+fn bars_with_a_final_jump(symbol: &str, count: usize) -> Vec<SensedRecord> {
+    let mut price = 100.0_f64;
+    (0..count)
+        .map(|i| {
+            let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.004;
+            let jump = if i + 1 == count { 0.18 } else { 0.0 };
+            let open = price;
+            price *= 1.0 + noise + jump;
+            let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+            SensedRecord::Bar(Box::new(Bar {
+                object_id: object(symbol),
+                venue: "XNYS".to_string(),
+                interval: Interval::Day,
+                open_time: at,
+                open: Decimal::from_f64(open).unwrap(),
+                high: Decimal::from_f64(open.max(price) * 1.002).unwrap(),
+                low: Decimal::from_f64(open.min(price) * 0.998).unwrap(),
+                close: Decimal::from_f64(price).unwrap(),
+                volume: dec!("1000000"),
+                trade_count: 5_000,
+                vwap: Decimal::from_f64((open + price) / 2.0),
+                quality: DataQuality::default(),
+            }))
+        })
+        .collect()
+}
+
+/// One macro release on `series`, which the platform learned at `ingested_at`.
+///
+/// `ingested_at` is the whole point: it becomes the market event's known-time,
+/// and a known-time after the cycle's instant is a fact the platform could not
+/// have held when it reasoned.
+fn macro_release(series: &str, ingested_at: Timestamp) -> SensedRecord {
+    SensedRecord::Macro(Box::new(MacroObservation {
+        series_id: series.to_string(),
+        region: "US".to_string(),
+        value: 3.4,
+        unit: "percent".to_string(),
+        reference_date: start().saturating_sub(Duration::from_days(1)),
+        consensus: Some(3.1),
+        previous: Some(3.0),
+        is_revision: false,
+        provenance: Provenance::new(
+            "macro-desk",
+            start().saturating_sub(Duration::from_days(1)),
+            ingested_at,
+        ),
+        quality: DataQuality::clean(),
+    }))
+}
+
+/// Run one cycle over the same tape, differing only in when the one held
+/// market event became knowable. Returns whether any unexplained move was
+/// raised, and the DISCOVER stage's own account of the pass.
+fn discover_over_an_event_known_at(ingested_at: Timestamp) -> Result<(bool, String, Vec<String>)> {
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.observe(bars_with_a_final_jump("AAA", 120));
+    // The release lands on BBB, not on AAA. It is therefore coverage of the
+    // event stream and never a candidate explanation for AAA's move, which is
+    // what isolates the coverage claim from the explanation itself.
+    platform.observe(vec![macro_release(object("BBB").as_str(), ingested_at)]);
+    assert_eq!(
+        platform.market_events().len(),
+        1,
+        "the premise failed: the platform is not holding the release at all, so this test would \
+         pass whatever the coverage rule did"
+    );
+
+    let report = platform.run_cycle(start());
+    let discover = report
+        .stage(Stage::Discover)
+        .cloned()
+        .expect("DISCOVER ran");
+    let unexplained = platform.queue().iter().any(|opportunity| {
+        opportunity
+            .anomalies
+            .iter()
+            .any(|anomaly| anomaly.kind == AnomalyKind::UnexplainedMove)
+    });
+    Ok((unexplained, discover.detail, discover.problems))
+}
+
+#[test]
+fn a_move_is_called_unexplained_only_when_the_event_stream_was_watched_by_the_instant_it_ran()
+-> Result<()> {
+    // The failure this prevents, and it was live: `stage_discover` attached
+    // the held events whenever the working set was non-empty, and
+    // `DetectionContext::with_events` then dropped every one of them whose
+    // known-time was after `now` and recorded coverage anyway. A working set
+    // holding nothing the platform could yet know therefore produced an empty
+    // event set *with* coverage — precisely the state the kernel's own comment
+    // says must never be claimed, because it is what licenses the catalyst
+    // detector to call a move `UnexplainedMove`. One vendor clock running fast
+    // was enough to manufacture "information is leaking on this name" out of
+    // nothing, and nothing anywhere would have said so: the dropping is
+    // silent, and `Timestamp::since` saturates, so the retention line cannot
+    // age a future-stamped event out either.
+
+    // The premise, and it has to come first: with the release knowable, the
+    // detector does raise an unexplained move on this tape. Without this the
+    // subject below would pass on a tape that never produced one.
+    let (watched, watched_detail, _) =
+        discover_over_an_event_known_at(start().saturating_sub(Duration::from_hours(6)))?;
+    assert!(
+        watched,
+        "the premise failed: with the event stream watched, this tape raises no unexplained move, \
+         so the subject asserts nothing — {watched_detail}"
+    );
+
+    // The subject: the same tape, the same event, one day later on the wire.
+    let (unwatched, unwatched_detail, problems) =
+        discover_over_an_event_known_at(start().saturating_add(Duration::from_days(1)))?;
+    assert!(
+        !unwatched,
+        "a move was called unexplained on the strength of an event stream whose every record was \
+         still in the future; \"no catalyst found\" is then a statement about our inputs and not \
+         about the world — {unwatched_detail}"
+    );
+
+    // And it is said out loud, naming the record. A leak withheld in silence
+    // leaves an operator reading a coverage line that quietly means nothing.
+    let named: Vec<&String> = problems
+        .iter()
+        .filter(|problem| problem.contains("could not yet know"))
+        .collect();
+    assert_eq!(
+        named.len(),
+        1,
+        "DISCOVER did not report the withheld record; its problems were {problems:?}"
+    );
+    assert!(
+        named[0].contains(object("BBB").as_str()),
+        "the refusal does not name the input, so nobody can take it back to the publisher: {}",
+        named[0]
+    );
+    assert!(
+        named[0].contains("no catalyst coverage was claimed"),
+        "the refusal does not say that coverage was withheld, which is the consequence an \
+         operator has to know about: {}",
+        named[0]
+    );
+    Ok(())
+}
+
+// --- the DISCOVER-to-REASON funnel, as a series ------------------------------
+
+#[test]
+fn the_funnel_from_opportunity_to_reviewed_hypothesis_is_recorded_and_not_only_narrated()
+-> Result<()> {
+    // Five names in `qip_observability::metrics::names` were declared and
+    // recorded by nothing: `qip_opportunities_detected_total`,
+    // `qip_hypotheses_{created,approved,rejected}_total` and
+    // `qip_hypothesis_confidence`. A name in that module reads as a series the
+    // platform publishes, and a dashboard built on one of them would have
+    // charted an empty descriptor for ever.
+    //
+    // What the funnel buys, beyond tidiness: a platform that has stopped
+    // finding anything and a platform whose review refuses everything both
+    // submit zero orders, and the order count cannot tell them apart. These
+    // can.
+    let mut platform = platform(PlatformConfig::default())?;
+
+    // The premise: nothing is recorded before a cycle runs, so every number
+    // below is this cycle's rather than an assembly-time constant.
+    let before = recorded(&platform);
+    assert_eq!(before.counter_total(names::OPPORTUNITIES_DETECTED), 0);
+    assert_eq!(before.counter_total(names::HYPOTHESES_CREATED), 0);
+
+    platform.observe(bars("AAA", 120));
+    let report = platform.run_cycle(start());
+
+    let discover = report.stage(Stage::Discover).expect("DISCOVER reports");
+    let snapshot = recorded(&platform);
+    // The stage's own count of what it found and the counter are two accounts
+    // of one cycle. Two independent claims about the same fact will disagree,
+    // and the louder one — the number on a chart — will be wrong.
+    assert_eq!(
+        snapshot.counter_total(names::OPPORTUNITIES_DETECTED),
+        discover.produced as u64,
+        "the opportunity counter and the DISCOVER stage disagree about the same pass: {}",
+        discover.detail
+    );
+    assert!(
+        discover.produced > 0,
+        "the premise failed: this tape raised no opportunity, so the counter asserts nothing — {}",
+        discover.detail
+    );
+
+    let reason = report.stage(Stage::Reason).expect("REASON reports");
+    assert!(
+        !reason.detail.contains("nothing in the queue"),
+        "the premise failed: REASON never convened, so no hypothesis could be counted: {}",
+        reason.detail
+    );
+
+    let created = snapshot.counter_total(names::HYPOTHESES_CREATED);
+    let approved = snapshot.counter_total(names::HYPOTHESES_APPROVED);
+    let rejected = snapshot.counter_total(names::HYPOTHESES_REJECTED);
+    assert_eq!(
+        created, 1,
+        "REASON synthesised a hypothesis and did not count it: {}",
+        reason.detail
+    );
+    // The invariant that makes the two verdict counters readable together: a
+    // hypothesis is either actionable or it is not, and every one created is
+    // counted exactly once on one side. A recording site that counted only
+    // approvals would leave a review stage refusing everything looking
+    // identical to a detector that had gone quiet.
+    assert_eq!(
+        approved + rejected,
+        created,
+        "a synthesised hypothesis was counted neither approved nor rejected, so the two verdict \
+         series cannot be read against the denominator: {}",
+        reason.detail
+    );
+    // And the side it landed on is the side REASON itself reported. The sum
+    // above survives the two counters being swapped; this does not, and a
+    // dashboard reading rejections as approvals is the reading that would send
+    // an operator looking for the wrong problem entirely.
+    let stage_said_rejected = reason
+        .problems
+        .iter()
+        .any(|problem| problem.starts_with("rejected on review"));
+    assert_eq!(
+        (approved, rejected),
+        if stage_said_rejected { (0, 1) } else { (1, 0) },
+        "the verdict counters and the REASON stage disagree about the same hypothesis; the stage \
+         said {} — {} / {:?}",
+        if stage_said_rejected {
+            "rejected"
+        } else {
+            "actionable"
+        },
+        reason.detail,
+        reason.problems
+    );
+
+    // And the confidence review actually produced, as a distribution rather
+    // than as whichever cycle happened to be last before a scrape.
+    let confidence = snapshot
+        .histogram(names::HYPOTHESIS_CONFIDENCE, &labels([]))
+        .expect("the hypothesis confidence histogram was never observed into");
+    assert_eq!(
+        confidence.count, created,
+        "one observation per hypothesis created is the whole contract of this histogram"
+    );
+    assert!(
+        confidence.mean() > 0.0 && confidence.mean() <= 1.0,
+        "a confidence outside (0, 1] is not a probability: {}",
+        confidence.mean()
+    );
+    Ok(())
+}
+
+// --- the configured agent review interval ------------------------------------
+
+#[test]
+fn a_deployment_whose_agent_review_interval_the_roster_does_not_honour_refuses_to_assemble()
+-> Result<()> {
+    // `PlatformConfig::agent_review_interval` shipped documented — "how long
+    // an agent authorisation is valid before review" — defaulted to ninety
+    // days, and read by nothing at all. The interval that actually expires a
+    // manifest was a literal in `qip_investment_agents::manifests`. Two claims
+    // about one fact, and the one an operator could edit governed nothing:
+    // exactly the shape `.claude/rules/domains/risk-and-execution.md` names by
+    // example, and the one `PlatformConfig`'s own comment on
+    // `reasoning_confidence_bar` forbids — "say where a number is read, or
+    // delete it".
+    //
+    // The premise, first, because a gate that refuses everything is not a
+    // gate: the shipped pair agrees, so the default assembles.
+    let shipped = PlatformConfig::default();
+    assert_eq!(
+        shipped.agent_review_interval,
+        Duration::from_days(90),
+        "the shipped default moved; this test's arithmetic below assumes ninety days"
+    );
+    platform(shipped)?;
+
+    // And the subject: a deployment that states a different term is stopped,
+    // rather than started with two answers to how long an agent may act.
+    let error = platform(PlatformConfig {
+        agent_review_interval: Duration::from_days(60),
+        ..PlatformConfig::default()
+    })
+    .expect_err("a configuration disagreeing with every manifest still assembled");
+    let message = error.message();
+    assert!(
+        message.contains("agent_review_interval"),
+        "the refusal does not name the field an operator has to change: {message}"
+    );
+    assert!(
+        message.contains("60 day(s)") && message.contains("90"),
+        "the refusal does not put both numbers in front of the reader, so it does not say which \
+         of the two is wrong: {message}"
+    );
+    assert!(
+        message.contains("manifests"),
+        "the refusal does not say where the authoritative interval lives, which is the one thing \
+         the operator needs next: {message}"
     );
     Ok(())
 }

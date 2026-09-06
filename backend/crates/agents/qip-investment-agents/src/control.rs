@@ -44,21 +44,40 @@ impl Agent for RiskControl {
         // A veto is a statement of fact about a limit, so it is reported with
         // full conviction. A warning is a statement that a limit is close,
         // which is information rather than a decision.
-        let (direction, conviction, claim) = if check.is_blocked() {
+        //
+        // **The reduction question is asked first, and the order is the whole
+        // control.** `LimitCheck::requires_reduction` is
+        // `any(|b| b.blocks() && b.forces_reduction)`, which implies
+        // `is_blocked` — `any(LimitBreach::blocks)` — so while `is_blocked`
+        // was tested first this arm could never be taken. That made every
+        // `Limit::forcing_reduction()` mark in the platform inert: the
+        // shipped `leverage`, `drawdown` and `daily-loss` limits all carry it,
+        // this is the only production caller of `requires_reduction`, and a
+        // desk reading a finding could not tell "stop taking risk" from
+        // "unwind what you are holding".
+        //
+        // Both arms carry full conviction. The reduction arm used to carry
+        // 0.8, which was defensible only while it sat *below* the block arm
+        // and could be read as a weaker finding; a breach that forces a
+        // reduction is a stricter fact than one that merely blocks, and
+        // reporting it less confidently would invert the severity the desk
+        // asked for.
+        let (direction, conviction, claim) = if check.requires_reduction() {
+            (
+                Direction::Negative,
+                1.0,
+                format!(
+                    "{} limit(s) block and {} of them require the book to be reduced: {}",
+                    blocking.len(),
+                    check.forcing_reduction().len(),
+                    check.reason()
+                ),
+            )
+        } else if check.is_blocked() {
             (
                 Direction::Negative,
                 1.0,
                 format!("{} limit(s) block: {}", blocking.len(), check.reason()),
-            )
-        } else if check.requires_reduction() {
-            (
-                Direction::Negative,
-                0.8,
-                format!(
-                    "no limit blocks, but {} require(s) a reduction: {}",
-                    blocking.len().max(1),
-                    check.reason()
-                ),
             )
         } else if !warnings.is_empty() {
             (

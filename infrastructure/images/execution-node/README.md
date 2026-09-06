@@ -36,8 +36,13 @@ a failing test rather than a node that will not come up.
 |---|---|---|
 | `/usr/local/bin/qip-edge-node` | `crane export` of `qip-edge-node@<digest>` in the environment's registry | Built, scanned, pushed, signed and attested by `deploy.yml`. The bake **refuses** a digest the environment's attestor has not signed. |
 | `/usr/local/bin/envoy` | `crane export` of `vendor/envoy@<digest>`, the digest read out of `infrastructure/egress/vendored-images.txt` | Mirrored and attested by `vendor.yml`. Same refusal. Same file `modules/egress-proxy` reads, so the proxy on the node and the proxy in every Cloud Run sidecar cannot fork. |
-| `/usr/local/bin/qip-fetch-secret` | This directory | Reviewed in the diff that changed it, staged with a sha256 in the payload manifest. |
+| `/usr/local/bin/qip-fetch-secret` | This directory, **as the default branch has it** | The bake fetches the default branch from `origin`, refuses unless this tree's copy hashes to the same blob, and takes the bytes from the branch rather than from the checkout. Its sha256 is in the payload manifest and the blob hash is in the run summary. |
 | `google-cloud-ops-agent.service` | A `.deb` pinned by version and sha256 in `image.yml` | Fetched by the runner, verified there, staged in the payload, verified again on the builder. |
+
+`provision.sh` is not on the image, and it is held to the same rule as the file
+above for the same reason: it is handed to the builder as its startup script
+and runs there as root. The bake gives the instance the default branch's copy,
+not the dispatched tree's.
 
 Plus, from `provision.sh` and not from a package:
 
@@ -51,7 +56,7 @@ Plus, from `provision.sh` and not from a package:
   image and every input digest, so an operator on a node can answer "which
   artefacts is this machine running" without the run that built it.
 
-## Built from the signed artefact, never from source
+## No binary is compiled here, and the two files that are not binaries
 
 There is no compiler in the bake and there must never be one. `image.yml`
 resolves the container image `deploy.yml` already signed, refuses to continue
@@ -59,6 +64,32 @@ unless the attestor signed those exact bytes, and extracts the binary out of
 it. A binary recompiled during the bake is a binary nothing signed, however
 identical the source, and the attestation chain would end at the container
 registry rather than at the machine.
+
+That is two of the four things the bake installs. The workflow header used to
+say "built from the signed artefact and never from source" and stop, which was
+false of the other two, and false about the two that matter most to a reader
+asking who can change what a node runs: `qip-fetch-secret` reads the venue
+credential and the capital-envelope key, and `provision.sh` runs as root on the
+builder. Recording their sha256 in the payload manifest — which is all the bake
+used to do — is a number with nothing to compare it to.
+
+They are now held against the repository's **default branch**: the bake fetches
+it from `origin`, hashes this tree's copy and the branch's blob, refuses when
+they differ naming the file, and then takes the bytes from the branch. A bake
+dispatched from a branch that edits either file refuses. Merge it first.
+
+Why the default branch rather than the attested image, since the Dockerfile
+exists and both files are small: **an attestation here is not a review**.
+`deploy.yml`'s `workflow_dispatch` path builds and attests whatever ref it is
+given once ci has passed for that commit. Moving these two files into the
+`qip-edge-node` image would therefore have signed exactly the same unreviewed
+bytes and made them look safer — the failure it was meant to close (edit the
+credential reader on a branch, get that branch's image attested, bake it) would
+have gone through with an attestation on it. What a dispatcher cannot choose is
+what is on the default branch, so that is the reference value. It is worth
+reopening if `deploy.yml` ever restricts attestation to the default branch, at
+which point the two mechanisms would say the same thing and the image would be
+the tidier place to say it.
 
 Say the limit of that plainly. **There is no admission control on a bare VM.**
 Every Cloud Run service in the catalogue evaluates the project's Binary

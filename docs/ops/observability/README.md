@@ -16,9 +16,9 @@ event_log.by_correlation(&correlation_id)
 The log is a hash chain. `EventLog::verify_chain` returns the first broken
 sequence number, so tampering is detectable rather than merely discouraged.
 
-## The seven alerts
+## The nine alerts
 
-Seven, because each one means somebody should look now. An alerting policy that
+Nine, because each one means somebody should look now. An alerting policy that
 fires on something nobody acts on trains people to ignore the ones that matter.
 
 | Alert | Threshold | Runbook |
@@ -30,6 +30,27 @@ fires on something nobody acts on trains people to ignore the ones that matter.
 | An execution node halted, by kill switch, by policy or by the polled flag | any, per cell and source | [kill-switch](../../operations/kill-switch.md) |
 | A node's book and its venue's record disagree | any break, over 5 minutes | [reconciliation-break](../../operations/reconciliation-break.md) |
 | The centre acted on a report whose exposure disagrees with its envelope | any break, over 5 minutes | [reconciliation-break](../../operations/reconciliation-break.md) |
+| A risk figure has been uncomputable for 15 minutes | 900s, per `figure` | inline, `main.tf:352-385` |
+| Sign-off withheld because the book cannot be read | a withholding in each of two consecutive 30-minute windows | inline, `main.tf:446-474` |
+
+Recount before quoting the number:
+`grep -c '^resource "google_monitoring_alert_policy"' infrastructure/terraform/modules/observability/main.tf`
+answers `9`. This section said "seven" until 2026-09-06, after two were added,
+and `NOT-SCRAPED.md` separately carried "three edge policies" for a while,
+which made the two groups sum to eight. A number nobody recounted is the thing
+to distrust in this file.
+
+**The last two fire on a control working, not on a control failing.** An
+unevaluated risk figure or a withheld sign-off means the platform has stopped
+trading that book — not that it is trading badly. There is no bad fill to go
+looking for, because there is no fill. Both policies say so in their own first
+line, and this table must not be read as contradicting them. They are two
+facts and not one: the gauge is the state the read is in, and the counter is
+the attribution — sign-off withheld with the liquidity read as the sole reason,
+which says the risk monitor permitted new risk and compliance was enforced. A
+read that fails on a minority of cycles never holds the gauge high for fifteen
+continuous minutes and the platform still declined to trade on every one of
+those cycles, so the counter catches what the gauge structurally cannot.
 
 The seventh watches `qip_central_reconciliation_breaks_total`, whose
 `direction` label is one of `cell_over_venue`, `venue_over_cell`,
@@ -65,9 +86,9 @@ Every descriptor named is one `qip-observability` registers, and
 `every_metric_an_alert_policy_queries_is_one_the_platform_emits` refuses a
 policy naming one it does not.
 
-## Why none of the seven exists yet
+## Why none of the nine exists yet
 
-All seven stay gated on `workload_metrics_exist`, which is `false` in every
+All nine stay gated on `workload_metrics_exist`, which is `false` in every
 environment — commented out at `environments/dev/terraform.tfvars:128` and
 defaulting false in both `terraform/variables.tf` and the module — because
 Cloud Monitoring refuses a policy naming a descriptor it has never ingested.

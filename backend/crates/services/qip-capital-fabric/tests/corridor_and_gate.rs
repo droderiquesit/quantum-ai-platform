@@ -19,7 +19,10 @@
 use qip_capital_fabric::corridor::{
     Corridor, CorridorCaps, CorridorId, CorridorStage, PermittedHours,
 };
-use qip_capital_fabric::custody::{CorridorKind, CustodyClass, CustodyPolicy};
+use qip_capital_fabric::custody::{
+    Attestation, CorridorKind, CustodyClass, CustodyPolicy, EnforcementPoint, EnforcementPoints,
+    Identity, RefusalReason, TransferAuthority,
+};
 use qip_capital_fabric::destination::{
     ACTIVATION_DELAY, Approver, Asset, DestinationKey, DestinationRegistry, DestinationStatus,
     SignatureRecord,
@@ -137,6 +140,49 @@ fn balances() -> Result<SourceBalances> {
     SourceBalances::new(dec!("10000"), dec!("1000"), dec!("1000"), dec!("1000"))
 }
 
+/// The identity that trades. §37.4 forbids it appearing among the attestors.
+const TRADING: &str = "trading-svc";
+
+/// The service identity each enforcement point attests under in the satisfied
+/// fixture. Three distinct names, none of them [`TRADING`].
+fn attesting_identity(point: EnforcementPoint) -> &'static str {
+    match point {
+        EnforcementPoint::TransferGate => "gate-svc",
+        EnforcementPoint::CustodyPolicy => "custody-policy-svc",
+        EnforcementPoint::VenueAllowlist => "venue-ops-oob",
+    }
+}
+
+fn attestation(point: EnforcementPoint, identity: &str) -> Result<Attestation> {
+    Attestation::new(
+        point,
+        Identity::new(identity)?,
+        format!("{}-record-1", point.as_str()),
+        signed_at(),
+    )
+}
+
+/// §37.4's closing rule satisfied: all three points attested, under three
+/// distinct identities, none of which is the one that trades.
+fn authority() -> Result<TransferAuthority> {
+    authority_with(|point| Some(attesting_identity(point)))
+}
+
+/// A [`TransferAuthority`] whose attestations are whatever `identity` says:
+/// `None` leaves the point silent, and a repeated name collapses two points
+/// onto one identity.
+fn authority_with(
+    identity: impl Fn(EnforcementPoint) -> Option<&'static str>,
+) -> Result<TransferAuthority> {
+    let mut points = EnforcementPoints::new();
+    for point in EnforcementPoint::ALL {
+        if let Some(name) = identity(point) {
+            points.attest(attestation(point, name)?)?;
+        }
+    }
+    Ok(TransferAuthority::new(points, Identity::new(TRADING)?))
+}
+
 /// Run the gate with every input satisfied except whatever the caller
 /// overrode.
 struct Inputs {
@@ -144,6 +190,7 @@ struct Inputs {
     corridor: Corridor,
     registry: DestinationRegistry,
     custody: CustodyPolicy,
+    authority: TransferAuthority,
     history: TransferHistory,
     balances: SourceBalances,
     velocity: VelocityState,
@@ -158,6 +205,7 @@ impl Inputs {
             corridor: active_corridor()?,
             registry: usable_registry()?,
             custody: CustodyPolicy::blueprint(),
+            authority: authority()?,
             history: TransferHistory::empty(),
             balances: balances()?,
             velocity: VelocityState::CLEAR,
@@ -172,6 +220,7 @@ impl Inputs {
             &self.corridor,
             &self.registry,
             &self.custody,
+            &self.authority,
             &self.history,
             &self.balances,
             self.velocity,
@@ -342,6 +391,225 @@ fn a_corridor_whose_source_class_the_custody_policy_says_never_transfers_vetoes_
         ),
         "{}",
         veto.reason
+    );
+    Ok(())
+}
+
+// --- §37.4's closing rule, through the gate ---------------------------------
+//
+// `EnforcementPoints::all_agree` and `Agreement::disjoint_from_trading_authority`
+// existed with no caller outside these tests: they computed §37.4's closing
+// rule and nothing consulted the answer. That is the defect
+// `risk-and-execution.md` names — `MaxExpectedShortfall` shipped in every
+// default limit set and could never fire — so the tests below drive the gate,
+// not the predicate. A test that called `all_agree` directly would have
+// passed before the gate was wired to it and after it was unwired again.
+
+#[test]
+fn an_intent_whose_enforcement_points_have_not_all_attested_vetoes_on_corridor_authority()
+-> Result<()> {
+    // The failure prevented: two of three enforcement points agreeing, read as
+    // agreement. §37.4 requires all three, and the point that stayed silent is
+    // the one an operator needs named — a refusal saying only "the authority
+    // is incomplete" sends them to read three service logs.
+    //
+    // Premise: the fixture with all three attesting is admitted, so what each
+    // iteration below refuses is the missing attestation and not the fixture.
+    let satisfied = Inputs::satisfied()?;
+    assert!(
+        satisfied.assess().is_ok(),
+        "premise: the fixture with three distinct attestations is admitted"
+    );
+
+    for missing in EnforcementPoint::ALL {
+        let mut inputs = Inputs::satisfied()?;
+        inputs.authority =
+            authority_with(|point| (point != missing).then(|| attesting_identity(point)))?;
+        // Premise for this iteration: exactly the other two attested.
+        assert!(inputs.authority.points().attestation(missing).is_none());
+        assert_eq!(
+            EnforcementPoint::ALL
+                .iter()
+                .filter(|point| inputs.authority.points().attestation(**point).is_some())
+                .count(),
+            2
+        );
+
+        let veto = inputs.veto();
+        assert_eq!(veto.check, GateCheck::CorridorAuthority);
+        assert!(veto.alert, "a corridor-authority failure alerts, per §37.3");
+        // Parenthesised so the token is delimited: `enforcement_point_missing`
+        // is otherwise a substring of nothing here today and of whatever a
+        // later `enforcement_point_missing_at_venue` would be called.
+        assert!(
+            veto.reason.contains(&format!(
+                "({})",
+                RefusalReason::EnforcementPointMissing { point: missing }.as_str()
+            )),
+            "{}",
+            veto.reason
+        );
+        assert!(
+            veto.reason.contains(&format!("{missing} has not attested")),
+            "{}",
+            veto.reason
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn an_intent_whose_enforcement_points_share_an_identity_vetoes_on_corridor_authority() -> Result<()>
+{
+    // The failure §37.4 names outright: the gate and the custody policy
+    // deployed under one service identity count as two approvals while being
+    // one decision made twice. Every pair is tried, so a check that compared
+    // only adjacent points would be caught.
+    //
+    // Premise: three distinct identities are admitted.
+    assert!(
+        Inputs::satisfied()?.assess().is_ok(),
+        "premise: three distinct attesting identities are admitted"
+    );
+
+    let pairs = [
+        (
+            EnforcementPoint::TransferGate,
+            EnforcementPoint::CustodyPolicy,
+        ),
+        (
+            EnforcementPoint::TransferGate,
+            EnforcementPoint::VenueAllowlist,
+        ),
+        (
+            EnforcementPoint::CustodyPolicy,
+            EnforcementPoint::VenueAllowlist,
+        ),
+    ];
+    for (first, second) in pairs {
+        let mut inputs = Inputs::satisfied()?;
+        inputs.authority = authority_with(|point| {
+            Some(if point == first || point == second {
+                "shared-svc"
+            } else {
+                attesting_identity(point)
+            })
+        })?;
+        // Premise: all three attested, so this is a refusal of the collapse
+        // and not of a silent point.
+        assert!(
+            EnforcementPoint::ALL.iter().all(|point| inputs
+                .authority
+                .points()
+                .attestation(*point)
+                .is_some())
+        );
+
+        let veto = inputs.veto();
+        assert_eq!(veto.check, GateCheck::CorridorAuthority);
+        assert!(veto.alert);
+        assert!(
+            veto.reason.contains(&format!(
+                "({})",
+                RefusalReason::SharedIdentity { first, second }.as_str()
+            )),
+            "{}",
+            veto.reason
+        );
+        assert!(
+            veto.reason
+                .contains(&format!("{first} and {second} both attested as shared-svc")),
+            "{}",
+            veto.reason
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn an_intent_attested_by_the_trading_identity_vetoes_on_corridor_authority() -> Result<()> {
+    // "Trading authority and transfer authority never share an identity."
+    // The failure prevented is the one the blueprint states: a compromised or
+    // runaway trading process that can also attest to its own capital
+    // movement needs no second credential to move money out.
+    //
+    // Checked separately from the pairwise distinctness because three
+    // identities differing from each other says nothing about whether one of
+    // them trades — each point is put in the trading identity's place in turn,
+    // and each must be refused.
+    assert!(
+        Inputs::satisfied()?.assess().is_ok(),
+        "premise: no attestor is the trading identity in the satisfied fixture"
+    );
+
+    for attestor in EnforcementPoint::ALL {
+        let mut inputs = Inputs::satisfied()?;
+        inputs.authority = authority_with(|point| {
+            Some(if point == attestor {
+                TRADING
+            } else {
+                attesting_identity(point)
+            })
+        })?;
+        // Premise: the three identities are still pairwise distinct, so the
+        // pairwise check cannot be what fires and the refusal below is about
+        // trading authority specifically.
+        assert!(
+            inputs.authority.points().all_agree().is_ok(),
+            "premise: the three attesting identities are pairwise distinct"
+        );
+
+        let veto = inputs.veto();
+        assert_eq!(veto.check, GateCheck::CorridorAuthority);
+        assert!(veto.alert);
+        assert!(
+            veto.reason.contains(&format!(
+                "({})",
+                RefusalReason::TradingIdentityHoldsTransferAuthority { point: attestor }.as_str()
+            )),
+            "{}",
+            veto.reason
+        );
+        assert!(
+            veto.reason
+                .contains(&format!("{attestor} attested as {TRADING}")),
+            "{}",
+            veto.reason
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn an_admitted_assessment_records_the_three_identities_it_was_admitted_on() -> Result<()> {
+    // The agreement the gate computes is kept on the `Approved` rather than
+    // discarded. A gate that checked the rule and recorded only that it held
+    // would leave "who authorised this movement" answerable from nothing but
+    // the gate's own word, which is the second source of truth the boundaries
+    // rule refuses.
+    let inputs = Inputs::satisfied()?;
+    let approved = match inputs.assess() {
+        Ok(approved) => approved,
+        Err(veto) => panic!("the satisfied fixture was vetoed: {veto}"),
+    };
+    let attested: Vec<(EnforcementPoint, &str)> = approved
+        .authority()
+        .attestations()
+        .iter()
+        .map(|attestation| (attestation.point, attestation.identity.as_str()))
+        .collect();
+    assert_eq!(
+        attested,
+        EnforcementPoint::ALL
+            .iter()
+            .map(|point| (*point, attesting_identity(*point)))
+            .collect::<Vec<_>>()
+    );
+    // And none of them is the identity that trades — asserted on the record
+    // rather than on the fixture, because it is the record an operator reads.
+    assert!(
+        attested.iter().all(|(_, identity)| *identity != TRADING),
+        "the approval names the trading identity among its attestors: {attested:?}"
     );
     Ok(())
 }

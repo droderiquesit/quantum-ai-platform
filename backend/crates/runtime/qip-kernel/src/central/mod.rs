@@ -48,6 +48,7 @@
 //! and not in the audit trail.
 
 pub mod dna;
+pub mod episodic;
 pub mod factory;
 pub mod foundry;
 pub mod insights;
@@ -56,9 +57,11 @@ pub mod models;
 pub mod plane;
 pub mod realised;
 pub mod regions;
+pub mod structure;
 pub mod whitelist;
 
 pub use dna::{DnaPayload, StrategyDna};
+pub use episodic::{EpisodicIssue, EpisodicOutcome};
 pub use factory::{StrategyCandidate, StrategyFactory, StrategyReview};
 pub use learning::{
     CellOutcome, DispositionInstruction, DispositionOutcome, DispositionRefused,
@@ -69,8 +72,11 @@ pub use plane::{
     AbsorbedFill, BreakDirection, BreakOrigin, CellIngestion, CellReport, CentralConfig,
     CentralPlane, IssuedCapital, ReconciliationBreak, capital_subject,
 };
-pub use realised::{REALISED_SESSIONS, RealisedSeries, RealisedSession};
+pub use realised::{
+    GrantedDay, REALISED_SESSIONS, RealisedCalendar, RealisedSeries, RealisedSession,
+};
 pub use regions::{GrantManifests, ManifestDecision, RegionMembership, RegionShare, RegionShares};
+pub use structure::{CLUSTERING_WINDOW, FamilyStructureJournal, STRESS_QUANTILE};
 pub use whitelist::{
     ArbitragePolicy, WhitelistIssue, WhitelistOutcome, WhitelistedMarket, WhitelistedVenue,
 };

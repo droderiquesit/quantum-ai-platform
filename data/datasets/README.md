@@ -8,6 +8,53 @@ is a production store; see `../README.md` for what the data domain holds.
 | `universe.json` | The instrument catalogue every central composition root reads from `QIP_UNIVERSE_PATH` and refuses to start without. Synthetic instruments mirroring the synthetic exchange's, so a deployment sizes into real exposure buckets. |
 | `loop-demonstration-tape.json` | A **synthetic fixture** for demonstrating that the decision loop runs end to end on data with a detectable structure in it. Read by `qip-fastbrain` when `QIP_FASTBRAIN_TAPE_PATH` names it and by `qip-api` when `QIP_API_TAPE_PATH` does, through the same `TapeFeed`, so the two roots cannot read one file two ways. Not market data: every price is generated from a fixed irrational rotation by `qip-market-ingestion`'s tape tests, so there is no source, no licence and no licensing question; its descriptor reports `LicensingClass::Synthetic`, which the object model bars from any production decision. |
 
+## The catalogue's liquidity block, and where its figures come from
+
+Every record in `universe.json` states a `liquidity` block, and
+`qip_financial::catalogue` refuses a record without one by name. It is
+required rather than optional because its absence was not visible: a record
+with no block did not arrive without a liquidity profile, it arrived carrying
+`LiquidityProfile::default()` — a 10 basis-point quote and a one-day exit —
+and `MinLiquidity` and `MaxDaysToLiquidate`, two controls whose job is to veto
+trading, were evaluated for every deployed instrument against a figure that
+existed in no file, no reviewed diff and under no manifest hash.
+
+The figures now stand exactly where `price` and `tick_size` stand: stated in
+the file, read in the diff, covered by the SHA-256 every run journals. Two
+different things back them, and the difference is not cosmetic.
+
+- **`NWSC`, `VNTG`, `MRDN` and `ATFB` are backed by the committed tape.**
+  `average_daily_volume` is the tape's own total volume over the distinct
+  dates it trades on, truncated — 26,423,076 for each, which is what the
+  fixed rotation generates. The first and last dates on the tape are partial
+  sessions, so this understates the real daily volume, and understating
+  capacity trades less rather than more. `typical_spread_bps` is a stated
+  figure, but a bounded one: wider than the record's own tick over its own
+  price (nothing is quotable tighter than the venue's grid) and narrower than
+  the whole high-low range of the tightest bar the tape shows it trading in
+  (a quote wider than a bar's entire range is not consistent with that bar
+  having traded). `every_committed_record_states_its_own_liquidity_and_the_tape_backs_the_four_it_covers`
+  in `backend/crates/libs/qip-financial/tests/costs.rs` holds both bounds.
+- **`HLCX` and `RSRC` appear on no tape in this repository, and nothing backs
+  them.** This is the point at which a reference file becomes an invented
+  number under a different name, so the rule for them is directional rather
+  than numerical: a record nothing measured is quoted no tighter, exits no
+  faster and is participated in no harder than every record the tape does
+  back, and states an average daily volume of zero — which makes
+  `LiquidityProfile::days_to_exit` return nothing rather than something fast,
+  and makes every volume-based capacity calculation size to zero. The worst a
+  stated figure can therefore do is stop the platform trading.
+  `a_committed_record_the_tape_does_not_cover_is_quoted_no_tighter_than_every_record_it_does`
+  holds that, so the direction cannot be reversed by an edit here.
+
+The exit times put `HLCX` and `RSRC` on `Rung::BondsAndLessLiquidListed` and
+the four tape names on `Rung::ListedEquityAndFutures`, and the widest quote on
+the upper rung (8bps) is tighter than the tightest on the lower (25bps), so
+`prove_quotes_can_coexist` admits the catalogue at `Platform::new`. That is
+not a coincidence to preserve by luck: quoting an unmeasured record
+conservatively is what keeps the ladder monotone, and quoting one optimistically
+is exactly the inversion that stopped the desk before `9f9c92a`.
+
 ## The demonstration tape
 
 Four of the catalogue's instruments (`NWSC`, `VNTG`, `MRDN`, `ATFB`, all

@@ -3,10 +3,18 @@
 //! Blueprint §37.3 puts a veto-only gate between a machine-generated transfer
 //! intent and anything that would act on it. This module is that gate with
 //! nothing behind it. [`TransferGate::assess`] takes an intent, the corridor
-//! it claims, the allowlist, the balances, the velocity state and the
-//! kill-switch state — every one of them supplied by the caller, with the
-//! platform clock — and returns either an [`Approved`] record or a [`Vetoed`]
-//! record naming the check that failed and what would satisfy it.
+//! it claims, the allowlist, the custody table, the three enforcement points'
+//! attestations, the balances, the velocity state and the kill-switch state —
+//! every one of them supplied by the caller, with the platform clock — and
+//! returns either an [`Approved`] record or a [`Vetoed`] record naming the
+//! check that failed and what would satisfy it.
+//!
+//! §37.4's closing rule rides inside check 1 rather than becoming an eighth
+//! check, for the same reason the custody table already does: §37.3 names
+//! seven checks, and the question "may this corridor carry this at all" is
+//! [`GateCheck::CorridorAuthority`]'s whether the answer comes from the
+//! corridor's own signature, from the allowlist, from the custody table, or
+//! from who attested to it.
 //!
 //! An [`Approved`] carries no way to execute. There is no transfer engine in
 //! this crate, no method that takes an `Approved` and does something with it,
@@ -23,7 +31,7 @@
 //! exists by which the gate could learn something the log did not record.
 
 use crate::corridor::{Corridor, CorridorStage};
-use crate::custody::CustodyPolicy;
+use crate::custody::{Agreement, CustodyPolicy, TransferAuthority};
 use crate::destination::{DestinationKey, DestinationRegistry};
 use crate::location::CapitalLocation;
 use qip_core::error::{Error, Result};
@@ -313,7 +321,10 @@ pub enum KillSwitchState {
 #[serde(rename_all = "snake_case")]
 pub enum GateCheck {
     /// Corridor active, signature record present and covering the current
-    /// definition, destination allowlisted and usable.
+    /// definition, destination allowlisted and usable, the custody table
+    /// permitting the class through this kind of corridor, and §37.4's three
+    /// enforcement points agreeing under three identities none of which
+    /// trades.
     CorridorAuthority,
     /// Within per-transfer, hourly, daily and cumulative caps, and inside
     /// permitted hours.
@@ -409,6 +420,7 @@ pub struct Approved {
     signature_reference: String,
     assessed_at: Timestamp,
     checks_passed: [GateCheck; 7],
+    authority: Agreement,
 }
 
 impl Approved {
@@ -437,6 +449,16 @@ impl Approved {
     pub fn checks_passed(&self) -> &[GateCheck; 7] {
         &self.checks_passed
     }
+
+    /// The three attestations §37.4 required, as the gate found them.
+    ///
+    /// Kept rather than discarded so an admitted assessment names *which*
+    /// three identities agreed. A gate that checked the rule and recorded
+    /// only "it held" would leave an operator asking who authorised a
+    /// movement with nothing but the gate's own word for it.
+    pub fn authority(&self) -> &Agreement {
+        &self.authority
+    }
 }
 
 /// The deterministic, veto-only gate.
@@ -463,6 +485,7 @@ impl TransferGate {
         corridor: &Corridor,
         registry: &DestinationRegistry,
         custody: &CustodyPolicy,
+        authority: &TransferAuthority,
         history: &TransferHistory,
         balances: &SourceBalances,
         velocity: VelocityState,
@@ -476,9 +499,10 @@ impl TransferGate {
             assessed_at: now,
         };
 
-        // 1. Corridor active, signature valid, destination allowlisted.
-        let signature_reference =
-            Self::corridor_authority(intent, corridor, registry, custody, now)
+        // 1. Corridor active, signature valid, destination allowlisted,
+        //    custody table permitting, three enforcement points agreeing.
+        let (signature_reference, agreement) =
+            Self::corridor_authority(intent, corridor, registry, custody, authority, now)
                 .map_err(|reason| veto(GateCheck::CorridorAuthority, reason))?;
 
         // 2. Within per-transfer, hourly, daily, cumulative caps and hours.
@@ -555,17 +579,20 @@ impl TransferGate {
             signature_reference,
             assessed_at: now,
             checks_passed: GateCheck::ALL,
+            authority: agreement,
         })
     }
 
-    /// Check 1. Returns the filing reference of the signature relied on.
+    /// Check 1. Returns the filing reference of the signature relied on and
+    /// the three attestations §37.4 required.
     fn corridor_authority(
         intent: &TransferIntent,
         corridor: &Corridor,
         registry: &DestinationRegistry,
         custody: &CustodyPolicy,
+        authority: &TransferAuthority,
         now: Timestamp,
-    ) -> std::result::Result<String, String> {
+    ) -> std::result::Result<(String, Agreement), String> {
         if intent.source() != corridor.source() || intent.destination() != corridor.destination() {
             return Err(format!(
                 "the intent is {} -> {} but corridor {} runs {} -> {}; an intent is assessed \
@@ -634,7 +661,24 @@ impl TransferGate {
                     corridor.kind()
                 )
             })?;
-        Ok(signed.signature.reference.clone())
+        // §37.4's closing rule, and the last thing check 1 asks: the three
+        // points that just answered — this gate, the allowlist and the
+        // custody table — must have attested under three identities, none of
+        // them the one that trades. Asked here, in the control, rather than
+        // of whoever assembled the attestations, because a `TransferAuthority`
+        // arrives deserialised from the log on every replay and a constructor
+        // that refused would be a check no replay runs. The failure prevented
+        // is §37.4's own: one service identity behind two points is one
+        // decision counted twice, and a trading process that can attest to
+        // its own capital movement needs no second compromise.
+        let agreement = authority.agreement().map_err(|refusal| {
+            format!(
+                "corridor {} would carry capital on three enforcement points' agreement, and \
+                 the {refusal}",
+                corridor.id()
+            )
+        })?;
+        Ok((signed.signature.reference.clone(), agreement))
     }
 
     /// Check 2.

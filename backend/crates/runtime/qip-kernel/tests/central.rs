@@ -65,6 +65,19 @@ use qip_strategy::ir::{Expr, Rule, StrategySpec, Type};
 use qip_strategy::program::Program;
 use std::collections::BTreeMap;
 
+/// The liquidity every fixture in this file states, because nothing states it
+/// for them any more.
+///
+/// [`qip_financial::costs::LiquidityProfile`] has no `Default`: the one it had
+/// asserted a 10bp quote and a one-session exit for any instrument at all, and
+/// `MinLiquidity` and `MaxDaysToLiquidate` — controls whose job is to veto
+/// trading — read exactly those two figures. A fixture may state its own
+/// premise; it may not inherit one nobody wrote down. A liquid listed name on
+/// five million units a day, quoted at three basis points.
+fn fixture_liquidity() -> qip_financial::costs::LiquidityProfile {
+    qip_financial::costs::LiquidityProfile::listed(qip_core::Decimal::from_int(5_000_000), 3.0)
+}
+
 // --- the instants and identities every test shares ---------------------------
 
 fn start() -> Timestamp {
@@ -1222,6 +1235,7 @@ fn universe() -> Universe {
             ObjectId::from_string(format!("obj-{symbol}")),
             symbol,
             InstrumentType::CommonStock,
+            fixture_liquidity(),
         )
         .venue(VENUE)
         .sector(Sector::InformationTechnology)
@@ -2479,5 +2493,419 @@ fn the_centres_manifests_for_a_regions_cells_never_together_exceed_its_grant_and
             "{cell} was given a manifest under a refused plan"
         );
     }
+    Ok(())
+}
+
+// --- §23.1 LEVEL 1: the corpus retains a grant, and LEARN measures on it -------
+
+/// The retention gap, closed and proven at the seam that writes it: a day the
+/// centre held a live grant and settled nothing is retained as a day of the
+/// record, and a day after that grant lapsed is not.
+///
+/// Before this, `absorb` ran only on a settlement, so the first day left no
+/// session at all and was indistinguishable afterwards from the second. The
+/// difference matters because one is a return of zero — a fact — and the
+/// other is not a return, and anything aligning strategies to one calendar
+/// has to fill the gap or throw the day away unless the record keeps them
+/// apart.
+#[test]
+fn a_day_under_a_live_grant_that_settled_nothing_is_retained_and_a_day_after_it_lapsed_is_not()
+-> Result<()> {
+    let mut plane = plane()?;
+    let id = strategy();
+    register(&mut plane, &id, CELL)?;
+    walk_to(&mut plane, &id, GateStage::Pilot)?;
+    let issued = issue(&mut plane, &id, CELL, start())?;
+    let grant = issued.envelope().gross_limit();
+    assert!(
+        issued.envelope().is_live(start()),
+        "premise: the grant is live at the instant it was issued"
+    );
+
+    // A report the cell sent while holding the grant, carrying no fill at all.
+    let mut kill_switch = qip_risk_engine::autonomy::KillSwitch::new();
+    let quiet = start().saturating_add(Duration::from_hours(1));
+    plane.ingest(CellReport::new(CELL, quiet), &mut kill_switch, quiet)?;
+
+    // And one three days later, by which time the eight-hour grant has lapsed
+    // and nothing has re-issued it.
+    let lapsed = start().saturating_add(Duration::from_days(3));
+    assert!(
+        !issued.envelope().is_live(lapsed),
+        "premise: the grant has expired by the second report"
+    );
+    plane.ingest(CellReport::new(CELL, lapsed), &mut kill_switch, lapsed)?;
+
+    let calendar = plane.realised_calendar(lapsed.saturating_add(Duration::from_days(1)));
+    assert_eq!(
+        calendar.day_count(),
+        1,
+        "one of the two days was under a grant the centre held live"
+    );
+    let day = start().start_of_day();
+    let observed = calendar
+        .by_strategy()
+        .get(&id)
+        .and_then(|days| days.get(&day))
+        .copied()
+        .ok_or_else(|| qip_core::Error::not_found("the granted day is in the calendar"))?;
+    assert_eq!(observed.grant, grant, "the day carries the grant behind it");
+    assert_eq!(
+        observed.pnl,
+        Decimal::ZERO,
+        "and no P&L, because nothing settled"
+    );
+    assert_eq!(
+        observed.fraction(),
+        Some(0.0),
+        "which is a return of zero, not an absence"
+    );
+    Ok(())
+}
+
+/// One session's fills for `id`, sized so the day's attributed P&L is `pnl`.
+fn session_fills(
+    id: &StrategyId,
+    tag: &str,
+    quantity: Decimal,
+    pnl: Decimal,
+    at: Timestamp,
+) -> Result<(
+    Vec<qip_mesh::delta::DeltaOrder>,
+    Vec<qip_contracts::wire::FillRecord>,
+)> {
+    use qip_contracts::message::BookSide;
+    let entry = dec!("100");
+    let exit = entry
+        + pnl
+            .checked_div(quantity)
+            .ok_or_else(|| qip_core::Error::numeric("a positive quantity divides any P&L"))?;
+    let (buy, bought) = strategy_order_and_fill(
+        id,
+        &format!("ord-{tag}-buy"),
+        BookSide::Ask,
+        quantity,
+        entry,
+        at,
+    );
+    let (sell, sold) = strategy_order_and_fill(
+        id,
+        &format!("ord-{tag}-sell"),
+        BookSide::Bid,
+        quantity,
+        exit,
+        at,
+    );
+    Ok((vec![buy, sell], vec![bought, sold]))
+}
+
+/// Blueprint §23.1 LEVEL 1 through the cycle: the LEARN stage measures family
+/// structure on the days the centre's own corpus retained a grant for, and
+/// the cycle's journal carries what it found.
+///
+/// Nothing here calls `measure`, `family_structure` or the clustering stage.
+/// The capability was complete, tested and unreachable, because the corpus
+/// could not produce one series per strategy on one calendar: a day that
+/// settled nothing left no session, so aligning three strategies to one
+/// window would have meant inventing observations for the days they were
+/// quiet. One of the three strategies here is quiet on every fifth session,
+/// and it is clustered anyway — on a zero it actually earned, under a grant
+/// the centre actually held.
+#[test]
+fn the_learn_stage_measures_family_structure_on_the_days_the_corpus_retained_a_grant() -> Result<()>
+{
+    use qip_kernel::central::CLUSTERING_WINDOW;
+
+    // Three strategies at one cell, so the cell's headroom has to hold three
+    // grants rather than the two the default budget leaves room for. Nothing
+    // about the measurement depends on the figure; it is the allocator's
+    // refusal, correctly applied, that would otherwise leave the third
+    // strategy ungranted and the population too small to correlate.
+    let mut config = PlatformConfig::default();
+    config.central.per_cell = Decimal::from_int(9_000_000);
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+    let ids = [
+        StrategyId::new("family-alpha"),
+        StrategyId::new("family-beta"),
+        StrategyId::new("family-gamma"),
+    ];
+    for id in &ids {
+        register(platform.central_mut(), id, CELL)?;
+        walk_to(platform.central_mut(), id, GateStage::Pilot)?;
+    }
+
+    let mut grants = Vec::new();
+    for id in &ids {
+        let issued = issue(platform.central_mut(), id, CELL, start())?;
+        grants.push(issued.envelope().gross_limit());
+    }
+    let quantity = grants[0]
+        .checked_div(dec!("1000"))
+        .ok_or_else(|| qip_core::Error::numeric("a thousand divides any grant"))?;
+
+    for session in 0..(CLUSTERING_WINDOW as i64) {
+        let at = start().saturating_add(Duration::from_days(session));
+        let mut orders = Vec::new();
+        let mut fills = Vec::new();
+        for (index, id) in ids.iter().enumerate() {
+            // The grant is re-issued each session, because an envelope lives
+            // eight hours and a day under a lapsed one is not a day under a
+            // grant.
+            issue(platform.central_mut(), id, CELL, at)?;
+            // Gamma trades on four sessions in five. The fifth is a day it
+            // held the grant and made nothing.
+            if index == 2 && session % 5 == 4 {
+                continue;
+            }
+            // Alpha and beta track one factor, gamma another, so the
+            // clustering has a structure to find rather than noise.
+            let shape = if index < 2 {
+                ((session % 11) as f64 - 5.0) * 0.002
+            } else {
+                ((session % 7) as f64 - 3.0) * 0.002
+            };
+            let wobble = ((session % 3) as f64 - 1.0) * 0.0003 * ((index + 1) as f64);
+            let pnl = Decimal::from_f64((shape + wobble) * grants[index].to_f64())
+                .ok_or_else(|| qip_core::Error::numeric("a finite return"))?;
+            let (session_orders, session_fills) =
+                session_fills(id, &format!("s{session}-{index}"), quantity, pnl, at)?;
+            orders.extend(session_orders);
+            fills.extend(session_fills);
+        }
+        let ingestion = platform.ingest_cell_report(
+            CellReport::new(CELL, at)
+                .with_orders(orders)
+                .with_fills(fills),
+            at,
+        )?;
+        assert!(
+            ingestion.settlement.refused.is_empty(),
+            "premise: session {session} settled: {:?}",
+            ingestion.settlement.refused
+        );
+    }
+
+    // The corpus, before any cycle reads it: three strategies aligned on a
+    // window of closed sessions, including the sessions gamma was quiet on.
+    let measuring_at = start().saturating_add(Duration::from_days(CLUSTERING_WINDOW as i64));
+    let calendar = platform.central().realised_calendar(measuring_at);
+    assert_eq!(
+        calendar.day_count(),
+        CLUSTERING_WINDOW,
+        "premise: every session the desk held a grant on is a day of the calendar"
+    );
+    let quiet_day = start()
+        .saturating_add(Duration::from_days(4))
+        .start_of_day();
+    assert_eq!(
+        calendar
+            .by_strategy()
+            .get(&ids[2])
+            .and_then(|days| days.get(&quiet_day))
+            .map(|day| (day.pnl, day.fraction())),
+        Some((Decimal::ZERO, Some(0.0))),
+        "premise: a session gamma held the grant and settled nothing is a return of zero"
+    );
+
+    let report = platform.run_cycle(measuring_at);
+    let learn = report
+        .stage(Stage::Learn)
+        .ok_or_else(|| qip_core::Error::not_found("the LEARN stage ran"))?;
+    assert!(
+        learn
+            .detail
+            .contains("3 strategy(ies) clustered into 2 family(ies)"),
+        "the stage says what it measured: {}",
+        learn.detail
+    );
+    assert!(
+        learn.detail.contains(&format!(
+            "on {CLUSTERING_WINDOW} closed session(s) (12 stress, 108 calm)"
+        )),
+        "and over how much, at the decile the window is cut at: {}",
+        learn.detail
+    );
+
+    // And the cycle's own entry carries it, so the measurement is
+    // reproducible from the log without the returned report.
+    let journaled: Vec<Option<qip_kernel::central::FamilyStructureJournal>> = platform
+        .replay_journal(
+            &qip_events::EventFilter::new().topic(qip_events::Topic::LearningCompleted),
+        )?
+        .iter()
+        .map(|event| {
+            event
+                .decode::<qip_kernel::platform::CycleJournalEntry>()
+                .map(|envelope| envelope.body.family_structure)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let measured = journaled
+        .last()
+        .and_then(|entry| *entry)
+        .ok_or_else(|| qip_core::Error::not_found("the cycle journalled its measurement"))?;
+    assert_eq!(measured.strategies, 3);
+    assert_eq!(measured.sessions, CLUSTERING_WINDOW);
+    assert_eq!(measured.stress_sessions, 12);
+    assert_eq!(measured.calm_sessions, CLUSTERING_WINDOW - 12);
+    assert_eq!(measured.excluded_unaligned, 0);
+    assert_eq!(measured.excluded_flat, 0);
+    assert_eq!(measured.pairs_total, 3);
+    assert!(
+        measured.mean_intra_family_correlation > measured.mean_inter_family_correlation,
+        "the two strategies on one factor are filed together: intra {} inter {}",
+        measured.mean_intra_family_correlation,
+        measured.mean_inter_family_correlation
+    );
+    Ok(())
+}
+
+/// The other half of §23.1 LEVEL 1, and the state of every deployment as this
+/// is written: no grant, no measurement, however much the cells settle.
+///
+/// `CentralPlane::issue` has no production caller — every call site is a test —
+/// and it is the only writer of the plane's envelope map, so `retain_grants`
+/// retains no day and the calendar the family stage reads stays empty. This
+/// runs the cycle with everything else the measurement needs already true:
+/// three strategies at pilot, `CLUSTERING_WINDOW` closed sessions, every one
+/// settled and attributed, and the same corpus read by the demotion monitor in
+/// the same LEARN stage. The returns are shaped on two factors exactly as the
+/// test above shapes them, so the population is one a clustering would succeed
+/// on. The only thing absent is the grant.
+///
+/// What it prevents is the repair that would look like progress: supplying a
+/// denominator the centre never signed, so that the stage has something to
+/// report. A day's return is P&L over the grant it was made under, and a
+/// family drawn on an invented denominator is a correlation between two
+/// numbers nobody granted — capital structure asserted by arithmetic rather
+/// than by two humans. `realised.rs` proves that of one series; this proves it
+/// through the cycle, where the fabrication could be put anywhere between the
+/// fill and the journal. It is also what would fail first if a stage were ever
+/// wired to issue capital for itself.
+#[test]
+fn the_learn_stage_measures_no_family_structure_on_a_corpus_the_centre_never_granted() -> Result<()>
+{
+    use qip_kernel::central::CLUSTERING_WINDOW;
+
+    let mut config = PlatformConfig::default();
+    config.central.per_cell = Decimal::from_int(9_000_000);
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+    let ids = [
+        StrategyId::new("ungranted-alpha"),
+        StrategyId::new("ungranted-beta"),
+        StrategyId::new("ungranted-gamma"),
+    ];
+    for id in &ids {
+        register(platform.central_mut(), id, CELL)?;
+        walk_to(platform.central_mut(), id, GateStage::Pilot)?;
+    }
+    // No `issue` call anywhere below. That is the whole of the difference from
+    // the test above, and it is the difference a deployment has.
+    for id in &ids {
+        assert!(
+            platform.central().envelope(CELL, id).is_none(),
+            "premise: {id} stands at pilot and holds no envelope"
+        );
+    }
+
+    // What the allocator would have sized each of these at, used only to shape
+    // the P&L into two correlated factors. Nothing reads it as a denominator,
+    // which is the point: if anything downstream invents one, the clustering
+    // has a population to succeed on and this test fails.
+    let would_have_granted = 2_000_000.0_f64;
+    let quantity = dec!("2000");
+    let mut fills_settled = 0usize;
+    for session in 0..(CLUSTERING_WINDOW as i64) {
+        let at = start().saturating_add(Duration::from_days(session));
+        let mut orders = Vec::new();
+        let mut fills = Vec::new();
+        for (index, id) in ids.iter().enumerate() {
+            let shape = if index < 2 {
+                ((session % 11) as f64 - 5.0) * 0.002
+            } else {
+                ((session % 7) as f64 - 3.0) * 0.002
+            };
+            let wobble = ((session % 3) as f64 - 1.0) * 0.0003 * ((index + 1) as f64);
+            let pnl = Decimal::from_f64((shape + wobble) * would_have_granted)
+                .ok_or_else(|| qip_core::Error::numeric("a finite return"))?;
+            let (session_orders, session_fills) =
+                session_fills(id, &format!("u{session}-{index}"), quantity, pnl, at)?;
+            orders.extend(session_orders);
+            fills.extend(session_fills);
+        }
+        let ingestion = platform.ingest_cell_report(
+            CellReport::new(CELL, at)
+                .with_orders(orders)
+                .with_fills(fills),
+            at,
+        )?;
+        assert!(
+            ingestion.settlement.refused.is_empty(),
+            "premise: session {session} settled: {:?}",
+            ingestion.settlement.refused
+        );
+        fills_settled += ingestion.settlement.fills_settled;
+    }
+    // Two fills a session each — an entry and an exit — for every strategy on
+    // every session of the window. Asserted because a corpus that recorded
+    // nothing would satisfy every absence below for the wrong reason.
+    assert_eq!(
+        fills_settled,
+        CLUSTERING_WINDOW * ids.len() * 2,
+        "premise: every session's fills were booked by the centre"
+    );
+
+    let measuring_at = start().saturating_add(Duration::from_days(CLUSTERING_WINDOW as i64));
+    assert_eq!(
+        platform.central().live_outcomes(measuring_at).len(),
+        ids.len(),
+        "premise: all three strategies have closed, settled sessions in the corpus"
+    );
+    // And the calendar, which is the family stage's only input, has nothing:
+    // a settled day whose grant the centre never held is not an observation of
+    // a return, because there is no denominator it could be a fraction of.
+    let calendar = platform.central().realised_calendar(measuring_at);
+    assert!(
+        calendar.is_empty(),
+        "the calendar holds no day under a grant"
+    );
+    assert_eq!(calendar.day_count(), 0);
+    assert_eq!(calendar.strategy_count(), 0);
+
+    let report = platform.run_cycle(measuring_at);
+    let learn = report
+        .stage(Stage::Learn)
+        .ok_or_else(|| qip_core::Error::not_found("the LEARN stage ran"))?;
+    assert!(
+        !learn.detail.contains("family(ies)"),
+        "the stage measured no family structure: {}",
+        learn.detail
+    );
+
+    let entry = platform
+        .replay_journal(
+            &qip_events::EventFilter::new().topic(qip_events::Topic::LearningCompleted),
+        )?
+        .last()
+        .ok_or_else(|| qip_core::Error::not_found("the cycle journalled an entry"))?
+        .decode::<qip_kernel::platform::CycleJournalEntry>()?
+        .body;
+    // The premise the absence rests on, in the entry itself: this cycle's
+    // LEARN did read the realised corpus — it reviewed every strategy in it
+    // against the pilot baseline — so the missing measurement is the missing
+    // grant and not a stage that never ran.
+    let review = entry
+        .strategy_review
+        .ok_or_else(|| qip_core::Error::not_found("LEARN reviewed the realised sessions"))?;
+    assert_eq!(
+        review.reviewed + review.skipped,
+        ids.len(),
+        "premise: every strategy's sessions reached the review this cycle"
+    );
+    assert_eq!(
+        entry.family_structure, None,
+        "and no family structure was measured on capital nobody granted"
+    );
     Ok(())
 }

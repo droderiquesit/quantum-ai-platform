@@ -70,6 +70,71 @@
 //! type with one variant, and no function here submits, transfers or signs
 //! anything (ADR 0021, ADR 0023).
 //!
+//! # Custody, and which half of it this module can enforce
+//!
+//! Custody answers two questions: **who holds this**, and **by what authority
+//! can it change hands**. Blueprint §37.4 answers them for assets — a table
+//! of asset class against custodian and the corridor kinds through which each
+//! may ever leave, closing with the rule that three independent enforcement
+//! points must agree and that trading authority and transfer authority never
+//! share an identity, a credential or a code path. That half lives in
+//! `qip_capital_fabric::custody` — named rather than linked, because this
+//! crate does not depend on that one and must not — and is enforced where it
+//! can be: `CustodyPolicy::permits` is the first of
+//! the seven vetoes in the transfer gate. Its remaining half — the policy
+//! engine holding a share of a signing key and releasing it on gate approval —
+//! is in ADR 0021's **refused** column, beside withdrawal APIs and live venue
+//! submission, and the refusal has no phase attached to it. It is not work
+//! deferred to a later wave; reaching it would require an owner decision
+//! superseding ADR 0003 and rewriting all three paper-trading layers, which
+//! is a change of purpose rather than a change of scope.
+//!
+//! This platform holds no capital, so the custody it *can* enforce is custody
+//! of the record: **the set of ways a number can appear in or leave a user's
+//! book is closed, named, and every one of them is gated.** That is a
+//! property of the books rather than of the money, so a paper-trading
+//! platform can hold it in full, and commingling — the custody failure that
+//! needs no capital to move in order to happen — is exactly what it prevents.
+//!
+//! The set, in full:
+//!
+//! * **In:** [`UserLedger::fund`], which asks the mandate registry, the
+//!   [`EligibilityRegistry`] and the investable ceiling first;
+//!   [`UserLedger::journal`], [`UserLedger::journal_to`] and
+//!   [`UserLedger::journal_pro_rata`], which refuse any split that does not
+//!   sum to the attributed fill exactly; and [`UserLedger::post_inflow`],
+//!   which refuses a reference nobody declared.
+//! * **Out:** nothing. A book is reduced only by a negative
+//!   [`AttributedFill`], which is a realised loss and a fact about what
+//!   happened. There is no redemption, no transfer and no withdrawal, and
+//!   [`WithdrawalEntitlement`] has one variant so that a granted one cannot be
+//!   named.
+//! * **Neither:** `&mut CashBalance` never leaves this crate — the ledger
+//!   hands out shared references only — so no caller outside it can move a
+//!   book at all.
+//!
+//! **`serde` used to be an ungated sixth way in.** [`CashBalance`],
+//! [`StrategyBook`] and [`UserLedger`] derived `Deserialize`, so a document
+//! naming a settled figure produced one, past every gate above. The rule that
+//! closes it is already written one file away, in `entitlement.rs`: *a record
+//! is evidence of what was decided, never an input that decides.* It was
+//! applied to the entitlement and not to the money. The money types now
+//! serialise and do not deserialise, proven by a `compile_fail` doctest
+//! beside [`CashBalance`] rather than by a check, because a trait that is not
+//! implemented cannot be worked around. ADR 0021 refuses the path by which
+//! capital leaves this platform; nothing in it permits one by which capital
+//! arrives from a file.
+//!
+//! `UserLedger`'s `Serialize` went with it, and that is a correction rather
+//! than a decision: [`LedgerKey`] is a tuple, `serde_json` refuses a map key
+//! that is not a string, and serialising a ledger holding a single book
+//! returned `Error("key must be a string")` — while an empty one succeeded,
+//! which is why no test caught it. A report of the books is built from
+//! [`UserLedger::books`] in key order, which is what `qip-api`'s ledger views
+//! already do and what
+//! `the_books_report_in_ledger_key_order_however_they_were_funded_and_each_book_reports_its_own_balance`
+//! holds.
+//!
 //! # Where the chain now ends
 //!
 //! ```

@@ -48,6 +48,23 @@ export const REST: Record<string, EndpointSpec> = {
   backtests: { method: "GET", path: "/backtests", role: "viewer", summary: "holdout evidence, gate findings and bands from the ledger" },
   regimes: { method: "GET", path: "/regimes", role: "viewer", summary: "why no regime view is served, and the declared stream topic" },
   registrations: { method: "GET", path: "/registrations", role: "viewer", summary: "what each venue demands before it is read, and who has registered" },
+  /**
+   * The credential slots, and the one read in this table this console's own
+   * credential cannot make.
+   *
+   * Listed anyway, because this table is what the platform serves and not what
+   * the console is entitled to: a route omitted for being refused would make
+   * the API surface the console reports narrower than the platform's, and the
+   * page that renders this table would stop being a description of `routes.rs`.
+   * The refusal is a per-panel fact and is rendered where the slots would be
+   * (`useRegistrations.ts`, `SLOTS_REFUSAL`).
+   */
+  registrationSlots: {
+    method: "GET",
+    path: "/registrations/slots",
+    role: "operator",
+    summary: "the deployment variable each credential is read under and the command that fills it — names only",
+  },
   cycle: { method: "POST", path: "/cycle", role: "analyst", summary: "run one cycle of the intelligence loop" },
   killSwitchTrip: { method: "POST", path: "/kill-switch", role: "operator", summary: "halt the platform" },
   killSwitchClear: { method: "DELETE", path: "/kill-switch", role: "operator", summary: "clear a halt" },
@@ -123,18 +140,63 @@ export const NOT_YET_SERVED: Record<string, MissingEndpoint> = {
     needed_for: "cash and settlement balances",
     note: "no cash ledger is exposed; /capital reports allocation bounds, not balances.",
   },
+  /**
+   * The note here said `/data-sources` carries no health fields "even when the
+   * data finder is wired in", which reads as a route with a wiring branch that
+   * happens not to be taken. There is no branch. `routes.rs` matches
+   * `(Method::Get, "/data-sources")` to one expression and returns
+   * `unavailable("sources", NO_DATA_FINDER)` unconditionally, so no
+   * composition of this process answers anything else — a fact stronger than
+   * the one the note claimed, stated imprecisely in the platform's favour.
+   */
   dataSourceHealth: {
     method: "GET",
     path: "/api/v1/data-sources/health",
     needed_for: "per-source latency, freshness, quality and provenance",
     note:
-      "GET /data-sources answers with an availability record only; it carries no health or provenance fields even when the data finder is wired in.",
+      "GET /data-sources answers an availability record and nothing else: routes.rs matches it to one expression, unavailable(\"sources\", NO_DATA_FINDER), with no second arm, so no build or composition of this process serves a health or provenance field on that route.",
   },
   compliance: {
     method: "GET",
     path: "/api/v1/compliance",
     needed_for: "compliance obligations and attestations",
     note: "GET /risk covers exposure and the kill switch; there is no compliance surface.",
+  },
+  /**
+   * The attestation half of the entry above, separated because the two are
+   * missing for different reasons and a page that named only "compliance"
+   * invited the reading that the hash chain covers both.
+   *
+   * `GET /system` re-walks the hash chain on every read and answers
+   * `chain_intact`, which proves no sealed record was edited. That is not an
+   * attestation: nobody signed it, it covers no period, and it names no
+   * obligation it was produced against. The `/compliance` page renders this
+   * beside the chain result precisely so a reader does not take a live
+   * integrity check for a countersigned statement.
+   */
+  complianceAttestations: {
+    method: "GET",
+    path: "/api/v1/compliance/attestations",
+    needed_for: "the attestations a named person signed, what each covered, and when it lapses",
+    note:
+      "GET /system re-verifies the event log's hash chain on every read, which proves records were not edited after sealing. No route serves a statement anybody signed, over a stated period, against a named obligation — and integrity is not attestation.",
+  },
+  /**
+   * Why the risk surface can say a halt is on but not how the desk got here.
+   *
+   * `GET /risk` answers the kill switch's *current* trip — halted, the scopes,
+   * who tripped it, the reason — and a count of clearances. A count is not a
+   * record: it cannot say when each halt began, how long it ran, who cleared
+   * it or on what basis, so a desk reconstructing an incident from this
+   * console alone cannot. The event log holds the facts; no HTTP route
+   * projects them.
+   */
+  killSwitchHistory: {
+    method: "GET",
+    path: "/api/v1/kill-switch/history",
+    needed_for: "each halt and clearance with its operator, instant, scope and basis",
+    note:
+      "GET /risk answers the current trip and a count of clearances only. A count cannot say when a halt began, how long it ran, or who cleared it, so the halt record an incident review needs is not reachable from this console.",
   },
   topology: {
     method: "GET",

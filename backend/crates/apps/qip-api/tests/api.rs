@@ -171,15 +171,77 @@ fn roles_are_ordered_so_authority_accumulates() {
     assert!(Role::Operator.includes(Role::Monitor));
     assert!(!Role::Viewer.includes(Role::Operator));
     assert!(!Role::Monitor.includes(Role::Viewer));
-    for role in [
-        Role::Monitor,
-        Role::Viewer,
-        Role::Analyst,
-        Role::Approver,
-        Role::Operator,
-    ] {
+    for role in every_role() {
         assert_eq!(Role::parse(role.as_str()).unwrap(), role);
         assert!(role.includes(role), "a role includes itself");
+    }
+}
+
+/// Every role the API defines, kept level with the enum by an exhaustive match.
+///
+/// The `match` is the whole point of the helper. A role added to `Role` and not
+/// added here makes this function fail to compile, so the list cannot fall
+/// quietly behind the type — which is how the approver role came to exist for
+/// months in an enum, in a credential loop and in four environments' secret
+/// mounts while nothing checked it against the route table.
+fn every_role() -> Vec<Role> {
+    let all = vec![Role::Monitor, Role::Viewer, Role::Analyst, Role::Operator];
+    for role in &all {
+        match role {
+            Role::Monitor | Role::Viewer | Role::Analyst | Role::Operator => {}
+        }
+    }
+    all
+}
+
+#[test]
+fn every_role_the_api_defines_is_required_by_at_least_one_route() {
+    // The defect this refuses, which was real in this repository rather than
+    // hypothetical. `Role::Approver` sat in the enum, was minted from
+    // QIP_TOKEN_APPROVER at start-up, and had a Secret Manager container
+    // mounted into all four environments — and
+    // `grep -c 'required_role: Role::Approver' src/routes.rs` was 0. Its
+    // holder could do precisely what an analyst could do. Nothing failed,
+    // because the enum and the route table were never compared.
+    //
+    // A role no route requires is worse than an absent role: it reads on the
+    // deployment as a distinct authority, an operator rotates a secret for it,
+    // and a security review counts one more level of separation than exists.
+    // The temptation when this fires is to hand the role a route it can just
+    // about justify, which lowers whatever that route required before. Removing
+    // the role is the other answer and usually the right one.
+    //
+    // Premise first: a route table this test could not read would make every
+    // assertion below vacuous.
+    assert!(
+        ROUTES.len() > 10,
+        "the route table holds {} rows, so it is not being read and no role \
+         could be found unrequired",
+        ROUTES.len()
+    );
+    let roles = every_role();
+    assert!(
+        roles.len() >= 4,
+        "only {} roles were enumerated",
+        roles.len()
+    );
+
+    for role in roles {
+        let requiring = ROUTES
+            .iter()
+            .filter(|route| route.required_role == role)
+            .count();
+        assert!(
+            requiring > 0,
+            "no route requires the {} role, so the credential minted for it \
+             authorises nothing: it is loaded at start-up, mounted from Secret \
+             Manager into every environment, rotated by someone, and grants its \
+             holder exactly what the role below it grants. Give it a route or \
+             remove it — and if the only candidate route already requires a \
+             higher role, removing it is the answer, because widening that \
+             route to fit is weakening a live control to occupy a dead one.",
+            role.as_str()
+        );
     }
 }
 
@@ -738,6 +800,10 @@ fn assemble() -> Result<Assembled> {
             qip_core::ObjectId::from_string("obj-AAA"),
             "AAA",
             InstrumentType::CommonStock,
+            qip_financial::costs::LiquidityProfile::listed(
+                qip_core::Decimal::from_int(1_000_000),
+                5.0,
+            ),
         )
         .venue("XNYS")
         .sector(Sector::InformationTechnology)
@@ -1695,6 +1761,82 @@ fn the_governance_page_renders_the_whitelist_the_platform_journaled_and_no_slot_
         "{after}"
     );
     assert!(after.contains(">PAPER TRADING<"), "{after}");
+    Ok(())
+}
+
+#[test]
+fn the_governance_page_reads_slot_four_off_the_journal_rather_than_declaring_it_unrecorded()
+-> Result<()> {
+    // Slot 4 became a journaled slot when `pending_policy` started calling
+    // the episodic producer. Until then this page could say "the platform
+    // journals slot 8 and records no other slot" and be right; saying it
+    // afterwards would be a page asserting an absence the journal
+    // contradicts, which is the failure the panel exists to prevent.
+    use qip_events::Topic;
+
+    let assembled = assemble()?;
+    let router = Router::new(assembled.api.clone(), assembled.web.clone());
+
+    let whitelist_line = {
+        let mut platform = assembled.platform.lock().expect("the platform lock");
+        // The row key: without a whitelist there is no row to read slot 4 on.
+        let whitelist = platform.issue_cycle_whitelist("eu-west", now())?;
+        let issue = platform.issue_episodic_digest(now())?;
+        // Premise: an empty memory is what a fresh process has, so this is
+        // the state a deployment reads, and the producer said so rather than
+        // producing a digest of nothing.
+        assert_eq!(
+            issue.outcome,
+            qip_kernel::central::EpisodicOutcome::NothingKnowable { held: 0 }
+        );
+        // Premise: both issues are on one topic, so a panel reading the topic
+        // alone could not tell them apart — and would have to call one of
+        // them the other.
+        assert_eq!(
+            platform
+                .event_log()
+                .by_topic(Topic::PolicyDistributed)
+                .len(),
+            2
+        );
+        whitelist.describe()
+    };
+
+    let page = page(&router, "/governance");
+    // The reason is the record's own: the instant it was issued and the count
+    // memory held. No blanket sentence can produce those two numbers.
+    let from_the_record = format!(
+        r#"data-fact="policy.eu-west.episodic_digest" data-state="not-recorded">not recorded<small class="muted"> — the platform journaled an episodic issue at {}: memory holds 0 episode(s) and none is knowable yet, so slot 4 shipped unproduced and every cell pauses situational recognition</small>"#,
+        now().to_rfc3339()
+    );
+    assert!(
+        page.contains(&from_the_record),
+        "the page did not read the episodic record the platform journaled: {page}"
+    );
+    // Premise for the refutation below: the blanket sentence is still on this
+    // page for the ten slots nothing records, so its absence on slot 4 is a
+    // choice the panel made and not a string that vanished.
+    let blanket = r#"data-state="not-recorded">not recorded<small class="muted"> — the platform journals slot 8 (cycle_whitelist) per cell and slot 4 (episodic_digest) per cycle, and records no other slot"#;
+    assert!(
+        page.contains(&format!(
+            r#"data-fact="policy.eu-west.causal_digest" {blanket}"#
+        )),
+        "{page}"
+    );
+    assert!(
+        !page.contains(&format!(
+            r#"data-fact="policy.eu-west.episodic_digest" {blanket}"#
+        )),
+        "the page declared slot 4 unrecorded by a sentence the journal contradicts: {page}"
+    );
+    // The whitelist row is unchanged by the record beside it.
+    assert!(
+        page.contains(&format!(
+            r#"data-fact="policy.eu-west.whitelist">{whitelist_line}<"#
+        )),
+        "{page}"
+    );
+    assert!(page.contains(">PAPER TRADING<"), "{page}");
     Ok(())
 }
 

@@ -239,8 +239,15 @@ module "secrets" {
   # created empty and the value is written out of band, so a state file that
   # leaks does not leak credentials.
   secret_names = [
+    # Four bearer tokens, one per role `qip_api::auth::Role` defines. There
+    # was a fifth, qip-token-approver, and it held a credential for a role no
+    # route in `qip-api` required — a secret created, granted, seeded and
+    # rotated in every environment, whose holder could do exactly what the
+    # analyst token could do. The role was removed rather than given a route,
+    # because the only approval the API exposes already requires the operator
+    # role. Recreating the container here without a role to match reintroduces
+    # a credential that authorises nothing.
     "qip-token-operator",
-    "qip-token-approver",
     "qip-token-analyst",
     "qip-token-viewer",
     "qip-token-monitor",
@@ -395,6 +402,67 @@ module "trust_zones" {
   # The identities in each zone are the catalogue's workloads placed there,
   # computed in catalogue.tf.
   zone_identities = local.zone_identities
+
+  # The ledger the zone grants are made against, wired from the module that
+  # creates it rather than from a name typed twice.
+  #
+  # `modules/trust-zones` grants `spanner.databaseReader` to every zone with a
+  # declared `read` path to the ledger and `spanner.databaseUser` to every zone
+  # with an `append` path. Both grants key on the pair — an instance and a
+  # database — and until `modules/data` published the instance beside the
+  # database this root could name only half of it, so the input had no value it
+  # could ever be given and neither `ledger_read` nor `ledger_append` could be
+  # created from here in any environment. That is the ledger half of the
+  # missing-infrastructure register's gap 5, and it is the half that has a
+  # resource to point at.
+  #
+  # Null when Spanner is off, which it is in all four environments today, so
+  # this creates nothing and changes no plan. That is the variable's own
+  # argument and not a workaround for it: "a deployment whose ledger has not
+  # been provisioned gets no bindings rather than bindings against a database
+  # that does not exist". The conditional is on `var.enable_spanner` — the same
+  # switch `module.data` creates the instance under — rather than on the
+  # outputs being null, because two switches for one fact disagree eventually.
+  ledger_database = var.enable_spanner ? {
+    instance = module.data.spanner_instance
+    database = module.data.spanner_database
+  } : null
+
+  # The control fabric has no resource anywhere in this configuration, so this
+  # is null here, explicitly, rather than by a default two files away.
+  #
+  # The register's gap 5 says the null default is argued and correct and that
+  # what is missing is the argument for why nothing can ever set it. This is
+  # that argument, at the seam where a value would be passed.
+  #
+  # Blueprint §46.1's control fabric is Pub/Sub. Three things stand between
+  # that and a topic here, and none of them is a value somebody could type:
+  #
+  #   * **Nothing in this build can speak to it.** `qip-streaming`'s Pub/Sub
+  #     transport is a port that refuses: `PubSubTransport` returns
+  #     `Error::Unavailable` naming what production must supply, and its module
+  #     doc says why — "Reaching it needs a gRPC client, a TLS stack and a
+  #     Google auth flow", none of which this workspace has. Admitting them is
+  #     ADR 0009's decision to reopen, not this file's. A topic created now
+  #     would be one no process could publish to or pull from, which is exactly
+  #     what `modules/data` refuses to provision by default: "a provisioned
+  #     database no adapter can open is a bill, an attack surface, and a
+  #     diagram that reads as a capability".
+  #   * **Whether it is Pub/Sub at all is open.** ADR 0011 replaced Pub/Sub
+  #     with the in-tree HTTP mesh for the data bus; the centre-to-node path is
+  #     unwired for a different reason (`catalogue.tf`'s note on
+  #     `QIP_MESH_CELLS`: a Cloud Run service publishes one port and the mesh
+  #     binds one per cell). Which of the two carries the control fabric is a
+  #     decision, and ADR 0024 records it as work it names and does not do.
+  #   * **A name here would not be a name this repository created.** The only
+  #     other shape available — a root variable naming a topic somebody made by
+  #     hand — puts four IAM bindings on a resource outside this configuration,
+  #     which the domain rule refuses by name.
+  #
+  # So it stays null until an ADR decides the first two. When one does, the
+  # topic is a resource in this repository and this line names it, in the same
+  # diff.
+  control_fabric_topic = null
 }
 
 module "observability" {

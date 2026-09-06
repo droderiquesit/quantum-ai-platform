@@ -384,7 +384,15 @@ function RegistrationBadge({ source }: { source: RegistrationSource }) {
     kind === "keyless"
       ? "A public endpoint: the platform reads it with no account and no credential."
       : kind === "registered"
-        ? `Registered by ${standing.operator}; the credential is read from ${standing.secret}, never carried here.`
+        ? // The variable the record names used to be quoted here. It rode on
+          // GET /registrations, which is Role::Viewer, and the platform moved
+          // it onto GET /registrations/slots at Role::Operator because a slot
+          // name is a fact about this deployment's secret store rather than
+          // about a venue. This index does not read that route: a tooltip is
+          // not worth a second request, and naming a variable this console was
+          // no longer served would have been a string invented to fill a
+          // sentence.
+          `Registered by ${standing.operator}. The deployment variable the credential is read under is on the venue registrations page, from an operator-role route; no credential value is anywhere in this console.`
         : standing.reason;
 
   return (

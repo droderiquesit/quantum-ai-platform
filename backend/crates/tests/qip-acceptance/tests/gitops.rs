@@ -3332,6 +3332,136 @@ fn infra_steps() -> Vec<String> {
     steps.into_iter().map(|step| step.join("\n")).collect()
 }
 
+/// The shell script of one step of `infra.yml`, dedented, as bash receives it.
+///
+/// The `env:` mapping is deliberately not read back: a value bound there is an
+/// environment value, so the caller supplies it, which is exactly the property
+/// under test. What is checked here is that the body carries no `${{ … }}` in
+/// live code, because an expression is text the runner substitutes before bash
+/// sees it and running the body without that substitution would be testing a
+/// script the runner never produces.
+fn infra_step_script(step_name: &str) -> String {
+    let step = infra_steps()
+        .into_iter()
+        .find(|step| step.contains(&format!("- name: {step_name}")))
+        .unwrap_or_else(|| panic!("{INFRA_WORKFLOW} has no step named {step_name:?}"));
+    let body = step
+        .split_once("run: |\n")
+        .unwrap_or_else(|| panic!("the step {step_name:?} has no `run: |` block"))
+        .1;
+    let indent = body
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start().len())
+        .unwrap_or_default();
+    let script: String = body
+        .lines()
+        .map(|line| {
+            if line.len() >= indent {
+                &line[indent..]
+            } else {
+                line.trim_start()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let live: String = script
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !live.contains("${{"),
+        "the step {step_name:?} still pastes an expression into its script, so what runs \
+         below is not what the runner would produce:\n{live}"
+    );
+    script
+}
+
+/// What that script does with one value of `ENVIRONMENT`: its exit status and
+/// everything it printed.
+fn run_infra_step(script: &str, environment: &str) -> (i32, String) {
+    let path = std::env::temp_dir().join(format!(
+        "qip-infra-refusal-{}-{}.sh",
+        std::process::id(),
+        environment.len()
+    ));
+    std::fs::write(&path, script).expect("the probe script is writable");
+    let output = std::process::Command::new("bash")
+        .arg(&path)
+        .env("ENVIRONMENT", environment)
+        .output()
+        .unwrap_or_else(|error| panic!("bash could not be run: {error}"));
+    let _ = std::fs::remove_file(&path);
+    let mut printed = String::from_utf8_lossy(&output.stdout).to_string();
+    printed.push_str(&String::from_utf8_lossy(&output.stderr));
+    (output.status.code().unwrap_or(-1), printed)
+}
+
+/// `infra.yml`'s prod refusal, driven rather than read.
+///
+/// A test that matches the text of a comparison pins a spelling, and the
+/// spelling is exactly what changed when the dispatch value moved out of the
+/// script and into the step's `env:`: `[ "${{ inputs.environment }}" = "prod" ]`
+/// became `[ "$ENVIRONMENT" = "prod" ]`, and the assertion naming the first
+/// read a correct refusal as a missing one. So this one runs the step's own
+/// script under bash and asks what it does.
+///
+/// Three values, because a guard that refuses everything passes two of the
+/// three and is still broken:
+///
+///   * `prod` is refused, and the refusal names prod rather than failing for
+///     some other reason;
+///   * `dev` is admitted — the half that proves the step is a gate and not a
+///     wall, and the half a guard written too tightly fails;
+///   * a value whose first line is a well-formed environment name and whose
+///     second line is a command of its own is refused. With that value pasted
+///     into the script by the runner it did not merely pass: the injected
+///     command ran, inside this very step, and the step exited 0. The step no
+///     longer takes it that way, and `no_workflow_pastes_a_dispatch_input_or_an_event_value_into_a_shell`
+///     in infrastructure.rs is what keeps it from going back; this asserts the
+///     other half, that the value is refused rather than quietly treated as an
+///     environment that simply is not prod.
+#[test]
+fn the_prod_refusal_in_the_infrastructure_workflow_refuses_prod_when_it_is_run() {
+    let script = infra_step_script("refuse what this workflow must never do");
+
+    let (code, printed) = run_infra_step(&script, "prod");
+    assert_ne!(
+        code, 0,
+        "the refusal step exited 0 for environment `prod`; {INFRA_WORKFLOW} holds the identity \
+         that can reshape an environment and prod is applied by a person, from the bootstrap \
+         script. It printed: {printed}"
+    );
+    assert!(
+        printed.contains("prod"),
+        "the refusal step refused `prod` for a reason it did not name; an operator reading \
+         this learns nothing about which rule fired: {printed}"
+    );
+
+    let (code, printed) = run_infra_step(&script, "dev");
+    assert_eq!(
+        code, 0,
+        "the refusal step exited {code} for environment `dev`, which is the one provisioned \
+         environment and a dispatch choice. A guard that refuses everything is not a guard, \
+         and this is the half that proves it works. It printed: {printed}"
+    );
+
+    let injection = "dev\" ]; then :; fi\ntouch /tmp/qip-should-never-exist\nif [ \"x";
+    let (code, printed) = run_infra_step(&script, injection);
+    assert_ne!(
+        code, 0,
+        "the refusal step admitted a dispatch value carrying a newline and a command. Bound \
+         through `env:` it cannot execute, but admitting it means the character-set guard is \
+         gone, and the guard is what stands between the next spelling of this step and the \
+         injection it already suffered once. It printed: {printed}"
+    );
+    assert!(
+        !std::path::Path::new("/tmp/qip-should-never-exist").exists(),
+        "the injected command ran"
+    );
+}
+
 #[test]
 fn the_bootstrap_applies_only_where_gitops_is_enabled_and_only_from_the_workflow_that_refuses_prod()
 {
@@ -3424,10 +3554,26 @@ fn the_bootstrap_applies_only_where_gitops_is_enabled_and_only_from_the_workflow
         "{INFRA_WORKFLOW} never reads gitops_enabled out of the tfvars, so the bootstrap's \
          condition is decided by something this test cannot see"
     );
-    // The prod refusal stands in front of it.
+    // The prod refusal stands in front of it, and the value it compares
+    // arrives through that step's own `env:` rather than pasted into its
+    // script. This assertion used to name the pasted spelling —
+    // `[ "${{ inputs.environment }}" = "prod" ]` — which the runner substitutes
+    // as source text, so a dispatch value carrying a newline ran a command of
+    // its own inside the refusal step and the step exited 0.
+    //
+    // Scoped to the step that refuses, not to the file. A whole-file
+    // `contains` for the `env:` binding passes while the refusal step alone
+    // loses it, because six other steps in this workflow bind the same value —
+    // which a mutation of exactly that shape demonstrated.
+    let refusal = steps
+        .iter()
+        .find(|step| step.contains("[ \"$ENVIRONMENT\" = \"prod\" ]"))
+        .unwrap_or_else(|| panic!("{INFRA_WORKFLOW} no longer refuses prod in a step"));
     assert!(
-        commands.contains("inputs.environment }}\" = \"prod\" ]"),
-        "{INFRA_WORKFLOW} no longer refuses prod in a step"
+        refusal.contains("ENVIRONMENT: ${{ inputs.environment }}"),
+        "{INFRA_WORKFLOW}'s prod refusal no longer binds the dispatch value in its own \
+         `env:`; an expression inside `run:` is text the runner pastes in before bash \
+         parses it"
     );
     // kubectl nowhere else, and no controller CLI anywhere.
     for path in files_with_extension(".github/workflows", "yml") {

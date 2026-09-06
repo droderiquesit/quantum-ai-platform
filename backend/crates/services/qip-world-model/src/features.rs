@@ -33,6 +33,45 @@ use std::collections::BTreeMap;
 /// (see [`FeatureLookup::Truncated`]).
 pub const FEATURE_HISTORY: usize = 512;
 
+/// How many distinct `(feature, subject)` series one store may hold.
+///
+/// [`FEATURE_HISTORY`] bounds a series; nothing bounded the number of them.
+/// The failure that exposed the gap: a reference-rate response whose `rates`
+/// object carried sixty-four sixty-kilobyte keys minted sixty-four permanent
+/// series per poll, and the store kept every one — 5,000 such keys were
+/// measured resting in it with zero evictions, because eviction is a
+/// within-series discipline and a new key is never a candidate for it.
+///
+/// Four thousand and ninety-six is chosen from the two sides it has to
+/// satisfy. Above: `series_limit × history_limit` is the store's worst case,
+/// and 4,096 × 512 values at roughly 48 bytes each is about 100 MB — the most
+/// this store may ever cost a Cloud Run instance, which is a number an
+/// operator can hold in their head. Below: the world model defines about
+/// twenty features and keys them by instrument, economy or macro series, so
+/// 4,096 series is well over two hundred instruments across every feature the
+/// platform computes, against a development universe of a handful. A
+/// deployment that legitimately outgrows it raises the bound at construction
+/// through [`FeatureStore::with_bounds`], which is a decision somebody makes
+/// rather than a ceiling discovered by falling through it.
+pub const FEATURE_SERIES_LIMIT: usize = 4_096;
+
+/// The longest a feature name or a subject may be, in characters.
+///
+/// A key here is an identifier: `close`, `macro_level`, `FX.EUR.USD`,
+/// `EA.POLICY_RATE`, an object id. The longest this platform mints is well
+/// under thirty characters, so 128 is four times any real one and still
+/// nowhere near a size at which a key is data rather than a name. It is a
+/// separate bound from [`FEATURE_SERIES_LIMIT`] because the two failures are
+/// different: a million short keys and one 60 KB key both exhaust a process,
+/// and a cardinality bound alone would admit 4,096 × 60 KB of pure key.
+///
+/// The ingestion boundary refuses a subject key that is not an identifier
+/// before it is ever published (`qip_market_ingestion::adapter`). This bound
+/// is not a duplicate of that one: it holds for every caller of this store,
+/// including the ones that compose a key themselves, and it holds after a
+/// record has already been admitted by whatever route.
+pub const FEATURE_KEY_CHARS: usize = 128;
+
 /// One observation of a feature.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FeatureValue {
@@ -212,12 +251,78 @@ impl<'a> FeatureLookup<'a> {
     }
 }
 
+/// Which half of a `(feature, subject)` key broke a bound.
+///
+/// Named rather than described, because the two call for different actions: a
+/// feature name too long is this platform's own bug, and a subject too long is
+/// almost always something a source chose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyDimension {
+    Feature,
+    Subject,
+}
+
+impl KeyDimension {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Feature => "feature",
+            Self::Subject => "subject",
+        }
+    }
+}
+
+/// Why a key was refused.
+///
+/// It deliberately carries no key *text*. The keys this exists to refuse are
+/// chosen by whoever answered the last hop, and a refusal carrying one would
+/// put sixty kilobytes of a vendor's choosing — newlines, escape sequences and
+/// all — into whatever renders the outcome. The shape is what a reader needs;
+/// the text is what an attacker wants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyRefusal {
+    /// One half of the key is longer than [`FeatureStore::key_limit`].
+    TooLong {
+        dimension: KeyDimension,
+        length: usize,
+        limit: usize,
+    },
+    /// The store already holds [`FeatureStore::series_limit`] series and this
+    /// key would be a new one. An existing key is still recorded: the bound is
+    /// on how many series exist, not on how often they are written.
+    NoRoom { limit: usize },
+}
+
+/// What [`FeatureStore::record`] did.
+///
+/// Returned rather than swallowed so that a caller composing a key can tell
+/// "stored" from "refused" — [`crate::world::WorldModel::absorb_macro`] uses
+/// it to keep a refused subject out of the change journal as well as out of
+/// the store. Callers on the per-tick path ignore it; for them the count in
+/// [`FeatureStore::refusals`] is the record, and it is surfaced in
+/// [`crate::world::WorldModel::statistics`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Recording {
+    Stored,
+    Refused(KeyRefusal),
+}
+
+impl Recording {
+    pub const fn is_refused(self) -> bool {
+        matches!(self, Self::Refused(_))
+    }
+}
+
 /// Feature values, indexed by feature and subject.
 ///
-/// Every series is bounded by [`FeatureStore::history_limit`]; see
-/// [`FEATURE_HISTORY`] for why the store owns the bound rather than its
-/// callers. The recording sites are on a per-tick path and cannot be trusted
-/// to remember a cap they do not own.
+/// Bounded in both dimensions, and they are different failures. Every series
+/// is bounded by [`FeatureStore::history_limit`] — see [`FEATURE_HISTORY`] for
+/// why the store owns the bound rather than its callers, which is that the
+/// recording sites are on a per-tick path and cannot be trusted to remember a
+/// cap they do not own. The *number* of series is bounded by
+/// [`FeatureStore::series_limit`] and the length of each key by
+/// [`FeatureStore::key_limit`], for the stronger version of the same reason:
+/// a key arrives from outside the process, and the caller composing it is
+/// usually the one with least idea what is in it.
 #[derive(Debug)]
 pub struct FeatureStore {
     definitions: BTreeMap<String, Feature>,
@@ -225,6 +330,12 @@ pub struct FeatureStore {
     values: BTreeMap<(String, String), Series>,
     /// Values retained per series. Fixed at construction; never zero.
     history_limit: usize,
+    /// Distinct series retained. Fixed at construction; never zero.
+    series_limit: usize,
+    /// Records refused because their key broke a bound. Non-zero means either
+    /// this platform is minting keys it should not, or a source is — and
+    /// either way the store is the only place that saw it happen.
+    refused: u64,
 }
 
 impl Default for FeatureStore {
@@ -233,6 +344,8 @@ impl Default for FeatureStore {
             definitions: BTreeMap::new(),
             values: BTreeMap::new(),
             history_limit: FEATURE_HISTORY,
+            series_limit: FEATURE_SERIES_LIMIT,
+            refused: 0,
         }
     }
 }
@@ -252,6 +365,16 @@ impl FeatureStore {
     /// and keeps it in production; refusing it stops the process where the
     /// mistake is still legible.
     pub fn with_history(history_limit: usize) -> Result<Self> {
+        Self::with_bounds(history_limit, FEATURE_SERIES_LIMIT)
+    }
+
+    /// A store bounded in both dimensions.
+    ///
+    /// Refuses zero for either, on the same argument [`Self::with_history`]
+    /// carries: a store that silently substituted one would hold a single
+    /// series or a single value while reporting nothing wrong, and the
+    /// caller's arithmetic slip would live on in production.
+    pub fn with_bounds(history_limit: usize, series_limit: usize) -> Result<Self> {
         if history_limit == 0 {
             return Err(Error::invalid(
                 "feature history limit must be at least 1; pass the number of \
@@ -259,16 +382,84 @@ impl FeatureStore {
                  FeatureStore::new() for the default of 512",
             ));
         }
+        if series_limit == 0 {
+            return Err(Error::invalid(
+                "feature series limit must be at least 1; pass the number of distinct \
+                 (feature, subject) series to retain, or use FeatureStore::new() for the \
+                 default of 4096",
+            ));
+        }
         Ok(Self {
             definitions: BTreeMap::new(),
             values: BTreeMap::new(),
             history_limit,
+            series_limit,
+            refused: 0,
         })
     }
 
     /// Values retained per `(feature, subject)` series.
     pub const fn history_limit(&self) -> usize {
         self.history_limit
+    }
+
+    /// Distinct `(feature, subject)` series this store will hold.
+    pub const fn series_limit(&self) -> usize {
+        self.series_limit
+    }
+
+    /// The longest key half this store will accept, in characters.
+    pub const fn key_limit(&self) -> usize {
+        FEATURE_KEY_CHARS
+    }
+
+    /// Distinct `(feature, subject)` series currently held.
+    pub fn series_count(&self) -> usize {
+        self.values.len()
+    }
+
+    /// Records refused because their key broke a bound.
+    ///
+    /// Zero on every healthy deployment. Non-zero is a fact about the inputs,
+    /// not about the store, and it is reported rather than logged at the site
+    /// because the recording sites are per-tick and a log line per refused
+    /// record is its own denial of service.
+    pub const fn refusals(&self) -> u64 {
+        self.refused
+    }
+
+    /// The key, or why it will not be one.
+    ///
+    /// Length first, cardinality second, and only for a key the store does not
+    /// already hold: a series already open stays writable at the limit, or a
+    /// store that filled up would stop absorbing the prices it was already
+    /// tracking — which would turn a bound meant to survive a hostile response
+    /// into an outage on the ordinary path.
+    fn admissible_key(
+        &self,
+        feature: &str,
+        subject: &str,
+    ) -> std::result::Result<(String, String), KeyRefusal> {
+        for (dimension, text) in [
+            (KeyDimension::Feature, feature),
+            (KeyDimension::Subject, subject),
+        ] {
+            let length = text.chars().count();
+            if length > FEATURE_KEY_CHARS {
+                return Err(KeyRefusal::TooLong {
+                    dimension,
+                    length,
+                    limit: FEATURE_KEY_CHARS,
+                });
+            }
+        }
+        let key = (feature.to_string(), subject.to_string());
+        if !self.values.contains_key(&key) && self.values.len() >= self.series_limit {
+            return Err(KeyRefusal::NoRoom {
+                limit: self.series_limit,
+            });
+        }
+        Ok(key)
     }
 
     /// Values discarded across every series to stay inside the bound.
@@ -324,12 +515,22 @@ impl FeatureStore {
     }
 
     /// Record a value, keeping the series ordered by valid time and bounded.
-    pub fn record(&mut self, feature: &str, subject: &str, value: FeatureValue) {
+    ///
+    /// Returns what it did. A refused key stores nothing and is counted in
+    /// [`Self::refusals`]: the key is refused, never truncated to fit, because
+    /// a key rewritten to fit is a series filed under a name its own source
+    /// would not recognise, and the next value from that source opens a second
+    /// one beside it.
+    pub fn record(&mut self, feature: &str, subject: &str, value: FeatureValue) -> Recording {
+        let key = match self.admissible_key(feature, subject) {
+            Ok(key) => key,
+            Err(refusal) => {
+                self.refused = self.refused.saturating_add(1);
+                return Recording::Refused(refusal);
+            }
+        };
         let limit = self.history_limit;
-        let series = self
-            .values
-            .entry((feature.to_string(), subject.to_string()))
-            .or_default();
+        let series = self.values.entry(key).or_default();
         match series
             .values
             .binary_search_by_key(&value.valid_at.as_nanos(), |v| v.valid_at.as_nanos())
@@ -339,6 +540,7 @@ impl FeatureStore {
             Err(position) => series.values.insert(position, value),
         }
         series.trim(limit);
+        Recording::Stored
     }
 
     /// Record many values for one series in a single merge.
@@ -351,19 +553,32 @@ impl FeatureStore {
     /// newest-first, and each of *n* front-inserts into a sorted series moves
     /// the whole series, which at feed rates is the difference between a
     /// second and a minute.
-    pub fn record_many(&mut self, feature: &str, subject: &str, mut values: Vec<FeatureValue>) {
+    ///
+    /// Held to the same key bounds as [`FeatureStore::record`], for the reason
+    /// the batch path exists at all: a feed handing over history in one call
+    /// must not be a way around a bound the per-tick path obeys.
+    pub fn record_many(
+        &mut self,
+        feature: &str,
+        subject: &str,
+        mut values: Vec<FeatureValue>,
+    ) -> Recording {
         if values.is_empty() {
-            return;
+            return Recording::Stored;
         }
+        let key = match self.admissible_key(feature, subject) {
+            Ok(key) => key,
+            Err(refusal) => {
+                self.refused = self.refused.saturating_add(1);
+                return Recording::Refused(refusal);
+            }
+        };
         // Stable sort by valid time, so equal-instant values keep the caller's
         // order and the later one wins the restatement below — exactly what a
         // sequence of `record` calls would have done.
         values.sort_by_key(|value| value.valid_at.as_nanos());
         let limit = self.history_limit;
-        let series = self
-            .values
-            .entry((feature.to_string(), subject.to_string()))
-            .or_default();
+        let series = self.values.entry(key).or_default();
 
         let existing = std::mem::take(&mut series.values);
         let mut merged: Vec<FeatureValue> = Vec::with_capacity(existing.len() + values.len());
@@ -410,6 +625,7 @@ impl FeatureStore {
         // handing over more history than the window holds keeps the newest of
         // it, and the count says how much it handed over that we did not keep.
         series.trim(limit);
+        Recording::Stored
     }
 
     /// The value for `subject` as of a point in both time dimensions.
@@ -812,5 +1028,223 @@ mod retention_tests {
             "612 ticks into a default store retain 512"
         );
         assert_eq!(store.evictions(), 100);
+    }
+}
+
+/// The other dimension: how many series there may be, and how long a key may
+/// be.
+///
+/// These exist because the retention bound above was read as *the* bound on
+/// this store and is only half of one. A rate table answering with sixty-four
+/// sixty-kilobyte currency codes minted sixty-four permanent series per poll
+/// and evicted nothing, because eviction happens within a series and a new key
+/// is never a candidate for it — 5,000 such keys were measured resting in a
+/// store reporting zero evictions. The connector that let those keys through
+/// now refuses them, but the bound belongs here too: this map is the thing
+/// that grows, and it grows for every caller, not only the one that was
+/// caught.
+#[cfg(test)]
+mod key_dimension_tests {
+    use super::*;
+
+    fn value() -> FeatureValue {
+        FeatureValue::immediate(1.0, Timestamp::from_secs(1))
+    }
+
+    #[test]
+    fn a_store_refuses_a_zero_series_limit_and_admits_the_smallest_real_one() {
+        // The same argument as the history limit: a caller asking for zero has
+        // a bug, and a store that quietly substituted one would refuse every
+        // series but the first while reporting nothing wrong.
+        let Err(error) = FeatureStore::with_bounds(8, 0) else {
+            panic!("a zero series limit is a caller bug and must be refused, not clamped");
+        };
+        assert_eq!(error.code(), "invalid");
+        assert!(
+            error.message().contains("at least 1"),
+            "the refusal must name what to do instead, got {:?}",
+            error.message()
+        );
+
+        let admitted = FeatureStore::with_bounds(8, 1).expect("one series is legitimate");
+        assert_eq!(admitted.series_limit(), 1);
+        assert_eq!(
+            admitted.history_limit(),
+            8,
+            "the two bounds are independent and neither overwrites the other"
+        );
+    }
+
+    #[test]
+    fn a_new_key_past_the_series_limit_is_refused_and_counted() {
+        let mut store = FeatureStore::with_bounds(4, 3).expect("valid bounds");
+        for index in 0..3 {
+            assert_eq!(
+                store.record("close", &format!("obj-{index}"), value()),
+                Recording::Stored,
+                "premise: the store admits keys until its limit"
+            );
+        }
+        assert_eq!(store.series_count(), 3);
+        assert_eq!(store.refusals(), 0, "nothing refused before the bound");
+
+        assert_eq!(
+            store.record("close", "obj-3", value()),
+            Recording::Refused(KeyRefusal::NoRoom { limit: 3 }),
+            "the fourth key must be refused, not admitted and not truncated"
+        );
+        assert_eq!(store.series_count(), 3, "and nothing was created for it");
+        assert_eq!(store.refusals(), 1, "the refusal is visible from the store");
+        assert!(
+            store
+                .value_as_of(
+                    "close",
+                    "obj-3",
+                    Timestamp::from_secs(1),
+                    Timestamp::from_secs(1)
+                )
+                .is_none(),
+            "a refused record must not be readable back"
+        );
+    }
+
+    #[test]
+    fn a_series_already_open_keeps_recording_after_the_store_is_full() {
+        // The half that stops this bound from being an outage. A store at its
+        // limit must go on absorbing the prices it is already tracking, or a
+        // hostile response would stop the ordinary path rather than only
+        // failing to extend it.
+        let mut store = FeatureStore::with_bounds(4, 2).expect("valid bounds");
+        store.record("close", "obj-1", FeatureValue::immediate(1.0, at(1)));
+        store.record("close", "obj-2", FeatureValue::immediate(2.0, at(1)));
+        assert_eq!(
+            store.record("close", "obj-3", value()),
+            Recording::Refused(KeyRefusal::NoRoom { limit: 2 }),
+            "premise: the store is full"
+        );
+
+        assert_eq!(
+            store.record("close", "obj-1", FeatureValue::immediate(3.0, at(2))),
+            Recording::Stored,
+            "an open series must stay writable at the limit"
+        );
+        assert_eq!(
+            store
+                .value_as_of("close", "obj-1", at(2), at(2))
+                .map(|value| value.value),
+            Some(3.0)
+        );
+    }
+
+    #[test]
+    fn a_key_longer_than_the_bound_is_refused_rather_than_truncated() {
+        // Truncating would be worse than refusing: two 60 KB keys sharing a
+        // prefix would become one series holding both sources' values, and no
+        // reader could tell which value came from where.
+        let mut store = FeatureStore::new();
+        let long = "Z".repeat(60_000);
+        assert_eq!(
+            store.record("macro_level", &long, value()),
+            Recording::Refused(KeyRefusal::TooLong {
+                dimension: KeyDimension::Subject,
+                length: 60_000,
+                limit: FEATURE_KEY_CHARS,
+            }),
+        );
+        assert_eq!(
+            store.record(&long, "obj-1", value()),
+            Recording::Refused(KeyRefusal::TooLong {
+                dimension: KeyDimension::Feature,
+                length: 60_000,
+                limit: FEATURE_KEY_CHARS,
+            }),
+            "the feature half is bounded too, and says which half it was"
+        );
+        assert_eq!(store.series_count(), 0);
+        assert_eq!(store.refusals(), 2);
+
+        // The premise, and the reason the bound is 128 rather than 16: every
+        // key this platform actually mints is far inside it.
+        assert_eq!(
+            store.record("macro_level", "FX.EUR.USD", value()),
+            Recording::Stored
+        );
+        assert!(
+            "macro_level".len() + "EA.POLICY_RATE".len() < FEATURE_KEY_CHARS,
+            "the longest key the platform mints must be comfortably inside the bound"
+        );
+    }
+
+    #[test]
+    fn a_refusal_carries_the_shape_of_the_key_and_never_the_key_itself() {
+        // The keys this bound exists to refuse are chosen by whoever answered
+        // the last hop. A refusal carrying one would put a vendor's newline
+        // and escape sequence into whatever renders the outcome — which is the
+        // second half of the same defect, one layer further in.
+        let mut store = FeatureStore::new();
+        let hostile = format!("macro\u{1b}[2J{}", "Z".repeat(200));
+        let Recording::Refused(refusal) = store.record("macro_level", &hostile, value()) else {
+            panic!("a 200-character subject with an escape sequence was accepted");
+        };
+        let rendered = format!("{refusal:?}");
+        assert!(
+            !rendered.contains('Z') && !rendered.contains('\u{1b}'),
+            "the refusal repeated the key it refused: {rendered:?}"
+        );
+        assert!(
+            rendered.contains(&hostile.chars().count().to_string()) && rendered.contains("Subject"),
+            "the refusal must still say which half broke which bound and by how much: {rendered}"
+        );
+    }
+
+    #[test]
+    fn the_batch_path_is_held_to_the_same_key_bounds_as_the_single_one() {
+        // `record_many` exists for speed. A bound the fast path does not obey
+        // is a bound with a documented way around it.
+        let mut store = FeatureStore::with_bounds(4, 1).expect("valid bounds");
+        store.record("close", "obj-1", value());
+        assert_eq!(
+            store.record_many("close", "obj-2", vec![value()]),
+            Recording::Refused(KeyRefusal::NoRoom { limit: 1 })
+        );
+        let long = "Z".repeat(200);
+        assert_eq!(
+            store.record_many("close", &long, vec![value()]),
+            Recording::Refused(KeyRefusal::TooLong {
+                dimension: KeyDimension::Subject,
+                length: 200,
+                limit: FEATURE_KEY_CHARS,
+            })
+        );
+        assert_eq!(store.series_count(), 1);
+        assert_eq!(store.refusals(), 2);
+    }
+
+    #[test]
+    fn the_default_store_is_bounded_in_the_key_dimension_too() {
+        // `FeatureStore::new()` is what the world model constructs, so a bound
+        // that reached only the configured constructor would never reach the
+        // defect — the same trap the history bound had to avoid.
+        let mut store = FeatureStore::new();
+        assert_eq!(store.series_limit(), FEATURE_SERIES_LIMIT);
+        assert_eq!(store.key_limit(), FEATURE_KEY_CHARS);
+
+        for index in 0..=FEATURE_SERIES_LIMIT {
+            store.record("close", &format!("obj-{index}"), value());
+        }
+        assert_eq!(
+            store.series_count(),
+            FEATURE_SERIES_LIMIT,
+            "one key past the limit must not open a series"
+        );
+        assert_eq!(
+            store.refusals(),
+            1,
+            "and exactly the one past the limit was refused"
+        );
+    }
+
+    fn at(second: i64) -> Timestamp {
+        Timestamp::from_secs(second)
     }
 }

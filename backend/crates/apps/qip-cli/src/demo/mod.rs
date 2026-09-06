@@ -109,6 +109,7 @@ use qip_execution_engine::order::Side;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_financial::asset_class::{InstrumentType, Sector};
+use qip_financial::costs::LiquidityProfile;
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{LicensingClass, Provenance};
 use qip_financial::universe::Universe;
@@ -238,16 +239,66 @@ fn platform_risk_state() -> RiskState {
     }
 }
 
+/// What this walk says an exit from its one instrument costs.
+///
+/// Split the way the committed catalogue's records are, and for the same
+/// reason: two of these figures are the tape's and two are this file's
+/// statement, and a reader has to be able to tell which is which.
+///
+/// **From the tape.** [`script::BAR_VOLUME`] is what the vendor serves on
+/// every bar, so it is the volume the demonstration's own data shows; the
+/// depth is that volume over [`script::BAR_TRADE_COUNT`], the size that
+/// actually changes hands at a touch. Stating anything else here would make
+/// the reference record and the tape two definitions of one instrument, which
+/// is the defect this demonstration exists to expose rather than commit.
+///
+/// **Stated.** The tape carries no quote, so nothing in this process has
+/// measured a spread. The only bound the data puts on one is the whole range
+/// of its tightest bar — twice [`script::BAR_RANGE_FRACTION`], or twenty basis
+/// points — and a quote can be no tighter than one tick on the grid, which at
+/// this price is one. Both bounds are strict, exactly as
+/// `qip-financial`'s catalogue suite holds the committed file, and the figure
+/// stated is the widest the tape admits: a spread nobody measured may only
+/// make an exit look more expensive, never less. The one-session exit at the
+/// house participation rate is the claim the tape does support — a hundred and
+/// twenty consecutive sessions of two and a half million units, against an
+/// order of [`ORDER_UNITS`].
+///
+/// This record used to state none of it and inherit a 10bp quote and a
+/// one-session exit from a constructor, which is how a demonstration of the
+/// platform's controls came to size against a figure that was in neither the
+/// tape it printed nor the code a reader could open.
+fn demo_liquidity() -> LiquidityProfile {
+    let volume = Decimal::from_int(script::BAR_VOLUME as i64);
+    LiquidityProfile {
+        average_daily_volume: volume,
+        // The widest quote the tightest bar admits, one basis point inside its
+        // bound so the comparison stays strict.
+        typical_spread_bps: 2.0 * script::BAR_RANGE_FRACTION * 10_000.0 - 1.0,
+        top_of_book_depth: volume
+            .checked_div(Decimal::from_int(script::BAR_TRADE_COUNT as i64))
+            .unwrap_or(Decimal::ZERO),
+        days_to_liquidate: 1.0,
+        max_participation_rate: LiquidityProfile::HOUSE_PARTICIPATION_RATE,
+        is_negotiated: false,
+    }
+}
+
 /// A universe holding the one instrument this walk is about.
 fn universe(at: Timestamp) -> Result<Universe> {
     let mut universe = Universe::new();
     universe.insert(
-        FinancialObject::builder(object(), script::SYMBOL, InstrumentType::CommonStock)
-            .venue(VENUE)
-            .sector(Sector::InformationTechnology)
-            .price(dec!("100"))
-            .provenance(Provenance::synthetic("qip-demo-live", at))
-            .build(at)?,
+        FinancialObject::builder(
+            object(),
+            script::SYMBOL,
+            InstrumentType::CommonStock,
+            demo_liquidity(),
+        )
+        .venue(VENUE)
+        .sector(Sector::InformationTechnology)
+        .price(dec!("100"))
+        .provenance(Provenance::synthetic("qip-demo-live", at))
+        .build(at)?,
     )?;
     Ok(universe)
 }
@@ -1268,5 +1319,106 @@ fn venue_config(base: &str) -> RestVenueConfig {
         health_path: HEALTH_PATH.into(),
         http: http_limits(),
         ..RestVenueConfig::default()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
+mod tests {
+    use super::*;
+
+    fn at() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    /// The reference record states the tape it is served beside, and states a
+    /// quote the tape admits.
+    ///
+    /// The defect this closes: this walk's one instrument stated no liquidity,
+    /// so it carried `LiquidityProfile::default()` — a ten-basis-point quote,
+    /// a one-session exit and no volume at all — through the platform's own
+    /// pre-trade control path in layer 6. A demonstration whose whole claim is
+    /// that the live path composes cannot size against a number that is in
+    /// neither the tape it prints nor the code a reader can open.
+    ///
+    /// The bounds are `qip-financial`'s own for the committed catalogue,
+    /// asked of this file: a quote is no tighter than one tick of the grid and
+    /// no wider than the whole range of the tightest bar the tape shows.
+    #[test]
+    fn the_demonstration_instrument_states_the_volume_its_own_tape_serves() -> Result<()> {
+        let universe = universe(at())?;
+        let object = universe.require(&object())?;
+        let liquidity = &object.liquidity;
+
+        // The premise, and the whole reason the constant exists: the bytes the
+        // vendor double actually serves carry this volume. If the tape ever
+        // goes back to writing its own figure, the record below is describing
+        // an instrument the demonstration does not serve, and this fails
+        // before the equality can pass on two numbers that agree by accident.
+        let tape = script::market_data(at());
+        assert!(
+            tape.contains(&format!("\"volume\":\"{}\"", script::BAR_VOLUME)),
+            "the tape the vendor serves does not carry the volume the record states"
+        );
+        assert_eq!(
+            liquidity.average_daily_volume,
+            Decimal::from_int(script::BAR_VOLUME as i64),
+            "the record states a volume the demonstration's own tape does not serve"
+        );
+
+        // A quote can be no tighter than the venue's grid.
+        let tick_bps = object.tick_size.to_f64() / object.price.to_f64() * 10_000.0;
+        assert!(
+            liquidity.typical_spread_bps > tick_bps,
+            "the record is quoted at {}bps, tighter than the {tick_bps}bps its own tick allows",
+            liquidity.typical_spread_bps
+        );
+        // And no wider than the whole range of the tightest bar the tape can
+        // show — one whose open and close coincide.
+        let tightest_range_bps = 2.0 * script::BAR_RANGE_FRACTION * 10_000.0;
+        assert!(
+            liquidity.typical_spread_bps < tightest_range_bps,
+            "the record is quoted at {}bps, wider than the whole {tightest_range_bps}bps range \
+             of the tightest bar the tape can show",
+            liquidity.typical_spread_bps
+        );
+        // And it sits at the *wide* end of that interval rather than somewhere
+        // comfortable inside it. Without this the two bounds above admit any
+        // figure between one and twenty basis points — including the ten the
+        // deleted `Default` asserted, which is the exact number this change
+        // exists to stop a control reading. A spread nobody measured may only
+        // make an exit look more expensive, never less.
+        assert!(
+            tightest_range_bps - liquidity.typical_spread_bps <= 1.0,
+            "the record is quoted at {}bps, more than a basis point inside the \
+             {tightest_range_bps}bps the tape admits; nothing measured this quote, so it may \
+             only be stated at the widest end of what the data allows",
+            liquidity.typical_spread_bps
+        );
+
+        // A book with depth at the touch and no volume behind it, or volume
+        // and no depth, is a measurement contradicting itself.
+        assert_eq!(
+            liquidity.top_of_book_depth.is_positive(),
+            liquidity.average_daily_volume.is_positive(),
+            "the record states a depth and a volume that cannot both be true"
+        );
+        // The six figures the deleted `LiquidityProfile::default()` asserted,
+        // written out whole rather than compared field by field:
+        // `days_to_liquidate` is a substring of `days_to_liquidation`, and an
+        // assertion shaped like text would pass on the wrong field.
+        assert_ne!(
+            *liquidity,
+            LiquidityProfile {
+                average_daily_volume: Decimal::ZERO,
+                typical_spread_bps: 10.0,
+                top_of_book_depth: Decimal::ZERO,
+                days_to_liquidate: 1.0,
+                max_participation_rate: 0.1,
+                is_negotiated: false,
+            },
+            "the demonstration instrument carries the six figures the deleted default asserted"
+        );
+        Ok(())
     }
 }

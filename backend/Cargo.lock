@@ -607,6 +607,7 @@ dependencies = [
  "qip-numerics",
  "qip-quantum",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

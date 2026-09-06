@@ -144,12 +144,26 @@ account it exchanges for is `qip-ci-<env>`, the narrow one Terraform creates
 
 | Secret | Consumer | Injection |
 |---|---|---|
-| `qip-token-{operator,approver,analyst,viewer,monitor}` | `qip-api` — the five bearer tokens | Secret Manager → a volume `modules/cloudrun` mounts as a file, named by `secret_mounts` in `catalogue.tf`; the process reads the `_FILE` variable |
+| `qip-token-{operator,analyst,viewer,monitor}` | `qip-api` — the four bearer tokens, one per role `qip_api::auth::Role` defines | Secret Manager → a volume `modules/cloudrun` mounts as a file, named by `secret_mounts` in `catalogue.tf`; the process reads the `_FILE` variable |
 | `qip-capital-envelope-key` | `qip-api`, `qip-fastbrain` and `qip-deepbrain` mount it (`catalogue.tf`); `qip-edge-node` verifies signed capital envelopes against it | The same volume mount on Cloud Run; on the execution node, fetched at boot by the startup script into the unit's run directory and named by `QIP_CAPITAL_ENVELOPE_KEY_FILE` |
 | `qip-quantum-token` | Quantum provider | Secret Manager. **No IAM reader binding exists yet** — the audit records this |
 | Venue feed endpoint + session credential | Edge cell market data | Not yet modelled. Per venue |
 | Venue gateway endpoint + order-entry credential | Edge cell execution | Not yet modelled. Per venue |
 | Drop-copy endpoint | Independent fill channel | Not yet modelled |
+
+There were five bearer tokens until `qip-token-approver` was deleted, and the
+reason belongs here rather than only in a commit message: no route in `qip-api`
+required the approver role, so that container held a credential whose holder
+could do exactly what the analyst token allowed. It was created, IAM-granted,
+seeded and rotated in all four environments and authorised nothing — a secret
+readable where it could never be used, which is the one thing
+`.claude/rules/01-security-and-safety.md` asks of a credential's placement. It
+was removed rather than wired to a route: the only approval this API exposes,
+`POST /registrations/:source/approve`, already requires the operator role, and
+lowering that to give a dead credential something to do would have weakened a
+live control. `qip-api` now refuses to start if `QIP_TOKEN_APPROVER` or
+`QIP_TOKEN_APPROVER_FILE` reaches it, so a deployment that kept the mount stops
+rather than silently ignoring it.
 
 The three venue values are what `qip-edge-node` prints on start-up as
 "awaiting". It serves its health surface without them and trades nothing,

@@ -15,6 +15,19 @@ use qip_quant::signal::{
 use qip_quant::strategy::{SignalWeightedStrategy, Strategy, StrategyContext, TargetWeights};
 use std::collections::BTreeMap;
 
+/// The liquidity every fixture in this file states, because nothing states it
+/// for them any more.
+///
+/// [`qip_financial::costs::LiquidityProfile`] has no `Default`: the one it had
+/// asserted a 10bp quote and a one-session exit for any instrument at all, and
+/// `MinLiquidity` and `MaxDaysToLiquidate` — controls whose job is to veto
+/// trading — read exactly those two figures. A fixture may state its own
+/// premise; it may not inherit one nobody wrote down. A liquid listed name on
+/// five million units a day, quoted at three basis points.
+fn fixture_liquidity() -> qip_financial::costs::LiquidityProfile {
+    qip_financial::costs::LiquidityProfile::listed(qip_core::Decimal::from_int(5_000_000), 3.0)
+}
+
 fn now() -> Timestamp {
     Timestamp::from_civil(2026, 8, 24)
 }
@@ -330,13 +343,18 @@ fn turnover_is_the_fraction_of_the_book_that_must_trade() {
 // --- the strategy SDK -------------------------------------------------------
 
 fn equity(symbol: &str, price: &str) -> FinancialObject {
-    FinancialObject::builder(object(symbol), symbol, InstrumentType::CommonStock)
-        .venue("XNYS")
-        .sector(Sector::InformationTechnology)
-        .price(Decimal::parse(price).unwrap())
-        .provenance(Provenance::synthetic("test", now()))
-        .build(now())
-        .expect("valid object")
+    FinancialObject::builder(
+        object(symbol),
+        symbol,
+        InstrumentType::CommonStock,
+        fixture_liquidity(),
+    )
+    .venue("XNYS")
+    .sector(Sector::InformationTechnology)
+    .price(Decimal::parse(price).unwrap())
+    .provenance(Provenance::synthetic("test", now()))
+    .build(now())
+    .expect("valid object")
 }
 
 #[test]

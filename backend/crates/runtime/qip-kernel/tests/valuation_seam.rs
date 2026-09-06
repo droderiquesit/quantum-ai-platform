@@ -41,6 +41,34 @@
 //!   red team's verdict admits a hypothesis, and everything these tests assert
 //!   happens strictly downstream of that verdict. No risk limit, no autonomy
 //!   ceiling and no paper-trading layer is touched.
+//!
+//!   **Read this before quoting anything below as evidence about a
+//!   deployment.** Nothing in *this file* runs under a shipped configuration.
+//!   Raise [`REVIEW_FLOOR`] to 0.50 and all five tests here fail on their own
+//!   premise — `the listed cycle proposed no legs ... rationale: no thesis
+//!   cleared the action bar this cycle` — so what they prove is that the
+//!   narrowing arithmetic is right *if reached*. That it is reached is proved
+//!   somewhere else, and it has to be, because no synthetic tape this file can
+//!   build clears the shipped bar:
+//!   `qip-fastbrain/tests/tape.rs::the_shipped_review_policy_admits_a_thesis_that_reaches_the_narrowed_sizing_budget`
+//!   drives the committed demonstration tape through `PlatformConfig::default()`
+//!   with the review policy untouched, and 107 of its 600 cycles enter
+//!   `construct_from` — so `deployable_capital`, `central_degradation` and
+//!   `mark_confidence_multiplier` all run in the configuration `qip-fastbrain`
+//!   deploys. That test pins the budget they produce at 3,750,000 and then
+//!   5,625,000 of a 10,000,000 book. If it is ever deleted, this file is back
+//!   to proving arithmetic nobody has shown a deployment performs, which was
+//!   finding M4.
+//!
+//!   One honest limit remains, and it is the tape's rather than this file's:
+//!   under the shipped policy the seam is reached and no *leg* is sized,
+//!   because the only theses the review approves on that tape are
+//!   `Claim::Overvalued` — an upward structural break — and
+//!   `conservative_default`'s long-only mandate has no feasible solution for a
+//!   short. Sizing a leg under the shipped floor needs a tape carrying a
+//!   downward dislocation whose panel still clears 0.50; the jump section
+//!   reaches 0.34 today. That is a fixture that does not exist, not a control
+//!   that cannot fire.
 //! * The tape's jump sits on the **last** bar. A jump two thirds of the way
 //!   through leaves a volatility-shift anomaly at the head of the queue, whose
 //!   claim is about the option rather than the underlying, so the thesis's
@@ -80,6 +108,12 @@ use qip_risk::limits::{Limit, LimitKind, LimitSet};
 /// See the module note. Low enough that the panel's verdict on a synthetic
 /// tape is `Approved` for a listed name *and* for a private fund, because the
 /// seam under test is reached only through an approved thesis.
+///
+/// **This is not the shipped value.** `ReviewPolicy::default()` requires 0.50
+/// and no app overrides it. Every test in this file is therefore a statement
+/// about arithmetic and not about a deployment; the reachability of that
+/// arithmetic under the shipped 0.50 is proved in
+/// `qip-fastbrain/tests/tape.rs`, and the module note says how.
 const REVIEW_FLOOR: f64 = 0.10;
 
 /// The book every test sizes against, so a notional can be reasoned about in
@@ -134,13 +168,18 @@ fn platform_of(universe: Universe, limits: LimitSet, equity: Decimal) -> Result<
 }
 
 fn listed(symbol: &str) -> Result<FinancialObject> {
-    FinancialObject::builder(object(symbol), symbol, InstrumentType::CommonStock)
-        .venue("XNYS")
-        .geography("US")
-        .sector(Sector::InformationTechnology)
-        .price(dec!("100"))
-        .provenance(Provenance::synthetic("test", start()))
-        .build(start())
+    FinancialObject::builder(
+        object(symbol),
+        symbol,
+        InstrumentType::CommonStock,
+        LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+    )
+    .venue("XNYS")
+    .geography("US")
+    .sector(Sector::InformationTechnology)
+    .price(dec!("100"))
+    .provenance(Provenance::synthetic("test", start()))
+    .build(start())
 }
 
 /// A private fund the valuation plane will have a view on, or refuse to.
@@ -174,22 +213,27 @@ fn private_fund_reported_at(
     residual: Decimal,
     observed: Timestamp,
 ) -> Result<FinancialObject> {
-    FinancialObject::builder(object(symbol), symbol, InstrumentType::PrivateEquityFund)
-        .venue("OTC")
-        .geography("US")
-        .price(dec!("100"))
-        .extension(Extension::PrivateAsset(PrivateAssetDetails {
-            vintage_year: 2024,
-            committed_capital: committed,
-            called_capital: called,
-            distributed_capital: distributed,
-            residual_value: residual,
-            stage: "buyout".to_string(),
-            lockup_years: 7.0,
-            capital_call_notice_days: 10,
-        }))
-        .provenance(Provenance::synthetic("administrator", observed))
-        .build(start())
+    FinancialObject::builder(
+        object(symbol),
+        symbol,
+        InstrumentType::PrivateEquityFund,
+        LiquidityProfile::illiquid(90.0, 250.0),
+    )
+    .venue("OTC")
+    .geography("US")
+    .price(dec!("100"))
+    .extension(Extension::PrivateAsset(PrivateAssetDetails {
+        vintage_year: 2024,
+        committed_capital: committed,
+        called_capital: called,
+        distributed_capital: distributed,
+        residual_value: residual,
+        stage: "buyout".to_string(),
+        lockup_years: 7.0,
+        capital_call_notice_days: 10,
+    }))
+    .provenance(Provenance::synthetic("administrator", observed))
+    .build(start())
 }
 
 fn bar(symbol: &str, at: Timestamp, open: f64, close: f64) -> SensedRecord {
@@ -805,12 +849,11 @@ fn liquidity_universe(slow: LiquidityProfile) -> Result<Universe> {
         ("SLOW", slow),
     ] {
         universe.insert(
-            FinancialObject::builder(object(symbol), symbol, InstrumentType::CommonStock)
+            FinancialObject::builder(object(symbol), symbol, InstrumentType::CommonStock, profile)
                 .venue("XNYS")
                 .geography("US")
                 .sector(Sector::InformationTechnology)
                 .price(dec!("100"))
-                .liquidity(profile)
                 .provenance(Provenance::synthetic("test", start()))
                 .build(start())?,
         )?;
@@ -882,7 +925,13 @@ fn a_cycle_over_a_book_that_cannot_be_exited_within_the_week_is_refused_new_risk
     // run.
     let desk = Decimal::from_int(10_000_000);
     let mut illiquid = platform_of(
-        liquidity_universe(LiquidityProfile::illiquid(30.0))?,
+        // 900bps is this record's own measured exit spread, stated rather than
+        // taken from a constructor default: `illiquid` no longer invents one,
+        // because the figure it used to invent became a ceiling on what every
+        // listed name above it could be quoted at. It has to stay wider than
+        // `FAST`'s 5bps above it or the two records cannot sit on one ladder
+        // and `Platform::new` refuses them by name.
+        liquidity_universe(LiquidityProfile::illiquid(30.0, 900.0))?,
         LimitSet::conservative_default(),
         desk,
     )?;

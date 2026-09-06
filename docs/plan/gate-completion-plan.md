@@ -55,9 +55,15 @@ evidencing them, which is the one thing this repository refuses.
   on the public internet under ADR 0030, with its own login enforced (the API
   answers 401 unauthenticated). Its database is empty because nothing sends
   to it.
-- **Nothing scrapes anything.** All seven alert policies are gated on
+- **Nothing scrapes anything.** Every alert policy is gated on
   `workload_metrics_exist`, unset in every environment;
-  `metrics_collector_image_digest` is likewise unset.
+  `metrics_collector_image_digest` is likewise unset. The count was seven when
+  this was written and is **nine** as of 2026-09-06 (`599daaa` added
+  `risk_figure_unevaluated` and `sign_off_withheld_on_liquidity`) — recount
+  with `grep -c '^resource "google_monitoring_alert_policy"'` against
+  `modules/observability/main.tf` rather than quoting this sentence, and note
+  that what matters is that the gated count equals the total, not what either
+  number is.
 
 There are therefore *two independent paths* and they are not alternatives —
 they answer different questions:

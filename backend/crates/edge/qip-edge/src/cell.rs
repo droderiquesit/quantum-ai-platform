@@ -39,6 +39,15 @@ use qip_strategy::program::Program;
 use qip_strategy::runtime::StrategyRuntime;
 use std::collections::{BTreeMap, VecDeque};
 
+/// The gate a cell refuses under when the gateway it was handed is not a
+/// simulated venue.
+///
+/// A constant rather than a bare literal at each of the two sites, because a
+/// test that named the gate as its own string would still pass if one site
+/// were reworded, and the two sites are the pass gate and the send gate for
+/// the same fact. `qip_edge_refusals_total{gate="live_venue"}` is the series.
+pub const GATE_LIVE_VENUE: &str = "live_venue";
+
 /// How a cell is identified and what it is allowed to reach.
 #[derive(Clone, Debug)]
 pub struct CellConfig {
@@ -117,6 +126,19 @@ impl CellConfig {
     /// longer than the bound would be silently shortened to it — the safety
     /// parameter the operator wrote replaced by one they did not.
     pub fn with_crossing_interval(mut self, interval: CrossingInterval) -> Result<Self> {
+        Self::check_crossing_interval(interval)?;
+        self.crossing_interval = Some(interval);
+        Ok(self)
+    }
+
+    /// The interval check, shared with [`Self::validate`].
+    ///
+    /// Extracted because every field of this struct is `pub`, so
+    /// `config.crossing_interval = Some(CrossingInterval::Passes(0))` reaches
+    /// the cell without ever passing through the builder above. Assembly runs
+    /// the same predicate again, so the builder is the convenient door rather
+    /// than the only one holding the property.
+    fn check_crossing_interval(interval: CrossingInterval) -> Result<()> {
         match interval {
             CrossingInterval::Passes(0) => {
                 return Err(Error::invalid(
@@ -142,8 +164,66 @@ impl CellConfig {
             }
             CrossingInterval::Passes(_) | CrossingInterval::Span(_) => {}
         }
-        self.crossing_interval = Some(interval);
-        Ok(self)
+        Ok(())
+    }
+
+    /// What this configuration must satisfy before a cell is assembled from
+    /// it, or the refusal naming what to set instead.
+    ///
+    /// [`Cell::new`] has returned `Result` since it was written and its body
+    /// was a single `Ok(Self { .. })`: a signature advertising that assembly
+    /// refuses a bad configuration, over a constructor no input could make
+    /// fail. That is the shape the risk rules call out by name — a control
+    /// that reads as protection and is not — and it sat on the type the
+    /// safety rules cite as the third layer of the paper-trading boundary.
+    ///
+    /// Each clause below refuses a configuration that would leave the cell
+    /// looking deployed while it could not do its job, and each refuses
+    /// rather than substituting a value the operator did not write:
+    ///
+    /// * an unnamed cell numbers its orders `-1`, `-2`, … and keys its region
+    ///   holds on the empty string, so two such cells sharing one regional
+    ///   allocation take each other's holds;
+    /// * an unnamed region reaches the centre as a state delta attributed to
+    ///   nowhere, and reaches the metric registry as an empty `region` label;
+    /// * a cell with no venue can never send: `Cell::venue_for` searches the
+    ///   configured list and returns `None` for every object, so every signal
+    ///   it raises dies at venue selection and the cell is inert while
+    ///   reporting healthy;
+    /// * a crossing interval that measures the §27.1 cap against nothing —
+    ///   the case [`Self::with_crossing_interval`] already refuses, re-checked
+    ///   here because the field is `pub` and the builder is skippable.
+    ///
+    /// The autonomy ceiling is deliberately *not* among them. A cell builds
+    /// its own [`AutonomyController`], whose ceiling is paper trading and
+    /// which no argument here can raise, so a clause asserting it would be a
+    /// check that cannot fire — the very thing the rest of this list exists
+    /// to remove.
+    pub fn validate(&self) -> Result<()> {
+        if self.cell_id.trim().is_empty() {
+            return Err(Error::invalid(
+                "a cell was assembled with no cell id; orders are numbered and region holds are \
+                 keyed on it, so set QIP_CELL_ID to the identifier the centre knows this cell by",
+            ));
+        }
+        if self.region.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "cell {} was assembled with no region; its state deltas and its metrics are \
+                 attributed by region, so set QIP_CELL_REGION to the region it runs in",
+                self.cell_id
+            )));
+        }
+        if self.venues.is_empty() {
+            return Err(Error::invalid(format!(
+                "cell {} was assembled with no venue; it would raise signals it could never \
+                 send, so name at least one venue in QIP_VENUES",
+                self.cell_id
+            )));
+        }
+        if let Some(interval) = self.crossing_interval {
+            Self::check_crossing_interval(interval)?;
+        }
+        Ok(())
     }
 
     pub fn with_venue(mut self, venue: VenueId) -> Self {
@@ -555,7 +635,13 @@ impl Cell {
     /// is a differently-assembled deployment the central plane signs off, and
     /// the absence of that constructor here is what makes the claim true
     /// rather than merely intended.
+    ///
+    /// The `Result` is now earned. [`CellConfig::validate`] is the check this
+    /// signature always advertised and, until it was added, did not perform:
+    /// the body was one `Ok(Self { .. })` and the configuration was moved in
+    /// unexamined, so no input could make assembly refuse.
     pub fn new(config: CellConfig, features: FeatureEngine) -> Result<Self> {
+        config.validate()?;
         Ok(Self {
             protocols: ProtocolRegistry::new(),
             sequencer: Sequencer::new(ReorderPolicy::default()),
@@ -1724,6 +1810,29 @@ impl Cell {
             return Ok(report);
         }
 
+        // The class of the gateway this pass was handed, before a signal is
+        // raised or a net is formed. `Cell::send` refuses each order at the
+        // seam and is the guarantee; this is what makes a live-class gateway
+        // *visible*. Without it a misconfigured cell is silent on every quiet
+        // pass and errors out of the middle of a busy one, so the series an
+        // operator would look at — `qip_edge_refusals_total{gate}` — never
+        // moves until the cell happens to want to trade.
+        //
+        // Placed after the halt check because a halted cell is already sending
+        // nothing and the halt gate is the one an operator must act on first;
+        // placed before the confirmation and withdrawal above would have been
+        // wrong for the opposite reason, since learning what filled and pulling
+        // resting orders back both *reduce* exposure.
+        if !gateway.is_simulated() {
+            let reason = format!(
+                "the gateway this cell was handed reports itself live and the cell's ceiling is \
+                 {}; no order is formed this pass. Attach a simulated gateway, or stop the cell",
+                self.autonomy.ceiling().as_str()
+            );
+            self.refuse(&mut report, GATE_LIVE_VENUE, &reason, now);
+            return Ok(report);
+        }
+
         // The degradation table, consulted once per pass. Everything below
         // reads the same narrowing, so a payload applied mid-pass changes the
         // next pass, never half of this one.
@@ -2272,13 +2381,33 @@ impl Cell {
         }))
     }
 
-    /// Number an order and hand it to the venue.
+    /// Number an order and hand it to the venue, or refuse it because the
+    /// venue is not a simulated one.
     ///
     /// The one place a `Placer` is called. Both the net path and the cycle
     /// path go through it, so an order that reaches a venue has been numbered
     /// by the cell's own sequence whichever seam produced it, and a second
     /// route to `gateway.place` — the shape of a control being bypassed —
-    /// would have to be written in the open.
+    /// would have to be written in the open. That is what makes this the seam
+    /// the venue class is checked at.
+    ///
+    /// `qip-execution-engine`'s order manager has refused a live venue below a
+    /// live level since it was written. The cell read the same bit and used it
+    /// only to stamp `simulated` onto the journal entry, so the one process on
+    /// this platform that places orders **without asking the central plane**
+    /// (ADR 0008) was the one that never compared its posture against the
+    /// class of venue it was sending to. The cell's ceiling is paper by
+    /// construction, which made that latent rather than live — but the safety
+    /// rules keep three independent layers precisely because "structurally
+    /// impossible today" and "checked" are different guarantees.
+    ///
+    /// Deliberately **stricter than the order manager**, which admits a live
+    /// venue once the level is live. A cell has no central check to fall back
+    /// on, so no ceiling makes a live venue admissible here and the refusal is
+    /// unconditional on the class. The ceiling is read to be *recorded* — an
+    /// operator reading the chain needs to know what posture was in force when
+    /// the order was stopped — and not to decide, because a ceiling in the
+    /// condition would be a live path waiting for a future constructor.
     #[allow(clippy::too_many_arguments)]
     fn send(
         &mut self,
@@ -2290,9 +2419,29 @@ impl Cell {
         now: Timestamp,
         gateway: &mut dyn Placer,
     ) -> Result<(String, bool)> {
+        let simulated = gateway.is_simulated();
+        if !simulated {
+            // Before the sequence is advanced: a refused order burns no order
+            // number, so the numbering stays a record of what the cell sent.
+            let reason = format!(
+                "{} is a live venue and this cell's ceiling is {}; live trading is disabled. \
+                 A cell decides alone and has no central check behind it, so it sends to a \
+                 simulated venue or it sends nothing",
+                venue.as_str(),
+                self.autonomy.ceiling().as_str()
+            );
+            self.metrics.refusal(GATE_LIVE_VENUE);
+            self.journal.record(
+                Decision::Refused {
+                    gate: GATE_LIVE_VENUE.to_string(),
+                    reason: reason.clone(),
+                },
+                now,
+            );
+            return Err(Error::denied(reason));
+        }
         self.order_sequence += 1;
         let order_id = format!("{}-{}", self.config.cell_id, self.order_sequence);
-        let simulated = gateway.is_simulated();
         gateway.place(&order_id, object_id, venue, side, quantity, price, now)?;
         Ok((order_id, simulated))
     }
@@ -4862,6 +5011,125 @@ mod crossing_tests {
         Ok(())
     }
 
+    /// A gateway whose class the test chooses, recording what it was asked to
+    /// place. `Placer::is_simulated` is a trait method any implementation may
+    /// answer `false` to — `qip-edge-node`'s two gateways both read it from
+    /// the adapter's own `Broker`, never from configuration — which is what
+    /// makes the refusal below a control that can fire rather than one held
+    /// shut by construction.
+    #[derive(Debug)]
+    struct ClassedGateway {
+        simulated: bool,
+        placed: Vec<String>,
+    }
+
+    impl Placer for ClassedGateway {
+        fn is_simulated(&self) -> bool {
+            self.simulated
+        }
+
+        fn place(
+            &mut self,
+            order_id: &str,
+            _object_id: &ObjectId,
+            _venue: &VenueId,
+            _side: BookSide,
+            _quantity: Decimal,
+            _price: Decimal,
+            _at: Timestamp,
+        ) -> Result<()> {
+            self.placed.push(order_id.to_string());
+            Ok(())
+        }
+    }
+
+    /// Two strategies wanting the same side, so the net does not cancel and
+    /// an order really is due at the venue.
+    fn one_sided_net(reference_price: Decimal) -> NetIntent {
+        netted(&[("alpha", "100"), ("beta", "40")], reference_price)
+    }
+
+    #[test]
+    fn the_send_seam_refuses_a_live_class_venue_and_the_gateway_is_never_called() -> Result<()> {
+        // `Cell::work` refuses a live-class gateway for the whole pass, so
+        // this drives `place_net` directly: the guarantee is that the *seam*
+        // holds, for any path that reaches a `Placer`, not that one caller
+        // happens to check first. The cell's order path had no refusal keyed
+        // on the venue class at all — it read `is_simulated` only to stamp
+        // the journal — while `qip-execution-engine`'s order manager has
+        // refused on the same bit since it was written.
+        let price = Decimal::parse("100").expect("a decimal literal");
+        let net_intent = one_sided_net(price);
+
+        // Premise: with a simulated gateway this very net reaches the venue.
+        // Without this the assertions below would pass against a cell that
+        // sends nothing for some entirely unrelated reason.
+        let mut cell = cell_with_book()?;
+        deploy_marketable(&mut cell, "alpha")?;
+        deploy_marketable(&mut cell, "beta")?;
+        let mut simulated = ClassedGateway {
+            simulated: true,
+            placed: Vec::new(),
+        };
+        let mut report = WorkReport::default();
+        let sent = cell.place_net(&net_intent, at(10), &mut simulated, &mut report)?;
+        assert!(
+            sent.is_some() && simulated.placed.len() == 1,
+            "the premise failed: the simulated gateway saw {:?} for a net that should send one \
+             order, refusals {:?}",
+            simulated.placed,
+            report.refusals
+        );
+
+        // The same net, the same cell shape, a gateway that says it is live.
+        let mut cell = cell_with_book()?;
+        deploy_marketable(&mut cell, "alpha")?;
+        deploy_marketable(&mut cell, "beta")?;
+        let mut live = ClassedGateway {
+            simulated: false,
+            placed: Vec::new(),
+        };
+        let mut report = WorkReport::default();
+        let before = cell.journal().entries().len();
+        let outcome = cell.place_net(&net_intent, at(10), &mut live, &mut report);
+
+        let error = match outcome {
+            Ok(placed) => panic!("a live-class gateway was handed an order: {placed:?}"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            live.placed.is_empty(),
+            "the venue was called anyway: {:?}",
+            live.placed
+        );
+        assert_eq!(
+            cell.order_sequence, 0,
+            "a refused order burned an order number, so the sequence no longer records what \
+             the cell sent"
+        );
+        assert!(
+            error.contains("live trading is disabled") && error.contains("paper_trading"),
+            "the refusal does not name the venue class or the ceiling in force: {error}"
+        );
+        // The gate is matched whole rather than by substring: a chain entry
+        // filed under `live_venue_something` must not read as this one.
+        let gates: Vec<String> = cell
+            .journal()
+            .entries()
+            .iter()
+            .skip(before)
+            .filter_map(|entry| match &entry.decision {
+                Decision::Refused { gate, .. } => Some(gate.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            gates.iter().any(|gate| gate == GATE_LIVE_VENUE),
+            "the chain does not name the {GATE_LIVE_VENUE} gate: {gates:?}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn a_fully_offsetting_net_is_out_of_cap_by_arithmetic_and_is_never_crossed() -> Result<()> {
         // §27.1's flagship case, and the one this cap cannot admit. The matched
@@ -5220,7 +5488,9 @@ mod polled_halt_tests {
     use qip_feature_dag::state::MarketState;
 
     fn cell() -> Result<Cell> {
-        let config = CellConfig::new("london-1", "europe-west2");
+        // A venue, because `CellConfig::validate` refuses a cell that has
+        // none: these tests are about the halt wire, not about assembly.
+        let config = CellConfig::new("london-1", "europe-west2").with_venue(VenueId::new("XLON"));
         let features = FeatureEngine::new(MarketState::default(), qip_core::Duration::from_secs(5));
         Cell::new(config, features)
     }

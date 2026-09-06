@@ -258,11 +258,22 @@ pub const ROUTES: &[Route] = &[
         summary: "profit, loss and realised against expected alpha",
         success: 200,
     },
+    // The summary says what the handler returns and not what a data-source
+    // surface would return, because the handler matches one expression and
+    // answers `available: false` unconditionally: no deployment of this
+    // process has ever served a source list, a health record, a freshness
+    // instant or a quality score. The previous summary — "discovered,
+    // approved and rejected data sources with health and licensing" —
+    // described an intent, and a console built against the route table was
+    // promising four fields no code path here can produce.
     Route {
         method: Method::Get,
         pattern: "/data-sources",
         required_role: Role::Viewer,
-        summary: "discovered, approved and rejected data sources with health and licensing",
+        summary: "why no source list is served: discovery, approval and rejection are the data \
+                  finder's and this deployment runs none, so the body is that refusal with the \
+                  reason and never an empty list. What each venue demands before it is read is \
+                  on /registrations",
         success: 200,
     },
     Route {
@@ -430,26 +441,45 @@ pub const ROUTES: &[Route] = &[
     //
     // The platform does everything about a venue registration except the
     // part that must be a person's. The list names, per catalogued source,
-    // what the venue demands, where the source stands, the terms to read,
-    // the deployment variable the credential is read under and the one
-    // command that fills it; the approval records that an operator did
-    // those things, under the operator's own authenticated subject. The
-    // fourth mutating route, and the typed intent it raises is
-    // `Platform::approve_registration`, which takes the same
-    // `OperatorIdentity` an autonomy change does and refuses a body whose
-    // secret looks like a key before the kernel sees it. Nothing a caller
-    // sends becomes a credential: the body carries a variable name, screened
-    // by the manifest's own shape rule, and the value stays in Secret
-    // Manager where the operator put it. The shapes are
-    // `crate::registration_views` and `ROUTES-REGISTRATIONS.md`.
+    // what the venue demands, where the source stands and the terms to read;
+    // the approval records that an operator did those things, under the
+    // operator's own authenticated subject. The fourth mutating route, and
+    // the typed intent it raises is `Platform::approve_registration`, which
+    // takes the same `OperatorIdentity` an autonomy change does and refuses
+    // a body whose secret looks like a key before the kernel sees it.
+    // Nothing a caller sends becomes a credential: the body carries a
+    // variable name, screened by the manifest's own shape rule, and the
+    // value stays in Secret Manager where the operator put it. The shapes
+    // are `crate::registration_views` and `ROUTES-REGISTRATIONS.md`.
+    //
+    // Two read routes rather than one whose body varies by caller. The slot
+    // a credential is read under, and the `gcloud` line that writes one, are
+    // facts about this deployment's secret store rather than about a venue,
+    // and they were being served to a viewer credential — reproduced on the
+    // wire before this split existed. Splitting them onto their own
+    // operator-role route keeps this table a true statement of what the API
+    // permits: a `Role::Viewer` row that served operator material to an
+    // operator would mean a security review had to read the handlers, which
+    // is exactly what the table exists to avoid.
     Route {
         method: Method::Get,
         pattern: "/registrations",
         required_role: Role::Viewer,
         summary: "every catalogued source with its registration requirement, standing \
-                  (keyless, registered by whom, or pending and why), the terms to read, the \
-                  deployment variable the credential is read under and the Secret Manager \
-                  command that fills it — names only, never a value",
+                  (keyless, registered by whom, or pending and why) and the terms to read — \
+                  and no credential slot: the deployment variable and the Secret Manager \
+                  command that fills it are on /registrations/slots, at the operator role",
+        success: 200,
+    },
+    Route {
+        method: Method::Get,
+        pattern: "/registrations/slots",
+        required_role: Role::Operator,
+        summary: "the same list with the credential slots beside each source: the deployment \
+                  variable the connector manifest reads the credential under, the one Secret \
+                  Manager command that puts a version behind it, any companion variable, and \
+                  the variable the registration record itself names — names only, never a \
+                  value",
         success: 200,
     },
     Route {
@@ -1075,7 +1105,19 @@ impl Api {
                 );
                 Response::json(status, body)
             }
+            // The viewer's list: requirement, standing, terms. The slot a
+            // credential is read under is not on it — see
+            // `/registrations/slots` below and the module comment in
+            // `registration_views`.
             (Method::Get, "/registrations") => {
+                let (status, body) = crate::ledger_views::render_fallible(
+                    crate::registration_views::standings(&platform, now),
+                );
+                Response::json(status, body)
+            }
+            // The operator's list: the same rows with the deployment
+            // variables and the commands that fill them.
+            (Method::Get, "/registrations/slots") => {
                 let (status, body) = crate::ledger_views::render_fallible(
                     crate::registration_views::registrations(&platform, now),
                 );
@@ -1276,6 +1318,7 @@ impl Api {
                                 .whitelist
                                 .iter()
                                 .chain(policy_pending.shares.iter())
+                                .chain(policy_pending.episodic.iter())
                             {
                                 eprintln!("qip-api: {line}");
                             }

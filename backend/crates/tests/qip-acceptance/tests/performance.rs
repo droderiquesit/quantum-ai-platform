@@ -78,6 +78,19 @@ use qip_strategy::runtime::StrategyRuntime;
 use std::collections::BTreeMap;
 use std::time::{Duration as WallDuration, Instant};
 
+/// The liquidity every fixture in this file states, because nothing states it
+/// for them any more.
+///
+/// [`qip_financial::costs::LiquidityProfile`] has no `Default`: the one it had
+/// asserted a 10bp quote and a one-session exit for any instrument at all, and
+/// `MinLiquidity` and `MaxDaysToLiquidate` — controls whose job is to veto
+/// trading — read exactly those two figures. A fixture may state its own
+/// premise; it may not inherit one nobody wrote down. A liquid listed name on
+/// five million units a day, quoted at three basis points.
+fn fixture_liquidity() -> qip_financial::costs::LiquidityProfile {
+    qip_financial::costs::LiquidityProfile::listed(qip_core::Decimal::from_int(5_000_000), 3.0)
+}
+
 // --- measurement ------------------------------------------------------------
 
 fn start() -> Timestamp {
@@ -560,8 +573,16 @@ fn the_risk_decision_costs_what_the_budget_says() -> Result<()> {
         object_id: object("ACME"),
         quantity: dec!("1000"),
         reference_price: dec!("100"),
-        axes: BTreeMap::from([("sector".to_string(), "information_technology".to_string())]),
-        counterparty: Some("broker-a".to_string()),
+        // The counterparty is one more exposure axis rather than a field of
+        // its own — see `ProposedOrder::axes` — so the projection walks two
+        // buckets here, which is what the budget below is measured against.
+        axes: BTreeMap::from([
+            ("sector".to_string(), "information_technology".to_string()),
+            (
+                qip_risk::limits::COUNTERPARTY_AXIS.to_string(),
+                "broker-a".to_string(),
+            ),
+        ]),
         scope: "performance".to_string(),
     };
 
@@ -751,6 +772,7 @@ fn the_cycle_cost_stops_growing_once_the_history_working_sets_reach_their_bounds
                     object(symbol),
                     symbol,
                     qip_financial::asset_class::InstrumentType::CommonStock,
+                    fixture_liquidity(),
                 )
                 .venue("XNYS")
                 .sector(qip_financial::asset_class::Sector::InformationTechnology)

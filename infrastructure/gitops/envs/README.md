@@ -46,9 +46,28 @@ so Config Connector's first reconcile acquires and changes nothing:
 
 The egress bootstrap and `universe.json` reach the running services as Cloud
 Storage volumes (`gcs { bucket, read_only }` on the Terraform resource). The
-Config Connector `RunService` reference lists no `gcs` volume. These
-manifests carry them anyway, as the services run, and the Application syncs
-with `Validate=true`. Three outcomes are possible on the first sync of
+Config Connector `RunService` reference lists no `gcs` volume — and that is
+now a schema reading rather than a documentation reading. The CRD the
+vendored operator version installs was fetched and its volume schema
+enumerated on 2026-09-06:
+
+```
+curl -sS https://raw.githubusercontent.com/GoogleCloudPlatform/k8s-config-connector/v1.156.0/config/crds/resources/apiextensions.k8s.io_v1_customresourcedefinition_runservices.run.cnrm.cloud.google.com.yaml
+sha256  e698dadd47be2595a9f6395b796abc670317dc16fdc56a97b31471363ab0d081
+  (byte-identical at the `master` branch, so this is not a stale tag)
+grep -ci gcs  →  0
+spec.template.volumes items: cloudSqlInstance, emptyDir, name, secret
+```
+
+Four properties, and `gcs` is not one of them; nor is `nfs`. What was not
+checked, because this environment's proxy refuses the GitHub contents API,
+is whether a second CRD elsewhere in that directory serves the same kind —
+so read this as "the CRD that generates `run.cnrm.cloud.google.com/v1beta1
+RunService` from the Terraform provider carries no `gcs` volume", which is
+the one these manifests are validated against.
+
+These manifests carry them anyway, as the services run, and the Application
+syncs with `Validate=true`. Three outcomes are possible on the first sync of
 `dev`, and only the third is acceptable:
 
 1. The schema does not admit `gcs` and the sync is refused with a
@@ -67,6 +86,50 @@ What must not happen is a schema that prunes the unknown field and a
 reconcile that removes the mount: a process that starts with no
 `universe.json` at the path it was told, and a proxy with no bootstrap.
 `Validate=true` is the line between outcome 1 and that.
+
+## The metrics collector, when a digest is finally pinned
+
+No manifest here carries one, and none may until an environment names
+`metrics_collector_image_digest`: the parity test in `gitops.rs` counts
+`qip-metrics-collector` containers and asserts the count equals
+"the catalogue entry asks for one **and** the environment names a digest".
+A sidecar written in ahead of the digest is a container Binary
+Authorization refuses at admission, which reads as a broken deploy rather
+than as a missing collector. The digest is refused upstream today —
+`modules/observability/NOT-SCRAPED.md` has the finding and the commands.
+
+What is already correct, so that the day it is pinned this is a mechanical
+edit rather than a design: `modules/cloudrun` publishes the `RunMonitoring`
+document as `config.yaml` at the **root** of `qip-metrics-<env>-<name>-<project>`,
+and exports `collector_mount_path` (`/etc/rungmp`) and
+`collector_config_path` (`/etc/rungmp/config.yaml`). The second is not a
+setting: it is the only path the sidecar's entrypoint opens. The two
+fragments the manifest for `fastbrain` and `deepbrain` then needs, and
+nothing else — the sidecar carries no environment, no secret and no
+identity of its own:
+
+```yaml
+    - name: qip-metrics-collector
+      image: cloud-run-gmp-sidecar        # a logical name; kustomization.yaml pins the digest
+      volumeMounts:
+      - name: metrics-collector-config
+        mountPath: /etc/rungmp            # modules/cloudrun's collector_mount_path
+      resources:
+        limits:
+          cpu: '1'
+          memory: 256Mi
+    volumes:
+    - name: metrics-collector-config
+      gcs:
+        bucket: qip-metrics-<env>-<name>-<project>
+        readOnly: true
+```
+
+That volume is a `gcs` volume, so it is subject in full to the section
+above: if the schema prunes `gcs`, the collector mounts nothing, reads its
+built-in default and scrapes a target nobody chose. Prove the mount before
+believing a scrape, and do not flip `workload_metrics_exist` on a manifest
+that merely applied.
 
 ## Other fields whose accepted form was not confirmable offline
 

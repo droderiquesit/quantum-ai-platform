@@ -35,6 +35,19 @@ use qip_kernel::platform::Platform;
 use qip_observability::Telemetry;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 
+/// The liquidity every fixture in this file states, because nothing states it
+/// for them any more.
+///
+/// [`qip_financial::costs::LiquidityProfile`] has no `Default`: the one it had
+/// asserted a 10bp quote and a one-session exit for any instrument at all, and
+/// `MinLiquidity` and `MaxDaysToLiquidate` — controls whose job is to veto
+/// trading — read exactly those two figures. A fixture may state its own
+/// premise; it may not inherit one nobody wrote down. A liquid listed name on
+/// five million units a day, quoted at three basis points.
+fn fixture_liquidity() -> qip_financial::costs::LiquidityProfile {
+    qip_financial::costs::LiquidityProfile::listed(qip_core::Decimal::from_int(5_000_000), 3.0)
+}
+
 fn start() -> Timestamp {
     Timestamp::from_civil(2026, 3, 1)
 }
@@ -69,6 +82,7 @@ fn private_object(symbol: &str, details: PrivateAssetDetails) -> Result<Financia
         ObjectId::from_string(format!("obj-{symbol}")),
         symbol,
         InstrumentType::PrivateEquityFund,
+        fixture_liquidity(),
     )
     .venue("OTC")
     .geography("US")
@@ -83,6 +97,7 @@ fn equity(symbol: &str) -> Result<FinancialObject> {
         ObjectId::from_string(format!("obj-{symbol}")),
         symbol,
         InstrumentType::CommonStock,
+        fixture_liquidity(),
     )
     .venue("XNYS")
     .geography("US")
@@ -351,6 +366,7 @@ fn private_object_at(
         ObjectId::from_string(format!("obj-{symbol}")),
         symbol,
         InstrumentType::PrivateEquityFund,
+        fixture_liquidity(),
     )
     .venue("OTC")
     .geography("US")

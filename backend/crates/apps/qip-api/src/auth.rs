@@ -19,6 +19,34 @@ use std::collections::BTreeMap;
 ///
 /// Ordered from least to most authority, and every level implies the ones
 /// below it.
+///
+/// # There was a fifth, and it authorised nothing
+///
+/// `Approver` — "approve or veto a proposal" — sat between `Analyst` and
+/// `Operator` here, was minted from `QIP_TOKEN_APPROVER`, and had a Secret
+/// Manager container mounted into all four environments. No route ever
+/// required it: `required_role: Role::Approver` appeared zero times in
+/// `crate::routes::ROUTES` while the other four appeared 4, 38, 2 and 5 times.
+/// So a holder of that token could do exactly what an analyst token could do,
+/// and the credential existed only to be rotated.
+///
+/// It was removed rather than wired, and the reason matters more than the
+/// removal. The only approval this API exposes is
+/// `POST /registrations/:source/approve`, which requires `Operator`: giving
+/// the dead role that route would have *lowered* a live control to find it
+/// something to do. Approving a *proposal* is not an API action at all —
+/// `qip_portfolio_engine::proposal::Proposal::approve` takes at least two
+/// controls, risk and compliance, supplied by the kernel — and it is not the
+/// live-trading second person either, which is
+/// `qip_risk_engine::autonomy::OperatorIdentity::with_second_approver` and is
+/// untouched by any of this.
+///
+/// The refusal for a deployment still carrying the variable lives in
+/// `qip-api`'s composition root, beside the read it replaces, and not in
+/// [`Role::parse`]: `parse` has no production caller, so a refusal here could
+/// never fire, and a control that cannot fire reads as protection and is not.
+/// `every_role_the_api_defines_is_required_by_at_least_one_route` in
+/// `tests/api.rs` is what stops a sixth role arriving the same way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
@@ -28,8 +56,6 @@ pub enum Role {
     Viewer,
     /// Read, and run research operations that change nothing.
     Analyst,
-    /// Approve or veto a proposal.
-    Approver,
     /// Change the autonomy level, clear the kill switch, halt the platform.
     Operator,
 }
@@ -40,7 +66,6 @@ impl Role {
             Self::Monitor => "monitor",
             Self::Viewer => "viewer",
             Self::Analyst => "analyst",
-            Self::Approver => "approver",
             Self::Operator => "operator",
         }
     }
@@ -50,7 +75,6 @@ impl Role {
             "monitor" => Ok(Self::Monitor),
             "viewer" => Ok(Self::Viewer),
             "analyst" => Ok(Self::Analyst),
-            "approver" => Ok(Self::Approver),
             "operator" => Ok(Self::Operator),
             other => Err(Error::invalid(format!("unknown role: {other}"))),
         }

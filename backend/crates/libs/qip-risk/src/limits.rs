@@ -14,6 +14,31 @@ use qip_core::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// The exposure axis [`LimitKind::MaxCounterpartyExposure`] reads.
+///
+/// One literal, exported, because the producer and the reader are in different
+/// crates: `qip-kernel` charges each fill to a bucket under this name and this
+/// module looks it up. An axis spelled two ways is a limit that cannot fire,
+/// and this cap has already been one — see the field it replaced on
+/// [`RiskState`].
+pub const COUNTERPARTY_AXIS: &str = "counterparty";
+
+/// The name [`RiskState::with_tail_risk`] files its value-at-risk refusal
+/// under, when the return series it was handed cannot be measured.
+///
+/// Exported for the same reason as [`COUNTERPARTY_AXIS`]: the producer and
+/// every reader of [`RiskState::unevaluated`] must spell the figure one way.
+/// A refusal filed under a name nobody looks up is a refusal nobody reads.
+pub const VALUE_AT_RISK_FIGURE: &str = "value_at_risk";
+
+/// The name [`RiskState::with_tail_risk`] files its expected-shortfall
+/// refusal under. See [`VALUE_AT_RISK_FIGURE`].
+pub const EXPECTED_SHORTFALL_FIGURE: &str = "expected_shortfall";
+
+/// The name [`RiskState::with_tail_risk`] files its volatility refusal under.
+/// See [`VALUE_AT_RISK_FIGURE`].
+pub const VOLATILITY_FIGURE: &str = "volatility";
+
 /// How serious a breach is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -96,6 +121,20 @@ pub enum LimitKind {
     /// Maximum days to exit a single position.
     MaxDaysToLiquidate { limit: f64 },
     /// Maximum gross exposure to one counterparty, as a fraction of equity.
+    ///
+    /// Read from the [`COUNTERPARTY_AXIS`] bucket of [`RiskState::axis_exposures`],
+    /// which is the same running per-bucket counter every other axis limit
+    /// reads and is maintained by [`crate::aggregate::RiskAggregates::apply_fill`].
+    ///
+    /// It used to read a `RiskState::counterparty_exposures` map of its own,
+    /// and that map had no producer anywhere: the sole writer was
+    /// `PreTradeChecker::project`, which added the *change in one instrument's*
+    /// exposure to an always-empty starting balance, and both production
+    /// callers of the execution engine's submit path named no counterparty at
+    /// all. So the cap could not fire — and had the call sites simply started
+    /// naming one, it would have fired against a per-order number wearing a
+    /// book-level name, which is worse. Two representations of one fact
+    /// disagree eventually; there is now one.
     MaxCounterpartyExposure { limit: f64 },
     /// Minimum cash as a fraction of equity.
     MinCashBuffer { limit: f64 },
@@ -141,8 +180,12 @@ impl LimitKind {
     /// monotone in size — converges to zero and refuses everything. Nothing
     /// about the threshold could have fixed that.
     ///
-    /// The match is exhaustive with no wildcard, so a seventeenth kind cannot
-    /// be added without someone answering this question about it. That is the
+    /// The match is exhaustive with no wildcard, so an eighteenth kind cannot
+    /// be added without someone answering this question about it. There are
+    /// seventeen — `grep -c '=> "max_\|=> "min_' src/limits.rs` — and this
+    /// sentence said "a seventeenth" after the count had already reached it,
+    /// which would have let the next author think the arm they were adding was
+    /// the one the rule already covered. That is the
     /// whole point of the method: the question was never asked of
     /// `MaxConcentration`, and it shipped in every default set.
     pub fn denominator_moves_with_the_order(&self) -> bool {
@@ -209,7 +252,32 @@ impl Limit {
     /// Evaluate an observed value against the limit.
     ///
     /// `observed` and `bound` are in the limit's own units.
-    fn assess(&self, observed: f64, bound: f64) -> Option<Severity> {
+    ///
+    /// **A figure that is not a finite number is refused, never compared.**
+    /// IEEE-754 makes every ordering comparison against a `NaN` false in both
+    /// directions, so `observed > bound` and `observed < bound` used to answer
+    /// "no breach" to a figure nobody could compute, and the limit went on
+    /// counting in [`LimitCheck::evaluated`]. The two thresholds are checked
+    /// for the same reason: `bound * NaN` is `NaN`, so a non-finite
+    /// [`Self::warning_threshold`] silences the warning arm and a non-finite
+    /// [`Self::critical_multiple`] downgrades every critical breach, both
+    /// without anything reading as wrong.
+    ///
+    /// The infinity [`RiskState::ratio`] answers on non-positive equity comes
+    /// through this arm too, and that is a strengthening rather than a
+    /// regression: it used to breach every *ceiling* by ordinary arithmetic
+    /// and pass every *floor* silently, because `inf < 0.02` is false, so an
+    /// insolvent book was inside its cash buffer. One rule now covers both
+    /// directions.
+    fn assess(&self, observed: f64, bound: f64) -> Assessment {
+        if !observed.is_finite()
+            || !bound.is_finite()
+            || !self.warning_threshold.is_finite()
+            || !self.critical_multiple.is_finite()
+        {
+            return Assessment::Uncomparable;
+        }
+
         if self.kind.is_minimum() {
             if observed < bound {
                 let shortfall = if bound > 1e-12 {
@@ -217,16 +285,16 @@ impl Limit {
                 } else {
                     1.0
                 };
-                return Some(if shortfall > self.critical_multiple - 1.0 {
+                return Assessment::Binds(if shortfall > self.critical_multiple - 1.0 {
                     Severity::Critical
                 } else {
                     Severity::Breach
                 });
             }
             if bound > 1e-12 && observed < bound / self.warning_threshold.max(1e-9) {
-                return Some(Severity::Warning);
+                return Assessment::Binds(Severity::Warning);
             }
-            return None;
+            return Assessment::Within;
         }
 
         if observed > bound {
@@ -235,17 +303,44 @@ impl Limit {
             } else {
                 f64::INFINITY
             };
-            return Some(if ratio >= self.critical_multiple {
+            return Assessment::Binds(if ratio >= self.critical_multiple {
                 Severity::Critical
             } else {
                 Severity::Breach
             });
         }
         if bound > 1e-12 && observed > bound * self.warning_threshold {
-            return Some(Severity::Warning);
+            return Assessment::Binds(Severity::Warning);
         }
-        None
+        Assessment::Within
     }
+}
+
+/// What comparing one observed figure against one bound established.
+///
+/// Three arms rather than the `Option<Severity>` this replaced, because that
+/// `None` merged two facts a risk desk must be able to tell apart: the
+/// comparison was made and the book is inside the limit, and the comparison
+/// could not be made at all. Merged, the second reads at the venue exactly
+/// like the first — no breach — which is the shape of defect this crate has
+/// already shipped twice, as `MaxExpectedShortfall` over an always-empty map
+/// and as the `daily-loss` cap over a field no producer wrote. A non-finite
+/// observation is worse than either, because it arrives from arithmetic
+/// rather than from a missing writer and so disarms *every* limit that reads
+/// the poisoned figure rather than one.
+///
+/// The enum is exhaustively matched at the single call site with no wildcard,
+/// so a fourth outcome cannot be added without someone deciding whether it
+/// blocks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Assessment {
+    /// The comparison was made and the observation is inside the limit.
+    Within,
+    /// The comparison was made and the limit binds at this severity.
+    Binds(Severity),
+    /// The comparison was not made, because one of the four numbers it needs
+    /// is not a finite number.
+    Uncomparable,
 }
 
 /// A limit that bound, and by how much.
@@ -294,12 +389,52 @@ pub struct RiskState {
     pub drawdown: f64,
     /// Loss today as a fraction of equity, positive for a loss.
     pub daily_loss: f64,
-    /// Days to liquidate each position.
+    /// Days to liquidate each position, as the caller's liquidity model has
+    /// marked it. Supplied, never derived here: a day count comes from average
+    /// daily volume and market depth, and this crate holds neither.
     pub days_to_liquidate: BTreeMap<String, f64>,
-    /// Fraction of the portfolio liquidatable within a given number of days.
+    /// Fraction of the portfolio liquidatable within a given number of days,
+    /// keyed by `{days:.0}` — exactly as [`LimitKind::MinLiquidity`] formats
+    /// its own lookup.
+    ///
+    /// **Filled by one producer, and that producer is not this crate.**
+    /// `qip-kernel`'s `Platform::liquidatable_within` sums a
+    /// `qip_financial::ladder::LiquidityLadder` whose construction *proved*
+    /// that exit cost rises as the ladder descends, and files
+    /// [`Self::unevaluated`] when it cannot. This crate held a second
+    /// derivation — `RiskState::with_liquidity_horizons`, which refiltered
+    /// `days_to_liquidate` into the same ratio — and it is gone rather than
+    /// repaired, for two reasons that are worth keeping written down because
+    /// the obvious fix was to repair it:
+    ///
+    /// * It could not file an honest refusal. Handed a book with holdings and
+    ///   no marks, it returned the state unchanged, so a reader saw the same
+    ///   empty map a passing floor produces. Filing [`Self::unevaluated`]
+    ///   instead would have meant *guessing why* somebody else's liquidity
+    ///   model produced nothing — "never run" and "run and refused" are the
+    ///   caller's facts, not this crate's, and [`Self::with_unevaluated`]
+    ///   exists precisely so the producer states its own reason.
+    /// * Two derivations of one number disagree eventually, and the louder one
+    ///   is wrong. A refilter of a flat map cannot notice that the rung
+    ///   classification underneath it contradicts the reference data; the
+    ///   ladder refuses on exactly that.
+    ///
+    /// So a state whose producer computes no liquidity leaves this empty, and
+    /// [`LimitKind::MinLiquidity`] records nothing — which is safe only
+    /// because that producer files [`Self::unevaluated`] and
+    /// `PreTradeChecker::check` refuses on it. Anything that fills this map
+    /// without being able to explain its own silence re-opens the gap.
     pub liquidatable_within: BTreeMap<String, f64>,
-    /// Gross exposure per counterparty.
-    pub counterparty_exposures: BTreeMap<String, Decimal>,
+    // Gross exposure per counterparty used to be a map of its own here. It is
+    // now a bucket of `axis_exposures` under `COUNTERPARTY_AXIS`, because the
+    // separate map had no producer: `RiskState::from_figures` never filled it,
+    // no aggregate counted it, and the only writer was
+    // `PreTradeChecker::project` adding one instrument's delta to an empty
+    // balance. `MaxCounterpartyExposure` therefore evaluated an empty loop on
+    // every book while counting in `LimitCheck::evaluated`. Charging the
+    // counterparty as an axis puts it on the same running per-bucket counter
+    // every other axis limit already reads, so there is one derivation of the
+    // number rather than two.
     /// Notional of the order being checked, when checking one.
     pub order_notional: Option<Decimal>,
     /// Instrument the order concerns.
@@ -334,6 +469,16 @@ pub struct RiskState {
 }
 
 impl RiskState {
+    /// `value` as a fraction of equity, or infinity when there is no equity to
+    /// divide by.
+    ///
+    /// The infinity is a statement that the ratio is undefined, and
+    /// [`Limit::assess`] now reads it as one: a non-positive-equity book
+    /// refuses every limit measured against equity. It used to breach the
+    /// ceilings by ordinary arithmetic and pass the floors in silence — `inf`
+    /// is not less than a cash-buffer bound of 0.02 — so an insolvent book was
+    /// reported as inside the one limit that exists to notice it had run out
+    /// of money.
     fn ratio(&self, value: Decimal) -> f64 {
         if !self.equity.is_positive() {
             return f64::INFINITY;
@@ -395,8 +540,54 @@ impl RiskState {
     /// volatility field untouched rather than recording zero, because a zero
     /// nobody computed would pass every one of these limits and look like
     /// evidence the book has no risk at all.
+    ///
+    /// **A series carrying a value that is not finite is refused here rather
+    /// than measured**, and the refusal is filed under [`Self::unevaluated`]
+    /// for each of the three figures the limit set actually asked for, so
+    /// `PreTradeChecker::check` rejects while it stands. It cannot be left for
+    /// [`Limit::assess`] to catch downstream, because one poisoned return
+    /// leaves the three figures disagreeing about whether they were
+    /// measurable at all: `qip_numerics::stats::quantile` *filters* non-finite
+    /// values before it sorts, so value at risk and expected shortfall come
+    /// back finite, plausible, and computed over a series that is not the one
+    /// supplied — a measurement of a book that does not exist — while
+    /// `stats::stddev` propagates, so volatility comes back `NaN`. Only the
+    /// second of those is visible to a comparison. Refusing the input is the
+    /// only place both are caught.
+    ///
+    /// Filing [`Self::unevaluated`] from here is not the move
+    /// `with_liquidity_horizons` was deleted for making. That method would
+    /// have had to invent a reason for somebody else's silence; this one is
+    /// the producer of these three figures and states its own — which index of
+    /// the series it could not use, and what was there.
     pub fn with_tail_risk(mut self, limits: &LimitSet, returns: &[f64]) -> Self {
         if returns.len() < 2 {
+            return self;
+        }
+        if let Some((index, value)) = returns
+            .iter()
+            .enumerate()
+            .find(|(_, value)| !value.is_finite())
+        {
+            let refusal = format!(
+                "return {index} of {} is {value}, so the series cannot be measured; the tail \
+                 statistics are not derived from it",
+                returns.len()
+            );
+            for limit in &limits.limits {
+                match limit.kind {
+                    LimitKind::MaxValueAtRisk { .. } => {
+                        self = self.with_unevaluated(VALUE_AT_RISK_FIGURE, refusal.as_str());
+                    }
+                    LimitKind::MaxExpectedShortfall { .. } => {
+                        self = self.with_unevaluated(EXPECTED_SHORTFALL_FIGURE, refusal.as_str());
+                    }
+                    LimitKind::MaxVolatility { .. } => {
+                        self = self.with_unevaluated(VOLATILITY_FIGURE, refusal.as_str());
+                    }
+                    _ => {}
+                }
+            }
             return self;
         }
         for limit in &limits.limits {
@@ -421,70 +612,6 @@ impl RiskState {
         }
         self
     }
-
-    /// Populate the fraction of the book liquidatable within each configured
-    /// [`LimitKind::MinLiquidity`] horizon, from `days_to_liquidate` and
-    /// `position_notionals` this state already carries.
-    ///
-    /// [`LimitKind::MinLiquidity`] looks its figure up in `liquidatable_within`,
-    /// keyed by horizon, and records nothing when the key is absent — the same
-    /// shape of failure [`Self::with_tail_risk`] closed for the tail limits.
-    /// [`LimitSet::conservative_default`] has shipped a `liquidity` limit since
-    /// before this method existed, and nothing filled the map it reads: the
-    /// limit took its `None` arm on every book. A control that cannot fire
-    /// reads as protection and is not.
-    ///
-    /// An instrument with no entry in `days_to_liquidate` is **not** treated
-    /// as liquidatable — its notional still counts in the denominator, so it
-    /// pulls the ratio down rather than being dropped from both sides. A
-    /// fraction computed only over the positions with a known exit time would
-    /// read more liquid the less anyone had told it, which is the wrong
-    /// direction for a floor to fail in; refusing to guess an unknown exit
-    /// time is the fail-closed choice.
-    ///
-    /// The key is `{days:.0}`, formatted exactly as the limit's own lookup
-    /// formats it when it reads — one rule, not two copies of the same
-    /// format a rounding boundary could separate.
-    ///
-    /// Leaves `liquidatable_within` untouched when the book holds no
-    /// positions: an empty book has nothing to be illiquid, and recording a
-    /// fabricated `1.0` for a ratio nobody measured is the same mistake in
-    /// the other direction.
-    ///
-    /// Also leaves it untouched when `days_to_liquidate` itself is empty —
-    /// nobody has marked a single instrument, which is a book that has never
-    /// been measured, not a book with zero liquid positions. The fail-closed
-    /// rule above governs *partial* coverage, once measurement has started;
-    /// it does not manufacture a floor-breaching `0.0` for a book a caller
-    /// has not marked at all, the same way an all-too-short return series
-    /// leaves the tail maps empty in [`Self::with_tail_risk`] rather than
-    /// recording a zero nobody computed.
-    pub fn with_liquidity_horizons(mut self, limits: &LimitSet) -> Self {
-        if self.days_to_liquidate.is_empty() {
-            return self;
-        }
-        let total: Decimal = self.position_notionals.values().map(|v| v.abs()).sum();
-        if !total.is_positive() {
-            return self;
-        }
-        for limit in &limits.limits {
-            if let LimitKind::MinLiquidity { days, .. } = limit.kind {
-                let liquidatable: Decimal = self
-                    .position_notionals
-                    .iter()
-                    .filter(|(instrument, _)| {
-                        self.days_to_liquidate
-                            .get(instrument.as_str())
-                            .is_some_and(|exit_days| *exit_days <= days)
-                    })
-                    .map(|(_, notional)| notional.abs())
-                    .sum();
-                self.liquidatable_within
-                    .insert(format!("{days:.0}"), liquidatable.to_f64() / total.to_f64());
-            }
-        }
-        self
-    }
 }
 
 /// The outcome of checking a state against a limit set.
@@ -502,10 +629,34 @@ impl LimitCheck {
     }
 
     /// Whether the state requires reducing risk, not merely stopping.
+    ///
+    /// **This implies [`Self::is_blocked`]** — a breach that forces a
+    /// reduction is a breach that blocks — and the implication is the reason
+    /// the order of the two questions matters at every call site. The one
+    /// production caller, `qip_investment_agents`'s `RiskControl`, asked
+    /// `is_blocked()` first and this second, so the second arm was unreachable
+    /// and the `forcing_reduction()` marks on the shipped `leverage`,
+    /// `drawdown` and `daily-loss` limits changed nothing anywhere. Ask this
+    /// one first.
     pub fn requires_reduction(&self) -> bool {
-        self.breaches
-            .iter()
-            .any(|b| b.blocks() && b.forces_reduction)
+        !self.forcing_reduction().is_empty()
+    }
+
+    /// The breaches that block *and* demand the book be brought back inside
+    /// the limit, worst first.
+    ///
+    /// Separate from [`Self::blocking`] because the two answer different
+    /// questions for an operator: how many limits stop new risk, and how many
+    /// of those the desk declared cannot be left standing. A caller that had
+    /// only the first had to report the blocking count on both arms, which is
+    /// how the reduction arm came to describe itself with
+    /// `blocking.len().max(1)` — a number that is right only when every
+    /// blocking breach happens to force a reduction.
+    pub fn forcing_reduction(&self) -> Vec<&LimitBreach> {
+        self.blocking()
+            .into_iter()
+            .filter(|breach| breach.forces_reduction)
+            .collect()
     }
 
     /// Breaches that block, worst first.
@@ -598,23 +749,45 @@ impl LimitSet {
     fn evaluate(&self, limit: &Limit, state: &RiskState) -> Vec<LimitBreach> {
         let mut out = Vec::new();
         let mut record = |observed: f64, bound: f64, subject: Option<String>, detail: String| {
-            if let Some(severity) = limit.assess(observed, bound) {
-                out.push(LimitBreach {
-                    limit_name: limit.name.clone(),
-                    limit_kind: limit.kind.label().to_string(),
-                    severity,
-                    observed,
-                    bound,
-                    utilisation: if bound.abs() > 1e-12 {
-                        observed / bound
-                    } else {
-                        f64::INFINITY
-                    },
-                    subject,
-                    detail,
-                    forces_reduction: limit.forces_reduction,
-                });
-            }
+            let (severity, detail) = match limit.assess(observed, bound) {
+                Assessment::Within => return,
+                Assessment::Binds(severity) => (severity, detail),
+                // Blocking, and [`Severity::Critical`] rather than
+                // [`Severity::Breach`] because the two mean different things
+                // to the desk: a breach is fixed by sending less, and a figure
+                // that is not a number is not fixed by sending less at all —
+                // it is fixed by whoever produced it. That is exactly the
+                // "intervention beyond blocking one order" the arm names.
+                //
+                // `observed` and `bound` are carried through untouched. A
+                // substituted figure would read downstream as a measurement,
+                // and the whole defect being closed here is a number nobody
+                // computed being read as one somebody did.
+                Assessment::Uncomparable => (
+                    Severity::Critical,
+                    format!(
+                        "{detail}: {observed} against a bound of {bound} is not a comparison — \
+                         a limit is not evaluated against a figure that is not a finite number, \
+                         so the order is refused rather than passed; correct the producer of \
+                         the figure, not the limit"
+                    ),
+                ),
+            };
+            out.push(LimitBreach {
+                limit_name: limit.name.clone(),
+                limit_kind: limit.kind.label().to_string(),
+                severity,
+                observed,
+                bound,
+                utilisation: if bound.abs() > 1e-12 {
+                    observed / bound
+                } else {
+                    f64::INFINITY
+                },
+                subject,
+                detail,
+                forces_reduction: limit.forces_reduction,
+            });
         };
 
         match &limit.kind {
@@ -693,11 +866,12 @@ impl LimitSet {
                 for (bucket, value) in buckets {
                     // No guard on a zero denominator and no early return:
                     // `RiskState::ratio` answers `f64::INFINITY` on
-                    // non-positive equity, so a book with no equity fails
-                    // every weight limit instead of silently skipping them.
-                    // The share-of-gross arm above returns early on a zero
-                    // axis total, and that early return is the fail-open half
-                    // of the same defect.
+                    // non-positive equity, which `Limit::assess` refuses as a
+                    // comparison it could not make, so a book with no equity
+                    // fails every weight limit instead of silently skipping
+                    // them. The share-of-gross arm above returns early on a
+                    // zero axis total, and that early return is the fail-open
+                    // half of the same defect.
                     record(
                         state.ratio(value.abs()),
                         *bound,
@@ -798,7 +972,15 @@ impl LimitSet {
                 }
             }
             LimitKind::MaxCounterpartyExposure { limit: bound } => {
-                for (counterparty, value) in &state.counterparty_exposures {
+                // An absent axis records nothing, exactly as `MaxAxisWeight`
+                // treats an absent axis: a book whose fills were never charged
+                // to a counterparty made no statement about counterparty
+                // concentration, and inventing a breach for it would refuse
+                // orders over reference data rather than over the book.
+                let Some(counterparties) = state.axis_exposures.get(COUNTERPARTY_AXIS) else {
+                    return out;
+                };
+                for (counterparty, value) in counterparties {
                     record(
                         state.ratio(value.abs()),
                         *bound,

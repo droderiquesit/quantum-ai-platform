@@ -23,18 +23,24 @@
  *   which would report a source the platform is refusing as fine — asserted
  *   on the contract's own `kalshi-markets` row, which needs an account and
  *   still answers `secret_slot: null`;
+ * * **the operator list's refusal rendered as either of those**, or as a
+ *   blank cell, which would turn "this console may not see the slot" into
+ *   "this source needs no credential" — the two are opposite facts and the
+ *   refusal is the one a deployed console actually meets;
  * * a refusal that echoes the value it refused, which would write a pasted
  *   key back onto the screen;
  * * the page without the paper-trading label, or with a control that could
  *   submit an order.
  *
  * The bodies are the examples in `backend/crates/apps/qip-api/ROUTES-REGISTRATIONS.md`
- * — `standing` tagged on its own `standing` key, `secret_command` beside
- * `secret_slot`, companions listed — with Alpaca moved back to pending so
- * there is something to approve, and one extra row for the `requirement: null`
- * arm the contract's table names. The refusal texts are the platform's own,
- * quoted from the Rust that produces them. No deployment has yet served the
- * route.
+ * — `standing` tagged on its own `standing` key, and since the route was split
+ * by authority, **two** of them: `GET /registrations` at `Role::Viewer` with
+ * requirement, standing and terms, and `GET /registrations/slots` at
+ * `Role::Operator` with `secret_command` beside `secret_slot` and the
+ * companions listed. Alpaca is moved back to pending so there is something to
+ * approve, and there is one extra row for the `requirement: null` arm the
+ * contract's table names. The refusal texts are the platform's own, quoted
+ * from the Rust that produces them. No deployment has yet served either route.
  */
 import { expect, test, type Page } from "@playwright/test";
 import { healthy, servePlatform } from "./support/platform";
@@ -47,9 +53,6 @@ const KEYLESS = {
   requirement: "keyless",
   standing: { standing: "keyless" },
   terms: "coinbase-exchange-market-data-terms",
-  secret_slot: null,
-  secret_command: null,
-  companion_secret_slots: [],
 } as const;
 
 const ALPACA_TERMS = "https://alpaca.markets/terms-and-conditions";
@@ -67,18 +70,17 @@ const ALPACA_PENDING = {
     reason: PENDING_REASON,
   },
   terms: ALPACA_TERMS,
-  secret_slot: ALPACA_SLOT,
-  secret_command: ALPACA_COMMAND,
-  companion_secret_slots: [{ variable: ALPACA_COMPANION, secret_command: ALPACA_COMPANION_COMMAND }],
 } as const;
 
 /**
  * The contract's own `kalshi-markets` row, verbatim from
  * `ROUTES-REGISTRATIONS.md`: a source that needs an *account* and still
- * answers `secret_slot: null`, because the manifest the platform holds names
- * no variable. The two `null`s in this surface are not the same fact, and a
- * card that read this one as "keyless" would tell an operator no key is
- * needed for a source the platform is refusing for want of one.
+ * answers `secret_slot: null` on the operator list, because the manifest the
+ * platform holds names no variable. The two `null`s in this surface are not
+ * the same fact, and a card that read this one as "keyless" would tell an
+ * operator no key is needed for a source the platform is refusing for want of
+ * one. Since the split there is a third non-answer — the slots route refused
+ * this console altogether — and the card must not render that as either.
  */
 const KALSHI_REASON =
   "`kalshi-markets` requires an account with the venue, opened in the operator's own name (requirement `account`) and no registration record exists for it, so it is refused. The platform's owner must register with the venue under their own identity, read its terms, create the credential in the venue's dashboard, place it in Secret Manager as a `_FILE`-projected secret, and record the registration — see docs/operations/registering-a-venue.md. anonymous or automated registration is not a path this platform offers: it circumvents the venue's terms and identity checks, and a licence nobody read is one nobody can be held to";
@@ -88,9 +90,6 @@ const KALSHI_PENDING = {
   requirement: "account",
   standing: { standing: "pending", who_must_register: "qip-platform", reason: KALSHI_REASON },
   terms: "https://kalshi.com/terms",
-  secret_slot: null,
-  secret_command: null,
-  companion_secret_slots: [],
 } as const;
 
 /**
@@ -108,19 +107,28 @@ const UNDECLARED = {
     reason: "`frankfurter-rates` has no registration requirement declared, so it is refused as unknown",
   },
   terms: null,
-  secret_slot: null,
-  secret_command: null,
-  companion_secret_slots: [],
 } as const;
 
 /** The operator the platform records: its credential's subject, not the session's display name. */
 const PLATFORM_OPERATOR = "operator@env";
 
+/**
+ * The registered standing as the *operator* routes answer it, with the
+ * variable the record names. `GET /registrations` no longer carries this arm's
+ * `secret`; the approval's 200 and `GET /registrations/slots` do.
+ */
 const ALPACA_REGISTERED_STANDING = {
   standing: "registered",
   operator: PLATFORM_OPERATOR,
   terms_read_at: "2025-10-09T08:53:20.000Z",
   secret: ALPACA_SLOT,
+} as const;
+
+/** The same standing as the viewer's list answers it: no slot. */
+const ALPACA_REGISTERED_SUMMARY = {
+  standing: "registered",
+  operator: PLATFORM_OPERATOR,
+  terms_read_at: "2025-10-09T08:53:20.000Z",
 } as const;
 
 /** `ApprovalView`: the standing, not the whole source. */
@@ -133,12 +141,46 @@ const APPROVAL = {
 
 const SERVED_AT = "2025-10-09T08:53:20.000Z";
 
+/** `GET /registrations`, `Role::Viewer`: requirement, standing, terms. No slot. */
 const REGISTRATIONS = {
   posture: "PAPER TRADING",
   served_at: SERVED_AT,
   sources: [KEYLESS, ALPACA_PENDING, KALSHI_PENDING, UNDECLARED],
 } as const;
 
+/**
+ * `GET /registrations/slots`, `Role::Operator`: the same rows in the same
+ * catalogue order, with the credential slots beside each.
+ *
+ * A second body rather than the first with extra keys, because that is what
+ * the platform serves — two routes, two shapes — and a fixture that carried
+ * the slots on the viewer's body would be testing this console against an API
+ * that no longer exists.
+ */
+const SLOTS = {
+  posture: "PAPER TRADING",
+  served_at: SERVED_AT,
+  sources: [
+    { ...KEYLESS, secret_slot: null, secret_command: null, companion_secret_slots: [] },
+    {
+      ...ALPACA_PENDING,
+      secret_slot: ALPACA_SLOT,
+      secret_command: ALPACA_COMMAND,
+      companion_secret_slots: [
+        { variable: ALPACA_COMPANION, secret_command: ALPACA_COMPANION_COMMAND },
+      ],
+    },
+    { ...KALSHI_PENDING, secret_slot: null, secret_command: null, companion_secret_slots: [] },
+    { ...UNDECLARED, secret_slot: null, secret_command: null, companion_secret_slots: [] },
+  ],
+} as const;
+
+/** Both reads, as a deployment whose console credential holds operator sees them. */
+function servedWithSlots(overrides: Record<string, unknown> = {}) {
+  return { ...healthy(), "/registrations": REGISTRATIONS, "/registrations/slots": SLOTS, ...overrides };
+}
+
+const SLOTS_PATH = "/api/gateway/registrations/slots";
 const APPROVE_PATH = "/api/gateway/registrations/alpaca-daily-bars/approve";
 
 /** The session as `/api/auth/session` projects it, with the roles under test. */
@@ -169,7 +211,7 @@ test("a pending source renders an approve button that names no person, the terms
     }
   });
   await serveSession(page, ["viewer", "operator"]);
-  await servePlatform(page, { ...healthy(), "/registrations": REGISTRATIONS });
+  await servePlatform(page, servedWithSlots());
   await page.goto("/data-sources/registrations");
 
   const content = page.locator("#content");
@@ -227,10 +269,14 @@ test("approving posts the terms and the variable name, and the card re-renders a
   page,
 }) => {
   await serveSession(page, ["viewer", "operator"]);
-  await servePlatform(page, { ...healthy(), "/registrations": REGISTRATIONS });
+  await servePlatform(page, servedWithSlots());
 
-  // A stateful platform: the POST flips what the GET answers, so the page
+  // A stateful platform: the POST flips what both GETs answer, so the page
   // has to show the platform's record rather than its own memory of the click.
+  // Both, because the two routes carry different halves of the same fact — the
+  // viewer's list says who registered, the operator's list says which variable
+  // the record names — and a fixture that flipped only one would let a page
+  // pass that had quietly stopped re-reading the other.
   let registered = false;
   const posted: unknown[] = [];
   await page.route("**/api/gateway/registrations**", async (route) => {
@@ -252,7 +298,25 @@ test("approving posts the terms and the variable name, and the card re-renders a
         headers: { "x-qip-gateway": "upstream", "content-type": "application/json" },
         body: JSON.stringify({
           ...REGISTRATIONS,
-          sources: [KEYLESS, registered ? { ...ALPACA_PENDING, standing: ALPACA_REGISTERED_STANDING } : ALPACA_PENDING],
+          sources: [
+            KEYLESS,
+            registered ? { ...ALPACA_PENDING, standing: ALPACA_REGISTERED_SUMMARY } : ALPACA_PENDING,
+          ],
+        }),
+      });
+      return;
+    }
+    if (request.method() === "GET" && path === SLOTS_PATH) {
+      const alpaca = SLOTS.sources[1];
+      await route.fulfill({
+        status: 200,
+        headers: { "x-qip-gateway": "upstream", "content-type": "application/json" },
+        body: JSON.stringify({
+          ...SLOTS,
+          sources: [
+            SLOTS.sources[0],
+            registered ? { ...alpaca, standing: ALPACA_REGISTERED_STANDING } : alpaca,
+          ],
         }),
       });
       return;
@@ -291,7 +355,12 @@ test("approving posts the terms and the variable name, and the card re-renders a
   await expect(page.getByTestId("registration-standing-alpaca-daily-bars")).toHaveText(`registered by ${PLATFORM_OPERATOR}`);
   const record = page.getByTestId("registration-record-alpaca-daily-bars");
   await expect(record).toContainText(PLATFORM_OPERATOR);
-  await expect(record).toContainText(ALPACA_SLOT);
+  // The variable the record names comes off the operator list, which this
+  // test's platform answers, so the page re-read it after the approval rather
+  // than keeping the standing the viewer's list gave it.
+  await expect(page.getByTestId("registration-record-secret-alpaca-daily-bars")).toHaveText(
+    ALPACA_SLOT,
+  );
   // The session's name is on the button, never on the record: the platform
   // took the operator from its credential and the page shows what it said.
   await expect(record).not.toContainText("Dana Ops");
@@ -311,7 +380,7 @@ test("a viewer's approve button is disabled with the reason, and nothing is post
     }
   });
   await serveSession(page, ["viewer"]);
-  await servePlatform(page, { ...healthy(), "/registrations": REGISTRATIONS });
+  await servePlatform(page, servedWithSlots());
   await page.goto("/data-sources/registrations");
 
   // The premise: the session landed and it is a viewer.
@@ -346,7 +415,7 @@ const SHAPE_REFUSAL =
 
 test("a 400 from the platform is rendered naming the field, and the card stays pending", async ({ page }) => {
   await serveSession(page, ["viewer", "operator"]);
-  await servePlatform(page, { ...healthy(), "/registrations": REGISTRATIONS });
+  await servePlatform(page, servedWithSlots());
   const REFUSAL = SHAPE_REFUSAL;
   await page.route("**/api/gateway/registrations/**", async (route) => {
     if (route.request().method() !== "POST") {
@@ -384,7 +453,7 @@ test("a 400 from the platform is rendered naming the field, and the card stays p
 
 test("a 403 from the platform is rendered as the credential refused, in the platform's words", async ({ page }) => {
   await serveSession(page, ["viewer", "operator"]);
-  await servePlatform(page, { ...healthy(), "/registrations": REGISTRATIONS });
+  await servePlatform(page, servedWithSlots());
   const DENIED = "POST /registrations/alpaca-daily-bars/approve requires the operator role; this credential holds viewer";
   await page.route("**/api/gateway/registrations/**", async (route) => {
     if (route.request().method() !== "POST") {
@@ -410,7 +479,7 @@ test("a 403 from the platform is rendered as the credential refused, in the plat
 
 test("a 409 from the platform tells the operator to sign in again, with the platform's reason", async ({ page }) => {
   await serveSession(page, ["viewer", "operator"]);
-  await servePlatform(page, { ...healthy(), "/registrations": REGISTRATIONS });
+  await servePlatform(page, servedWithSlots());
   const STALE = "the operator identity was verified 22 minutes ago; an approval accepts one verified within 15 minutes";
   await page.route("**/api/gateway/registrations/**", async (route) => {
     if (route.request().method() !== "POST") {
@@ -436,7 +505,7 @@ test("a 409 from the platform tells the operator to sign in again, with the plat
 
 test("a keyless source shows no approve button and no secret slot", async ({ page }) => {
   await serveSession(page, ["viewer", "operator"]);
-  await servePlatform(page, { ...healthy(), "/registrations": REGISTRATIONS });
+  await servePlatform(page, servedWithSlots());
   await page.goto("/data-sources/registrations");
 
   // The premise: the operator could approve, so an absent button is the
@@ -465,7 +534,7 @@ test("a pending source with no secret slot is not shown as keyless, and an undec
   // tell an operator a refused source is fine, on a page whose whole purpose
   // is naming what a person still has to do.
   await serveSession(page, ["viewer", "operator"]);
-  await servePlatform(page, { ...healthy(), "/registrations": REGISTRATIONS });
+  await servePlatform(page, servedWithSlots());
   await page.goto("/data-sources/registrations");
 
   // The premise: the keyless card is on the same screen and does say keyless,
@@ -501,10 +570,95 @@ test("a pending source with no secret slot is not shown as keyless, and an undec
   await expect(page.getByTestId("registration-terms")).toHaveValue("https://kalshi.com/terms");
 });
 
+/**
+ * The platform's own 403 for `GET /registrations/slots`, in the shape
+ * `routes.rs` answers a credential short of the role.
+ */
+const SLOTS_DENIED = "this operation requires the operator role";
+
+test("the slots route refused leaves an explicit refusal where each slot would be, never a blank and never the no-slot wording", async ({
+  page,
+}) => {
+  // This is what a deployed console actually meets. `GET /registrations/slots`
+  // is `Role::Operator`; the portal's service account is granted the viewer
+  // token and nothing else (ADR 0018, "The console authenticates as viewer"),
+  // so the read is refused in every committed configuration.
+  //
+  // The failure this prevents is a specific misreading, not an empty panel.
+  // One branch away on this same card, a slot cell already says "the manifest
+  // the platform holds for this source names no credential variable" — and a
+  // refusal rendered as a blank, or worse as that sentence, tells an operator
+  // no credential is needed for a source the platform is refusing until one
+  // exists. So the refusal has to be present, and it has to be distinguishable
+  // from the absence beside it.
+  const slotReads: number[] = [];
+  await serveSession(page, ["viewer", "operator"]);
+  await servePlatform(page, { ...healthy(), "/registrations": REGISTRATIONS });
+  // Registered after `servePlatform`, so this handler wins for the slots path.
+  await page.route(`**${SLOTS_PATH}`, async (route) => {
+    slotReads.push(403);
+    await route.fulfill({
+      status: 403,
+      headers: { "x-qip-gateway": "upstream", "content-type": "application/json" },
+      body: JSON.stringify({ error: SLOTS_DENIED }),
+    });
+  });
+
+  await page.goto("/data-sources/registrations");
+
+  // Premise, in three parts, because every assertion below is about a page
+  // that asked and was refused. Without these the test would pass against a
+  // console that never made the second read at all — which is the outcome
+  // "render a refusal" could be faked by.
+  await expect(page.getByTestId("registration-alpaca-daily-bars")).toBeVisible();
+  await expect(page.getByTestId("registration-standing-alpaca-daily-bars")).toHaveText("pending");
+  expect(slotReads, "the page never read /registrations/slots, so nothing below is a refusal").toEqual([403]);
+
+  // The refusal names the role, the reason and the way an operator gets the
+  // fact anyway. A panel that said only "refused" would leave an operator
+  // holding a credential and no idea it is the console withholding this.
+  const refused = page.getByTestId("registration-slot-refused-alpaca-daily-bars");
+  await expect(refused).toBeVisible();
+  await expect(refused).toHaveAttribute("data-slot-access", "refused");
+  await expect(refused).toContainText("GET /api/v1/registrations/slots");
+  await expect(refused).toContainText("403");
+  await expect(refused).toContainText("operator role");
+  await expect(refused).toContainText("authenticates as viewer");
+  await expect(refused).toContainText("qip registrations");
+  // The platform's own words, not a paraphrase of them.
+  await expect(refused).toContainText(SLOTS_DENIED);
+
+  // And it is not the neighbouring absence. `kalshi-markets` genuinely answers
+  // `secret_slot: null` when the operator list is served; here nobody was told
+  // anything about it, and the card must not claim the manifest names no
+  // variable.
+  await expect(page.getByTestId("registration-no-slot-kalshi-markets")).toHaveCount(0);
+  await expect(page.getByTestId("registration-no-slot-coinbase-spot-ticker")).toHaveCount(0);
+  const content = page.locator("#content");
+  await expect(content, "a refusal was rendered as the manifest naming no variable").not.toContainText(
+    "names no credential variable",
+  );
+
+  // Nothing invented in place of what was withheld: no slot name, no command.
+  await expect(content).not.toContainText(ALPACA_SLOT);
+  await expect(content).not.toContainText(ALPACA_COMPANION);
+  await expect(content).not.toContainText("gcloud secrets versions add");
+  await expect(page.getByTestId("registration-secret-slot-alpaca-daily-bars")).toHaveCount(0);
+  await expect(page.getByTestId("registration-command-alpaca-daily-bars")).toHaveCount(0);
+
+  // The approval still works and prefills nothing, because a variable name
+  // this console was never served is one it must not put in the record.
+  await page.getByTestId("registration-approve-alpaca-daily-bars").click();
+  await expect(page.getByTestId("registration-secret")).toHaveValue("");
+  await expect(page.getByTestId("registration-terms")).toHaveValue(ALPACA_TERMS);
+
+  await expect(page.getByTestId("registrations-paper-label")).toHaveText("PAPER TRADING");
+});
+
 test("with no one signed in the approve button is disabled and says a named operator is needed", async ({ page }) => {
   // The open-console instance answers `/api/auth/session` unauthenticated
   // itself; nothing is stubbed for it here.
-  await servePlatform(page, { ...healthy(), "/registrations": REGISTRATIONS });
+  await servePlatform(page, servedWithSlots());
   await page.goto("/data-sources/registrations");
 
   await expect(page.getByTestId("registrations-session")).toContainText("no one is signed in");
