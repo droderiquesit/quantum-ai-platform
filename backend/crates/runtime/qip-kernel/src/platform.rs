@@ -4665,9 +4665,9 @@ impl Platform {
     ///
     /// **One thing does stop it before it starts.** A cycle asked for as of an
     /// instant earlier than one this platform has already reasoned at is
-    /// refused whole rather than run: see [`Platform::reasoned_through`] for
-    /// the leak that permits, and [`Self::refuse_cycle_before`] for what the
-    /// caller gets back. The refusal is not a stage failing — it is the
+    /// refused whole rather than run: see the `Platform::reasoned_through`
+    /// field for the leak that permits, and `Self::refuse_cycle_before` for
+    /// what the caller gets back. The refusal is not a stage failing — it is the
     /// argument being wrong — so nothing is journalled, nothing is charged and
     /// no state moves.
     pub fn run_cycle(&mut self, now: Timestamp) -> CycleReport {
