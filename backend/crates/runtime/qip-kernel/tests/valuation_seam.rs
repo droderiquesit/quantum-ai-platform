@@ -41,6 +41,34 @@
 //!   red team's verdict admits a hypothesis, and everything these tests assert
 //!   happens strictly downstream of that verdict. No risk limit, no autonomy
 //!   ceiling and no paper-trading layer is touched.
+//!
+//!   **Read this before quoting anything below as evidence about a
+//!   deployment.** Nothing in *this file* runs under a shipped configuration.
+//!   Raise [`REVIEW_FLOOR`] to 0.50 and all five tests here fail on their own
+//!   premise — `the listed cycle proposed no legs ... rationale: no thesis
+//!   cleared the action bar this cycle` — so what they prove is that the
+//!   narrowing arithmetic is right *if reached*. That it is reached is proved
+//!   somewhere else, and it has to be, because no synthetic tape this file can
+//!   build clears the shipped bar:
+//!   `qip-fastbrain/tests/tape.rs::the_shipped_review_policy_admits_a_thesis_that_reaches_the_narrowed_sizing_budget`
+//!   drives the committed demonstration tape through `PlatformConfig::default()`
+//!   with the review policy untouched, and 107 of its 600 cycles enter
+//!   `construct_from` — so `deployable_capital`, `central_degradation` and
+//!   `mark_confidence_multiplier` all run in the configuration `qip-fastbrain`
+//!   deploys. That test pins the budget they produce at 3,750,000 and then
+//!   5,625,000 of a 10,000,000 book. If it is ever deleted, this file is back
+//!   to proving arithmetic nobody has shown a deployment performs, which was
+//!   finding M4.
+//!
+//!   One honest limit remains, and it is the tape's rather than this file's:
+//!   under the shipped policy the seam is reached and no *leg* is sized,
+//!   because the only theses the review approves on that tape are
+//!   `Claim::Overvalued` — an upward structural break — and
+//!   `conservative_default`'s long-only mandate has no feasible solution for a
+//!   short. Sizing a leg under the shipped floor needs a tape carrying a
+//!   downward dislocation whose panel still clears 0.50; the jump section
+//!   reaches 0.34 today. That is a fixture that does not exist, not a control
+//!   that cannot fire.
 //! * The tape's jump sits on the **last** bar. A jump two thirds of the way
 //!   through leaves a volatility-shift anomaly at the head of the queue, whose
 //!   claim is about the option rather than the underlying, so the thesis's
@@ -80,6 +108,12 @@ use qip_risk::limits::{Limit, LimitKind, LimitSet};
 /// See the module note. Low enough that the panel's verdict on a synthetic
 /// tape is `Approved` for a listed name *and* for a private fund, because the
 /// seam under test is reached only through an approved thesis.
+///
+/// **This is not the shipped value.** `ReviewPolicy::default()` requires 0.50
+/// and no app overrides it. Every test in this file is therefore a statement
+/// about arithmetic and not about a deployment; the reachability of that
+/// arithmetic under the shipped 0.50 is proved in
+/// `qip-fastbrain/tests/tape.rs`, and the module note says how.
 const REVIEW_FLOOR: f64 = 0.10;
 
 /// The book every test sizes against, so a notional can be reasoned about in

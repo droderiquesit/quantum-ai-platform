@@ -44,10 +44,64 @@
 //! family standing where an asset stands today. LEVEL 3, distributing a
 //! family's budget across its members by capacity, is not built.
 //!
-//! Neither new stage has a production caller. Nothing in this platform holds a
-//! per-strategy return corpus to cluster, so no family has been evaluated on
-//! real data and none is claimed to have been. Both are complete, refusing,
-//! tested units waiting for the population they operate on.
+//! # Why neither stage has a production caller
+//!
+//! Neither does, and the reason recorded here was wrong. It said nothing in
+//! this platform holds a per-strategy return corpus. Something does:
+//! `qip-kernel`'s `central::realised::RealisedSeries` retains up to
+//! `REALISED_SESSIONS` — 252 — daily sessions per `(cell, strategy)` of the
+//! P&L the centre's own attribution booked, each over the gross limit of the
+//! envelope the fills were made under, written from `CentralPlane::ingest`
+//! by way of `record_realised` and read by the demotion monitor. That is a
+//! corpus of realised returns from attributed fills, reproducible from the
+//! event log, and an agent who believed the old sentence would set out to
+//! build one while the one already in the tree went unused.
+//!
+//! Three things still stand between that corpus and a caller here, and each
+//! is a gap in the platform rather than in these stages:
+//!
+//! * **The calendar cannot be reconstructed.** [`StressCorrelation`] needs
+//!   every series aligned to one calendar, and the only exposure of the
+//!   corpus — `CentralPlane::live_outcomes` — hands back a `Vec<f64>` with
+//!   the day each return belongs to already dropped. Even with the days, a
+//!   day on which a strategy settled nothing has no session at all, and the
+//!   centre retains only the envelope it holds *now*, so "held a grant and
+//!   made nothing" and "held no grant" are indistinguishable after the fact.
+//!   The first is a return of zero and the second is not a return; filling
+//!   the gap either way invents an observation, and refusing every strategy
+//!   without a session on every day of the grid leaves nothing to cluster.
+//!   Retaining the grant per session, beside the P&L already retained, is
+//!   what would close this.
+//! * **There is no stress axis.** [`StressWindow`] takes a benchmark series
+//!   or an upstream classifier's verdict, and the platform records neither a
+//!   stress classification nor a benchmark a window could be cut from.
+//! * **Nothing consumes a family.** [`problem::PortfolioProblem`] is built
+//!   per instrument in `qip-portfolio-engine`'s `construction`, and
+//!   `qip-capital` sizes per strategy; no seam anywhere takes a
+//!   [`FamilyAssignment`]. `qip_lifecycle::StrategyFamily` is not that seam
+//!   and must not be mistaken for it: it is a provenance key naming the
+//!   sweep a strategy came from, fixed at enrolment, and `TrialBook` refuses
+//!   to move a strategy between families precisely so a trial count cannot
+//!   be laundered by renaming. A family recomputed from correlation every
+//!   cycle cannot be that family.
+//!
+//! [`horizons`] is further from a caller than [`families`], not nearer.
+//! [`CapitalPools`] requires the total split four ways and refuses a split
+//! that does not sum exactly; the platform tracks one book — equity, the
+//! active reservations, and the unfunded commitments that
+//! `Platform::deployable_capital` nets off — and no division into inventory,
+//! deployable, unreserved and reserved exists to read. [`family_horizons`]
+//! requires a [`Horizon`] per strategy, and nothing records one;
+//! `qip_financial::ladder::LiquidationHorizon` is a property of an instrument
+//! rung rather than of a strategy, and mapping its seven rungs onto these
+//! four buckets would assert a strategy attribute nobody measured.
+//!
+//! Both stages are complete, refusing, tested units. No family has been
+//! evaluated on real data and none is claimed to have been — in particular
+//! [`Diagnostics::pairs_calm_would_have_misfiled`], which is what keying on
+//! stress rather than on the full sample costs in this population, has never
+//! been computed over a real one, and its value for this platform is
+//! unknown rather than small.
 
 pub mod families;
 pub mod horizons;

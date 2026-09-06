@@ -24,6 +24,14 @@
 //! * **Nothing here can reach a language model.** `qip-edge` does not depend
 //!   on `qip-ai`, directly or transitively, and the workspace architecture
 //!   tests keep it that way.
+//! * **A figure the cell cannot evaluate refuses; it never abstains.** The
+//!   centre carries that discipline in `RiskState::unevaluated`, which nothing
+//!   here imports and nothing here should — every figure [`Cell::work`] sizes
+//!   against is measured from this cell's own book on this pass or refused
+//!   under a named gate before an intent exists. The argument, the table of
+//!   gates and what would overturn it are in
+//!   `docs/architecture/edge-fail-closed-figures.md`, enforced by
+//!   `tests/unevaluated.rs`.
 
 pub mod arbitrage;
 pub mod cell;

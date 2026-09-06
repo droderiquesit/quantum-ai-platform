@@ -13,11 +13,17 @@
 //! default:
 //!
 //! - **Every record carries an object id, asset class (through its instrument
-//!   type), venue, sector, geography, currency, price and licensing class.**
-//!   A record missing one is refused *by name* and takes the whole catalogue
-//!   with it: an instrument that reached the universe with `Unclassified`
-//!   for a sector would feed the sector bucket a value nobody chose, which is
-//!   the defect this module exists to close, rebuilt one record at a time.
+//!   type), venue, sector, geography, currency, price, licensing class and
+//!   liquidity.** A record missing one is refused *by name* and takes the
+//!   whole catalogue with it: an instrument that reached the universe with
+//!   `Unclassified` for a sector would feed the sector bucket a value nobody
+//!   chose, which is the defect this module exists to close, rebuilt one
+//!   record at a time. Liquidity is the newest of the eight and was the
+//!   worst, because its absence was not visible: a record with no liquidity
+//!   block did not arrive without one, it arrived carrying
+//!   `LiquidityProfile::default()` — a 10bp quote and a one-day exit that
+//!   nobody measured — and the shipped `MinLiquidity` and `MaxDaysToLiquidate`
+//!   limits vetoed, or declined to veto, against exactly that.
 //! - **An empty catalogue is refused.** The empty universe is the state that
 //!   hid the bucket defect; a catalogue that reproduced it deliberately would
 //!   be a way to switch the buckets off from a data file.
@@ -102,6 +108,11 @@ struct RawRecord {
     contract_multiplier: Option<Decimal>,
     issuer: Option<String>,
     licensing: Option<LicensingClass>,
+    /// The record's own liquidity measurement. Required; see `build`.
+    /// [`crate::costs::LiquidityProfile`] is the wire shape itself rather than
+    /// a raw twin of it, so the figures a reviewer reads in the file are the
+    /// figures the ladder prices with, without a conversion in between.
+    liquidity: Option<crate::costs::LiquidityProfile>,
 }
 
 /// What a root records about the catalogue it assembled, so the run is
@@ -373,6 +384,30 @@ fn build(
             "licensing posture is evaluated before an instrument is used, not after",
         )
     })?;
+    // Required, and the last field to become so. A record without one did not
+    // arrive without a liquidity profile: it arrived with
+    // `LiquidityProfile::default()`, which asserts a 10bp quote and a one-day
+    // exit for anything at all. Those figures are read at `Platform::new` by
+    // every universe record, priced onto the liquidity ladder, and evaluated
+    // by `MinLiquidity` and `MaxDaysToLiquidate` — so the whole deployed
+    // universe was vetoed, or not vetoed, on a number that appeared in no
+    // file, no diff and no manifest hash. It is the defect `illiquid`'s
+    // hardcoded 250bps was, one level out: an invented number standing where a
+    // control reads. Refused here rather than defaulted for the reason every
+    // other field on this record is: an operator whose problem is one
+    // reference record should be told which record and which field, at
+    // start-up, and not meet it later as arithmetic about rungs.
+    let liquidity = record.liquidity.clone().ok_or_else(|| {
+        missing(
+            version,
+            label,
+            "liquidity",
+            "the liquidity ladder prices an exit from it and the shipped `MinLiquidity` and \
+             `MaxDaysToLiquidate` limits read the result; state what this instrument's exit \
+             actually costs rather than letting it inherit a 10bp quote and a one-day exit that \
+             nobody measured",
+        )
+    })?;
 
     let provenance = Provenance::new(catalogue.source.clone(), catalogue.as_of, now)
         .with_licensing(licensing)
@@ -385,6 +420,7 @@ fn build(
             .geography(geography)
             .currency(currency)
             .price(price)
+            .liquidity(liquidity)
             .provenance(provenance)
             .metadata("catalogue_version", version)
             .metadata("catalogue_sha256", sha256);

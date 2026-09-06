@@ -7,6 +7,12 @@
 Runbooks are in [docs/operations](../operations/README.md), and the one
 deployment path is [docs/operations/deployment-path.md](../operations/deployment-path.md).
 
+Dated records of what was run against something real, and what the run does
+not prove:
+
+* [The ECB reference rates through the loop, live (2026-09-06)](live-source-frankfurter-2026-09-06.md)
+* [Execution measurements](execution-measurements.md)
+
 The two registers of what is switched off or missing, kept as a pair so that
 they cannot disagree about one switch:
 

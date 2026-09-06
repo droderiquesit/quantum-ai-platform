@@ -41,6 +41,11 @@ plus seven central is nine. **Run the commands; do not increment.** This
 file has already been wrong once by adding one to a number it read rather
 than counting the file.
 
+Both commands were run again on 2026-09-06 by the change that fixed the
+collector's object path, which touched no policy: `9`, and the same two
+lines at `193` and `233`. Recorded because a rewrite of this file is exactly
+when a count gets carried across instead of taken.
+
 The receiver labels each sample `cell: <node_id>` and `region: <region>`
 from the template's `static_configs`, which is what
 `max by (cell, source) (qip_edge_halted)` groups on, so the halt policy's
@@ -73,14 +78,24 @@ and writes to Cloud Monitoring. What is now in the Terraform:
   it must be a full `repository@sha256:<64 hex>` and is refused otherwise;
   null is no sidecar, no configuration bucket, no grant, and the module's
   `metrics_collected` output is `false`. There is no second switch.
-- Under a digest the module renders the sidecar beside the workload, started
-  after the workload container is ready, with a `RunMonitoring` document
-  scraping `/metrics` on the workload's own port every 30 seconds with a
-  10-second timeout — the same cadence as the node's receiver. The document
-  is published to a bucket and mounted read-only at `/etc/rungmp`, so the
-  target and the interval are in a diff. The sidecar carries no secret, no
-  environment and no identity; it writes on the `metricWriter` grant every
-  workload already holds, and nothing was widened for it.
+- Under a digest the module publishes a `RunMonitoring` document scraping
+  `/metrics` on the workload's own port every 30 seconds with a 10-second
+  timeout — the same cadence as the node's receiver — to a per-workload
+  bucket, as `config.yaml` at its root, and grants the workload's own
+  identity `objectViewer` on that bucket alone. The target and the interval
+  are therefore in a diff rather than in an image. The sidecar carries no
+  secret, no environment and no identity; it would write on the
+  `metricWriter` grant every workload already holds, and nothing was widened
+  for it.
+
+  It does **not** render the sidecar: the container and the volume that
+  mounts that bucket at `/etc/rungmp` belong to the `RunService` manifest
+  since ADR 0036, and no manifest has either. This bullet said the module
+  renders the sidecar and mounts the document; both halves outlived ADR
+  0036 and are corrected here on 2026-09-06. What the module produces today
+  is a bucket, an object, a grant and two outputs
+  (`collector_mount_path`, `collector_config_path`) — the publisher's half
+  of a mount whose other half is unwritten.
 - `catalogue.tf` attaches it to both brains and deliberately not to the API,
   whose `/metrics` sits behind `Role::Monitor` and would answer a tokenless
   sidecar 401 every thirty seconds. The image is composed from the
@@ -92,8 +107,10 @@ What is not:
 
 - **No digest is pinned, and the adoption is REFUSED rather than pending.**
   `metrics_collector_image_digest` is null in every environment
-  (`environments/dev/terraform.tfvars:142` is the only mention and it is
-  commented out). The gate is the one the Envoy proxy had to satisfy first:
+  (`environments/dev/terraform.tfvars:250` is the only mention and it is
+  commented out; that line was cited as `:142` here until 2026-09-06, when
+  `grep -rn metrics_collector_image_digest environments/*/terraform.tfvars`
+  was actually run rather than copied). The gate is the one the Envoy proxy had to satisfy first:
   Binary Authorization admits only what the platform's attestor signed, so
   the sidecar must be mirrored by digest through
   `infrastructure/egress/vendored-images.txt` and `vendor.yml` before any
@@ -139,24 +156,52 @@ What is not:
   ship. Attaching an unattested image anyway would produce a revision Binary
   Authorization refuses, which reads as a broken deploy rather than as a
   missing collector.
-- **The document does not yet land where the collector reads.** The sidecar
+- **The document now lands where the collector reads. Fixed 2026-09-06; the
+  mount that would carry it is still not written anywhere.** The sidecar
   reads exactly one path, `/etc/rungmp/config.yaml` — the only `/etc/rungmp*`
   literal in its entrypoint binary, and its `Cmd` names
   `/etc/rungmpcol/config.yaml`, which is the OpenTelemetry configuration it
-  *generates* from ours rather than one it reads. `modules/cloudrun` mounts
-  the whole bucket, because the GA provider has no `mount_options` on a Cloud
-  Run GCS volume and so `only-dir` is unavailable, and it names the object
-  `${local.collector_prefix}/config.yaml` — a content hash used as a
-  directory, on the reasoning that a changed configuration should sit beside
-  the old one rather than overwrite it. Under this mount that document lands
-  at `/etc/rungmp/<hash>/config.yaml`, where nothing looks. Pin the digest on
-  top of that layout and the collector starts, finds no document, falls back
-  to its own built-in default and scrapes a target nobody chose — with every
-  alert policy still gated off, so nobody would see it. The object must be
-  named `config.yaml` at the bucket root before a digest is pinned, and the
-  fixed name costs one bucket-scoped `storage.objects.delete` because an
-  overwrite needs it. That change is to `modules/cloudrun`, not to this
-  module, and has not been made.
+  *generates* from ours rather than one it reads. `modules/cloudrun` used to
+  name the mount `/etc/rungmp` in one local and the object
+  `${local.collector_prefix}/config.yaml` in another — a content hash used as
+  a directory, on the reasoning that a changed configuration should sit beside
+  the old one rather than overwrite it — so the document would have landed at
+  `/etc/rungmp/<hash>/config.yaml`, where nothing looks. A digest pinned on
+  top of that layout produces a collector that starts, finds no document,
+  falls back to its own built-in default and scrapes a target nobody chose,
+  with every alert policy still gated off, so nothing would contradict it.
+
+  What replaced it: one literal, `local.collector_read_path =
+  "/etc/rungmp/config.yaml"`, with `local.collector_mount = dirname(...)` and
+  the object's name `basename(...)`. The two halves cannot spell the path
+  differently again because there is only one spelling, and
+  `the_metrics_collector_runs_only_under_a_digest_pinned_image_and_nothing_claims_a_scrape`
+  in the `infrastructure` suite asserts both derivations — mutation-verified
+  by restoring each of the two old spellings and reading the failure.
+
+  The fixed name costs what this file said it would: an overwrite needs
+  `storage.objects.delete`, which the infra account deliberately lacks, so
+  the first *change* to this document — a renamed workload, a moved
+  container port — will fail an apply with a 403 naming that permission on
+  this one bucket. Creating it needs only `storage.objects.create`, so the
+  first apply is unaffected, and the bucket is versioned, so a replaced
+  document is archived rather than lost. No grant was widened to pre-empt
+  that; an apply that stops and names one permission is the better failure
+  of the two, and the alternative was a document at a path nothing reads.
+
+  **The mount itself does not exist.** ADR 0036 moved the service to a
+  `RunService` manifest, no manifest carries a `qip-metrics-collector`
+  container or an `/etc/rungmp` volume, and none may until a digest is
+  pinned — `gitops.rs` counts the container and requires it to equal
+  "the catalogue asks **and** the environment names a digest".
+  `infrastructure/gitops/envs/README.md` now carries the exact two
+  fragments to add on that day, and the module exports
+  `collector_mount_path` and `collector_config_path` so the manifest agrees
+  with one source rather than a second spelling. Note the mount is a `gcs`
+  volume and the RunService CRD at the vendored operator version admits no
+  such volume type (that README's `gcs` section has the schema and the
+  command); until a sync proves otherwise, "the document is published
+  correctly" is not "the collector can read it".
 - **The sidecar has never been applied, though this module has.** This entry
   used to read "Nothing has been applied. ADR 0024 records that no plan has
   been produced on any environment." That sentence has outlived its truth in
@@ -260,8 +305,12 @@ alarm.
 
 ## What would change this file
 
-- `modules/cloudrun` publishing the collector's document as `config.yaml` at
-  the root of its bucket, which is the one path the sidecar reads.
+- ~~`modules/cloudrun` publishing the collector's document as `config.yaml` at
+  the root of its bucket, which is the one path the sidecar reads.~~ Done
+  2026-09-06, and struck through rather than deleted so the next reader can
+  see this list is worked rather than aspirational. It changes nothing below
+  it: a document published where a collector would read it is not a scrape,
+  and no collector exists to read it.
 - **Google publishing a `cloud-run-gmp-sidecar` above 1.9.2 built on
   `golang.org/x/crypto` >= 0.56.0.** This is the blocker, it is upstream, and
   nothing in this repository can clear it. Re-run the tag-list command in the
@@ -272,6 +321,12 @@ alarm.
   list uncommented, mirrored and attested by `vendor.yml` as
   `vendor/cloud-run-gmp-sidecar`, and recorded as
   `metrics_collector_image_digest` in an environment's tfvars.
+- The sidecar container and its `/etc/rungmp` volume written into the two
+  brains' `RunService` manifests in the same commit as that digest — the
+  fragments are in `infrastructure/gitops/envs/README.md` — and a sync that
+  proves the `gcs` volume was admitted rather than pruned. A pruned volume
+  is a collector reading its built-in default, which is the same silent
+  failure the object path just stopped being.
 - A plan read and applied by a person, and both brains' revisions admitted
   carrying the sidecar.
 - A node applied from a non-empty `execution_nodes`, and a

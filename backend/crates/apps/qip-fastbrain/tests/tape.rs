@@ -21,9 +21,19 @@
 //! reported it, and the bar is the reasoning control (ADR 0005). If a future
 //! tape clears it, the assertion on the bar fails and says what the test
 //! must then grow to assert.
+//!
+//! The third test is the one that closes finding M4. Every test in
+//! `qip-kernel/tests/valuation_seam.rs` lowers `ReviewPolicy`'s shipped 0.50
+//! floor to 0.10 to reach the sizing seam at all, so that file proves the
+//! narrowing arithmetic is *correct* and proves nothing about whether it is
+//! *reached*. This file's platform is `PlatformConfig::default()` and
+//! `LimitSet::conservative_default()` — the shipped configuration, which no
+//! app overrides — so a construction reached here is a construction a
+//! deployment reaches, and the budget it is handed is the budget a deployment
+//! would size against.
 
 use qip_agents::finding::{AgentFinding, Direction, FindingStatus};
-use qip_core::{Clock, Duration, Timestamp};
+use qip_core::{Clock, Decimal, Duration, Timestamp};
 use qip_fastbrain::feed::Feed;
 use qip_fastbrain::node;
 use qip_fastbrain::roster::MAXIMUM_BUDGET;
@@ -588,6 +598,205 @@ fn the_macro_arm_feeds_the_macro_analyst_on_the_tape_and_the_review_still_holds_
     );
 
     // Nothing became live, on a tape or otherwise.
+    assert!(!platform.is_live_capable());
+    assert!(!platform.orders().has_live_fills());
+}
+
+// --- the valuation seam, under the policy a deployment actually ships --------
+
+/// The book `PlatformConfig::default()` opens with.
+///
+/// Stated here rather than read back off the platform. Every figure below is
+/// a fraction of it, and an expectation computed from the same accessor the
+/// assertion checks would move with any mutation and pin nothing — three
+/// magnitude-level mutations survived `valuation_seam.rs` once for exactly
+/// that reason.
+const BOOK: i64 = 10_000_000;
+
+/// What `construct_from` hands the optimiser while the self-model has never
+/// absorbed a graded outcome.
+///
+/// §6.2 as the centre reads it on this tape: the causal graph has absorbed no
+/// claim, so row 2 reads `Unavailable` and takes 0.75; the belief state was
+/// written by this cycle's own REASON stage, so row 4 is fresh and takes
+/// nothing; the self-model has graded nothing, so row 6 reads `Unavailable`
+/// and halves. 10,000,000 x 0.75 x 0.50.
+const BUDGET_BEFORE_LEARNING: i64 = 3_750_000;
+
+/// And once LEARN has scored a claim into a calibration record.
+///
+/// Row 6 becomes `Stale` rather than `Unavailable` — the self-model has
+/// absorbed an outcome, just not a recent enough one — so it takes 0.75
+/// instead of 0.50. 10,000,000 x 0.75 x 0.75. The three-valued `Freshness`
+/// exists to keep those two apart, and this is the only assertion in the tree
+/// that watches the centre's budget cross between them on a running platform.
+const BUDGET_AFTER_LEARNING: i64 = 5_625_000;
+
+#[test]
+fn the_shipped_review_policy_admits_a_thesis_that_reaches_the_narrowed_sizing_budget() {
+    // Finding M4, closed here. Every test in
+    // `qip-kernel/tests/valuation_seam.rs` lowers `ReviewPolicy`'s shipped
+    // `minimum_surviving_confidence` from 0.50 to 0.10, because on a synthetic
+    // single-name tape the panel tops out near 0.37 and no thesis is ever
+    // approved. Raise that fixture constant back to the shipped value and all
+    // five of those tests fail on their own premise — "the listed cycle
+    // proposed no legs ... rationale: no thesis cleared the action bar this
+    // cycle" — so what they prove is that the narrowing arithmetic is right if
+    // reached, and nothing in the tree proved it was reached. A narrowing
+    // chain in the sizing path that no shipped configuration enters is a
+    // control nobody has proven fires.
+    //
+    // This platform is `PlatformConfig::default()` and
+    // `LimitSet::conservative_default()`, unmodified — `grep -rn
+    // minimum_surviving_confidence backend/crates` finds no app that overrides
+    // the review policy — so every construction counted below is one a
+    // deployment on this tape would reach.
+    let tape = Tape::open(tape_path()).expect("the committed tape loads");
+    assert_tape_premises(&tape);
+    let mut feed = Feed::tape(&tape_path().display().to_string()).expect("the tape feed opens");
+    let mut platform = platform(&feed);
+
+    // ----- the premise: the policy under test is the shipped one -----------
+    // The crux of the finding. If this drifts, everything below is about some
+    // other platform than the one that deploys.
+    let bar = platform.config().review.minimum_surviving_confidence;
+    assert!(
+        (bar - 0.50).abs() < 1e-12,
+        "the premise failed: this platform's surviving-confidence floor is {bar}, not the shipped \
+         0.50, so nothing below says anything about a deployed configuration"
+    );
+    assert_eq!(
+        platform.config().initial_equity,
+        Decimal::from_int(BOOK),
+        "the premise failed: the shipped book is not the {BOOK} every figure below is a fraction of"
+    );
+
+    // ----- the run ---------------------------------------------------------
+    // Each cycle that reached the construction, with the budget it was handed
+    // and whether LEARN had already written a calibration *before* that cycle
+    // began. Read before the step, not after: DECIDE runs before LEARN inside
+    // one cycle, so a calibration written by cycle N is not a fact DECIDE had
+    // at cycle N, and partitioning on the value after the step would put one
+    // construction on the wrong side of the boundary for a reason that is
+    // about stage order rather than about sizing.
+    let wall = qip_core::SystemClock;
+    let mut constructions: Vec<(usize, Decimal, bool)> = Vec::new();
+    let mut cycle = 0usize;
+    while !feed.is_exhausted() {
+        let now = feed
+            .cycle_instant(&wall)
+            .expect("an unexhausted tape has a next period");
+        let calibrated_before = platform.calibration().is_some();
+        let _ = node::step(&mut platform, &mut feed, now, MAXIMUM_BUDGET).expect("a step runs");
+        cycle += 1;
+        if let Some(proposal) = platform.proposals().last()
+            && proposal.rationale.starts_with("expresses ")
+        {
+            constructions.push((cycle, proposal.equity.amount, calibrated_before));
+        }
+    }
+
+    // ----- the consequence -------------------------------------------------
+    // The finding itself: the seam is entered, under the shipped floor, by a
+    // thesis the shipped red team approved.
+    assert!(
+        !constructions.is_empty(),
+        "no cycle in {cycle} reached the construction under the shipped review policy, so \
+         `deployable_capital`, `central_degradation` and `mark_confidence_multiplier` are still \
+         unreached by any configuration a deployment uses — finding M4 is open again"
+    );
+    // Premise for the arithmetic: nothing filled, so the tracked book is the
+    // whole book and the budget's shortfall against it is the narrowing and
+    // not a drawdown, a hold, or an unfunded commitment coming off free
+    // capital first.
+    assert_eq!(
+        platform.orders().fills().len(),
+        0,
+        "the premise failed: a fill moved the book the budgets below are fractions of"
+    );
+    assert_eq!(
+        platform.equity(),
+        Decimal::from_int(BOOK),
+        "the premise failed: the tracked book is no longer {BOOK}"
+    );
+
+    // And by exactly how much, on both sides of the self-model row. Stated as
+    // fractions of a book asserted above, so halving or doubling either §6.2
+    // constant moves the budget and fails here — the mutation class that
+    // survived `valuation_seam.rs`, where every assertion had the platform's
+    // own reading on both sides.
+    let before = Decimal::from_int(BUDGET_BEFORE_LEARNING);
+    let after = Decimal::from_int(BUDGET_AFTER_LEARNING);
+    let uncalibrated: Vec<&(usize, Decimal, bool)> =
+        constructions.iter().filter(|entry| !entry.2).collect();
+    let calibrated: Vec<&(usize, Decimal, bool)> =
+        constructions.iter().filter(|entry| entry.2).collect();
+    assert!(
+        !uncalibrated.is_empty() && !calibrated.is_empty(),
+        "the premise failed: the tape's {} construction(s) all sit on one side of the self-model \
+         row, so the crossing below is not observed at all",
+        constructions.len()
+    );
+    for (at, budget, _) in &uncalibrated {
+        assert_eq!(
+            *budget, before,
+            "cycle {at} sized against {budget} before LEARN had graded anything; §6.2 with the \
+             self-model unavailable is 0.75 x 0.50 of {BOOK}"
+        );
+    }
+    for (at, budget, _) in &calibrated {
+        assert_eq!(
+            *budget, after,
+            "cycle {at} sized against {budget} after LEARN wrote a calibration; §6.2 with the \
+             self-model stale rather than absent is 0.75 x 0.75 of {BOOK}"
+        );
+    }
+    // The direction, stated separately: a self-model that has absorbed an
+    // outcome must widen the budget, never narrow it. An arithmetic that
+    // swapped the stale and unavailable constants would satisfy neither loop
+    // above, but a future one that made them equal would satisfy both and
+    // erase the distinction `Freshness` is three-valued to keep.
+    assert!(
+        before < after,
+        "the self-model row grants no more budget once it has graded an outcome: {before} then \
+         {after}"
+    );
+    // Narrowed at all, against the book rather than against another reading.
+    assert!(
+        after < Decimal::from_int(BOOK),
+        "the widest budget the centre handed the optimiser is the whole book, so §6.2 narrowed \
+         nothing: {after}"
+    );
+
+    // ----- what this still does not prove, said out loud -------------------
+    // No leg. Every construction on this tape comes back infeasible, and the
+    // reason is not the valuation plane: the approved theses are all
+    // `Claim::Overvalued`, because the structural break the review clears is
+    // an upward drift and `mechanism_for` maps a positive z-score to
+    // overvalued. `thesis_from` signs conviction by the claim, so the thesis
+    // is a short, and `conservative_default`'s long-only mandate has no
+    // feasible solution for it. What would have to change for a leg to be
+    // sized under the shipped policy is a tape carrying a *downward*
+    // dislocation whose panel still clears 0.50 — the jump section reaches
+    // only 0.34 today. Until such a tape exists, the seam is proven reached
+    // and the optimiser's output is proven empty, which are two facts and not
+    // one.
+    assert!(
+        constructions
+            .iter()
+            .all(|(_, budget, _)| budget.is_positive()),
+        "a construction was handed nothing to size against, so the infeasibility below would be \
+         about an empty budget rather than about the mandate"
+    );
+    let legs: usize = platform.proposals().iter().map(|p| p.len()).sum();
+    assert_eq!(
+        legs, 0,
+        "a leg was sized on this tape. That is progress, not a failure — but this test now \
+         understates what the tape proves, and must grow to assert the proposal, the order, the \
+         fill and the LEARN attribution that follow it"
+    );
+
+    // The boundary. Nothing here went near a venue.
     assert!(!platform.is_live_capable());
     assert!(!platform.orders().has_live_fills());
 }

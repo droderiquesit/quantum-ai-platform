@@ -138,10 +138,29 @@ locals {
   # `metrics_collected = false`. There is no second switch that could declare
   # a collector without naming the bytes it runs.
   has_metrics_collector = var.collector_image_digest != null
-  collector_mount       = "/etc/rungmp"
+
+  # The one path the collector reads its document from, and the two values
+  # derived from it.
+  #
+  # `/etc/rungmp/config.yaml` is a property of the image rather than a choice
+  # of ours: it is the only `/etc/rungmp*` literal in the sidecar's entrypoint
+  # binary and no argument names another (`infrastructure/egress/vendored-images.txt`
+  # records how that was read). The mount point and the object's name are
+  # taken apart from that one literal here, so they cannot say different
+  # things — which they did. The mount was written as `/etc/rungmp` in one
+  # local, the object was named under a content-hash directory computed in
+  # another, and the document therefore landed at `/etc/rungmp/<hash>/config.yaml`,
+  # where the collector does not look. Nothing failed: a sidecar pinned on
+  # top of that layout starts, finds no document, falls back to its built-in
+  # default and scrapes a target nobody chose, with every alert policy still
+  # gated off. A gap that reads as working is the one this derivation exists
+  # to prevent.
+  collector_read_path = "/etc/rungmp/config.yaml"
+  collector_mount     = dirname(local.collector_read_path)
+  collector_object    = basename(local.collector_read_path)
 
   # What the collector scrapes, as the `RunMonitoring` document the sidecar
-  # reads from `/etc/rungmp/config.yaml`. The workload's own port and the
+  # reads from `local.collector_read_path`. The workload's own port and the
   # path both brains and the API serve their exposition on; thirty seconds
   # with a ten-second timeout, the same cadence the execution node's Ops
   # Agent receiver uses, so the two planes' series are comparable. Written
@@ -159,11 +178,6 @@ locals {
           interval: 30s
           timeout: 10s
   EOT
-
-  # The object's directory is its content's hash, for the reason the egress
-  # bootstrap is named by its hash: a changed configuration is a new object
-  # beside the old one, never an overwrite.
-  collector_prefix = substr(sha256(local.collector_config), 0, 16)
 
   # The service's own URL, as Cloud Run has assigned it deterministically
   # since 2024: the service name, the project number, the region. Computed
@@ -375,11 +389,31 @@ resource "google_storage_bucket" "collector_config" {
   }
 }
 
+# The object is `config.yaml` at the root of the bucket, and deliberately not
+# under a content-hash directory the way the configuration files and the
+# egress bootstrap are.
+#
+# Those two are read by a process that is told the path, so a hash in the name
+# costs nothing and buys publishing that never overwrites — and so never needs
+# `storage.objects.delete`, which the infra account deliberately lacks. The
+# collector is told nothing: it opens `local.collector_read_path` and no
+# other, so a hash-named object here is a document it never reads. The name
+# has to be the one the reader uses.
+#
+# What replaces the immutability that costs: the bucket is versioned, so a
+# replaced document is archived rather than lost and the bytes a revision ran
+# under stay readable by generation. The remaining cost is real and is why it
+# is written here rather than discovered: an overwrite needs
+# `storage.objects.delete` on this bucket, so the first change to this
+# document — a renamed workload, a moved container port — fails the apply
+# with a 403 naming that permission on this one bucket. That is the intended
+# failure. The alternative was a document at a path the collector does not
+# read, which fails nothing and collects nothing.
 resource "google_storage_bucket_object" "collector_config" {
   count = local.has_metrics_collector ? 1 : 0
 
   bucket       = google_storage_bucket.collector_config[0].name
-  name         = "${local.collector_prefix}/config.yaml"
+  name         = local.collector_object
   content      = local.collector_config
   content_type = "application/yaml"
 }

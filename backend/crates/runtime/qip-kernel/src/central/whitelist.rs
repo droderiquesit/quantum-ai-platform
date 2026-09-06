@@ -49,23 +49,47 @@
 //! refusal made at the centre is one an operator sees at the console instead
 //! of in a cell's delta stream.
 //!
-//! # Why slot 8 is the only one this module produces
+//! # Why slot 8 is the only one *this module* produces
 //!
 //! The audit is recorded here because the next reader of this file is the
 //! next person asked to fill another slot, and every one of the remaining
-//! nine looks producible until its input is read.
+//! nine looks producible until its input is read. One of the nine has since
+//! been produced elsewhere — [`super::episodic`] fills slot 4 — and the
+//! paragraph that ruled it out is corrected below rather than deleted,
+//! because the reason it stopped being true is the useful part.
 //!
 //! Three of the nine — belief priors, the episodic digest and the causal
 //! digest — are the three `PolicyItem::capability` maps to a §6.2
 //! capability, which means producing one *relaxes* the cell rather than
 //! informing it: `DegradationState::sizing_multiplier` stops narrowing when
 //! the belief and causal slots read fresh, and `pauses` stops pausing
-//! situational-recognition strategies when the episodic slot does. The
-//! kernel holds no belief engine, no episodic store, and no causal edge —
-//! `WorldModel::claim_causal` is called only by its own demo seed — so a
-//! producer for any of them would ship an empty or relabelled value and buy
-//! a wider position with it. Their unproduced state is the platform saying
-//! it has no such capability, and that sentence is load-bearing.
+//! situational-recognition strategies when the episodic slot does. Two of
+//! those three are still unproducible, and for the reason this paragraph
+//! originally gave for all three:
+//!
+//! * **Belief priors.** `BeliefState` holds when a belief was last formed
+//!   and how many have been — deliberately not the hypotheses themselves,
+//!   which travel to the event log — so there is no per-subject confidence
+//!   to ship. A map assembled from the cycle's own precedents would be keyed
+//!   by hypothesis id, which names nothing a cell can read, and it would
+//!   double every cell's sizing multiplier. What would have to exist: a
+//!   belief the centre holds *per subject a cell trades*, retained past the
+//!   cycle that formed it.
+//! * **The causal digest.** `WorldModel::claim_causal` is called only from
+//!   `qip_world_model::world::seed_demo_world` and from this crate's own
+//!   tests, so the graph a deployment holds is empty and its
+//!   `last_updated()` is `None`. A producer would be honest and would never
+//!   fire. What would have to exist: a production path absorbing causal
+//!   claims — filings, research notes — into the graph.
+//!
+//! The episodic third was true when it was written and is not now. The LEARN
+//! stage moves each resolved thesis's episode into `Platform::episodes`
+//! (`remember_resolved`, reached from `calibrate_resolved` and so from
+//! `stage_learn`), so the store is real and is written by the production
+//! cycle. [`super::episodic`] states what it holds, stamped with the newest
+//! *knowable* episode's instant rather than the issue instant, so a memory
+//! that stops absorbing goes stale at the cell inside ten minutes and the
+//! pause returns. An empty memory still produces nothing at all.
 //!
 //! Of the other six: a model manifest names each model by content digest and
 //! `ModelCard` carries no digest of any artifact, because weights are never
@@ -76,7 +100,10 @@
 //! venue while the only tick this platform states is per instrument, and a
 //! catalogue that omits a tick is indistinguishable from one that states the
 //! builder's default, so signing it would be signing a default as a venue's
-//! grid; there is no adversary monitor at all. The regime is the closest —
+//! grid — and `qip_edge::feasibility::effective` takes the slot's value in
+//! *preference* to the cell's own per-instrument grid, so the wrong number
+//! there does not sit beside the right one, it replaces it; there is no
+//! adversary monitor at all. The regime is the closest —
 //! the tape statistics are real and drive routing every cycle — but
 //! `Platform::market_regime` is per subject and answers `Crisis` from this
 //! process's own drawdown, so shipping it per cell would sign a house state

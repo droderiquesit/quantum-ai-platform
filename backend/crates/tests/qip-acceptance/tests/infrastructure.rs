@@ -4748,6 +4748,58 @@ fn the_metrics_collector_runs_only_under_a_digest_pinned_image_and_nothing_claim
         );
     }
 
+    // And it lands where the collector reads it.
+    //
+    // This is the half that failed silently. The sidecar opens exactly one
+    // path, `/etc/rungmp/config.yaml` — the only such literal in its
+    // entrypoint binary — and the module used to name the mount in one local
+    // and the object under a content-hash directory in another, so the
+    // document would have arrived at `/etc/rungmp/<hash>/config.yaml`. A
+    // collector pinned on top of that starts, finds nothing, falls back to
+    // its built-in default and scrapes a target nobody chose, with every
+    // alert policy still gated off: a gap that reads as a working deploy.
+    // So the mount and the object's name are asserted to come apart from the
+    // one literal, rather than each being asserted against a string written
+    // here — two independent spellings are how they diverged the first time.
+    assert!(
+        sets(
+            &module,
+            "collector_read_path",
+            "\"/etc/rungmp/config.yaml\""
+        ),
+        "modules/cloudrun no longer names /etc/rungmp/config.yaml as the path the collector \
+         reads; that path is a property of the sidecar image, not a setting"
+    );
+    assert!(
+        sets(
+            &module,
+            "collector_mount",
+            "dirname(local.collector_read_path)"
+        ) && sets(
+            &module,
+            "collector_object",
+            "basename(local.collector_read_path)"
+        ),
+        "the collector's mount point and its object name no longer both derive from \
+         local.collector_read_path, so they can disagree again"
+    );
+    let object = module
+        .split("resource \"google_storage_bucket_object\" \"collector_config\" {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect("modules/cloudrun publishes the collector's document as a bucket object");
+    assert!(
+        sets(object, "name", "local.collector_object"),
+        "the collector's document is published under some other object name; under a prefix it \
+         is a file the sidecar never opens"
+    );
+    assert!(
+        sets(&outputs, "value", "local.collector_mount")
+            && sets(&outputs, "value", "local.collector_read_path"),
+        "modules/cloudrun no longer exports the mount and the document's path, which are what a \
+         RunService manifest's volume mount has to agree with"
+    );
+
     // The root names the digest bare and the catalogue composes it with the
     // registry prefix, so the upstream repository cannot reach a plan; and
     // the two brains carry it while the API, whose /metrics needs a token,

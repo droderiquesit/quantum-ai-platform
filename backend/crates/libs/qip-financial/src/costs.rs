@@ -9,7 +9,17 @@ use qip_core::Decimal;
 use serde::{Deserialize, Serialize};
 
 /// How readily a position can be turned into cash.
+///
+/// This is also the wire shape of a catalogue record's `liquidity` block, read
+/// by [`crate::catalogue`] with no second definition beside it — two
+/// declarations of one fact drift, and the one nobody is looking at is the one
+/// that drifts. Every field is therefore required of a catalogue that states
+/// the block — serde refuses a missing one — and `deny_unknown_fields` names
+/// the key that should not be there: a catalogue writing `days_to_liquidation`
+/// would otherwise be refused for a *missing* `days_to_liquidate`, pointing
+/// the operator at a key they are looking straight at.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiquidityProfile {
     /// Typical traded volume per day, in instrument units.
     pub average_daily_volume: Decimal,
@@ -25,6 +35,43 @@ pub struct LiquidityProfile {
     pub is_negotiated: bool,
 }
 
+/// **These six figures are nobody's measurement, and three production paths
+/// still install them.** Read this before using `LiquidityProfile::default()`
+/// in anything a control will read.
+///
+/// `typical_spread_bps: 10.0` and `days_to_liquidate: 1.0` are not
+/// conservative placeholders. They are close to the tightest quote and the
+/// fastest exit a listed name plausibly has, asserted by a library about
+/// instruments it has never seen, and they are read by `MinLiquidity` and
+/// `MaxDaysToLiquidate` — controls whose job is to veto trading. It is the
+/// same shape [`LiquidityProfile::illiquid`] was cured of, one level out and
+/// one level milder: that constant sat on a low rung and became a ceiling on
+/// every listed quote above it, whereas this one is uniform and so inverts
+/// nothing. Uniform is not harmless. It answers a question nobody asked it,
+/// in the direction that permits trading.
+///
+/// Every record in the committed catalogue used to inherit it, because the
+/// catalogue format carried no liquidity block at all — so the figure the
+/// deployed limits evaluated existed in no artefact: not in the file, not in
+/// a diff anybody reviewed, and not under the SHA-256 a run journals.
+/// [`crate::catalogue`] now **requires** the block and refuses a record
+/// without one by name, so no catalogued record reaches a control on this
+/// default any more.
+///
+/// That closes the deployed catalogue and not this constructor. Three
+/// production paths still build a [`crate::object::FinancialObject`] without
+/// stating liquidity and so still inherit these six figures:
+/// `qip-deepbrain`'s synthetic reference universe (`reference.rs`),
+/// `qip-brokers`' simulated venue listing (`exchange.rs::list_instrument`),
+/// and `qip-cli`'s demonstration universe. Closing it properly means the
+/// absence being unrepresentable rather than defaulted, and that is a
+/// workspace-wide change, not a local one: replacing these values with
+/// figures the existing seams refuse — `Rung::classify` for an exit time that
+/// is not a number of days, `qip-kernel`'s `ladder_reference_of` for a spread
+/// that is not a spread — was measured at **260 failing tests across the
+/// workspace**, every one of them a record that never stated its liquidity
+/// and was sized and vetoed against these numbers without saying so. The
+/// count is the argument for doing it deliberately, not for leaving it.
 impl Default for LiquidityProfile {
     fn default() -> Self {
         Self {

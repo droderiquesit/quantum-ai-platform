@@ -110,7 +110,15 @@ fn catalogue_text() -> String {
       "price": "100.00",
       "lot_size": "1",
       "tick_size": "0.01",
-      "licensing": "internal"
+      "licensing": "internal",
+      "liquidity": {
+        "average_daily_volume": "1000000",
+        "typical_spread_bps": 5.0,
+        "top_of_book_depth": "500",
+        "days_to_liquidate": 1.0,
+        "max_participation_rate": 0.1,
+        "is_negotiated": false
+      }
     }
   ]
 }"#

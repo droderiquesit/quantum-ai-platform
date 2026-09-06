@@ -40,7 +40,20 @@ is the point:
 - No service reads the environment. No lib performs I/O.
 - No new async runtime. Blocking I/O with explicit timeouts is a decision
   (ADR 0001, ADR 0011), not an omission.
-- No in-tree cryptography. ADR 0009 forbids hand-rolled crypto.
+- No hand-rolled protocol stack or asymmetric primitive. ADR 0009's actual
+  prohibition is on **clients** — "a gRPC implementation, a TLS stack and a
+  Google auth flow written in-tree, guarding real money, reviewed by nobody who
+  writes TLS for a living". ADR 0002's Decision section authorises the in-tree
+  hashing by name: "SHA-256 and HMAC, the random number generator". Both are
+  proven against published vectors (`qip-core/tests/hashing.rs` — FIPS 180-4
+  and RFC 4231, 6 passed), which is what makes that narrow case defensible and
+  is exactly what a TLS or JWT implementation could never claim: those fail
+  silently against a live adversary and never against a fixture.
+  This line used to read "No in-tree cryptography. ADR 0009 forbids hand-rolled
+  crypto." It was a mis-citation, it contradicted ADR 0002 in the file agents
+  read first, and ADR 0043 found it. Do not read the correction as permission:
+  asymmetric signing, a CSPRNG, and anchoring the event-log chain are three
+  gaps no in-tree code may close — see ADR 0043 (proposed).
 - No crate added without an ADR (ADR 0002, ADR 0009).
 - No second source of truth for a fact the event log already holds.
 

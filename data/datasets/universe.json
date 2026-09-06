@@ -16,7 +16,15 @@
       "price": "142.50",
       "lot_size": "1",
       "tick_size": "0.01",
-      "licensing": "internal"
+      "licensing": "internal",
+      "liquidity": {
+        "average_daily_volume": "26423076",
+        "typical_spread_bps": 4.0,
+        "top_of_book_depth": "13211",
+        "days_to_liquidate": 1.0,
+        "max_participation_rate": 0.1,
+        "is_negotiated": false
+      }
     },
     {
       "object_id": "OBJ00000000000000000VNTG",
@@ -30,7 +38,15 @@
       "price": "318.75",
       "lot_size": "1",
       "tick_size": "0.01",
-      "licensing": "internal"
+      "licensing": "internal",
+      "liquidity": {
+        "average_daily_volume": "26423076",
+        "typical_spread_bps": 3.0,
+        "top_of_book_depth": "13211",
+        "days_to_liquidate": 1.0,
+        "max_participation_rate": 0.1,
+        "is_negotiated": false
+      }
     },
     {
       "object_id": "OBJ00000000000000000MRDN",
@@ -44,7 +60,15 @@
       "price": "88.20",
       "lot_size": "1",
       "tick_size": "0.01",
-      "licensing": "internal"
+      "licensing": "internal",
+      "liquidity": {
+        "average_daily_volume": "26423076",
+        "typical_spread_bps": 6.0,
+        "top_of_book_depth": "13211",
+        "days_to_liquidate": 1.0,
+        "max_participation_rate": 0.1,
+        "is_negotiated": false
+      }
     },
     {
       "object_id": "OBJ00000000000000000ATFB",
@@ -58,7 +82,15 @@
       "price": "54.10",
       "lot_size": "1",
       "tick_size": "0.01",
-      "licensing": "internal"
+      "licensing": "internal",
+      "liquidity": {
+        "average_daily_volume": "26423076",
+        "typical_spread_bps": 8.0,
+        "top_of_book_depth": "13211",
+        "days_to_liquidate": 1.0,
+        "max_participation_rate": 0.1,
+        "is_negotiated": false
+      }
     },
     {
       "object_id": "OBJ00000000000000000HLCX",
@@ -72,7 +104,15 @@
       "price": "21.40",
       "lot_size": "1",
       "tick_size": "0.01",
-      "licensing": "internal"
+      "licensing": "internal",
+      "liquidity": {
+        "average_daily_volume": "0",
+        "typical_spread_bps": 25.0,
+        "top_of_book_depth": "0",
+        "days_to_liquidate": 3.0,
+        "max_participation_rate": 0.05,
+        "is_negotiated": false
+      }
     },
     {
       "object_id": "OBJ00000000000000000RSRC",
@@ -86,7 +126,15 @@
       "price": "63.05",
       "lot_size": "1",
       "tick_size": "0.01",
-      "licensing": "synthetic"
+      "licensing": "synthetic",
+      "liquidity": {
+        "average_daily_volume": "0",
+        "typical_spread_bps": 25.0,
+        "top_of_book_depth": "0",
+        "days_to_liquidate": 3.0,
+        "max_participation_rate": 0.05,
+        "is_negotiated": false
+      }
     }
   ]
 }

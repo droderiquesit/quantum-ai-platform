@@ -48,6 +48,7 @@
 //! and not in the audit trail.
 
 pub mod dna;
+pub mod episodic;
 pub mod factory;
 pub mod foundry;
 pub mod insights;
@@ -59,6 +60,7 @@ pub mod regions;
 pub mod whitelist;
 
 pub use dna::{DnaPayload, StrategyDna};
+pub use episodic::{EpisodicIssue, EpisodicOutcome};
 pub use factory::{StrategyCandidate, StrategyFactory, StrategyReview};
 pub use learning::{
     CellOutcome, DispositionInstruction, DispositionOutcome, DispositionRefused,

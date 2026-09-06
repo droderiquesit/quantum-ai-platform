@@ -247,3 +247,367 @@ fn a_negotiated_profile_carries_the_spread_its_caller_stated_and_invents_none() 
             .is_none()
     );
 }
+
+// --- what the committed catalogue says about liquidity -----------------------
+//
+// `LiquidityProfile::default()` asserts `typical_spread_bps: 10.0` and
+// `days_to_liquidate: 1.0`. Until the catalogue format carried a liquidity
+// block, every record in `data/datasets/universe.json` inherited exactly that,
+// so `MinLiquidity` and `MaxDaysToLiquidate` — controls whose whole job is to
+// veto trading — were evaluated for every deployed instrument against a figure
+// that appeared in no file, in no diff a reviewer read, and under no manifest
+// hash. It is `illiquid`'s hardcoded 250bps one level out: an invented number
+// standing where a control reads. It is milder only because it was uniform,
+// and so could not invert the ladder the way the 250 did.
+//
+// These tests are here rather than in `catalogue.rs`'s own suite because the
+// subject is the `LiquidityProfile` a record carries, which is this file's
+// subject, not the loader's field-by-field parsing.
+
+/// The file every central root reads, and the tape the four listed names in it
+/// were demonstrated on. Both relative to this crate, so the tests read the
+/// committed artefacts and not a copy of them.
+const COMMITTED_UNIVERSE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../../../data/datasets/universe.json"
+);
+const COMMITTED_TAPE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../../../data/datasets/loop-demonstration-tape.json"
+);
+
+fn catalogue_now() -> qip_core::Timestamp {
+    qip_core::Timestamp::from_civil(2026, 9, 2)
+}
+
+fn universe_text() -> String {
+    std::fs::read_to_string(COMMITTED_UNIVERSE).expect("the committed catalogue is readable")
+}
+
+/// What the committed tape actually shows about one instrument.
+struct TapeFigures {
+    /// Total volume over the distinct dates it trades on — the only volume
+    /// measurement this repository contains for these names.
+    average_daily_volume: f64,
+    /// The narrowest whole high-low range on any bar, in basis points of its
+    /// own mid. A quoted spread wider than the tightest bar's entire range is
+    /// not consistent with those bars having traded, so this is an upper bound
+    /// the data supports rather than an opinion about the instrument.
+    tightest_range_bps: f64,
+}
+
+fn tape_figures() -> std::collections::BTreeMap<String, TapeFigures> {
+    let text = std::fs::read_to_string(COMMITTED_TAPE).expect("the committed tape is readable");
+    let tape: serde_json::Value = serde_json::from_str(&text).expect("the tape is JSON");
+    let observations = tape["observations"]
+        .as_array()
+        .expect("the tape holds an observations array");
+    let number = |value: &serde_json::Value, key: &str| -> f64 {
+        value[key]
+            .as_str()
+            .unwrap_or_else(|| panic!("an observation has a string `{key}`: {value}"))
+            .parse::<f64>()
+            .unwrap_or_else(|_| panic!("`{key}` is a number: {value}"))
+    };
+
+    let mut volume: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
+    let mut dates: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    let mut tightest: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
+    for observation in observations {
+        let id = observation["object_id"]
+            .as_str()
+            .expect("an observation names its instrument")
+            .to_string();
+        *volume.entry(id.clone()).or_insert(0.0) += number(observation, "volume");
+        let at = observation["at"]
+            .as_str()
+            .expect("an observation is stamped")
+            .to_string();
+        dates.entry(id.clone()).or_default().insert(at[..10].into());
+        let (high, low) = (number(observation, "high"), number(observation, "low"));
+        let range_bps = (high - low) / ((high + low) / 2.0) * 10_000.0;
+        let slot = tightest.entry(id).or_insert(f64::INFINITY);
+        if range_bps < *slot {
+            *slot = range_bps;
+        }
+    }
+
+    volume
+        .into_iter()
+        .map(|(id, total)| {
+            let days = dates[&id].len() as f64;
+            (
+                id.clone(),
+                TapeFigures {
+                    // Truncated, as the catalogue states it: the first and last
+                    // dates on the tape are partial, so this understates the
+                    // real daily volume, and understating capacity is the
+                    // direction that trades less rather than more.
+                    average_daily_volume: (total / days).trunc(),
+                    tightest_range_bps: tightest[&id],
+                },
+            )
+        })
+        .collect()
+}
+
+/// A record that states no liquidity is refused by name, rather than being
+/// handed a 10bp quote and a one-day exit that nobody measured.
+///
+/// The premise matters as much as the refusal: the record being broken must
+/// carry a liquidity block that is *not* the constructor default, or the
+/// refusal below could be about a file that never said anything different.
+#[test]
+fn a_catalogue_record_that_states_no_liquidity_is_refused_by_name_and_inherits_no_default() {
+    let text = universe_text();
+    let loaded = qip_financial::catalogue::load(&text, catalogue_now())
+        .expect("the committed catalogue loads as committed");
+    let default = LiquidityProfile::default();
+    // Premise: the loader installs each record's own figures, and they are not
+    // the ones the constructor would have invented.
+    for object in loaded.universe.iter() {
+        assert_ne!(
+            object.liquidity, default,
+            "{} carries the constructor's default liquidity profile, so the catalogue is not \
+             the source of the figure the ladder prices",
+            object.object_id
+        );
+    }
+    assert_eq!(default.typical_spread_bps, 10.0);
+    assert_eq!(default.days_to_liquidate, 1.0);
+
+    let mut value: serde_json::Value = serde_json::from_str(&text).expect("the catalogue is JSON");
+    let broken = 3usize;
+    let object_id = value["instruments"][broken]["object_id"]
+        .as_str()
+        .expect("the record names its object id")
+        .to_string();
+    assert!(
+        value["instruments"][broken]
+            .as_object_mut()
+            .expect("a record is an object")
+            .remove("liquidity")
+            .is_some(),
+        "the record had no liquidity block to remove"
+    );
+    let text = serde_json::to_string(&value).expect("the bent catalogue re-serialises");
+
+    let error = match qip_financial::catalogue::load(&text, catalogue_now()) {
+        Ok(loaded) => panic!(
+            "a catalogue with a record stating no liquidity loaded {} instrument(s); every one \
+             of them would be vetoed, or not vetoed, on a spread nobody measured",
+            loaded.universe.len()
+        ),
+        Err(error) => error.message().to_string(),
+    };
+    assert!(
+        error.contains(&format!("record #{}", broken + 1)),
+        "the refusal does not name the record's position: {error}"
+    );
+    assert!(
+        error.contains(&format!("`{object_id}`")),
+        "the refusal does not name the record's object id: {error}"
+    );
+    assert!(
+        error.contains("`liquidity`"),
+        "the refusal does not name the missing field: {error}"
+    );
+}
+
+/// A misspelled key inside a liquidity block is named as the key that should
+/// not be there, not only as the one that is missing.
+///
+/// Without `deny_unknown_fields` on [`LiquidityProfile`] the stray key is
+/// discarded in silence and serde refuses the record for a *missing*
+/// `days_to_liquidate` — pointing the operator at a key they are looking
+/// straight at, in a file where they have just written it. Both halves are
+/// asserted, and on the backtick-delimited token rather than the bare word:
+/// `days_to_liquidate` is a substring of `days_to_liquidation`, so a
+/// `contains("days_to_liquidate")` here would pass whichever field serde
+/// happened to name.
+#[test]
+fn a_misspelled_key_in_a_liquidity_block_is_refused_naming_the_key_that_does_not_belong() {
+    let text = universe_text();
+    // Premise: the file loads as committed, and the key about to be bent is
+    // really in the record being bent.
+    assert!(qip_financial::catalogue::load(&text, catalogue_now()).is_ok());
+    let mut value: serde_json::Value = serde_json::from_str(&text).expect("the catalogue is JSON");
+    let block = value["instruments"][0]["liquidity"]
+        .as_object_mut()
+        .expect("the first record states a liquidity block");
+    let days = block
+        .remove("days_to_liquidate")
+        .expect("the block states days_to_liquidate");
+    block.insert("days_to_liquidation".into(), days);
+    let text = serde_json::to_string(&value).expect("the bent catalogue re-serialises");
+
+    let error = match qip_financial::catalogue::load(&text, catalogue_now()) {
+        Ok(_) => panic!("a liquidity block with a misspelled key was accepted"),
+        Err(error) => error.message().to_string(),
+    };
+    assert!(
+        error.contains("unknown field `days_to_liquidation`"),
+        "the refusal does not name the key that does not belong: {error}"
+    );
+    assert!(
+        error.contains("record #1"),
+        "the refusal does not name the record: {error}"
+    );
+}
+
+/// Every committed record states its own liquidity, and for the four the
+/// committed tape covers, the stated volume is the volume the tape shows and
+/// the stated spread sits inside the interval that data admits.
+///
+/// The bounds are the point. A stated figure that no committed data contradicts
+/// is a reference fact of the same standing as the `price` beside it; a stated
+/// figure outside them is an opinion the file is passing off as a measurement.
+#[test]
+fn every_committed_record_states_its_own_liquidity_and_the_tape_backs_the_four_it_covers() {
+    let text = universe_text();
+    let loaded = qip_financial::catalogue::load(&text, catalogue_now())
+        .expect("the committed catalogue loads");
+    let tape = tape_figures();
+    // Premise: there are records on both sides of the tape, so the loop below
+    // exercises the measured arm and the stated arm rather than one of them.
+    assert_eq!(tape.len(), 4, "the committed tape covers four instruments");
+    assert!(
+        loaded.universe.len() > tape.len(),
+        "every catalogued record is on the tape; the stated arm is untested"
+    );
+
+    let mut checked = 0usize;
+    for object in loaded.universe.iter() {
+        let liquidity = &object.liquidity;
+        assert!(
+            !liquidity.is_negotiated,
+            "{} is a listed common stock stated as trading by negotiation",
+            object.object_id
+        );
+        // A book with depth at the touch but no volume behind it is a
+        // measurement contradicting itself.
+        assert_eq!(
+            liquidity.top_of_book_depth.is_positive(),
+            liquidity.average_daily_volume.is_positive(),
+            "{} states a top-of-book depth and an average daily volume that cannot both be true",
+            object.object_id
+        );
+        // The minimum quotable spread: one tick over the record's own price.
+        // Nothing can be quoted tighter than the venue's grid.
+        let tick_bps = object.tick_size.to_f64() / object.price.to_f64() * 10_000.0;
+        assert!(
+            liquidity.typical_spread_bps > tick_bps,
+            "{} is quoted at {}bps, tighter than the {tick_bps}bps its own tick size allows",
+            object.object_id,
+            liquidity.typical_spread_bps
+        );
+
+        let Some(measured) = tape.get(object.object_id.as_str()) else {
+            continue;
+        };
+        checked += 1;
+        assert_eq!(
+            liquidity.average_daily_volume.to_f64(),
+            measured.average_daily_volume,
+            "{} states an average daily volume the committed tape does not show",
+            object.object_id
+        );
+        assert!(
+            liquidity.typical_spread_bps < measured.tightest_range_bps,
+            "{} is quoted at {}bps, wider than the whole {}bps range of the tightest bar the \
+             tape shows it trading in",
+            object.object_id,
+            liquidity.typical_spread_bps,
+            measured.tightest_range_bps
+        );
+    }
+    assert_eq!(
+        checked,
+        tape.len(),
+        "the catalogue does not carry every instrument the tape covers, so the measured arm \
+         above checked fewer records than it claims"
+    );
+}
+
+/// Where the catalogue states a figure it cannot measure, the figure may only
+/// tighten a control, never loosen one.
+///
+/// Two committed records appear on no tape in this repository, so nothing backs
+/// their liquidity the way the other four are backed. That is the moment a
+/// reference file turns into an invented number under a different name. The
+/// rule that keeps it honest is directional: an unmeasured record is quoted no
+/// tighter, exits no faster, and is participated in no harder than every record
+/// that *is* measured, and claims no volume at all — so the worst a stated
+/// figure can do is trade less.
+#[test]
+fn a_committed_record_the_tape_does_not_cover_is_quoted_no_tighter_than_every_record_it_does() {
+    let loaded = qip_financial::catalogue::load(&universe_text(), catalogue_now())
+        .expect("the committed catalogue loads");
+    let tape = tape_figures();
+
+    let (measured, stated): (Vec<_>, Vec<_>) = loaded
+        .universe
+        .iter()
+        .partition(|object| tape.contains_key(object.object_id.as_str()));
+    // Premise: both sides are non-empty, or the comparison below is vacuous —
+    // a filter over an empty list satisfies every rule ever written.
+    assert!(!measured.is_empty(), "no record is backed by the tape");
+    assert!(!stated.is_empty(), "no record is stated without the tape");
+
+    let widest = measured
+        .iter()
+        .map(|object| object.liquidity.typical_spread_bps)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let slowest = measured
+        .iter()
+        .map(|object| object.liquidity.days_to_liquidate)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let keenest = measured
+        .iter()
+        .map(|object| object.liquidity.max_participation_rate)
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        widest.is_finite() && slowest.is_finite() && keenest.is_finite(),
+        "the measured records state no bound to compare against"
+    );
+
+    for object in stated {
+        let liquidity = &object.liquidity;
+        assert!(
+            liquidity.typical_spread_bps >= widest,
+            "{} is on no tape and is quoted at {}bps, tighter than the {widest}bps of the widest \
+             record the tape backs",
+            object.object_id,
+            liquidity.typical_spread_bps
+        );
+        assert!(
+            liquidity.days_to_liquidate >= slowest,
+            "{} is on no tape and claims to exit in {} days, faster than the {slowest} days of \
+             the slowest record the tape backs",
+            object.object_id,
+            liquidity.days_to_liquidate
+        );
+        assert!(
+            liquidity.max_participation_rate <= keenest,
+            "{} is on no tape and would be {} of a day's volume, more than the {keenest} the \
+             platform permits itself in a record the tape backs",
+            object.object_id,
+            liquidity.max_participation_rate
+        );
+        assert!(
+            !liquidity.average_daily_volume.is_positive(),
+            "{} is on no tape and states an average daily volume of {}; nothing in this \
+             repository observed it trading",
+            object.object_id,
+            liquidity.average_daily_volume
+        );
+        // And so it offers no volume-based exit estimate at all, rather than a
+        // fast one: `days_to_liquidate` is the only guide it has.
+        assert!(
+            liquidity
+                .days_to_exit(qip_core::Decimal::from_int(1_000))
+                .is_none()
+        );
+    }
+}

@@ -36,7 +36,7 @@
 
 use crate::central::{
     AbsorbedFill, CellIngestion, CellOutcome, CellReport, CentralPlane, DispositionOutcome,
-    LearningReport, WhitelistIssue,
+    EpisodicIssue, LearningReport, WhitelistIssue,
 };
 use crate::config::PlatformConfig;
 use crate::cycle::{CycleReport, Stage, StageOutcome};
@@ -2703,6 +2703,51 @@ impl Platform {
         let envelope = StreamEnvelope::seal(
             self.context.ids().generate::<EventKind>(now),
             Lineage::root(correlation_id, "kernel/whitelist"),
+            issue.clone(),
+            now,
+            now,
+            facts,
+        )?;
+        self.event_log.append(&envelope.to_frame()?)?;
+        self.journal.publish(envelope, now)?;
+        Ok(issue)
+    }
+
+    /// Produce the cycle's episodic digest — payload slot 4 — and journal it.
+    ///
+    /// One issue per cycle rather than one per cell: the memory this states is
+    /// the platform's, so every cell receives the same digest, and a record
+    /// per cell would be seven claims about one fact.
+    ///
+    /// The digest is taken over the episodes memory says are knowable at
+    /// `now`, and [`crate::central::EpisodicIssue::slot`] stamps it with the
+    /// newest of their instants — never with `now`. See
+    /// [`crate::central::episodic`] for why that distinction is the whole
+    /// safety argument: a produced slot stops a cell pausing its
+    /// situational-recognition strategies, and a memory that stopped absorbing
+    /// anything must stop excusing that pause ten minutes later.
+    ///
+    /// Journaled produced or not, like the whitelist beside it, because a
+    /// memory nothing ever makes knowable is exactly the fact an operator
+    /// asking why every cell still pauses has to be able to find.
+    pub fn issue_episodic_digest(&mut self, now: Timestamp) -> Result<EpisodicIssue> {
+        let issue = EpisodicIssue::derive(self.episodes.episodes(now), self.episodes.len(), now)?;
+        let correlation_id = self
+            .context
+            .ids()
+            .generate::<qip_core::lineage::CorrelationKind>(now);
+        let facts = EventFacts::derived(
+            SourceIdentity::new(
+                SourceId::new("qip-kernel"),
+                SourceType::Internal,
+                StreamRegion::new(HOME_REGION),
+            ),
+            Subject::unattributed(),
+            EpisodicIssue::TOPIC,
+        );
+        let envelope = StreamEnvelope::seal(
+            self.context.ids().generate::<EventKind>(now),
+            Lineage::root(correlation_id, "kernel/episodic"),
             issue.clone(),
             now,
             now,
@@ -12520,5 +12565,129 @@ mod unsizeable_thesis_tests {
             assert!(!platform.orders.has_live_fills());
             assert!(!platform.is_live_capable());
         }
+    }
+}
+
+#[cfg(test)]
+mod episodic_slot_tests {
+    use super::*;
+    use qip_ai::memory::{ClaimRecord, DecisionTaken, FindingsSummary, RegimeLabel};
+    use qip_contracts::policy::Slot;
+    use qip_financial::universe::Universe;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn platform() -> Platform {
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    /// A resolved episode, as `remember_resolved` puts one into memory:
+    /// knowable from the instant LEARN saw the outcome.
+    fn resolved(id: &str, known_at: Timestamp) -> Episode {
+        Episode {
+            episode_id: id.to_string(),
+            instrument: "obj-AAA".to_string(),
+            regime: RegimeLabel {
+                market: "calm".to_string(),
+                volatility: "low".to_string(),
+            },
+            findings: FindingsSummary {
+                runs: 1,
+                findings: 1,
+                coverage: 1.0,
+                contested: false,
+            },
+            stances: Vec::new(),
+            claim: ClaimRecord {
+                class: "mean_reversion".to_string(),
+                claim: "reverts".to_string(),
+                direction: 1.0,
+                confidence: 0.6,
+            },
+            horizon: Duration::from_hours(24),
+            decision: DecisionTaken::Approved,
+            outcome: Some(EpisodeOutcome {
+                resolved_at: known_at,
+                realised_move_bps: 12.0,
+                realised_pnl: 250.0,
+            }),
+            at: known_at.saturating_sub(Duration::from_hours(24)),
+            known_at,
+        }
+    }
+
+    #[test]
+    fn the_episodic_slot_is_produced_from_the_platforms_own_memory_and_journaled_either_way() {
+        // Slot 4 of the signed §41.5 payload had no producer: every payload
+        // shipped it unproduced, so every cell read §6.2 row 3 as unavailable
+        // and paused its situational-recognition strategies whatever the
+        // centre remembered. This is the producer, and what it must not do is
+        // assert a memory that is empty or that stopped moving.
+        let mut platform = platform();
+        let now = start();
+
+        // Premise: an empty memory produces nothing, and says so in the
+        // journal rather than silently.
+        let before = platform.event_log.len();
+        let empty = platform
+            .issue_episodic_digest(now)
+            .expect("an empty memory is not an error");
+        assert_eq!(empty.slot(), Slot::unproduced());
+        assert_eq!(
+            empty.outcome,
+            crate::central::EpisodicOutcome::NothingKnowable { held: 0 }
+        );
+        assert!(
+            platform.event_log.len() > before,
+            "an unproduced slot was not journaled, so an operator asking why every cell pauses \
+             finds nothing"
+        );
+
+        // A resolution LEARN saw an hour ago, remembered exactly as
+        // `remember_resolved` remembers one.
+        let resolved_at = now.saturating_sub(Duration::from_hours(1));
+        platform
+            .episodes
+            .remember(resolved(&episode_id_for("HYP-1"), resolved_at))
+            .expect("a validated episode enters memory");
+
+        let issued = platform
+            .issue_episodic_digest(now)
+            .expect("one knowable episode");
+        assert_eq!(
+            issued.digest().map(|digest| digest.episodes),
+            Some(1),
+            "the digest did not count the platform's own memory"
+        );
+        // The instant is the memory's, not the issue's. Stamping `now` would
+        // let a memory that absorbed nothing for a week read fresh at every
+        // cell for as long as payloads kept being issued.
+        assert_eq!(issued.slot().produced_at(), Some(resolved_at));
+        assert_ne!(issued.slot().produced_at(), Some(now));
+        // And an hour is past slot 4's ten-minute time to live, so this
+        // produced slot still narrows the cell.
+        assert_eq!(
+            issued
+                .slot()
+                .freshness(qip_contracts::policy::PolicyItem::EpisodicDigest, now),
+            qip_contracts::degradation::Freshness::Stale
+        );
+
+        // The boundary: producing policy reached no venue.
+        assert!(!platform.orders.has_live_fills());
+        assert!(!platform.is_live_capable());
     }
 }
