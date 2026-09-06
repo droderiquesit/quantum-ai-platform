@@ -50,6 +50,20 @@ variable "training_service_account" {
 }
 
 variable "deletion_protection" {
-  type    = bool
-  default = true
+  description = <<-EOT
+    Whether the training staging bucket refuses to be destroyed while it still
+    holds objects. Default true, matching modules/data: a `terraform destroy`
+    aimed at dev that reached another environment is not a hypothetical.
+
+    Read by exactly one resource, `google_storage_bucket.training`, as
+    `force_destroy = !var.deletion_protection`. It was read by nothing at all
+    until then — declared, defaulted true, and referenced by no resource in
+    this module while the root never passed it either — which is a safety
+    default that protects nothing and reads in a review as one that does.
+
+    It cannot reach the KMS key: `lifecycle.prevent_destroy` takes a literal
+    and not a variable, so that key states `true` directly and always will.
+  EOT
+  type        = bool
+  default     = true
 }

@@ -60,6 +60,16 @@ resource "google_storage_bucket" "training" {
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"
 
+  # The one reader of `var.deletion_protection` in this module, spelled the way
+  # modules/data spells it. Scratch is still evidence: the inputs of the run
+  # that produced a model live here for thirty days, and a destroy that emptied
+  # the bucket would remove the only record of what a model was fitted on
+  # before the lifecycle rule had finished with it. At the default this is
+  # `false`, which is also the provider's default, so turning the variable on
+  # changes no plan — what changes is that the safety default now has something
+  # to protect instead of being a declaration.
+  force_destroy = !var.deletion_protection
+
   encryption {
     default_kms_key_name = google_kms_crypto_key.models[0].id
   }

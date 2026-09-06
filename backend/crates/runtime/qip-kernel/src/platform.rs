@@ -1853,6 +1853,28 @@ struct PositionLot {
     average_price: Decimal,
 }
 
+/// The equity one day opened at, and the day it is the opening of.
+///
+/// Bitemporal, and the two instants differ on purpose. `day` is the UTC day
+/// the figure is *about* — the instant the fact was true is that day's first
+/// nanosecond. `equity` is the number the book held then, and the platform
+/// learned it at the last moment it looked *before* the day began, not at the
+/// boundary itself: nothing in [`TrackedCapital`] reads a clock on its own, so
+/// the day rolls when the platform next looks.
+///
+/// That gap is exact rather than approximate, and the argument is the whole
+/// reason the daily-loss figure is a measurement and not a guess:
+/// [`TrackedCapital::equity`] moves only when a fill is booked;
+/// [`TrackedCapital::apply_fill`] re-anchors *before* it books one and
+/// `Platform::run_cycle` re-anchors before it runs. So between the last look
+/// and the day boundary the book cannot have moved, and the equity read at the
+/// first look of the new day is the equity the book held at midnight.
+#[derive(Clone, Copy, Debug)]
+struct DayOpen {
+    day: Timestamp,
+    equity: Decimal,
+}
+
 /// The book's capital state, tracked from realised fills and nothing else.
 ///
 /// Positions are carried at average entry cost, so equity here is the initial
@@ -1862,8 +1884,8 @@ struct PositionLot {
 /// exists to refuse. The trade-off is stated where it is read
 /// ([`Platform::risk_state`]): drawdown and daily loss driven by adverse
 /// marks are invisible until realised. Deterministic by construction — the
-/// same fills in the same order produce the same state, with no clock read
-/// anywhere.
+/// same fills in the same order at the same instants produce the same state,
+/// and no clock is read here; every instant arrives as an argument.
 #[derive(Debug)]
 struct TrackedCapital {
     /// Cash after every fill's notional and costs. Starts at the configured
@@ -1875,19 +1897,84 @@ struct TrackedCapital {
     costs_paid: Decimal,
     /// The highest equity seen, for the drawdown the monitor watches.
     peak_equity: Decimal,
+    /// The equity today opened at, for the single-day loss the monitor halts
+    /// on and the `daily-loss` limit reads.
+    ///
+    /// Until this field existed `RiskState::daily_loss` had no production
+    /// writer at all: `RiskState::from_figures` left it at `Default`'s 0.0 and
+    /// `Platform::risk_state_from` never touched it, so
+    /// `LimitSet::conservative_default`'s `daily-loss` cap recorded
+    /// `record(0.0, 0.04, …)` on every book and counted in
+    /// `LimitCheck::evaluated` while being incapable of breaching — and
+    /// `RiskMonitor::observe`'s `HaltGlobally` arm on `halt_daily_loss` was
+    /// unreachable beside a drawdown halt that worked. Two controls that read
+    /// as protection and were not.
+    day_open: DayOpen,
     /// Open positions keyed by instrument.
     positions: BTreeMap<String, PositionLot>,
 }
 
 impl TrackedCapital {
-    fn new(initial_equity: Decimal) -> Self {
+    /// Open the book at `initial_equity`, as of `opened_at`.
+    ///
+    /// The day anchor starts at the platform's own opening equity rather than
+    /// at the book's equity at midnight, and that is the honest figure rather
+    /// than a smaller claim. Nothing this type tracks existed before
+    /// `opened_at`: its equity is the initial equity plus realised P&L minus
+    /// costs, so every movement the daily-loss figure can ever report is one
+    /// the platform itself caused. A loss the book suffered earlier the same
+    /// day, before the process started, is not in this equity series at all
+    /// and therefore cannot be under-reported by anchoring here.
+    fn new(initial_equity: Decimal, opened_at: Timestamp) -> Self {
         Self {
             cash: initial_equity,
             realised_pnl: Decimal::ZERO,
             costs_paid: Decimal::ZERO,
             peak_equity: initial_equity,
+            day_open: DayOpen {
+                day: opened_at.start_of_day(),
+                equity: initial_equity,
+            },
             positions: BTreeMap::new(),
         }
+    }
+
+    /// Re-anchor the day if the clock has passed midnight since the last look.
+    ///
+    /// The anchor only ever advances. A clock that stepped backwards past a
+    /// boundary therefore cannot reset the day's loss to zero, and that
+    /// direction is the one that matters: a reset would clear a halt that is
+    /// holding, whereas keeping the older anchor at worst holds a halt that
+    /// has expired — which an operator can lift and a silent reset is not.
+    fn open_day(&mut self, now: Timestamp) {
+        let day = now.start_of_day();
+        if day > self.day_open.day {
+            self.day_open = DayOpen {
+                day,
+                equity: self.equity(),
+            };
+        }
+    }
+
+    /// Statistic: realised loss since the day opened, as a fraction of the
+    /// equity it opened at. Negative when the book is up on the day.
+    ///
+    /// The crossing point from money to a statistic, stated here because this
+    /// is where it happens: both equities are [`Decimal`] and are subtracted
+    /// as money, and only the ratio becomes `f64` — which is the unit both
+    /// `LimitKind::MaxDailyLoss` and `MonitorPolicy::halt_daily_loss` are
+    /// stated in.
+    ///
+    /// A non-positive opening equity answers [`f64::INFINITY`], following
+    /// `RiskState::ratio` rather than [`Self::drawdown`]: a book that opened
+    /// with nothing must fail the daily-loss cap rather than skip it, and a
+    /// zero here would be the fabricated pass this whole field exists to end.
+    fn daily_loss(&self) -> f64 {
+        let opening = self.day_open.equity;
+        if !opening.is_positive() {
+            return f64::INFINITY;
+        }
+        (opening - self.equity()).to_f64() / opening.to_f64()
     }
 
     /// Book one fill: move cash, update the lot, realise P&L on the reducing
@@ -1904,6 +1991,15 @@ impl TrackedCapital {
     /// wrong for it, because a partial close at a profit moves the position
     /// at cost by less than the cash it brought in, and an aggregate fed cash
     /// would report a long book short after enough of them.
+    ///
+    /// `at` is the instant the fill is booked, and the day is re-anchored
+    /// against it **before** the fill moves anything. Ordering, not
+    /// convenience: re-anchoring afterwards would take the first fill of a new
+    /// day as part of that day's opening equity, so the day would open at a
+    /// number that already contained the first trade's loss and the cap would
+    /// under-read by exactly it. Doing it here rather than at the call site is
+    /// what makes it impossible to forget — a caller cannot book a fill
+    /// without the anchor having been asked about the same instant.
     fn apply_fill(
         &mut self,
         object_id: &str,
@@ -1911,7 +2007,9 @@ impl TrackedCapital {
         price: Decimal,
         quantity: Decimal,
         costs: Decimal,
+        at: Timestamp,
     ) -> Decimal {
+        self.open_day(at);
         let at_cost = |positions: &BTreeMap<String, PositionLot>| {
             positions
                 .get(object_id)
@@ -2251,6 +2349,41 @@ impl Platform {
             config.licensed_datasets.clone(),
             config.quantum_enabled,
         )?;
+        // `PlatformConfig::agent_review_interval` is read here, and this is the
+        // only place it is read.
+        //
+        // It shipped as a documented control — "how long an agent
+        // authorisation is valid before review", defaulted to ninety days —
+        // that nothing consulted. `grep -rn agent_review_interval` returned its
+        // declaration and its default and nothing else, while the interval that
+        // actually expires a manifest was a literal in each manifest
+        // constructor. Two claims about one fact, one of them a dial an
+        // operator could turn to watch nothing happen: the shape
+        // `.claude/rules/domains/risk-and-execution.md` names by example, and
+        // the shape `PlatformConfig` itself forbids fifteen fields above —
+        // "say where a number is read, or delete it".
+        //
+        // It is read as a refusal rather than as an override, because the
+        // manifests are the authorisation and a configuration file is not
+        // allowed to extend one. An operator who sets sixty days here and gets
+        // ninety is being lied to; an operator who sets sixty days and can
+        // *shorten* every manifest from outside the manifest has an
+        // authorisation whose term is no longer in the artefact that grants it.
+        // So the two must agree, and the platform refuses to assemble when they
+        // do not, naming both numbers and where each lives.
+        for manifest in organisation.roster().iter() {
+            if manifest.review_interval != config.agent_review_interval {
+                return Err(Error::invalid(format!(
+                    "this deployment's agent_review_interval is {:.0} day(s) and the manifest for \
+                     {} authorises for {:.0}; the manifest is the authorisation, so change it in \
+                     qip-investment-agents::manifests and set the configuration to match, rather \
+                     than running with two answers to how long an agent may act",
+                    config.agent_review_interval.as_days_f64(),
+                    manifest.id,
+                    manifest.review_interval.as_days_f64(),
+                )));
+            }
+        }
 
         let mut router = ComputeRouter::classical(config.seed).with_policy(config.routing);
         if config.quantum_enabled {
@@ -2426,7 +2559,7 @@ impl Platform {
             market,
             liquidity: LiquidityTopology::default(),
             market_events: Vec::new(),
-            capital: TrackedCapital::new(initial_equity),
+            capital: TrackedCapital::new(initial_equity, now),
             aggregates: RiskAggregates::new(initial_equity, initial_equity)?,
             queue: Vec::new(),
             proposals: Vec::new(),
@@ -2601,6 +2734,31 @@ impl Platform {
         metrics.describe(
             names::RISK_EVALUATIONS,
             "passes of the risk monitor over the book",
+        );
+        // The DISCOVER-to-REASON funnel. Recorded because a platform that has
+        // stopped finding anything and a platform whose review rejects
+        // everything both submit no orders, and until these five existed the
+        // order count was the only number an operator had — so the two states
+        // were the same number.
+        metrics.describe(
+            names::OPPORTUNITIES_DETECTED,
+            "opportunities the detectors raised in the DISCOVER stage, before any were worked",
+        );
+        metrics.describe(
+            names::HYPOTHESES_CREATED,
+            "hypotheses the REASON stage synthesised from an opportunity and the panel's findings",
+        );
+        metrics.describe(
+            names::HYPOTHESES_APPROVED,
+            "hypotheses review found actionable, so a thesis was attempted",
+        );
+        metrics.describe(
+            names::HYPOTHESES_REJECTED,
+            "hypotheses review refused; the opportunity was worked and produced nothing to size",
+        );
+        metrics.describe(
+            names::HYPOTHESIS_CONFIDENCE,
+            "effective confidence of each synthesised hypothesis, after review",
         );
         metrics.describe(
             names::REASON_ROUTINGS,
@@ -4676,6 +4834,14 @@ impl Platform {
         }
         self.reasoned_through = now;
         self.cycle += 1;
+        // Re-anchor the day before anything in the cycle can move the book.
+        // `TrackedCapital::apply_fill` does the same for a fill, but a day on
+        // which nothing trades still has to roll: without this, a quiet
+        // weekend would leave the anchor on Friday and the daily-loss cap
+        // would read Friday's loss on Monday. The refusal above makes `now`
+        // non-decreasing across cycles, which is the property the anchor's
+        // advance-only rule relies on.
+        self.capital.open_day(now);
         let correlation_id = self
             .context
             .ids()
@@ -5248,13 +5414,66 @@ impl Platform {
         // once an intelligence record has actually arrived: an empty set with
         // coverage would let "no events supplied" masquerade as "no catalyst
         // existed".
-        if !self.market_events.is_empty() {
+        //
+        // **`market_events` being non-empty is not that precondition, and
+        // treating it as one was a point-in-time leak with the sign reversed.**
+        // `DetectionContext::with_events` hands the set to
+        // `KnownEvents::known_by(now, …)`, which drops every event whose
+        // known-time is after `now` and then records coverage anyway. A working
+        // set holding nothing but events the platform could not yet know
+        // therefore produced precisely the state the paragraph above forbids:
+        // zero events, coverage claimed, and the catalyst detector licensed to
+        // call the next large move *unexplained* — an opportunity manufactured
+        // out of a feed's clock skew. Nothing could see it happen, because the
+        // dropping is silent and `Timestamp::since` saturates, so the retention
+        // line above can never age a future-stamped event out either.
+        //
+        // So the claim is checked rather than asserted, by the detector
+        // `qip_compliance::pit` exists for — the module that covers "inputs
+        // that arrive from outside a reader". Coverage is claimed only if at
+        // least one held event was genuinely knowable, and every input that was
+        // not is named on the cycle rather than discarded quietly.
+        let knowability: Vec<(String, qip_contracts::time::Stamped<()>)> = self
+            .market_events
+            .iter()
+            .map(|event| {
+                (
+                    event.event_id.clone(),
+                    // `MarketEvent::new` has already clamped known-time forward
+                    // to the occurrence, so this stamp never trips `Stamped`'s
+                    // own clamp and the audit reads the event's own known-time.
+                    qip_contracts::time::Stamped::new((), event.occurred_at(), event.known_at()),
+                )
+            })
+            .collect();
+        // Taken from the compliance plane rather than constructed here, which
+        // is what that accessor exists for: "a method on the plane rather than
+        // a free function so that every read in the platform is reachable from
+        // the governance object, and an audit can find them by looking at who
+        // holds a plane". Control 1's status text has always claimed that the
+        // detector "names inputs that arrived from outside a reader"; this is
+        // the first production caller that makes the claim true of the plane
+        // and not only of the module.
+        let audit = self
+            .central
+            .compliance()
+            .leakage_detector(now)
+            .audit(knowability.iter().map(|(id, fact)| (id.as_str(), fact)));
+        let unknowable = audit.findings().len();
+        let knowable = audit.inspected().saturating_sub(unknowable);
+        if knowable > 0 {
             detection = detection.with_events(self.market_events.clone());
         }
 
         let found = self.opportunities.scan(&detection, &self.context);
         let suppressed = self.opportunities.suppressed_count();
         let count = found.len();
+        // The top of the funnel, at the seam where it becomes known. Everything
+        // downstream — theses, proposals, orders — is zero when this is zero,
+        // and that reads identically to a review stage refusing everything.
+        self.telemetry
+            .metrics
+            .increment(names::OPPORTUNITIES_DETECTED, labels([]), count as u64);
         self.queue.extend(found);
         // The queue is worked newest-highest-value first, and anything that
         // expired while waiting is dropped rather than silently worked late.
@@ -5270,6 +5489,22 @@ impl Platform {
                 self.queue.len()
             ),
         );
+        // Named individually, not counted. The refusal names every leaking
+        // input because a feed fixed for one event and left broken for three
+        // reads clean afterwards, and the event id is the only part of this an
+        // operator can take back to the publisher.
+        if let Err(leak) = audit.require_clean() {
+            outcome = outcome.with_problem(format!(
+                "the catalyst path holds event(s) this platform could not yet know, so they were \
+                 withheld from the detectors{}: {}",
+                if knowable == 0 {
+                    " and no catalyst coverage was claimed for this pass"
+                } else {
+                    ""
+                },
+                leak.message()
+            ));
+        }
         if expired > 0 {
             outcome = outcome.with_problem(format!(
                 "{expired} opportunity(ies) expired before they were worked"
@@ -5849,6 +6084,33 @@ impl Platform {
         let outcome = match self.synthesise(&opportunity, &report, now) {
             Ok(Some(reasoned)) => {
                 let approved = reasoned.hypothesis.status.is_actionable();
+                // Recorded here, where review's verdict becomes known, rather
+                // than inferred later from the order count. `created` is the
+                // denominator the other two are read against: approved plus
+                // rejected equals created, so a dashboard that shows the three
+                // together shows a review stage that has started refusing
+                // everything — which produces exactly the same zero orders as
+                // a detector that has stopped firing.
+                self.telemetry
+                    .metrics
+                    .count(names::HYPOTHESES_CREATED, labels([]));
+                self.telemetry.metrics.count(
+                    if approved {
+                        names::HYPOTHESES_APPROVED
+                    } else {
+                        names::HYPOTHESES_REJECTED
+                    },
+                    labels([]),
+                );
+                // A histogram over the unit interval, not a gauge: this is a
+                // per-cycle quantity, and a gauge would report whichever cycle
+                // happened to be the last before the scrape. Statistics are
+                // `f64` here by the domain rule; no money crosses this line.
+                self.telemetry.metrics.observe_unit(
+                    names::HYPOTHESIS_CONFIDENCE,
+                    labels([]),
+                    reasoned.hypothesis.effective_confidence(),
+                );
                 // A confidence with no resolution criteria is an opinion. The
                 // prediction is what makes the hypothesis scoreable later
                 // against something a source published, rather than against
@@ -7943,9 +8205,17 @@ impl Platform {
     /// Stated exclusions, because an honest smaller claim beats a fabricated
     /// larger one: no unrealised P&L and no mark-to-market exposure — the
     /// platform holds no marks, so an adverse move on an open position is
-    /// invisible here until a fill realises it; and no daily-loss figure —
-    /// the loop owns no day-boundary convention, and a "daily" number cut at
-    /// an arbitrary anchor would be a statement about the anchor.
+    /// invisible here until a fill realises it.
+    ///
+    /// The daily-loss figure **used to be** a third exclusion, on the grounds
+    /// that the loop owned no day-boundary convention. It does now — the UTC
+    /// day, anchored by [`DayOpen`] — and the exclusion was not free while it
+    /// stood: the field it left empty is the one the shipped `daily-loss` cap
+    /// and the monitor's single-day-loss global halt both read, so an absent
+    /// convention was two controls that could not fire rather than a figure
+    /// nobody published. The figure is realised-only like the rest, so it is
+    /// the loss the platform's own fills booked today and not the book's
+    /// mark-to-market day.
     fn risk_state(&self) -> RiskState {
         self.risk_state_from(&self.aggregates)
     }
@@ -7994,8 +8264,22 @@ impl Platform {
     #[doc(hidden)]
     pub fn risk_state_from(&self, figures: &impl AggregateFigures) -> RiskState {
         let returns = self.equity_returns();
-        let state =
-            RiskState::from_figures(figures).with_tail_risk(self.monitor.limits(), &returns);
+        let state = RiskState {
+            // The day's realised loss, from the book's own day anchor. It is
+            // read here rather than from `figures` for the same reason the
+            // tail statistics and the liquidity fractions are: the aggregate
+            // holds running counters and no day boundary, and a "daily" number
+            // needs the instant the day opened as well as the equity.
+            //
+            // Until this line existed the field stayed at `Default`'s 0.0 on
+            // every book, so `LimitSet::conservative_default`'s `daily-loss`
+            // cap compared 0.0 against 0.04 forever while counting in
+            // `LimitCheck::evaluated`, and `RiskMonitor::observe`'s
+            // single-day-loss `HaltGlobally` arm could not be reached. Both
+            // read as controls and neither could fire.
+            daily_loss: self.capital.daily_loss(),
+            ..RiskState::from_figures(figures).with_tail_risk(self.monitor.limits(), &returns)
+        };
         // Both maps or neither. The fractions are a sum over the same ladder
         // the day counts come from, so filling one from a ladder whose totals
         // could not be computed would leave the two halves of one liquidity
@@ -8186,13 +8470,23 @@ impl Platform {
         // the breach was discovered — if the aggregate had carried a bucket
         // at all — only by the monitor, one cycle late.
         let axes = self.exposure_axes_for(object_id.as_str());
+        // The counterparty is the venue that will hold the other side, and the
+        // platform knows it here because it is about to hand the order to it.
+        // Until this was named, `None` went in and
+        // `LimitKind::MaxCounterpartyExposure` iterated an empty map on every
+        // book: a deployment that configured a counterparty cap got no breach,
+        // ever. The broker's own name rather than a configured label, so the
+        // bucket the cap reads and the venue the fill came back from are the
+        // same string by construction — and its cardinality is the configured
+        // venue list, not anything an order carries.
+        let counterparty = self.broker.name().to_string();
         let result = self.orders.submit(
             order,
             self.broker.as_mut(),
             &self.autonomy,
             &risk_state,
             axes,
-            None,
+            Some(counterparty),
             now,
         );
 
@@ -8388,6 +8682,7 @@ impl Platform {
                 fill.price,
                 fill.quantity,
                 fill.costs,
+                fill.at,
             );
             self.aggregate_fill(object_id.as_str(), moved);
         }
@@ -8416,8 +8711,25 @@ impl Platform {
     /// not. The problem surfaces on the next cycle's report, and the
     /// aggregate's fill count falling behind the order manager's is the
     /// symptom an operator would see.
+    ///
+    /// It is also charged to a bucket under
+    /// [`qip_risk::limits::COUNTERPARTY_AXIS`], named by the broker that
+    /// executed it. That is the running balance
+    /// `LimitKind::MaxCounterpartyExposure` reads, and it is the same axis the
+    /// pre-trade projection adds the order under, so the cap's before and
+    /// after are one number rather than two. It carries **the desk's own
+    /// executions only**: a cell's fills arrive through
+    /// [`Self::charge_cell_fills`] and `AbsorbedFill` names no venue, so a
+    /// book that also trades through cells is under-charged here and a
+    /// counterparty cap will read low on it. Stated rather than papered over,
+    /// because the alternative — charging a cell's fill to the desk's broker —
+    /// would put exposure against a counterparty that never saw the trade.
     fn aggregate_fill(&mut self, object_id: &str, moved: Decimal) {
-        let axes = self.exposure_axes_for(object_id);
+        let mut axes = self.exposure_axes_for(object_id);
+        axes.insert(
+            qip_risk::limits::COUNTERPARTY_AXIS.to_string(),
+            self.broker.name().to_string(),
+        );
         if !moved.is_zero()
             && let Err(error) = self
                 .aggregates
@@ -9833,6 +10145,234 @@ mod decide_tests {
         );
     }
 
+    /// Book a realised loss of `fraction` of the platform's opening equity, at
+    /// `at`, through the same `TrackedCapital::apply_fill` the fill-capture
+    /// path calls.
+    ///
+    /// One lot bought and sold back at a lower price, so the loss is realised
+    /// rather than marked: the platform holds no marks and an unrealised loss
+    /// would move nothing at all.
+    fn realise_loss(platform: &mut Platform, fraction: i64, at: Timestamp) -> Decimal {
+        let opening = platform.capital.equity();
+        let loss = opening
+            .checked_div(Decimal::from_int(1_000))
+            .map(|per_mille| per_mille * Decimal::from_int(fraction))
+            .expect("the opening equity is positive");
+        let entry = Decimal::from_int(1_000_000);
+        platform.capital.apply_fill(
+            "AAA",
+            Side::Buy,
+            entry,
+            Decimal::from_int(1),
+            Decimal::ZERO,
+            at,
+        );
+        platform.capital.apply_fill(
+            "AAA",
+            Side::Sell,
+            entry - loss,
+            Decimal::from_int(1),
+            Decimal::ZERO,
+            at,
+        );
+        loss
+    }
+
+    #[test]
+    fn the_daily_loss_limit_can_actually_fire() {
+        // The same defect as `the_expected_shortfall_limit_can_actually_fire`,
+        // found four more times. `RiskState::daily_loss` had no production
+        // writer at all: `RiskState::from_figures` left it at `Default`'s 0.0
+        // and `Platform::risk_state_from` never set it, so
+        // `LimitSet::conservative_default`'s `daily-loss` cap evaluated
+        // `record(0.0, 0.04, …)` on every book that has ever run. It counted
+        // in `LimitCheck::evaluated`, which is worse than the expected
+        // shortfall case: it read as a control that had run and passed rather
+        // than as one that was absent.
+        let mut platform = platform();
+        let now = Timestamp::from_secs(1_760_000_000);
+
+        // The premise, before the conclusion. A book that has lost nothing
+        // must not breach, or the assertion below would pass on a cap that
+        // fires on everything — which is an outage, not a control, and a test
+        // that only ever asserts a breach cannot tell the two apart.
+        let quiet = platform.risk_state();
+        // Exactly zero, not approximately: the book opened at its own equity
+        // and nothing has moved it, so the subtraction is of a number from
+        // itself. A tolerance here would also accept the fabricated zero this
+        // whole change exists to remove.
+        assert!(
+            qip_core::testing::is_exactly_zero(quiet.daily_loss),
+            "a book that has booked no fill has lost nothing today, and the \
+             figure reads {}",
+            quiet.daily_loss
+        );
+        assert!(
+            !LimitSet::conservative_default()
+                .check(&quiet)
+                .breaches
+                .iter()
+                .any(|breach| breach.limit_name == "daily-loss"),
+            "the daily-loss cap breached on a book that has not traded"
+        );
+
+        // Forty-five thousandths: past the 0.04 cap and deliberately short of
+        // the monitor's 0.05 global halt, so this test is about the limit and
+        // the halt is proved separately.
+        let loss = realise_loss(&mut platform, 45, now);
+        assert!(
+            loss.is_positive(),
+            "the premise failed: no loss was realised, so nothing is being measured"
+        );
+
+        let state = platform.risk_state();
+        assert!(
+            state.daily_loss > 0.04,
+            "the book realised {loss} of a 10,000,000 opening and the day's loss reads \
+             {} — the figure the cap divides is still not being written",
+            state.daily_loss
+        );
+
+        // And it is the day's loss, not the drawdown wearing its name. Both
+        // are 0.045 on this book because it opened at its peak, so a mutation
+        // that fed `drawdown` into this field would pass every assertion above
+        // it. The drawdown cap is 0.15 and must stay silent while the
+        // daily-loss cap at 0.04 speaks; that asymmetry is what tells them
+        // apart.
+        let breaches = LimitSet::conservative_default().check(&state).breaches;
+        let named: Vec<&str> = breaches
+            .iter()
+            .map(|breach| breach.limit_name.as_str())
+            .collect();
+        assert!(
+            named.contains(&"daily-loss"),
+            "the day's loss is {} against a cap of 0.04 and the cap did not fire; \
+             the limits that spoke were {named:?}",
+            state.daily_loss
+        );
+        assert!(
+            !named.contains(&"drawdown"),
+            "the drawdown cap at 0.15 fired on a 4.5% loss, so the two figures are \
+             not being told apart: {named:?}"
+        );
+    }
+
+    #[test]
+    fn a_single_day_loss_past_its_threshold_halts_the_platform_globally() {
+        // `RiskMonitor::observe`'s `HaltGlobally` arm on
+        // `MonitorPolicy::halt_daily_loss` sat directly beside the drawdown
+        // halt and read the same never-written field, so the platform's
+        // single-day-loss stop could not fire while its neighbour worked. The
+        // seam is `stage_act`, which runs the monitor every cycle whether or
+        // not there is anything to trade, so the whole cycle is what is driven
+        // here rather than the monitor on its own.
+        let mut platform = platform();
+        let start = Timestamp::from_secs(1_760_000_000);
+
+        // Premise: nothing is halted before the loss, so the trip below is
+        // this cycle's doing.
+        assert!(
+            !platform.autonomy.kill_switch().is_globally_tripped(),
+            "the premise failed: the platform was already halted"
+        );
+
+        // Sixty thousandths: past the 0.05 single-day halt and far short of
+        // the 0.20 drawdown halt beside it, so the arm that fired is
+        // identifiable from the threshold it names.
+        realise_loss(&mut platform, 60, start);
+        let before = platform.risk_state();
+        // Read from the book rather than from the risk state: the state's
+        // drawdown comes from the aggregate, which is marked per *aggregated*
+        // fill, and a premise that read zero there would be satisfied by a
+        // book that had lost everything. This is the figure the halt beside
+        // the one under test would compare.
+        let realised_drawdown = platform.capital.drawdown();
+        assert!(
+            realised_drawdown > 0.0,
+            "the premise failed: no loss was realised, so no arm of the monitor \
+             has anything to fire on"
+        );
+        assert!(
+            realised_drawdown < platform.monitor.policy().halt_drawdown,
+            "the premise failed: the drawdown ({realised_drawdown}) is already past \
+             its own halt threshold, so a global halt would not identify which arm \
+             fired"
+        );
+
+        platform.run_cycle(start);
+
+        assert!(
+            platform.autonomy.kill_switch().is_globally_tripped(),
+            "a single-day loss of {} against a threshold of {} did not halt the \
+             platform",
+            before.daily_loss,
+            platform.monitor.policy().halt_daily_loss
+        );
+        let trip = platform
+            .autonomy
+            .kill_switch()
+            .global_trip()
+            .expect("a global trip carries its reason");
+        // Matched on the phrase the daily-loss arm alone writes. The drawdown
+        // arm's sentence begins "drawdown of", so a substring shared by both
+        // would let a mutation swap the arms and go unnoticed.
+        assert!(
+            trip.reason.starts_with("a single-day loss of"),
+            "the platform halted for some other reason: {}",
+            trip.reason
+        );
+    }
+
+    #[test]
+    fn a_new_day_reopens_the_daily_loss_at_the_equity_the_book_carried_into_it() {
+        // The half that makes the first two mean something: a "daily" loss
+        // that never resets is a drawdown with a different label, and it would
+        // halt the platform permanently on the strength of one bad Tuesday.
+        // `Platform::run_cycle` re-anchors the day before the stages run, so a
+        // day on which nothing trades still rolls — without that, a quiet
+        // weekend leaves the anchor on Friday.
+        let mut platform = platform();
+        let day_one = Timestamp::from_secs(1_760_000_000);
+        let day_two = day_one.saturating_add(Duration::from_days(1));
+        assert!(
+            day_two.start_of_day() > day_one.start_of_day(),
+            "the premise failed: the two instants are on the same UTC day"
+        );
+
+        realise_loss(&mut platform, 45, day_one);
+        let first = platform.risk_state();
+        assert!(
+            first.daily_loss > 0.04,
+            "the premise failed: nothing was lost on the first day, so there is \
+             nothing for the second day to have cleared"
+        );
+
+        platform.run_cycle(day_two);
+        let second = platform.risk_state();
+
+        // Exactly zero: the new day opened at the equity the book still holds,
+        // so the subtraction is of a number from itself. A tolerance would let
+        // a partially-rolled anchor through.
+        assert!(
+            qip_core::testing::is_exactly_zero(second.daily_loss),
+            "yesterday's loss is still being reported as today's ({}), so the \
+             day anchor did not roll",
+            second.daily_loss
+        );
+        // And the loss did not evaporate — it is still a drawdown, which is
+        // the figure that is *supposed* to persist across days. Read off the
+        // book, because that is where both figures are derived and so the only
+        // place the two can be compared without an aggregate mark in between.
+        // If both went to zero the anchor would have been re-read from a book
+        // that had forgotten its own history.
+        assert!(
+            platform.capital.drawdown() > 0.04,
+            "the drawdown cleared with the day, so the book's peak was reset \
+             too: {}",
+            platform.capital.drawdown()
+        );
+    }
+
     #[test]
     fn a_sized_proposal_is_signed_by_two_controls_and_released_as_orders() {
         // The trading spine's last seam. Until this passed, `stage_act`
@@ -10408,6 +10948,7 @@ mod decide_tests {
             Decimal::from_int(100),
             Decimal::from_int(1),
             Decimal::ZERO,
+            now,
         );
         platform.capital.apply_fill(
             "AAA",
@@ -10415,6 +10956,7 @@ mod decide_tests {
             Decimal::from_int(50),
             Decimal::from_int(1),
             Decimal::ZERO,
+            now,
         );
         assert!(
             platform.capital.equity() < equity,

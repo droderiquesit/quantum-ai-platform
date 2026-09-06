@@ -1111,8 +1111,11 @@ fn cash_below_its_buffer_refuses_the_order_instead_of_borrowing_silently() -> Re
         object_id: object("ACME"),
         quantity: dec!("95000"),
         reference_price: dec!("100"),
+        // No counterparty named, so no `COUNTERPARTY_AXIS` bucket: this
+        // fixture is about the cash floor and makes no claim about who is on
+        // the other side. `ProposedOrder::counterparty` used to be a field
+        // here; it is an exposure axis now, for the reason on that field.
         axes: BTreeMap::new(),
-        counterparty: None,
         scope: "stress".to_string(),
     };
 

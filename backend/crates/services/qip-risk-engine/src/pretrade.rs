@@ -25,10 +25,17 @@ pub struct ProposedOrder {
     /// Signed: positive buys, negative sells.
     pub quantity: Decimal,
     pub reference_price: Decimal,
-    /// Exposure axes this instrument belongs to, e.g. sector and country.
+    /// Exposure axes this instrument belongs to, e.g. sector and country —
+    /// and, when the caller knows it, the counterparty the order would face,
+    /// under [`qip_risk::limits::COUNTERPARTY_AXIS`].
+    ///
+    /// The counterparty used to be a field of its own here, projected into a
+    /// `RiskState::counterparty_exposures` map nothing else in the workspace
+    /// wrote. That made `MaxCounterpartyExposure` a cap over one order's own
+    /// delta rather than over the book's balance with that counterparty. As an
+    /// axis it is carried by the same running counters the sector and country
+    /// caps read, so the projection starts from the book's real exposure.
     pub axes: BTreeMap<String, String>,
-    /// Counterparty the order would face.
-    pub counterparty: Option<String>,
     /// The scope for kill-switch purposes, usually the strategy.
     pub scope: String,
 }
@@ -283,26 +290,17 @@ impl PreTradeChecker {
             *entry = *entry - existing.abs() + updated.abs();
         }
 
-        if let Some(counterparty) = &order.counterparty {
-            // Netted the same way as `gross_exposure` and `axis_exposures`
-            // above, and for the same reason: `counterparty_exposures` is
-            // documented in `qip-risk` as *gross exposure per counterparty*,
-            // read back through `abs()` by `MaxCounterpartyExposure`, not a
-            // running total of notional ever traded through that
-            // counterparty. The form this carried before added
-            // `order.notional()` unconditionally, so every order — closing or
-            // opening — only ever increased the recorded exposure; a book
-            // flattened to zero through the same counterparty still showed
-            // whatever volume had ever passed through it, and a limit read
-            // against that number could only ratchet toward a permanent
-            // block instead of describing the counterparty relationship as
-            // it stands after the trade.
-            let entry = projected
-                .counterparty_exposures
-                .entry(counterparty.clone())
-                .or_insert(Decimal::ZERO);
-            *entry = *entry - existing.abs() + updated.abs();
-        }
+        // The counterparty is one of those axes now, so the netting above
+        // covers it. It is worth recording why the arithmetic is a netting and
+        // not an addition, because both the counterparty balance and the axis
+        // buckets are *gross exposure per bucket* — a current balance, not a
+        // running total of notional ever routed through it. An earlier form
+        // added `order.notional()` unconditionally, so every order, closing or
+        // opening, only ever increased the recorded exposure; a book flattened
+        // to zero through one counterparty still showed whatever volume had
+        // ever passed through it, and a cap reading that number could only
+        // ratchet toward a permanent block that closing the offending position
+        // could not clear.
 
         projected.order_notional = Some(order.notional());
         projected.order_subject = Some(key);

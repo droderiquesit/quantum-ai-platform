@@ -38,7 +38,7 @@ use qip_market::bar::{Bar, Interval};
 use qip_market::book::{BookLevel, OrderBook};
 use qip_market::snapshot::MarketSnapshot;
 use qip_portfolio::portfolio::Portfolio;
-use qip_risk::limits::{LimitSet, RiskState};
+use qip_risk::limits::{Limit, LimitKind, LimitSet, RiskState};
 use qip_world_model::WorldModel;
 use qip_world_model::features::{Feature, FeatureValue};
 use qip_world_model::vocabulary::names;
@@ -1781,6 +1781,124 @@ fn two_briefs_identical_except_for_the_precedent_produce_identical_convictions_a
         "the precedent moved the confidence: {} with, {} without",
         reasoned_with.hypothesis.effective_confidence(),
         reasoned_without.hypothesis.effective_confidence()
+    );
+    Ok(())
+}
+
+// --- the reduction distinction ----------------------------------------------
+
+/// A desk whose only interesting facility is the risk view.
+fn desk_with_risk(state: RiskState, limits: LimitSet) -> Arc<Desk> {
+    Arc::new(Desk::new(
+        MarketView {
+            snapshot: MarketSnapshot::new(now()),
+            universe: Universe::new(),
+        },
+        WorldModel::new(),
+        BookView {
+            portfolio: Portfolio::new(
+                PortfolioId::from_string("pf-1"),
+                "test",
+                Currency::USD,
+                dec!("1000000"),
+                now(),
+            ),
+            marks: BTreeMap::new(),
+        },
+        RiskView { state, limits },
+        ComplianceView::default(),
+        ResearchMemory::new(),
+        SearchIndex::new(),
+    ))
+}
+
+/// The claim `RiskControl` makes about a book, through the host that charges
+/// and audits the run — not by calling the predicate underneath it.
+fn risk_control_claim(state: RiskState, limits: LimitSet, run: &str) -> String {
+    use qip_investment_agents::control::RiskControl;
+
+    let agent = RiskControl::new(
+        manifests::risk_control(now()),
+        desk_with_risk(state, limits),
+    );
+    let record = AgentHost::new(1).run(
+        &agent,
+        &brief(),
+        now(),
+        lineage(),
+        AgentRunId::from_string(run),
+    );
+    record
+        .finding
+        .expect("the risk control always reaches a finding")
+        .claim
+}
+
+#[test]
+fn a_breach_the_desk_marked_as_forcing_a_reduction_is_reported_as_more_than_a_block() -> Result<()>
+{
+    // `LimitCheck::requires_reduction` is
+    // `any(|b| b.blocks() && b.forces_reduction)`, which implies
+    // `LimitCheck::is_blocked` — `any(LimitBreach::blocks)`. `RiskControl` is
+    // the only production caller of either, and it asked `is_blocked` first,
+    // so the reduction arm was unreachable code. Every
+    // `Limit::forcing_reduction()` mark in the platform was therefore inert,
+    // including the ones on the shipped `leverage`, `drawdown` and
+    // `daily-loss` limits: a desk reading a finding could not tell "stop
+    // taking new risk" from "unwind what you are holding".
+    //
+    // The two limit sets below differ in exactly one byte of intent — the
+    // `.forcing_reduction()` call — over the same book, so nothing else can
+    // account for a difference in what is reported.
+    let breached = || RiskState {
+        equity: dec!("1000000"),
+        cash: dec!("1000000"),
+        gross_exposure: dec!("2000000"),
+        ..RiskState::default()
+    };
+    let plain = LimitSet::new("plain").with(
+        Limit::new("leverage", LimitKind::MaxLeverage { limit: 1.5 })
+            .with_rationale("gross exposure beyond this cannot be unwound in a stress"),
+    );
+    let forcing = LimitSet::new("forcing").with(
+        Limit::new("leverage", LimitKind::MaxLeverage { limit: 1.5 })
+            .forcing_reduction()
+            .with_rationale("gross exposure beyond this cannot be unwound in a stress"),
+    );
+
+    // Premise: the book breaches both sets and blocks under both, so the
+    // difference asserted below is the mark and not the breach.
+    for (label, set) in [("plain", &plain), ("forcing", &forcing)] {
+        let check = set.check(&breached());
+        assert!(
+            check.is_blocked(),
+            "the premise failed: leverage of 2.0 against a cap of 1.5 did not block \
+             under the {label} set"
+        );
+    }
+    assert!(
+        !plain.check(&breached()).requires_reduction(),
+        "the premise failed: the unmarked set already demands a reduction, so the \
+         mark is not what the assertion below measures"
+    );
+
+    // Matched on the delimiter, not on a shared prefix: "1 limit(s) block" is
+    // a prefix of both sentences, so a bare `contains` would be true of the
+    // unmarked set too and the test would pass with the branches back in
+    // their unreachable order.
+    let plain_claim = risk_control_claim(breached(), plain, "run-reduction-plain");
+    assert!(
+        plain_claim.starts_with("1 limit(s) block: "),
+        "an unmarked blocking breach is no longer reported as a plain block: \
+         {plain_claim}"
+    );
+
+    let forcing_claim = risk_control_claim(breached(), forcing, "run-reduction-forcing");
+    assert!(
+        forcing_claim
+            .starts_with("1 limit(s) block and 1 of them require the book to be reduced: "),
+        "a limit the desk marked as forcing a reduction was reported as an ordinary \
+         block, so the mark still changes nothing: {forcing_claim}"
     );
     Ok(())
 }

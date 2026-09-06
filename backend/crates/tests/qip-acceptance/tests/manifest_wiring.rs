@@ -2471,3 +2471,120 @@ fn something_collects_the_metrics_the_alert_policies_depend_on_or_says_that_noth
         );
     }
 }
+
+#[test]
+fn every_metric_name_the_platform_declares_is_one_something_records() {
+    // The other half of the pair above, and the one the observability rule
+    // states in as many words: "a registered constant nothing calls would
+    // satisfy the acceptance test and still page nobody, so check the caller,
+    // not the name."
+    //
+    // `qip_observability::metrics::names` carried **twenty-six** constants no
+    // caller anywhere in the workspace referenced. That is not inert
+    // inventory. A name in that module reads as a series this platform
+    // publishes: an operator building a dashboard or a policy on
+    // `qip_kill_switch_engaged_total` or `qip_agent_permission_denials_total`
+    // — two of the twenty-six, and both second names for facts the kernel
+    // already publishes under `qip_kill_switch_tripped` and
+    // `qip_permission_denials_total` — would have queried a descriptor Cloud
+    // Monitoring has never ingested, and got a chart that stays empty because
+    // nothing is wrong.
+    //
+    // So the entry condition for this module is a caller. The twenty-one that
+    // named facts the platform does not compute were deleted; the five that
+    // named facts it computes and discarded are recorded in `Platform`.
+    let declared = read("backend/crates/libs/qip-observability/src/metrics.rs");
+    let names: Vec<String> = declared
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("pub const ")?;
+            let ident = rest.split(':').next()?.trim();
+            ident
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                .then(|| ident.to_string())
+        })
+        .collect();
+    // Assert the premise before asserting anything about it: a parse that
+    // found nothing would make every check below vacuously true, which is the
+    // exact shape of test this repository has already been bitten by.
+    assert!(
+        names.len() > 30,
+        "only {} metric name constant(s) were parsed out of metrics.rs; the scan is not reaching \
+         them and the assertions below prove nothing",
+        names.len()
+    );
+
+    // The three names with no recording site and a reason, stated here rather
+    // than left for a reader to rediscover. The exposition encoders have to be
+    // proven against *some* series, and a fabricated name in that module would
+    // be worse than one whose only caller is a test: it would read as a series
+    // the platform publishes and be neither published nor explained.
+    const FIXTURES_ONLY: [&str; 3] = [
+        "EXECUTION_LATENCY_MS",
+        "PORTFOLIO_VALUE",
+        "PORTFOLIO_LEVERAGE",
+    ];
+
+    let sources: Vec<std::path::PathBuf> = files_with_extension("backend/crates", "rs")
+        .into_iter()
+        .filter(|path| !path.ends_with("qip-observability/src/metrics.rs"))
+        .collect();
+    assert!(
+        sources.len() > 100,
+        "only {} Rust source file(s) were found to search for callers",
+        sources.len()
+    );
+    let corpus: String = sources
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    let mut uncalled: Vec<&str> = Vec::new();
+    for name in &names {
+        if FIXTURES_ONLY.contains(&name.as_str()) {
+            continue;
+        }
+        if !corpus.contains(&format!("names::{name}")) {
+            uncalled.push(name.as_str());
+        }
+    }
+    assert!(
+        uncalled.is_empty(),
+        "these metric names are declared and nothing records them: {uncalled:?}. A name in \
+         `names` reads as a series the platform publishes; delete it, or add the recording site \
+         in the same change. If it is genuinely a test fixture, say so beside it and add it to \
+         FIXTURES_ONLY, which is two edits and a reviewer who sees both."
+    );
+
+    // And the allow-list itself does not rot: an entry that gained a real
+    // caller must leave, or the next reader will believe a published series is
+    // only a fixture.
+    for fixture in FIXTURES_ONLY {
+        assert!(
+            declared.contains(&format!("pub const {fixture}:")),
+            "{fixture} is on the fixtures-only list and is no longer declared at all"
+        );
+        assert!(
+            !production_records(&sources, fixture),
+            "{fixture} is on the fixtures-only list and something outside a test now records it; \
+             move it off the list, because a published series described as a fixture is the same \
+             defect as a fixture described as a published series"
+        );
+    }
+}
+
+/// Whether any non-test source file records `name`.
+///
+/// "Non-test" is the crate's `src/` outside a `#[cfg(test)]` file and outside
+/// `tests/`; a fixture proven only by an exposition test is the case this
+/// distinguishes from a series the platform actually publishes.
+fn production_records(sources: &[std::path::PathBuf], name: &str) -> bool {
+    sources.iter().any(|path| {
+        let is_test = path.components().any(|c| c.as_os_str() == "tests");
+        !is_test
+            && std::fs::read_to_string(path)
+                .is_ok_and(|text| text.contains(&format!("names::{name}")))
+    })
+}

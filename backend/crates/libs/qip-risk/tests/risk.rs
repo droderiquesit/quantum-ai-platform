@@ -514,7 +514,6 @@ fn state() -> RiskState {
         daily_loss: 0.01,
         days_to_liquidate: BTreeMap::from([("AAPL".to_string(), 1.0)]),
         liquidatable_within: BTreeMap::from([("5".to_string(), 0.95)]),
-        counterparty_exposures: BTreeMap::new(),
         order_notional: None,
         order_subject: None,
         // Every figure above was computed, so nothing is filed as

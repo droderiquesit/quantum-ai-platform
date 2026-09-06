@@ -317,6 +317,14 @@ impl OrderManager {
     }
 
     /// Submit an order. The single path to a venue.
+    ///
+    /// A `counterparty` the caller can name becomes one more exposure axis on
+    /// the projected state, under [`qip_risk::limits::COUNTERPARTY_AXIS`], so
+    /// `LimitKind::MaxCounterpartyExposure` reads the same running per-bucket
+    /// counter the sector and country caps read. `None` adds no axis and makes
+    /// no claim: a caller that cannot say who is on the other side must not
+    /// have one invented for it, because the cap would then bind against a
+    /// name nobody chose.
     #[allow(clippy::too_many_arguments)]
     pub fn submit(
         &mut self,
@@ -324,7 +332,7 @@ impl OrderManager {
         broker: &mut dyn Broker,
         autonomy: &AutonomyController,
         risk_state: &RiskState,
-        axes: BTreeMap<String, String>,
+        mut axes: BTreeMap<String, String>,
         counterparty: Option<String>,
         at: Timestamp,
     ) -> SubmissionResult {
@@ -437,12 +445,17 @@ impl OrderManager {
         }
 
         // 6. Pre-trade risk, against the state the order would produce.
+        if let Some(counterparty) = counterparty {
+            axes.insert(
+                qip_risk::limits::COUNTERPARTY_AXIS.to_string(),
+                counterparty,
+            );
+        }
         let proposed = ProposedOrder {
             object_id: order.object_id.clone(),
             quantity: order.quantity * Decimal::from_int(i64::from(order.side.sign())),
             reference_price: order.arrival_price,
             axes,
-            counterparty,
             scope: order.scope.clone(),
         };
         let check = match self.checker.check(&proposed, risk_state, at) {

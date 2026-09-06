@@ -14,6 +14,15 @@ use qip_core::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// The exposure axis [`LimitKind::MaxCounterpartyExposure`] reads.
+///
+/// One literal, exported, because the producer and the reader are in different
+/// crates: `qip-kernel` charges each fill to a bucket under this name and this
+/// module looks it up. An axis spelled two ways is a limit that cannot fire,
+/// and this cap has already been one — see the field it replaced on
+/// [`RiskState`].
+pub const COUNTERPARTY_AXIS: &str = "counterparty";
+
 /// How serious a breach is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -96,6 +105,20 @@ pub enum LimitKind {
     /// Maximum days to exit a single position.
     MaxDaysToLiquidate { limit: f64 },
     /// Maximum gross exposure to one counterparty, as a fraction of equity.
+    ///
+    /// Read from the [`COUNTERPARTY_AXIS`] bucket of [`RiskState::axis_exposures`],
+    /// which is the same running per-bucket counter every other axis limit
+    /// reads and is maintained by [`crate::aggregate::RiskAggregates::apply_fill`].
+    ///
+    /// It used to read a `RiskState::counterparty_exposures` map of its own,
+    /// and that map had no producer anywhere: the sole writer was
+    /// `PreTradeChecker::project`, which added the *change in one instrument's*
+    /// exposure to an always-empty starting balance, and both production
+    /// callers of the execution engine's submit path named no counterparty at
+    /// all. So the cap could not fire — and had the call sites simply started
+    /// naming one, it would have fired against a per-order number wearing a
+    /// book-level name, which is worse. Two representations of one fact
+    /// disagree eventually; there is now one.
     MaxCounterpartyExposure { limit: f64 },
     /// Minimum cash as a fraction of equity.
     MinCashBuffer { limit: f64 },
@@ -330,8 +353,16 @@ pub struct RiskState {
     /// `PreTradeChecker::check` refuses on it. Anything that fills this map
     /// without being able to explain its own silence re-opens the gap.
     pub liquidatable_within: BTreeMap<String, f64>,
-    /// Gross exposure per counterparty.
-    pub counterparty_exposures: BTreeMap<String, Decimal>,
+    // Gross exposure per counterparty used to be a map of its own here. It is
+    // now a bucket of `axis_exposures` under `COUNTERPARTY_AXIS`, because the
+    // separate map had no producer: `RiskState::from_figures` never filled it,
+    // no aggregate counted it, and the only writer was
+    // `PreTradeChecker::project` adding one instrument's delta to an empty
+    // balance. `MaxCounterpartyExposure` therefore evaluated an empty loop on
+    // every book while counting in `LimitCheck::evaluated`. Charging the
+    // counterparty as an axis puts it on the same running per-bucket counter
+    // every other axis limit already reads, so there is one derivation of the
+    // number rather than two.
     /// Notional of the order being checked, when checking one.
     pub order_notional: Option<Decimal>,
     /// Instrument the order concerns.
@@ -470,10 +501,34 @@ impl LimitCheck {
     }
 
     /// Whether the state requires reducing risk, not merely stopping.
+    ///
+    /// **This implies [`Self::is_blocked`]** — a breach that forces a
+    /// reduction is a breach that blocks — and the implication is the reason
+    /// the order of the two questions matters at every call site. The one
+    /// production caller, `qip_investment_agents`'s `RiskControl`, asked
+    /// `is_blocked()` first and this second, so the second arm was unreachable
+    /// and the `forcing_reduction()` marks on the shipped `leverage`,
+    /// `drawdown` and `daily-loss` limits changed nothing anywhere. Ask this
+    /// one first.
     pub fn requires_reduction(&self) -> bool {
-        self.breaches
-            .iter()
-            .any(|b| b.blocks() && b.forces_reduction)
+        !self.forcing_reduction().is_empty()
+    }
+
+    /// The breaches that block *and* demand the book be brought back inside
+    /// the limit, worst first.
+    ///
+    /// Separate from [`Self::blocking`] because the two answer different
+    /// questions for an operator: how many limits stop new risk, and how many
+    /// of those the desk declared cannot be left standing. A caller that had
+    /// only the first had to report the blocking count on both arms, which is
+    /// how the reduction arm came to describe itself with
+    /// `blocking.len().max(1)` — a number that is right only when every
+    /// blocking breach happens to force a reduction.
+    pub fn forcing_reduction(&self) -> Vec<&LimitBreach> {
+        self.blocking()
+            .into_iter()
+            .filter(|breach| breach.forces_reduction)
+            .collect()
     }
 
     /// Breaches that block, worst first.
@@ -766,7 +821,15 @@ impl LimitSet {
                 }
             }
             LimitKind::MaxCounterpartyExposure { limit: bound } => {
-                for (counterparty, value) in &state.counterparty_exposures {
+                // An absent axis records nothing, exactly as `MaxAxisWeight`
+                // treats an absent axis: a book whose fills were never charged
+                // to a counterparty made no statement about counterparty
+                // concentration, and inventing a breach for it would refuse
+                // orders over reference data rather than over the book.
+                let Some(counterparties) = state.axis_exposures.get(COUNTERPARTY_AXIS) else {
+                    return out;
+                };
+                for (counterparty, value) in counterparties {
                     record(
                         state.ratio(value.abs()),
                         *bound,

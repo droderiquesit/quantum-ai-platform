@@ -573,8 +573,16 @@ fn the_risk_decision_costs_what_the_budget_says() -> Result<()> {
         object_id: object("ACME"),
         quantity: dec!("1000"),
         reference_price: dec!("100"),
-        axes: BTreeMap::from([("sector".to_string(), "information_technology".to_string())]),
-        counterparty: Some("broker-a".to_string()),
+        // The counterparty is one more exposure axis rather than a field of
+        // its own — see `ProposedOrder::axes` — so the projection walks two
+        // buckets here, which is what the budget below is measured against.
+        axes: BTreeMap::from([
+            ("sector".to_string(), "information_technology".to_string()),
+            (
+                qip_risk::limits::COUNTERPARTY_AXIS.to_string(),
+                "broker-a".to_string(),
+            ),
+        ]),
         scope: "performance".to_string(),
     };
 

@@ -205,6 +205,21 @@ pub struct PlatformConfig {
     /// Datasets licensed for use in a production investment decision.
     pub licensed_datasets: Vec<String>,
     /// How long an agent authorisation is valid before review.
+    ///
+    /// Read in exactly one place: `Platform::new`, which refuses to assemble
+    /// when this disagrees with the review interval on any manifest the roster
+    /// actually carries. It is a statement the deployment makes about the
+    /// roster it expects, checked against the roster it got — not an override.
+    /// The manifest is the authorisation, and a configuration file that could
+    /// silently extend or shorten one would put the term of an agent's
+    /// authority somewhere other than the artefact granting it.
+    ///
+    /// It was read by nothing at all until then: this field, its default and
+    /// nothing else, while `AgentManifest::review_interval` and
+    /// `qip_investment_agents::manifests::REVIEW_INTERVAL` each hardcoded
+    /// ninety days. Two independent claims about one fact will disagree, and
+    /// the louder one will be wrong — here the loud one was the configuration
+    /// an operator could edit, and it governed nothing.
     pub agent_review_interval: Duration,
     /// How the central plane is sized and bounded.
     ///

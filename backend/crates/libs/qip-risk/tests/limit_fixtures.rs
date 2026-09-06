@@ -48,17 +48,28 @@ fn state() -> RiskState {
             ("AAPL".to_string(), Decimal::from_int(80_000)),
             ("MSFT".to_string(), Decimal::from_int(60_000)),
         ]),
-        axis_exposures: BTreeMap::from([(
-            "sector".to_string(),
-            BTreeMap::from([
-                ("energy".to_string(), Decimal::from_int(300_000)),
-                ("financials".to_string(), Decimal::from_int(300_000)),
-                (
-                    "information_technology".to_string(),
-                    Decimal::from_int(300_000),
-                ),
-            ]),
-        )]),
+        axis_exposures: BTreeMap::from([
+            (
+                "sector".to_string(),
+                BTreeMap::from([
+                    ("energy".to_string(), Decimal::from_int(300_000)),
+                    ("financials".to_string(), Decimal::from_int(300_000)),
+                    (
+                        "information_technology".to_string(),
+                        Decimal::from_int(300_000),
+                    ),
+                ]),
+            ),
+            // The counterparty balance is a bucket of this map rather than a
+            // map of its own: it used to be `RiskState::counterparty_exposures`,
+            // which nothing in the workspace ever wrote, so
+            // `MaxCounterpartyExposure` iterated an empty loop on every real
+            // book while this fixture handed it a number by hand.
+            (
+                qip_risk::limits::COUNTERPARTY_AXIS.to_string(),
+                BTreeMap::from([("prime".to_string(), Decimal::from_int(200_000))]),
+            ),
+        ]),
         volatility: 0.18,
         value_at_risk: BTreeMap::from([("0.99".to_string(), 0.03)]),
         expected_shortfall: BTreeMap::from([("0.97".to_string(), 0.05)]),
@@ -66,7 +77,6 @@ fn state() -> RiskState {
         daily_loss: 0.01,
         days_to_liquidate: BTreeMap::from([("AAPL".to_string(), 1.0)]),
         liquidatable_within: BTreeMap::from([("5".to_string(), 0.95)]),
-        counterparty_exposures: BTreeMap::from([("prime".to_string(), Decimal::from_int(200_000))]),
         order_notional: Some(Decimal::from_int(50_000)),
         order_subject: Some("AAPL".to_string()),
         // Every map above holds the figure its limit reads, so none is filed
