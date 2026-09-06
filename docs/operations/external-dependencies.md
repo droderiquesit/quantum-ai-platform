@@ -284,8 +284,15 @@ central plane (`:522`). The per-venue egress rule is created only when
 `shadow_mode` is false (`:551-552`), and the root passes `shadow_mode = true`
 unconditionally (`main.tf:492`), so the first node cannot open a venue session
 until a reviewer sees that literal change. The module's README carries the
-rest: what the startup script verifies about the boot image, what nothing here
-enforces, and that no image bake exists.
+rest: what the startup script verifies about the boot image and what nothing
+here enforces. **This sentence used to end "and that no image bake exists",
+which stopped being true at `5ccaea9`**: the bake is
+`.github/workflows/image.yml` over `infrastructure/images/execution-node/`
+and `infrastructure/terraform/modules/image-bake/`. It has never been
+dispatched — `GET /repos/…/actions/workflows/image.yml/runs` answers
+`total_count: 0` — and `image_bake_subnet_cidr` is commented out in
+`environments/dev/`, so the module creates nothing. A bake exists; no image
+does.
 
 None of it has been planned or validated. There is no `terraform` binary in
 this environment.
@@ -347,8 +354,13 @@ fetches at boot instead: `qip-fetch-secret` writes the capital envelope key
 to a tmpfs at mode 0400, and the venue credential only if the module bound
 one, which the paper ceiling and shadow mode each prevent on their own. The
 binary reads `QIP_CAPITAL_ENVELOPE_KEY_FILE` (`:154`). The helper is one the
-boot image is contracted to ship (`:91`), and no image bake exists in this
-repository.
+boot image is contracted to ship (`:91`). **Since `5ccaea9` something in this
+repository ships it**: `infrastructure/images/execution-node/provision.sh`
+installs `qip-fetch-secret` to `/usr/local/bin` (`:185`) and refuses the image
+if it is not executable afterwards (`:268`). That is a bake, not an image —
+`.github/workflows/image.yml` has never been dispatched and
+`image_bake_subnet_cidr` is unset everywhere — so the helper is still
+contracted rather than present on any machine.
 
 What is still out of band is the values. Terraform creates every secret
 container empty — no value appears in any `.tf`, and

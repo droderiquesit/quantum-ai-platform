@@ -31,6 +31,26 @@
 > modules has been applied — `execution_nodes = {}` in every environment and
 > no `terraform` binary exists in this session either — so "wired" here means
 > "reachable from `main.tf`", not "running".
+>
+> **Second correction, 2026-09-06 — G9, step C5 and decision D23 have been
+> answered, and the rows below still read as though they had not.** Three
+> places say the node's boot image has no build: G9 ("No node boot image
+> build"), step C5 ("a boot image (G9) — no image pipeline exists in the tree
+> and Terraform cannot make one"), and D23 ("Whether the node's boot image is
+> built in CI or by hand, and with what tool | Not decided"). `5ccaea9` both
+> decided and built it: `.github/workflows/image.yml` over
+> `infrastructure/images/execution-node/` and
+> `infrastructure/terraform/modules/image-bake/`, taking the container image
+> `deploy.yml` has already attested and refusing to run on an artefact the
+> attestor did not sign. The rows are left as scored, like every other row
+> here. **What they still get right is the state of the world, and a careless
+> reading of this correction would lose it**: the workflow has never been
+> dispatched — `GET /repos/…/actions/workflows/image.yml/runs` answers
+> `total_count: 0` — `image_bake_subnet_cidr` is commented out in
+> `environments/dev/terraform.tfvars`, so `module.image_bake` has `count = 0`
+> and creates nothing, and `boot_image` has no value in any environment. A
+> pipeline exists; an image does not, and step C5's node step still cannot be
+> performed.
 
 
 **Scope.** The runtime this repository would produce if its committed

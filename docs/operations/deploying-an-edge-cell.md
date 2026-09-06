@@ -24,12 +24,29 @@ it can promise:
   (`environments/{dev,test,stage,prod}/terraform.tfvars`). No node exists
   anywhere, because a node needs at least one venue and no venue's published
   ranges are recorded in this repository.
-* Nothing in this repository builds the boot image
-  (`modules/execution-node/README.md`, "No image bake exists"). `deploy.yml`
-  builds and attests a container image of `qip-edge-node`; turning that into a
-  Compute Engine image with the kernel command line the module verifies is a
-  build step nobody has written. Until it exists, step 4 names an image
-  somebody built by hand.
+* **The boot image does not exist, but the thing that builds it now does.**
+  This bullet used to read "Nothing in this repository builds the boot image",
+  citing `modules/execution-node/README.md`'s "No image bake exists"; both
+  stopped being true at `5ccaea9`, and that README's section is now headed
+  "The image bake exists and has never been run". `.github/workflows/image.yml`
+  takes the container image `deploy.yml` attested — refusing to run on an
+  artefact the attestor did not sign — and, through
+  `infrastructure/images/execution-node/provision.sh`, bakes a Compute Engine
+  image carrying the kernel command line, the isolated cores, the huge pages
+  and the three binaries the module's startup script verifies.
+  `infrastructure/terraform/modules/image-bake/` is the staging bucket, the
+  read-only identity and the internet-less /28 it builds on. **None of it has
+  run.** `GET /repos/…/actions/workflows/image.yml/runs` answers
+  `total_count: 0`, so no image has been baked — check the run count and not
+  whether the workflow exists, because GitHub registered the file on
+  2026-09-06 and a `200` on that endpoint says only that it knows about it;
+  `image_bake_subnet_cidr` is
+  commented out in `environments/dev/terraform.tfvars`, so `module.image_bake`
+  has `count = 0` and creates nothing; and `boot_image` has no value in any
+  environment — every occurrence in a tfvars file is inside a comment. So step
+  4 still names an image nobody has, and what changed is that producing one is
+  now three human acts (uncomment the CIDR, `infra.yml up`, dispatch
+  `image.yml`) rather than a build step nobody has written.
 * A node this module boots **runs passes**. The startup script writes
   `QIP_VENUE_FEED=simulated` (`startup.sh.tftpl:174`), the one value
   `qip-edge-node` accepts — any other stops the process naming ADR 0003
@@ -77,7 +94,10 @@ it can promise:
    refuses to start the units when one is missing
    (`modules/execution-node/README.md`, "What this module cannot enforce").
    There is no admission controller on a bare machine, so this is what stands
-   between a hand-built image and a trading node.
+   between an unverified image and a trading node — whoever built it.
+   `infrastructure/images/execution-node/provision.sh` asserts the same list
+   at bake time (`:267-279`), which is a second check and not a replacement:
+   the startup script is the one that runs on the machine that trades.
 
 5. **Write the venues map from the venue's own connectivity documentation.**
    It may not be empty — `qip-edge-node` refuses an empty `QIP_VENUES` and the
@@ -272,7 +292,10 @@ book serve no price.
 
 ## What this runbook does not cover
 
-* **The boot image.** Nothing builds it; see above.
+* **The boot image.** `.github/workflows/image.yml` builds it and has never
+  been dispatched, so none exists; see the second bullet at the top. Running
+  the bake is its own runbook and this one does not describe it —
+  `infrastructure/images/execution-node/README.md` does.
 * **The venue decision.** The ranges in step 5 come from the venue, and no
   venue has been chosen for any environment.
 * **A venue feed.** `QIP_VENUE_FEED` has one value, `simulated`. A feed from

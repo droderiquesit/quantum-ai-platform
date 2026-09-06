@@ -83,9 +83,14 @@ Everything else (`project_id`, `region`, `environment`, `autonomy_ceiling`,
 > ```
 
 **Exists.** The value is threaded to the observability module at
-`main.tf:342` (`notification_channels = var.notification_channels`) and from
-there onto all seven policies — `modules/observability/main.tf` lines 40, 76,
-114, 148, 193, 233 and 273 each read `notification_channels = var.notification_channels`.
+`main.tf:416` (`notification_channels = var.notification_channels`) and from
+there onto all nine policies — `modules/observability/main.tf` lines 40, 76,
+114, 148, 199, 239, 279, 350 and 444 each read
+`notification_channels = var.notification_channels`. Recounted 2026-09-06 with
+`grep -n 'notification_channels' modules/observability/main.tf`; this entry
+carried 193, 233 and 273 from before the `polled` halt source was documented
+and before the two liquidity policies were added, and every one of those three
+had moved.
 The module's own variable takes no default at all
 (`modules/observability/variables.tf:13-15`), so the root's `[]` is the only
 value any policy can get.
@@ -93,7 +98,7 @@ value any policy can get.
 **Delta.** The variable is assigned in **none** of the four tfvars, and the
 string `notification_channels` does not appear in any file under
 `infrastructure/environments/`. So on the day `workload_metrics_exist` is
-flipped, all seven alert policies are created with an empty channel list:
+flipped, all nine alert policies are created with an empty channel list:
 every one of them evaluates, none of them can page anybody. This is precisely
 the failure the variable's own one-line description names, and it is the only
 gate in this register with **no comment anywhere in the environment
@@ -260,11 +265,20 @@ the staleness note below.
 
 ## 6. `workload_metrics_exist = false` in every environment
 
-**Required.** Seven alert policies.
+**Required.** Nine alert policies.
 
-**Exists.** All seven are `count = var.workload_metrics_exist ? 1 : 0` —
+**Exists.** All nine are `count = var.workload_metrics_exist ? 1 : 0` —
 `modules/observability/main.tf` lines 24, 60 (with an extra prod exclusion),
-98, 132, 177, 217, 257. The flag reaches the module at `main.tf:338`.
+98, 132, 183, 223, 263, 314 and 396. The flag reaches the module at
+`main.tf:412`. Recounted 2026-09-06:
+`grep -c '^resource "google_monitoring_alert_policy"' modules/observability/main.tf`
+answers `9`, and `grep -n 'count *='` over the same file answers those nine
+lines. The two most recent are `risk_figure_unevaluated` and
+`sign_off_withheld_on_liquidity`, and both alarm on a control **working** — a
+risk figure that could not be computed, and a sign-off withheld because of it,
+which mean the platform has stopped trading that book rather than that it is
+trading badly. Adding them changes nothing about this gate: with it false,
+`count = 0` on all nine and no policy object exists in any environment.
 
 **Delta.** Never assigned; commented out in dev
 (`environments/dev/terraform.tfvars:100`, `# workload_metrics_exist = true`)

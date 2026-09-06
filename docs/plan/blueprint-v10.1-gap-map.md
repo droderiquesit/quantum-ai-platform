@@ -10,9 +10,8 @@
 > landed uncommitted while this was being written, and is scored, flagged and
 > cited by symbol rather than waited for. **Amended 2026-09-06:** that fifth
 > caller committed at `b060df2`, and the claim its row made for it — "so it is
-> a control that can fire" — is withdrawn on evidence. Wired, yes;
-> trustworthy, no. See the liquidity-ladder row, and
-> `PROJECT-PLAN.md`'s valuation row, which withdrew the same claim. The
+> a control that can fire" — was withdrawn on evidence. Wired, yes;
+> trustworthy, no. The
 > self-model, wallet, treasury/corridor and per-account-entitlement rows had
 > been ABSENT since the first pass and stopped being true at `e5dc8fc`,
 > `5546a24` and `0599092`; and two first-pass findings were themselves wrong
@@ -22,6 +21,18 @@
 > duplicate tenor under an unstable comparator. Rows not named in this note
 > were not re-verified in this pass and carry their original evidence and
 > date; a row's silence is not a claim that it was rechecked.
+>
+> **Amended again 2026-09-06, and this second correction is the instructive
+> one, because the withdrawal outlived the defect it described.** Both
+> findings behind "trustworthy, no" were repaired at `5ccaea9`, and the
+> liquidity-ladder row went on calling the repairs "in the working tree,
+> uncommitted at this writing" after they had been committed — which told a
+> reader not to rely on a floor that now fires. **A document wrong
+> pessimistically is wrong.** The floor fails closed, and each holding's days
+> to exit now come from its own record rather than from its rung's bucket.
+> One defect of the same family is open and is named in the row rather than
+> summarised. See the liquidity-ladder row, and `PROJECT-PLAN.md`'s valuation
+> row, which is the current score.
 
 A first-pass structural inventory: for each capability the "Algorik —
 Cognitive Investment Platform, Blueprint v10.1" document names, does anything
@@ -137,7 +148,7 @@ still no crawler, no renderer and no Tor client — this crate opens no sockets
 |---|---|---|
 | Capital engine (deployed/reserve/exploration split, bounded expiring grants) | BUILT+WIRED | `qip-capital::reservation::ReservationLedger`, `AllocationLimits`, `CapitalAllocator`, `DrawdownSchedule` and `qip_capital_fabric` imports at `qip-kernel/src/platform.rs:47-49`; `qip_capital_fabric::evaluate(&plan, realised)` called at `platform.rs:5661` |
 | Risk envelope including a per-causal-driver concentration limit | BUILT+WIRED | Confirmed by `.claude/rules/domains/risk-and-execution.md`: `RiskState::with_tail_risk` fills expected shortfall per-limit, and `the_expected_shortfall_limit_can_actually_fire` in `qip-kernel/src/platform.rs` proves the veto fires rather than reading as decorative protection |
-| Liquidity ladder (rung-by-rung withdrawal ordering, cash → PE commitments) | **BUILT+WIRED as a risk read, committed at `b060df2` — but the control it wires is not trustworthy; BUILT-UNWIRED at `1107305`** | Re-scored three times: ABSENT at the first pass, twice on 2026-09-05, and again on 2026-09-06 after an adversarial review of the wiring. `qip-financial/src/ladder.rs:238` defines `LiquidityLadder`; monotonicity is compared by cross-multiplication so money never leaves `Decimal`, and the rung order is the enum's declaration order — a property of the type rather than of a sort call someone can forget. At `1107305` it had **no production caller**. It has one now, committed at `b060df2` (`git merge-base --is-ancestor b060df2 HEAD` succeeds; the row said "not yet committed" and that is stale): `Platform::liquidity_ladder` builds one from the aggregates, `Platform::risk_state_from` fills `RiskState::days_to_liquidate` and `RiskState::liquidatable_within` from it, and `stage_act` calls it. Those fields are read by `LimitKind::MaxDaysToLiquidate` and `LimitKind::MinLiquidity` (`qip-risk/src/limits.rs:298,300`). **This row then said "so it is a control that can fire", and that sentence is withdrawn.** It did not survive a second adversarial pass, and the identical over-claim was withdrawn from `PROJECT-PLAN.md`'s valuation row; leaving it here would let the retired claim survive in the history document. Two findings, each re-verified against the committed tree on 2026-09-06 rather than taken on report. First, **the floor fails open**: at HEAD `risk_state_from` reads the ladder through `if let Ok(ladder) = self.liquidity_ladder(figures) { … }`, so a refused ladder leaves both maps untouched and empty, `MinLiquidity` takes its `None` arm, and every order is accepted — and `LiquidityProfile::illiquid()` hardcodes `typical_spread_bps: 250.0` (`qip-financial/src/costs.rs:60`) while `listed()` takes the caller's spread (`:46`), so any listed instrument quoted above 250 bps makes the monotonicity proof refuse the whole ladder. A silently unevaluated floor and a satisfied floor are the same empty map. Second, **`LiquidationHorizon::least_days` over-counts liquidity**: `Rung::classify` puts any non-negotiated holding with `days_to_liquidate > 1.0` on `BondsAndLessLiquidListed`, whose horizon is `Days`, whose `least_days` is `2.0` — so a record stating forty-five days is read as two and both limits report green. So: **BUILT+WIRED is a structural verdict about whether a caller exists, and this row's own preamble says these counts are not a judgment of correctness. Take it that way and no further.** Repairs are in the working tree, uncommitted at this writing — `risk_state_from` recording the refusal through `RiskState::with_unevaluated`, and `LadderEntry::days_to_exit` carrying the record's own measurement rather than the bucket floor — and this row should be re-scored again when they land, not before. **The blueprint's own caller stays structurally forbidden**: serving a withdrawal from the top of the ladder needs a *granted* withdrawal, and ADR 0021 leaves `WithdrawalEntitlement` with exactly one arm, `Refused` — no `Granted` to construct and no `Deserialize` to smuggle one through (`qip-capital/src/ledger/entitlement.rs:155`). So the ladder is wired along the one seam that is admissible here and will never be wired along the one the blueprint names. Verify before quoting: `grep -rn 'liquidity_ladder(' backend/crates/runtime/qip-kernel/src/platform.rs` for the caller, and read the `if let Ok(` in `risk_state_from` before believing any sentence about the limit firing. The ladder is execution-adjacent by subject and inert by construction: its plan legs carry an object id, a rung, an amount and a cost, and a test asserts the serialised field set is exactly those four so a future venue or side field trips it |
+| Liquidity ladder (rung-by-rung withdrawal ordering, cash → PE commitments) | **BUILT+WIRED as a risk read, committed at `b060df2`; the "not trustworthy" verdict this cell carried is withdrawn — both findings behind it were repaired at `5ccaea9`; BUILT-UNWIRED at `1107305`** | Re-scored four times: ABSENT at the first pass, twice on 2026-09-05, once on 2026-09-06 after an adversarial review of the wiring, and again on 2026-09-06 after the repairs landed and this cell went on describing them as pending. `qip-financial/src/ladder.rs:238` defines `LiquidityLadder`; monotonicity is compared by cross-multiplication so money never leaves `Decimal`, and the rung order is the enum's declaration order — a property of the type rather than of a sort call someone can forget. At `1107305` it had **no production caller**. It has one now, committed at `b060df2` (`git merge-base --is-ancestor b060df2 HEAD` succeeds; the row said "not yet committed" and that is stale): `Platform::liquidity_ladder` builds one from the aggregates, `Platform::risk_state_from` fills `RiskState::days_to_liquidate` and `RiskState::liquidatable_within` from it, and `stage_act` calls it. Those fields are read by `LimitKind::MaxDaysToLiquidate` and `LimitKind::MinLiquidity` (`qip-risk/src/limits.rs:298,300`). **This row then said "so it is a control that can fire", and that sentence is withdrawn.** It did not survive a second adversarial pass, and the identical over-claim was withdrawn from `PROJECT-PLAN.md`'s valuation row; leaving it here would let the retired claim survive in the history document. Two findings, **both closed at `5ccaea9`** — and this cell said "repairs are in the working tree, uncommitted at this writing" after they had landed, which is the same error in the opposite direction to the over-claim above it. `git merge-base --is-ancestor 5ccaea9 HEAD` succeeds. First, the floor **used to fail open**: `risk_state_from` read the ladder through `if let Ok(ladder) = self.liquidity_ladder(figures) { … }`, so a refused ladder left both maps untouched and empty, `MinLiquidity` took its `None` arm, and every order was accepted — a silently unevaluated floor and a satisfied floor were the same empty map. `git show HEAD:backend/crates/runtime/qip-kernel/src/platform.rs \| grep -n "if let Ok(ladder)"` now returns nothing. In its place, `RiskState::unevaluated` (`qip-risk/src/limits.rs:333`) carries the refusal, `risk_state_from` files it (`platform.rs:7720`), and `PreTradeChecker::check` rejects while an entry stands, before weighing any limit and not reducibly (`qip-risk-engine/src/pretrade.rs:219-222`). Second, **`LiquidationHorizon::least_days` over-counted liquidity**: `Rung::classify` puts any non-negotiated holding with `days_to_liquidate > 1.0` on `BondsAndLessLiquidListed`, whose horizon is `Days`, whose `least_days` is `2.0`, so a record stating forty-five days read as two. `LadderEntry::days_to_exit` (`qip-financial/src/ladder.rs:339`) now returns the larger of the record's own measurement and that floor, the kernel carries the record's figure onto the entry (`platform.rs:7790`), and `reachable_within` filters on it (`ladder.rs:653`). **What survives is the instrument the first finding was measured with**: `LiquidityProfile::illiquid()` still hardcodes `typical_spread_bps: 250.0` (`qip-financial/src/costs.rs:57-60`) while `listed()` takes the caller's spread (`:46`), and `ladder_reference_of` admits a wider quote silently at assembly (`platform.rs:786-804`), so a listed name at 300 bps still inverts the per-rung cost rate and makes the monotonicity proof refuse the whole ladder — and now that the floor fails closed, that refusal stops every order in the cycle rather than none of them. **BUILT+WIRED is a structural verdict about whether a caller exists, and this row's own preamble says these counts are not a judgment of correctness. Take it that way and no further** — `PROJECT-PLAN.md`'s valuation row carries the current score; this row is history. **The blueprint's own caller stays structurally forbidden**: serving a withdrawal from the top of the ladder needs a *granted* withdrawal, and ADR 0021 leaves `WithdrawalEntitlement` with exactly one arm, `Refused` — no `Granted` to construct and no `Deserialize` to smuggle one through (`qip-capital/src/ledger/entitlement.rs:155`). So the ladder is wired along the one seam that is admissible here and will never be wired along the one the blueprint names. Verify before quoting: `grep -rn 'liquidity_ladder(' backend/crates/runtime/qip-kernel/src/platform.rs` for the caller, and read the `match` in `risk_state_from` — the `if let Ok(` that used to be there is what made every sentence about the limit firing false, and its absence is what makes them true. The ladder is execution-adjacent by subject and inert by construction: its plan legs carry an object id, a rung, an amount and a cost, and a test asserts the serialised field set is exactly those four so a future venue or side field trips it |
 | Compounding policy (reinvestment cadence, fee-tier accumulation, withdrawal drag) | ABSENT | `grep -rli "compounding"` returns nothing |
 | Treasury / signed corridors / MPC withdrawal gates | PARTIAL (records and refusals only, by ADR 0021) | Re-scored 2026-09-05; the ABSENT verdict above was true when written and stopped being true at `5546a24`. `qip-capital-fabric/src/corridor.rs` defines `CorridorId:33`, `CorridorCaps:125`, `CorridorStage:245`; `destination.rs` defines `DestinationKey:80`, `DestinationRecord:230`, `DestinationRegistry:249`; `gate.rs` defines the seven-veto transfer gate, reached from the kernel at `qip-kernel/src/platform.rs:3751` (`GateCheck::ALL`, seven checks); `custody.rs` defines `CorridorKind:95` and custody policy as data; `journal.rs` defines `CorridorAction:156`, `CorridorStep:199`, `CorridorStanding:282`. **What is deliberately still absent is the half that would move money**: there is no transfer engine and no MPC signer, so the gate's `Approved` has no consumer, and ADR 0021 forbids building one until Phase 12. This is a refusal, not a gap |
 | Wallet (read-only balance aggregation, signing crate deliberately unlinked) | BUILT+WIRED (read model only) | Re-scored 2026-09-05; ABSENT above was true when written and stopped being true at `5546a24`. `qip-capital-fabric/src/wallet.rs` is the read model with halting reconciliation, imported into the kernel at `qip-kernel/src/platform.rs:63` beside the journal at `:59`, and served at `GET /wallet`. The signing half is unlinked exactly as the blueprint's own parenthesis asks, and as ADR 0021 requires |
@@ -230,23 +241,33 @@ classified above:
   or from a service the kernel actually calls). **One of the 24 was
   uncommitted when this was written and is committed now** (`b060df2`): the
   liquidity ladder's risk read. A reader checking out `1107305` still counts
-  23 and 4, not 24 and 3. Read its row before treating that as good news —
-  the caller exists and the control it feeds abstains silently on a class of
-  book, which is a correctness question this document's counts do not ask.
+  23 and 4, not 24 and 3. This bullet went on to say the control it feeds
+  "abstains silently on a class of book"; **that stopped being true at
+  `5ccaea9`** — the ladder's refusal now travels as `RiskState::unevaluated`
+  and `PreTradeChecker::check` rejects on it before weighing a limit. Read its
+  row anyway, and not as good news: the abstention became a blanket refusal,
+  which is the safe direction and is still a book the platform cannot trade.
+  Either way it is a correctness question this document's counts do not ask.
   Of the 24, several more are wired in the
   codebase sense but reach no *deployed* process, most notably the entire
   edge/execution plane (`execution_nodes = {}` in every environment) — that
   distinction is called out per-row above and matters more than the count.
 - **3 of 44** are BUILT-UNWIRED. The valuation result is the interesting one:
   six engines were built at `1107305`, four wired then and a fifth wired
-  uncommitted since, leaving **the volatility surface as the only one reached
-  by nothing** — and for a reason that is not "nobody got to it yet". Nothing
-  in this platform ingests option quotes, so wiring it is a data source with a
+  since, leaving **the volatility surface as the only one reached by nothing**
+  — and for a reason that is not "nobody got to it yet". Nothing in this
+  platform ingests option quotes, so wiring it is a data source with a
   licensing evaluation ahead of it. A future re-score should check the caller
-  rather than the type. The ladder's wiring did survive into a commit
-  (`b060df2`); what a re-score should check next is not whether it is wired
-  but whether the limits it feeds can be made to fire, which as of 2026-09-06
-  they cannot on any book whose ladder is refused.
+  rather than the type, and should not use `grep -rl VolatilitySurface` for
+  it: since `5ccaea9` that lists `qip-kernel/src/valuation.rs` too, where the
+  one occurrence is a doc comment at `:221`. The ladder's wiring survived into
+  a commit (`b060df2`), and the question this bullet said to check next —
+  whether the limits it feeds can be made to fire — **was answered at
+  `5ccaea9`: they can.** The bullet's own answer, "as of 2026-09-06 they
+  cannot on any book whose ladder is refused", is withdrawn; a refused ladder
+  is now itself a refusal. What a re-score should check *now* is narrower and
+  is in the row: the 250 bps `illiquid()` default that decides which books get
+  refused.
 
 These are **structural counts** — does code exist, is it called — not a
 judgment of correctness, completeness, or fitness of what exists. A
