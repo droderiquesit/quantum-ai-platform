@@ -1570,11 +1570,11 @@ impl MarketSimulator {
             * 10_000.0;
         let volatility = spec.step_volatility * regime.volatility_multiplier;
         let participation = (outcome.filled.to_f64() / spec.daily_volume).max(0.0);
-        let impact_bps = if volatility > 0.0 && participation > 0.0 {
-            self.costs.impact_coefficient * volatility * participation.sqrt() * 10_000.0
-        } else {
-            0.0
-        };
+        // Through the cost model rather than inline. This line used to spell
+        // the square-root law out for itself — the fourth place on the platform
+        // that did — and a formula written four times is four numbers that will
+        // eventually disagree about the same fill.
+        let impact_bps = self.costs.impact_bps(participation, volatility);
         let total_bps = (walk_bps.max(0.0) + impact_bps) * regime.slippage_multiplier;
         if !total_bps.is_finite() {
             // A multiplier large enough to overflow the arithmetic is a
@@ -1652,18 +1652,13 @@ impl MarketSimulator {
     }
 
     /// Commission on a filled notional, from the platform's own cost model.
+    ///
+    /// The fee is now computed in [`Decimal`] throughout, by
+    /// [`CostModel::commission_on`], so the old round trip through `f64` and
+    /// its saturating fallback are both gone: there is no longer a step at
+    /// which an unrepresentable fee has to be guessed at in either direction.
     fn commission_on(&self, notional: Decimal) -> Decimal {
-        if !notional.is_positive() {
-            return Decimal::ZERO;
-        }
-        let charged =
-            (notional.to_f64() * self.costs.commission_rate).max(self.costs.minimum_commission);
-        // A fee too large to represent saturates rather than falling back to
-        // zero. Zero was the wrong direction for an unrepresentable number: a
-        // notional big enough to overflow the fee is a notional whose fee is
-        // enormous, and reporting it as free is the one reading that is
-        // certainly wrong.
-        Decimal::from_f64(charged).unwrap_or(Decimal::MAX)
+        self.costs.commission_on(notional)
     }
 }
 
