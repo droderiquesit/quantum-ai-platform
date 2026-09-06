@@ -738,6 +738,10 @@ fn assemble() -> Result<Assembled> {
             qip_core::ObjectId::from_string("obj-AAA"),
             "AAA",
             InstrumentType::CommonStock,
+            qip_financial::costs::LiquidityProfile::listed(
+                qip_core::Decimal::from_int(1_000_000),
+                5.0,
+            ),
         )
         .venue("XNYS")
         .sector(Sector::InformationTechnology)
@@ -1695,6 +1699,82 @@ fn the_governance_page_renders_the_whitelist_the_platform_journaled_and_no_slot_
         "{after}"
     );
     assert!(after.contains(">PAPER TRADING<"), "{after}");
+    Ok(())
+}
+
+#[test]
+fn the_governance_page_reads_slot_four_off_the_journal_rather_than_declaring_it_unrecorded()
+-> Result<()> {
+    // Slot 4 became a journaled slot when `pending_policy` started calling
+    // the episodic producer. Until then this page could say "the platform
+    // journals slot 8 and records no other slot" and be right; saying it
+    // afterwards would be a page asserting an absence the journal
+    // contradicts, which is the failure the panel exists to prevent.
+    use qip_events::Topic;
+
+    let assembled = assemble()?;
+    let router = Router::new(assembled.api.clone(), assembled.web.clone());
+
+    let whitelist_line = {
+        let mut platform = assembled.platform.lock().expect("the platform lock");
+        // The row key: without a whitelist there is no row to read slot 4 on.
+        let whitelist = platform.issue_cycle_whitelist("eu-west", now())?;
+        let issue = platform.issue_episodic_digest(now())?;
+        // Premise: an empty memory is what a fresh process has, so this is
+        // the state a deployment reads, and the producer said so rather than
+        // producing a digest of nothing.
+        assert_eq!(
+            issue.outcome,
+            qip_kernel::central::EpisodicOutcome::NothingKnowable { held: 0 }
+        );
+        // Premise: both issues are on one topic, so a panel reading the topic
+        // alone could not tell them apart — and would have to call one of
+        // them the other.
+        assert_eq!(
+            platform
+                .event_log()
+                .by_topic(Topic::PolicyDistributed)
+                .len(),
+            2
+        );
+        whitelist.describe()
+    };
+
+    let page = page(&router, "/governance");
+    // The reason is the record's own: the instant it was issued and the count
+    // memory held. No blanket sentence can produce those two numbers.
+    let from_the_record = format!(
+        r#"data-fact="policy.eu-west.episodic_digest" data-state="not-recorded">not recorded<small class="muted"> — the platform journaled an episodic issue at {}: memory holds 0 episode(s) and none is knowable yet, so slot 4 shipped unproduced and every cell pauses situational recognition</small>"#,
+        now().to_rfc3339()
+    );
+    assert!(
+        page.contains(&from_the_record),
+        "the page did not read the episodic record the platform journaled: {page}"
+    );
+    // Premise for the refutation below: the blanket sentence is still on this
+    // page for the ten slots nothing records, so its absence on slot 4 is a
+    // choice the panel made and not a string that vanished.
+    let blanket = r#"data-state="not-recorded">not recorded<small class="muted"> — the platform journals slot 8 (cycle_whitelist) per cell and slot 4 (episodic_digest) per cycle, and records no other slot"#;
+    assert!(
+        page.contains(&format!(
+            r#"data-fact="policy.eu-west.causal_digest" {blanket}"#
+        )),
+        "{page}"
+    );
+    assert!(
+        !page.contains(&format!(
+            r#"data-fact="policy.eu-west.episodic_digest" {blanket}"#
+        )),
+        "the page declared slot 4 unrecorded by a sentence the journal contradicts: {page}"
+    );
+    // The whitelist row is unchanged by the record beside it.
+    assert!(
+        page.contains(&format!(
+            r#"data-fact="policy.eu-west.whitelist">{whitelist_line}<"#
+        )),
+        "{page}"
+    );
+    assert!(page.contains(">PAPER TRADING<"), "{page}");
     Ok(())
 }
 

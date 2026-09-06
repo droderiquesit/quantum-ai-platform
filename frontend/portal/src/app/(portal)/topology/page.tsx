@@ -12,6 +12,7 @@ import {
 } from "@/components/data/States";
 import { describeOutcome, platform } from "@/lib/api/client";
 import { NOT_YET_SERVED } from "@/lib/api/endpoints";
+import { WIRE_REDACTIONS } from "@/lib/api/redaction";
 import type { Agents, MeshStatus, Regions, SystemStatus, SystemView } from "@/lib/api/types";
 import { formatCount } from "@/lib/format";
 import { useResource, type Resource } from "@/lib/hooks/useResource";
@@ -37,13 +38,30 @@ import { useResource, type Resource } from "@/lib/hooks/useResource";
  * report from this cell", which is what `/regions` answers, not "these two
  * processes are connected", which no route in this platform states.
  *
- * **What is deliberately not drawn.** `GET /mesh` carries a `cells[].address`,
- * and that address is the cell's base URL on the mesh transport — its identity,
- * taken from `QIP_MESH_PEER`. It is an internal endpoint and it is not rendered
- * here in any form, not as a node label, not as a tooltip, not as a title
- * attribute. The gateway strips `QIP_API_BASE_URL` out of its own error bodies
- * so an upstream address never reaches a browser; a topology page is the single
- * most likely screen to undo that, so it holds the same line.
+ * **What is deliberately not drawn, and what no longer arrives.** `GET /mesh`
+ * carries a `cells[].address`, and that address is the cell's base URL on the
+ * mesh transport — its identity, taken from `QIP_MESH_PEER`. `GET
+ * /system/status` embeds the same status whole, so it carries every cell
+ * address too. Both are `Role::Viewer`. It is an internal endpoint and it is
+ * not rendered here in any form, not as a node label, not as a tooltip, not as
+ * a title attribute.
+ *
+ * This comment used to end there and add that the gateway strips
+ * `QIP_API_BASE_URL` out of its own error bodies "so an upstream address never
+ * reaches a browser". That was true of the pixels and false of the wire: the
+ * gateway forwarded `/mesh` unmodified, and the body this page fetched carried
+ * `"address":"…"` for every served cell, in the network tab, in memory, and in
+ * reach of any extension with host permissions. A page asserting a transport
+ * property the transport does not have is worse than one that says nothing,
+ * because it is read as an assurance — an operator screenshots it into an
+ * incident thread on the strength of it.
+ *
+ * The gateway now applies the field, so the claim is about something. The
+ * declared list is `WIRE_REDACTIONS` in `@/lib/api/redaction`, this page
+ * renders that list rather than restating it, the replacement is named in the
+ * `x-qip-redacted` response header, and `tests/wire.spec.ts` asserts on the
+ * response body a browser receives rather than on the DOM — a DOM assertion is
+ * what let the old claim ship.
  *
  * There is no control on this page and there is nothing here that could submit
  * an order.
@@ -160,17 +178,35 @@ export default function Topology() {
             <StateBlock
               tone="neutral"
               label="withheld on purpose"
-              headline="No address, no host, no port is rendered for any node."
+              headline="No address, no host and no port is rendered for any node, and none reaches this browser to render."
             >
               <p data-testid="topology-withheld">
                 <span className="num">GET /mesh</span> carries a{" "}
                 <span className="num">cells[].address</span> per cell — the base URL the mesh
                 transport identifies that cell by, configured through{" "}
-                <span className="num">QIP_MESH_PEER</span>. It is an internal endpoint and it is not
-                on this page, in any element, including titles. The browser gets nothing about an
-                upstream the public may not see; that is the same rule the gateway follows when it
-                redacts <span className="num">QIP_API_BASE_URL</span> out of an error body.
+                <span className="num">QIP_MESH_PEER</span> — and{" "}
+                <span className="num">GET /system/status</span> embeds that same status whole, so it
+                carries them too. Both answer <span className="num">Role::Viewer</span>. Not drawing
+                a field was never the same as not receiving it: this panel used to say an upstream
+                address never reached a browser while the body behind the page carried one per
+                served cell. The gateway replaces the field before the response leaves this
+                console&rsquo;s server and names what it replaced in the{" "}
+                <span className="num">x-qip-redacted</span> header, so the claim is one an operator
+                can check in the same network tab the value used to sit in.
               </p>
+              <ul className="mt-2 flex flex-col gap-1" data-testid="topology-redactions">
+                {WIRE_REDACTIONS.map((redaction) => (
+                  <li
+                    key={`${redaction.route} ${redaction.field}`}
+                    data-testid="topology-redaction"
+                    data-route={redaction.route}
+                    data-field={redaction.field}
+                  >
+                    <span className="num">GET /api/v1{redaction.route}</span>{" "}
+                    <span className="num">{redaction.field}</span> — replaced. {redaction.why}
+                  </li>
+                ))}
+              </ul>
             </StateBlock>
             <StateBlock
               tone="neutral"

@@ -62,6 +62,8 @@ use qip_edge::cell::{ExecutionReport, Placer};
 use qip_edge::dropcopy::DropCopyFill;
 use qip_execution_engine::broker::Broker;
 use qip_execution_engine::order::{Order, OrderType, Side};
+use qip_financial::costs::LiquidityProfile;
+use qip_financial::object::FinancialObject;
 use std::collections::BTreeMap;
 
 /// The finest step the synthetic listing trades in.
@@ -72,6 +74,46 @@ use std::collections::BTreeMap;
 /// inventing a coarser step would refuse orders for a reason the venue never
 /// stated.
 const SYNTHETIC_STEP: Decimal = Decimal::from_raw(1);
+
+/// What a listing this process invented says about leaving the position.
+///
+/// The step above is chosen in the permissive direction because a coarser grid
+/// would refuse orders the venue never refused, and that is safe: a lot size is
+/// inert outside the matching engine. A liquidity profile is not. It is read by
+/// `MinLiquidity` and `MaxDaysToLiquidate`, whose whole job is to veto, and by
+/// the liquidity ladder that prices an exit — so the permissive direction here
+/// is the direction that lets a control fail to fire. This listing is invented
+/// on demand for an instrument nobody in this process has measured, so every
+/// figure is chosen so that the record can only ever tighten a control:
+///
+/// * **No volume at all**, so [`LiquidityProfile::days_to_exit`] returns
+///   `None` rather than a fast estimate, and `days_to_liquidate` below is the
+///   only guide anything has. A depth of zero beside it, because a book with
+///   depth at the touch and no volume behind it is a measurement contradicting
+///   itself.
+/// * **Twenty-five basis points and three sessions**, the figures the
+///   committed catalogue states for the two records no tape in this repository
+///   covers. Same situation, same answer, and stated in one register so an
+///   operator reading a risk report cannot tell from the numbers which file
+///   the caution came from.
+/// * **Five percent participation**, half the house rate, for the same reason.
+/// * **Not negotiated**: the venue matches it on a price-time book in this
+///   process, and saying otherwise would misplace it on the ladder's private
+///   rung.
+///
+/// Nothing reads this today — `SimulatedExchange` uses a listing's symbol, lot
+/// and tick and nothing else — and that is exactly why it is stated rather than
+/// defaulted. The next reader inherits whichever it is.
+fn invented_listing_liquidity() -> LiquidityProfile {
+    LiquidityProfile {
+        average_daily_volume: Decimal::ZERO,
+        typical_spread_bps: 25.0,
+        top_of_book_depth: Decimal::ZERO,
+        days_to_liquidate: 3.0,
+        max_participation_rate: 0.05,
+        is_negotiated: false,
+    }
+}
 
 /// How many resting orders the gateway will follow at the venue.
 ///
@@ -262,6 +304,19 @@ impl SimulatedGateway {
         self.exchange.resting_count()
     }
 
+    /// The venue's own record for an instrument, once something has caused it
+    /// to be listed.
+    ///
+    /// Read from the venue rather than from anything this gateway kept,
+    /// because the question it answers is what the *listing* says — and the
+    /// listing this gateway invents through [`invented_listing_liquidity`] is
+    /// a `FinancialObject` a risk engine would read like any other. A caller
+    /// with no way to see it could not tell a stated liquidity from a
+    /// defaulted one, which is how the defaulted one survived.
+    pub fn listing(&self, object_id: &ObjectId) -> Option<&FinancialObject> {
+        self.exchange.listing(object_id)
+    }
+
     /// Whether the venue's own order record still holds `order_id` open.
     ///
     /// Read from the matching engine, not from the gateway's working set:
@@ -301,6 +356,7 @@ impl SimulatedGateway {
             reference,
             SYNTHETIC_STEP,
             SYNTHETIC_STEP,
+            invented_listing_liquidity(),
             at,
         )
     }

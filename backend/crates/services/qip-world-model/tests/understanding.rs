@@ -1900,3 +1900,87 @@ fn a_recognised_macro_release_lands_under_the_analysts_name_keyed_by_its_economy
     assert_eq!(read(names::MACRO_LEVEL, "US.CPI.YOY"), Some(5.25));
     assert_eq!(read(names::INFLATION_YOY, "US"), None);
 }
+
+/// A macro release whose series id cannot be a store key is refused for the
+/// whole observation — including the journal.
+///
+/// The journal is why this is a contract test rather than a unit one. A
+/// release with a surprise writes a `Change` whose description interpolates
+/// the series id, and that description reaches the UNDERSTAND stage detail and
+/// the console. A key too long or too hostile to be a store key is exactly a
+/// key too hostile to render, so the store's refusal has to govern the
+/// journal write as well, and only the two together prove it.
+#[test]
+fn a_macro_release_whose_series_id_cannot_be_a_key_is_never_journalled() {
+    use qip_world_model::vocabulary::names;
+
+    let release = |series_id: &str| MacroObservation {
+        series_id: series_id.into(),
+        region: "EA".into(),
+        value: 5.25,
+        unit: "percent".into(),
+        reference_date: days_ago(10),
+        // A consensus is what produces a surprise, which is what produces the
+        // journal entry this test is about.
+        consensus: Some(5.0),
+        previous: None,
+        is_revision: false,
+        provenance: Provenance::synthetic("macro", days_ago(2)),
+        quality: DataQuality::clean(),
+    };
+
+    let mut model = WorldModel::new();
+    // Premise: an ordinary release with the same surprise *is* journalled, so
+    // the absence below is caused by the key and not by the path being dead.
+    model.absorb_macro(&release("EA.POLICY_RATE"));
+    assert_eq!(
+        model.changes().len(),
+        1,
+        "a surprising release must still be journalled: {:?}",
+        model.changes()
+    );
+    assert!(
+        model.changes()[0].description.contains("EA.POLICY_RATE"),
+        "premise: the journal entry interpolates the series id"
+    );
+
+    let hostile = format!("EA.\u{1b}[2J{}", "Z".repeat(60_000));
+    model.absorb_macro(&release(&hostile));
+
+    assert_eq!(
+        model.changes().len(),
+        1,
+        "the refused release added a journal entry: {:?}",
+        model
+            .changes()
+            .iter()
+            .map(|change| change.description.chars().take(24).collect::<String>())
+            .collect::<Vec<_>>()
+    );
+    let statistics = model.statistics();
+    assert_eq!(
+        statistics.get("feature_keys_refused").copied(),
+        Some(1),
+        "the refusal must be visible to an operator rather than only prevented: {statistics:?}"
+    );
+    assert_eq!(
+        statistics.get("feature_series").copied(),
+        Some(3),
+        "the honest release's three series and nothing from the hostile one: {statistics:?}"
+    );
+    assert_eq!(
+        model
+            .features()
+            .value_as_of(names::MACRO_LEVEL, &hostile, days_ago(10), now())
+            .map(|value| value.value),
+        None,
+        "a refused key must not be readable back under any of the three writes"
+    );
+    // And the world state — which is serialised into the event log — carries
+    // no key from it either.
+    let state = model.state_at(days_ago(10), now());
+    assert!(
+        state.features.keys().all(|key| key.len() < 64),
+        "a hostile key reached the world state snapshot"
+    );
+}

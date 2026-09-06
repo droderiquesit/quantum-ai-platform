@@ -36,7 +36,7 @@
 
 use crate::central::{
     AbsorbedFill, CellIngestion, CellOutcome, CellReport, CentralPlane, DispositionOutcome,
-    EpisodicIssue, LearningReport, WhitelistIssue,
+    EpisodicIssue, FamilyStructureJournal, LearningReport, WhitelistIssue,
 };
 use crate::config::PlatformConfig;
 use crate::cycle::{CycleReport, Stage, StageOutcome};
@@ -326,6 +326,9 @@ pub struct Platform {
     /// What the LEARN stage's strategy review did this cycle, for the
     /// journal. Cleared as each cycle's LEARN begins.
     cycle_strategy_review: Option<StrategyReviewJournal>,
+    /// What the LEARN stage measured of family structure this cycle, for the
+    /// journal. Cleared as each cycle's LEARN begins.
+    cycle_family_structure: Option<FamilyStructureJournal>,
     /// The durable, hash-chained mirror of the cycle journal.
     journal: DurableLogTransport,
     /// Everything the platform decided, and what came of it — refusals
@@ -498,8 +501,58 @@ pub struct Platform {
 
     // State carried between cycles.
     cycle: u64,
+    /// The latest instant this platform has already reasoned at: the assembly
+    /// instant, then each cycle's own.
+    ///
+    /// **The failure it prevents is a point-in-time leak the assembly-time
+    /// checks cannot catch a second time.** Everything derived in
+    /// [`Platform::new`] is derived *as of* the assembly instant, and several
+    /// of those derivations refuse a record that was not yet knowable then —
+    /// `IlliquidValuator::mark_private_asset` refuses `known_at > read_at`,
+    /// and an object it refuses joins `illiquid_unmarkable` rather than
+    /// becoming a mark. That check runs once. The mark it produces carries
+    /// only `as_of`, the instant the evidence was observed, so
+    /// [`AssetValuation::confidence_at`] can refuse a read before the mark was
+    /// *struck* and has nothing with which to refuse a read before the record
+    /// was *knowable*. A cycle run at an instant between the two therefore
+    /// sized against a mark the platform could not have held — and sized
+    /// *larger*, because a mark decays from `as_of` and the earlier read has
+    /// decayed less. Measured: a fund whose administrator reported ten days
+    /// before assembly sized at 0.384889535 as of the assembly instant and at
+    /// 0.386374532 as of the day before it, one day before the record existed
+    /// here.
+    ///
+    /// The anchor is the assembly instant because that is the `read_at` every
+    /// one of those checks was taken against; holding `now` at or after it
+    /// restores the property for all of them at once — the marks, the
+    /// commitment book, the feasibility grids, the exposure axes and the
+    /// decision-grade sweep — rather than for the one that was noticed.
+    ///
+    /// [`qip_core::ManualClock::set`] already declares monotonicity "a
+    /// precondition of the event log's ordering guarantees" and enforces it
+    /// for the clock replay uses. `qip-api` and `qip-fastbrain` assemble on
+    /// [`qip_core::SystemClock`], which makes no such promise: an NTP step, a
+    /// live migration or an operator's `date` moves the host clock backwards
+    /// and the precondition is simply not held. This field moves the rule to
+    /// the seam that consumes it.
+    reasoned_through: Timestamp,
     /// The correlation id of the most recent cycle, for tracing.
     last_correlation: Option<CorrelationId>,
+    /// Records [`Platform::observe`] has taken in over this process's life —
+    /// the count it returned, accumulated, and nothing else.
+    ///
+    /// The SENSE stage answers "has anything been fed in" from this and never
+    /// again from one of the stores below. It used to read the price series
+    /// alone, so a cycle that absorbed three central-bank reference rates
+    /// reported `produced: 0` and "the platform is running blind" beside a
+    /// feed summary reading `released: 3, observed: 3`: two claims about one
+    /// fact, and the louder one was wrong. A macro observation lands in the
+    /// world model and the catalyst path and touches no price series, so the
+    /// stage was measuring one absorption arm and concluding about nine. This
+    /// is not a second source of truth for what is *held* — the stores below
+    /// are that, and they are bounded, so what is held is smaller than this
+    /// number as soon as retention bites.
+    observations_absorbed: u64,
     /// Price history per instrument, for the detectors.
     price_history: BTreeMap<String, Vec<f64>>,
     volume_history: BTreeMap<String, Vec<f64>>,
@@ -1405,6 +1458,13 @@ pub struct CycleJournalEntry {
     /// older journal replays.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub strategy_review: Option<StrategyReviewJournal>,
+    /// What LEARN measured of family structure this cycle, on the days its
+    /// strategies held grants. Absent on a cycle whose realised corpus carried
+    /// no aligned window — every cycle until the centre has issued grants over
+    /// [`crate::central::CLUSTERING_WINDOW`] closed sessions. Defaulted so an
+    /// older journal replays.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub family_structure: Option<FamilyStructureJournal>,
 }
 
 /// What the LEARN stage's counterfactual pass left in the journal.
@@ -2286,6 +2346,7 @@ impl Platform {
             declined_scores: Vec::new(),
             cycle_counterfactuals: None,
             cycle_strategy_review: None,
+            cycle_family_structure: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
             outcomes: OutcomeCapture::new(),
             counterfactuals,
@@ -2353,6 +2414,10 @@ impl Platform {
             telemetry,
             event_log,
             cycle: 0,
+            // The assembly instant, which is the `read_at` every point-in-time
+            // check above was taken against.
+            reasoned_through: now,
+            observations_absorbed: 0,
             price_history: BTreeMap::new(),
             volume_history: BTreeMap::new(),
             spread_history: BTreeMap::new(),
@@ -4480,6 +4545,11 @@ impl Platform {
                 world.absorb_bars(bars.iter().map(|bar| (bar.as_ref(), bar.close_time())));
             });
         }
+        // The number returned and the number the SENSE stage reasons from are
+        // the same number, taken here once. A caller reporting `observed` and
+        // a stage reporting "nothing has been fed in" about the same cycle is
+        // the disagreement this accumulation removes.
+        self.observations_absorbed = self.observations_absorbed.saturating_add(absorbed as u64);
         absorbed
     }
 
@@ -4891,6 +4961,7 @@ impl Platform {
             calibration: self.cycle_calibration.clone(),
             counterfactuals: self.cycle_counterfactuals.clone(),
             strategy_review: self.cycle_strategy_review.clone(),
+            family_structure: self.cycle_family_structure,
         };
 
         let facts = EventFacts::derived(
@@ -4918,9 +4989,34 @@ impl Platform {
 
     // --- the stages ---------------------------------------------------------
 
+    /// What SENSE holds, and — separately — whether anything was ever fed in.
+    ///
+    /// The two are different questions and this stage used to answer both from
+    /// the price series. It therefore called a platform blind that had just
+    /// absorbed three central-bank reference rates, because a macro
+    /// observation reaches the world model and the catalyst path and no price
+    /// series at all. The "fed in" question is now answered by
+    /// [`Platform::observations_absorbed`], which is the count
+    /// [`Platform::observe`] returned to the caller that reports `observed`
+    /// beside this stage — one fact, one reading.
+    ///
+    /// `produced` stays what is *held*, not what arrived: every store counted
+    /// here is bounded, so under load the two diverge and the divergence is
+    /// the retention policy working. The three stores partition the record
+    /// kinds rather than overlapping them — bars land in the price series,
+    /// quotes and books in the depth map, and news, fundamentals, macro
+    /// releases and corporate actions in the event list — so nothing is
+    /// counted twice. Trades, ticks, reference data and alternative data are
+    /// retained only as point-in-time feature values, which UNDERSTAND reports
+    /// as coverage rather than as a count of observations; they are absorbed
+    /// and named in the `from N absorbed` clause here rather than being
+    /// silently invisible.
     fn stage_sense(&mut self, _now: Timestamp) -> StageOutcome {
         let instruments = self.price_history.len();
-        let observations: usize = self.price_history.values().map(Vec::len).sum();
+        let prices: usize = self.price_history.values().map(Vec::len).sum();
+        let depth = self.liquidity.observation_count();
+        let events = self.market_events.len();
+        let held = prices + depth + events;
         // What the platform has decided it should be collecting, next to what
         // it is actually receiving. A registry that is filling while the
         // observation count stays at zero is the interesting failure, and a
@@ -4931,17 +5027,40 @@ impl Platform {
         } else {
             format!("; {sources} registered source(s)")
         };
-        if observations == 0 {
+        let absorbed = self.observations_absorbed;
+        if absorbed == 0 {
             return StageOutcome::ran(
                 Stage::Sense,
                 0,
                 format!("no observations have been fed in; the platform is running blind{sourced}"),
             );
         }
+        let mut surfaces: Vec<String> = Vec::new();
+        if prices > 0 {
+            surfaces.push(format!(
+                "{prices} price observation(s) across {instruments} instrument(s)"
+            ));
+        }
+        if depth > 0 {
+            surfaces.push(format!("{depth} depth observation(s)"));
+        }
+        if events > 0 {
+            surfaces.push(format!("{events} knowable event(s)"));
+        }
+        // An absorbed record whose only home is a feature value is real and
+        // held; it is simply not held as an observation this stage counts, and
+        // saying that is better than a bare zero an operator reads as silence.
+        let breakdown = if surfaces.is_empty() {
+            "none of them in a series this stage counts; they are point-in-time feature values, \
+             which understand reports"
+                .to_string()
+        } else {
+            surfaces.join(", ")
+        };
         StageOutcome::ran(
             Stage::Sense,
-            observations,
-            format!("{observations} observation(s) across {instruments} instrument(s){sourced}"),
+            held,
+            format!("{held} observation(s) held from {absorbed} absorbed: {breakdown}{sourced}"),
         )
     }
 
@@ -7243,6 +7362,7 @@ impl Platform {
     fn stage_learn(&mut self, now: Timestamp) -> StageOutcome {
         self.cycle_calibration = None;
         self.cycle_counterfactuals = None;
+        self.cycle_family_structure = None;
         // The wallet, against the book ACT left. A refusal by the control is
         // a record the journal keeps; an error here is the journal or the
         // log refusing the record, which is a problem on the cycle's record
@@ -7312,6 +7432,28 @@ impl Platform {
         }
         if let Some(problem) = problem {
             outcome = outcome.with_problem(problem);
+        }
+        // Measure how the strategies that held grants actually moved together
+        // on the desk's worst days. Blueprint §23.1 LEVEL 1: the family
+        // clustering was a complete, refusing, tested stage with no caller,
+        // because nothing could hand it one series per strategy on one
+        // calendar. `central::realised` now retains the grant on a day that
+        // settled nothing, so it can. This measures and allocates nothing:
+        // no seam in this platform consumes a family, and a decision keyed on
+        // one would be a gate with no subject.
+        match self.central.family_structure(now) {
+            Ok(Some(journal)) => {
+                let detail = format!("{}; {}", outcome.detail, journal.describe());
+                outcome = StageOutcome { detail, ..outcome };
+                self.cycle_family_structure = Some(journal);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                outcome = outcome.with_problem(format!(
+                    "the realised corpus could not be clustered into families: {}",
+                    error.message()
+                ));
+            }
         }
         for problem in std::mem::take(&mut self.capture_problems) {
             outcome = outcome.with_problem(problem);
@@ -9343,6 +9485,7 @@ mod decide_tests {
                         qip_core::ObjectId::from_string(symbol),
                         symbol,
                         InstrumentType::CommonStock,
+                        LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
                     )
                     .venue("XNAS")
                     .sector(Sector::InformationTechnology)
@@ -10609,6 +10752,7 @@ mod user_ledger_tests {
                     ObjectId::from_string(INSTRUMENT),
                     "AAA",
                     InstrumentType::CommonStock,
+                    LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
                 )
                 .venue("XNYS")
                 .sector(Sector::InformationTechnology)
@@ -11425,11 +11569,11 @@ mod liquidity_ladder_tests {
                         ObjectId::from_string(id),
                         id,
                         InstrumentType::CommonStock,
+                        liquidity,
                     )
                     .venue("XNYS")
                     .sector(Sector::InformationTechnology)
                     .price(Decimal::from_int(100))
-                    .liquidity(liquidity)
                     .provenance(Provenance::synthetic("test", start()))
                     .build(start())
                     .expect("valid object"),
@@ -11739,14 +11883,11 @@ mod liquidity_ladder_tests {
                     ObjectId::from_string(FAST),
                     FAST,
                     InstrumentType::CommonStock,
+                    LiquidityProfile::listed(Decimal::from_int(10_000_000), 10_000.0),
                 )
                 .venue("XNYS")
                 .sector(Sector::InformationTechnology)
                 .price(Decimal::from_int(100))
-                .liquidity(LiquidityProfile::listed(
-                    Decimal::from_int(10_000_000),
-                    10_000.0,
-                ))
                 .provenance(Provenance::synthetic("test", start()))
                 .build(start())
                 .expect("valid object"),
@@ -11790,14 +11931,14 @@ mod liquidity_ladder_tests {
                         ObjectId::from_string(FAST),
                         FAST,
                         InstrumentType::CommonStock,
+                        LiquidityProfile {
+                            days_to_liquidate: days,
+                            ..LiquidityProfile::listed(Decimal::from_int(10_000_000), 5.0)
+                        },
                     )
                     .venue("XNYS")
                     .sector(Sector::InformationTechnology)
                     .price(Decimal::from_int(100))
-                    .liquidity(LiquidityProfile {
-                        days_to_liquidate: days,
-                        ..LiquidityProfile::listed(Decimal::from_int(10_000_000), 5.0)
-                    })
                     .provenance(Provenance::synthetic("test", start()))
                     .build(start())
                     .expect("valid object"),
@@ -12041,11 +12182,11 @@ mod liquidity_ladder_tests {
                     ObjectId::from_string(SLOG),
                     SLOG,
                     InstrumentType::CommonStock,
+                    liquidity,
                 )
                 .venue("XNYS")
                 .sector(Sector::InformationTechnology)
                 .price(Decimal::from_int(100))
-                .liquidity(liquidity)
                 .provenance(Provenance::synthetic("test", start()))
                 .build(start())
                 .expect("valid object"),
@@ -12349,6 +12490,7 @@ mod unsizeable_thesis_tests {
             ObjectId::from_string(PRIVATE),
             "PRIV",
             InstrumentType::PrivateEquityFund,
+            LiquidityProfile::illiquid(90.0, 250.0),
         )
         .venue("OTC")
         .geography("US")
@@ -12375,6 +12517,7 @@ mod unsizeable_thesis_tests {
             ObjectId::from_string(LIQUID),
             "AAA",
             InstrumentType::CommonStock,
+            LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
         )
         .venue("XNYS")
         .geography("US")

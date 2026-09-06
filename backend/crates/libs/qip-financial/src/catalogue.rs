@@ -20,10 +20,13 @@
 //!   chose, which is the defect this module exists to close, rebuilt one
 //!   record at a time. Liquidity is the newest of the eight and was the
 //!   worst, because its absence was not visible: a record with no liquidity
-//!   block did not arrive without one, it arrived carrying
-//!   `LiquidityProfile::default()` — a 10bp quote and a one-day exit that
-//!   nobody measured — and the shipped `MinLiquidity` and `MaxDaysToLiquidate`
-//!   limits vetoed, or declined to veto, against exactly that.
+//!   block did not arrive without one, it arrived carrying the profile
+//!   `LiquidityProfile`'s deleted `Default` supplied — a 10bp quote and a
+//!   one-day exit that nobody measured — and the shipped `MinLiquidity` and
+//!   `MaxDaysToLiquidate` limits vetoed, or declined to veto, against exactly
+//!   that. That constructor is gone now and the type has no default at all,
+//!   so this refusal is no longer the only thing standing between a record
+//!   and an invented figure; it is still the one that names the record.
 //! - **An empty catalogue is refused.** The empty universe is the state that
 //!   hid the bucket defect; a catalogue that reproduced it deliberately would
 //!   be a way to switch the buckets off from a data file.
@@ -385,9 +388,10 @@ fn build(
         )
     })?;
     // Required, and the last field to become so. A record without one did not
-    // arrive without a liquidity profile: it arrived with
-    // `LiquidityProfile::default()`, which asserts a 10bp quote and a one-day
-    // exit for anything at all. Those figures are read at `Platform::new` by
+    // arrive without a liquidity profile: it arrived with the one
+    // `LiquidityProfile`'s deleted `Default` supplied, which asserted a 10bp
+    // quote and a one-day exit for anything at all. Those figures are read at
+    // `Platform::new` by
     // every universe record, priced onto the liquidity ladder, and evaluated
     // by `MinLiquidity` and `MaxDaysToLiquidate` — so the whole deployed
     // universe was vetoed, or not vetoed, on a number that appeared in no
@@ -413,17 +417,20 @@ fn build(
         .with_licensing(licensing)
         .with_upstream_id(format!("{version}@{sha256}"));
 
-    let mut builder =
-        FinancialObject::builder(ObjectId::from_string(object_id), symbol, instrument_type)
-            .venue(venue)
-            .sector(sector)
-            .geography(geography)
-            .currency(currency)
-            .price(price)
-            .liquidity(liquidity)
-            .provenance(provenance)
-            .metadata("catalogue_version", version)
-            .metadata("catalogue_sha256", sha256);
+    let mut builder = FinancialObject::builder(
+        ObjectId::from_string(object_id),
+        symbol,
+        instrument_type,
+        liquidity,
+    )
+    .venue(venue)
+    .sector(sector)
+    .geography(geography)
+    .currency(currency)
+    .price(price)
+    .provenance(provenance)
+    .metadata("catalogue_version", version)
+    .metadata("catalogue_sha256", sha256);
     if let Some(name) = &record.name {
         builder = builder.name(name.clone());
     }

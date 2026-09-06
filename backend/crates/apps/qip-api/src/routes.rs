@@ -1276,6 +1276,7 @@ impl Api {
                                 .whitelist
                                 .iter()
                                 .chain(policy_pending.shares.iter())
+                                .chain(policy_pending.episodic.iter())
                             {
                                 eprintln!("qip-api: {line}");
                             }

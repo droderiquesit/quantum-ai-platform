@@ -15,11 +15,18 @@
  *   source freshness, and registration standing is not provenance. Both are
  *   real and both are about something else, and the page names them as
  *   different facts rather than putting them in the empty columns;
- * * a credential slot, a secret command or a venue URL reaching the browser.
+ * * a credential slot, a secret command or a venue URL being *rendered*.
  *   `GET /registrations` carries all three and this page renders none of them.
  *   A health screen is the one an operator screenshots into an incident
  *   thread, and the gateway already strips `QIP_API_BASE_URL` out of its own
  *   error bodies for exactly this reason;
+ * * that finding being reported as more than it is. Everything in this file
+ *   stubs at `page.route`, so nothing here exercises the gateway and nothing
+ *   here can say what crossed the wire — and for a whole wave the page said the
+ *   fields were withheld while the body it fetched carried every one of them.
+ *   The wire half lives in `tests/wire.spec.ts`, against a real gateway;
+ *   the assertion below is on the split claim, so a page that goes back to
+ *   promising the transport fails here;
  * * the four states rendering alike. An empty catalogue, a platform nothing
  *   could reach, a credential a route refused, and a read still in flight are
  *   four different facts with four different remedies, and a console that
@@ -215,10 +222,24 @@ test("the catalogue gives every source an empty health record and leaks no crede
   // And no anchor anywhere on the page points off-site.
   await expect(content.locator('a[href^="http"]')).toHaveCount(0);
 
-  // The page says so, rather than only doing it.
-  await expect(page.getByTestId("feed-health-redaction")).toContainText(
-    "No credential, no variable name, no command, no venue URL, no internal address.",
+  // The page says so, rather than only doing it — and says it about the page
+  // rather than about the transport. The previous headline stopped at "no
+  // internal address", which reads as an assurance that none of it reached the
+  // browser; the read behind this very screen carries all four to anything
+  // holding the lowest role. Both halves are asserted so neither can be
+  // dropped back to the comfortable one.
+  const redaction = page.getByTestId("feed-health-redaction");
+  await expect(redaction).toContainText(
+    "No credential, no variable name, no command, no venue URL and no internal address is rendered on this page.",
   );
+  await expect(redaction).toContainText(
+    "Not rendering a field is not the same as not receiving it",
+  );
+  const disclosure = page.locator('[data-testid="feed-health-disclosure-row"][data-route="/registrations"]');
+  await expect(disclosure, "the page no longer names what its own read carried").toHaveCount(1);
+  await expect(disclosure).toHaveAttribute("data-role", "viewer");
+  await expect(disclosure).toContainText("secret_slot");
+  await expect(disclosure).toContainText("Platform-side fix:");
 
   // The registry route's own answer, in the platform's words. `client.ts`
   // classifies `{subject, available:false, reason}` as a stated absence before

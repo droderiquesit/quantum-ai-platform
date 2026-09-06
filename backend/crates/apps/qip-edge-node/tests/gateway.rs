@@ -24,6 +24,7 @@ use qip_execution_engine::order::Side;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::features::BookPressure;
 use qip_feature_dag::state::MarketState;
+use qip_financial::costs::LiquidityProfile;
 use qip_financial::quality::LicensingClass;
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
@@ -48,6 +49,23 @@ fn object(symbol: &str) -> ObjectId {
 
 fn venue(name: &str) -> VenueId {
     VenueId::new(name)
+}
+
+/// A liquidity profile this test states, because `list_synthetic` will not
+/// invent one.
+///
+/// Deliberately not the node's own `invented_listing_liquidity`: a fixture
+/// that reuses the value under test cannot tell whether the listing carried
+/// the caller's figures or the callee's.
+fn stated_liquidity() -> LiquidityProfile {
+    LiquidityProfile {
+        average_daily_volume: dec!("400000"),
+        typical_spread_bps: 12.0,
+        top_of_book_depth: dec!("900"),
+        days_to_liquidate: 2.0,
+        max_participation_rate: 0.08,
+        is_negotiated: false,
+    }
 }
 
 fn level(
@@ -416,7 +434,15 @@ fn a_synthetic_listing_refuses_nonsense_and_records_its_provenance() -> Result<(
         SimulatedExchange::new(venue("XLON"), ExchangeSettings::orderly(), 1, start());
     assert!(
         exchange
-            .list_synthetic(object("X"), "X", dec!("0"), dec!("1"), dec!("1"), start())
+            .list_synthetic(
+                object("X"),
+                "X",
+                dec!("0"),
+                dec!("1"),
+                dec!("1"),
+                stated_liquidity(),
+                start()
+            )
             .is_err(),
         "a zero-price listing was accepted"
     );
@@ -426,6 +452,7 @@ fn a_synthetic_listing_refuses_nonsense_and_records_its_provenance() -> Result<(
         dec!("10"),
         dec!("1"),
         dec!("0.01"),
+        stated_liquidity(),
         start(),
     )?;
     let listing = exchange.listing(&object("X")).expect("just listed");
@@ -439,6 +466,101 @@ fn a_synthetic_listing_refuses_nonsense_and_records_its_provenance() -> Result<(
         listing.provenance.source.contains("simulated venue"),
         "the provenance does not name what invented it: {}",
         listing.provenance.source
+    );
+    // The venue carries the caller's liquidity and does not substitute one.
+    // It used to have no parameter for it at all, so every synthetic listing
+    // arrived carrying `LiquidityProfile::default()`.
+    assert_eq!(
+        listing.liquidity,
+        stated_liquidity(),
+        "the venue rewrote the liquidity its caller stated"
+    );
+    Ok(())
+}
+
+/// A listing this node invents can only ever tighten a control, never loosen
+/// one.
+///
+/// The gap this closes: `ensure_listed` invents a `FinancialObject` at trade
+/// time for an instrument nothing in this process has measured, and until the
+/// liquidity parameter existed that object asserted a ten-basis-point quote
+/// and a one-session exit. `MinLiquidity` and `MaxDaysToLiquidate` read those
+/// two fields and exist to veto; a figure nobody measured, in the direction
+/// that permits trading, is a control that reads as protection and is not.
+///
+/// The four assertions are the committed catalogue's own rule for a record no
+/// tape backs — quoted no tighter, exiting no faster, participated no harder,
+/// and claiming no volume — applied to the record this binary writes.
+#[test]
+fn a_listing_this_node_invents_states_a_liquidity_that_cannot_loosen_a_control() -> Result<()> {
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    // The premise: the venue does not list this instrument, so the placement
+    // below is what invents the record rather than finding one.
+    assert!(
+        gateway.listing(&object("UNSEEN")).is_none(),
+        "the venue already lists the instrument, so nothing below invents a listing"
+    );
+    gateway.place(
+        "order-1",
+        &object("UNSEEN"),
+        &venue("XLON"),
+        BookSide::Ask,
+        dec!("10"),
+        dec!("100"),
+        start(),
+    )?;
+    let listing = gateway
+        .listing(&object("UNSEEN"))
+        .expect("placing against an unlisted instrument lists it");
+    let liquidity = &listing.liquidity;
+
+    // The figures the deleted `LiquidityProfile::default()` asserted. Named as
+    // a whole profile rather than compared field by field, because
+    // `days_to_liquidate` is a substring of `days_to_liquidation` and a
+    // text-shaped assertion here would pass on the wrong field.
+    let deleted_default = LiquidityProfile {
+        average_daily_volume: Decimal::ZERO,
+        typical_spread_bps: 10.0,
+        top_of_book_depth: Decimal::ZERO,
+        days_to_liquidate: 1.0,
+        max_participation_rate: 0.1,
+        is_negotiated: false,
+    };
+    assert_ne!(
+        *liquidity, deleted_default,
+        "an invented listing carries the six figures the deleted default asserted"
+    );
+    assert!(
+        liquidity.typical_spread_bps > deleted_default.typical_spread_bps,
+        "an instrument this process has never measured is quoted at {}bps, no wider than the \
+         {}bps the deleted default invented",
+        liquidity.typical_spread_bps,
+        deleted_default.typical_spread_bps
+    );
+    assert!(
+        liquidity.days_to_liquidate > deleted_default.days_to_liquidate,
+        "an instrument this process has never measured claims to exit in {} sessions, no \
+         slower than the {} the deleted default invented",
+        liquidity.days_to_liquidate,
+        deleted_default.days_to_liquidate
+    );
+    assert!(
+        liquidity.max_participation_rate < deleted_default.max_participation_rate,
+        "an instrument this process has never measured would be {} of a session's volume, no \
+         less than the {} the deleted default invented",
+        liquidity.max_participation_rate,
+        deleted_default.max_participation_rate
+    );
+    assert!(
+        !liquidity.average_daily_volume.is_positive(),
+        "an invented listing claims {} units a day; nothing in this process observed it trading",
+        liquidity.average_daily_volume
+    );
+    // And so it offers no volume-based exit estimate at all, rather than a
+    // fast one: `days_to_liquidate` is the only guide anything has.
+    assert!(
+        liquidity.days_to_exit(dec!("1000")).is_none(),
+        "an invented listing offers a volume-based exit estimate off a volume nobody measured"
     );
     Ok(())
 }

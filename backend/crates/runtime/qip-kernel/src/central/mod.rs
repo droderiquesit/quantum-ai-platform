@@ -57,6 +57,7 @@ pub mod models;
 pub mod plane;
 pub mod realised;
 pub mod regions;
+pub mod structure;
 pub mod whitelist;
 
 pub use dna::{DnaPayload, StrategyDna};
@@ -71,8 +72,11 @@ pub use plane::{
     AbsorbedFill, BreakDirection, BreakOrigin, CellIngestion, CellReport, CentralConfig,
     CentralPlane, IssuedCapital, ReconciliationBreak, capital_subject,
 };
-pub use realised::{REALISED_SESSIONS, RealisedSeries, RealisedSession};
+pub use realised::{
+    GrantedDay, REALISED_SESSIONS, RealisedCalendar, RealisedSeries, RealisedSession,
+};
 pub use regions::{GrantManifests, ManifestDecision, RegionMembership, RegionShare, RegionShares};
+pub use structure::{CLUSTERING_WINDOW, FamilyStructureJournal, STRESS_QUANTILE};
 pub use whitelist::{
     ArbitragePolicy, WhitelistIssue, WhitelistOutcome, WhitelistedMarket, WhitelistedVenue,
 };

@@ -10,13 +10,19 @@ const PORT = Number(process.env.PLAYWRIGHT_PORT ?? 3311);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 
 /**
- * A second app, in front of a real upstream, for the service-worker suite.
+ * A second app, in front of a real upstream, for the service-worker suite and
+ * for the one that reads what the gateway put on the wire.
  *
- * That suite cannot use `page.route`: Playwright fulfils an intercepted request
+ * Neither can use `page.route`: Playwright fulfils an intercepted request
  * before the service worker receives a `fetch` event, so a test of what the
- * worker caches would pass no matter what the worker did. Here the request
- * really crosses a socket, through the real gateway handler, so the worker
- * really gets to make — and be judged on — its decision.
+ * worker caches would pass no matter what the worker did — and it fulfils it
+ * before the gateway runs at all, so a test of what the gateway removes from a
+ * body would pass no matter what the gateway did. That second blindness is not
+ * hypothetical: two pages claimed no upstream address reached a browser, every
+ * assertion behind the claim was a DOM assertion against a stub, and the
+ * address was in the network tab the whole time. Here the request really
+ * crosses a socket, through the real gateway handler, so both components get
+ * to make — and be judged on — their decisions.
  */
 const WORKER_PORT = Number(process.env.PLAYWRIGHT_WORKER_PORT ?? 3312);
 const WORKER_BASE_URL = `http://127.0.0.1:${WORKER_PORT}`;
@@ -73,11 +79,12 @@ export default defineConfig({
     {
       name: "desktop-chromium",
       use: { ...devices["Desktop Chrome"], viewport: { width: 1600, height: 1000 } },
-      // worker.spec needs the instance with a real upstream behind it,
-      // auth.spec needs the instance with authentication required, and
-      // gate.spec needs the one where nothing was said about it; running any
-      // of them here would test the wrong server.
-      testIgnore: /(worker|auth|gate)\.spec\.ts/,
+      // worker.spec and wire.spec need the instance with a real upstream
+      // behind it, auth.spec needs the instance with authentication required,
+      // and gate.spec needs the one where nothing was said about it; running
+      // any of them here would test the wrong server — this one is pointed at
+      // a dead port on purpose.
+      testIgnore: /(worker|wire|auth|gate)\.spec\.ts/,
     },
     {
       name: "tablet-chromium",
@@ -88,6 +95,15 @@ export default defineConfig({
       name: "worker-chromium",
       use: { ...devices["Desktop Chrome"], baseURL: WORKER_BASE_URL },
       testMatch: /worker\.spec\.ts/,
+    },
+    {
+      // The same instance, because what this suite needs is exactly what that
+      // one needs: a real gateway with a real upstream behind it. Separate
+      // project rather than a second server, since a second server would be a
+      // second thing to keep in step with the first.
+      name: "wire-chromium",
+      use: { ...devices["Desktop Chrome"], baseURL: WORKER_BASE_URL },
+      testMatch: /wire\.spec\.ts/,
     },
     {
       name: "auth-chromium",

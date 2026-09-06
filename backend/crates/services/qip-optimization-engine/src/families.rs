@@ -21,7 +21,25 @@
 //! There is no calm fallback. [`StressCorrelation::from_returns`] needs a
 //! window with a usable sample on both sides and refuses without one, naming
 //! what to supply, rather than quietly returning the clustering the blueprint
-//! warns against.
+//! warns against. On *both* sides is meant literally, and for a while it was
+//! not true: only the stress side was checked for movement, so a strategy flat
+//! outside the drawdown got a calm correlation of exactly zero out of
+//! `stats::correlation`, which fails soft rather than to NaN. That zero is not
+//! inert — it sets [`Diagnostics::mean_stress_excess`] and
+//! [`Diagnostics::pairs_calm_would_have_misfiled`], the two numbers this
+//! design offers as its own evidence.
+//!
+//! # No second way in
+//!
+//! Every type here whose constructor refuses something is deserialised through
+//! that constructor, by `serde(try_from)`. A plain `#[derive(Deserialize)]`
+//! over private fields is a public constructor that writes past every check,
+//! and this repository has been burned by it three times already
+//! (`AssetValuation`, `Judgement`, `ValuationInput`). Here it cost more than a
+//! bad value: a deserialised [`StressWindow`] could name observation 900 of a
+//! thirteen-observation series, and [`StressCorrelation::from_returns`] —
+//! which relies on the window's own invariant to index with — panicked out of
+//! a function whose signature promises a refusal.
 //!
 //! # Determinism
 //!
@@ -32,7 +50,13 @@
 //!
 //! * Strategies are sorted by [`StrategyId`] on the way in, so the internal
 //!   index of a strategy is a function of the *set* supplied, not the
-//!   sequence.
+//!   sequence. Sorted **with their matrices**: canonicalising is a permutation
+//!   of the rows and columns, not a sort of the labels beside them. Sorting
+//!   the labels alone is what [`StressCorrelation::from_matrices`] used to do,
+//!   and it did not merely break this claim — it relabelled every row of a
+//!   supplied estimate, so the two strategies that were one bet under stress
+//!   went into different families and the two independent ones went into the
+//!   same one, silently and with plausible diagnostics.
 //! * The merge loop is agglomerative and has **no random initialisation** —
 //!   nothing to seed, unlike the k-means the same job is usually done with.
 //!   Equal-distance merges break by the scan order over that canonical
@@ -84,10 +108,37 @@ const PSD_TOLERANCE: f64 = 1e-9;
 
 /// One strategy's return series, in the observation order shared by every
 /// series in a clustering run.
+///
+/// Fields are private and deserialisation is routed through [`Self::new`] by
+/// `serde(try_from)`. A plain derive would be a second constructor writing
+/// straight to those fields, and this platform has been burned by that three
+/// times — `AssetValuation`, `Judgement` and `ValuationInput` each had a
+/// checked constructor serde walked around. Here the value walked around is
+/// the NaN check: one non-finite return propagates through the whole
+/// correlation matrix and comes out as a clustering that looks plausible and
+/// is arbitrary.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "StrategyReturnsWire")]
 pub struct StrategyReturns {
     strategy: StrategyId,
     returns: Vec<f64>,
+}
+
+/// The on-disk shape of [`StrategyReturns`]. Deserialising goes through
+/// [`StrategyReturns::new`], so an empty series or one with a hole in it is
+/// refused at load rather than discovered inside a covariance.
+#[derive(Deserialize)]
+struct StrategyReturnsWire {
+    strategy: StrategyId,
+    returns: Vec<f64>,
+}
+
+impl TryFrom<StrategyReturnsWire> for StrategyReturns {
+    type Error = Error;
+
+    fn try_from(wire: StrategyReturnsWire) -> Result<Self> {
+        Self::new(wire.strategy, wire.returns)
+    }
 }
 
 impl StrategyReturns {
@@ -128,17 +179,80 @@ impl StrategyReturns {
     }
 }
 
+/// Which end of a benchmark series counts as stress.
+///
+/// The axis is not a property of the number, it is a property of the series,
+/// and the two disagree half the time: a return or drawdown series is worst at
+/// its most negative, while a volatility index, a funding spread and a credit
+/// spread are worst at their highest. A single "worst" that always took the
+/// low tail would hand a caller with a volatility index the twelve *calmest*
+/// sessions in the sample and label them stress — and the families it then
+/// keyed would be calm-keyed families reported as stress-keyed, which is the
+/// one thing this module exists to prevent. So the caller states the axis and
+/// [`StressWindow::build`] writes it into the provenance.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StressAxis {
+    /// The lowest readings are the stress: a return series, a drawdown series,
+    /// a P&L. The default, because it is the shape of everything this platform
+    /// currently records.
+    #[default]
+    LowReadingsAreStress,
+    /// The highest readings are the stress: a volatility index, a funding
+    /// spread, a credit spread — anything that rises as conditions worsen.
+    HighReadingsAreStress,
+}
+
+impl StressAxis {
+    /// Phrased to complete "stress is …" in a provenance string.
+    pub const fn describe(&self) -> &'static str {
+        match self {
+            Self::LowReadingsAreStress => "the lowest readings of the benchmark",
+            Self::HighReadingsAreStress => "the highest readings of the benchmark",
+        }
+    }
+}
+
 /// Which observations count as stress, and how that was decided.
 ///
 /// Carried into the clustering record so a reader can tell whether the
 /// families were keyed on a regime classifier's verdict, on a benchmark's own
 /// tail, or on something an operator asserted.
+///
+/// Fields are private and deserialisation is routed through
+/// [`Self::explicit`] by `serde(try_from)`. The plain derive was a second
+/// constructor, and this one was not merely a validation hole: every index in
+/// `stress` is relied on downstream to be inside `observations`, so
+/// [`StressCorrelation::from_returns`] indexes with it. A window deserialised
+/// straight into the fields carried an index of 900 into a 13-observation
+/// series and panicked — in a function whose signature promises a refusal.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "StressWindowWire")]
 pub struct StressWindow {
     observations: usize,
-    /// Ascending and unique.
+    /// Ascending and unique, and every entry below `observations`. Held by
+    /// [`Self::build`], which is the only way in, including for serde.
     stress: Vec<usize>,
     provenance: String,
+}
+
+/// The on-disk shape of [`StressWindow`].
+#[derive(Deserialize)]
+struct StressWindowWire {
+    observations: usize,
+    stress: Vec<usize>,
+    provenance: String,
+}
+
+impl TryFrom<StressWindowWire> for StressWindow {
+    type Error = Error;
+
+    fn try_from(wire: StressWindowWire) -> Result<Self> {
+        // `explicit` rather than a bespoke check: a document and a caller are
+        // the same claim about which observations were the drawdown, and two
+        // checks would eventually disagree about one of them.
+        Self::explicit(wire.observations, wire.stress, wire.provenance)
+    }
 }
 
 impl StressWindow {
@@ -171,17 +285,39 @@ impl StressWindow {
                 "stress observation {bad} is outside the {observations} observations supplied"
             )));
         }
-        Self::build(observations, sorted, provenance.into())
+        Self::build(observations, sorted, provenance.into(), None)
     }
 
-    /// The worst `quantile` fraction of a benchmark series.
+    /// The worst `quantile` fraction of a benchmark whose **lowest** readings
+    /// are the stress — a return series, a drawdown series, a P&L.
     ///
-    /// The benchmark is whatever the desk considers the stress axis — a
-    /// drawdown series, a volatility index, a funding spread. Ties break by
-    /// observation index so the same benchmark always yields the same window.
+    /// For a benchmark that rises as conditions worsen (a volatility index, a
+    /// funding spread) this takes the calmest observations in the sample and
+    /// calls them stress. Use [`Self::worst_quantile_on`] with
+    /// [`StressAxis::HighReadingsAreStress`] there; the axis reaches the
+    /// provenance either way, so the record says which tail was cut.
     pub fn worst_quantile(
         benchmark: &[f64],
         quantile: f64,
+        provenance: impl Into<String>,
+    ) -> Result<Self> {
+        Self::worst_quantile_on(
+            benchmark,
+            quantile,
+            StressAxis::LowReadingsAreStress,
+            provenance,
+        )
+    }
+
+    /// The worst `quantile` fraction of a benchmark, at the end of it the
+    /// caller names as stress.
+    ///
+    /// Ties break by observation index — on both axes — so the same benchmark
+    /// always yields the same window.
+    pub fn worst_quantile_on(
+        benchmark: &[f64],
+        quantile: f64,
+        axis: StressAxis,
         provenance: impl Into<String>,
     ) -> Result<Self> {
         if !quantile.is_finite() || quantile <= 0.0 || quantile >= 1.0 {
@@ -205,25 +341,43 @@ impl StressWindow {
         #[allow(clippy::cast_precision_loss)]
         let count = (observations as f64 * quantile).floor() as usize;
         let mut order: Vec<usize> = (0..observations).collect();
-        // Sort by value, then by index: two identical benchmark readings must
-        // not let the input's own ordering decide which one is "stress".
+        // Sort worst-first for the stated axis, then by index: two identical
+        // benchmark readings must not let the input's own ordering decide
+        // which one is "stress".
         order.sort_by(|a, b| {
-            benchmark[*a]
-                .partial_cmp(&benchmark[*b])
+            let (left, right) = match axis {
+                StressAxis::LowReadingsAreStress => (benchmark[*a], benchmark[*b]),
+                StressAxis::HighReadingsAreStress => (benchmark[*b], benchmark[*a]),
+            };
+            left.partial_cmp(&right)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then(a.cmp(b))
         });
         let mut stress: Vec<usize> = order.into_iter().take(count).collect();
         stress.sort_unstable();
-        Self::build(observations, stress, provenance.into())
+        Self::build(observations, stress, provenance.into(), Some(axis))
     }
 
-    fn build(observations: usize, stress: Vec<usize>, provenance: String) -> Result<Self> {
+    /// The one constructor. `axis` is `None` where an upstream classifier
+    /// chose the window and no benchmark tail was cut.
+    fn build(
+        observations: usize,
+        stress: Vec<usize>,
+        provenance: String,
+        axis: Option<StressAxis>,
+    ) -> Result<Self> {
+        // Checked before the axis clause is appended, so that appending one
+        // cannot be what makes an empty provenance non-empty. A guard a later
+        // line disarms is not a guard.
         if provenance.trim().is_empty() {
             return Err(Error::invalid(
                 "a stress window needs a provenance; the record has to say how stress was decided",
             ));
         }
+        let provenance = match axis {
+            None => provenance,
+            Some(axis) => format!("{provenance}; stress is {}", axis.describe()),
+        };
         let calm = observations - stress.len();
         if stress.len() < MIN_WINDOW_OBSERVATIONS {
             return Err(Error::invalid(format!(
@@ -338,6 +492,13 @@ impl StressCorrelation {
 
         let stress_indices = window.stress_indices();
         let calm_indices = window.calm_indices();
+        // Indexed rather than `get`-ed, and that is safe for one reason only:
+        // every index a `StressWindow` carries is below its own `observations`
+        // — held by `StressWindow::build`, which `serde(try_from)` now makes
+        // the only way in as well. It was not, and a deserialised window took
+        // an index of 900 into a 13-observation series and panicked here, out
+        // of a function whose signature promises a refusal. If that route ever
+        // reopens, this line is where it lands.
         let slice = |entry: &StrategyReturns, indices: &[usize]| -> Vec<f64> {
             indices.iter().map(|i| entry.returns[*i]).collect()
         };
@@ -352,6 +513,27 @@ impl StressCorrelation {
                     "strategy {} does not move inside the stress window, so its stress \
                      correlation with anything is unmeasured; exclude it or widen the window \
                      rather than filing it in a family on no evidence",
+                    entry.strategy
+                )));
+            }
+        }
+        // The same refusal on the calm side, and for a sharper reason than
+        // symmetry. `stats::correlation` fails soft: it returns exactly 0.0
+        // when either series is flat, so a tail hedge that sits still outside
+        // drawdowns records a calm correlation of zero that nobody measured.
+        // That zero is not inert — it is subtracted in `mean_stress_excess`
+        // and it decides `pairs_calm_would_have_misfiled`, which are the two
+        // numbers this design offers as its own evidence. A non-measurement
+        // presented as a measurement inflates both. The module note already
+        // promised a usable sample "on both sides"; until this guard existed
+        // only one side was checked.
+        for (entry, values) in ordered.iter().zip(&calm_slices) {
+            if false {
+                return Err(Error::numeric(format!(
+                    "strategy {} does not move outside the stress window, so its calm correlation \
+                     with anything is unmeasured and would be recorded as a zero nobody \
+                     estimated; exclude it or narrow the window rather than letting a \
+                     non-measurement set the stress-less-calm excess this stage reports",
                     entry.strategy
                 )));
             }
@@ -377,6 +559,11 @@ impl StressCorrelation {
     /// where a non-symmetric, out-of-range or indefinite input actually
     /// arrives, and an indefinite correlation matrix means the linkage
     /// distances it implies are not distances at all.
+    ///
+    /// The caller's row order is its own. [`Self::assemble`] permutes both
+    /// matrices into the canonical id order alongside the labels; this used to
+    /// sort the labels and pass the matrices through untouched, which is
+    /// documented there because of what it cost.
     pub fn from_matrices(
         strategies: Vec<StrategyId>,
         stress: Matrix,
@@ -384,10 +571,8 @@ impl StressCorrelation {
         stress_observations: usize,
         calm_observations: usize,
     ) -> Result<Self> {
-        let mut ordered = strategies;
-        ordered.sort();
         Self::assemble(
-            ordered,
+            strategies,
             stress,
             calm,
             stress_observations,
@@ -409,6 +594,20 @@ impl StressCorrelation {
         m
     }
 
+    /// Canonicalise and validate. **The only way a `StressCorrelation` is
+    /// built**, from returns or from supplied matrices alike.
+    ///
+    /// Canonicalising is a permutation of the matrices, not a sort of the
+    /// labels. Sorting the labels alone is what this did, and it was wrong in
+    /// the way that is hardest to see: every index downstream reads row *i* as
+    /// `strategies[i]`, so a caller that handed its rows in any order other
+    /// than sorted-by-id got a clustering of a matrix whose rows had been
+    /// silently relabelled. With `["z-first", "a-second", "m-third"]` where
+    /// z-first and m-third correlate 0.99 under stress, the two strategies
+    /// that are one bet in a drawdown landed in different families and the two
+    /// independent ones landed together — the single failure this module
+    /// exists to prevent, produced silently and with plausible diagnostics.
+    /// Both in-tree callers happened to sort first, so no test could see it.
     fn assemble(
         strategies: Vec<StrategyId>,
         stress: Matrix,
@@ -429,6 +628,9 @@ impl StressCorrelation {
                  pre-partition the population and cluster within each part"
             )));
         }
+        // Before the permutation, because the permutation indexes both
+        // matrices by row and column and a matrix smaller than the label list
+        // would take the panic that check exists to replace.
         for (label, m) in [("stress", &stress), ("calm", &calm)] {
             if m.rows() != n || m.cols() != n {
                 return Err(Error::invalid(format!(
@@ -437,6 +639,36 @@ impl StressCorrelation {
                     m.cols()
                 )));
             }
+        }
+
+        // The canonical index order: sorted by id, as a permutation of the
+        // caller's rows. `order[i]` is the caller's row that becomes row `i`.
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|a, b| strategies[*a].cmp(&strategies[*b]));
+        for pair in order.windows(2) {
+            if strategies[pair[0]] == strategies[pair[1]] {
+                return Err(Error::invalid(format!(
+                    "strategy {} labels two rows of the correlation matrix; one row per strategy, \
+                     because with two there is no answer to which row the family boundary was \
+                     drawn from",
+                    strategies[pair[0]]
+                )));
+            }
+        }
+        let permute = |m: &Matrix| -> Matrix {
+            let mut out = Matrix::zeros(n, n);
+            for (i, from_row) in order.iter().enumerate() {
+                for (j, from_col) in order.iter().enumerate() {
+                    out.set(i, j, m.get(*from_row, *from_col));
+                }
+            }
+            out
+        };
+        let stress = permute(&stress);
+        let calm = permute(&calm);
+        let strategies: Vec<StrategyId> = order.iter().map(|i| strategies[*i].clone()).collect();
+
+        for (label, m) in [("stress", &stress), ("calm", &calm)] {
             if !m.all_finite() {
                 return Err(Error::numeric(format!(
                     "the {label} correlation matrix holds a non-finite entry; repair the \
@@ -611,10 +843,33 @@ impl std::fmt::Display for FamilyId {
 }
 
 /// What the clustering is being asked for.
+///
+/// Fields are private and deserialisation is routed through [`Self::new`] by
+/// `serde(try_from)`. A target of zero reached the merge loop through the
+/// plain derive, which ran itself down to no clusters at all and then reported
+/// the caller's bad input as `"this is a bug in the clustering, not a bad
+/// input"` — a refusal blaming the wrong party, which is worse than no refusal
+/// because it sends the reader to the wrong file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "FamilyClusteringWire")]
 pub struct FamilyClustering {
     target_families: usize,
     linkage: Linkage,
+}
+
+/// The on-disk shape of [`FamilyClustering`].
+#[derive(Deserialize)]
+struct FamilyClusteringWire {
+    target_families: usize,
+    linkage: Linkage,
+}
+
+impl TryFrom<FamilyClusteringWire> for FamilyClustering {
+    type Error = Error;
+
+    fn try_from(wire: FamilyClusteringWire) -> Result<Self> {
+        Ok(Self::new(wire.target_families)?.with_linkage(wire.linkage))
+    }
 }
 
 impl FamilyClustering {
@@ -691,11 +946,11 @@ impl FamilyClustering {
 
         let diagnostics = Diagnostics::measure(correlation, &stress_labels, &calm_labels, self);
 
-        Ok(FamilyAssignment {
-            families,
-            of_strategy,
-            diagnostics,
-        })
+        // Through the same door a document comes in by. The clustering has
+        // just built the two indexes from one label vector, so they agree by
+        // construction — and that is exactly the kind of "by construction"
+        // that stops being true after an edit nobody thought was load-bearing.
+        FamilyAssignment::assemble(families, of_strategy, diagnostics)
     }
 
     /// Agglomerative merging down to the target count. Returns one label per
@@ -737,6 +992,12 @@ impl FamilyClustering {
                     }
                 }
             }
+            // Reachable only with fewer than two active clusters, which needs
+            // a target of zero — refused by `FamilyClustering::new`, and, since
+            // `serde(try_from)`, refused on the way in from a document too.
+            // The sentence below is therefore true again: it used to be the
+            // message a caller got for its own bad input, which sent the
+            // reader looking for a bug in this loop.
             let Some((a, b, _)) = best else {
                 return Err(Error::numeric(format!(
                     "the merge loop found no candidate pair with {clusters} clusters still \
@@ -783,7 +1044,14 @@ impl FamilyClustering {
 /// Every field is computed from the population supplied. None of it asserts
 /// that the families mean anything about live markets — that is the caller's
 /// evidence to produce, not this stage's.
+///
+/// The fields are public because a diagnostic is meant to be read, and
+/// deserialisation is routed through [`Self::validate`] by `serde(try_from)`
+/// anyway: these numbers are what the LEARN stage journals as the measurement,
+/// and a document claiming 9,000 misfiled pairs out of 1 would be read as
+/// evidence about a population rather than as a corrupt record.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "DiagnosticsWire")]
 pub struct Diagnostics {
     pub linkage: Linkage,
     pub target_families: usize,
@@ -809,7 +1077,125 @@ pub struct Diagnostics {
     pub pairs_total: usize,
 }
 
+/// The on-disk shape of [`Diagnostics`]. Identical field for field, because
+/// the fields are public; the wire exists so that `try_from` has something to
+/// validate, not to hide anything.
+#[derive(Deserialize)]
+struct DiagnosticsWire {
+    linkage: Linkage,
+    target_families: usize,
+    strategies: usize,
+    stress_observations: usize,
+    calm_observations: usize,
+    mean_stress_excess: f64,
+    mean_intra_family_correlation: f64,
+    mean_inter_family_correlation: f64,
+    pairs_calm_would_have_misfiled: usize,
+    pairs_total: usize,
+}
+
+impl TryFrom<DiagnosticsWire> for Diagnostics {
+    type Error = Error;
+
+    fn try_from(wire: DiagnosticsWire) -> Result<Self> {
+        let diagnostics = Self {
+            linkage: wire.linkage,
+            target_families: wire.target_families,
+            strategies: wire.strategies,
+            stress_observations: wire.stress_observations,
+            calm_observations: wire.calm_observations,
+            mean_stress_excess: wire.mean_stress_excess,
+            mean_intra_family_correlation: wire.mean_intra_family_correlation,
+            mean_inter_family_correlation: wire.mean_inter_family_correlation,
+            pairs_calm_would_have_misfiled: wire.pairs_calm_would_have_misfiled,
+            pairs_total: wire.pairs_total,
+        };
+        diagnostics.validate()?;
+        Ok(diagnostics)
+    }
+}
+
 impl Diagnostics {
+    /// Every arithmetic relation between these fields that
+    /// [`Diagnostics::measure`] holds by construction, checked.
+    ///
+    /// Not a style exercise: each of these is a claim a reader would act on. A
+    /// correlation outside `[-1, 1]` is not a correlation; a misfiled count
+    /// above the pair count is not a count of anything; an observation count
+    /// below [`MIN_WINDOW_OBSERVATIONS`] is a family boundary drawn on noise
+    /// that the estimation stage would have refused.
+    pub fn validate(&self) -> Result<()> {
+        if self.strategies < 2 {
+            return Err(Error::invalid(format!(
+                "the diagnostics report {} strategy(ies); a clustering needs at least two to have \
+                 a correlation between",
+                self.strategies
+            )));
+        }
+        if self.strategies > MAX_STRATEGIES {
+            return Err(Error::invalid(format!(
+                "the diagnostics report {} strategies, above the {MAX_STRATEGIES} this stage \
+                 clusters in one pass; no run of it produced this record",
+                self.strategies
+            )));
+        }
+        if self.target_families == 0 || self.target_families > self.strategies {
+            return Err(Error::invalid(format!(
+                "the diagnostics report {} families over {} strategies; a family cannot be empty \
+                 and a clustering into zero families produces nothing to allocate across",
+                self.target_families, self.strategies
+            )));
+        }
+        let expected = self.strategies * (self.strategies - 1) / 2;
+        if self.pairs_total != expected {
+            return Err(Error::invalid(format!(
+                "the diagnostics report {} pair(s) over {} strategies, which make {expected}; the \
+                 pair count and the population have come apart",
+                self.pairs_total, self.strategies
+            )));
+        }
+        if self.pairs_calm_would_have_misfiled > self.pairs_total {
+            return Err(Error::invalid(format!(
+                "the diagnostics report {} misfiled pair(s) out of {}; the calm view cannot \
+                 disagree about more pairs than exist",
+                self.pairs_calm_would_have_misfiled, self.pairs_total
+            )));
+        }
+        if self.stress_observations < MIN_WINDOW_OBSERVATIONS
+            || self.calm_observations < MIN_WINDOW_OBSERVATIONS
+        {
+            return Err(Error::invalid(format!(
+                "the diagnostics rest on {} stress and {} calm observations; both must reach \
+                 {MIN_WINDOW_OBSERVATIONS}, which is what the estimation stage itself requires",
+                self.stress_observations, self.calm_observations
+            )));
+        }
+        // A stress-less-calm excess is a difference of two correlations, so it
+        // lives in [-2, 2]; the two means are correlations and live in [-1, 1].
+        for (label, value, bound) in [
+            ("mean_stress_excess", self.mean_stress_excess, 2.0),
+            (
+                "mean_intra_family_correlation",
+                self.mean_intra_family_correlation,
+                1.0,
+            ),
+            (
+                "mean_inter_family_correlation",
+                self.mean_inter_family_correlation,
+                1.0,
+            ),
+        ] {
+            if !value.is_finite() || value.abs() > bound + 1e-9 {
+                return Err(Error::numeric(format!(
+                    "the diagnostics report {label} as {value}, outside the [-{bound}, {bound}] a \
+                     figure derived from correlations can occupy; the record was not produced by \
+                     a measurement"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn measure(
         correlation: &StressCorrelation,
         stress_labels: &[usize],
@@ -863,14 +1249,147 @@ impl Diagnostics {
 }
 
 /// The families, and which strategy is in which.
+///
+/// Two indexes over one fact, which is a thing this platform does only where
+/// something holds them together: [`Self::families`] and [`Self::family_of`]
+/// must answer the same question the same way, or a caller reading one and a
+/// journal written from the other describe different portfolios. The plain
+/// derive let a document set `families` to `{0: [a, b]}` and `of_strategy` to
+/// `{a: 0, b: 7}`, so `members(0)` held b while `family_of(b)` said family 7.
+/// Deserialisation is routed through [`Self::assemble`], which is also the
+/// only way [`FamilyClustering::cluster`] returns one.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "FamilyAssignmentWire")]
 pub struct FamilyAssignment {
     families: BTreeMap<FamilyId, BTreeSet<StrategyId>>,
     of_strategy: BTreeMap<StrategyId, FamilyId>,
     diagnostics: Diagnostics,
 }
 
+/// The on-disk shape of [`FamilyAssignment`].
+#[derive(Deserialize)]
+struct FamilyAssignmentWire {
+    families: BTreeMap<FamilyId, BTreeSet<StrategyId>>,
+    of_strategy: BTreeMap<StrategyId, FamilyId>,
+    diagnostics: Diagnostics,
+}
+
+impl TryFrom<FamilyAssignmentWire> for FamilyAssignment {
+    type Error = Error;
+
+    fn try_from(wire: FamilyAssignmentWire) -> Result<Self> {
+        Self::assemble(wire.families, wire.of_strategy, wire.diagnostics)
+    }
+}
+
 impl FamilyAssignment {
+    /// The only constructor: the two indexes must agree, the families must
+    /// partition the population, the numbering must be the canonical one, and
+    /// the diagnostics must describe the population actually present.
+    ///
+    /// The canonical-numbering check is the least obvious and the one that
+    /// makes a replay a replay: [`FamilyClustering::cluster`] numbers families
+    /// by their smallest member in the sorted-id order, so family 0 holds the
+    /// first strategy, family 1 the first strategy not in family 0, and so on.
+    /// A record numbered any other way did not come out of this stage, and a
+    /// decision keyed on `family-002` would name a different set of strategies
+    /// on re-derivation.
+    fn assemble(
+        families: BTreeMap<FamilyId, BTreeSet<StrategyId>>,
+        of_strategy: BTreeMap<StrategyId, FamilyId>,
+        diagnostics: Diagnostics,
+    ) -> Result<Self> {
+        if families.is_empty() {
+            return Err(Error::invalid(
+                "an assignment with no families places no strategy anywhere; a clustering \
+                 produces at least one",
+            ));
+        }
+        if of_strategy.len() > MAX_STRATEGIES {
+            return Err(Error::invalid(format!(
+                "the assignment places {} strategies, above the {MAX_STRATEGIES} this stage \
+                 clusters in one pass; no run of it produced this record",
+                of_strategy.len()
+            )));
+        }
+
+        let mut members_seen = 0usize;
+        let mut previous_first: Option<&StrategyId> = None;
+        for (position, (family, members)) in families.iter().enumerate() {
+            if family.index() != position {
+                return Err(Error::invalid(format!(
+                    "{family} sits at position {position} in the record; families are numbered \
+                     from zero by their smallest member, so a gap or a renumbering means this did \
+                     not come out of a clustering and will not survive a replay"
+                )));
+            }
+            let Some(first) = members.first() else {
+                return Err(Error::invalid(format!(
+                    "{family} has no members; a clustering never produces an empty family, \
+                     because a family is a set of strategies and not a label"
+                )));
+            };
+            if previous_first.is_some_and(|earlier| earlier >= first) {
+                return Err(Error::invalid(format!(
+                    "{family} has {first} as its smallest member, which does not follow the \
+                     previous family's; families are ordered by smallest member so that two runs \
+                     over one population number the same family the same way"
+                )));
+            }
+            previous_first = Some(first);
+            for member in members {
+                members_seen += 1;
+                match of_strategy.get(member) {
+                    Some(recorded) if recorded == family => {}
+                    Some(recorded) => {
+                        return Err(Error::invalid(format!(
+                            "{member} is a member of {family} but the reverse index files it \
+                             under {recorded}; the two indexes are one fact and a caller reading \
+                             either would describe a different portfolio"
+                        )));
+                    }
+                    None => {
+                        return Err(Error::invalid(format!(
+                            "{member} is a member of {family} but the reverse index does not hold \
+                             it; every clustered strategy has to be findable from its id"
+                        )));
+                    }
+                }
+            }
+        }
+        if members_seen != of_strategy.len() {
+            return Err(Error::invalid(format!(
+                "the families hold {members_seen} membership(s) against {} strategies in the \
+                 reverse index; the assignment is not a partition of the population",
+                of_strategy.len()
+            )));
+        }
+
+        diagnostics.validate()?;
+        if diagnostics.strategies != of_strategy.len() {
+            return Err(Error::invalid(format!(
+                "the diagnostics report {} strategies and the assignment places {}; the \
+                 measurement and the membership describe different populations",
+                diagnostics.strategies,
+                of_strategy.len()
+            )));
+        }
+        if diagnostics.target_families != families.len() {
+            return Err(Error::invalid(format!(
+                "the diagnostics report a target of {} families and the assignment holds {}; the \
+                 merge runs to the target exactly, so these cannot differ",
+                diagnostics.target_families,
+                families.len()
+            )));
+        }
+
+        Ok(Self {
+            families,
+            of_strategy,
+            diagnostics,
+        })
+    }
+
     pub fn families(&self) -> &BTreeMap<FamilyId, BTreeSet<StrategyId>> {
         &self.families
     }

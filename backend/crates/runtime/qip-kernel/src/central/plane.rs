@@ -23,7 +23,7 @@
 use super::dna::StrategyDna;
 use super::factory::StrategyFactory;
 use super::learning::CellOutcome;
-use super::realised::RealisedSeries;
+use super::realised::{RealisedCalendar, RealisedSeries};
 use super::regions::{GrantManifests, RegionMembership, RegionShares, partition};
 use super::whitelist::{ArbitragePolicy, WhitelistIssue, WhitelistOutcome};
 use qip_capital::allocation::{
@@ -880,6 +880,74 @@ impl CentralPlane {
         }
     }
 
+    /// Retain, on the day of `at`, every live grant this cell holds — whether
+    /// or not anything settled under it.
+    ///
+    /// The fact a settlement cannot carry. A day under a grant that traded
+    /// nothing left no session at all before this, so afterwards the centre
+    /// could not tell it from a day under no grant: the first is a return of
+    /// zero and the second is not a return, and nothing retained distinguished
+    /// them. This writes the first as what it is.
+    ///
+    /// Gated on [`CapitalEnvelope::is_live`] at the report's own instant, not
+    /// on the presence of an envelope. The map keeps a grant after it expires,
+    /// and a lapsed grant is an authority the cell may no longer commit
+    /// against; retaining one would put a denominator behind a day on which
+    /// the strategy held nothing.
+    ///
+    /// Filtered by the factory's baseline for the same reason
+    /// [`CentralPlane::record_realised`] is, and it is what bounds the work:
+    /// grants held at this cell for strategies that have reached pilot, both
+    /// fixed by decisions rather than by traffic.
+    fn retain_grants(&mut self, cell: &str, at: Timestamp) {
+        // Collected before the write because the grants and the series are
+        // two fields of the same plane; the list is bounded by the strategies
+        // holding a grant at one cell.
+        let live: Vec<(StrategyId, Decimal)> = self
+            .envelopes
+            .iter()
+            .filter(|((held_cell, strategy), envelope)| {
+                held_cell == cell
+                    && envelope.is_live(at)
+                    && self.factory.baseline(strategy).is_some()
+            })
+            .map(|((_, strategy), envelope)| (strategy.clone(), envelope.gross_limit()))
+            .collect();
+        for (strategy, grant) in live {
+            self.realised
+                .entry((cell.to_string(), strategy))
+                .or_default()
+                .retain_grant(at, grant);
+        }
+    }
+
+    /// The retained corpus as one day-keyed series per strategy: what each
+    /// attributed on each closed day it held a live grant, summed across the
+    /// cells that held one.
+    ///
+    /// The exposure [`CentralPlane::live_outcomes`] is not. That one answers
+    /// "how has this strategy done since its baseline" and hands back returns
+    /// with the day dropped, which is the right shape for a verdict on one
+    /// strategy and the wrong shape for anything comparing two: a correlation
+    /// needs both series on one calendar, and a `Vec<f64>` cannot be aligned
+    /// to anything.
+    ///
+    /// Derived on every call rather than kept beside the sessions, for the
+    /// same reason `live_outcomes` is: the calendar a caller reads is the one
+    /// the retained sessions support at `now`. A late report revises a day
+    /// that has already closed, and the revision is visible from the next call
+    /// onward — a fact recorded forward, never one legible before the centre
+    /// knew it.
+    pub fn realised_calendar(&self, now: Timestamp) -> RealisedCalendar {
+        let mut calendar = RealisedCalendar::default();
+        for ((_, strategy), series) in &self.realised {
+            for (day, granted) in series.granted_days(now) {
+                calendar.absorb(strategy, day, granted);
+            }
+        }
+        calendar
+    }
+
     /// The live observation the demotion monitor should review this tick,
     /// one per strategy per cell that has closed a session since its
     /// baseline was established, in cell then strategy order.
@@ -1180,6 +1248,11 @@ impl CentralPlane {
         // refusal in the recall step cannot leave a fill half-attributed.
         let settlement = self.settle(&report, now);
         self.record_realised(&report.cell, &settlement, report.at);
+        // The grant the cell held while it made this report, on the same day
+        // the settlement was booked into and at the report's own instant. A
+        // day that settled nothing is a day of the record too, and until this
+        // line it was thrown away.
+        self.retain_grants(&report.cell, report.at);
 
         // The cell's breaks and the settlement's, halted together: a fill on
         // an order the centre never saw sent is the venue's channel and the

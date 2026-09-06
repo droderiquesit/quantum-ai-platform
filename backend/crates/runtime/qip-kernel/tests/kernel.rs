@@ -15,6 +15,7 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Decimal, ObjectId, dec};
 use qip_execution_engine::order::Side;
 use qip_financial::asset_class::{InstrumentType, Sector};
+use qip_financial::intelligence::MacroObservation;
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
@@ -36,18 +37,36 @@ fn object(symbol: &str) -> ObjectId {
     ObjectId::from_string(format!("obj-{symbol}"))
 }
 
+/// The liquidity every fixture in this file states, because nothing states it
+/// for them any more.
+///
+/// [`qip_financial::costs::LiquidityProfile`] has no `Default`: the one it had
+/// asserted a 10bp quote and a one-session exit for any instrument at all, and
+/// `MinLiquidity` and `MaxDaysToLiquidate` — controls whose job is to veto
+/// trading — read exactly those two figures. A fixture may state its own
+/// premise; it may not inherit one nobody wrote down. A liquid listed name on
+/// five million units a day, quoted at three basis points.
+fn fixture_liquidity() -> qip_financial::costs::LiquidityProfile {
+    qip_financial::costs::LiquidityProfile::listed(qip_core::Decimal::from_int(5_000_000), 3.0)
+}
+
 fn universe() -> Universe {
     let mut universe = Universe::new();
     for symbol in ["AAA", "BBB"] {
         universe
             .insert(
-                FinancialObject::builder(object(symbol), symbol, InstrumentType::CommonStock)
-                    .venue("XNYS")
-                    .sector(Sector::InformationTechnology)
-                    .price(dec!("100"))
-                    .provenance(Provenance::synthetic("test", start()))
-                    .build(start())
-                    .expect("valid object"),
+                FinancialObject::builder(
+                    object(symbol),
+                    symbol,
+                    InstrumentType::CommonStock,
+                    fixture_liquidity(),
+                )
+                .venue("XNYS")
+                .sector(Sector::InformationTechnology)
+                .price(dec!("100"))
+                .provenance(Provenance::synthetic("test", start()))
+                .build(start())
+                .expect("valid object"),
             )
             .expect("insertable");
     }
@@ -171,6 +190,74 @@ fn a_cycle_with_no_data_still_runs_every_stage_and_says_why_each_was_quiet() -> 
             .unwrap()
             .detail
             .contains("nothing in the queue")
+    );
+    Ok(())
+}
+
+/// Three reference rates in the shape the ECB connector releases them, which
+/// is the shape that exposed the defect below: a macro observation reaches the
+/// world model and the catalyst path and never touches the price series.
+fn rates() -> Vec<SensedRecord> {
+    let reference = start().saturating_sub(Duration::from_days(2));
+    ["USD", "GBP", "JPY"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, quote)| {
+            SensedRecord::Macro(Box::new(MacroObservation {
+                series_id: format!("FX.EUR.{quote}"),
+                region: "EA".to_string(),
+                value: 1.0 + index as f64,
+                unit: format!("{quote} per EUR"),
+                reference_date: reference,
+                consensus: None,
+                previous: None,
+                is_revision: false,
+                provenance: Provenance::new(
+                    "reference-rates",
+                    reference,
+                    reference.saturating_add(Duration::from_hours(16)),
+                ),
+                quality: DataQuality::clean(),
+            }))
+        })
+        .collect()
+}
+
+#[test]
+fn a_cycle_that_absorbed_reference_rates_reports_them_rather_than_calling_itself_blind()
+-> Result<()> {
+    // Not hypothetical: driven against the real ECB endpoint on 2026-09-06
+    // (`docs/ops/live-source-frankfurter-2026-09-06.md`) the cycle response
+    // carried `"released":3,"observed":3` and the SENSE stage on the same
+    // cycle carried `"produced":0` with "no observations have been fed in;
+    // the platform is running blind". The stage measured the price series
+    // alone and drew a conclusion about every record kind, so an operator
+    // reading the stage table would have called a working source dead.
+    let mut platform = platform(PlatformConfig::default())?;
+    let observed = platform.observe(rates());
+    assert_eq!(
+        observed, 3,
+        "premise: the platform took all three rates in, so a zero below is the stage's \
+         and not the feed's"
+    );
+
+    let report = platform.run_cycle(start());
+    let sense = report.stage(Stage::Sense).expect("sense ran");
+    assert_eq!(
+        sense.produced, observed,
+        "the stage table and the feed's own count are two readings of one fact and they \
+         disagree: {}",
+        sense.detail
+    );
+    assert!(
+        !sense.detail.contains("running blind"),
+        "a platform holding three observations described itself as blind: {}",
+        sense.detail
+    );
+    assert!(
+        sense.detail.contains("3 observation(s) held"),
+        "the stage did not say what it holds: {}",
+        sense.detail
     );
     Ok(())
 }

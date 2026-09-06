@@ -165,16 +165,58 @@ Idempotency against a real source, not a scripted one: the same table twice
 produced three observations and then none, and the three already held stayed
 held.
 
-## One thing worth fixing, found by running this
+## One thing worth fixing, found by running this — **fixed 2026-09-06**
 
 The cycle response's SENSE stage reads `"produced":0` with the detail **"no
 observations have been fed in; the platform is running blind"** on the very
 cycle in which `"sense":{"released":3,"observed":3}`. Two claims about the same
 fact, and the louder one is wrong. The stage line describes a different
 mechanism from the feed's pre-cycle `observe`, and an operator reading the
-stage table would conclude the source was dead. The fix is in
-`backend/crates/runtime/qip-kernel` and is outside the scope of the change this
-record accompanies; it is written down here rather than left in a session.
+stage table would conclude the source was dead.
+
+**Closed on 2026-09-06, after this record was written.** `Platform::stage_sense`
+(`backend/crates/runtime/qip-kernel/src/platform.rs`) no longer answers "has
+anything been fed in" from the price series. It answers it from
+`Platform::observations_absorbed` — the count `Platform::observe` returned to
+the same caller that reports `observed` beside the stage, accumulated and
+nothing else. One fact, one reading, so the two can no longer disagree. A macro
+observation lands in the world model and the catalyst path and touches no price
+series at all, which is exactly why the old reading called a platform blind
+that had just absorbed three central-bank reference rates: it measured one
+absorption arm and concluded about all of them.
+
+The stage now says what it *holds* beside what it took in. Its format string is
+`{held} observation(s) held from {absorbed} absorbed: {breakdown}{sourced}`, so
+the three-macro-record case this session produced renders as `3 observation(s)
+held from 3 absorbed: 3 knowable event(s)`. `produced` deliberately stays what
+is held rather than what arrived — every store it counts is bounded, so under
+load the two diverge and the divergence is the retention policy working, not a
+lost record.
+
+Two kernel tests hold it, both in
+`backend/crates/runtime/qip-kernel/tests/kernel.rs` and both run for this
+record:
+
+```
+$ cargo test -p qip-kernel --test kernel a_cycle_that_absorbed_reference_rates -- --nocapture
+test a_cycle_that_absorbed_reference_rates_reports_them_rather_than_calling_itself_blind ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 0.01s
+
+$ cargo test -p qip-kernel --test kernel a_cycle_with_no_data_still_runs_every_stage
+test a_cycle_with_no_data_still_runs_every_stage_and_says_why_each_was_quiet ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 0.00s
+```
+
+The first asserts that the stage's `produced` equals the count `observe`
+returned and that the detail does not contain "running blind"; the second keeps
+the blind detail for the case that genuinely is blind, because a platform that
+has absorbed nothing must still say so.
+
+**This closes a reporting defect and moves no boundary.** The repair was made
+and tested in-process against three synthetic records in the shape the ECB
+connector releases them. It was not re-run against the live vendor, nothing
+about it was deployed, and every limit in the next section still stands
+unchanged.
 
 ## The precise boundary of the claim
 

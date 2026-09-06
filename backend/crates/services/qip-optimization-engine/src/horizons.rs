@@ -31,6 +31,19 @@
 //! than [`HorizonReconciliation::into_plan`], which refuses while any horizon
 //! is over-committed. A limit that cannot fire is a defect; this one can only
 //! be passed by balancing.
+//!
+//! **Including for serde.** That paragraph was a doc comment and not a type:
+//! every struct in this module derived `Deserialize` straight onto its private
+//! fields, so a document was a second constructor that ran none of the checks
+//! above. It was not theoretical. A plan claiming 999,999,999 committed
+//! against a total of 4 loaded without passing the gate; a pool set stating
+//! 1,000 in each of four pools against a total of 1,000 loaded and the same
+//! unit was spent four times with `is_balanced` still true; and a budget of
+//! -250 loaded and netted a real breach at that horizon away, past the
+//! budgeted-twice guard, because it belonged to a different family. Each type
+//! now carries `serde(try_from)` onto its own checked constructor, and
+//! [`ReconciledPlan`]'s wire type is [`HorizonReconciliation`] itself — so the
+//! only way to a plan really is [`HorizonReconciliation::into_plan`].
 
 use crate::families::{FamilyAssignment, FamilyId};
 use qip_core::decimal::Decimal;
@@ -99,7 +112,16 @@ impl std::fmt::Display for Horizon {
 }
 
 /// The four pools of blueprint §23.4, plus the liability the last one carries.
+///
+/// Fields are private and deserialisation is routed through [`Self::new`] by
+/// `serde(try_from)`. The plain derive was a second constructor, and it
+/// undid the one guarantee this module claims to make arithmetically
+/// impossible: a document stating a total of 1,000 with 1,000 in each of the
+/// four pools loaded, and the same unit was then spent four times over, with
+/// [`HorizonReconciliation::is_balanced`] reporting true and `unallocated`
+/// reading -3,000. Negative pools loaded too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "CapitalPoolsWire")]
 pub struct CapitalPools {
     total: Decimal,
     available_inventory: Decimal,
@@ -107,6 +129,32 @@ pub struct CapitalPools {
     capital_not_reserved_for_calls: Decimal,
     reserved_capital: Decimal,
     unfunded_commitments: Decimal,
+}
+
+/// The on-disk shape of [`CapitalPools`].
+#[derive(Deserialize)]
+struct CapitalPoolsWire {
+    total: Decimal,
+    available_inventory: Decimal,
+    deployable_capital: Decimal,
+    capital_not_reserved_for_calls: Decimal,
+    reserved_capital: Decimal,
+    unfunded_commitments: Decimal,
+}
+
+impl TryFrom<CapitalPoolsWire> for CapitalPools {
+    type Error = Error;
+
+    fn try_from(wire: CapitalPoolsWire) -> Result<Self> {
+        Self::new(
+            wire.total,
+            wire.available_inventory,
+            wire.deployable_capital,
+            wire.capital_not_reserved_for_calls,
+            wire.reserved_capital,
+            wire.unfunded_commitments,
+        )
+    }
 }
 
 impl CapitalPools {
@@ -206,11 +254,37 @@ impl CapitalPools {
 }
 
 /// One family's claim on one horizon's pool.
+///
+/// Fields are private and deserialisation is routed through
+/// [`Self::from_money`] by `serde(try_from)`. A negative budget is not a small
+/// error: [`reconcile`] sums the budgets at a horizon, so one deserialised
+/// record of -250 at the horizon another family is over-committed at nets a
+/// real breach away and the reconciliation reports balanced. The
+/// budgeted-twice guard does not catch it, because the two records are two
+/// different families and are each perfectly legitimate on their own. A limit
+/// a second record can net away is a limit that cannot fire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "FamilyBudgetWire")]
 pub struct FamilyBudget {
     family: FamilyId,
     horizon: Horizon,
     money: Decimal,
+}
+
+/// The on-disk shape of [`FamilyBudget`].
+#[derive(Deserialize)]
+struct FamilyBudgetWire {
+    family: FamilyId,
+    horizon: Horizon,
+    money: Decimal,
+}
+
+impl TryFrom<FamilyBudgetWire> for FamilyBudget {
+    type Error = Error;
+
+    fn try_from(wire: FamilyBudgetWire) -> Result<Self> {
+        Self::from_money(wire.family, wire.horizon, wire.money)
+    }
 }
 
 impl FamilyBudget {
@@ -324,7 +398,19 @@ impl HorizonPosition {
 }
 
 /// What the reconciliation found, breaches included.
+///
+/// Fields are private and deserialisation is routed through [`Self::rederive`]
+/// by `serde(try_from)`: a document's pools and budgets are put back through
+/// [`CapitalPools::new`], [`FamilyBudget::from_money`] and [`reconcile`], and
+/// the result must equal what the document claimed. Checking the fields one by
+/// one would be a second implementation of the reconciliation, and the two
+/// would drift; re-deriving means there is one.
+///
+/// Without it, a reconciliation loaded with no positions at all reported
+/// `is_balanced` — vacuously, because nothing was over its pool — and handed
+/// out a [`ReconciledPlan`] for a total of 4 with 999,999,999 allocated.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "HorizonReconciliationWire")]
 pub struct HorizonReconciliation {
     positions: BTreeMap<Horizon, HorizonPosition>,
     allocations: BTreeMap<FamilyId, Decimal>,
@@ -332,7 +418,142 @@ pub struct HorizonReconciliation {
     allocated: Decimal,
 }
 
+/// The on-disk shape of [`HorizonReconciliation`].
+#[derive(Deserialize)]
+struct HorizonReconciliationWire {
+    positions: BTreeMap<Horizon, HorizonPosition>,
+    allocations: BTreeMap<FamilyId, Decimal>,
+    total: Decimal,
+    allocated: Decimal,
+}
+
+impl TryFrom<HorizonReconciliationWire> for HorizonReconciliation {
+    type Error = Error;
+
+    fn try_from(wire: HorizonReconciliationWire) -> Result<Self> {
+        let claimed = Self {
+            positions: wire.positions,
+            allocations: wire.allocations,
+            total: wire.total,
+            allocated: wire.allocated,
+        };
+        let rederived = claimed.rederive()?;
+        if rederived != claimed {
+            return Err(Error::invalid(format!(
+                "the reconciliation does not re-derive from its own parts: it claims {} allocated \
+                 over committed {}, and its own budgets against its own pools give {} allocated \
+                 over committed {}; the record was edited after it was produced",
+                claimed.allocated,
+                claimed.committed_summary(),
+                rederived.allocated,
+                rederived.committed_summary()
+            )));
+        }
+        Ok(rederived)
+    }
+}
+
 impl HorizonReconciliation {
+    /// Rebuild this reconciliation from the pools and budgets it carries.
+    ///
+    /// Everything a `HorizonReconciliation` asserts is a function of the four
+    /// pools, the unfunded commitment liability and the family budgets, all of
+    /// which it holds. So the check is to take those back out, put them
+    /// through the constructors that refuse a bad one, and run [`reconcile`]
+    /// again.
+    fn rederive(&self) -> Result<Self> {
+        let mut pool: BTreeMap<Horizon, Decimal> = BTreeMap::new();
+        let mut liability = Decimal::ZERO;
+        for horizon in Horizon::ALL {
+            let position = self.positions.get(&horizon).ok_or_else(|| {
+                Error::invalid(format!(
+                    "the reconciliation carries no position for the {horizon} horizon; all four \
+                     are reported whether or not a family was budgeted there, because a horizon \
+                     nobody reported is a horizon nobody checked"
+                ))
+            })?;
+            if position.horizon != horizon {
+                return Err(Error::invalid(format!(
+                    "the position filed under the {horizon} horizon says it is {}; the key and \
+                     the record have to name one horizon, or a breach is reported against the \
+                     wrong pool ({})",
+                    position.horizon,
+                    horizon.treatment()
+                )));
+            }
+            if horizon == Horizon::Years {
+                liability = position.liability;
+            } else if !position.liability.is_zero() {
+                return Err(Error::invalid(format!(
+                    "the {horizon} horizon carries an unfunded commitment liability of {}; the \
+                     liability belongs to the years horizon alone, which is the only pool that \
+                     has to meet a capital call",
+                    position.liability
+                )));
+            }
+            pool.insert(horizon, position.pool);
+        }
+        let at = |horizon: Horizon| pool.get(&horizon).copied().unwrap_or(Decimal::MIN);
+        // Every horizon is in `pool` by the loop above, so `at` never falls
+        // back; the fallback is `MIN` rather than `ZERO` so that if it ever
+        // did, `CapitalPools::new` would refuse it as a negative pool instead
+        // of admitting a plausible-looking zero.
+        let pools = CapitalPools::new(
+            self.total,
+            at(Horizon::MicrosecondsToMinutes),
+            at(Horizon::HoursToDays),
+            at(Horizon::WeeksToMonths),
+            at(Horizon::Years),
+            liability,
+        )?;
+
+        let mut budgets: Vec<FamilyBudget> = Vec::new();
+        let mut budgeted: BTreeSet<FamilyId> = BTreeSet::new();
+        for horizon in Horizon::ALL {
+            let families = self
+                .positions
+                .get(&horizon)
+                .map(|position| position.families.clone())
+                .unwrap_or_default();
+            for family in families {
+                let money = self.allocations.get(&family).ok_or_else(|| {
+                    Error::invalid(format!(
+                        "{family} is listed at the {horizon} horizon with no budget among the \
+                         allocations; a family charged to a pool has to say what it was charged"
+                    ))
+                })?;
+                budgets.push(FamilyBudget::from_money(family, horizon, *money)?);
+                budgeted.insert(family);
+            }
+        }
+        for (family, money) in &self.allocations {
+            if !budgeted.contains(family) {
+                return Err(Error::invalid(format!(
+                    "{family} holds a budget of {money} at no horizon; capital that belongs to no \
+                     horizon is capital two horizons will both spend — file it at the horizon it \
+                     is to be allocated against"
+                )));
+            }
+        }
+
+        reconcile(&pools, &budgets)
+    }
+
+    /// What each horizon claims, for a refusal to show both sides with.
+    fn committed_summary(&self) -> String {
+        Horizon::ALL
+            .iter()
+            .map(|horizon| {
+                let committed = self.positions.get(horizon).map_or_else(
+                    || "absent".to_string(),
+                    |position| position.committed.to_string(),
+                );
+                format!("{horizon}={committed}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     pub fn positions(&self) -> &BTreeMap<Horizon, HorizonPosition> {
         &self.positions
     }
@@ -413,12 +634,29 @@ impl HorizonReconciliation {
 /// Constructible only through [`HorizonReconciliation::into_plan`]. That is
 /// the structural half of the guarantee — a caller cannot hold this type and
 /// be over-committed, whatever it forgot to check.
+///
+/// It was a doc comment rather than a type: the derived `Deserialize` wrote
+/// straight to these private fields, and a document produced a plan claiming
+/// 999,999,999 committed against a total of 4 without passing the gate at all.
+/// So serde comes in by the same door, and by no other — `try_from` takes a
+/// [`HorizonReconciliation`], which re-derives itself from its own pools and
+/// budgets, and then calls [`HorizonReconciliation::into_plan`]. The sentence
+/// above is now enforced by the compiler for every route in.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "HorizonReconciliation")]
 pub struct ReconciledPlan {
     positions: BTreeMap<Horizon, HorizonPosition>,
     allocations: BTreeMap<FamilyId, Decimal>,
     total: Decimal,
     allocated: Decimal,
+}
+
+impl TryFrom<HorizonReconciliation> for ReconciledPlan {
+    type Error = Error;
+
+    fn try_from(reconciliation: HorizonReconciliation) -> Result<Self> {
+        reconciliation.into_plan()
+    }
 }
 
 impl ReconciledPlan {

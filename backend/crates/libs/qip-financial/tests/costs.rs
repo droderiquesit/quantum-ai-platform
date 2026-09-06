@@ -176,10 +176,16 @@ fn estimate_uses_the_magnitude_of_a_negative_notional() {
 
 #[test]
 fn days_to_exit_scales_inversely_with_the_permitted_participation_rate() {
+    // Every field is named because there is no default to fall back on: the
+    // two this test turns on are the volume and the participation rate, and
+    // the other four are stated so the reader can see they are not the subject.
     let liquidity = LiquidityProfile {
         average_daily_volume: qip_core::Decimal::from_int(1_000_000),
+        typical_spread_bps: 4.0,
+        top_of_book_depth: qip_core::Decimal::from_int(500),
+        days_to_liquidate: 1.0,
         max_participation_rate: 0.1,
-        ..LiquidityProfile::default()
+        is_negotiated: false,
     };
     let quantity = qip_core::Decimal::from_int(500_000);
     let days = liquidity
@@ -199,8 +205,11 @@ fn days_to_exit_scales_inversely_with_the_permitted_participation_rate() {
     // Zero participation policy (nobody may trade this) has no estimate either.
     let frozen = LiquidityProfile {
         average_daily_volume: qip_core::Decimal::from_int(1_000_000),
+        typical_spread_bps: 4.0,
+        top_of_book_depth: qip_core::Decimal::from_int(500),
+        days_to_liquidate: 1.0,
         max_participation_rate: 0.0,
-        ..LiquidityProfile::default()
+        is_negotiated: false,
     };
     assert!(frozen.days_to_exit(quantity).is_none());
 }
@@ -250,7 +259,7 @@ fn a_negotiated_profile_carries_the_spread_its_caller_stated_and_invents_none() 
 
 // --- what the committed catalogue says about liquidity -----------------------
 //
-// `LiquidityProfile::default()` asserts `typical_spread_bps: 10.0` and
+// `LiquidityProfile` had a `Default` asserting `typical_spread_bps: 10.0` and
 // `days_to_liquidate: 1.0`. Until the catalogue format carried a liquidity
 // block, every record in `data/datasets/universe.json` inherited exactly that,
 // so `MinLiquidity` and `MaxDaysToLiquidate` — controls whose whole job is to
@@ -356,26 +365,40 @@ fn tape_figures() -> std::collections::BTreeMap<String, TapeFigures> {
 /// handed a 10bp quote and a one-day exit that nobody measured.
 ///
 /// The premise matters as much as the refusal: the record being broken must
-/// carry a liquidity block that is *not* the constructor default, or the
-/// refusal below could be about a file that never said anything different.
+/// carry a liquidity block that is *not* the figures the deleted constructor
+/// invented, or the refusal below could be about a file that never said
+/// anything different.
+///
+/// `LiquidityProfile::default()` no longer exists, so the profile compared
+/// against is written out here rather than obtained from the library. That is
+/// the point of writing it out: the test still fails if the committed
+/// catalogue ever comes to carry those six figures, whether a constructor put
+/// them there or an editor did.
 #[test]
 fn a_catalogue_record_that_states_no_liquidity_is_refused_by_name_and_inherits_no_default() {
     let text = universe_text();
     let loaded = qip_financial::catalogue::load(&text, catalogue_now())
         .expect("the committed catalogue loads as committed");
-    let default = LiquidityProfile::default();
+    let deleted_default = LiquidityProfile {
+        average_daily_volume: qip_core::Decimal::ZERO,
+        typical_spread_bps: 10.0,
+        top_of_book_depth: qip_core::Decimal::ZERO,
+        days_to_liquidate: 1.0,
+        max_participation_rate: 0.1,
+        is_negotiated: false,
+    };
     // Premise: the loader installs each record's own figures, and they are not
-    // the ones the constructor would have invented.
+    // the ones the constructor used to invent.
     for object in loaded.universe.iter() {
         assert_ne!(
-            object.liquidity, default,
-            "{} carries the constructor's default liquidity profile, so the catalogue is not \
+            object.liquidity, deleted_default,
+            "{} carries the six figures the deleted default asserted, so the catalogue is not \
              the source of the figure the ladder prices",
             object.object_id
         );
     }
-    assert_eq!(default.typical_spread_bps, 10.0);
-    assert_eq!(default.days_to_liquidate, 1.0);
+    assert_eq!(deleted_default.typical_spread_bps, 10.0);
+    assert_eq!(deleted_default.days_to_liquidate, 1.0);
 
     let mut value: serde_json::Value = serde_json::from_str(&text).expect("the catalogue is JSON");
     let broken = 3usize;

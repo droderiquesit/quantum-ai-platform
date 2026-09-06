@@ -718,10 +718,21 @@ fn classification_never_returns_the_resting_rung_because_no_instrument_property_
     // A position rests because a strategy is anchoring it. That is a fact about
     // the strategy, not the instrument, and a classifier that guessed it would
     // put positions on a rung nobody chose.
+    // The third used to be `LiquidityProfile::default()`. There is no default
+    // any more, so the third case states the figures that constructor asserted
+    // — a 10bp quote and a one-session exit on an instrument that trades no
+    // volume — which is the shape the classifier still has to place.
     let profiles = [
         LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
         LiquidityProfile::illiquid(30.0, 900.0),
-        LiquidityProfile::default(),
+        LiquidityProfile {
+            average_daily_volume: Decimal::ZERO,
+            typical_spread_bps: 10.0,
+            top_of_book_depth: Decimal::ZERO,
+            days_to_liquidate: 1.0,
+            max_participation_rate: 0.1,
+            is_negotiated: false,
+        },
     ];
     // Premise: this really does cover every class.
     assert_eq!(AssetClass::ALL.len(), 13);

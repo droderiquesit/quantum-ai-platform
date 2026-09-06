@@ -168,13 +168,18 @@ fn platform_of(universe: Universe, limits: LimitSet, equity: Decimal) -> Result<
 }
 
 fn listed(symbol: &str) -> Result<FinancialObject> {
-    FinancialObject::builder(object(symbol), symbol, InstrumentType::CommonStock)
-        .venue("XNYS")
-        .geography("US")
-        .sector(Sector::InformationTechnology)
-        .price(dec!("100"))
-        .provenance(Provenance::synthetic("test", start()))
-        .build(start())
+    FinancialObject::builder(
+        object(symbol),
+        symbol,
+        InstrumentType::CommonStock,
+        LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+    )
+    .venue("XNYS")
+    .geography("US")
+    .sector(Sector::InformationTechnology)
+    .price(dec!("100"))
+    .provenance(Provenance::synthetic("test", start()))
+    .build(start())
 }
 
 /// A private fund the valuation plane will have a view on, or refuse to.
@@ -208,22 +213,27 @@ fn private_fund_reported_at(
     residual: Decimal,
     observed: Timestamp,
 ) -> Result<FinancialObject> {
-    FinancialObject::builder(object(symbol), symbol, InstrumentType::PrivateEquityFund)
-        .venue("OTC")
-        .geography("US")
-        .price(dec!("100"))
-        .extension(Extension::PrivateAsset(PrivateAssetDetails {
-            vintage_year: 2024,
-            committed_capital: committed,
-            called_capital: called,
-            distributed_capital: distributed,
-            residual_value: residual,
-            stage: "buyout".to_string(),
-            lockup_years: 7.0,
-            capital_call_notice_days: 10,
-        }))
-        .provenance(Provenance::synthetic("administrator", observed))
-        .build(start())
+    FinancialObject::builder(
+        object(symbol),
+        symbol,
+        InstrumentType::PrivateEquityFund,
+        LiquidityProfile::illiquid(90.0, 250.0),
+    )
+    .venue("OTC")
+    .geography("US")
+    .price(dec!("100"))
+    .extension(Extension::PrivateAsset(PrivateAssetDetails {
+        vintage_year: 2024,
+        committed_capital: committed,
+        called_capital: called,
+        distributed_capital: distributed,
+        residual_value: residual,
+        stage: "buyout".to_string(),
+        lockup_years: 7.0,
+        capital_call_notice_days: 10,
+    }))
+    .provenance(Provenance::synthetic("administrator", observed))
+    .build(start())
 }
 
 fn bar(symbol: &str, at: Timestamp, open: f64, close: f64) -> SensedRecord {
@@ -839,12 +849,11 @@ fn liquidity_universe(slow: LiquidityProfile) -> Result<Universe> {
         ("SLOW", slow),
     ] {
         universe.insert(
-            FinancialObject::builder(object(symbol), symbol, InstrumentType::CommonStock)
+            FinancialObject::builder(object(symbol), symbol, InstrumentType::CommonStock, profile)
                 .venue("XNYS")
                 .geography("US")
                 .sector(Sector::InformationTechnology)
                 .price(dec!("100"))
-                .liquidity(profile)
                 .provenance(Provenance::synthetic("test", start()))
                 .build(start())?,
         )?;

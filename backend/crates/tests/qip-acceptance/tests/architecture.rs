@@ -1658,3 +1658,159 @@ fn names_the_process_environment(line: &str) -> bool {
     }
     false
 }
+
+/// Nothing in the workspace can obtain a liquidity profile nobody stated.
+///
+/// `LiquidityProfile` had a `Default`, and it asserted `typical_spread_bps:
+/// 10.0` and `days_to_liquidate: 1.0` for any instrument at all. Those two
+/// fields are read by `MinLiquidity` and `MaxDaysToLiquidate`, controls whose
+/// whole job is to veto trading, and by the liquidity ladder that prices an
+/// exit — so every record that never stated its liquidity was vetoed, or
+/// declined to be vetoed, on a figure that was in no file, in no diff a
+/// reviewer read, and under no manifest hash. `qip-deepbrain`'s synthetic
+/// reference universe, `qip-brokers`' simulated venue listing and `qip-cli`'s
+/// demonstration universe each inherited it in a shipped binary.
+///
+/// The cure is that the value is not constructible without stating figures:
+/// the `Default` impl is gone and `FinancialObject::builder` takes a profile
+/// by position. Both are compiler-enforced, and this test exists for the one
+/// thing the compiler cannot refuse — somebody writing the impl back. A
+/// reintroduced `Default` would compile, every call site would keep working,
+/// and the only symptom would be a control quietly reading ten basis points
+/// again.
+///
+/// This is a cross-cutting assertion and lives here rather than in
+/// `qip-financial`'s own suite for the ordinary reason: the crate that owns
+/// the type cannot see the thirty-odd crates that would inherit the value.
+///
+/// The scan is line-based, and the same honesty applies as to the `std::env`
+/// walk above: a line whose first token is `//` is prose and skipped, so the
+/// several doc comments that name the deleted constructor by name — this
+/// paragraph among them — are not violations. Everything else is code.
+///
+/// **The scope list is read off the tree rather than written down**, and that
+/// is not tidiness. A hand-written list is the one mutation this test could
+/// not survive: narrowing it to `libs` alone still scans several hundred
+/// files, still names the type hundreds of times, and reports no violation
+/// while `qip-cli` calls the constructor on every line of it. Verified by
+/// doing exactly that — the earlier version of this test passed. Reading the
+/// directories means a new crate group is covered the day it appears, and a
+/// group excluded on purpose has to be named in `EXCLUDED` with a reason.
+#[test]
+fn no_shipped_source_can_obtain_a_liquidity_profile_nobody_stated() {
+    // `tests` is `qip-acceptance` itself: a suite, with no `src/` a
+    // deployment runs, and the only crate group whose job is to name the
+    // figures under discussion.
+    const EXCLUDED: [&str; 1] = ["tests"];
+    let scopes: Vec<String> = {
+        let mut found: Vec<String> = std::fs::read_dir(repository_root().join("backend/crates"))
+            .expect("backend/crates is readable")
+            .map(|entry| entry.expect("a readable directory entry"))
+            .filter(|entry| entry.path().is_dir())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| !EXCLUDED.contains(&name.as_str()))
+            .collect();
+        found.sort();
+        found
+    };
+    // The premise: the tree really does hold the crate groups the layering
+    // rules name. A read that returned two directories would scan two.
+    assert_eq!(
+        scopes,
+        vec![
+            "agents".to_string(),
+            "apps".to_string(),
+            "edge".to_string(),
+            "libs".to_string(),
+            "quant".to_string(),
+            "runtime".to_string(),
+            "services".to_string(),
+        ],
+        "the crate groups under backend/crates are not the seven this scan expects; a group          added without being covered here is a group that may reintroduce the default"
+    );
+    // Two spellings, because one of them is what a reintroduction looks like
+    // and the other is what using it looks like. `Default::default()` at a
+    // `liquidity:` field is a third and is caught by the second pattern's
+    // companion below.
+    const FORBIDDEN: [&str; 3] = [
+        "impl Default for LiquidityProfile",
+        "LiquidityProfile::default()",
+        "liquidity: Default::default()",
+    ];
+
+    let root = repository_root();
+    let mut scanned: BTreeMap<String, usize> = BTreeMap::new();
+    let mut naming_the_type = 0usize;
+    let mut violations: Vec<String> = Vec::new();
+    for scope in &scopes {
+        let directory = root.join("backend/crates").join(scope);
+        assert!(
+            directory.is_dir(),
+            "no such directory: {}",
+            directory.display()
+        );
+        for path in qip_acceptance::files_with_extension(&format!("backend/crates/{scope}"), "rs") {
+            let relative = path
+                .strip_prefix(&root)
+                .expect("the file is under the repository")
+                .to_string_lossy()
+                .replace('\\', "/");
+            // A crate's own `tests/` directory is its test binary. A fixture
+            // may state whatever premise it likes, including the six figures
+            // the deleted default asserted; what it may not do is inherit
+            // them, and there is nothing left to inherit them from.
+            if !relative.contains("/src/") {
+                continue;
+            }
+            *scanned.entry(scope.clone()).or_default() += 1;
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("cannot read {relative}: {error}"));
+            for (index, line) in text.lines().enumerate() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("//") {
+                    continue;
+                }
+                if trimmed.contains("LiquidityProfile") {
+                    naming_the_type += 1;
+                }
+                for pattern in FORBIDDEN {
+                    if trimmed.contains(pattern) {
+                        violations.push(format!("{relative}:{}: {}", index + 1, trimmed));
+                    }
+                }
+            }
+        }
+    }
+
+    // The premise, in three halves. Every crate group has to have contributed
+    // files — a group that scanned nothing is a group excluded by accident,
+    // which is the mutation this test was found unable to survive. The walk
+    // has to have seen the workspace. And it has to have seen the type: a scan
+    // that reaches every file but never reads the identifier would report "no
+    // violations" for ever, which is the exact shape of a test that guards
+    // nothing.
+    for scope in &scopes {
+        assert!(
+            scanned.get(scope).copied().unwrap_or_default() > 0,
+            "the {scope} crate group contributed no source file to the scan"
+        );
+    }
+    let scanned: usize = scanned.values().sum();
+    assert!(
+        scanned >= 100,
+        "only {scanned} source files were scanned; the walk is not reaching the crates"
+    );
+    assert!(
+        naming_the_type >= 5,
+        "only {naming_the_type} lines of shipped code name LiquidityProfile; the scan is \
+         looking for a pattern in files that do not contain the subject"
+    );
+    assert!(
+        violations.is_empty(),
+        "a liquidity profile is being obtained without anybody stating one. The `Default` was \
+         removed because `MinLiquidity` and `MaxDaysToLiquidate` read its 10bp quote and its \
+         one-session exit, and no caller had measured either. State the six figures, or take \
+         them from the caller who has them:\n{}",
+        violations.join("\n")
+    );
+}

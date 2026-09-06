@@ -13,6 +13,21 @@ a credential must not do. **What closes it:** the four checks, run by the
 owner against `algorik-dev`, with their outputs quoted into this status line.
 Nothing else does, and no amount of further design work substitutes.
 
+**Re-examined 2026-09-06, and still proposed.** The session that did this pass
+was asked to answer the four checks against Microsoft and Google public
+documentation. **It could not: no documentation-search, web-fetch or web-search
+tool was available to it.** Both attempts are quoted in "The four checks,
+2026-09-06" below rather than summarised, because a record about a credential
+must not be able to be read as though a check had been run. What the pass could
+do is answer the parts of the four questions that are settled by the WebAuthn
+specification or by this repository's own code rather than by a console, and it
+found four consequences that change the shape of the fallback. **The record now
+recommends Shape A**, on an argument that does not depend on any of the four
+checks passing — and records that **Shape B as written is not viable**, because
+the custom-claim store it names cannot hold what point 5 also puts there and
+would be destroyed by the console's own profile write. That section is
+additive: no decision below was rewritten, and the status stays *proposed*.
+
 Re-verified on 2026-09-05 that nothing has moved:
 `grep -n 'AuthMethod' frontend/packages/auth/src/index.ts` still returns
 `export type AuthMethod = "password" | "google" | "passkey" | "saml" | "oidc" | "development";`
@@ -108,6 +123,172 @@ project can enable, and the Terraform provider's
 4. Whether the ID token a passkey sign-in returns carries the same custom
    claims the password sign-in returns today, so ADR 0019's agreements and
    roles survive the switch unchanged.
+
+### The four checks, 2026-09-06 — what was tried, and what is answerable without a console
+
+**What was tried, quoted rather than summarised.** The pass was asked to answer
+the four checks against Microsoft and Google public documentation. No
+documentation-search tool was reachable, under either name it is published as:
+
+```
+Error: No such tool available: microsoft_docs_search
+Error: No such tool available: mcp__Microsoft_Learn__microsoft_docs_search
+```
+
+No web-fetch or web-search tool was available either. **So no check below is
+answered with a citation to a vendor's documentation, and none should be read
+as though it were.** Every claim carries its evidence class: **[tree]** read
+from this repository at the line given; **[spec]** a property of the W3C Web
+Authentication specification, stated from the author's knowledge and **not
+fetched this session** — check it against the specification before relying on
+it; **[open]** not answerable without a console or a credential.
+
+**Check 1 — are the four v2 endpoints usable, at GA, on this project? [open].**
+What a person must look at, exactly: the Identity Platform sign-in-providers
+documentation, for whether passkeys are listed as a provider a project may
+enable; the Identity Toolkit **v2** REST reference, for whether
+`accounts/passkeyEnrollment:start|finalize` and
+`accounts/passkeySignIn:start|finalize` are documented as generally available
+rather than preview or allowlisted; and then one call against `algorik-dev`
+whose answer is a `credentialCreationOptions` body rather than an error code.
+The probe is small because the machinery exists: `call()` already extracts
+Google's stable ALL_CAPS code from the error body
+(`identity-platform.ts:52-57`), so a `PERMISSION_DENIED` or an
+`UNSUPPORTED_PASSKEY`-class refusal arrives as a code and not as a stack trace.
+**[tree]** The only repository evidence is weak and must not be mistaken for an
+answer: the `sign_in` block this platform configures has `email`,
+`phone_number` and `anonymous` and no passkey block
+(`modules/identity/main.tf:44,53-68`). That says what this configuration
+enables. It does not say what the API supports.
+
+**Check 2 — can an account exist with a passkey as its only provider?
+[open].** What a person must do: set `enable_email_password = false` against a
+scratch project — **not `dev`**, whose Identity Platform configuration is
+applied (`enable_identity_platform = true`,
+`environments/dev/terraform.tfvars:299`) and whose account pool this record
+cannot inspect, so disabling the only working sign-in method there would be a
+change nobody has measured the blast radius of — then create one account,
+complete `passkeySignIn:finalize`, and confirm an ID token comes back.
+**[tree]** Note the coupling the module already has: `password_required = true`
+lives inside the same `email` block that the `enabled` flag switches
+(`main.tf:56-61`), so this check also settles whether the email block can be
+disabled without disturbing the `authorized_domains` and quota configuration
+that share the resource.
+
+**Check 3 — the relying-party ID, and what a host change does. Half answered,
+and the answered half is decisive.** **[spec]** A credential is created against
+one RP ID; an authenticator will not produce an assertion for a different one,
+and the RP ID must equal the origin's effective domain or be a registrable
+suffix of it. **There is no migration path for a credential whose RP ID
+changes** — every user re-enrols. **[tree]** The portal's origin today is
+`algorik-portal-rgxpsss2lq-uk.a.run.app`
+(`environments/dev/terraform.tfvars:300-304`), and an algorik.ai migration is
+on the books and already referenced by the identity module
+(`main.tf:14-18`). If `run.app` or `a.run.app` is on the Public Suffix List —
+**check the list; do not assume it** — the RP ID cannot be shortened to a
+shared parent, so every credential is bound to that exact service hostname,
+which the migration changes. **The consequence holds under both shapes and is
+the most actionable thing this pass produced: do not enrol a population before
+the destination hostname is the origin, or plan to discard every credential
+enrolled first.** Under Shape A there is a second half — what RP ID Identity
+Platform uses on the project's behalf — and that half stays `[open]`.
+
+**Check 4 — do the custom claims survive? [open]** for the token itself. The
+platform-side half of the same question is answerable from the tree, and the
+answer is worse than the question assumes; it is the next section.
+
+### What the tree established instead, and why it decides the shape
+
+**(a) Shape B's credential store would be destroyed by the console's own
+profile write.** `gipWriteProfile` serialises `{ [PROFILE_CLAIM]: profile }`
+and sets `customAttributes` to exactly that string
+(`identity-platform.ts:237-247`); `accounts:update` replaces the blob rather
+than merging it. **So a credential list stored under a second key inside the
+same claims blob is deleted by the next profile write** — the next agreements
+re-acceptance, the next role change. Shape B would therefore need
+`gipWriteProfile` to become a read-merge-write against the account record,
+which is the lost-update race ADR 0019 examined and rejected for Cloud Storage,
+relocated onto Identity Platform and now sitting on the credential path instead
+of the profile path. **[tree]**
+
+**(b) The two-passkey cap is a byte budget whose largest term is chosen by
+hardware, not by this platform.** `PROFILE_CLAIM_LIMIT = 1000`, and
+`gipWriteProfile` refuses locally above it and returns false, which the caller
+treats as a sign-up that did not complete (`:147-157`, `:233-248`). The shipped
+profile — account type, three agreements, a version, one role — serialises to
+roughly 150 bytes (hand-counted from `StoredProfileClaims`; an estimate, not a
+measurement). **[spec]** A credential ID is chosen by the *authenticator*: a
+key-wrapping roaming authenticator's is commonly 64 bytes, which is 88
+characters once base64url-encoded, before the COSE public key beside it. So
+decision 2's "roughly 220 bytes each" is an assumption about the hardware the
+desk happens to buy, and the cap is not "two passkeys" — it is a budget whose
+overflow is a whole write refused, taking the compliance record with it.
+
+**(c) Decision 5's recovery code has nowhere to count its attempts.** Five
+attempts in fifteen minutes needs a counter, and ADR 0019 removed the console's
+store on purpose. The only place left is the same custom claim — a
+read-modify-write per attempt across stateless instances, which is (a) again,
+and a counter an attacker races is not a counter that stops one. **This is an
+open consequence of decision 5 under *either* shape**, named here rather than
+discovered at implementation; under Shape A it is smaller only because the
+claim then holds the recovery HMAC and not also the credentials.
+
+**(d) A Rust relying party is not merely undesirable — it is impossible
+today.** ADR 0043 establishes that no Rust process in this workspace can
+produce an unpredictable byte: `Xoshiro256` is deterministic by design and
+there is no other source, and 0043 decision 5's `/dev/urandom`-in-a-composition-root
+answer is specified and not implemented. A relying party mints challenges. The
+console can (Node's `crypto.randomBytes`, which is why ADR 0042's 16-byte nonce
+is safe as specified); `qip-api` cannot. The rejection already in decision 2
+gains a second and harder reason.
+
+**(e) ADR 0042 gains from this record and is not depended on by it.** The
+console's assertion carries `method` and `authenticated_at`; a passkey makes
+both mean more than a password does. It changes attribution only, never
+authority, and nothing here moves its key, its slot or its verification.
+
+### The recommendation: Shape A — and what to do if it cannot be had
+
+**Shape A**, on an argument that does not depend on any of the four checks
+passing:
+
+1. **Shape B as written is refuted by (a) and (b).** Its credential store is a
+   claims blob that the console's own profile write replaces, inside a byte
+   budget whose largest term is a property of the authenticator. Shape A stores
+   the credential where the account is and asks neither question.
+2. **Trying Shape A first is cheap and trying Shape B first is not.** Shape A's
+   first step is one HTTP call through code that already exists. Shape B's is a
+   dependency, a verifier, a storage decision and a Playwright rewrite, most of
+   which is discarded if check 1 passes.
+3. **Shape A fails loudly.** An endpoint that is absent, preview-gated or
+   tier-restricted answers with a code the portal already parses. It cannot
+   half-pass silently, which is the property that makes it safe to attempt
+   before it is decided.
+
+**Against it, stated because it is the real objection:** Shape A makes the
+console's *only* credential depend on a Google surface whose general
+availability is exactly what check 1 is about, and a preview API underneath a
+sign-in page is a worse dependency than an npm package. **If check 1 answers
+"exists, preview only", that is a third answer this record has no shape for** —
+the honest response is to stay on the deprecated password path and revisit,
+not to fall through to Shape B by default.
+
+**If a check genuinely fails, Shape B is admitted only with a named amendment
+saying where a credential record lives.** Three candidates, and this record
+ranks them rather than leaving the choice to whoever implements it:
+(i) the profile claim, *merged* rather than replaced, with the byte budget
+stated and an overflow that refuses the enrolment rather than the profile;
+(ii) the platform's own hash-chained event log, which ADR 0019 already names as
+the honest home for a fact Identity Platform cannot hold — at the cost of
+making the console's sign-in depend on the platform, a dependency direction to
+take deliberately and not by accident; (iii) one passkey plus the operator code,
+which drops the second-authenticator recovery path. **The preference is (ii)
+over (i), and (iii) is refused** — decision 5 requires both recovery paths, and
+the one that does not need an operator is the one that works at 3 a.m.
+
+**What still closes this record** is unchanged: the four checks, run by the
+owner against `algorik-dev`, with their outputs quoted into the status line.
+This pass narrowed what they have to decide; it did not answer one of them.
 
 ## Decision
 
@@ -274,6 +455,18 @@ page that says "that address is already registered" undoes it.
 * **If the operator-issued code is ever found emailed, logged or written to
   a committed file**, the recovery path has become a password, and the
   answer is to remove the path rather than to relabel it.
+* **If a credential is enrolled before the portal is served from the hostname
+  it will keep.** Added 2026-09-06. A credential is bound to the relying-party
+  ID it was created against and does not survive a change of it, so enrolling
+  a population on today's Cloud Run hostname buys a re-enrolment of everyone at
+  the domain migration. Either the migration comes first or the discard is
+  accepted deliberately.
+* **If a Shape B credential record is ever written into the same
+  `customAttributes` blob `gipWriteProfile` replaces.** Added 2026-09-06. The
+  next profile write deletes it, silently, and the account then reads as having
+  no credential — or, if the write overflows the 1000-byte cap instead, as
+  having no accepted agreements. Either failure is a user locked out by a
+  routine role change.
 
 ## Nothing is applied
 
@@ -292,3 +485,21 @@ only this:
 The first step toward applying it is the four checks under "Whether Identity
 Platform verifies a passkey itself", run by the owner against the dev
 project, with their outputs quoted into this record's status line.
+
+**The 2026-09-06 pass changed no file outside this one.** No probe was run
+against any project — the session had no credential and no web access of any
+kind — no Terraform variable moved, no npm package was added under either
+shape, `AuthMethod` still lists `"password"` at
+`frontend/packages/auth/src/index.ts:24`, and the word `passkey` appears under
+`frontend/portal/src` only in the sign-in page and three of the deprecated auth
+routes — the copy and the notes this section already lists. **No ceremony
+exists**: the portal's one Identity Platform client
+(`src/lib/server/identity-platform.ts`) reaches the v1 surface only —
+`accounts:signUp`, `:signInWithPassword`, `:sendOobCode`, `:resetPassword`,
+`:update`, `:lookup` — and names no v2 endpoint at all. **No gate was run for this
+pass**: no Rust, Terraform or TypeScript file was touched, so `cargo fmt`,
+`cargo clippy`, `cargo test`, `terraform validate` and the frontend gates have
+nothing to judge; the documentation acceptance suite is the one gate a change
+to this file reaches, and whoever accepts this pass runs
+`cargo test -p qip-acceptance --test documentation` and quotes its
+`test result:` line.

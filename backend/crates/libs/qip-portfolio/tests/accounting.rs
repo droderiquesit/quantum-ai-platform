@@ -28,13 +28,13 @@ fn equity(symbol: &str, price: &str, sector: Sector, country: &str) -> Financial
         ObjectId::from_string(format!("OBJ{symbol:0>23}")),
         symbol,
         InstrumentType::CommonStock,
+        LiquidityProfile::listed(Decimal::from_int(1_000_000), 3.0),
     )
     .name(symbol)
     .venue("XNYS")
     .sector(sector)
     .geography(country)
     .price(Decimal::parse(price).unwrap())
-    .liquidity(LiquidityProfile::listed(Decimal::from_int(1_000_000), 3.0))
     .transaction_costs(TransactionCostModel::listed(3.0))
     .risk(RiskCharacteristics {
         annualised_volatility: 0.28,

@@ -905,19 +905,142 @@ fn the_boot_image_bake_installs_exactly_what_the_node_refuses_to_start_without()
     );
 }
 
+/// Every `run:` script in a workflow, as its step's name and its shell body.
+///
+/// Read as blocks rather than searched for as text, because the properties
+/// below are about *where* a value appears. An expression in a step's `env:`
+/// mapping becomes an environment value the shell reads; the identical
+/// expression three lines lower inside `run:` is text the runner pastes into
+/// the script before bash sees it. Only one of the two can carry a second
+/// command.
+fn shell_bodies(workflow: &str) -> Vec<(String, String)> {
+    let mut bodies: Vec<(String, String)> = Vec::new();
+    let mut name = String::from("(a step with no name)");
+    let mut lines = workflow.lines().peekable();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("- name: ") {
+            name = rest.to_string();
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix("run:") else {
+            continue;
+        };
+        let indent = line.len() - line.trim_start().len();
+        let mut body = String::new();
+        // `run: gcloud …` on one line is as much a shell as `run: |` is.
+        let inline = rest.trim();
+        if !inline.is_empty() && inline != "|" {
+            body.push_str(inline);
+            body.push('\n');
+        }
+        while let Some(next) = lines.peek() {
+            let blank = next.trim().is_empty();
+            if !blank && next.len() - next.trim_start().len() <= indent {
+                break;
+            }
+            body.push_str(next);
+            body.push('\n');
+            let _ = lines.next();
+        }
+        bodies.push((name.clone(), body));
+    }
+    bodies
+}
+
+/// A shell body as logical lines: continuations folded, comments dropped.
+///
+/// `crane export … \` and the `| tar -xO … > payload/…` under it are one
+/// command, and a check that reads them as two cannot say where the bytes in
+/// `payload/` came from.
+fn folded_commands(body: &str) -> Vec<String> {
+    let mut folded: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if current.is_empty() && (trimmed.is_empty() || trimmed.starts_with('#')) {
+            continue;
+        }
+        if let Some(head) = trimmed.strip_suffix('\\') {
+            current.push_str(head.trim_end());
+            current.push(' ');
+            continue;
+        }
+        current.push_str(trimmed);
+        folded.push(std::mem::take(&mut current));
+    }
+    if !current.is_empty() {
+        folded.push(current);
+    }
+    folded
+}
+
+/// Every file the bake writes into `payload/`, paired with the command that
+/// wrote it.
+///
+/// Parsed rather than listed. A list here would be four names that stay true
+/// while the bake grows a fifth member, and the fifth member is the whole
+/// question: `payload/` is what the builder machine unpacks and installs into
+/// the image a trading node boots.
+fn payload_members(workflow: &str) -> Vec<(String, String)> {
+    let mut members: Vec<(String, String)> = Vec::new();
+    for (_, body) in shell_bodies(workflow) {
+        for command in folded_commands(&body) {
+            let mut written: Vec<String> = Vec::new();
+            for piece in command.split("> payload/").skip(1) {
+                written.push(piece.split_whitespace().next().unwrap_or("").to_string());
+            }
+            let tokens: Vec<&str> = command.split_whitespace().collect();
+            if matches!(tokens.first(), Some(&"cp" | &"curl" | &"install" | &"mv")) {
+                for token in &tokens {
+                    if let Some(name) = token.trim_matches('"').strip_prefix("payload/") {
+                        written.push(name.to_string());
+                    }
+                }
+            }
+            for name in written {
+                // `payload/${binary}` is a loop over members already found,
+                // not a member of its own.
+                if name.is_empty() || name.contains('$') {
+                    continue;
+                }
+                members.push((name, command.clone()));
+            }
+        }
+    }
+    members.sort();
+    members.dedup();
+    members
+}
+
 #[test]
-fn the_boot_image_is_baked_from_the_attested_artefact_and_never_from_source() {
-    // The property the whole workflow is arranged around. `deploy.yml` builds,
-    // scans, pushes, signs and attests `qip-edge-node`; the boot image has to
-    // be built from *that*, because an image that recompiled the binary during
-    // the bake has no relationship to anything that was signed — however
-    // identical the source — and the attestation chain would end at the
-    // container registry rather than at the machine.
+fn every_file_the_boot_image_installs_is_attested_pinned_or_from_the_reviewed_branch() {
+    // This was `the_boot_image_is_baked_from_the_attested_artefact_and_never_
+    // from_source`, and the name was a claim the body did not check. It
+    // asserted the absence of four literals — `cargo build` and friends — and
+    // that `crane export` ran twice, and said nothing whatever about what the
+    // bake copied out of the checkout. Two of the four things it installs came
+    // from there: `qip-fetch-secret`, which reads the node's venue credential
+    // and its capital-envelope key, and `provision.sh`, which runs as root on
+    // the builder. Ten more `cp` lines would have passed it unchanged.
     //
-    // There is no admission controller on a bare VM to catch it later. §41.4's
-    // whole point is that nothing sits between the binary and the kernel, and
-    // admission control is something that sits in between. The refusal below
-    // is the only place this can be caught.
+    // So the property is now stated over every member of the payload, and the
+    // name says which three custodies are acceptable:
+    //
+    //   * extracted from an image the environment's attestor signed;
+    //   * downloaded and checked against a digest pinned in this file;
+    //   * taken from the repository's default branch, having been compared
+    //     against it first.
+    //
+    // The third exists because an attestation is not a review. `deploy.yml`'s
+    // dispatch path builds and attests whatever ref it is given once ci has
+    // passed for that commit, so moving these two files into the attested
+    // image would have signed the same unreviewed bytes rather than closing
+    // anything.
+    //
+    // There is no admission controller on a bare VM to catch any of it later.
+    // §41.4's whole point is that nothing sits between the binary and the
+    // kernel, and admission control is something that sits in between.
     let workflow = read(IMAGE_WORKFLOW);
     for forbidden in [
         "cargo build",
@@ -1029,6 +1152,339 @@ fn the_boot_image_is_baked_from_the_attested_artefact_and_never_from_source() {
         "modules/egress-proxy no longer reads the vendored list, so the \
          premise of the check above — that both sides read one file — is gone"
     );
+
+    // --- and now every member of the payload, by where its bytes come from ---
+
+    let members = payload_members(&workflow);
+    let names: Vec<&str> = members.iter().map(|(name, _)| name.as_str()).collect();
+    // The premise. A walk that found nothing would pass every assertion below
+    // it, which is the failure mode this repository has already shipped once.
+    for expected in [
+        "qip-edge-node",
+        "envoy",
+        "qip-fetch-secret",
+        "google-cloud-ops-agent.deb",
+    ] {
+        assert!(
+            names.contains(&expected),
+            "no command in {IMAGE_WORKFLOW} writes payload/{expected}; the walk \
+             found {names:?} and is reading the wrong thing"
+        );
+    }
+
+    // Where `reviewed/` comes from, asserted before anything is allowed to
+    // claim custody through it. The directory is only worth anything because
+    // one step refuses unless its contents match the default branch.
+    let reviewed = block_under(
+        &workflow,
+        "- name: the files this bake takes from the source tree are the reviewed ones",
+    );
+    assert!(
+        reviewed.contains("${{ github.event.repository.default_branch }}"),
+        "{IMAGE_WORKFLOW} holds the unattested files against something other \
+         than the repository's default branch. The reference value has to be \
+         one the dispatcher cannot choose; a branch they name is not one."
+    );
+    for fragment in [
+        "git fetch",
+        "git hash-object",
+        "git rev-parse --verify --quiet",
+        "git cat-file blob",
+        "exit 1",
+    ] {
+        assert!(
+            reviewed.contains(fragment),
+            "{IMAGE_WORKFLOW}'s source-provenance step no longer runs \
+             `{fragment}`. Comparing against the remote, refusing on a \
+             difference and taking the bytes from the reviewed commit are one \
+             mechanism; with any of them gone the rest records a digest \
+             against no reference, which is a number rather than a chain of \
+             custody."
+        );
+    }
+    // The paths that step actually compares, read out of it as whole tokens.
+    // `contains("provision.sh")` would be true of the step's own prose.
+    let compared: Vec<String> = reviewed
+        .split("members=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_else(|| {
+            panic!("{IMAGE_WORKFLOW}'s source-provenance step lists no members to compare")
+        })
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    assert!(
+        compared.len() >= 2,
+        "only {compared:?} are compared against the default branch; both the \
+         credential reader and the provisioning script have to be"
+    );
+
+    for (name, command) in &members {
+        let tokens: Vec<&str> = command.split_whitespace().collect();
+        if command.contains("crane export") {
+            continue; // out of an image require_attested has signed
+        }
+        if tokens.first() == Some(&"curl") {
+            // Pinned by digest in this file and checked before it is staged.
+            assert!(
+                workflow.lines().any(|line| {
+                    line.contains(&format!("payload/{name}")) && line.contains("sha256sum -c")
+                }),
+                "{IMAGE_WORKFLOW} downloads payload/{name} and no line checks it \
+                 against a digest pinned in this file"
+            );
+            continue;
+        }
+        let source = tokens
+            .get(1)
+            .map(|token| token.trim_matches('"').to_string())
+            .unwrap_or_default();
+        assert!(
+            source.starts_with("reviewed/"),
+            "payload/{name} is created by `{command}`, which is neither an \
+             extraction from an attested image, a download pinned by digest, \
+             nor a copy from `reviewed/`. A file taken straight out of the \
+             checkout is whatever the dispatched branch said it was: this is \
+             the payload a builder unpacks as root, and one of its members is \
+             the process that reads the node's venue credential."
+        );
+        let basename = source.trim_start_matches("reviewed/");
+        assert!(
+            compared
+                .iter()
+                .any(|path| path.ends_with(&format!("/{basename}"))),
+            "payload/{name} is copied from {source}, and the step that \
+             populates `reviewed/` compares {compared:?} — not {basename}. A \
+             directory called reviewed/ is not a review."
+        );
+    }
+
+    // The startup script the builder runs as root is a payload member in
+    // everything but name: it is read off the runner's filesystem and handed
+    // to the instance as metadata, so the same three custodies apply to it.
+    let create = block_under(&workflow, "- name: create the builder");
+    let startup = create
+        .split("startup-script=")
+        .nth(1)
+        .map(|rest| {
+            rest.split([',', '"', ' '])
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .unwrap_or_else(|| {
+            panic!("{IMAGE_WORKFLOW} creates the builder with no startup script at all")
+        });
+    assert!(
+        startup.starts_with("reviewed/"),
+        "{IMAGE_WORKFLOW} gives the builder `{startup}` as its startup script, \
+         straight out of the checkout. That script runs as root and decides \
+         what the image contains."
+    );
+    let startup_name = startup.trim_start_matches("reviewed/");
+    assert!(
+        compared
+            .iter()
+            .any(|path| path.ends_with(&format!("/{startup_name}"))),
+        "the builder's startup script is {startup}, and the step that \
+         populates `reviewed/` compares {compared:?}; nothing holds \
+         {startup_name} against the default branch"
+    );
+
+    // Every member's digest is recorded, so the image's own manifest names one
+    // per file. The digest is not the custody — the paragraphs above are —
+    // but a member absent from the manifest is one an operator on a node
+    // cannot check at all.
+    let manifest = workflow
+        .lines()
+        .find(|line| line.contains("> MANIFEST.sha256"))
+        .unwrap_or_else(|| panic!("{IMAGE_WORKFLOW} writes no MANIFEST.sha256"))
+        .to_string();
+    for (name, _) in &members {
+        assert!(
+            manifest.contains(name.as_str()),
+            "payload/{name} is not in the payload manifest `{manifest}`, so \
+             neither the builder nor an operator on the node can tell whether \
+             the file it installed is the file this run staged"
+        );
+    }
+}
+
+/// Every dispatch input a workflow declares, with the shell variables it is
+/// bound to anywhere in the file.
+///
+/// `TARGET_ENVIRONMENT: ${{ inputs.environment }}` and
+/// `BAKE_SHA: ${{ inputs.commit || github.sha }}` are both bindings; the
+/// second is why this reads to the input's name rather than to a closing
+/// brace.
+fn dispatch_inputs(workflow: &str) -> Vec<(String, Vec<String>)> {
+    let declared = block_under(workflow, "inputs:");
+    let indent = declared
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start().len())
+        .min()
+        .unwrap_or_default();
+    declared
+        .lines()
+        .filter(|line| !line.trim().is_empty() && line.len() - line.trim_start().len() == indent)
+        .filter_map(|line| line.trim().strip_suffix(':').map(str::to_string))
+        .map(|name| {
+            let marker = format!("${{{{ inputs.{name} ");
+            let bound: Vec<String> = workflow
+                .lines()
+                .filter(|line| line.contains(&marker))
+                .filter_map(|line| {
+                    let (key, value) = line.trim().split_once(": ")?;
+                    value.starts_with("${{").then(|| key.to_string())
+                })
+                .collect();
+            (name, bound)
+        })
+        .collect()
+}
+
+#[test]
+fn a_dispatch_input_cannot_carry_a_second_line_into_a_shell_the_bake_runs() {
+    // The class of defect this exists for, because it is not hypothetical and
+    // this suite had nothing that could see it.
+    //
+    // `base_image` was free text interpolated straight into three `run:`
+    // bodies, and the step that validated it used `grep`. `grep` matches per
+    // line. A value whose first line was a well-formed image self-link and
+    // whose second line was `"; echo INJECTED >&2; echo "` satisfied both
+    // patterns — because grep never looked at the second line — and the whole
+    // value was then pasted into a `gcloud compute instances create` command
+    // by the runner, where the second line became a command of its own. The
+    // runner holds the WIF credential for `qip-infra-<env>` at that point,
+    // which carries compute.admin, iam.roleAdmin and
+    // binaryauthorization.attestorsAdmin.
+    //
+    // Two properties close it, and both are asserted here because either alone
+    // leaves the door ajar:
+    //
+    //   1. no dispatch input is interpolated into a `run:` body at all — it
+    //      arrives as an environment value, where a newline is data;
+    //   2. the first thing any shell does with a variable bound to a dispatch
+    //      input is check its character set, before any pattern tool sees it.
+    //
+    // Scoped to this workflow deliberately. The other workflows' inputs are
+    // outside the paths this change may touch, and a test that fails on a file
+    // nobody may fix is a test people learn to delete.
+    let workflow = read(IMAGE_WORKFLOW);
+    let bodies = shell_bodies(&workflow);
+    assert!(
+        bodies.len() >= 15,
+        "only {} `run:` bodies were read out of {IMAGE_WORKFLOW}; the walk is \
+         not reaching them and everything below would pass on an empty file",
+        bodies.len()
+    );
+
+    let inputs = dispatch_inputs(&workflow);
+    let names: Vec<&str> = inputs.iter().map(|(name, _)| name.as_str()).collect();
+    assert!(
+        names.contains(&"base_image") && names.contains(&"machine_type"),
+        "the dispatch inputs read out of {IMAGE_WORKFLOW} are {names:?}, which \
+         is not this workflow's form; the parse has stopped parsing"
+    );
+
+    // 1. Nothing a dispatcher types is pasted into a script.
+    for (step, body) in &bodies {
+        for (name, _) in &inputs {
+            let interpolation = format!("${{{{ inputs.{name} }}}}");
+            assert!(
+                !body.contains(&interpolation),
+                "the step `{step}` interpolates `{interpolation}` into its \
+                 shell. The runner substitutes that as text before bash sees \
+                 the script, so a value containing a newline is a second \
+                 command running with the job's credential. Bind it in the \
+                 step's `env:` and read it as a shell variable."
+            );
+        }
+    }
+
+    // 2. And the first thing done with each of them is a character-set check.
+    let scripts: String = bodies
+        .iter()
+        .map(|(_, body)| shell_without_comment_lines(body))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (name, bound) in &inputs {
+        assert!(
+            !bound.is_empty(),
+            "the dispatch input `{name}` is bound to no environment variable \
+             anywhere in {IMAGE_WORKFLOW}; either it is unused or it reaches \
+             the job by a route this check cannot see"
+        );
+        for variable in bound {
+            let uses: Vec<usize> = [format!("${variable}"), format!("${{{variable}}}")]
+                .iter()
+                .filter_map(|spelling| scripts.find(spelling.as_str()))
+                .collect();
+            let Some(first) = uses.iter().min().copied() else {
+                continue; // bound, but no shell ever reads it
+            };
+            let guard = scripts
+                .find(&format!("case \"${variable}\" in"))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "`{variable}` carries the dispatch input `{name}` into a \
+                         shell and no `case \"${variable}\" in` guard checks its \
+                         character set. A pattern is not enough: every pattern \
+                         tool in a shell matches per line."
+                    )
+                });
+            assert!(
+                guard <= first,
+                "`{variable}` carries the dispatch input `{name}`, and the \
+                 first thing a shell does with it is at byte {first}, before \
+                 the character-set guard at byte {guard}. The guard has to \
+                 come first — that ordering is the whole of the fix, because a \
+                 grep that runs before it has already accepted a value whose \
+                 second line nobody looked at."
+            );
+        }
+    }
+}
+
+#[test]
+fn every_download_this_bake_hashes_refuses_an_error_page_rather_than_staging_it() {
+    // `curl -sSLo destination url` writes the server's error page to the
+    // destination and exits 0 on a 404. The next line hashes it, the hash does
+    // not match, and the run fails saying the checksum is wrong — which reads
+    // as tampering. A reviewer then goes looking for an attacker instead of
+    // for a moved URL. `-f` makes curl fail on the status code, so the failure
+    // names itself.
+    //
+    // Both downloads matter for the same reason: one is the tool that copies
+    // the attested bytes out of the registry, the other is the package that
+    // gets installed as root into the image a trading node boots.
+    let workflow = read(IMAGE_WORKFLOW);
+    let downloads: Vec<String> = shell_bodies(&workflow)
+        .iter()
+        .flat_map(|(_, body)| folded_commands(body))
+        .filter(|command| command.starts_with("curl "))
+        .collect();
+    assert!(
+        downloads.len() >= 2,
+        "only {downloads:?} were read out of {IMAGE_WORKFLOW}; it downloads \
+         crane and the Ops Agent package and this walk should see both"
+    );
+    for command in &downloads {
+        let flags = command
+            .split_whitespace()
+            .nth(1)
+            .expect("a curl invocation has arguments")
+            .to_string();
+        assert!(
+            flags.starts_with('-') && flags.contains('f'),
+            "`{command}` downloads without curl's `-f`. On a 404 curl writes \
+             the error page to the destination and exits 0, so the failure \
+             surfaces two lines later as a checksum mismatch on bytes nobody \
+             asked for."
+        );
+    }
 }
 
 #[test]
@@ -1162,6 +1618,37 @@ fn the_boot_image_is_pinned_by_name_and_carries_what_the_nodes_template_requires
         workflow.contains("isolcpus=\"2-$((vcpus - 1))\""),
         "{IMAGE_WORKFLOW} no longer derives the isolated range with the \
          module's own arithmetic"
+    );
+    // And the huge-page floor is read out of the module rather than typed, for
+    // the same reason and after the same mistake. The check was `-ge 1`, which
+    // is `required_hugepages_gb`'s default written a second time, while the
+    // input's own description promised "at least modules/execution-node's
+    // required_hugepages_gb". Raise that variable and the bake would go on
+    // admitting 1 — and the disagreement surfaces as a node that boots and
+    // refuses its own image at the startup script's huge-page check, after the
+    // apply.
+    let checked_inputs = block_under(
+        &workflow,
+        "- name: check the inputs this workflow will not guess",
+    );
+    assert!(
+        checked_inputs.contains("required_hugepages_gb"),
+        "{IMAGE_WORKFLOW} checks hugepages_gb against a number of its own \
+         rather than against the module's `required_hugepages_gb`"
+    );
+    assert!(
+        !checked_inputs.contains("-ge 1 ]"),
+        "{IMAGE_WORKFLOW} compares hugepages_gb with a literal floor. Two \
+         spellings of the same number disagree eventually, and this one \
+         disagrees in the direction that produces an image every node refuses \
+         to start on."
+    );
+    let startup_floor = shell_without_comment_lines(&read(NODE_STARTUP));
+    assert!(
+        startup_floor.contains("-lt \"${required_hugepages_gb}\""),
+        "{NODE_STARTUP} no longer refuses a machine with fewer huge pages than \
+         required, so the assertion above is guarding a contract nothing \
+         enforces"
     );
     // Read off the drop-in `provision.sh` writes, not off the file. The
     // script also *verifies* the generated grub.cfg with a `grep` naming the
@@ -1531,6 +2018,56 @@ fn every_service_account_terraform_creates_runs_something_or_signs_something() {
          what runs as it; a new account is added here with what runs as it, or it is an \
          identity with nothing attached."
     );
+
+    // One of those entries was satisfied technically and not honestly, and it
+    // is worth saying which. Every other account in the list is bound to its
+    // consumer somewhere else in this file — `execution-node.node` by the
+    // template that runs as it, the Cloud Run accounts by the module that
+    // creates one per workload. `image-bake.builder` had only the comment
+    // above: what runs as it is `gcloud compute instances create
+    // --service-account` in a workflow no test read. Delete that flag and the
+    // bake still works, the builder runs as the project's default compute
+    // identity — which the next test forbids for every other workload — and
+    // this test still passed.
+    //
+    // So the flag is bound to the module here, end to end: the module's
+    // `account_id`, the workflow's derivation of the email from it, the
+    // environment binding, and the flag itself.
+    let module = without_comments(&read(IMAGE_BAKE_MODULE));
+    let account_id = terraform_resources(&module, "google_service_account")
+        .iter()
+        .find(|(name, _)| name == "builder")
+        .and_then(|(_, body)| {
+            body.lines().find_map(|line| {
+                collapsed(line)
+                    .strip_prefix("account_id = ")
+                    .map(|value| value.trim_matches('"').to_string())
+            })
+        })
+        .unwrap_or_else(|| panic!("{IMAGE_BAKE_MODULE} declares no account_id for the builder"));
+    let workflow = read(IMAGE_WORKFLOW);
+    let derived = account_id.replace("${var.environment}", "${TARGET_ENVIRONMENT}");
+    assert!(
+        workflow.contains(&format!("builder_account={derived}@")),
+        "{IMAGE_BAKE_MODULE} creates `{account_id}` and {IMAGE_WORKFLOW} derives \
+         its builder's identity as something else. The workflow spells the \
+         account the module creates, or it authenticates as an identity \
+         nothing reviews."
+    );
+    let create = block_under(&workflow, "- name: create the builder");
+    assert!(
+        create.contains("BUILDER_ACCOUNT: ${{ steps.identity.outputs.builder_account }}"),
+        "{IMAGE_WORKFLOW}'s builder step no longer binds BUILDER_ACCOUNT to the \
+         identity the tfvars-derived step produced"
+    );
+    assert!(
+        create.contains("--service-account \"${BUILDER_ACCOUNT}\""),
+        "{IMAGE_WORKFLOW} creates the builder without `--service-account \
+         \"${{BUILDER_ACCOUNT}}\"`, which is how gcloud spells \"run it as the \
+         project's default compute identity\". The builder is the machine the \
+         boot image is taken from; whatever token it carries is a token an \
+         image with a bug in its provisioning script carries too."
+    );
 }
 
 #[test]
@@ -1557,6 +2094,36 @@ fn no_workload_runs_as_the_projects_default_compute_identity() {
     assert!(
         node.contains("email = google_service_account.node.email"),
         "the execution node's template does not run as the account the module creates for it"
+    );
+
+    // The third thing deployed outside Terraform, and the one that is not a
+    // Cloud Run service: the throwaway machine the boot image is baked on.
+    // Same failure, same spelling — an instance created with no
+    // `--service-account` runs as the default compute identity — and the same
+    // reason this test could not fail on it, which is that the file was not
+    // among the ones it read.
+    let bake = read(IMAGE_WORKFLOW);
+    assert!(
+        !bake.contains("compute@developer.gserviceaccount.com"),
+        "{IMAGE_WORKFLOW} names the default compute identity"
+    );
+    let instances: Vec<String> = bake
+        .lines()
+        .filter(|line| line.trim().starts_with("gcloud compute instances create"))
+        .map(|line| line.trim().to_string())
+        .collect();
+    assert_eq!(
+        instances.len(),
+        1,
+        "{IMAGE_WORKFLOW} creates {} instances; the assertion below reads one",
+        instances.len()
+    );
+    let create = block_under(&bake, "- name: create the builder");
+    assert!(
+        create.contains("--service-account"),
+        "{IMAGE_WORKFLOW} creates the builder with no --service-account, so \
+         Compute Engine runs it as the project's default compute identity — \
+         the identity every other workload here is kept off"
     );
 
     // The two workloads deployed outside Terraform. Register gap 2: the

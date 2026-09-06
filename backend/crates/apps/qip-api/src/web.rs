@@ -16,7 +16,7 @@ use qip_contracts::policy::PolicyItem;
 use qip_core::time::Timestamp;
 use qip_events::{EventBody, EventFilter};
 use qip_kernel::Platform;
-use qip_kernel::central::WhitelistIssue;
+use qip_kernel::central::{EpisodicIssue, EpisodicOutcome, WhitelistIssue};
 use qip_observability::Snapshot;
 use qip_observability::metrics::{Labels, labels, names};
 use qip_web::pages::{Surface, render};
@@ -483,14 +483,23 @@ fn settlement_rows(snapshot: &Snapshot) -> Vec<FactRow> {
     rows
 }
 
-/// The last cycle whitelist the platform journaled for each cell.
+/// The last cycle whitelist the platform journaled for each cell, and the
+/// last episodic digest it journaled for the cycle.
 ///
-/// The one slot of the twelve the platform records as it produces it. The
-/// other eleven are assembled at the shipping seam from platform facts and
-/// are not journaled, so they are rendered as not recorded rather than as
-/// produced: the page attests what the journal holds.
+/// Two of the twelve slots are recorded as they are produced and they are
+/// recorded differently, which is why they are read differently here: slot 8
+/// is per cell, so it keys these rows, and slot 4 is per cycle — one memory,
+/// one record — so the same digest appears on every row with its own instant
+/// beside it. The other ten are assembled at the shipping seam from platform
+/// facts and are not journaled, so they are rendered as not recorded rather
+/// than as produced: the page attests what the journal holds.
+///
+/// Both bodies arrive on one topic. They are told apart by decoding rather
+/// than by the topic, and a record that decodes as neither is skipped instead
+/// of being counted as either.
 fn shipped_policy(platform: &Platform, now: Timestamp) -> Panel<ShippedPolicyRow> {
     let mut latest: BTreeMap<String, WhitelistIssue> = BTreeMap::new();
+    let mut episodic: Option<EpisodicIssue> = None;
     // Read through the journal rather than off the event log's records.
     //
     // The log stores what `StreamEnvelope::to_frame` produced, so a record's
@@ -510,6 +519,16 @@ fn shipped_policy(platform: &Platform, now: Timestamp) -> Panel<ShippedPolicyRow
         }
     };
     for envelope in replayed {
+        if let Ok(decoded) = envelope.decode::<EpisodicIssue>() {
+            let issue = decoded.body;
+            if episodic
+                .as_ref()
+                .is_none_or(|held| issue.issued_at >= held.issued_at)
+            {
+                episodic = Some(issue);
+            }
+            continue;
+        }
         let Ok(envelope) = envelope.decode::<WhitelistIssue>() else {
             continue;
         };
@@ -521,6 +540,33 @@ fn shipped_policy(platform: &Platform, now: Timestamp) -> Panel<ShippedPolicyRow
             latest.insert(issue.cell.clone(), issue);
         }
     }
+    // Built once, outside the per-cell loop, because it is one fact about the
+    // platform's memory and not one per cell.
+    let episodic_fact = match &episodic {
+        None => Fact::not_recorded(
+            "the platform has journaled no episodic issue: no cycle has shipped policy from \
+             this process",
+        ),
+        Some(issue) => match (&issue.outcome, issue.slot().produced_at()) {
+            (EpisodicOutcome::Produced { episodes, .. }, Some(produced_at)) => {
+                Fact::recorded(format!(
+                    "{episodes} episode(s), newest knowable at {}, issued at {}",
+                    produced_at.to_rfc3339(),
+                    issue.issued_at.to_rfc3339()
+                ))
+            }
+            (EpisodicOutcome::NothingKnowable { held }, _) => Fact::not_recorded(format!(
+                "the platform journaled an episodic issue at {}: memory holds {held} episode(s) \
+                 and none is knowable yet, so slot 4 shipped unproduced and every cell pauses \
+                 situational recognition",
+                issue.issued_at.to_rfc3339()
+            )),
+            (EpisodicOutcome::Produced { .. }, None) => Fact::not_recorded(
+                "an episodic issue records a produced digest with no instant, which the producer \
+                 cannot emit; this record was not written by this build",
+            ),
+        },
+    };
     if latest.is_empty() {
         return Panel::absent(
             "the platform has journaled no policy issue: no cycle has shipped policy to a cell \
@@ -534,14 +580,19 @@ fn shipped_policy(platform: &Platform, now: Timestamp) -> Panel<ShippedPolicyRow
             let slots = PolicyItem::all()
                 .into_iter()
                 .map(|item| {
-                    let fact = if item == PolicyItem::CycleWhitelist {
-                        Fact::recorded(format!("produced at {issued_at}"))
-                    } else {
-                        Fact::not_recorded(
-                            "the platform journals slot 8 (cycle_whitelist) as it issues it and \
-                             records no other slot; the shipping seam assembles this one \
-                             without a journal entry",
-                        )
+                    let fact = match item {
+                        PolicyItem::CycleWhitelist => {
+                            Fact::recorded(format!("produced at {issued_at}"))
+                        }
+                        // The platform's memory, not this cell's: one issue
+                        // per cycle reaches every cell, so the same fact
+                        // carries its own instants rather than this row's.
+                        PolicyItem::EpisodicDigest => episodic_fact.clone(),
+                        _ => Fact::not_recorded(
+                            "the platform journals slot 8 (cycle_whitelist) per cell and slot 4 \
+                             (episodic_digest) per cycle, and records no other slot; the \
+                             shipping seam assembles this one without a journal entry",
+                        ),
                     };
                     FactRow::new(item.as_str(), item.as_str(), fact)
                 })

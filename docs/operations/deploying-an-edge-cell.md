@@ -16,9 +16,17 @@ produces a cell that either cannot reach its venue, or can reach more than its
 venue. Both are quiet.
 
 Nothing in this runbook has been executed against a real project. It is written
-from the configuration in `infrastructure/`, which has never been applied, and
-the first person to follow it should expect to correct it. Two facts bound what
-it can promise:
+from the configuration in `infrastructure/`, and the first person to follow it
+should expect to correct it.
+
+This paragraph used to add "which has never been applied". That stopped being
+true and the clause outlived it: `dev` has been applied, by `infra.yml` runs 34
+through 38 under [ADR 0040](../adr/0040-the-owner-authorises-the-agent-to-apply-dev-and-what-that-authorisation-cannot-reach.md),
+taking state from 163 to 237 resources —
+`docs/ops/missing-infrastructure-register.md` records each run, its plan and its
+terminal status. What has never been applied is **anything in this file**: no
+`execution_nodes` entry has ever reached a plan, so every resource named below
+is a resource no plan has yet proposed. Two facts bound what it can promise:
 
 * `execution_nodes = {}` in every environment
   (`environments/{dev,test,stage,prod}/terraform.tfvars`). No node exists
@@ -55,6 +63,104 @@ it can promise:
   over the venues in step 5 (`6340610`). Proven in
   `backend/crates/apps/qip-edge-node/tests/pass.rs`; run by no deployed
   node, because of the first bullet.
+
+## The exact sequence, for the one node ADR 0035 authorises
+
+`## Do this` below is how each field is chosen. This is the order the acts
+happen in, for the `newyork-1` node in `dev` and nothing else. It is written
+out because the obvious order is wrong in one place: **`image.yml` cannot bake
+anything until `infra.yml` has applied `module.image_bake` first**, and a
+person who dispatches the bake as their first act gets a refusal naming a
+tfvars line rather than an image.
+
+Nine acts. Exactly one of them is a person choosing a number nothing may choose
+for them (act 1); one is transcribing a value only a run can produce (act 6);
+the rest are dispatches and diffs. Those two are the whole of what has stood
+between ADR 0035 and a node since it was written.
+
+1. **Settle the ceiling.** [ADR 0045](../adr/0045-the-first-execution-nodes-capital-ceiling.md)
+   proposes `region_allocation = "1000000"` — one tenth of
+   `PlatformConfig::initial_equity`, with the derivation, the three rejected
+   alternatives and the failure it is the last defence against. Its status is
+   **Proposed**, not accepted: the record says in its own first paragraph that
+   "writing a number down is not choosing it", and that `execution_nodes` stays
+   `{}` until somebody edits the tfvars in a reviewed diff. Read it, then accept
+   the number or choose another. No workflow, script or agent may pick it.
+   Note what it does *not* unblock: the boot image, which is acts 2 to 5.
+
+2. **Give the bake somewhere to build.** Uncomment
+   `image_bake_subnet_cidr = "10.0.37.0/28"` in
+   `infrastructure/environments/dev/terraform.tfvars`. Until then
+   `module.image_bake` has `count = 0` and creates nothing, and `image.yml`'s
+   "the bake's own infrastructure exists" step refuses with that file's name
+   rather than failing on a bucket that is not there.
+
+3. **Dispatch `infra.yml` with `environment=dev`, `action=plan`, and read it.**
+   `module.image_bake` declares **seven** resources
+   (`grep -c '^resource "' infrastructure/terraform/modules/image-bake/main.tf`),
+   and the plan should propose those seven and nothing else: the staging
+   bucket, the builder service account, the one bucket binding that is its only
+   grant, the /28 subnet, and three firewall rules — deny-egress, an allow to
+   Google's APIs, deny-ingress. The tfvars comment beside
+   `image_bake_subnet_cidr` says "three things", which is three *nouns* and not
+   the resource count; do not stop on a plan of seven. A plan proposing
+   anything outside that list is the finding, not the wiring.
+
+4. **Dispatch `infra.yml` with `action=up`.** This is an apply, and under
+   [ADR 0040](../adr/0040-the-owner-authorises-the-agent-to-apply-dev-and-what-that-authorisation-cannot-reach.md)
+   the dispatch is the review; record the run URL and its terminal status in
+   `docs/ops/missing-infrastructure-register.md` beside runs 34 to 38.
+
+5. **Dispatch `.github/workflows/image.yml`.** Manual dispatch only, `prod`
+   refused twice over. Its inputs, and what each has to agree with:
+
+   | Input | Value | Why it is not free |
+   |---|---|---|
+   | `environment` | `dev` | The registry, the attestor and the project the bake reads |
+   | `machine_type` | `c3-highcpu-8` | **The same shape as the tfvars entry.** The isolated-core range is baked into the image's kernel command line, so one image is valid for one shape; the workflow reads the permitted list out of `modules/execution-node/variables.tf` rather than keeping a copy |
+   | `base_image` | a full Debian self-link, `projects/debian-cloud/global/images/debian-12-…` | A family is refused by the same regex `boot_image` applies. `gcloud compute images list --project debian-cloud --filter='family=debian-12' --format='value(selfLink)'` prints one |
+   | `commit` | a commit `deploy.yml` has already built **and the attestor has signed** | The bake extracts the binary out of the attested container image and never compiles. An unattested digest stops the run |
+   | `hugepages_gb` | `1` | At least `required_hugepages_gb`, which defaults to 1 |
+
+   The run creates a throwaway machine, bakes, deletes the machine and its
+   disk, and prints one line: `boot_image = "projects/<project>/global/images/<name>"`.
+
+6. **Take the self-link out of the run** — the last line of the log, and the
+   `boot_image` row of the step summary. Do not reconstruct it by hand.
+
+7. **Write the entry, in one reviewed diff.** Replace `execution_nodes = {}` in
+   `infrastructure/environments/dev/terraform.tfvars` with the block that sits
+   commented above it, setting `boot_image` to the self-link from act 6 and
+   `region_allocation` to the ceiling from act 1. Every other field in that
+   block is already determined and is argued in the comment beside it. Leave
+   shadow mode alone: it is not a field, and
+   `adr_0035_authorises_one_shadow_node_in_dev_and_none_anywhere_else` in the
+   `infrastructure` acceptance suite refuses a second node in `dev` and any
+   node at all in `test`, `stage` or `prod`.
+
+   `node_count` is not a field either, so the module's default of one applies:
+   this entry starts a machine and it bills by the hour from the apply in act 9.
+
+8. **Dispatch `infra.yml` with `action=plan`, and read it against step 9 of
+   `## Do this`** — the resource list, and the two things the plan must not
+   contain. This plan is the evidence ADR 0020 step 3 asks for, and it is the
+   first plan `modules/execution-node` has ever appeared in.
+
+9. **Dispatch `infra.yml` with `action=up`**, then continue at step 11 of
+   `## Do this`: confirm the tag is carried, write the verification key, confirm
+   the node can reach nothing, attach the snapshot schedule.
+
+**What has been checked without a credential, and what has not.** Every
+`validation` block `modules/execution-node` declares was evaluated against the
+exact values acts 1 and 7 supply — the ADR 0035 entry with ADR 0045's ceiling —
+by `terraform validate` against a harness root outside the repository with no
+provider credential and no state, and all of them admitted it; the same harness
+refuses `region_allocation = "0"` and a `boot_image` of `debian-12` or an image
+family, naming the rule and the line. What that does **not** cover, and what act
+8's plan is therefore the first to exercise: the module's three `lifecycle`
+preconditions, every provider-side check that needs a refreshed state, and
+anything Google refuses only at apply. `terraform validate` evaluates neither a
+precondition nor an API.
 
 ## Do this
 

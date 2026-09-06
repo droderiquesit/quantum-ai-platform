@@ -23,17 +23,34 @@ fn ctx() -> (Context, Timestamp) {
     (ctx, now)
 }
 
+/// The liquidity every fixture in this file states, because nothing states it
+/// for them any more.
+///
+/// [`LiquidityProfile`] has no `Default`: the one it had asserted a 10bp quote
+/// and a one-session exit for any instrument at all, and `MinLiquidity` and
+/// `MaxDaysToLiquidate` — controls whose job is to veto trading — read exactly
+/// those two figures. A fixture may state its own premise; it may not inherit
+/// one nobody wrote down. A liquid listed name on five million units a day,
+/// quoted at three basis points.
+fn fixture_liquidity() -> LiquidityProfile {
+    LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0)
+}
+
 fn equity(ctx: &Context, now: Timestamp, symbol: &str, price: &str) -> FinancialObject {
-    FinancialObject::builder(ctx.ids().generate(now), symbol, InstrumentType::CommonStock)
-        .name(format!("{symbol} Inc"))
-        .venue("XNYS")
-        .sector(Sector::InformationTechnology)
-        .price(Decimal::parse(price).unwrap())
-        .liquidity(LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0))
-        .transaction_costs(TransactionCostModel::listed(3.0))
-        .provenance(Provenance::synthetic("test", now))
-        .build(now)
-        .expect("valid equity")
+    FinancialObject::builder(
+        ctx.ids().generate(now),
+        symbol,
+        InstrumentType::CommonStock,
+        fixture_liquidity(),
+    )
+    .name(format!("{symbol} Inc"))
+    .venue("XNYS")
+    .sector(Sector::InformationTechnology)
+    .price(Decimal::parse(price).unwrap())
+    .transaction_costs(TransactionCostModel::listed(3.0))
+    .provenance(Provenance::synthetic("test", now))
+    .build(now)
+    .expect("valid equity")
 }
 
 // --- taxonomy ---------------------------------------------------------------
@@ -205,6 +222,7 @@ fn a_derivative_without_an_underlying_is_rejected() {
         ctx.ids().generate(now),
         "AAPL240119C00200000",
         InstrumentType::Option,
+        fixture_liquidity(),
     )
     .venue("OPRA")
     .price(dec!("5.25"))
@@ -239,6 +257,7 @@ fn a_bond_without_a_maturity_is_rejected() {
         ctx.ids().generate(now),
         "T 4.25 2034",
         InstrumentType::GovernmentBond,
+        fixture_liquidity(),
     )
     .venue("OTC")
     .price(dec!("99.5"))
@@ -251,21 +270,29 @@ fn a_bond_without_a_maturity_is_rejected() {
 #[test]
 fn an_object_without_provenance_is_rejected() {
     let (ctx, now) = ctx();
-    let result =
-        FinancialObject::builder(ctx.ids().generate(now), "X", InstrumentType::CommonStock)
-            .price(Decimal::ONE)
-            .build(now);
+    let result = FinancialObject::builder(
+        ctx.ids().generate(now),
+        "X",
+        InstrumentType::CommonStock,
+        fixture_liquidity(),
+    )
+    .price(Decimal::ONE)
+    .build(now);
     assert!(result.unwrap_err().to_string().contains("provenance"));
 }
 
 #[test]
 fn a_negative_price_is_rejected() {
     let (ctx, now) = ctx();
-    let result =
-        FinancialObject::builder(ctx.ids().generate(now), "X", InstrumentType::CommonStock)
-            .price(dec!("-1"))
-            .provenance(Provenance::synthetic("test", now))
-            .build(now);
+    let result = FinancialObject::builder(
+        ctx.ids().generate(now),
+        "X",
+        InstrumentType::CommonStock,
+        fixture_liquidity(),
+    )
+    .price(dec!("-1"))
+    .provenance(Provenance::synthetic("test", now))
+    .build(now);
     assert!(result.unwrap_err().to_string().contains("negative"));
 }
 
@@ -387,11 +414,15 @@ fn every_asset_class_can_be_represented() {
 
     let mut universe = Universe::new();
     for (symbol, instrument_type, extension, underlying_id) in specs {
-        let mut builder =
-            FinancialObject::builder(ctx.ids().generate(now), symbol, instrument_type)
-                .venue("OTC")
-                .price(dec!("100"))
-                .provenance(Provenance::synthetic("test", now));
+        let mut builder = FinancialObject::builder(
+            ctx.ids().generate(now),
+            symbol,
+            instrument_type,
+            fixture_liquidity(),
+        )
+        .venue("OTC")
+        .price(dec!("100"))
+        .provenance(Provenance::synthetic("test", now));
         if let Some(id) = underlying_id {
             builder = builder.underlying(id);
         }
@@ -413,25 +444,30 @@ fn every_asset_class_can_be_represented() {
 #[test]
 fn notional_accounts_for_the_contract_multiplier() {
     let (ctx, now) = ctx();
-    let object = FinancialObject::builder(ctx.ids().generate(now), "ESZ6", InstrumentType::Future)
-        .venue("XCME")
-        .price(dec!("5450.25"))
-        .contract_multiplier(Decimal::from_int(50))
-        .underlying(ObjectId::from_string("00000000000000000000000001"))
-        .extension(Extension::Future(FutureDetails {
-            underlying_object_id: "obj-spx".into(),
-            expiry: Timestamp::from_civil(2026, 12, 18),
-            contract_size: Decimal::from_int(50),
-            tick_size: dec!("0.25"),
-            tick_value: dec!("12.5"),
-            initial_margin: Decimal::from_int(13_000),
-            maintenance_margin: Decimal::from_int(11_500),
-            settlement: SettlementStyle::Cash,
-            contract_month_index: 1,
-        }))
-        .provenance(Provenance::synthetic("test", now))
-        .build(now)
-        .unwrap();
+    let object = FinancialObject::builder(
+        ctx.ids().generate(now),
+        "ESZ6",
+        InstrumentType::Future,
+        fixture_liquidity(),
+    )
+    .venue("XCME")
+    .price(dec!("5450.25"))
+    .contract_multiplier(Decimal::from_int(50))
+    .underlying(ObjectId::from_string("00000000000000000000000001"))
+    .extension(Extension::Future(FutureDetails {
+        underlying_object_id: "obj-spx".into(),
+        expiry: Timestamp::from_civil(2026, 12, 18),
+        contract_size: Decimal::from_int(50),
+        tick_size: dec!("0.25"),
+        tick_value: dec!("12.5"),
+        initial_margin: Decimal::from_int(13_000),
+        maintenance_margin: Decimal::from_int(11_500),
+        settlement: SettlementStyle::Cash,
+        contract_month_index: 1,
+    }))
+    .provenance(Provenance::synthetic("test", now))
+    .build(now)
+    .unwrap();
 
     // Two contracts at 5450.25 with a 50x multiplier.
     assert_eq!(object.notional(Decimal::from_int(2)), dec!("545025"));
@@ -613,11 +649,15 @@ fn ingested_before_it_happened_is_a_validation_failure() {
     let (ctx, now) = ctx();
     let mut provenance = Provenance::synthetic("test", now);
     provenance.ingestion_time = now.saturating_sub(qip_core::Duration::from_hours(1));
-    let result =
-        FinancialObject::builder(ctx.ids().generate(now), "X", InstrumentType::CommonStock)
-            .price(Decimal::ONE)
-            .provenance(provenance)
-            .build(now);
+    let result = FinancialObject::builder(
+        ctx.ids().generate(now),
+        "X",
+        InstrumentType::CommonStock,
+        fixture_liquidity(),
+    )
+    .price(Decimal::ONE)
+    .provenance(provenance)
+    .build(now);
     assert!(result.unwrap_err().to_string().contains("ingested before"));
 }
 

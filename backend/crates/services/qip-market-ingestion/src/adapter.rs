@@ -20,6 +20,125 @@ use qip_market::corporate_action::CorporateAction;
 use qip_market::quote::{Quote, Tick, Trade};
 use serde::{Deserialize, Serialize};
 
+/// The longest a record's own subject key may be, in characters.
+///
+/// A series id is an *identifier*, and in this platform an identifier is
+/// permanent: it keys a feature-store series, it is written into the
+/// hash-chained event log, and it is interpolated into the operator prose the
+/// UNDERSTAND stage renders. The longest one this build mints is
+/// `FX.{base}.{quote}` — eleven characters — and the vocabulary's
+/// `{region}.{code}` is not much longer, so sixty-four is several times any
+/// legitimate key and still far too small to be an allocation.
+///
+/// The failure is not hypothetical. A rate table answering with sixty-four
+/// sixty-kilobyte currency codes produced 3,840,704 bytes of permanent key
+/// from one poll, and nothing between the socket and the feature store
+/// refused it: `max_events_per_batch` bounds the *number* of events, and
+/// nothing bounded their size.
+pub const MAX_SUBJECT_KEY_CHARS: usize = 64;
+
+/// The largest magnitude a statistic may carry into the platform.
+///
+/// Not a judgement about what any particular series may plausibly print —
+/// that belongs to the connector, which knows what its source publishes. This
+/// is the arithmetic bound underneath every such judgement: the statistics
+/// here are `f64` and second-moment statistics square their inputs. The
+/// deepest feature series the world model retains is 512 values, so a variance
+/// over a full series sums 512 squares, and that sum overflows to `inf` above
+/// about `5.9e152` — `sqrt(f64::MAX / 512)`. At `1e150` the same sum is
+/// `5.1e302` and finite, with two and a half decades still in hand for a
+/// covariance or a longer window. Past the overflow point the sum is `inf`,
+/// and `inf - inf` is `NaN`, whose comparisons answer `false` in both
+/// directions — a limit check that neither passes nor fails. `1e300`, the
+/// value that arrived through a rate table and was admitted end to end, is
+/// a hundred and fifty decades past it.
+///
+/// Nothing legitimate is anywhere near this: world GDP expressed in yen is
+/// about `6e14`, and the largest exchange rate the ECB has ever published is
+/// about `1.8e6`.
+///
+/// Refused rather than clamped: a reading this large is not a measurement that
+/// needs correcting, it is a measurement that never happened.
+pub const MAX_STATISTIC_MAGNITUDE: f64 = 1e150;
+
+/// A bounded, escaped rendering of text a vendor chose.
+///
+/// Every refusal below quotes the thing it refused, and the thing it refused
+/// may be sixty kilobytes of a hostile response with an escape sequence in it.
+/// The message travels into a quarantine entry, a `DataQualityFailure` on the
+/// bus, the event log and an operator's terminal, so it carries at most the
+/// first sixteen characters, `Debug`-escaped — which renders a newline as
+/// `\n` and an ANSI introducer as `\u{1b}` — plus the length, which is the
+/// part that actually tells an operator what happened.
+pub(crate) fn bounded_excerpt(text: &str) -> String {
+    const KEEP: usize = 16;
+    let head: String = text.chars().take(KEEP).collect();
+    if text.chars().nth(KEEP).is_some() {
+        format!("{head:?}… ({} characters)", text.chars().count())
+    } else {
+        format!("{head:?}")
+    }
+}
+
+/// Problems with a key a record will be stored and journalled under.
+///
+/// The character set is the one [`crate::narrative`] already holds a
+/// configured series id to; the reason is different — that one keeps a
+/// vendor's identifier from splitting a request line, this one keeps it from
+/// becoming a permanent store key — and both refuse rather than sanitise,
+/// because a key silently rewritten is a series nobody can find again.
+fn subject_key_issues(kind: &str, key: &str) -> Vec<String> {
+    if key.trim().is_empty() {
+        return vec![format!(
+            "an empty {kind}; a record with no subject cannot be read back under any key"
+        )];
+    }
+    let length = key.chars().count();
+    if length > MAX_SUBJECT_KEY_CHARS {
+        return vec![format!(
+            "the {kind} {} is {length} characters and the bound is {MAX_SUBJECT_KEY_CHARS}: a key \
+             this long is not an identifier, and it would be permanent in the feature store and \
+             in the event log",
+            bounded_excerpt(key)
+        )];
+    }
+    match key
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':')))
+    {
+        Some(offending) => vec![format!(
+            "the {kind} {} contains {offending:?}: a subject key is ASCII letters, digits and \
+             . - _ : only, because it is rendered into operator prose and into a request line \
+             built by hand",
+            bounded_excerpt(key)
+        )],
+        None => Vec::new(),
+    }
+}
+
+/// Problems with a value that will be read as a statistic.
+///
+/// Finiteness was the whole of this check until a rate of `1e300` was shown to
+/// travel from a response body to a `FeatureValue` untouched. Finite is not
+/// the same as usable: see [`MAX_STATISTIC_MAGNITUDE`].
+fn statistic_issues(kind: &str, subject: &str, value: f64) -> Vec<String> {
+    if !value.is_finite() {
+        return vec![format!(
+            "non-finite {kind} for {}",
+            bounded_excerpt(subject)
+        )];
+    }
+    if value.abs() > MAX_STATISTIC_MAGNITUDE {
+        return vec![format!(
+            "the {kind} for {} is {value:e}, past the {MAX_STATISTIC_MAGNITUDE:e} beyond which a \
+             second-moment statistic over this series overflows to infinity and every comparison \
+             drawn from it answers false in both directions",
+            bounded_excerpt(subject)
+        )];
+    }
+    Vec::new()
+}
+
 /// One record produced by an adapter.
 ///
 /// A single enum rather than a trait object per type: the ingestion service
@@ -151,18 +270,12 @@ impl SensedRecord {
                 }
             }
             Self::Macro(m) => {
-                if m.value.is_finite() {
-                    Vec::new()
-                } else {
-                    vec![format!("non-finite macro value for {}", m.series_id)]
-                }
+                let mut issues = subject_key_issues("macro series id", &m.series_id);
+                issues.extend(statistic_issues("macro value", &m.series_id, m.value));
+                issues
             }
             Self::AlternativeData(a) => {
-                if a.value.is_finite() {
-                    Vec::new()
-                } else {
-                    vec![format!("non-finite value in {}", a.dataset)]
-                }
+                statistic_issues("alternative data value", &a.dataset, a.value)
             }
             Self::CorporateAction(_) | Self::ReferenceData(_) => Vec::new(),
         }

@@ -1385,9 +1385,12 @@ fn a_cycle_ships_the_desk_a_live_grant_funds_as_a_whitelist_the_cell_verifies() 
         .platform
         .lock()
         .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
-    let recorded = platform.replay_journal(&EventFilter::new().topic(Topic::PolicyDistributed))?;
+    // Read by producer rather than by topic: the episodic issue slot 4 ships
+    // from is journaled on the same topic every cycle, and counting the topic
+    // would make this read two records and call it a duplicated whitelist.
+    let recorded = whitelist_records(&platform)?;
     assert_eq!(recorded.len(), 1, "one cycle, one issue for the one cell");
-    let issue = recorded[0].decode::<WhitelistIssue>()?.body;
+    let issue = &recorded[0];
     assert_eq!(issue.cell, CELL);
     assert_eq!(
         issue.whitelist, whitelist,
@@ -1423,16 +1426,17 @@ fn the_whitelist_a_cycle_ships_is_in_the_archive_before_the_cycle_answers() -> R
         .lock()
         .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
     // Premise: the cycle journaled one whitelist for the one served cell. If
-    // it had not, an archive with no such record would prove nothing.
-    let journaled = platform
-        .replay_journal(&EventFilter::new().topic(Topic::PolicyDistributed))?
-        .len();
+    // it had not, an archive with no such record would prove nothing. Counted
+    // by producer, because the episodic issue shares the topic and one cycle
+    // now writes both.
+    let journaled = whitelist_records(&platform)?.len();
     assert_eq!(journaled, 1, "one cell, one whitelist issued");
 
     let archived_whitelists = archive
         .records()?
         .iter()
         .filter(|entry| entry.record.event.topic == Topic::PolicyDistributed)
+        .filter(|entry| entry.record.event.lineage.producer == "kernel/whitelist")
         .count();
     assert_eq!(
         archived_whitelists, 1,
@@ -1523,16 +1527,304 @@ fn a_policy_venue_the_grant_does_not_permit_ships_the_slot_unproduced_and_names_
         shipped_whitelist(&rig, "policy-refused")?.is_none(),
         "a refused whitelist reached the cell as a produced slot"
     );
-    // Nothing was distributed, so nothing is recorded as distributed.
+    // Nothing was distributed, so no *whitelist* is recorded as distributed.
+    // The episodic issue beside it shares the topic and is journaled produced
+    // or not, so the producer is what distinguishes them; counting the topic
+    // alone would make this assertion fail for a reason that has nothing to
+    // do with the venue refusal it exists to guard.
     let platform = rig
         .platform
         .lock()
         .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
     assert!(
-        platform
-            .replay_journal(&EventFilter::new().topic(Topic::PolicyDistributed))?
-            .is_empty(),
+        whitelist_records(&platform)?.is_empty(),
         "a refusal was journaled as a distribution"
     );
+    Ok(())
+}
+
+// --- slot 4, the episodic digest, from the platform's own memory ------------
+//
+// `Platform::issue_episodic_digest` landed with the LEARN stage's episodic
+// memory behind it and **no production caller**: `pending_policy` never
+// asked for it, so every payload every centre shipped carried slot 4
+// unproduced, and every cell read §6.2 row 3 as unavailable however much the
+// centre remembered. A producer whose value nothing uses is the defect class
+// this repository names by example, and it looks like a control from the
+// outside.
+//
+// Wiring it is a **widening**, and it is asserted here rather than left to be
+// discovered. `DegradationState::pauses` pauses `SituationalRecognition`
+// exactly when `Capability::EpisodicMemory` is not fresh, so a cell whose
+// payload carries a fresh slot 4 stops pausing those strategies. Two things
+// bound it, both pinned below: the slot is stamped with the newest knowable
+// episode's instant and never with the issue instant, and slot 4's time to
+// live is 600 seconds — so the pause returns ten minutes after the last LEARN
+// resolution whatever the centre keeps publishing. Theses resolve over days,
+// so the common case is a produced slot that already reads stale; the
+// widening is the ten minutes after a resolution, not a standing state.
+
+use qip_contracts::degradation::{Capability, Freshness, StrategyClass};
+use qip_contracts::policy::{PolicyItem, PolicyPayload, Slot};
+use qip_financial::asset_class::{InstrumentType, Sector};
+use qip_financial::object::FinancialObject;
+use qip_financial::quality::{DataQuality, Provenance};
+use qip_kernel::cycle::Stage;
+use qip_market::bar::{Bar, Interval};
+use qip_market_ingestion::adapter::SensedRecord;
+
+/// Every cycle whitelist the platform journalled, told apart from the
+/// episodic issue that now shares its topic by the producer the kernel
+/// stamped on the lineage — not by a decode that happened to succeed.
+fn whitelist_records(platform: &Platform) -> Result<Vec<WhitelistIssue>> {
+    platform
+        .replay_journal(&EventFilter::new().topic(Topic::PolicyDistributed))?
+        .iter()
+        .filter(|envelope| envelope.lineage().producer == "kernel/whitelist")
+        .map(|envelope| Ok(envelope.decode::<WhitelistIssue>()?.body))
+        .collect()
+}
+
+fn memory_object() -> ObjectId {
+    ObjectId::from_string("obj-AAA")
+}
+
+/// One instrument, because one resolved thesis is all the memory needs.
+fn memory_universe() -> Result<qip_financial::universe::Universe> {
+    let mut universe = qip_financial::universe::Universe::new();
+    universe.insert(
+        FinancialObject::builder(
+            memory_object(),
+            "AAA",
+            InstrumentType::CommonStock,
+            LiquidityProfile::listed(dec!("1000000"), 5.0),
+        )
+        .venue(DESK_VENUE)
+        .sector(Sector::InformationTechnology)
+        .price(dec!("100"))
+        .provenance(Provenance::synthetic("test", start()))
+        .build(start())?,
+    )?;
+    Ok(universe)
+}
+
+fn memory_bar(at: Timestamp, open: f64, close: f64) -> Result<SensedRecord> {
+    Ok(SensedRecord::Bar(Box::new(Bar {
+        object_id: memory_object(),
+        venue: DESK_VENUE.to_string(),
+        interval: Interval::Day,
+        open_time: at,
+        open: Decimal::from_f64(open).ok_or_else(|| Error::numeric("a representable open"))?,
+        high: Decimal::from_f64(open.max(close) * 1.002)
+            .ok_or_else(|| Error::numeric("a representable high"))?,
+        low: Decimal::from_f64(open.min(close) * 0.998)
+            .ok_or_else(|| Error::numeric("a representable low"))?,
+        close: Decimal::from_f64(close).ok_or_else(|| Error::numeric("a representable close"))?,
+        volume: dec!("1000000"),
+        trade_count: 5_000,
+        vwap: Decimal::from_f64((open + close) / 2.0),
+        quality: DataQuality::default(),
+    })))
+}
+
+/// A price series with a jump two thirds of the way in, so the detectors have
+/// something real to find and REASON forms a claim.
+fn memory_bars(count: usize) -> Result<Vec<SensedRecord>> {
+    let mut price = 100.0_f64;
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
+        let jump = if i == count * 2 / 3 { 0.09 } else { 0.0 };
+        let open = price;
+        price *= 1.0 + noise + jump;
+        let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+        out.push(memory_bar(at, open, price)?);
+    }
+    Ok(out)
+}
+
+/// Twenty swinging bars up to `horizon`, which move every observable a claim
+/// can name far enough that LEARN reaches a verdict.
+fn memory_swings(horizon: Timestamp) -> Result<Vec<SensedRecord>> {
+    (0..20)
+        .map(|i| {
+            let (open, close) = if i % 2 == 0 {
+                (100.0, 150.0)
+            } else {
+                (150.0, 100.0)
+            };
+            memory_bar(
+                horizon.saturating_sub(Duration::from_mins((20 - i) * 60)),
+                open,
+                close,
+            )
+        })
+        .collect()
+}
+
+/// A platform whose episodic memory holds one resolved episode, filled the
+/// only way one is filled in production: REASON forms a claim, the horizon
+/// passes, and LEARN resolves it and remembers it. Returns the platform, the
+/// instant the episode became knowable (LEARN's own), and an instant one
+/// second later at which policy is issued.
+///
+/// Mirrored from `qip-kernel`'s `tests/episodic.rs` rather than shared with
+/// it, for the reason the whitelist fixture above states: a fixture crate
+/// would be a dependency and there is nowhere below both apps to put one.
+fn remembering_platform() -> Result<(Platform, Timestamp, Timestamp)> {
+    let build = || -> Result<Platform> {
+        let config = PlatformConfig::default();
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            qip_observability::Telemetry::silent(),
+            memory_universe()?,
+            qip_risk::limits::LimitSet::conservative_default(),
+        )
+    };
+
+    // The horizon is the claim's own, read from a probe run so the resolving
+    // cycle below is placed after it rather than at a guessed instant.
+    let horizon = {
+        let mut probe = build()?;
+        probe.observe(memory_bars(120)?);
+        probe.run_cycle(start());
+        probe
+            .predictions()
+            .first()
+            .ok_or_else(|| Error::invalid("the probe cycle formed no claim"))?
+            .proposition
+            .resolves_at
+    };
+    let resolved_at = horizon.saturating_add(Duration::from_mins(1));
+    let asked_at = resolved_at.saturating_add(Duration::from_secs(1));
+
+    let mut platform = build()?;
+    platform.observe(memory_bars(120)?);
+    let first = platform.run_cycle(start());
+    assert!(
+        !platform.predictions().is_empty(),
+        "premise: the first cycle made a claim:\n{}",
+        first.summarise()
+    );
+    platform.observe(memory_swings(horizon)?);
+    let second = platform.run_cycle(resolved_at);
+    let learn = second
+        .stage(Stage::Learn)
+        .ok_or_else(|| Error::invalid("learn ran"))?;
+    assert!(
+        learn.detail.contains("episode(s) remembered"),
+        "premise: LEARN did not remember the resolved thesis as an episode, so the digest \
+         below would be over an empty memory: {}",
+        learn.detail
+    );
+    Ok((platform, resolved_at, asked_at))
+}
+
+#[test]
+fn a_cycle_ships_slot_four_stamped_with_the_memorys_instant_and_the_pause_returns_when_it_ages()
+-> Result<()> {
+    let (mut platform, resolved_at, asked_at) = remembering_platform()?;
+
+    // Premise, and the state every deployed centre shipped: a payload whose
+    // slot 4 is unproduced pauses situational recognition. Without this the
+    // assertion further down would pass on a payload that pauses nothing.
+    let unwired = PolicyPayload::unproduced(1, CELL, asked_at);
+    assert_eq!(unwired.episodic_digest, Slot::unproduced());
+    assert!(
+        unwired
+            .narrowing(asked_at)
+            .pauses(StrategyClass::SituationalRecognition),
+        "an unproduced slot 4 must pause situational recognition, or this test proves nothing"
+    );
+
+    let pending = qip_api::mesh::pending_policy(
+        &mut platform,
+        [CELL.to_string()].into_iter(),
+        None,
+        asked_at,
+    );
+    assert_eq!(pending.payloads.len(), 1, "one cell, one payload");
+    let (cell, payload) = &pending.payloads[0];
+    assert_eq!(cell, CELL);
+
+    let digest = payload.episodic_digest.value().ok_or_else(|| {
+        Error::invalid("slot 4 shipped unproduced from a platform that remembers")
+    })?;
+    assert_eq!(
+        digest.episodes, 1,
+        "the digest did not name the one episode LEARN remembered"
+    );
+    // The instant is the memory's and not the shipper's. This is the whole
+    // safety argument: stamped `now`, a memory that stopped absorbing last
+    // week would read fresh at every cell for as long as payloads kept being
+    // issued.
+    assert_eq!(
+        payload.episodic_digest.produced_at(),
+        Some(resolved_at),
+        "slot 4 is not stamped with the instant the episode became knowable"
+    );
+    assert_ne!(
+        payload.episodic_digest.produced_at(),
+        Some(asked_at),
+        "slot 4 was stamped with the issue instant"
+    );
+
+    // One line per cycle, not one per cell: the memory is the platform's.
+    assert_eq!(
+        pending.episodic.len(),
+        1,
+        "one memory, one line: {:?}",
+        pending.episodic
+    );
+    assert!(
+        pending.episodic[0].contains("1 episode(s)")
+            && pending.episodic[0].contains("newest knowable"),
+        "the operator line does not say what shipped: {}",
+        pending.episodic[0]
+    );
+
+    // The widening, exactly: one second after the resolution the cell no
+    // longer pauses situational recognition.
+    let narrowing = payload.narrowing(asked_at);
+    assert_eq!(
+        narrowing.freshness(Capability::EpisodicMemory),
+        Freshness::Fresh
+    );
+    assert!(
+        !narrowing.pauses(StrategyClass::SituationalRecognition),
+        "a fresh slot 4 did not lift the pause, so wiring the producer changed nothing"
+    );
+
+    // And its bound, measured on the slot alone so the payload's own 300
+    // second validity is not what is being read: fresh at 599 seconds past
+    // the memory's instant, stale at 601.
+    assert_eq!(
+        payload.episodic_digest.freshness(
+            PolicyItem::EpisodicDigest,
+            resolved_at.saturating_add(Duration::from_secs(599))
+        ),
+        Freshness::Fresh
+    );
+    assert_eq!(
+        payload.episodic_digest.freshness(
+            PolicyItem::EpisodicDigest,
+            resolved_at.saturating_add(Duration::from_secs(601))
+        ),
+        Freshness::Stale,
+        "slot 4 outlived its ten-minute time to live, so a memory that stopped moving would \
+         keep excusing the pause"
+    );
+    assert!(
+        payload
+            .narrowing(resolved_at.saturating_add(Duration::from_secs(601)))
+            .pauses(StrategyClass::SituationalRecognition),
+        "the pause did not return once the digest aged out"
+    );
+
+    // The boundary: issuing policy reached no venue and this platform could
+    // never reach one.
+    assert!(!platform.is_live_capable());
     Ok(())
 }

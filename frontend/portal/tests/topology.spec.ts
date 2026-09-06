@@ -12,13 +12,20 @@
  *   though something computed it. Asserted on the missing-endpoint block and
  *   on the assembly statement, and on every node carrying the route that
  *   evidenced it;
- * * an internal address reaching the browser. `GET /mesh` carries
+ * * an internal address being *rendered*. `GET /mesh` carries
  *   `cells[].address` — a cell's base URL on the mesh transport, configured
  *   through `QIP_MESH_PEER`. The stub below puts a real-looking one in the
  *   body, and the assertion is on that string appearing nowhere in the page,
- *   including in title attributes. The gateway strips `QIP_API_BASE_URL` out
- *   of its own error bodies for the same reason, and a topology screen is the
- *   most likely place to undo it;
+ *   including in title attributes;
+ * * that finding being read as a claim about the wire. It is not one, and it
+ *   never could be from here: every test in this file intercepts at the
+ *   browser boundary with `page.route`, so the gateway — the only component
+ *   that can remove a field before a browser holds it — never runs. For a
+ *   whole wave this page's own panel said an upstream address never reached a
+ *   browser while the body behind it carried one per served cell, and a DOM
+ *   assertion is exactly what could not see that. `tests/wire.spec.ts` runs
+ *   against a real gateway and asserts on the response body; what is asserted
+ *   here is that the page states the declared redaction rather than a promise;
  * * the other binaries drawn as healthy, or drawn at all. This console talks
  *   to one process and no route lists the rest, so the fast brain, the deep
  *   brain and the execution node are absent and stated absent — a greyed-out
@@ -233,6 +240,21 @@ test("every node and edge names the route that evidenced it, and no address, hos
   // And the page says it withholds it, rather than only withholding it.
   await expect(page.getByTestId("topology-withheld")).toContainText("cells[].address");
   await expect(page.getByTestId("topology-withheld")).toContainText("QIP_MESH_PEER");
+
+  // What the page claims about the transport is the declared redaction list —
+  // the same table the gateway applies — and not a sentence somebody wrote.
+  // Both routes are named, because `/system/status` embeds the mesh status
+  // whole and redacting only `/mesh` would have moved the leak rather than
+  // closed it.
+  const redactions = page.getByTestId("topology-redaction");
+  await expect(redactions).toHaveCount(2);
+  await expect(
+    page.locator('[data-testid="topology-redaction"][data-route="/mesh"]'),
+  ).toHaveAttribute("data-field", "cells[].address");
+  await expect(
+    page.locator('[data-testid="topology-redaction"][data-route="/system/status"]'),
+  ).toHaveAttribute("data-field", "mesh.cells[].address");
+  await expect(page.getByTestId("topology-withheld")).toContainText("x-qip-redacted");
 
   // The processes this console cannot see are named absent, not drawn down.
   await expect(page.getByTestId("topology-out-of-view")).toContainText("fast brain");

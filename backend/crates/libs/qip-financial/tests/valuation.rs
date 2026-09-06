@@ -21,6 +21,19 @@ use qip_financial::quality::Provenance;
 use qip_financial::valuation::{AssetValuation, IlliquidValuator, ValuationInput, ValuationMethod};
 use std::collections::BTreeMap;
 
+/// The liquidity every fixture in this file states, because nothing states it
+/// for them any more.
+///
+/// [`qip_financial::costs::LiquidityProfile`] has no `Default`: the one it had
+/// asserted a 10bp quote and a one-session exit for any instrument at all, and
+/// `MinLiquidity` and `MaxDaysToLiquidate` — controls whose job is to veto
+/// trading — read exactly those two figures. A fixture may state its own
+/// premise; it may not inherit one nobody wrote down. A liquid listed name on
+/// five million units a day, quoted at three basis points.
+fn fixture_liquidity() -> qip_financial::costs::LiquidityProfile {
+    qip_financial::costs::LiquidityProfile::listed(qip_core::Decimal::from_int(5_000_000), 3.0)
+}
+
 fn origin() -> Timestamp {
     Timestamp::from_civil(2020, 1, 1)
 }
@@ -47,6 +60,7 @@ fn private_object(symbol: &str, details: PrivateAssetDetails) -> Result<Financia
         ObjectId::from_string(format!("obj-{symbol}")),
         symbol,
         InstrumentType::PrivateEquityFund,
+        fixture_liquidity(),
     )
     .venue("OTC")
     .price(dec!("1"))
@@ -330,6 +344,7 @@ fn marking_an_object_that_is_not_a_private_asset_reports_not_mine_rather_than_a_
         ObjectId::from_string("obj-aaa"),
         "AAA",
         InstrumentType::CommonStock,
+        fixture_liquidity(),
     )
     .venue("XNYS")
     .price(dec!("100"))
@@ -420,6 +435,7 @@ fn private_object_observed_at(
         ObjectId::from_string(format!("obj-{symbol}")),
         symbol,
         InstrumentType::PrivateEquityFund,
+        fixture_liquidity(),
     )
     .venue("OTC")
     .price(dec!("1"))
@@ -510,6 +526,7 @@ fn a_record_whose_evidence_postdates_the_platforms_copy_of_it_is_refused_rather_
         ObjectId::from_string("obj-AHEAD"),
         "AHEAD",
         InstrumentType::PrivateEquityFund,
+        fixture_liquidity(),
     )
     .venue("OTC")
     .price(dec!("1"))

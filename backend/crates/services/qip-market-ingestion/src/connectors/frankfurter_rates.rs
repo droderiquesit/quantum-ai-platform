@@ -58,7 +58,7 @@
 //! [`qip_core::Decimal`]. The distinction is `qip-core`'s second rule and this
 //! pair of connectors is where it is visible.
 
-use crate::adapter::SensedRecord;
+use crate::adapter::{SensedRecord, bounded_excerpt};
 use crate::connector::SourceConnector;
 use crate::connector::checkpoint::Cursor;
 use crate::connector::envelope::RawEvent;
@@ -68,6 +68,7 @@ use qip_core::error::{Error, Result};
 use qip_financial::intelligence::MacroObservation;
 use qip_financial::quality::{DataQuality, Provenance};
 use serde_json::Value;
+use std::collections::BTreeSet;
 
 /// The manifest this connector was written against.
 pub const MANIFEST: &str = include_str!("manifests/frankfurter-ecb-reference-rates.json");
@@ -87,9 +88,19 @@ pub const MANIFEST: &str = include_str!("manifests/frankfurter-ecb-reference-rat
 pub const FIXTURE: &str = include_str!("fixtures/frankfurter-ecb-reference-rates.json");
 
 /// The ECB's reference rates as a fan-out of macro observations.
+///
+/// The question and the answer are both held here: `base` and `quotes` are
+/// read out of the manifest's own query at construction, so [`Self::decode`]
+/// compares what arrived against what was asked for rather than believing
+/// whatever the response says the table is about. See [`Self::new`].
 #[derive(Clone, Debug)]
 pub struct FrankfurterRatesConnector {
     manifest: SourceManifest,
+    /// The `base` the manifest's query asks for. Fixed at construction.
+    base: String,
+    /// The `symbols` the manifest's query asks for. Fixed at construction, so
+    /// a currency this connector never requested cannot mint a series.
+    quotes: BTreeSet<String>,
 }
 
 impl FrankfurterRatesConnector {
@@ -121,10 +132,54 @@ impl FrankfurterRatesConnector {
     /// disagree with.
     pub const REGION: &'static str = "EA";
 
+    /// An ISO 4217 alphabetic code: three upper-case ASCII letters, always.
+    const CURRENCY_CODE_LENGTH: usize = 3;
+
+    /// The smallest rate this connector will publish: one euro buying a
+    /// millionth of a unit of the quote currency.
+    ///
+    /// Nothing the ECB publishes comes close. The most valuable currency in
+    /// existence per unit is the Kuwaiti dinar at roughly 0.3 per euro, and
+    /// the ECB's table has never held anything below about 0.8. A floor six
+    /// orders of magnitude below that admits a currency a million times
+    /// stronger per unit than the euro — which does not exist and would not
+    /// arrive without a redenomination that also changed the code.
+    pub const MIN_RATE: f64 = 1e-6;
+
+    /// The largest rate this connector will publish.
+    ///
+    /// Argued from what the source is rather than picked round. The ECB's own
+    /// daily table spans about five orders of magnitude at any one time —
+    /// sterling near 0.85, the Indonesian rupiah near 19,000 — and it has
+    /// published far larger: the Turkish lira stood near 1.8 *million* per
+    /// euro before the 2005 redenomination struck six zeros off it. A band
+    /// whose ceiling a real hyperinflation could reach is a band that takes
+    /// the feed down for a true event, so this one sits three orders of
+    /// magnitude above the largest rate the ECB has ever published.
+    ///
+    /// It is deliberately loose. It is not here to catch a rate that is wrong
+    /// by ten per cent — the surprise and data-quality paths are for that. It
+    /// is here to refuse a number that cannot be an exchange rate at all, of
+    /// which `1e300` is the worked example: finite, positive, admitted end to
+    /// end, and infinite the moment anything squares it.
+    pub const MAX_RATE: f64 = 1e9;
+
     pub fn shipped_manifest() -> Result<SourceManifest> {
         SourceManifest::from_json(MANIFEST)
     }
 
+    /// Build the connector for the table its manifest asks for.
+    ///
+    /// Fails when the manifest's query does not name a `base` and a `symbols`
+    /// list of ISO 4217 codes. That is not bureaucracy: it is what gives
+    /// [`Self::decode`] something to hold the response to. Without it the
+    /// connector took the base from the response body and the quote currencies
+    /// from the response's own object keys, so a hostile or broken answer on
+    /// this plaintext hop chose the series ids — and a series id is a
+    /// permanent feature-store key and a permanent line in the event log. The
+    /// sibling discipline already exists in [`crate::narrative`], which
+    /// refuses a macro release for a series the deployment did not configure;
+    /// this connector was the one that did not do it.
     pub fn new(manifest: SourceManifest) -> Result<Self> {
         manifest.validate()?;
         if manifest.publication_delay().is_zero() {
@@ -136,7 +191,135 @@ impl FrankfurterRatesConnector {
                 manifest.source_id
             )));
         }
-        Ok(Self { manifest })
+        let base = match manifest.endpoint.query.get("base") {
+            Some(base) => Self::currency_code("the manifest's `base` query parameter", base)?,
+            None => {
+                return Err(Error::invalid(format!(
+                    "`{}` names no `base` in its endpoint query. The base is what every rate in \
+                     the table is against, and a connector that cannot say which one it asked \
+                     for has to believe whichever one the response claims",
+                    manifest.source_id
+                )));
+            }
+        };
+        let Some(symbols) = manifest.endpoint.query.get("symbols") else {
+            return Err(Error::invalid(format!(
+                "`{}` names no `symbols` in its endpoint query. Without the list this connector \
+                 requested, every key of the response's `rates` object mints a series, and the \
+                 vendor — or whoever answers for it on a plaintext hop — chooses the keys",
+                manifest.source_id
+            )));
+        };
+        let mut quotes = BTreeSet::new();
+        for symbol in symbols.split(',') {
+            let code = Self::currency_code("a `symbols` entry in the manifest query", symbol)?;
+            if code == base {
+                return Err(Error::invalid(format!(
+                    "`{}` asks for {base} against itself; a rate of one is not an observation and \
+                     `FX.{base}.{base}` is a series nobody can interpret",
+                    manifest.source_id
+                )));
+            }
+            quotes.insert(code);
+        }
+        if quotes.is_empty() {
+            return Err(Error::invalid(format!(
+                "`{}` asks for no quote currencies, so every poll would decode an empty table \
+                 and the feed would look healthy while carrying nothing",
+                manifest.source_id
+            )));
+        }
+        Ok(Self {
+            manifest,
+            base,
+            quotes,
+        })
+    }
+
+    /// One ISO 4217 alphabetic code, or a refusal that does not repeat it.
+    ///
+    /// The text being refused may be sixty kilobytes of a hostile response, so
+    /// the message carries [`bounded_excerpt`]'s escaped prefix and the length
+    /// rather than the value — the same rule the manifest's `SecretRef` keeps
+    /// for the opposite reason.
+    fn currency_code(role: &str, code: &str) -> Result<String> {
+        let code = code.trim();
+        let length = code.chars().count();
+        if length != Self::CURRENCY_CODE_LENGTH {
+            return Err(Error::schema(format!(
+                "{role} is {} — {length} character(s) where an ISO 4217 code is exactly {}",
+                bounded_excerpt(code),
+                Self::CURRENCY_CODE_LENGTH
+            )));
+        }
+        if !code.chars().all(|c| c.is_ascii_uppercase()) {
+            return Err(Error::schema(format!(
+                "{role} is {}, which is not three upper-case ASCII letters. A currency code \
+                 becomes a permanent series id, so it is held to its own standard's shape rather \
+                 than to whatever arrived",
+                bounded_excerpt(code)
+            )));
+        }
+        Ok(code.to_string())
+    }
+
+    /// The pair the manifest asked for, or a refusal naming what arrived.
+    ///
+    /// Both directions matter. A `base` other than the requested one means the
+    /// response is a table about something else — every rate in it would be
+    /// filed under a series whose name says otherwise. A quote outside the
+    /// requested set means the response is answering a question nobody asked,
+    /// and each such key would mint a feature series that no reader knows
+    /// about and no eviction ever removes.
+    fn requested_pair(&self, base: &str, quote: &str) -> Result<()> {
+        if base != self.base {
+            return Err(Error::schema(format!(
+                "the rate table says its base is {}, and this connector asked for {}. A table \
+                 about a different base is an answer to a question nobody asked, and publishing \
+                 it would file every rate in it under a series id that names the wrong currency",
+                bounded_excerpt(base),
+                self.base
+            )));
+        }
+        if !self.quotes.contains(quote) {
+            return Err(Error::schema(format!(
+                "the rate table carries {}, which is not one of the {} currencies this connector \
+                 requested ({}). Each unrequested key would mint a permanent feature series and a \
+                 permanent event-log key from a value the vendor chose",
+                bounded_excerpt(quote),
+                self.quotes.len(),
+                self.quotes.iter().cloned().collect::<Vec<_>>().join(", ")
+            )));
+        }
+        Ok(())
+    }
+
+    /// A rate inside the band, or a refusal naming the value.
+    ///
+    /// Refused, never clamped: a rate of `1e300` is not a rate that needs
+    /// correcting to something sensible — nobody knows what it should have
+    /// been — and a value silently corrected is a caller bug that survives
+    /// into a backtest.
+    fn admissible_rate(&self, quote: &str, rate: f64) -> Result<()> {
+        if !rate.is_finite() || rate <= 0.0 {
+            return Err(Error::schema(format!(
+                "the rate for {}/{quote} is {rate}, and a non-positive exchange rate is not a \
+                 rate this platform will invert or publish",
+                self.base
+            )));
+        }
+        if !(Self::MIN_RATE..=Self::MAX_RATE).contains(&rate) {
+            return Err(Error::schema(format!(
+                "the rate for {}/{quote} is {rate:e}, outside the {:e}..={:e} band an ECB euro \
+                 reference rate can occupy. The largest the ECB has ever published is the \
+                 pre-2005 Turkish lira near 1.8e6 and the smallest is under one, so a value \
+                 outside this band is not a rate that drifted — it is not a rate",
+                self.base,
+                Self::MIN_RATE,
+                Self::MAX_RATE
+            )));
+        }
+        Ok(())
     }
 
     /// `2026-08-24` as midnight UTC on that date.
@@ -171,13 +354,25 @@ impl SourceConnector for FrankfurterRatesConnector {
         &self.manifest
     }
 
-    /// One event per currency pair.
+    /// One event per currency pair, and only for the pairs asked for.
     ///
     /// The body of each event carries the pair and the rate only. It
     /// deliberately does *not* carry the whole table: the fingerprint is taken
     /// over the body, and a body containing every other currency would change
     /// whenever any of them moved — so an unchanged USD rate would fingerprint
     /// differently on consecutive days and be published as new.
+    ///
+    /// # Why an unrequested key refuses the whole table rather than being skipped
+    ///
+    /// Skipping it would publish the rest and record nothing anybody reads: a
+    /// source answering a question this connector did not ask has either
+    /// changed or been answered by someone else, and both are findings. The
+    /// refusal quarantines the page under `DecodeFailure` with the reason,
+    /// which is a `DataQualityFailure` on a topic the platform already alarms
+    /// on. A *missing* requested currency is the opposite case and is admitted:
+    /// the ECB does stop publishing a currency, and taking the feed down for
+    /// USD and GBP because JPY went away would be an outage manufactured out
+    /// of a vendor's edit.
     fn decode(&self, payload: &Value, _cursor: &Cursor) -> Result<Vec<RawEvent>> {
         let base = Self::base(payload)?.to_string();
         let reference_date = Self::reference_date(payload)?;
@@ -187,17 +382,13 @@ impl SourceConnector for FrankfurterRatesConnector {
             .ok_or_else(|| Error::schema("the rate table's `rates` is not an object"))?;
         let mut events = Vec::with_capacity(rates.len());
         for (quote, value) in rates {
+            self.requested_pair(&base, quote)?;
             let rate = value.as_f64().ok_or_else(|| {
                 Error::schema(format!(
                     "the rate for {base}/{quote} is {value}, which is not a number"
                 ))
             })?;
-            if !rate.is_finite() || rate <= 0.0 {
-                return Err(Error::schema(format!(
-                    "the rate for {base}/{quote} is {rate}, and a non-positive exchange rate is \
-                     not a rate this platform will invert or publish"
-                )));
-            }
+            self.admissible_rate(quote, rate)?;
             events.push(RawEvent::new(
                 format!("{base}/{quote}@{}", reference_date.to_date_string()),
                 reference_date,
@@ -212,6 +403,14 @@ impl SourceConnector for FrankfurterRatesConnector {
         Ok(events)
     }
 
+    /// The record, and the second place the pair and the band are checked.
+    ///
+    /// Not belt and braces for its own sake: this is the seam where the
+    /// permanent artefacts are minted — the series id, the unit string, the
+    /// value a `FeatureValue` is built from. `decode` is where a bad table is
+    /// found, but `map` is where a bad pair would *become* a key, and a
+    /// connector whose two halves disagree about what it asked for is a
+    /// connector where only one of them is the gate.
     fn map(&self, event: &RawEvent, ingest_time: Timestamp) -> Result<SensedRecord> {
         let base = Self::base(&event.body)?;
         let quote = event
@@ -228,6 +427,8 @@ impl SourceConnector for FrankfurterRatesConnector {
             .ok_or_else(|| {
                 Error::schema("a decoded rate event lost its rate between decode and map")
             })?;
+        self.requested_pair(base, quote)?;
+        self.admissible_rate(quote, rate)?;
         let provenance = Provenance::new(
             self.manifest.source_id.clone(),
             event.event_time,

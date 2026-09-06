@@ -645,25 +645,50 @@ pub struct PendingPolicy {
     /// never funds is explained where the share was, or was not, shipped
     /// from.
     pub shares: Vec<String>,
+    /// One line per **cycle**, not per cell: what slot 4 carries and from how
+    /// much memory, or why nothing was produced.
+    ///
+    /// The episodic memory is the platform's, so every cell in a cycle
+    /// receives the same digest and describing it once is the whole of the
+    /// fact; seven copies would be seven claims about one thing. An operator
+    /// asking why every cell still pauses situational recognition reads the
+    /// answer here.
+    pub episodic: Vec<String>,
 }
 
 /// The policy payloads one cycle should ship, one per configured cell.
 ///
-/// Built from what the platform actually has, which today is three of the
+/// Built from what the platform actually has, which today is four of the
 /// twelve items: the grant manifest — the signatures of every live envelope
 /// for the cell, so a dropped grant becomes visible — the risk envelope, as
-/// the limit set the monitor really enforces, and the cycle whitelist, as
-/// [`Platform::issue_cycle_whitelist`] produces and journals it. Every other
-/// slot ships unproduced and reads as unavailable at the cell, which narrows
-/// it; that is the fail-closed design, not an omission. The halted flag
-/// mirrors the central kill switch, so a cell that missed the halt broadcast
-/// converges at the next payload.
+/// the limit set the monitor really enforces, the cycle whitelist, as
+/// [`Platform::issue_cycle_whitelist`] produces and journals it, and the
+/// episodic digest, as [`Platform::issue_episodic_digest`] takes it over the
+/// LEARN stage's own memory. Every other slot ships unproduced and reads as
+/// unavailable at the cell, which narrows it; that is the fail-closed design,
+/// not an omission. The halted flag mirrors the central kill switch, so a
+/// cell that missed the halt broadcast converges at the next payload.
 ///
-/// `&mut` because the whitelist is journaled as it is issued: a whitelist
-/// that reached a cell with no record at the centre would be a permission
-/// reproducible from nothing. The caller already holds the platform's lock
-/// mutably for the drain that precedes this, so the borrow costs nothing it
-/// was not already paying.
+/// **Slot 4 widens what a cell may do, and the widening is bounded here.**
+/// [`qip_contracts::degradation::DegradationState::pauses`] pauses
+/// `SituationalRecognition` exactly while `EpisodicMemory` is not fresh, so a
+/// cell whose payload carries a fresh digest stops pausing those strategies.
+/// Two things bound that. The slot is stamped with the newest **knowable**
+/// episode's instant and never with `now` — the producer owns that and there
+/// is no other route to the slot — and slot 4's time to live is 600 seconds.
+/// A LEARN resolution therefore lifts the pause for at most ten minutes and
+/// theses resolve over days, so the common case remains a produced slot the
+/// cell reads stale. What this is not is a state a quiet centre can leave a
+/// cell in: silence ages the digest out and the pause returns without anyone
+/// republishing anything.
+///
+/// `&mut` because the whitelist and the digest are journaled as they are
+/// issued: a whitelist that reached a cell with no record at the centre would
+/// be a permission reproducible from nothing, and a digest is journaled
+/// produced or not because a memory nothing ever makes knowable is exactly
+/// the fact an operator asking why every cell still pauses has to find. The
+/// caller already holds the platform's lock mutably for the drain that
+/// precedes this, so the borrow costs nothing it was not already paying.
 ///
 /// The whitelist ships as the producer returned it — empty included, and an
 /// empty whitelist is what an unset policy or a missing grant produces,
@@ -711,6 +736,23 @@ pub fn pending_policy(
         )
     });
     let mut pending = PendingPolicy::default();
+    // Once per cycle, before the loop: the memory is the platform's, so every
+    // cell receives the same slot and journaling it per cell would be seven
+    // records of one fact. A refusal ships the slot unproduced — which is
+    // what every payload carried while this producer had no caller — and says
+    // so, rather than leaving the cell to infer a memory from an absence.
+    let episodic = match platform.issue_episodic_digest(now) {
+        Ok(issue) => {
+            pending.episodic.push(issue.describe());
+            issue.slot()
+        }
+        Err(error) => {
+            pending
+                .episodic
+                .push(format!("episodic digest: not shipped, {}", error.message()));
+            Slot::unproduced()
+        }
+    };
     for cell in cells {
         let sequence = now.as_nanos().max(0) as u64;
         let mut payload = PolicyPayload::unproduced(sequence, &cell, now);
@@ -761,6 +803,12 @@ pub fn pending_policy(
                 error.message()
             )),
         }
+        // The same digest for every cell, stamped with the memory's own
+        // instant rather than this one. Assigned unconditionally, because an
+        // unproduced slot assigned is the same fail-closed value as an
+        // unproduced slot left alone and the reader should not have to work
+        // out which path left it.
+        payload.episodic_digest = episodic.clone();
         pending.payloads.push((cell, payload));
     }
     pending
@@ -943,6 +991,7 @@ impl MeshBackbone {
         let mut summary = PolicySummary {
             whitelist: pending.whitelist,
             shares: pending.shares,
+            episodic: pending.episodic,
             ..PolicySummary::default()
         };
         let Some(key) = self.policy_key.clone() else {
@@ -1212,6 +1261,12 @@ pub struct PolicySummary {
     /// (ADR 0039), for the same reason the whitelist lines are here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shares: Vec<String>,
+    /// What slot 4 carried this cycle and from how much memory — one line for
+    /// the cycle, because one memory produced it. An operator asking why
+    /// every cell still pauses situational recognition reads it here, and a
+    /// memory that never becomes knowable is the answer they are looking for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub episodic: Vec<String>,
 }
 
 pub fn exchange_json(

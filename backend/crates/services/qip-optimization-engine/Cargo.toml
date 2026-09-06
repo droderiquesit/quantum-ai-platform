@@ -13,5 +13,13 @@ qip-core.workspace = true
 qip-numerics.workspace = true
 qip-quantum.workspace = true
 
+# Test-only, and only so the crate's own tests can drive a `Deserialize`
+# implementation. A checked constructor that serde can walk around is not a
+# check, and the only way to prove it cannot be walked around is to hand the
+# type a document. Adds no dependency: `serde_json` is one of the two ADR 0002
+# permits and is already in the lockfile.
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true

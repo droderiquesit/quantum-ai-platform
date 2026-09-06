@@ -123,12 +123,21 @@ export const NOT_YET_SERVED: Record<string, MissingEndpoint> = {
     needed_for: "cash and settlement balances",
     note: "no cash ledger is exposed; /capital reports allocation bounds, not balances.",
   },
+  /**
+   * The note here said `/data-sources` carries no health fields "even when the
+   * data finder is wired in", which reads as a route with a wiring branch that
+   * happens not to be taken. There is no branch. `routes.rs` matches
+   * `(Method::Get, "/data-sources")` to one expression and returns
+   * `unavailable("sources", NO_DATA_FINDER)` unconditionally, so no
+   * composition of this process answers anything else — a fact stronger than
+   * the one the note claimed, stated imprecisely in the platform's favour.
+   */
   dataSourceHealth: {
     method: "GET",
     path: "/api/v1/data-sources/health",
     needed_for: "per-source latency, freshness, quality and provenance",
     note:
-      "GET /data-sources answers with an availability record only; it carries no health or provenance fields even when the data finder is wired in.",
+      "GET /data-sources answers an availability record and nothing else: routes.rs matches it to one expression, unavailable(\"sources\", NO_DATA_FINDER), with no second arm, so no build or composition of this process serves a health or provenance field on that route.",
   },
   compliance: {
     method: "GET",

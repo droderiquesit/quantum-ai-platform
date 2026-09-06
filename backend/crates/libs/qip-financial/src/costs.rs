@@ -18,6 +18,41 @@ use serde::{Deserialize, Serialize};
 /// the key that should not be there: a catalogue writing `days_to_liquidation`
 /// would otherwise be refused for a *missing* `days_to_liquidate`, pointing
 /// the operator at a key they are looking straight at.
+///
+/// # There is deliberately no `Default`
+///
+/// There was one, and it asserted `typical_spread_bps: 10.0` and
+/// `days_to_liquidate: 1.0` — close to the tightest quote and the fastest exit
+/// a listed name plausibly has, asserted by a library about instruments it had
+/// never seen. `MinLiquidity` and `MaxDaysToLiquidate`, controls whose whole
+/// job is to veto trading, read exactly those two fields, so every instrument
+/// that never stated its liquidity was vetoed — or declined to be vetoed — on
+/// a figure that existed in no file, in no diff a reviewer read, and under no
+/// manifest hash. It was the shape [`Self::illiquid`] was cured of, one level
+/// out and one level milder: that constant sat on a low rung and became a
+/// ceiling on every listed quote above it, whereas this one was uniform and so
+/// inverted nothing. Uniform is not harmless. It answered a question nobody
+/// asked it, in the direction that permits trading.
+///
+/// **A more conservative default would have been the same defect with a
+/// different number, and a refusable sentinel would have been the same defect
+/// with a longer fuse.** Making the two quoted figures `f64::NAN` was measured
+/// — 260 failing tests — and it would have worked only for the two seams that
+/// look: [`crate::ladder::Rung::classify`] and `ladder_reference_of` in
+/// `qip-kernel`. Three other readers do not look. This type reaches
+/// `qip_capital::TradeCapacity`, which divides by `average_daily_volume`;
+/// `qip_risk`'s aggregate, which carries `days_to_liquidate` into the horizon
+/// a limit is compared against; and `qip_twin`'s counterfactual, which sizes
+/// participation off the volume. A `NaN` reaching those produces a `NaN`
+/// capacity, and every `<= 0.0` guard on the way answers `false` to a `NaN`.
+/// The sentinel would have travelled further than the number it replaced.
+///
+/// So the absence is not representable. A value of this type can be obtained
+/// four ways and each is somebody stating figures: [`Self::listed`],
+/// [`Self::illiquid`], a struct literal naming all six fields, and `serde`,
+/// which refuses a missing one. [`crate::object::FinancialObject::builder`]
+/// takes one **by position** for the same reason — an object cannot be started
+/// without saying what it costs to leave it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LiquidityProfile {
@@ -35,58 +70,28 @@ pub struct LiquidityProfile {
     pub is_negotiated: bool,
 }
 
-/// **These six figures are nobody's measurement, and three production paths
-/// still install them.** Read this before using `LiquidityProfile::default()`
-/// in anything a control will read.
-///
-/// `typical_spread_bps: 10.0` and `days_to_liquidate: 1.0` are not
-/// conservative placeholders. They are close to the tightest quote and the
-/// fastest exit a listed name plausibly has, asserted by a library about
-/// instruments it has never seen, and they are read by `MinLiquidity` and
-/// `MaxDaysToLiquidate` — controls whose job is to veto trading. It is the
-/// same shape [`LiquidityProfile::illiquid`] was cured of, one level out and
-/// one level milder: that constant sat on a low rung and became a ceiling on
-/// every listed quote above it, whereas this one is uniform and so inverts
-/// nothing. Uniform is not harmless. It answers a question nobody asked it,
-/// in the direction that permits trading.
-///
-/// Every record in the committed catalogue used to inherit it, because the
-/// catalogue format carried no liquidity block at all — so the figure the
-/// deployed limits evaluated existed in no artefact: not in the file, not in
-/// a diff anybody reviewed, and not under the SHA-256 a run journals.
-/// [`crate::catalogue`] now **requires** the block and refuses a record
-/// without one by name, so no catalogued record reaches a control on this
-/// default any more.
-///
-/// That closes the deployed catalogue and not this constructor. Three
-/// production paths still build a [`crate::object::FinancialObject`] without
-/// stating liquidity and so still inherit these six figures:
-/// `qip-deepbrain`'s synthetic reference universe (`reference.rs`),
-/// `qip-brokers`' simulated venue listing (`exchange.rs::list_instrument`),
-/// and `qip-cli`'s demonstration universe. Closing it properly means the
-/// absence being unrepresentable rather than defaulted, and that is a
-/// workspace-wide change, not a local one: replacing these values with
-/// figures the existing seams refuse — `Rung::classify` for an exit time that
-/// is not a number of days, `qip-kernel`'s `ladder_reference_of` for a spread
-/// that is not a spread — was measured at **260 failing tests across the
-/// workspace**, every one of them a record that never stated its liquidity
-/// and was sized and vetoed against these numbers without saying so. The
-/// count is the argument for doing it deliberately, not for leaving it.
-impl Default for LiquidityProfile {
-    fn default() -> Self {
-        Self {
-            average_daily_volume: Decimal::ZERO,
-            typical_spread_bps: 10.0,
-            top_of_book_depth: Decimal::ZERO,
-            days_to_liquidate: 1.0,
-            max_participation_rate: 0.1,
-            is_negotiated: false,
-        }
-    }
-}
-
 impl LiquidityProfile {
+    /// The fraction of a day's volume the platform is willing to be.
+    ///
+    /// A policy rather than a measurement — it is what the desk permits
+    /// itself, not what the instrument does — which is why it is a named
+    /// constant here and a stated field on every record that departs from it.
+    /// [`crate::catalogue`] records state their own; the two constructors
+    /// below apply this one and say so.
+    pub const HOUSE_PARTICIPATION_RATE: f64 = 0.1;
+
     /// Liquid, tight-spread listed instrument.
+    ///
+    /// **Choosing this constructor is itself the claim**, and it is a claim
+    /// about two things the caller must actually believe: that the instrument
+    /// exits within one session, and that the desk may be
+    /// [`Self::HOUSE_PARTICIPATION_RATE`] of its volume. `Rung::classify`
+    /// reads the first — `days > 1.0` drops a holding to
+    /// [`crate::ladder::Rung::BondsAndLessLiquidListed`] — so a caller whose
+    /// instrument takes longer than a session to leave is not describing a
+    /// listed name and must state the six fields itself. This is not the
+    /// defect the removed `Default` was: a default is inherited by a caller
+    /// who said nothing, and this is chosen by a caller who named it.
     pub fn listed(average_daily_volume: Decimal, spread_bps: f64) -> Self {
         Self {
             average_daily_volume,
@@ -95,7 +100,7 @@ impl LiquidityProfile {
                 .checked_div(Decimal::from_int(2000))
                 .unwrap_or(Decimal::ZERO),
             days_to_liquidate: 1.0,
-            max_participation_rate: 0.1,
+            max_participation_rate: Self::HOUSE_PARTICIPATION_RATE,
             is_negotiated: false,
         }
     }

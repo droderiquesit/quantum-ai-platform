@@ -41,6 +41,27 @@ pub(crate) const SUBJECT: &str = "NWSC-US";
 /// against rather than three points and an opinion.
 pub(crate) const BARS: usize = 120;
 
+/// Units and trades in every bar this vendor serves.
+///
+/// Named rather than written into the response string because
+/// [`crate::demo::universe`] states the demonstration instrument's liquidity
+/// from them, and a reference record whose volume disagrees with the tape it
+/// is served beside is the second definition this file exists to avoid. The
+/// instrument used to state no liquidity at all and inherit a 10bp quote and a
+/// one-session exit that appeared in neither the tape nor the code.
+pub(crate) const BAR_VOLUME: u64 = 2_500_000;
+pub(crate) const BAR_TRADE_COUNT: u64 = 8_000;
+
+/// How far a bar's high sits above, and its low below, the session's own open
+/// and close.
+///
+/// The whole range of the tightest bar — one whose open and close coincide —
+/// is therefore twice this, which is the only bound this tape puts on a quoted
+/// spread. `qip-financial`'s
+/// `every_committed_record_states_its_own_liquidity_and_the_tape_backs_the_four_it_covers`
+/// holds the committed catalogue to the same bound.
+pub(crate) const BAR_RANGE_FRACTION: f64 = 0.001;
+
 /// The quiet part of the series: a hundred and nineteen closes near 100.
 ///
 /// Non-cumulative on purpose. The same window is served to every poll, so a
@@ -97,9 +118,9 @@ pub(crate) fn market_data(start: Timestamp) -> String {
         bars.push(format!(
             r#"{{"symbol":"{SYMBOL}","interval":"1d","open_time":"{open_time}",
                  "open":"{open:.6}","high":"{high:.6}","low":"{low:.6}","close":"{close:.6}",
-                 "volume":"2500000","trade_count":8000}}"#,
-            high = open.max(*close) * 1.001,
-            low = open.min(*close) * 0.999,
+                 "volume":"{BAR_VOLUME}","trade_count":{BAR_TRADE_COUNT}}}"#,
+            high = open.max(*close) * (1.0 + BAR_RANGE_FRACTION),
+            low = open.min(*close) * (1.0 - BAR_RANGE_FRACTION),
         ));
     }
     let announced = start.saturating_sub(Duration::from_hours(1)).to_rfc3339();

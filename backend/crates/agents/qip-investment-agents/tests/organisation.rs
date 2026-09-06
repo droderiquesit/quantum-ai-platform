@@ -45,6 +45,19 @@ use qip_world_model::vocabulary::names;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+/// The liquidity every fixture in this file states, because nothing states it
+/// for them any more.
+///
+/// [`qip_financial::costs::LiquidityProfile`] has no `Default`: the one it had
+/// asserted a 10bp quote and a one-session exit for any instrument at all, and
+/// `MinLiquidity` and `MaxDaysToLiquidate` — controls whose job is to veto
+/// trading — read exactly those two figures. A fixture may state its own
+/// premise; it may not inherit one nobody wrote down. A liquid listed name on
+/// five million units a day, quoted at three basis points.
+fn fixture_liquidity() -> qip_financial::costs::LiquidityProfile {
+    qip_financial::costs::LiquidityProfile::listed(qip_core::Decimal::from_int(5_000_000), 3.0)
+}
+
 fn now() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
 }
@@ -243,13 +256,18 @@ fn an_expired_roster_does_not_start() {
 // --- the desk ---------------------------------------------------------------
 
 fn equity(symbol: &str, price: &str) -> FinancialObject {
-    FinancialObject::builder(object(symbol), symbol, InstrumentType::CommonStock)
-        .venue("XNYS")
-        .sector(Sector::InformationTechnology)
-        .price(Decimal::parse(price).unwrap())
-        .provenance(Provenance::synthetic("test", now()))
-        .build(now())
-        .expect("valid object")
+    FinancialObject::builder(
+        object(symbol),
+        symbol,
+        InstrumentType::CommonStock,
+        fixture_liquidity(),
+    )
+    .venue("XNYS")
+    .sector(Sector::InformationTechnology)
+    .price(Decimal::parse(price).unwrap())
+    .provenance(Provenance::synthetic("test", now()))
+    .build(now())
+    .expect("valid object")
 }
 
 /// A spot commodity, so the commodities analyst's asset-class gate admits
@@ -258,23 +276,33 @@ fn equity(symbol: &str, price: &str) -> FinancialObject {
 /// features keyed on the subject, not a property of the instrument, and a
 /// future would need an underlying and a maturity the test never reads.
 fn commodity(symbol: &str, price: &str) -> FinancialObject {
-    FinancialObject::builder(object(symbol), symbol, InstrumentType::CommoditySpot)
-        .venue("XNYM")
-        .sector(Sector::Energy)
-        .price(Decimal::parse(price).unwrap())
-        .provenance(Provenance::synthetic("test", now()))
-        .build(now())
-        .expect("valid object")
+    FinancialObject::builder(
+        object(symbol),
+        symbol,
+        InstrumentType::CommoditySpot,
+        fixture_liquidity(),
+    )
+    .venue("XNYM")
+    .sector(Sector::Energy)
+    .price(Decimal::parse(price).unwrap())
+    .provenance(Provenance::synthetic("test", now()))
+    .build(now())
+    .expect("valid object")
 }
 
 /// A spot currency pair for the carry analyst.
 fn fx_pair(symbol: &str, price: &str) -> FinancialObject {
-    FinancialObject::builder(object(symbol), symbol, InstrumentType::FxSpot)
-        .venue("FXALL")
-        .price(Decimal::parse(price).unwrap())
-        .provenance(Provenance::synthetic("test", now()))
-        .build(now())
-        .expect("valid object")
+    FinancialObject::builder(
+        object(symbol),
+        symbol,
+        InstrumentType::FxSpot,
+        fixture_liquidity(),
+    )
+    .venue("FXALL")
+    .price(Decimal::parse(price).unwrap())
+    .provenance(Provenance::synthetic("test", now()))
+    .build(now())
+    .expect("valid object")
 }
 
 /// The instant the curve and carry readings describe, and the later instant

@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { declaresWrite, describeWrites } from "@/lib/api/endpoints";
+import { redactBody } from "@/lib/api/redaction";
 import { authRequired } from "@/lib/server/auth-gate";
 import { requireCsrf, sessionFrom } from "@/lib/server/auth-http";
 import {
@@ -15,8 +16,14 @@ import {
  *
  * `/api/gateway/<rest>` becomes `<QIP_API_BASE_URL>/api/v1/<rest>`, with the
  * deployment's bearer token attached here rather than in the browser. The
- * upstream status and body are passed through untouched: a console that
- * rewrote a 404 into an empty list would be lying about the platform.
+ * upstream status is passed through untouched, and so is the body except for
+ * the fields declared in `@/lib/api/redaction`: a console that rewrote a 404
+ * into an empty list would be lying about the platform, and one that let a
+ * cell's mesh address through while two pages claimed it withheld addresses
+ * was lying about itself. Each replaced field is named in `x-qip-redacted`,
+ * so the removal is legible in the same network tab the value used to be in;
+ * everything else crosses byte for byte, which is why the redactor rebuilds a
+ * body only when a declared field was really there.
  *
  * `x-qip-gateway` states who produced the response, so the client can tell "the
  * platform said no such route" from "this process could not reach the platform".
@@ -135,14 +142,20 @@ async function forward(request: NextRequest, context: RouteContext): Promise<Res
       redirect: "manual",
     });
     const text = await response.text();
-    return new Response(text, {
-      status: response.status,
-      headers: {
-        "content-type": response.headers.get("content-type") ?? "application/json",
-        "cache-control": "no-store",
-        "x-qip-gateway": "upstream",
-      },
+    // The one place a response body is allowed to change shape, and it changes
+    // it visibly. `Role::Viewer` is enough to read a cell's mesh address off
+    // `/mesh` and off the `mesh` block inside `/system/status`; no page here
+    // renders one, and the topology page claimed none reached a browser. It
+    // does not now.
+    const upstreamType = response.headers.get("content-type");
+    const redaction = redactBody(path.slice(API_VERSION_PREFIX.length), text, upstreamType);
+    const outgoing = new Headers({
+      "content-type": upstreamType ?? "application/json",
+      "cache-control": "no-store",
+      "x-qip-gateway": "upstream",
     });
+    if (redaction.fields.length > 0) outgoing.set("x-qip-redacted", redaction.fields.join(", "));
+    return new Response(redaction.body, { status: response.status, headers: outgoing });
   } catch (cause) {
     // The path, never the resolved URL. `QIP_API_BASE_URL` names an in-cluster
     // address the public may not see, and a gateway that echoes it into an

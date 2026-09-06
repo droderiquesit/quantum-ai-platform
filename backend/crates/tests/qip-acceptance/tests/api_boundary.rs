@@ -940,6 +940,15 @@ fn the_api_calls_no_platform_mutator_beyond_the_ten_it_is_allowed() {
         "open_trial_book",
         "ingest_cell_report",
         "issue_cycle_whitelist",
+        // `issue_episodic_digest` — the same class as `issue_cycle_whitelist`
+        // and narrower. `pending_policy` asks the platform for slot 4 once per
+        // cycle as it builds the payloads, and the API supplies nothing to it
+        // but the instant: the digest is over the LEARN stage's own episodic
+        // memory, the slot it returns is stamped with the newest *knowable*
+        // episode's instant and never with the issue instant, and `&mut` is
+        // for the journal append alone. Nothing a caller of the API sends can
+        // widen what a cell may do with it.
+        "issue_episodic_digest",
         "observe",
         "observe_statement",
         "approve_registration",

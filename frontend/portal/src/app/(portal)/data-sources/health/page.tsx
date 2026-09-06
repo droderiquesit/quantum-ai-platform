@@ -12,6 +12,7 @@ import {
 } from "@/components/data/States";
 import { platform } from "@/lib/api/client";
 import { NOT_YET_SERVED } from "@/lib/api/endpoints";
+import { WIRE_DISCLOSURES } from "@/lib/api/redaction";
 import type { SystemStatus } from "@/lib/api/types";
 import { formatTimestamp } from "@/lib/format";
 import { useRegistrations, type RegistrationSource } from "@/lib/hooks/useRegistrations";
@@ -49,13 +50,31 @@ import { useResource } from "@/lib/hooks/useResource";
  * is exactly what is missing and an operator should be able to read that off
  * one screen rather than infer it from a page that has no health panel at all.
  *
- * **What this page will not render, and why it is a rule rather than a habit.**
- * The gateway redacts `QIP_API_BASE_URL` out of its own error bodies so an
- * upstream address does not reach a browser. Anything this console says about
- * an upstream is held to the same line: no credential, no variable a credential
- * is read from, no command that would write one, no venue URL and no internal
- * address. `GET /registrations` carries `secret_slot`, `secret_command`,
- * `terms` and the companion slots, and none of the four is rendered here.
+ * **What this page will not render, and the half of that it cannot enforce.**
+ * No credential, no variable a credential is read from, no command that would
+ * write one, no venue URL and no internal address is rendered here. That much
+ * is this page's to promise and it keeps it.
+ *
+ * What it may not promise is the wire, and it used to. The line here said the
+ * four fields were withheld, full stop, which reads as an assurance that they
+ * do not reach the browser at all — and they do. This page's own catalogue read
+ * is `GET /registrations`, which answers `Role::Viewer` with `secret_slot`,
+ * `secret_command`, each companion command and `terms` for every catalogued
+ * source; opening this screen puts every venue's slot name and its Secret
+ * Manager write command in the network tab, in memory, and in reach of any
+ * extension with host permissions, whatever the screen shows. The
+ * console cannot take that back at the gateway: `/data-sources/registrations`
+ * and `/compliance` render the slot names because the credential lifecycle is
+ * their whole job, so stripping the fields would break the pages that need them
+ * and keep nothing from a browser that can call the route itself.
+ *
+ * So the claim is now split in two — what this page renders, and what the read
+ * behind it carried — and the second half names the platform-side change that
+ * would close it, in `WIRE_DISCLOSURES` (`@/lib/api/redaction`), which this
+ * page renders rather than restates. `GET /mesh` and `GET /system/status` are
+ * the other half of that module: those the gateway does redact, because no page
+ * here needs a cell's address. `tests/wire.spec.ts` asserts both against the
+ * response body rather than the DOM.
  *
  * There is no control on this page. It reads, and a page about whether a feed
  * is healthy has nothing it could legitimately submit.
@@ -240,30 +259,75 @@ export default function DataSourceHealth() {
       </Panel>
 
       <Panel data-testid="feed-health-redaction">
-        <PanelHead title="What this page will not render" />
+        <PanelHead title="What this page will not render, and what the read behind it still carried" />
         <PanelBody>
-          <StateBlock
-            tone="neutral"
-            label="withheld on purpose"
-            headline="No credential, no variable name, no command, no venue URL, no internal address."
-          >
-            <p>
-              <span className="num">GET /registrations</span> carries{" "}
-              <span className="num">secret_slot</span>, <span className="num">secret_command</span>,{" "}
-              <span className="num">terms</span> and any companion slots, and none of the four is on
-              this page. A health screen is the one an operator screenshots into an incident thread,
-              and a variable name beside a venue is half of the instruction for getting a key out of
-              a deployment. The variable names live on{" "}
-              <Link href="/data-sources/registrations" className="underline">
-                venue registrations
-              </Link>
-              , behind the page whose job is the credential lifecycle.
-            </p>
-            <p className="mt-2">
-              Nothing here reaches the platform except reads, and no control on this page could
-              submit an order: none exists, and the gateway declares no write this page could call.
-            </p>
-          </StateBlock>
+          <div className="flex flex-col gap-3">
+            <StateBlock
+              tone="neutral"
+              label="withheld on purpose"
+              headline="No credential, no variable name, no command, no venue URL and no internal address is rendered on this page."
+            >
+              <p data-testid="feed-health-withheld">
+                <span className="num">GET /registrations</span> carries{" "}
+                <span className="num">secret_slot</span>, <span className="num">secret_command</span>,{" "}
+                <span className="num">terms</span> and any companion slots, and none of the four is on
+                this page. A health screen is the one an operator screenshots into an incident thread,
+                and a variable name beside a venue is half of the instruction for getting a key out of
+                a deployment. The variable names live on{" "}
+                <Link href="/data-sources/registrations" className="underline">
+                  venue registrations
+                </Link>
+                , behind the page whose job is the credential lifecycle.
+              </p>
+              <p className="mt-2">
+                Nothing here reaches the platform except reads, and no control on this page could
+                submit an order: none exists, and the gateway declares no write this page could call.
+              </p>
+            </StateBlock>
+            <StateBlock
+              tone="warn"
+              label="on the wire regardless"
+              headline="Not rendering a field is not the same as not receiving it, and this panel used to say otherwise."
+            >
+              <p data-testid="feed-health-disclosure">
+                The paragraph above is about pixels. The read that fills the catalogue on this page is{" "}
+                <span className="num">GET /api/v1/registrations</span>, and it answers those fields to
+                anything holding the lowest role — so they are in this browser&rsquo;s network tab
+                whatever the screen shows. This console does not redact them, and the reason is not
+                oversight: the pages below render them because the credential lifecycle is their job,
+                and a browser that can read this page can call the route itself, so removing the
+                fields here would be a claim rather than a control. What would close it is on the
+                platform&rsquo;s side, and is named per route.
+              </p>
+              <ul className="mt-2 flex flex-col gap-2" data-testid="feed-health-disclosures">
+                {WIRE_DISCLOSURES.map((disclosure) => (
+                  <li
+                    key={disclosure.route}
+                    data-testid="feed-health-disclosure-row"
+                    data-route={disclosure.route}
+                    data-role={disclosure.role}
+                  >
+                    <span className="num">GET /api/v1{disclosure.route}</span> —{" "}
+                    <span className="num">{disclosure.fields.join(", ")}</span>, served to{" "}
+                    <span className="num">{disclosure.role}</span>. {disclosure.why}{" "}
+                    <span className="text-[color:var(--color-ink-faint)]">
+                      Platform-side fix: {disclosure.platform_fix}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2">
+                The fields the gateway <em>does</em> remove are the mesh addresses on{" "}
+                <span className="num">GET /mesh</span> and{" "}
+                <span className="num">GET /system/status</span>, which no page here renders; they are
+                listed on{" "}
+                <Link href="/topology" className="underline">
+                  topology
+                </Link>{" "}
+                beside the graph that would otherwise have drawn them.
+              </p>
+            </StateBlock>
+          </div>
         </PanelBody>
       </Panel>
     </div>
