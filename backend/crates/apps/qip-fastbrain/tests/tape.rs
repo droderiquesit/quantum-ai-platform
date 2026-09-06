@@ -516,22 +516,32 @@ fn the_macro_arm_feeds_the_macro_analyst_on_the_tape_and_the_review_still_holds_
 
     // Later on the tape the review approves a hypothesis — on the MRDN
     // drift, once enough of it has printed — at an effective confidence
-    // above the review's 0.50. Approved is not sized: the DECIDE stage
-    // holds a thesis to `PlatformConfig::reasoning_confidence_bar`, the
-    // panel's own documented resolving power, and nothing on this tape
-    // reaches it. So there is no proposal, no order and no fill, and this
-    // test says so with the two numbers side by side rather than reading
-    // "approved" as "acted on".
-    let decide_bar = PlatformConfig::default().reasoning_confidence_bar;
+    // above the review's 0.50. Approved is still not sized, and the reason
+    // is the optimiser, not a confidence bar.
+    //
+    // What stood here said the DECIDE stage "holds a thesis to
+    // `PlatformConfig::reasoning_confidence_bar`". It does not and never
+    // did: `stage_decide` sizes whatever REASON approved and compares
+    // nothing to a bar, and when that sentence was written nothing in
+    // `qip-kernel` read the field at all. The assertion under it —
+    // `best_confidence < 0.90` against panel confidences near 0.5 — was
+    // near-vacuous, and it named a control that did not exist as the cause
+    // of a number it did not cause. The bar now has one reader,
+    // `Platform::reason_decision_context`, where it caps the *routing*
+    // requirement; it decides which rung answers the question and has
+    // nothing to say about whether an answer is sized.
+    //
+    // The real reason is on the record the cycles left. Every proposal on
+    // this tape is one of two rationales: 149 cycles had no pending thesis
+    // at all, and the 107 that did reached the construction and got an
+    // infeasible solution back from the mandate-constrained optimiser —
+    // "expresses 1 approved thesis(es) at -0.0% gross, sized by
+    // quadratic_program: no feasible solution found". A proposal with an
+    // infeasible solution has no legs. That is what this test asserts now,
+    // which is a claim about the platform rather than about a constant.
     assert!(
         best_confidence >= 0.50,
         "no hypothesis on the tape was approved by the review: best {best_confidence:.3}"
-    );
-    assert!(
-        best_confidence < decide_bar,
-        "the best effective confidence {best_confidence:.3} reaches the {decide_bar:.2} decide \
-         bar: a thesis may now be sized on this tape, and this test must grow to assert the \
-         proposal, the order, the fill and the LEARN attribution that follow"
     );
     // DECIDE records a proposal every cycle, with no legs on a cycle that
     // sized nothing; the working set is the premise and the legs the claim.
@@ -539,10 +549,37 @@ fn the_macro_arm_feeds_the_macro_analyst_on_the_tape_and_the_review_still_holds_
         !platform.proposals().is_empty(),
         "premise: DECIDE recorded no proposal at all"
     );
+    // Premise: some cycle really did reach the construction with an approved
+    // thesis. Without it the claim below would hold on a tape that approved
+    // nothing, and "no legs" would prove only that the panel never agreed.
+    let constructed: Vec<&str> = platform
+        .proposals()
+        .iter()
+        .map(|proposal| proposal.rationale.as_str())
+        .filter(|rationale| rationale.starts_with("expresses "))
+        .collect();
+    assert!(
+        !constructed.is_empty(),
+        "premise: no approved thesis ever reached the construction, so this tape says nothing \
+         about why nothing was sized"
+    );
+    assert!(
+        constructed
+            .iter()
+            .all(|rationale| rationale.contains("no feasible solution found")),
+        "a construction on this tape found a feasible solution, so a thesis may now be sized \
+         here and this test must grow to assert the proposal, the order, the fill and the LEARN \
+         attribution that follow: {:?}",
+        constructed
+            .iter()
+            .find(|rationale| !rationale.contains("no feasible solution found"))
+    );
     let legs: usize = platform.proposals().iter().map(|p| p.len()).sum();
     assert_eq!(
-        legs, 0,
-        "a thesis was sized below the {decide_bar:.2} decide bar: {legs} leg(s) proposed"
+        legs,
+        0,
+        "{} construction(s) came back infeasible and {legs} leg(s) were proposed anyway",
+        constructed.len()
     );
     assert_eq!(
         platform.orders().fills().len(),

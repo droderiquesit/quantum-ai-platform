@@ -6,9 +6,21 @@ import { Suspense } from "react";
 import { Chip, Freshness, KeyValue } from "@/components/data/Bits";
 import { Kpi, KpiRow } from "@/components/data/Kpi";
 import { Panel, PanelBody, PanelHead, TableWell } from "@/components/data/Panel";
-import { EmptyBlock, LoadingBlock, ResourceView, StateBlock } from "@/components/data/States";
+import {
+  EmptyBlock,
+  LoadingBlock,
+  MissingEndpointBlock,
+  ResourceView,
+  StateBlock,
+} from "@/components/data/States";
+import { NOT_YET_SERVED } from "@/lib/api/endpoints";
 import { formatCount, formatDecimal, formatTimestamp } from "@/lib/format";
-import { useLedgerUsers, type LedgerUser, type LedgerUsers } from "@/lib/hooks/useTreasury";
+import {
+  useLedgerUsers,
+  useSessionIdentity,
+  type LedgerUser,
+  type LedgerUsers,
+} from "@/lib/hooks/useTreasury";
 import { CapabilityChip, Muted, TreasuryHeader, WithdrawalChip } from "../_shared";
 
 /**
@@ -31,8 +43,12 @@ import { CapabilityChip, Muted, TreasuryHeader, WithdrawalChip } from "../_share
  * person who signs in here — so the account on screen is the one an operator
  * selected, never the signed-in person's own. A page that greeted the reader
  * with "your account" would be naming a binding that does not exist anywhere
- * below it. The contract that would make it exist is written down in the
- * handoff rather than invented here.
+ * below it. The two routes that would make it exist are named on the page
+ * itself, in the "Whose account this is" panel, out of the same
+ * `NOT_YET_SERVED` table every other absent endpoint on this console renders
+ * from — because until they were, the reason this page shows an operator's
+ * pick lived only in this comment and in a handoff document, and neither is
+ * legible from a screen.
  *
  * **The states are four and they do not look alike.** A platform that could not
  * be reached, a credential the route refused, a ledger holding no account at
@@ -78,6 +94,70 @@ function Account() {
           </ResourceView>
         </PanelBody>
       </Panel>
+
+      <Panel>
+        <PanelHead title="Whose account this is" />
+        <PanelBody>
+          <WhoseAccount />
+        </PanelBody>
+      </Panel>
+    </div>
+  );
+}
+
+/**
+ * The binding that does not exist, named where a reader would otherwise assume
+ * it does.
+ *
+ * The page's own doc comment has said this since it landed, and a source
+ * comment is not something an operator looking at the screen can read. So the
+ * two routes that would close it are in `NOT_YET_SERVED` — the same table
+ * every other absent endpoint on this console is rendered from — and this
+ * panel renders them beside who is actually signed in.
+ *
+ * The attribution wording is the one agreed for the venue-registration
+ * dialog and it is deliberately the same: what the platform records is this
+ * console's own deployment credential, a subject such as `operator@env`, and
+ * naming the signed-in person as the subject of a platform-recorded fact
+ * names an identity nothing downstream holds. Here the fact is which account
+ * the reader is looking at, which is a read rather than a write, and the gap
+ * is the same one.
+ */
+function WhoseAccount() {
+  const identity = useSessionIdentity();
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p
+        className="text-[11.5px] leading-relaxed text-[color:var(--color-ink-dim)]"
+        data-testid="account-binding"
+      >
+        The account above is the one an operator selected. It is not resolved from whoever is signed
+        in to this console, because nothing below this page can resolve that: every browser session
+        reaches the platform through one deployment credential, so the subject the platform sees is
+        that credential&rsquo;s — something of the form{" "}
+        <span className="num">operator@env</span>, the same for every person who signs in here — and
+        it is not a ledger account. Which human is reading is known only from this console&rsquo;s
+        own sign-in record, which the platform&rsquo;s event log does not hold.
+      </p>
+
+      <p className="text-[11px] leading-snug text-[color:var(--color-ink-faint)]" data-testid="account-session">
+        {identity.status === "loading"
+          ? "reading who is signed in…"
+          : identity.status === "unauthenticated"
+            ? "no one is signed in to this console; the account above would be the same one either way, because the platform is not asked who is reading"
+            : `signed in as ${identity.name} (${identity.email}), roles: ${
+                identity.roles.length === 0 ? "none" : identity.roles.join(", ")
+              } — a console identity, not a ledger account`}
+      </p>
+
+      <MissingEndpointBlock endpoint={NOT_YET_SERVED["accountForSession"]!} />
+      <MissingEndpointBlock endpoint={NOT_YET_SERVED["accountByUser"]!} />
+
+      <p className="text-[11px] leading-snug text-[color:var(--color-ink-faint)]">
+        Until the first of those exists this console must not say &ldquo;your account&rdquo;, and it
+        does not. Nothing on this page is filled in to stand in for either route.
+      </p>
     </div>
   );
 }

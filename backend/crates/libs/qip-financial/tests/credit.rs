@@ -12,11 +12,16 @@
 
 use qip_core::error::Result;
 use qip_core::testing::approx_eq;
-use qip_core::{Decimal, dec};
+use qip_core::time::Duration;
+use qip_core::{Decimal, ObjectId, Timestamp, dec};
+use qip_financial::asset_class::InstrumentType;
 use qip_financial::credit::{
-    Covenant, CovenantKind, CovenantState, CreditProfile, DefaultPrior, indicative_recovery_rate,
+    Covenant, CovenantKind, CovenantSource, CovenantState, CreditProfile, DefaultPrior,
+    LOAN_LEVERAGE_COVENANT, indicative_recovery_rate,
 };
-use qip_financial::extensions::{CreditRating, Seniority};
+use qip_financial::extensions::{CreditRating, Extension, LoanDetails, Seniority};
+use qip_financial::object::FinancialObject;
+use qip_financial::quality::Provenance;
 
 fn senior(default_probability: f64, recovery: f64) -> Result<CreditProfile> {
     CreditProfile::new(
@@ -25,6 +30,57 @@ fn senior(default_probability: f64, recovery: f64) -> Result<CreditProfile> {
         default_probability,
         recovery,
     )
+}
+
+fn loan_origin() -> Timestamp {
+    Timestamp::from_civil(2026, 8, 22)
+}
+
+/// A drawn leveraged loan, built through the object model so the covenant
+/// under test is the one `CreditProfile::from_object` derives rather than one
+/// the test handed it.
+fn loan_object(
+    leverage_covenant: Option<f64>,
+    net_debt_to_ebitda: f64,
+    covenant_lite: bool,
+) -> Result<FinancialObject> {
+    let mut object = FinancialObject::builder(
+        ObjectId::from_string("obj-LOAN"),
+        "LOAN",
+        InstrumentType::Loan,
+    )
+    .venue("OTC")
+    .price(dec!("98"))
+    .provenance(Provenance::synthetic("test", loan_origin()))
+    .extension(Extension::Loan(LoanDetails {
+        borrower: "Overlevered Ltd".into(),
+        maturity: loan_origin().saturating_add(Duration::from_days(1826)),
+        commitment: dec!("50000000"),
+        drawn: dec!("50000000"),
+        spread_bps: 525.0,
+        benchmark: "SOFR".into(),
+        seniority: Seniority::SecuredFirstLien,
+        modified_duration: 0.25,
+        covenant_lite,
+        net_debt_to_ebitda,
+        leverage_covenant,
+        is_amortising: false,
+    }))
+    .build(loan_origin())?;
+    // Without a stated estimate the engine refuses to profile the borrower at
+    // all, and every assertion below would be about the wrong refusal.
+    object.risk.default_probability = 0.08;
+    Ok(object)
+}
+
+fn loan_profile(leverage_covenant: Option<f64>, net_debt_to_ebitda: f64) -> Result<CreditProfile> {
+    CreditProfile::from_object(&loan_object(leverage_covenant, net_debt_to_ebitda, false)?)
+        .expect("a loan is a credit claim")
+}
+
+fn loan_profile_lite(net_debt_to_ebitda: f64) -> Result<CreditProfile> {
+    CreditProfile::from_object(&loan_object(None, net_debt_to_ebitda, true)?)
+        .expect("a loan is a credit claim")
 }
 
 #[test]
@@ -244,8 +300,8 @@ fn a_covenant_is_tested_in_the_direction_its_kind_states() -> Result<()> {
     // wrong way round, which reports a breached borrower as compliant. A
     // ceiling and a floor at the same threshold and the same observation must
     // disagree.
-    let ceiling = Covenant::new("net_debt_to_ebitda", CovenantKind::Ceiling, 6.0, 7.5)?;
-    let floor = Covenant::new("interest_coverage", CovenantKind::Floor, 6.0, 7.5)?;
+    let ceiling = Covenant::agreed("net_debt_to_ebitda", CovenantKind::Ceiling, 6.0, 7.5)?;
+    let floor = Covenant::agreed("interest_coverage", CovenantKind::Floor, 6.0, 7.5)?;
     assert_eq!(
         ceiling.state(),
         CovenantState::Breached,
@@ -259,9 +315,9 @@ fn a_covenant_is_tested_in_the_direction_its_kind_states() -> Result<()> {
 
     // Met, but inside the watch band: a state with only two arms would report
     // this identically to a borrower at half the threshold.
-    let tight = Covenant::new("net_debt_to_ebitda", CovenantKind::Ceiling, 6.0, 5.8)?;
+    let tight = Covenant::agreed("net_debt_to_ebitda", CovenantKind::Ceiling, 6.0, 5.8)?;
     assert_eq!(tight.state(), CovenantState::Watch);
-    let comfortable = Covenant::new("net_debt_to_ebitda", CovenantKind::Ceiling, 6.0, 2.0)?;
+    let comfortable = Covenant::agreed("net_debt_to_ebitda", CovenantKind::Ceiling, 6.0, 2.0)?;
     assert_eq!(comfortable.state(), CovenantState::Compliant);
     Ok(())
 }
@@ -272,10 +328,10 @@ fn a_covenant_with_a_non_finite_observation_is_refused_rather_than_tested() {
     // missing number reads as a breach in both directions — an operator paged
     // on arithmetic rather than on a borrower.
     assert!(
-        Covenant::new("leverage", CovenantKind::Ceiling, 6.0, 5.0).is_ok(),
+        Covenant::agreed("leverage", CovenantKind::Ceiling, 6.0, 5.0).is_ok(),
         "the premise fails: a well-formed covenant is already refused"
     );
-    let refusal = Covenant::new("leverage", CovenantKind::Ceiling, 6.0, f64::NAN)
+    let refusal = Covenant::agreed("leverage", CovenantKind::Ceiling, 6.0, f64::NAN)
         .expect_err("a covenant with no observation was tested");
     assert!(
         refusal
@@ -283,8 +339,8 @@ fn a_covenant_with_a_non_finite_observation_is_refused_rather_than_tested() {
             .contains("omit the covenant until the borrower reports"),
         "the refusal does not say what to do instead: {refusal}"
     );
-    assert!(Covenant::new("leverage", CovenantKind::Ceiling, f64::NAN, 5.0).is_err());
-    assert!(Covenant::new("  ", CovenantKind::Ceiling, 6.0, 5.0).is_err());
+    assert!(Covenant::agreed("leverage", CovenantKind::Ceiling, f64::NAN, 5.0).is_err());
+    assert!(Covenant::agreed("  ", CovenantKind::Ceiling, 6.0, 5.0).is_err());
 }
 
 #[test]
@@ -300,7 +356,7 @@ fn an_obligor_with_no_covenant_reports_no_state_rather_than_compliance() -> Resu
         "an untested obligor reported a covenant state"
     );
 
-    let tested = senior(0.04, 0.4)?.with_covenant(Covenant::new(
+    let tested = senior(0.04, 0.4)?.with_covenant(Covenant::agreed(
         "leverage",
         CovenantKind::Ceiling,
         6.0,
@@ -316,8 +372,13 @@ fn the_worst_covenant_is_what_the_profile_reports() -> Result<()> {
     // asserts the register holds more than the breached test, so a profile
     // that dropped everything but the worst would not pass this either.
     let profile = senior(0.04, 0.4)?
-        .with_covenant(Covenant::new("coverage", CovenantKind::Floor, 2.0, 4.0)?)?
-        .with_covenant(Covenant::new("leverage", CovenantKind::Ceiling, 6.0, 9.0)?)?;
+        .with_covenant(Covenant::agreed("coverage", CovenantKind::Floor, 2.0, 4.0)?)?
+        .with_covenant(Covenant::agreed(
+            "leverage",
+            CovenantKind::Ceiling,
+            6.0,
+            9.0,
+        )?)?;
     assert_eq!(
         profile.covenants().count(),
         2,
@@ -344,14 +405,19 @@ fn a_covenant_registered_twice_under_one_name_is_refused_naming_it() -> Result<(
     // Overwriting would let a stale test silently replace a live one, and the
     // register would then report a state nobody could reproduce from the
     // credit agreement.
-    let once = senior(0.04, 0.4)?.with_covenant(Covenant::new(
+    let once = senior(0.04, 0.4)?.with_covenant(Covenant::agreed(
         "leverage",
         CovenantKind::Ceiling,
         6.0,
         2.0,
     )?)?;
     let refusal = once
-        .with_covenant(Covenant::new("leverage", CovenantKind::Ceiling, 4.0, 3.0)?)
+        .with_covenant(Covenant::agreed(
+            "leverage",
+            CovenantKind::Ceiling,
+            4.0,
+            3.0,
+        )?)
         .expect_err("a covenant name was registered twice");
     assert!(
         refusal
@@ -359,6 +425,147 @@ fn a_covenant_registered_twice_under_one_name_is_refused_naming_it() -> Result<(
             .contains("covenant leverage is already registered"),
         "the refusal does not name the covenant: {refusal}"
     );
+    Ok(())
+}
+
+#[test]
+fn a_level_this_platform_assumed_cannot_be_breached_and_says_so_in_its_own_sentence() -> Result<()>
+{
+    // The failure this prevents, and it was live in this file: every
+    // non-covenant-lite loan was given a six-turn leverage ceiling
+    // manufactured for it, and a borrower at 6.4 turns was reported as
+    // "net_debt_to_ebitda (ceiling 6) observed at 6.4: breached" —
+    // indistinguishable from a breach of a covenant the credit agreement
+    // actually contains. `covenant_state` returns an `Option` precisely so
+    // "nothing tested" cannot read as "tested and passed"; here it read as
+    // tested and failed, which is worse, because a breach is escalated.
+    let agreed = Covenant::agreed("net_debt_to_ebitda", CovenantKind::Ceiling, 6.0, 6.4)?;
+    let assumed = Covenant::assumed("net_debt_to_ebitda", CovenantKind::Ceiling, 6.0, 6.4)?;
+
+    // The premise: the same name, direction, level and observation. Everything
+    // that differs below differs because of the source and nothing else.
+    assert_eq!(
+        agreed.state(),
+        assumed.state(),
+        "the fixtures are not paired"
+    );
+    assert_eq!(agreed.state(), CovenantState::Breached);
+
+    assert!(agreed.is_breached(), "a real covenant breach was not one");
+    assert!(
+        !assumed.is_breached(),
+        "a level nobody agreed to was reported as breached: {}",
+        assumed.describe()
+    );
+    assert!(assumed.exceeds_assumed_level());
+    assert!(
+        !agreed.exceeds_assumed_level(),
+        "a contractual breach was filed as an assumption being exceeded"
+    );
+
+    // The sentence, not the flag. This is what an operator reads, and the two
+    // must not differ by a word a scanning eye skips. Matched on the whole
+    // clause rather than on "breach", which is a substring of both.
+    let agreed_sentence = agreed.describe();
+    let assumed_sentence = assumed.describe();
+    assert_eq!(
+        agreed_sentence,
+        "net_debt_to_ebitda (agreement ceiling 6) observed at 6.4: breached"
+    );
+    assert_eq!(
+        assumed_sentence,
+        "net_debt_to_ebitda (no agreement level supplied; tested against this platform's \
+         assumed ceiling 6) observed at 6.4: past the assumed level, which is not a covenant \
+         breach"
+    );
+    assert_ne!(
+        agreed_sentence, assumed_sentence,
+        "the two provenances render identically, which is the defect"
+    );
+
+    // And the register-level split: an obligor whose only test is an
+    // assumption has had nothing tested, so it reports no covenant state at
+    // all rather than a compliant or breached one.
+    let only_assumed = senior(0.04, 0.4)?.with_covenant(assumed)?;
+    assert!(
+        only_assumed.covenants().count() == 1,
+        "the premise fails: the profile did not keep the assumed test"
+    );
+    assert_eq!(
+        only_assumed.covenant_state(),
+        None,
+        "a level this platform assumed was reported as a covenant state"
+    );
+    assert!(only_assumed.breached_covenants().is_empty());
+    assert_eq!(only_assumed.assumed_tests_exceeded().len(), 1);
+
+    let with_agreement = senior(0.04, 0.4)?.with_covenant(agreed)?;
+    assert_eq!(
+        with_agreement.covenant_state(),
+        Some(CovenantState::Breached),
+        "a real covenant stopped reporting a state"
+    );
+    assert_eq!(with_agreement.breached_covenants().len(), 1);
+    assert!(with_agreement.assumed_tests_exceeded().is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_loan_is_tested_against_its_agreements_own_ceiling_when_the_agreement_states_one() -> Result<()>
+{
+    // The default heuristic earns its place only if a real covenant can
+    // displace it. Without `LoanDetails::leverage_covenant` the `Agreement`
+    // arm would be a variant nothing in production ever produces — a
+    // distinction drawn in the type and never reachable from a loan.
+    let stated = loan_profile(Some(4.0), 5.0)?;
+    let covenant = stated
+        .covenants()
+        .next()
+        .expect("a non-covenant-lite loan carries a leverage test");
+    assert_eq!(covenant.source, CovenantSource::Agreement);
+    assert!(
+        approx_eq(covenant.threshold, 4.0, 1e-12),
+        "the agreement's own ceiling was replaced by the platform's default: {}",
+        covenant.threshold
+    );
+    // 5.0 turns is inside the platform's six-turn assumption and outside the
+    // agreement's four, so an implementation ignoring the agreement would
+    // report compliance here. That is the whole point of the fixture.
+    assert_eq!(stated.covenant_state(), Some(CovenantState::Breached));
+    assert_eq!(stated.breached_covenants().len(), 1);
+
+    let unstated = loan_profile(None, 5.0)?;
+    let assumed = unstated
+        .covenants()
+        .next()
+        .expect("a loan with no stated ceiling still reports its leverage");
+    assert_eq!(assumed.source, CovenantSource::Assumed);
+    assert!(
+        approx_eq(assumed.threshold, LOAN_LEVERAGE_COVENANT, 1e-12),
+        "the assumed ceiling is not the documented default: {}",
+        assumed.threshold
+    );
+    assert_eq!(
+        unstated.covenant_state(),
+        None,
+        "a loan whose agreement nobody captured reported a covenant state"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_covenant_lite_loan_carries_no_leverage_test_of_either_kind() -> Result<()> {
+    // The negative case that stops the two tests above being vacuous: if
+    // `from_object` attached a test unconditionally, both would pass on an
+    // implementation that ignored `covenant_lite` entirely.
+    let profile = loan_profile_lite(9.4)?;
+    assert_eq!(
+        profile.covenants().count(),
+        0,
+        "a covenant-lite loan was given a leverage test anyway"
+    );
+    assert_eq!(profile.covenant_state(), None);
+    assert!(profile.assumed_tests_exceeded().is_empty());
     Ok(())
 }
 

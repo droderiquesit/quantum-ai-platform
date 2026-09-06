@@ -10,10 +10,16 @@
 # when what it actually is, is unbuildable.
 #
 # What blocks it is named beside the commented entry below: no boot image
-# exists and nothing in this repository builds one, and nobody has chosen the
-# node's capital allocation. Both are values a person supplies, not values
-# Terraform can derive, so `execution_nodes = {}` stays — a working
-# configuration, not an incomplete one.
+# exists yet, and nobody has chosen the node's capital allocation. The first
+# of those changed shape rather than going away. `.github/workflows/image.yml`
+# and `infrastructure/images/execution-node/` are now the bake — built from
+# the container image `deploy.yml` attested, refusing to run on an artefact
+# the attestor did not sign — but it has never been dispatched, so no image
+# self-link exists to write here. Producing one is three human acts:
+# uncomment `image_bake_subnet_cidr` below, dispatch `infra.yml` with
+# `action=up`, dispatch `image.yml`. The allocation is not like that: it is a
+# number a person chooses and no workflow may pick. So `execution_nodes = {}`
+# stays — a working configuration, not an incomplete one.
 
 # The project this environment lives in. An identifier, not a secret: it
 # appears in every resource name and in the pipeline's own configuration, so
@@ -134,15 +140,19 @@ gitops_master_ipv4_cidr_block = "10.0.36.0/28"
 #     through private Google access and the central plane over the VPC, and a
 #     NAT would give it an IP-layer route to the internet that nothing asked
 #     for.
-#   * `boot_image` has no value anyone can write. Nothing in this repository
-#     bakes a Compute Engine image — `deploy.yml` builds a *container* image of
-#     qip-edge-node — and the startup script's checks (isolcpus, huge pages, no
-#     swap, no container runtime, /usr/local/bin/{qip-edge-node,envoy,
-#     qip-fetch-secret}, the Ops Agent) are the contract that image has to
-#     meet. modules/execution-node/README.md's "No image bake exists" is the
-#     record. Writing a plausible self-link here would produce a plan that
-#     reads as ready and an apply that fails after the subnet, the identity
-#     and four IAM bindings exist.
+#   * `boot_image` has no value anyone can write **yet**. There is now a bake
+#     — `.github/workflows/image.yml`, with `infrastructure/images/
+#     execution-node/` — which turns the container image `deploy.yml` attested,
+#     the vendored Envoy and a pinned Ops Agent into a Compute Engine image
+#     meeting the startup script's checks (isolcpus, huge pages, no swap, no
+#     container runtime, /usr/local/bin/{qip-edge-node,envoy,qip-fetch-secret},
+#     the Ops Agent). It has never been dispatched, so there is no self-link.
+#     The image is built for one machine shape — the isolated-core range is in
+#     its kernel command line — so the image named here and `machine_type`
+#     above have to be the same shape or the node boots and declines to trade.
+#     Writing a plausible self-link here would still produce a plan that reads
+#     as ready and an apply that fails after the subnet, the identity and four
+#     IAM bindings exist.
 #   * `region_allocation` is the ceiling on the capital this cell may hold in
 #     reservation. It has no default anywhere on purpose: a default is a number
 #     nobody chose, and this is the one number in a cell's envelope a reviewer
@@ -170,6 +180,27 @@ gitops_master_ipv4_cidr_block = "10.0.36.0/28"
 # it, and `an_execution_node_may_reach_its_venues_and_the_central_plane_and_
 # nothing_else` in the acceptance suite refuses the change.
 execution_nodes = {}
+
+# --- Where the node's boot image is baked ------------------------------------
+#
+# Commented out, so `module.image_bake` creates nothing and this plan is
+# unchanged by its existence. Uncommenting it and applying creates three
+# things: a staging bucket, an identity whose only grant is reading that
+# bucket, and a /28 with no route to the internet for the throwaway machine
+# `.github/workflows/image.yml` builds the image on. None of them is an
+# execution node and none of them bills while idle beyond a few objects the
+# bucket's lifecycle rule expires after a week.
+#
+# `10.0.37.0/28` is free: it sits above the control plane's endpoint range
+# (10.0.36.0/28) and the trust zones (10.0.32-35.0/24), above the console
+# (10.0.16.0/26), and far below the ladder the execution nodes draw from
+# (10.<64+n>.0.0/16, per environments/README.md) — so it overlaps nothing
+# here and nothing a node would take.
+#
+# This is the first of the two acts ADR 0035 is waiting on. The second —
+# `region_allocation` — is a number a person chooses and nothing may default.
+#
+# image_bake_subnet_cidr = "10.0.37.0/28"
 
 # Every managed service off. Development runs on memory, which is what the
 # implemented storage targets are for on an instance with no volume.

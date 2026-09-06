@@ -156,6 +156,24 @@ fn private_fund(
     distributed: Decimal,
     residual: Decimal,
 ) -> Result<FinancialObject> {
+    private_fund_reported_at(symbol, committed, called, distributed, residual, start())
+}
+
+/// The same fund with the administrator's report dated.
+///
+/// `observed` becomes the record's `provenance.event_time`, which since
+/// `9fe3df4` is the instant a mark decays and falls due for review from — not
+/// the instant it was read. A fund whose report is older than the mark's review
+/// interval is the routine case, not an exotic one: private administrators
+/// report quarterly with a 45-to-90-day lag.
+fn private_fund_reported_at(
+    symbol: &str,
+    committed: Decimal,
+    called: Decimal,
+    distributed: Decimal,
+    residual: Decimal,
+    observed: Timestamp,
+) -> Result<FinancialObject> {
     FinancialObject::builder(object(symbol), symbol, InstrumentType::PrivateEquityFund)
         .venue("OTC")
         .geography("US")
@@ -170,7 +188,7 @@ fn private_fund(
             lockup_years: 7.0,
             capital_call_notice_days: 10,
         }))
-        .provenance(Provenance::synthetic("administrator", start()))
+        .provenance(Provenance::synthetic("administrator", observed))
         .build(start())
 }
 
@@ -479,6 +497,32 @@ fn the_weaker_of_two_marks_produces_the_smaller_notional_from_an_otherwise_ident
         Decimal::ONE,
         "the premise failed: the listed reference is itself narrowed"
     );
+    // "Unnarrowed" means unnarrowed *by a mark*. The centre still narrows the
+    // budget by §6.2, and this is the only assertion in this crate that pins
+    // that product at the seam a cycle crosses rather than at the accessor
+    // beside it — `central_degradation` is proved by unit tests in
+    // `platform.rs`, and a reviewer deleted the multiplier from
+    // `construct_from` and then deleted only its self-model row, and both
+    // survived every test in this file.
+    //
+    // The figure is stated here rather than read back off the platform, which
+    // is the whole point: an expectation derived from `central_degradation`
+    // moves with the mutation and pins nothing. On a platform assembled this
+    // cycle the self-model has absorbed no graded outcome, so §6.2 row 6 reads
+    // `Unavailable` and halves; the causal graph has absorbed no claim, so
+    // row 2 reads `Unavailable` and takes 0.75; the belief state was written
+    // by this cycle's own REASON stage, so row 4 is fresh and takes nothing.
+    // 1 x 0.75 x 0.5 = 0.375 of a 1,000,000 book. Dropping the narrowing
+    // altogether gives 1,000,000; dropping only the self-model row gives
+    // 750,000.
+    assert_eq!(
+        unnarrowed.equity.amount,
+        book() * dec!("0.375"),
+        "the budget a whole cycle handed the optimiser is not the free capital narrowed by §6.2 \
+         as the centre reads it: {} against a book of {}",
+        unnarrowed.equity.amount,
+        book()
+    );
 
     let reported_universe = {
         let mut universe = Universe::new();
@@ -582,6 +626,164 @@ fn the_weaker_of_two_marks_produces_the_smaller_notional_from_an_otherwise_ident
              mark's confidence {confidence}"
         );
     }
+
+    // Finally, the magnitude — and this is the one thing every assertion above
+    // fails to hold, because each of them has the platform's own reading on
+    // both sides. `assert_eq!(budget, unnarrowed * confidence)` is a statement
+    // about the *shape* of the haircut and says nothing about its size: halve
+    // every private mark's haircut (`ValuationMethod::base_confidence`,
+    // `LastRound` 0.40 -> 0.80 and `Cost` 0.20 -> 0.40) and the budget doubles,
+    // the confidence doubles with it, the ordering between the two methods
+    // holds, and every assertion in this file still passes while every private
+    // position the platform would take has doubled. That mutation was applied
+    // and no test in this crate caught it.
+    //
+    // So these two bounds are stated here and derived from nothing the platform
+    // computed. Both ends matter:
+    //
+    // * A `LastRound` mark is the price of one negotiated primary transaction
+    //   that may stand for a year before review. It is evidence, and it is not
+    //   a market, so the platform may stand behind **at most half** of what it
+    //   would deploy behind a quoted price.
+    // * `ValuationMethod::Cost` documents itself as "an admission of
+    //   ignorance": the number is what was paid, and nothing since has been
+    //   observed. **At most a quarter.**
+    // * And each has a floor, because a haircut severe enough that a private
+    //   position rounds to nothing is a refusal wearing a haircut's clothes.
+    //   This plane has a refusal path and it is the right place for a refusal —
+    //   the test above this one drives it — so a mark the plane was willing to
+    //   strike must still support a position an operator can see.
+    for (label, proposal, most, least) in [
+        ("last-round", &reported, dec!("2"), dec!("10")),
+        ("at-cost", &at_cost, dec!("4"), dec!("20")),
+    ] {
+        assert!(
+            proposal.equity.amount * most <= unnarrowed.equity.amount,
+            "the {label} cycle deployed {} of the {} a quoted price supports, which is more than \
+             one part in {most}; a private mark is standing behind more capital than the method \
+             can carry",
+            proposal.equity.amount,
+            unnarrowed.equity.amount
+        );
+        assert!(
+            proposal.equity.amount * least >= unnarrowed.equity.amount,
+            "the {label} cycle deployed {} of the {} a quoted price supports, less than one part \
+             in {least}; a mark the plane was willing to strike is being refused by arithmetic \
+             instead of by the refusal path",
+            proposal.equity.amount,
+            unnarrowed.equity.amount
+        );
+    }
+    Ok(())
+}
+
+// --- 3b. a mark nobody has refreshed ----------------------------------------
+
+/// How long before [`start`] the administrator's report is dated in the stale
+/// run.
+///
+/// Past the 365-day review interval a `LastRound` mark carries, and not so far
+/// past it that the mark decays to nothing: at 400 days the decayed confidence
+/// is still about 0.086, so a platform with the staleness refusal deleted would
+/// happily size a small position rather than fail for some unrelated reason.
+/// That is the mutation this test exists for, and a fixture that made it fail
+/// for the wrong reason would prove nothing.
+const REPORT_AGE_DAYS: i64 = 400;
+
+#[test]
+fn a_cycle_whose_thesis_rests_on_a_mark_past_its_review_date_sizes_nothing_and_says_when_it_fell_due()
+-> Result<()> {
+    // The staleness half of `sizing_confidence`, driven through a whole cycle.
+    // Deleting the `is_stale` block was caught only by an accessor test in
+    // `valuation_plane.rs`, which calls `sizing_confidence` itself; nothing
+    // asserted the consequence, which is that a cycle refuses to size against
+    // an expired mark. The distinction from the test above it is the point: the
+    // plane *did* strike a mark here and the platform still will not deploy
+    // against it, because a mark nobody has refreshed for longer than its own
+    // review interval is a number about a world that has moved.
+    //
+    // Premise and control: the identical record, reported today, sizes a real
+    // position. Without it, "nothing was sized" below would pass on a cycle
+    // that was never going to size anything.
+    let fresh_universe = {
+        let mut universe = Universe::new();
+        universe.insert(private_fund(
+            "PRIV",
+            dec!("400000"),
+            dec!("400000"),
+            Decimal::ZERO,
+            dec!("500000"),
+        )?)?;
+        universe
+    };
+    let (_, fresh) = cycle_over(fresh_universe, "PRIV")?;
+    sized_notional(&fresh, "freshly-reported control");
+
+    let stale_universe = {
+        let mut universe = Universe::new();
+        universe.insert(private_fund_reported_at(
+            "PRIV",
+            dec!("400000"),
+            dec!("400000"),
+            Decimal::ZERO,
+            dec!("500000"),
+            start().saturating_sub(Duration::from_days(REPORT_AGE_DAYS)),
+        )?)?;
+        universe
+    };
+    let (platform, refused) = cycle_over(stale_universe, "PRIV")?;
+
+    // Premise, and the one that separates this test from the unmarkable one:
+    // the plane had no trouble marking this record. It is the age of the
+    // evidence and nothing else that stops the sizing.
+    assert!(
+        platform.illiquid_unmarkable().is_empty(),
+        "the premise failed: the plane refused to mark the record at all, so this test is the \
+         unmarkable test again: {:?}",
+        platform.illiquid_unmarkable()
+    );
+    let mark = platform
+        .illiquid_mark("obj-PRIV")
+        .expect("the premise failed: a reported residual is markable whatever its age");
+    assert!(
+        mark.is_stale(start()),
+        "the premise failed: a report dated {REPORT_AGE_DAYS} days back is not past the {} mark's \
+         review date of {}",
+        mark.method().label(),
+        mark.next_review().to_rfc3339()
+    );
+
+    // The consequence, first: nothing was sized against it.
+    assert!(
+        refused.is_empty(),
+        "a mark {REPORT_AGE_DAYS} days past its review date was sized into anyway: {} leg(s), \
+         rationale: {}",
+        refused.len(),
+        refused.rationale
+    );
+    assert_eq!(refused.traded_notional(), Decimal::ZERO);
+    // Premise: a thesis really was approved and really did reach construction,
+    // so the zero above is a refusal and not a quiet cycle.
+    assert!(
+        refused
+            .rationale
+            .starts_with("1 thesis(es) approved and none sized:"),
+        "the premise failed: no approved thesis reached the construction — rationale: {}",
+        refused.rationale
+    );
+    // And the cycle says which instrument, and when the mark fell due, so an
+    // operator is told what to refresh rather than that something went wrong.
+    assert!(
+        refused.rationale.contains("obj-PRIV")
+            && refused.rationale.contains("due for review")
+            && refused.rationale.contains(&mark.next_review().to_rfc3339()),
+        "the cycle does not name the instrument and the date the mark fell due: {}",
+        refused.rationale
+    );
+
+    assert!(platform.orders().fills().is_empty());
+    assert!(!platform.orders().has_live_fills());
+    assert!(!platform.is_live_capable());
     Ok(())
 }
 

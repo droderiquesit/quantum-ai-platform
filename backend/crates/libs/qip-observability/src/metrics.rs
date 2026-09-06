@@ -625,6 +625,18 @@ pub mod names {
 
     // Risk and execution
     pub const RISK_EVALUATIONS: &str = "qip_risk_evaluations_total";
+    /// Figures a risk read set out to compute and could not, by `figure`:
+    /// `1` while the figure is missing and `0` while it is being computed.
+    ///
+    /// A gauge rather than a counter because the question is "is a control
+    /// running right now", not "how often has it failed". It exists because
+    /// the answer used to be visible nowhere: a liquidity ladder the book
+    /// refused left `RiskState::liquidatable_within` empty, the shipped
+    /// `MinLiquidity` floor took its `None` arm, every order was accepted, and
+    /// the only trace was a sentence on one cycle report that nothing read.
+    /// A control that is not running looks exactly like a control that passed
+    /// unless something says otherwise, and this is the something.
+    pub const RISK_FIGURES_UNEVALUATED: &str = "qip_risk_figures_unevaluated";
     pub const RISK_REJECTIONS: &str = "qip_risk_rejections_total";
     pub const KILL_SWITCH_ENGAGED: &str = "qip_kill_switch_engaged_total";
     pub const ORDERS_SUBMITTED: &str = "qip_orders_submitted_total";

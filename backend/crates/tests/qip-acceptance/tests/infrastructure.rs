@@ -414,6 +414,13 @@ const TRUST_ZONES_MODULE: &str = "infrastructure/terraform/modules/trust-zones/m
 const NETWORK_VARIABLES: &str = "infrastructure/terraform/modules/network/variables.tf";
 const NETWORK_MODULE: &str = "infrastructure/terraform/modules/network/main.tf";
 const SECRETS_MODULE: &str = "infrastructure/terraform/modules/secrets/main.tf";
+/// What the node's boot image is baked on, and the bake itself. The image is
+/// the half of §41.4 no Terraform can hold — the kernel command line, the
+/// absence of swap, the two extra binaries — so the file that creates it and
+/// the file that verifies it are checked against each other here.
+const IMAGE_BAKE_MODULE: &str = "infrastructure/terraform/modules/image-bake/main.tf";
+const IMAGE_WORKFLOW: &str = ".github/workflows/image.yml";
+const IMAGE_PROVISION: &str = "infrastructure/images/execution-node/provision.sh";
 /// The two Cloud Run services this repository deploys outside the catalogue.
 /// `docs/ops/missing-infrastructure-register.md` gaps 1 to 4 are all in this
 /// one file, and each of them was invisible to a suite that never read it.
@@ -740,6 +747,445 @@ fn the_execution_node_has_no_external_address_and_no_container_runtime() {
     assert!(
         variables.contains("!can(regex(\"/family/\", var.boot_image))"),
         "the boot image may be named through a family, which is a moving pointer"
+    );
+}
+
+// --- the boot image: what the bake makes and what the node verifies ---------
+//
+// The image is the half of §41.4 that no Terraform can hold. The startup
+// script *verifies* it at every boot and refuses to start a unit when
+// something is missing; `.github/workflows/image.yml` and
+// `infrastructure/images/execution-node/provision.sh` *create* it. Two files
+// describing one contract is exactly the arrangement that drifts, and the
+// drift is invisible until a machine comes up and declines to trade — after
+// an apply that already created a subnet, an identity and four IAM bindings.
+//
+// So the two lists are compared here rather than trusted to agree.
+
+/// Every `/usr/local/bin/<name>` the node's startup script refuses to start
+/// without, read out of its `[ -x … ]` checks.
+///
+/// Parsed rather than listed, because a list here would be a third copy of the
+/// contract and this whole section exists because copies drift.
+fn binaries_the_node_requires() -> Vec<String> {
+    let startup = shell_without_comment_lines(&read(NODE_STARTUP));
+    let mut found: Vec<String> = startup
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("[ -x /usr/local/bin/")?;
+            let (name, _) = rest.split_once(' ')?;
+            Some(name.to_string())
+        })
+        .collect();
+    found.sort();
+    found.dedup();
+    assert!(
+        found.len() >= 3,
+        "only {found:?} were parsed out of {NODE_STARTUP}'s executable checks; \
+         the script's shape has changed and this check has stopped checking"
+    );
+    found
+}
+
+/// Every `/usr/local/bin/<name>` the bake installs, as name and file mode,
+/// read out of `provision.sh`'s `install` lines.
+fn binaries_the_bake_installs() -> Vec<(String, String)> {
+    let provision = shell_without_comment_lines(&read(IMAGE_PROVISION));
+    let mut found: Vec<(String, String)> = Vec::new();
+    for line in provision.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("install ") {
+            continue;
+        }
+        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+        let Some(destination) = tokens
+            .last()
+            .and_then(|last| last.strip_prefix("/usr/local/bin/"))
+        else {
+            continue;
+        };
+        let mode = tokens
+            .iter()
+            .position(|token| *token == "-m")
+            .and_then(|index| tokens.get(index + 1))
+            .unwrap_or_else(|| {
+                panic!("{IMAGE_PROVISION} installs {destination} with no explicit mode")
+            });
+        found.push((destination.to_string(), (*mode).to_string()));
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+#[test]
+fn the_boot_image_bake_installs_exactly_what_the_node_refuses_to_start_without() {
+    // Both directions, because each is a different failure.
+    //
+    // A binary the node checks for and the bake does not install is a node
+    // that boots and refuses — the safe direction, and still an apply wasted.
+    // A binary the bake installs that nothing checks for is a file on a
+    // trading machine that no boot-time check would notice going missing or
+    // changing, which is the direction that reads as fine.
+    let required = binaries_the_node_requires();
+    let installed = binaries_the_bake_installs();
+    let installed_names: Vec<String> = installed
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+
+    for name in &required {
+        assert!(
+            installed_names.contains(name),
+            "{NODE_STARTUP} refuses to start without /usr/local/bin/{name} and \
+             {IMAGE_PROVISION} installs {installed_names:?}. A node built from \
+             this image comes up, finds the file missing, and declines to trade."
+        );
+    }
+    for name in &installed_names {
+        assert!(
+            required.contains(name),
+            "{IMAGE_PROVISION} installs /usr/local/bin/{name} and \
+             {NODE_STARTUP} checks for {required:?}. A binary on the hot path \
+             that no boot-time check looks at is one that can go missing or \
+             change without anything refusing."
+        );
+    }
+
+    // Executable and not writable by anyone but root. A binary on the hot
+    // path that the service user can rewrite is a machine where compromising
+    // the service compromises the next boot.
+    for (name, mode) in &installed {
+        assert_eq!(
+            mode, "0755",
+            "{IMAGE_PROVISION} installs /usr/local/bin/{name} at mode {mode}; \
+             0755 is the only mode that is executable by the service user and \
+             writable by nobody but root"
+        );
+    }
+
+    // The Ops Agent is the one required thing that is not a file in
+    // /usr/local/bin: the startup script asks systemd for the unit. A node
+    // nothing scrapes is a node nobody can operate, and every alert policy
+    // naming a `qip_edge_*` descriptor watches something nothing ingests
+    // until this agent's Prometheus receiver scrapes the health port.
+    let startup = read(NODE_STARTUP);
+    assert!(
+        startup.contains("systemctl cat google-cloud-ops-agent.service"),
+        "{NODE_STARTUP} no longer requires the Ops Agent's unit; this check is \
+         reading for a contract that has moved"
+    );
+    let provision = shell_without_comment_lines(&read(IMAGE_PROVISION));
+    assert!(
+        provision.contains("dpkg -i ./google-cloud-ops-agent.deb")
+            && provision.contains("systemctl enable google-cloud-ops-agent.service"),
+        "{IMAGE_PROVISION} does not install and enable the Ops Agent, and \
+         {NODE_STARTUP} refuses to start any unit without its service"
+    );
+    // Pinned by digest, not fetched by a repository-adding script. An
+    // unpinned third party in the trusted computing base of a trading machine
+    // is what infrastructure/egress/vendored-images.txt exists to refuse, and
+    // the boot image is not an exception to it.
+    let workflow = read(IMAGE_WORKFLOW);
+    // Read off the staging step. `sha256sum -c -` also appears in the crane
+    // install, so a check over the whole file passes with the agent's own
+    // verification deleted — an unverified package installed as root into the
+    // image a trading node boots.
+    let staging = block_under(&workflow, "- name: stage the pinned ops agent");
+    assert!(
+        workflow.contains("OPS_AGENT_SHA256:") && staging.contains("sha256sum -c -"),
+        "{IMAGE_WORKFLOW} stages the Ops Agent without pinning it by digest; \
+         its staging step is {staging:?}"
+    );
+    assert!(
+        !workflow.contains("add-google-cloud-ops-agent-repo.sh"),
+        "{IMAGE_WORKFLOW} installs the Ops Agent through Google's \
+         repository-adding script, which is an unpinned third party running as \
+         root in the image a trading node boots"
+    );
+}
+
+#[test]
+fn the_boot_image_is_baked_from_the_attested_artefact_and_never_from_source() {
+    // The property the whole workflow is arranged around. `deploy.yml` builds,
+    // scans, pushes, signs and attests `qip-edge-node`; the boot image has to
+    // be built from *that*, because an image that recompiled the binary during
+    // the bake has no relationship to anything that was signed — however
+    // identical the source — and the attestation chain would end at the
+    // container registry rather than at the machine.
+    //
+    // There is no admission controller on a bare VM to catch it later. §41.4's
+    // whole point is that nothing sits between the binary and the kernel, and
+    // admission control is something that sits in between. The refusal below
+    // is the only place this can be caught.
+    let workflow = read(IMAGE_WORKFLOW);
+    for forbidden in [
+        "cargo build",
+        "docker build",
+        "docker buildx",
+        "cargo install",
+    ] {
+        assert!(
+            !workflow.contains(forbidden),
+            "{IMAGE_WORKFLOW} contains `{forbidden}`. The boot image is built \
+             from the artefact deploy.yml attested and never from source."
+        );
+    }
+    // Both binaries, and counted rather than searched for. A single
+    // `contains("crane export")` passes while one of the two extractions has
+    // been replaced by something else entirely, which is the half of this
+    // property that matters least often and matters most.
+    let extract = block_under(
+        &workflow,
+        "- name: extract the binaries from the attested images",
+    );
+    assert_eq!(
+        extract.matches("crane export").count(),
+        2,
+        "{IMAGE_WORKFLOW}'s extract step runs `crane export` \
+         {} time(s); both binaries come out of an attested image or neither \
+         does",
+        extract.matches("crane export").count()
+    );
+
+    // And it refuses when the attestation is absent. A workflow that looked
+    // the attestation up and carried on would read, in a review, exactly like
+    // one that checked.
+    let require = block_under(&workflow, "require_attested() {");
+    assert!(
+        require.contains("binauthz attestations list"),
+        "{IMAGE_WORKFLOW}'s attestation check no longer asks Binary \
+         Authorization anything; it found {require:?}"
+    );
+    assert!(
+        require.contains("exit 1"),
+        "{IMAGE_WORKFLOW} looks the attestation up and does not refuse when it \
+         is absent, which reads in a review exactly like a check"
+    );
+
+    // Both artefacts, not just the platform's own. The vendored Envoy is
+    // third-party code that ends up on the machine holding the venue
+    // sessions, and its digest comes from the one committed list — the same
+    // file vendor.yml mirrors from and modules/egress-proxy reads the running
+    // proxy's digest out of, so the proxy in the boot image and the proxy in
+    // every Cloud Run sidecar cannot fork.
+    //
+    // Read out of the step that does the resolving rather than out of the
+    // whole file: this workflow's header explains what it resolves and why,
+    // in the same words, so a check over the file passes on the prose after
+    // the step has stopped doing it.
+    let attested = block_under(
+        &workflow,
+        "- name: the artefacts this image is built from are ones the pipeline attested",
+    );
+    for artefact in ["qip-edge-node@", "vendor/envoy@"] {
+        assert!(
+            attested.contains(artefact),
+            "{IMAGE_WORKFLOW}'s attestation step does not resolve {artefact} by \
+             digest"
+        );
+    }
+    assert!(
+        attested.contains("infrastructure/egress/vendored-images.txt"),
+        "{IMAGE_WORKFLOW} takes Envoy's digest from somewhere other than the \
+         vendored list, so the proxy on the node and the proxy in every \
+         sidecar can fork"
+    );
+    // And it *derives* the digest rather than carrying one. The assertion
+    // above was written alone and a mutation that replaced the derivation
+    // with a hard-coded `sha256:…` left it passing, because the step also
+    // counts the entries in that file and the file's name was still there.
+    // A literal container digest in this workflow is one nobody re-derives
+    // when the vendored list moves, which is how the proxy in the boot image
+    // and the proxy in every sidecar drift apart with both looking pinned.
+    //
+    // Not a blanket ban on a literal hash: `OPS_AGENT_SHA256` is deliberately
+    // one, because a Debian package has no attested list to be read out of
+    // and its pin is reviewed in the diff that changes it. The distinction is
+    // the `sha256:` prefix, which is how a container digest is written and a
+    // package checksum is not.
+    let literal_digest = workflow.split("sha256:").skip(1).find(|rest| {
+        rest.chars()
+            .take(64)
+            .filter(char::is_ascii_hexdigit)
+            .count()
+            == 64
+    });
+    assert!(
+        literal_digest.is_none(),
+        "{IMAGE_WORKFLOW} carries a literal container digest (sha256:{}…). \
+         Every image digest here is derived — qip-edge-node's from the \
+         registry for the commit, Envoy's from the vendored list — so that \
+         nothing has to remember to update it.",
+        literal_digest
+            .map(|rest| rest.chars().take(12).collect::<String>())
+            .unwrap_or_default()
+    );
+    let egress_module = without_comments(&read(
+        "infrastructure/terraform/modules/egress-proxy/main.tf",
+    ));
+    assert!(
+        egress_module.contains("egress/vendored-images.txt"),
+        "modules/egress-proxy no longer reads the vendored list, so the \
+         premise of the check above — that both sides read one file — is gone"
+    );
+}
+
+#[test]
+fn the_boot_image_is_pinned_by_name_and_carries_what_the_nodes_template_requires() {
+    let workflow = read(IMAGE_WORKFLOW);
+
+    // A family is a moving pointer. `var.boot_image` refuses one, and an
+    // image published into a family would be exactly the value that
+    // validation exists to keep out of a tfvars — produced by this pipeline,
+    // which is worse than one somebody pasted.
+    // Both spellings gcloud accepts. `--family x` and `--family=x` are the
+    // same flag, and a check for one is a check somebody passes by writing
+    // the other.
+    for spelling in ["--family ", "--family="] {
+        assert!(
+            !workflow.contains(spelling),
+            "{IMAGE_WORKFLOW} publishes the image into a family (`{spelling}`). \
+             `var.boot_image` refuses a family because there is no admission \
+             controller between that value and a process on the hot path."
+        );
+    }
+    // Read out of the step that refuses, not out of the file: the header
+    // explains the refusal in the same words, so a check over the whole file
+    // passes on the prose after the step has stopped refusing.
+    let checked = block_under(
+        &workflow,
+        "- name: check the inputs this workflow will not guess",
+    );
+    assert!(
+        checked.contains("/family/"),
+        "{IMAGE_WORKFLOW} no longer refuses a base image named through a \
+         family, so the bake would build on whatever was last pushed to it"
+    );
+
+    // The guest OS features are not cosmetic. The node's instance template
+    // sets `nic_type = "GVNIC"` and a full shielded config, and Compute
+    // Engine refuses an instance whose image declares neither feature. An
+    // image baked without them plans cleanly and fails at apply, after the
+    // subnet, the identity and four IAM bindings already exist.
+    //
+    // The *argument* is read and split, not searched for in the file. This
+    // was written as `workflow.contains("GVNIC")` first, and a mutation that
+    // deleted GVNIC from the flag left the test passing — because the comment
+    // three lines above the flag explains why GVNIC is needed and contains
+    // the word. That is the exact class this repository's testing rule names,
+    // and it survived here until it was mutated for.
+    let node = without_comments(&read(NODE_MODULE));
+    assert!(
+        node.contains("nic_type = \"GVNIC\""),
+        "the node's template no longer asks for gVNIC; the feature assertion \
+         below is checking for something nothing needs"
+    );
+    let declared_features = workflow
+        .lines()
+        .find_map(|line| {
+            let rest = line.trim().strip_prefix("--guest-os-features \"")?;
+            rest.split('"').next().map(str::to_string)
+        })
+        .unwrap_or_else(|| {
+            panic!("{IMAGE_WORKFLOW} creates an image with no --guest-os-features argument at all")
+        });
+    let declared: Vec<&str> = declared_features.split(',').map(str::trim).collect();
+    for (feature, why) in [
+        ("GVNIC", "the node's template sets nic_type = \"GVNIC\""),
+        (
+            "UEFI_COMPATIBLE",
+            "the node's template enables secure boot and vTPM",
+        ),
+    ] {
+        assert!(
+            declared.contains(&feature),
+            "{IMAGE_WORKFLOW} creates the image with --guest-os-features \
+             {declared:?}, which does not include {feature}, and {why}. \
+             Compute Engine refuses the instance, at apply."
+        );
+    }
+
+    // One image per machine shape, and the shapes the bake offers are the
+    // shapes Terraform permits. A dispatch choice Terraform would refuse is
+    // an image nobody can use; a shape Terraform permits and the bake cannot
+    // build for is a node that has no image.
+    //
+    // §41.3 gives cores 0 and 1 to the OS, the telemetry drainer and the
+    // control-plane client and isolates the rest, so the isolated range is a
+    // property of the shape — which is why an image is valid for exactly one.
+    let variables = read("infrastructure/terraform/modules/execution-node/variables.tf");
+    let permitted: Vec<String> = variables
+        .split("variable \"machine_type\"")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}").next())
+        .expect("the machine_type variable declares a permitted set")
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            let inner = trimmed.strip_prefix('"')?.strip_suffix("\",")?;
+            Some(inner.to_string())
+        })
+        .collect();
+    assert!(
+        permitted.len() >= 4,
+        "only {permitted:?} shapes were read out of the module's permitted set"
+    );
+    let offered_block = block_under(&workflow, "machine_type:");
+    let mut offered: Vec<String> = block_under(&offered_block, "options:")
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("- ").map(str::to_string))
+        .collect();
+    // Sorted, because the order a dispatch menu lists shapes in is a
+    // presentation choice and failing on it would teach people to edit this
+    // test. A missing or extra shape survives the sort and is what matters.
+    offered.sort();
+    let mut permitted = permitted;
+    permitted.sort();
+    assert_eq!(
+        offered, permitted,
+        "{IMAGE_WORKFLOW} offers machine types the module does not permit, or \
+         omits ones it does. A dispatch choice Terraform would refuse is an \
+         image nobody can use."
+    );
+    // And the range itself is derived from the shape rather than typed. Two
+    // spellings of this arithmetic disagree eventually, and the disagreement
+    // is an isolcpus range naming cores the machine does not have — which the
+    // kernel ignores, leaving a node that boots, passes every check anybody
+    // wrote, and schedules the hot path wherever it likes.
+    let node_module_locals = read(NODE_MODULE);
+    assert!(
+        node_module_locals.contains("isolated_cpus = \"2-${local.vcpus - 1}\""),
+        "the module no longer derives the isolated range as 2 to the last core"
+    );
+    assert!(
+        workflow.contains("isolcpus=\"2-$((vcpus - 1))\""),
+        "{IMAGE_WORKFLOW} no longer derives the isolated range with the \
+         module's own arithmetic"
+    );
+    // Read off the drop-in `provision.sh` writes, not off the file. The
+    // script also *verifies* the generated grub.cfg with a `grep` naming the
+    // same two parameters, so a check over the whole file passes with the
+    // line that writes them deleted and only the line that checks them left —
+    // a bake that verifies a command line it never wrote.
+    let provision = shell_without_comment_lines(&read(IMAGE_PROVISION));
+    let cmdline = provision
+        .lines()
+        .find(|line| line.trim_start().starts_with("GRUB_CMDLINE_LINUX="))
+        .unwrap_or_else(|| panic!("{IMAGE_PROVISION} writes no GRUB_CMDLINE_LINUX drop-in at all"));
+    for parameter in ["isolcpus=${isolcpus}", "hugepages=${hugepages_gb}"] {
+        assert!(
+            cmdline.contains(parameter),
+            "{IMAGE_PROVISION}'s kernel command line is `{cmdline}`, which does \
+             not carry `{parameter}`. The node's startup script refuses to boot \
+             without it."
+        );
+    }
+    let startup = shell_without_comment_lines(&read(NODE_STARTUP));
+    assert!(
+        startup.contains("grep -qw \"isolcpus=${isolated_cpus}\" /proc/cmdline"),
+        "{NODE_STARTUP} no longer checks the kernel command line, so the \
+         assertion above is guarding a contract nothing enforces"
     );
 }
 
@@ -1071,6 +1517,12 @@ fn every_service_account_terraform_creates_runs_something_or_signs_something() {
         ("gitops-control-plane".to_string(), "kcc".to_string()),
         ("gitops-control-plane".to_string(), "argocd".to_string()),
         ("gitops-control-plane".to_string(), "kargo".to_string()),
+        // The throwaway machine `.github/workflows/image.yml` bakes the
+        // execution node's boot image on. It exists for a few minutes per
+        // bake and holds one grant — `storage.objectViewer` on the staging
+        // bucket — because whatever it carries is what an image with a bug in
+        // its provisioning script carries too.
+        ("image-bake".to_string(), "builder".to_string()),
     ];
     expected.sort();
     assert_eq!(
@@ -1469,10 +1921,18 @@ fn every_subnet_in_the_network_is_covered_by_an_egress_deny() {
     // checked in both directions: a deny that names no target covers every
     // subnet in the VPC, which is the trust-zone model dissolved into one
     // rule, and a test that only failed on under-coverage would pass that.
+    // Every module that creates a subnet. A module missing from this list is
+    // a subnet nothing here checks — which is the register's gap in a new
+    // place, because the check that found it reads a list rather than the
+    // tree. `modules/image-bake`'s subnet holds the throwaway machine the
+    // boot image is baked on, and an image bake with a route to the internet
+    // is an unreviewed third party in the trusted computing base of a
+    // trading node.
     let modules = [
         ("network", NETWORK_MODULE),
         ("trust-zones", TRUST_ZONES_MODULE),
         ("execution-node", NODE_MODULE),
+        ("image-bake", IMAGE_BAKE_MODULE),
     ];
     let read_modules: Vec<(&str, &str, String)> = modules
         .iter()
@@ -2912,13 +3372,21 @@ fn no_workflow_depends_on_a_repository_variable() {
     // every check that only asked whether they were set waved it through, and
     // both workflows then failed on an audience nobody could explain.
     //
-    // Both derive their identity from the environment's committed tfvars now,
-    // where every value is reviewed like any other configuration and a broken
-    // bootstrap cannot reach it. A `vars.` creeping back into either workflow
-    // reintroduces the entire failure mode.
+    // All four derive their identity from the environment's committed tfvars
+    // now, where every value is reviewed like any other configuration and a
+    // broken bootstrap cannot reach it. A `vars.` creeping back into any of
+    // them reintroduces the entire failure mode.
+    //
+    // This list held two of the four for a while, and the two it omitted were
+    // the ones nobody would think to check: `vendor.yml` authenticates and
+    // attests exactly as `deploy.yml` does, and `image.yml` bakes a boot image
+    // for a machine with no admission controller on it. A workflow outside the
+    // list is a workflow where the whole failure mode is available again.
     for workflow_file in [
         ".github/workflows/infra.yml",
         ".github/workflows/deploy.yml",
+        ".github/workflows/vendor.yml",
+        ".github/workflows/image.yml",
     ] {
         let workflow = read(workflow_file);
         assert!(
@@ -3737,9 +4205,10 @@ fn step_output_references(text: &str) -> std::collections::BTreeSet<(String, Str
 
 #[test]
 fn every_step_output_a_workflow_reads_is_one_that_job_writes() {
-    const WORKFLOWS: [&str; 4] = [
+    const WORKFLOWS: [&str; 5] = [
         ".github/workflows/ci.yml",
         ".github/workflows/deploy.yml",
+        ".github/workflows/image.yml",
         ".github/workflows/infra.yml",
         ".github/workflows/vendor.yml",
     ];

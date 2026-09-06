@@ -608,6 +608,40 @@ module "execution_node" {
   evidence_bucket = module.evidence.bucket_name
 }
 
+# What the node's boot image is baked on (`.github/workflows/image.yml`).
+#
+# The module above names an image in `boot_image` and refuses anything that is
+# not a full self-link. Nothing in this repository produced such an image until
+# the bake existed — `modules/execution-node/README.md` recorded that under "No
+# image bake exists" and it is why every environment's `execution_nodes` is
+# still `{}`. This creates the three things the bake needs in the project: the
+# staging bucket, the builder's identity, and a subnet with no route to the
+# internet.
+#
+# Created only where an environment names a range, exactly as the console's
+# subnet is. A default range would be a subnet nobody decided to create, in
+# four environments, three of which will never bake anything.
+#
+# The image itself is deliberately not a resource here. Terraform would own its
+# lifecycle, and `infra.yml`'s targeted `down` — or any destroy — could then
+# delete the image a node's instance template still names, which is a group
+# that cannot heal and a machine that cannot be replaced.
+module "image_bake" {
+  source = "./modules/image-bake"
+  count  = var.image_bake_subnet_cidr == null ? 0 : 1
+
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
+
+  project_id  = var.project_id
+  region      = var.region
+  environment = var.environment
+  labels      = local.labels
+
+  network_id  = module.network.network_id
+  subnet_cidr = var.image_bake_subnet_cidr
+}
+
 # Only an image this pipeline signed may run.
 #
 # Every Cloud Run service in the catalogue evaluates the project's default

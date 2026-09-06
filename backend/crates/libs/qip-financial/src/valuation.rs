@@ -17,7 +17,11 @@
 //! an error naming what to supply. Returning a number nobody could observe,
 //! presented as a valuation, is the specific failure this plane must not have,
 //! because a fabricated mark is indistinguishable downstream from an observed
-//! one and will support leverage on its own authority.
+//! one and will support leverage on its own authority. Reading a mark back from
+//! a document is the second way to obtain one, and it runs the same check: a
+//! plain `#[derive(Deserialize)]` wrote straight to the private fields and was
+//! the constructor that invented a mark, until `serde(try_from)` put it through
+//! [`IlliquidValuator::assemble`] like everything else.
 //!
 //! **Marks decay, from the instant the evidence was observed.** A last-round
 //! valuation six months old carries less confidence than one six days old, and
@@ -134,7 +138,16 @@ impl ValuationMethod {
 }
 
 /// One piece of evidence a mark was derived from, with its own confidence.
+///
+/// Fields are private and deserialisation is routed through [`Self::new`] by
+/// `serde(try_from)`. The plain derive was a second way in that wrote straight
+/// to the private fields, and an input is not an inert record: its confidence
+/// is what [`IlliquidValuator::from_comparables`] scales the whole mark by, and
+/// its `known_at` is what [`IlliquidValuator::assemble`] tests for
+/// point-in-time leakage. An input a document invented is evidence the mark
+/// then claims to rest on.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "ValuationInputWire")]
 pub struct ValuationInput {
     label: String,
     value: Decimal,
@@ -142,6 +155,25 @@ pub struct ValuationInput {
     confidence: f64,
     /// When this input became knowable to the platform.
     known_at: Timestamp,
+}
+
+/// The on-disk shape. Deserialising goes through [`ValuationInput::new`], so an
+/// unlabelled input or one believed at a confidence of 50 is refused at load
+/// and not discovered after it has already scaled a mark.
+#[derive(Deserialize)]
+struct ValuationInputWire {
+    label: String,
+    value: Decimal,
+    confidence: f64,
+    known_at: Timestamp,
+}
+
+impl TryFrom<ValuationInputWire> for ValuationInput {
+    type Error = Error;
+
+    fn try_from(wire: ValuationInputWire) -> Result<Self> {
+        Self::new(wire.label, wire.value, wire.confidence, wire.known_at)
+    }
 }
 
 impl ValuationInput {
@@ -209,10 +241,35 @@ impl ValuationInput {
 /// name across the crates that both use them is how a reviewer reads the wrong
 /// invariant into a diff.
 ///
-/// Fields are private. There is no way to construct one except through
-/// [`IlliquidValuator`], and therefore no way to produce a mark that did not
-/// pass an evidence check.
+/// Fields are private and there is no public constructor. A mark is either
+/// struck by [`IlliquidValuator`] or read back from a document, and
+/// `serde(try_from)` routes the second through [`IlliquidValuator::assemble`],
+/// which is the first's own evidence check — so both mints run one check
+/// rather than two that can drift apart.
+///
+/// **`#[derive(Deserialize)]` on its own was the second constructor this doc
+/// used to deny existed.** It wrote straight to the private fields, and a
+/// document stating a confidence of 50, a value of zero, an empty asset id, no
+/// inputs at all, or a review date centuries out was accepted as a mark. The
+/// last is the worst of them: `next_review` is the only thing
+/// [`Self::is_stale`] consults, so a review date nobody computed is a mark that
+/// never falls due and goes on supporting leverage at full confidence forever.
+/// The wire is therefore required to carry the review date the method mandates
+/// rather than having it recomputed — a document that disagrees with the method
+/// it names is a corrupt document, and silently replacing its figure would hide
+/// that.
+///
+/// **What this does not establish, and no check inside this type could.** The
+/// mark's `value` is not re-derived from its `inputs`: only
+/// [`IlliquidValuator::from_comparables`] computes the value from them, the
+/// others take it as the observation itself, and a read-path check the write
+/// path does not run would refuse marks this platform produced. Nor is `asset`
+/// known to name an object in any universe, or `as_of` known to be when anyone
+/// looked. A document is trusted exactly as far as the log it was read from is,
+/// and what makes that trustworthy is the hash chain on the event log, not this
+/// type.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "AssetValuationWire")]
 pub struct AssetValuation {
     asset: String,
     value: Decimal,
@@ -223,6 +280,66 @@ pub struct AssetValuation {
     confidence: f64,
     as_of: Timestamp,
     next_review: Timestamp,
+}
+
+/// The on-disk shape. Every field arrives unchecked and none of them reaches an
+/// [`AssetValuation`] without passing [`IlliquidValuator::assemble`].
+#[derive(Deserialize)]
+struct AssetValuationWire {
+    asset: String,
+    value: Decimal,
+    method: ValuationMethod,
+    inputs: BTreeMap<String, ValuationInput>,
+    confidence: f64,
+    as_of: Timestamp,
+    next_review: Timestamp,
+}
+
+impl TryFrom<AssetValuationWire> for AssetValuation {
+    type Error = Error;
+
+    fn try_from(wire: AssetValuationWire) -> Result<Self> {
+        // The map key and the input's own label are two claims about the same
+        // fact, and a document is the one place they can disagree: `assemble`
+        // builds the key from the label, so a mark that files `quote` under
+        // `acquisition_cost` is a mark whose evidence is reported under a name
+        // nobody can reconcile it by.
+        for (key, input) in &wire.inputs {
+            if key != input.label() {
+                return Err(Error::invalid(format!(
+                    "the {} mark on {} files the input {} under the key {key}; key each input by \
+                     its own label, because the key is what a person re-deriving the mark looks \
+                     it up by",
+                    wire.method.label(),
+                    wire.asset,
+                    input.label()
+                )));
+            }
+        }
+        let declared_review = wire.next_review;
+        let mark = IlliquidValuator::assemble(
+            wire.asset,
+            wire.value,
+            wire.method,
+            wire.inputs.into_values().collect(),
+            wire.confidence,
+            wire.as_of,
+        )?;
+        if mark.next_review != declared_review {
+            return Err(Error::invalid(format!(
+                "the {} mark on {} falls due for review at {} but the record says {}; a {} mark is \
+                 reviewed {} days after it is struck, and a review date nobody computed is a mark \
+                 that never goes stale",
+                mark.method.label(),
+                mark.asset,
+                mark.next_review.to_rfc3339(),
+                declared_review.to_rfc3339(),
+                mark.method.label(),
+                mark.method.review_interval().as_days_f64()
+            )));
+        }
+        Ok(mark)
+    }
 }
 
 impl AssetValuation {
@@ -340,6 +457,10 @@ pub struct IlliquidValuator;
 
 impl IlliquidValuator {
     /// Common construction, after a method's own evidence check has passed.
+    ///
+    /// Also the path deserialisation takes, so a mark read back from a document
+    /// meets the same refusals as one struck here rather than a weaker set
+    /// written twice.
     fn assemble(
         asset: String,
         value: Decimal,
@@ -365,6 +486,19 @@ impl IlliquidValuator {
             return Err(Error::invalid(format!(
                 "the {} mark on {asset} carries a confidence of {confidence}; supply one in \
                  (0, 1] — a mark believed with zero confidence is not a mark",
+                method.label()
+            )));
+        }
+        // Every constructor above supplies at least one input, so this refuses
+        // nothing this platform strikes. It exists because the deserialisation
+        // path reaches here too, and a mark with an empty evidence set is the
+        // fabrication the module opens by refusing: a number wearing a method
+        // label, with nothing behind it a person could go and check.
+        if inputs.is_empty() {
+            return Err(Error::invalid(format!(
+                "the {} mark on {asset} names no input it was derived from; supply the observation \
+                 it was struck from — a mark carrying no evidence cannot be re-derived by the \
+                 person it has to convince",
                 method.label()
             )));
         }

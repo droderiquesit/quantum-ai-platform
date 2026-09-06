@@ -19,8 +19,9 @@ published ranges are needed for it. `environments/dev/terraform.tfvars` carries
 the whole entry as a comment, with every field determined.
 
 What is missing is an artefact and a number, and neither is Terraform's to
-supply: **no boot image exists** (see "No image bake exists" below — nothing
-here builds one), and nobody has chosen the node's `region_allocation`. Writing
+supply: **no boot image has been baked** (see "The image bake exists and has
+never been run" below — there is a build step now, and it has not produced
+anything), and nobody has chosen the node's `region_allocation`. Writing
 a plausible self-link for the first would produce a plan that reads as ready
 and an apply that fails after the subnet, the identity and four IAM bindings
 already exist. The plan that eventually carries a real entry is the evidence
@@ -121,15 +122,44 @@ So, plainly:
 Nobody should read this module as satisfying the Binary Authorization rule. It
 narrows the gap and names the rest.
 
-### No image bake exists
+### The image bake exists and has never been run
 
-Nothing in this repository builds the boot image. `deploy.yml` builds and
-attests a container image of `qip-edge-node`; turning that, Envoy and the Ops
-Agent into a Compute Engine image with the kernel command line above is a build
-step that has not been written. Until it is, `boot_image` in a tfvars entry
-names an image somebody built by hand, and the startup script's checks are the
-only thing standing between a hand-built image and a trading node. ADR 0024
-records this as remaining work.
+This section used to say "No image bake exists" and that nothing in this
+repository built the boot image. That is no longer true and the sentence would
+outlive its truth if it stayed.
+
+`.github/workflows/image.yml`, with `infrastructure/images/execution-node/`,
+is the build step. It resolves the container image `deploy.yml` built for a
+commit, **refuses to proceed unless the environment's attestor has signed those
+exact bytes**, extracts the binary out of it with crane, does the same for the
+vendored Envoy whose digest comes from `infrastructure/egress/vendored-images.txt`,
+adds a pinned Ops Agent `.deb` and the `qip-fetch-secret` helper, and provisions
+a throwaway machine that writes the kernel command line, removes swap, refuses a
+base with a container runtime, and runs the same predicates `startup.sh.tftpl`
+runs. The disk becomes one image, named by machine shape and commit, published
+into no family — a family being the moving pointer `boot_image` already refuses.
+There is no compiler in the bake: an image that recompiled the binary would have
+no relationship to anything that was signed.
+
+Two things are still true and matter more than the change:
+
+- **No image has been baked.** The workflow has never been dispatched, so
+  `boot_image` still has no value anyone can write, and `execution_nodes`
+  is still `{}` in every environment. The bake needs `image_bake_subnet_cidr`
+  set in an environment's tfvars and an apply of `module.image_bake` before its
+  first run, and it refuses with that file's name rather than failing on a
+  bucket that is not there.
+- **The startup script's checks are still the only thing between an image and
+  a trading node**, because there is no admission control on a bare VM (see
+  above). What the bake adds is a chain of custody a person can check — the
+  inputs were attested, the run refused to continue without the attestations,
+  and the image records every input digest in its description and in
+  `/etc/qip/boot-image-manifest` on the disk. That is not admission control.
+  An image built by hand is still admitted by this module exactly as before,
+  and only the boot-time checks would catch it.
+
+`infrastructure/images/execution-node/README.md` is the contract and records
+what has been exercised and what has not.
 
 ## The tfvars entry
 

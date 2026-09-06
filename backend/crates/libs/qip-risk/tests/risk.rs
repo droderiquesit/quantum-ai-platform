@@ -517,6 +517,10 @@ fn state() -> RiskState {
         counterparty_exposures: BTreeMap::new(),
         order_notional: None,
         order_subject: None,
+        // Every figure above was computed, so nothing is filed as
+        // unevaluated. A fixture with an entry here is a state no order may
+        // pass, which is the property `pretrade.rs` tests separately.
+        unevaluated: BTreeMap::new(),
     }
 }
 

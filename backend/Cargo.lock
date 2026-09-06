@@ -259,6 +259,7 @@ dependencies = [
  "qip-core",
  "qip-financial",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

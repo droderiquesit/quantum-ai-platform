@@ -11,14 +11,15 @@
 // assertion is the deliverable and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
 
-use qip_core::error::Result;
+use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_financial::asset_class::InstrumentType;
 use qip_financial::cashflow::{CashflowForecast, CashflowKind, ForecastCashflow};
 use qip_financial::extensions::{Extension, PrivateAssetDetails};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
-use qip_financial::valuation::{IlliquidValuator, ValuationInput, ValuationMethod};
+use qip_financial::valuation::{AssetValuation, IlliquidValuator, ValuationInput, ValuationMethod};
+use std::collections::BTreeMap;
 
 fn origin() -> Timestamp {
     Timestamp::from_civil(2020, 1, 1)
@@ -661,5 +662,319 @@ fn a_lockup_that_is_not_a_finite_term_is_refused_rather_than_saturating() -> Res
             refusal.message()
         );
     }
+    Ok(())
+}
+
+// --- the second constructor: reading a mark back from a document -------------
+//
+// `AssetValuation`'s doc claimed for as long as the type existed that "there is
+// no way to construct one except through `IlliquidValuator`, and therefore no
+// way to produce a mark that did not pass an evidence check". A plain
+// `#[derive(Deserialize)]` was that way, and it wrote straight to the private
+// fields. This was not hypothetical: a document naming a value of 999999999 at
+// a confidence of 1, with no inputs at all and a review date centuries out,
+// deserialised and answered `is_stale` with `false` forever. A fabricated mark
+// is indistinguishable downstream from an observed one and supports leverage on
+// its own authority, which is the one failure this module exists to prevent.
+
+/// A mark this platform actually struck, and the document it serialises to.
+///
+/// Every forgery below is this document with exactly one field edited, so what
+/// each assertion proves is the edit — not some unrelated difference between a
+/// hand-written blob and a record the valuator produced.
+fn genuine_mark() -> Result<(AssetValuation, serde_json::Value)> {
+    let mark = IlliquidValuator::from_last_round("obj-PRIV", dec!("1000"), day(10), day(20))?;
+    let document = serde_json::to_value(&mark).map_err(|e| Error::invalid(e.to_string()))?;
+    Ok((mark, document))
+}
+
+/// Replace one field of a document, having first proved the field is there.
+///
+/// Without that premise a misspelled field name would add a key serde ignores,
+/// and the "forgery" would be the genuine record passing its own check.
+fn forge(document: &serde_json::Value, field: &str, value: serde_json::Value) -> serde_json::Value {
+    assert!(
+        document.get(field).is_some(),
+        "{field} is not a field of a serialised mark, so editing it forges nothing"
+    );
+    let mut forged = document.clone();
+    forged[field] = value;
+    forged
+}
+
+#[test]
+fn a_mark_read_back_from_a_document_meets_the_same_evidence_check_the_valuator_ran() -> Result<()> {
+    let (mark, document) = genuine_mark()?;
+
+    // Premise, and the half that distinguishes a working gate from one that
+    // refuses everything: the genuine document round-trips and compares equal,
+    // so each refusal below is caused by the edit and not by the seam being
+    // unable to read anything at all.
+    let round_tripped: AssetValuation =
+        serde_json::from_value(document.clone()).map_err(|e| Error::invalid(e.to_string()))?;
+    assert_eq!(round_tripped, mark);
+    assert_eq!(round_tripped.inputs().count(), 1);
+    assert!(round_tripped.struck_confidence() > 0.0);
+
+    // Each forgery is a state `IlliquidValuator::assemble` refuses when the
+    // valuator builds the mark, paired with the words the refusal has to carry
+    // for an operator to know which record to correct.
+    let forgeries: Vec<(&str, serde_json::Value, &str)> = vec![
+        (
+            "confidence",
+            serde_json::json!(50.0),
+            "carries a confidence of 50",
+        ),
+        (
+            "confidence",
+            serde_json::json!(0.0),
+            "carries a confidence of 0",
+        ),
+        (
+            "value",
+            serde_json::json!("0"),
+            "a mark must be strictly positive",
+        ),
+        (
+            "asset",
+            serde_json::json!(""),
+            "a valuation needs the object id it marks",
+        ),
+        (
+            "inputs",
+            serde_json::json!({}),
+            "names no input it was derived from",
+        ),
+    ];
+    for (field, value, expected) in forgeries {
+        let refusal = serde_json::from_value::<AssetValuation>(forge(&document, field, value))
+            .expect_err("a document encoding a state the valuator refuses must not become a mark");
+        assert!(
+            refusal.to_string().contains(expected),
+            "the refusal must survive into the deserialisation error and say {expected:?}, said: \
+             {refusal}"
+        );
+    }
+
+    // The forgery with the longest reach, and the one no other check catches:
+    // `next_review` is the only thing `is_stale` consults, so a review date
+    // nobody computed is a mark that never falls due and goes on supporting
+    // leverage at full struck confidence forever. The wire must carry the date
+    // the method mandates; a document that disagrees is corrupt and is refused
+    // rather than quietly overwritten.
+    let never_stale = forge(
+        &document,
+        "next_review",
+        serde_json::json!(Timestamp::from_civil(2200, 1, 1).to_rfc3339()),
+    );
+    let refusal = serde_json::from_value::<AssetValuation>(never_stale)
+        .expect_err("a review date the method did not produce must be refused");
+    assert!(
+        refusal
+            .to_string()
+            .contains("a review date nobody computed"),
+        "the refusal must name what the forged date buys, said: {refusal}"
+    );
+    // And it names the date the method actually mandates, so the correction is
+    // in the message rather than in the reader's head.
+    assert!(
+        refusal
+            .to_string()
+            .contains(&mark.next_review().to_rfc3339()),
+        "the refusal must name the review date the method mandates, said: {refusal}"
+    );
+
+    // Point-in-time leakage reaches the read path too. An input stamped after
+    // the valuation instant is refused when the valuator assembles a mark, and
+    // a document carrying one is a mark that read the future.
+    let leaking_input = serde_json::json!({
+        "last_round": {
+            "label": "last_round",
+            "value": "1000",
+            "confidence": 1.0,
+            "known_at": day(30).to_rfc3339(),
+        }
+    });
+    let refusal =
+        serde_json::from_value::<AssetValuation>(forge(&document, "inputs", leaking_input))
+            .expect_err("an input knowable after the valuation instant must be refused");
+    assert!(
+        refusal.to_string().contains("after the valuation instant"),
+        "the refusal must name the leak, said: {refusal}"
+    );
+
+    // The map key and the input's own label are two claims about the same fact,
+    // and a document is the only place they can disagree — `assemble` builds
+    // the key from the label. A mark filing `last_round` under
+    // `acquisition_cost` reports its evidence under a name nobody can reconcile
+    // it by.
+    let misfiled = serde_json::json!({
+        "acquisition_cost": {
+            "label": "last_round",
+            "value": "1000",
+            "confidence": 1.0,
+            "known_at": day(10).to_rfc3339(),
+        }
+    });
+    let refusal = serde_json::from_value::<AssetValuation>(forge(&document, "inputs", misfiled))
+        .expect_err("an input filed under a key that is not its label must be refused");
+    assert!(
+        refusal
+            .to_string()
+            .contains("under the key acquisition_cost"),
+        "the refusal must name the key that does not match, said: {refusal}"
+    );
+    Ok(())
+}
+
+/// A mark inside an internally-tagged enum — the route `Extension` takes, where
+/// serde buffers the content and re-deserialises it from the buffer. That
+/// buffering is where a `try_from` is most likely to be silently dropped.
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum TaggedHolding {
+    Illiquid { mark: AssetValuation },
+}
+
+/// The same, untagged: serde tries each variant against a buffered copy.
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum UntaggedHolding {
+    Illiquid(AssetValuation),
+}
+
+#[test]
+fn a_forged_mark_is_refused_through_every_container_that_buffers_it() -> Result<()> {
+    let (mark, document) = genuine_mark()?;
+    // The confidence of 50 is the forgery to carry through every container: it
+    // is arithmetic, not a parse error, so only the checked constructor stops
+    // it and a container that dropped `try_from` would let it through.
+    let forged = forge(&document, "confidence", serde_json::json!(50.0));
+
+    // A bare value, and the shape the kernel actually holds — `Platform` keeps
+    // `BTreeMap<String, AssetValuation>`, so this is not a hypothetical
+    // container.
+    let genuine_map = serde_json::json!({ "obj-PRIV": document.clone() });
+    let forged_map = serde_json::json!({ "obj-PRIV": forged.clone() });
+    let accepted: BTreeMap<String, AssetValuation> =
+        serde_json::from_value(genuine_map).map_err(|e| Error::invalid(e.to_string()))?;
+    assert_eq!(accepted.len(), 1, "the genuine map must be readable");
+    assert!(
+        serde_json::from_value::<BTreeMap<String, AssetValuation>>(forged_map).is_err(),
+        "a forged mark inside a map must be refused"
+    );
+
+    let genuine_list = serde_json::json!([document.clone()]);
+    let forged_list = serde_json::json!([forged.clone()]);
+    let accepted: Vec<AssetValuation> =
+        serde_json::from_value(genuine_list).map_err(|e| Error::invalid(e.to_string()))?;
+    assert_eq!(accepted, vec![mark.clone()]);
+    assert!(
+        serde_json::from_value::<Vec<AssetValuation>>(forged_list).is_err(),
+        "a forged mark inside a list must be refused"
+    );
+
+    let accepted: Option<AssetValuation> =
+        serde_json::from_value(document.clone()).map_err(|e| Error::invalid(e.to_string()))?;
+    assert_eq!(accepted, Some(mark.clone()));
+    assert!(
+        serde_json::from_value::<Option<AssetValuation>>(forged.clone()).is_err(),
+        "a forged mark inside an Option must be refused"
+    );
+
+    // The internally-tagged route. `Extension` is `#[serde(tag = "kind")]`, and
+    // buffering the content is exactly where the checked constructor would be
+    // lost if `serde(try_from)` did not survive it.
+    let genuine_tagged = serde_json::json!({ "kind": "illiquid", "mark": document.clone() });
+    let forged_tagged = serde_json::json!({ "kind": "illiquid", "mark": forged.clone() });
+    let accepted: TaggedHolding =
+        serde_json::from_value(genuine_tagged).map_err(|e| Error::invalid(e.to_string()))?;
+    let TaggedHolding::Illiquid { mark: read_back } = accepted;
+    assert_eq!(read_back, mark);
+    let refusal = serde_json::from_value::<TaggedHolding>(forged_tagged)
+        .expect_err("a forged mark inside an internally-tagged enum must be refused");
+    // The tagged route keeps the refusal's own words, which is what makes it
+    // usable to an operator reading a load failure.
+    assert!(
+        refusal.to_string().contains("carries a confidence of 50"),
+        "the tagged route must keep the refusal's words, said: {refusal}"
+    );
+
+    // The untagged route refuses too, but serde reports "did not match any
+    // variant" and the refusal's own words are lost. Asserted rather than
+    // hidden: an untagged container is a bad place to put a mark, because the
+    // record that has to be corrected cannot be named from the error.
+    let genuine_untagged: UntaggedHolding =
+        serde_json::from_value(document.clone()).map_err(|e| Error::invalid(e.to_string()))?;
+    let UntaggedHolding::Illiquid(read_back) = genuine_untagged;
+    assert_eq!(read_back, mark);
+    assert!(
+        serde_json::from_value::<UntaggedHolding>(forged).is_err(),
+        "a forged mark inside an untagged enum must be refused"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_input_read_back_from_a_document_meets_the_same_check_that_minted_it() -> Result<()> {
+    // `ValuationInput::new` refuses an unlabelled input, a non-positive value
+    // and a confidence outside (0, 1]. The derive bypassed all three, and an
+    // input is not inert: `from_comparables` scales the entire mark by the
+    // weakest input's confidence, so a fabricated 1.0 raises the mark and a
+    // fabricated 50 would have raised it past what any method allows.
+    let genuine = ValuationInput::new("quote", dec!("1000"), 0.9, day(10))?;
+    let document = serde_json::to_value(&genuine).map_err(|e| Error::invalid(e.to_string()))?;
+
+    // Premise: the genuine input round-trips.
+    let round_tripped: ValuationInput =
+        serde_json::from_value(document.clone()).map_err(|e| Error::invalid(e.to_string()))?;
+    assert_eq!(round_tripped, genuine);
+
+    let forgeries: Vec<(&str, serde_json::Value, &str)> = vec![
+        (
+            "confidence",
+            serde_json::json!(50.0),
+            "carries a confidence of 50",
+        ),
+        (
+            "value",
+            serde_json::json!("-1"),
+            "supply a strictly positive observation",
+        ),
+        (
+            "label",
+            serde_json::json!("   "),
+            "a valuation input needs a label",
+        ),
+    ];
+    for (field, value, expected) in forgeries {
+        let refusal = serde_json::from_value::<ValuationInput>(forge(&document, field, value))
+            .expect_err("a document encoding an input that is not evidence must be refused");
+        assert!(
+            refusal.to_string().contains(expected),
+            "the refusal must say {expected:?}, said: {refusal}"
+        );
+    }
+
+    // And nested where it matters: a mark whose evidence a document invented.
+    // `assemble` never looks inside an input's confidence, so without the
+    // input's own checked constructor this would have been accepted as a mark
+    // resting on evidence believed fifty times over.
+    let (_, mark_document) = genuine_mark()?;
+    let invented = serde_json::json!({
+        "last_round": {
+            "label": "last_round",
+            "value": "1000",
+            "confidence": 50.0,
+            "known_at": day(10).to_rfc3339(),
+        }
+    });
+    let refusal =
+        serde_json::from_value::<AssetValuation>(forge(&mark_document, "inputs", invented))
+            .expect_err("a mark resting on an invented input must be refused");
+    assert!(
+        refusal.to_string().contains("carries a confidence of 50"),
+        "the refusal must name the input's confidence, said: {refusal}"
+    );
     Ok(())
 }

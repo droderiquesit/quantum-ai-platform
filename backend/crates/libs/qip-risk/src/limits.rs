@@ -304,6 +304,33 @@ pub struct RiskState {
     pub order_notional: Option<Decimal>,
     /// Instrument the order concerns.
     pub order_subject: Option<String>,
+    /// Figures the producer of this state set out to compute and could not,
+    /// keyed by the figure's own name and carrying the refusal that stopped
+    /// it.
+    ///
+    /// **A non-empty map refuses orders.** `PreTradeChecker::check` rejects
+    /// every order while one entry stands, and that is the point of the field
+    /// rather than a side effect of it. Every limit that reads a keyed figure
+    /// takes its `None` arm when the key is absent — [`LimitKind::MinLiquidity`]
+    /// looks `liquidatable_within` up by horizon and records nothing when
+    /// there is nothing there — so at the venue an unevaluated control and a
+    /// control that passed are the same event: no breach. That is not
+    /// hypothetical here. `Platform::liquidity_ladder` refuses a book whose
+    /// rungs do not get more expensive as they descend, which one listed
+    /// instrument quoted wider than 250bps is enough to cause; the refusal
+    /// left `liquidatable_within` empty, the shipped `liquidity` floor
+    /// abstained, and a book that had just refused ten orders out of ten
+    /// accepted ten out of ten on the same universe with one spread changed.
+    ///
+    /// The message is kept, not just the fact, because "the floor did not run"
+    /// and "the floor did not run because the catalogue quotes AAA at 300bps"
+    /// are different sentences to the operator who has to fix it.
+    ///
+    /// Empty by default, and that means *no figure was attempted and failed* —
+    /// not "everything is fine". Only a producer knows what it tried, so only
+    /// a producer fills this. A state built by a caller that never computes a
+    /// liquidity ladder carries no claim about liquidity either way.
+    pub unevaluated: BTreeMap<String, String>,
 }
 
 impl RiskState {
@@ -312,6 +339,27 @@ impl RiskState {
             return f64::INFINITY;
         }
         value.to_f64() / self.equity.to_f64()
+    }
+
+    /// Record that a figure this state was meant to carry could not be
+    /// computed, with the refusal that stopped it.
+    ///
+    /// Deliberately not a setter for the figure itself. A producer that could
+    /// not compute a number must not be able to file a substitute for it: a
+    /// fabricated zero passes nothing and fails everything, a fabricated one
+    /// passes everything, and both read downstream as a measurement. This
+    /// records the absence and leaves the number absent.
+    ///
+    /// `figure` is a fixed name from the producer's own source — it reaches a
+    /// metric label — and never anything derived from an instrument, a
+    /// strategy or an order.
+    pub fn with_unevaluated(
+        mut self,
+        figure: impl Into<String>,
+        refusal: impl Into<String>,
+    ) -> Self {
+        self.unevaluated.insert(figure.into(), refusal.into());
+        self
     }
 
     /// Populate the tail figures the given limits will read, from a return

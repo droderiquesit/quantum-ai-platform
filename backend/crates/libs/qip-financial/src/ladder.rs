@@ -30,10 +30,13 @@
 //!
 //! Every value and every cost is a [`Decimal`], because both are money. The
 //! horizons are categorical and the rungs are an enum, so no money here is
-//! ever a statistic. The one number that is not money is
-//! [`LiquidationHorizon::least_days`], which exists because the risk domain
-//! states its liquidity floors in days and something has to translate; it is
-//! a floor rather than an estimate, for the reason given on it.
+//! ever a statistic. Two numbers are not money and both are days:
+//! [`LiquidationHorizon::least_days`], the boundary of a horizon's own bucket,
+//! and [`LadderEntry::measured_days_to_exit`], the record's own measurement
+//! where a caller supplied one. [`LadderEntry::days_to_exit`] is the larger of
+//! the two and the only one anything outside this module should read. The
+//! bucket boundary alone was read for one release, and it reported a holding
+//! stated at forty-five days as taking two.
 
 use crate::asset_class::AssetClass;
 use crate::costs::LiquidityProfile;
@@ -69,21 +72,31 @@ impl LiquidationHorizon {
     /// The fewest days an exit on this horizon can honestly be claimed to
     /// take.
     ///
-    /// A **floor**, not an estimate, and the distinction is the whole point.
-    /// The horizons are categorical because that is what the ladder can
-    /// defend; a risk limit stated in days — `qip_risk`'s `MinLiquidity` and
-    /// `MaxDaysToLiquidate` both are — needs a number, and the only number
-    /// this type can supply without inventing one is the boundary of its own
-    /// bucket. Reading a floor into a liquidity control fails in the safe
-    /// direction: it can call a position slower to exit than it is, never
-    /// faster, so a floor that is wrong makes a book look less liquid and
-    /// tightens the floor rather than relaxing it.
+    /// A **floor**, not an estimate: the boundary of the horizon's own bucket
+    /// and nothing more. It is one of the two lower bounds
+    /// [`LadderEntry::days_to_exit`] takes the larger of, and on its own it is
+    /// **not** a safe answer to "how long does this holding take to leave".
+    /// This doc claimed it was, in these words: "it can call a position slower
+    /// to exit than it is, never faster". That claim was false, and the
+    /// failure was live. `Days` floors at two, and [`Rung::classify`] puts
+    /// every non-negotiated holding stated to take more than one day on
+    /// [`Rung::BondsAndLessLiquidListed`] — so a record stating **forty-five**
+    /// days was read as two, `MinLiquidity` counted the position as exitable
+    /// within a week, and `MaxDaysToLiquidate { limit: 10.0 }` compared 2.0
+    /// against 10 and recorded nothing. The record held the right number and
+    /// the bucket boundary discarded it.
+    ///
+    /// The bucket is therefore never used alone. [`LadderEntry::days_to_exit`]
+    /// carries the record's own measurement where the caller supplied one and
+    /// falls back to this floor only where nobody measured, which is the one
+    /// case where the boundary is the best available lower bound rather than a
+    /// replacement for a better one.
     ///
     /// The values are the boundaries the horizon names, not risk parameters:
     /// `Immediate` and `Seconds` are both inside one trading day and are
     /// therefore zero days, `SameDay` is one, `Days` is two because
-    /// [`Rung::classify`] already reserves it for anything stated as taking
-    /// more than a single day, `Months` is thirty and `Years` is
+    /// [`Rung::classify`] reserves it for anything stated as taking more than
+    /// a single day, `Months` is thirty and `Years` is
     /// three-hundred-and-sixty-five. Anyone tempted to tune one of these is
     /// tuning a calendar, which is the signal that the limit wanted a
     /// different horizon rather than a different number.
@@ -95,41 +108,6 @@ impl LiquidationHorizon {
             Self::Months => 30.0,
             Self::Years => 365.0,
         }
-    }
-
-    /// The deepest horizon that is still inside `days`, or `None` when not
-    /// even an immediate exit is.
-    ///
-    /// The inverse of [`Self::least_days`], and the function a caller needs to
-    /// turn a limit stated in days into the ladder question
-    /// [`LiquidityLadder::reachable_within`] answers. Deriving it here rather
-    /// than at the call site keeps one rule: a caller that re-implemented the
-    /// mapping would sooner or later place the boundary on the other side of
-    /// a comparison from this one, and the two would disagree about a book
-    /// sitting exactly on a horizon.
-    ///
-    /// `None` for a negative or non-finite `days`, which is a caller stating
-    /// a horizon that cannot exist. Refused rather than floored at
-    /// `Immediate`, because a limit configured with a nonsense horizon should
-    /// read as unevaluated, not as one that passed.
-    ///
-    /// [`Self::Immediate`] is never returned and is deliberately absent from
-    /// the search: it and [`Self::Seconds`] are both zero days, so `Seconds`
-    /// is always the deeper of the two answers to the same question, and
-    /// `reachable_within(Seconds)` already includes every `Immediate` rung.
-    pub fn deepest_within(days: f64) -> Option<Self> {
-        if !days.is_finite() || days < 0.0 {
-            return None;
-        }
-        [
-            Self::Years,
-            Self::Months,
-            Self::Days,
-            Self::SameDay,
-            Self::Seconds,
-        ]
-        .into_iter()
-        .find(|horizon| horizon.least_days() <= days)
     }
 }
 
@@ -207,7 +185,8 @@ impl Rung {
         }
     }
 
-    /// The rung an instrument sits on, from its class and its liquidity.
+    /// The rung an instrument sits on, from its class and its liquidity, or a
+    /// refusal naming the figure that could not be read.
     ///
     /// Two facts decide it, and the second can only push an object *down*: an
     /// instrument that trades by negotiation cannot settle in seconds however
@@ -216,10 +195,50 @@ impl Rung {
     /// correction of a bad input — a negotiated equity in a private placement
     /// is genuinely on a lower rung than a listed one.
     ///
+    /// **A `days_to_liquidate` that is not a number of days is refused rather
+    /// than compared.** The comparison that pushes an instrument below its
+    /// class is `> 1.0`, and `f64` makes that `false` for `NaN` and for a
+    /// negative: the liquidity arm then answered [`Self::CashAtVenue`], which
+    /// can push nothing down, so an instrument nobody had measured kept its
+    /// asset class's rung and the book reported it exitable on that class's
+    /// horizon. An equity with `NaN` days classified `ListedEquityAndFutures`
+    /// — same day. Infinity was worse in the other direction: `inf > 1.0` is
+    /// `true`, so an instrument stated never to liquidate landed on
+    /// [`Self::BondsAndLessLiquidListed`] and read as exitable in two days.
+    /// `credit.rs` in this crate refuses a non-finite covenant observation for
+    /// exactly this reason; a liquidity measurement is no different, and this
+    /// one feeds a floor that vetoes trading.
+    ///
+    /// The refusal is deliberate and it fires early: `qip-kernel`'s
+    /// `ladder_reference_of` classifies every universe record at assembly, so
+    /// a catalogue carrying such a figure stops `Platform::new` rather than
+    /// producing a liquidity floor computed over an instrument nobody
+    /// measured.
+    ///
     /// [`Rung::RestingAndAnchored`] is never returned. A position is on that
     /// rung because a strategy is holding it deliberately, and no property of
     /// the instrument reveals that; the caller who knows the strategy sets it.
-    pub fn classify(class: AssetClass, liquidity: &LiquidityProfile) -> Self {
+    ///
+    /// **The rung this returns is a cost ordering and no longer an exit
+    /// time.** `days > 1.0` puts everything from a day and a half to a decade
+    /// on [`Self::BondsAndLessLiquidListed`], whose horizon floors at two
+    /// days, and for one release that boundary *was* the exit time every risk
+    /// limit read. It is not, now: the caller carries the record's own
+    /// `days_to_liquidate` onto the entry through
+    /// [`LadderEntry::exiting_over_days`], and [`LadderEntry::days_to_exit`]
+    /// reads the larger of the two. Widening the buckets here would not have
+    /// fixed it — a bucket one order of magnitude away is still a bucket —
+    /// which is why this mapping is deliberately unchanged.
+    pub fn classify(class: AssetClass, liquidity: &LiquidityProfile) -> Result<Self> {
+        let days = liquidity.days_to_liquidate;
+        if !days.is_finite() || days < 0.0 {
+            return Err(Error::invalid(format!(
+                "a liquidity record states {days} days to liquidate, which is not a number of \
+                 days an exit can take; correct the record before placing the holding — the \
+                 ladder cannot read this figure, and a figure it cannot read leaves the holding \
+                 on its asset class's rung and reports the book more exitable than it is"
+            )));
+        }
         let by_class = match class {
             AssetClass::Cash => Self::CashAtVenue,
             AssetClass::DigitalAsset | AssetClass::ForeignExchange => Self::LiquidSpotAndPerpetual,
@@ -236,17 +255,22 @@ impl Rung {
         };
         let by_liquidity = if liquidity.is_negotiated {
             Self::PrivateCreditAndRealAssets
-        } else if liquidity.days_to_liquidate > 1.0 {
+        } else if days > 1.0 {
             Self::BondsAndLessLiquidListed
         } else {
             Self::CashAtVenue
         };
-        by_class.max(by_liquidity)
+        Ok(by_class.max(by_liquidity))
     }
 }
 
 /// One holding placed on the ladder.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// [`Eq`] is deliberately absent: `measured_days_to_exit` is an `f64` and
+/// there is no total equality on one. It is the only number here that is not
+/// money, and it is a statistic — a measurement of how long an exit takes —
+/// which is why it may be an `f64` at all.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LadderEntry {
     /// The object this value sits in.
     pub object_id: String,
@@ -256,6 +280,14 @@ pub struct LadderEntry {
     /// What it would cost to turn all of `value` into cash — spread, fee,
     /// impact and discount together. Money, in the same currency as `value`.
     pub cost_to_liquidate: Decimal,
+    /// The record's own stated days to exit this holding, where the caller
+    /// had one.
+    ///
+    /// `None` means nobody measured, not "zero" and not "immediately".
+    /// Read through [`Self::days_to_exit`], never directly, so that the fall
+    /// back to the rung's own floor happens in one place.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub measured_days_to_exit: Option<f64>,
 }
 
 impl LadderEntry {
@@ -270,6 +302,51 @@ impl LadderEntry {
             rung,
             value,
             cost_to_liquidate,
+            measured_days_to_exit: None,
+        }
+    }
+
+    /// Carry the record's own measurement of how long this holding takes to
+    /// leave.
+    ///
+    /// The caller that holds the reference record is the only one that knows
+    /// this, and the ladder cannot derive it: [`Rung`] is a cost ordering, and
+    /// a rung's [`LiquidationHorizon::least_days`] is the boundary of a
+    /// bucket. A holding stated at forty-five days sits on
+    /// [`Rung::BondsAndLessLiquidListed`] beside one stated at one and a
+    /// half, and reading the rung alone reported both as two days.
+    ///
+    /// `days` is validated by [`LiquidityLadder::new`], with every other
+    /// refusal a lying entry can take, rather than here: an entry is a value
+    /// object, and the ladder is where an entry that would make the book lie
+    /// is refused.
+    pub fn exiting_over_days(mut self, days: f64) -> Self {
+        self.measured_days_to_exit = Some(days);
+        self
+    }
+
+    /// The fewest days this holding can honestly be claimed to take to leave.
+    ///
+    /// The larger of the record's own measurement and the rung's floor, which
+    /// is the best available lower bound rather than a preference between two
+    /// numbers. Both are lower bounds on the truth: the rung's floor because
+    /// the rung is a bucket, the record's because it is what somebody
+    /// measured. Taking the maximum is what makes the statement "this ladder
+    /// never calls a position faster to exit than it is" true; taking the
+    /// rung's alone made it false, and
+    /// `qip_risk::limits::LimitKind::MaxDaysToLiquidate` compared 2.0 against
+    /// its bound for a holding the record said took forty-five days.
+    pub fn days_to_exit(&self) -> f64 {
+        let floor = self.rung.horizon().least_days();
+        match self.measured_days_to_exit {
+            // `f64::max` returns the other operand for a `NaN`, which would
+            // silently answer the floor. `LiquidityLadder::new` refuses a
+            // `NaN` measurement, so no entry reachable through the
+            // constructor can take that path — this is the arm that keeps the
+            // refusal from being the only thing standing between a `NaN` and
+            // a liquidity floor.
+            Some(days) if days.is_finite() && days > floor => days,
+            _ => floor,
         }
     }
 }
@@ -303,7 +380,11 @@ pub struct LiquidationPlan {
 }
 
 /// The book, ordered by how readily it becomes cash.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// [`Eq`] is absent for the reason it is absent on [`LadderEntry`]: an entry
+/// carries a measured exit time in days, and there is no total equality on an
+/// `f64`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LiquidityLadder {
     /// Keyed on `(rung, object_id)` so iteration order is ladder order and a
     /// replay reproduces the same plan leg for leg.
@@ -326,12 +407,40 @@ impl LiquidityLadder {
     ///   higher one. The ladder's entire purpose is that serving from the top
     ///   downward is serving from the cheapest downward. If that does not
     ///   hold, the rungs are assigned wrongly and every plan built on them
-    ///   picks the expensive source first.
+    ///   picks the expensive source first;
+    /// * a book whose value **does not add up inside the decimal range**.
+    ///   Proved here so that every reader afterwards is reading a total
+    ///   somebody computed. It was not: the sums saturated at
+    ///   [`Decimal::MAX`] or dropped the entry that overflowed, so a ladder
+    ///   holding one unit of cash beside 1.7e29 of spot reported a total
+    ///   value of one, and a rung holding more than the range can express
+    ///   reported exactly [`Decimal::MAX`] into the monotonicity proof above.
+    ///   Under-reporting the book is not a safe direction here:
+    ///   `reachable_within` feeds `RiskState::liquidatable_within`, which
+    ///   `LimitKind::MinLiquidity` divides, and a clamp inside a control that
+    ///   vetoes trading is a control reading a number nobody computed;
+    /// * a **measured exit time that is not a number of days**. A `NaN` would
+    ///   make [`LadderEntry::days_to_exit`] fall back to the rung's floor and
+    ///   the holding would read as exitable on its bucket's horizon, which is
+    ///   the exact shape of the defect carrying the measurement exists to
+    ///   close. Supplying no measurement is honest; supplying one that is not
+    ///   a number is not.
     pub fn new(entries: Vec<LadderEntry>) -> Result<Self> {
         let mut map: BTreeMap<(Rung, String), LadderEntry> = BTreeMap::new();
         let mut seen: BTreeMap<String, Rung> = BTreeMap::new();
 
         for entry in entries {
+            if let Some(days) = entry.measured_days_to_exit
+                && (!days.is_finite() || days < 0.0)
+            {
+                return Err(Error::invalid(format!(
+                    "holding {id} states {days} days to exit, which is not a number of days; \
+                     correct the record or place the holding with no measurement — a figure the \
+                     ladder cannot read would leave the holding on its rung's own floor and \
+                     report the book more exitable than it is",
+                    id = entry.object_id
+                )));
+            }
             if !entry.value.is_positive() {
                 return Err(Error::invalid(format!(
                     "holding {id} has value {value}, which is not positive; remove a written-\
@@ -372,6 +481,10 @@ impl LiquidityLadder {
 
         let ladder = Self { entries: map };
         ladder.prove_monotonic()?;
+        // The whole book, proved to add up before anything reads it. The
+        // per-rung totals inside `prove_monotonic` can each fit while their
+        // sum does not, so this is a second question rather than the same one.
+        ladder.total_value()?;
         Ok(ladder)
     }
 
@@ -382,7 +495,7 @@ impl LiquidityLadder {
     /// `cost_a * value_b > cost_b * value_a`, which keeps money in [`Decimal`]
     /// and never rounds a comparison into or out of a refusal.
     fn prove_monotonic(&self) -> Result<()> {
-        let totals = self.value_and_cost_by_rung();
+        let totals = self.value_and_cost_by_rung()?;
         let mut previous: Option<(Rung, Decimal, Decimal)> = None;
         for (rung, (value, cost)) in totals {
             if let Some((above, above_value, above_cost)) = previous {
@@ -418,19 +531,39 @@ impl LiquidityLadder {
         Ok(())
     }
 
-    fn value_and_cost_by_rung(&self) -> BTreeMap<Rung, (Decimal, Decimal)> {
+    /// Value and cost on each occupied rung, or a refusal where a rung's
+    /// total leaves the decimal range.
+    ///
+    /// Fallible because the alternative was a fabrication: this used to
+    /// saturate at [`Decimal::MAX`] on overflow, and [`Self::prove_monotonic`]
+    /// then compared a number nobody had computed against a real one and
+    /// pronounced the ladder sound.
+    fn value_and_cost_by_rung(&self) -> Result<BTreeMap<Rung, (Decimal, Decimal)>> {
         let mut totals: BTreeMap<Rung, (Decimal, Decimal)> = BTreeMap::new();
         for entry in self.entries.values() {
             let slot = totals
                 .entry(entry.rung)
                 .or_insert((Decimal::ZERO, Decimal::ZERO));
-            slot.0 = slot.0.checked_add(entry.value).unwrap_or(Decimal::MAX);
-            slot.1 = slot
-                .1
-                .checked_add(entry.cost_to_liquidate)
-                .unwrap_or(Decimal::MAX);
+            slot.0 = slot.0.checked_add(entry.value).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the value on rung {rung} leaves the decimal range at holding {id}; split \
+                     the book or correct the marks — a saturated rung total is read by the \
+                     monotonicity proof as though somebody had computed it",
+                    rung = entry.rung.as_str(),
+                    id = entry.object_id
+                ))
+            })?;
+            slot.1 = slot.1.checked_add(entry.cost_to_liquidate).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the exit cost on rung {rung} leaves the decimal range at holding {id}; \
+                     split the book or correct the cost model — a saturated rung cost is read \
+                     by the monotonicity proof as though somebody had computed it",
+                    rung = entry.rung.as_str(),
+                    id = entry.object_id
+                ))
+            })?;
         }
-        totals
+        Ok(totals)
     }
 
     /// Every entry, ladder order, top rung first.
@@ -438,33 +571,95 @@ impl LiquidityLadder {
         self.entries.values()
     }
 
-    /// Value on each occupied rung, ladder order.
-    pub fn value_by_rung(&self) -> BTreeMap<Rung, Decimal> {
-        self.value_and_cost_by_rung()
+    /// Value on each occupied rung, ladder order, or a refusal where a rung's
+    /// total leaves the decimal range.
+    pub fn value_by_rung(&self) -> Result<BTreeMap<Rung, Decimal>> {
+        Ok(self
+            .value_and_cost_by_rung()?
             .into_iter()
             .map(|(rung, (value, _))| (rung, value))
-            .collect()
+            .collect())
     }
 
-    /// Everything the ladder holds.
-    pub fn total_value(&self) -> Decimal {
-        self.entries.values().fold(Decimal::ZERO, |acc, e| {
-            acc.checked_add(e.value).unwrap_or(acc)
+    /// Everything the ladder holds, or a refusal where the book does not add
+    /// up inside the decimal range.
+    ///
+    /// The fold used to keep the accumulator on overflow, which **dropped the
+    /// entry**: a ladder holding one unit of cash beside 1.7e29 of spot
+    /// answered one. Fallible rather than saturating because both directions
+    /// lie, and this total is the denominator of the fraction
+    /// `LimitKind::MinLiquidity` vetoes trading on.
+    ///
+    /// [`Self::new`] proves this before returning, so no ladder reachable
+    /// through the constructor can take the refusal. It is still a `Result`
+    /// rather than a `Decimal`, because the only two ways to write a fallible
+    /// sum with an infallible signature are a clamp and a panic, and this
+    /// module's whole argument is that it refuses rather than lies. The proof
+    /// belongs in the constructor so that a refusal reaches the cycle report
+    /// through `Platform::liquidity_ladder`; the `Result` here is what makes
+    /// the proof's absence impossible to write by accident.
+    pub fn total_value(&self) -> Result<Decimal> {
+        self.entries.values().try_fold(Decimal::ZERO, |acc, e| {
+            acc.checked_add(e.value).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the ladder's total value leaves the decimal range at holding {id}; split \
+                     the book or correct the marks — a total that dropped a holding would \
+                     under-report the book, and the liquidity floor divides by it",
+                    id = e.object_id
+                ))
+            })
         })
     }
 
-    /// How much of the book could become cash within `horizon`.
+    /// How much of the book could become cash within `days`, or a refusal
+    /// where that is not a number of days or the sum leaves the decimal range.
     ///
     /// The risk read the ladder exists to give: a book where nine tenths of
     /// the value is reachable only in months is a different book from one
     /// where nine tenths is reachable the same day, whatever their marks say
     /// they are worth.
-    pub fn reachable_within(&self, horizon: LiquidationHorizon) -> Decimal {
+    ///
+    /// **Stated in days, and compared against each holding's own days.** It
+    /// took a [`LiquidationHorizon`] and filtered on `entry.rung.horizon()`,
+    /// so a caller with a limit in days had to map it onto a bucket first and
+    /// every holding answered with its bucket's boundary. Both ends of that
+    /// lost the measurement: a limit at five days became the `Days` bucket,
+    /// and a holding stated at forty-five days sat in the same bucket as one
+    /// stated at one and a half. The book read as fully exitable inside a
+    /// week. Days against days is one comparison instead of two mappings that
+    /// could disagree — which is why `LiquidationHorizon::deepest_within`,
+    /// the mapping the caller used, no longer exists.
+    ///
+    /// A `days` that is not a number of days is **refused, not floored**: a
+    /// limit configured with a nonsense horizon must read as unevaluated, and
+    /// the kernel turns that refusal into an order refusal rather than into a
+    /// fraction nobody computed.
+    ///
+    /// Fallible for the reason [`Self::total_value`] is, and it matters more
+    /// here: this is the numerator `RiskState::liquidatable_within` files
+    /// under the horizon `LimitKind::MinLiquidity` looks up, so an entry
+    /// silently dropped is a liquidity floor evaluated against a book that
+    /// was never counted.
+    pub fn reachable_within(&self, days: f64) -> Result<Decimal> {
+        if !days.is_finite() || days < 0.0 {
+            return Err(Error::invalid(format!(
+                "cannot say what is reachable within {days} days, which is not a horizon an exit \
+                 can have; state the horizon in days — a liquidity floor asked this way reads as \
+                 unevaluated rather than as one every book passed"
+            )));
+        }
         self.entries
             .values()
-            .filter(|e| e.rung.horizon() <= horizon)
-            .fold(Decimal::ZERO, |acc, e| {
-                acc.checked_add(e.value).unwrap_or(acc)
+            .filter(|e| e.days_to_exit() <= days)
+            .try_fold(Decimal::ZERO, |acc, e| {
+                acc.checked_add(e.value).ok_or_else(|| {
+                    Error::numeric(format!(
+                        "the value reachable within {days} days leaves the decimal range at \
+                         holding {id}; split the book or correct the marks — a sum that dropped \
+                         a holding would report the book less exitable than it is",
+                        id = e.object_id
+                    ))
+                })
             })
     }
 
@@ -486,9 +681,17 @@ impl LiquidityLadder {
                 "cannot plan for {amount}; ask for a positive amount of cash"
             )));
         }
-        let available = self.total_value();
+        let available = self.total_value()?;
         if amount > available {
-            let short = amount.checked_sub(available).unwrap_or(Decimal::ZERO);
+            // Named exactly, or not at all. A shortfall floored at zero would
+            // have read as "nothing missing" inside a refusal about something
+            // missing.
+            let short = amount.checked_sub(available).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the shortfall between the {amount} asked for and the {available} this \
+                     ladder holds leaves the decimal range; ask for an amount inside it"
+                ))
+            })?;
             return Err(Error::invalid(format!(
                 "the ladder holds {available} but {amount} was asked for, {short} short; ask \
                  for no more than the book holds — a plan that raises less than it was asked \

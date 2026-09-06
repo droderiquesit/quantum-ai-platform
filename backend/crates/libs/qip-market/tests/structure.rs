@@ -893,6 +893,163 @@ fn discounting_to_a_tenor_that_has_already_passed_is_refused() {
     );
 }
 
+#[test]
+fn a_yield_quoted_in_percent_is_refused_rather_than_discounting_a_claim_to_zero() {
+    // The failure this prevents, and it was live in this file: a vendor
+    // quoting `yield_to_maturity` as 4.35 rather than 0.0435 built a perfectly
+    // valid curve, and `present_value` returned exactly 0 for every amount at
+    // every tenor — because `Decimal::from_f64` rounds to nine decimal places
+    // rather than failing, so `exp(-4.35 * 10) = 1.9e-19` arrived as
+    // `Decimal::ZERO`. Zero is not a small valuation, it is the absence of
+    // one, and a credit register printing "worst claim at 0 of discounted
+    // expected loss" reads as a universe carrying no credit risk.
+    let percent_quoted = TermStructure::new(
+        "UST-percent",
+        Currency::USD,
+        now(),
+        vec![
+            CurvePoint {
+                tenor_years: 2.0,
+                value: 4.50,
+            },
+            CurvePoint {
+                tenor_years: 10.0,
+                value: 4.35,
+            },
+        ],
+    )
+    .expect("the curve itself is well-formed; it is the unit that is wrong");
+
+    // The premise, asserted before the refusal: the arithmetic really does
+    // collapse. Without this the test would pass on an implementation that
+    // refused every present value for some unrelated reason.
+    let factor = percent_quoted.discount_factor(10.0);
+    assert!(
+        factor > 0.0 && factor < 1e-15,
+        "the fixture does not underflow ({factor}), so this proves nothing"
+    );
+    assert_eq!(
+        Decimal::from_f64(factor),
+        Some(Decimal::ZERO),
+        "the premise fails: the factor no longer rounds to zero, so the \
+         manufactured-zero path this guards does not exist"
+    );
+
+    let refusal = percent_quoted
+        .present_value(dec!("1000000"), 10.0)
+        .expect_err("a million was discounted to zero and returned as a valuation");
+    let message = refusal.to_string();
+    assert!(
+        message.contains("rounds to zero at the scale money is held at"),
+        "the refusal does not name what went wrong: {message}"
+    );
+    assert!(
+        message.contains("quoted in percent rather than as a fraction"),
+        "the refusal does not say what to do instead: {message}"
+    );
+
+    // And the other half of a working gate: the same curve in the right unit
+    // is admitted and discounts to a real number. A guard that refused both
+    // would be indistinguishable from one that refused everything.
+    let fraction_quoted = TermStructure::new(
+        "UST-fraction",
+        Currency::USD,
+        now(),
+        vec![
+            CurvePoint {
+                tenor_years: 2.0,
+                value: 0.0450,
+            },
+            CurvePoint {
+                tenor_years: 10.0,
+                value: 0.0435,
+            },
+        ],
+    )
+    .expect("a curve quoted as fractions");
+    let present = fraction_quoted
+        .present_value(dec!("1000000"), 10.0)
+        .expect("a curve at 4.35% must still discount");
+    assert!(
+        present > dec!("600000") && present < dec!("700000"),
+        "a million discounted ten years at 4.35% is not {present}"
+    );
+}
+
+#[test]
+fn a_stored_curve_is_refitted_from_its_own_points_rather_than_read_by_a_second_method() {
+    // The failure this prevents: the interpolator is `serde(skip)`, because a
+    // fitted spline is derived state and storing it would give a replay a
+    // second source of truth. While the field was an `Option`, a curve read
+    // back from the log carried `None` and answered every query by *nearest
+    // neighbour* — a different interpolation from the monotone cubic the live
+    // curve used, on the same points. A curve that interpolates differently on
+    // a replay than it did live is not a replay.
+    let live = treasury_curve();
+    // The premise: the two methods actually disagree somewhere, so a
+    // round-trip that silently switched would be detectable at all. Halfway
+    // between the 5y and 10y knots, nearest-neighbour returns one endpoint and
+    // the cubic does not.
+    let midpoint = 7.5;
+    let cubic = live.rate_at(midpoint);
+    assert!(
+        (cubic - 0.0420).abs() > 1e-6 && (cubic - 0.0435).abs() > 1e-6,
+        "the fixture's midpoint {cubic} coincides with a knot, so a switch of \
+         method would not show"
+    );
+
+    let json = serde_json::to_string(&live).expect("a curve serialises");
+    let replayed: TermStructure = serde_json::from_str(&json).expect("a stored curve loads");
+    assert!(
+        approx_eq(replayed.rate_at(midpoint), cubic, 1e-12),
+        "the replayed curve reads {} where the live one read {cubic}",
+        replayed.rate_at(midpoint)
+    );
+
+    // And a stored payload that would not form a curve is refused at load,
+    // rather than becoming a curve with no points that answers every tenor
+    // with a rate of zero — a discount factor of one, an amount returned
+    // undiscounted as a present value. Built by emptying the points of a
+    // payload that has just been proven to load, so the refusal is about the
+    // points and not about a field name this test guessed wrong.
+    let mut payload: serde_json::Value = serde_json::from_str(&json).expect("the payload parses");
+    assert!(
+        payload
+            .get("points")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|points| points.len() == 5),
+        "the premise fails: the stored shape has no `points` array to empty: {payload}"
+    );
+    payload["points"] = serde_json::Value::Array(Vec::new());
+    let empty = serde_json::from_value::<TermStructure>(payload);
+    assert!(
+        empty.is_err(),
+        "a stored curve with no points was accepted and will answer every query"
+    );
+}
+
+#[test]
+fn the_curve_publishes_the_tenors_it_was_actually_quoted_at() {
+    // Published so a caller that must not accept flat extrapolation can tell
+    // an observed rate from an extended one. Without it `rate_at(40.0)` on a
+    // single 10y point returns the 10y rate and is indistinguishable from an
+    // observation.
+    let curve = treasury_curve();
+    let (shortest, longest) = curve.tenor_range();
+    assert!(
+        approx_eq(shortest, 0.25, 1e-12),
+        "the front end is {shortest}"
+    );
+    assert!(approx_eq(longest, 30.0, 1e-12), "the long end is {longest}");
+    // The premise that makes the range worth publishing: outside it the curve
+    // answers anyway, with the endpoint value.
+    assert!(approx_eq(
+        curve.rate_at(longest + 20.0),
+        curve.rate_at(longest),
+        1e-12
+    ));
+}
+
 // --- microstructure ---------------------------------------------------------
 
 #[test]

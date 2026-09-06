@@ -78,8 +78,15 @@ fn govvie(symbol: &str, tenor_years: i64, yield_to_maturity: f64) -> Result<Fina
     .build(start())
 }
 
-/// A leveraged loan whose reported leverage is above the covenant ceiling.
-fn breached_loan() -> Result<FinancialObject> {
+/// A leveraged loan at 9.4 turns, with or without the ceiling its credit
+/// agreement sets.
+///
+/// The parameter is the whole point of the pair of tests below. With
+/// `Some(6.0)` the borrower has broken a term somebody agreed to; with `None`
+/// nobody captured the agreement and the platform is testing against an
+/// assumption of its own. The two must not report identically, and until this
+/// argument existed they did.
+fn leveraged_loan(leverage_covenant: Option<f64>) -> Result<FinancialObject> {
     let mut object = FinancialObject::builder(
         ObjectId::from_string("obj-LOAN"),
         "LOAN",
@@ -98,6 +105,7 @@ fn breached_loan() -> Result<FinancialObject> {
         seniority: Seniority::SecuredFirstLien,
         modified_duration: 0.25,
         covenant_lite: false,
+        leverage_covenant,
         net_debt_to_ebitda: 9.4,
         is_amortising: false,
     }))
@@ -107,6 +115,12 @@ fn breached_loan() -> Result<FinancialObject> {
     object.risk.default_probability = 0.08;
     object.risk.recovery_rate = 0.6;
     Ok(object)
+}
+
+/// The loan as its credit agreement states it: a six-turn ceiling, breached at
+/// 9.4.
+fn breached_loan() -> Result<FinancialObject> {
+    leveraged_loan(Some(6.0))
 }
 
 fn platform_over(universe: Universe) -> Result<Platform> {
@@ -196,6 +210,13 @@ fn a_breached_covenant_is_raised_as_a_problem_by_the_stage_that_reports_the_regi
     // example of (`MaxExpectedShortfall`, which shipped in every default limit
     // set and could never fire). The property: a borrower through its leverage
     // ceiling reaches the cycle report.
+    //
+    // The fixture now states the ceiling its credit agreement sets. It did
+    // not, and this test passed anyway, because every non-covenant-lite loan
+    // was given a six-turn ceiling manufactured for it — so what the test
+    // proved was that a heuristic could raise a breach, which is the defect
+    // rather than the property. Its companion below covers the loan whose
+    // agreement nobody captured.
     let mut universe = Universe::new();
     universe.insert(govvie("UST5", 5, 0.0420)?)?;
     universe.insert(breached_loan()?)?;
@@ -225,12 +246,10 @@ fn a_breached_covenant_is_raised_as_a_problem_by_the_stage_that_reports_the_regi
         .expect("the cycle ran no UNDERSTAND stage");
     assert!(understand.ran, "the UNDERSTAND stage did not run");
     assert!(
-        understand
-            .problems
-            .iter()
-            .any(|problem| problem.contains("covenant breached")
-                && problem.contains("Overlevered Ltd")),
-        "the breach did not reach the cycle report: {:?}",
+        understand.problems.iter().any(|problem| problem
+            .starts_with("covenant breached: obj-LOAN (Overlevered Ltd):")
+            && problem.contains("(agreement ceiling 6)")),
+        "the breach did not reach the cycle report as a breach of an agreed term: {:?}",
         understand.problems
     );
     // And the detail says the register exists at all, so an operator reading
@@ -239,6 +258,291 @@ fn a_breached_covenant_is_raised_as_a_problem_by_the_stage_that_reports_the_regi
         understand.detail.contains("credit register holds"),
         "the UNDERSTAND detail does not report the register: {}",
         understand.detail
+    );
+    Ok(())
+}
+
+#[test]
+fn a_borrower_past_a_level_this_platform_assumed_is_not_reported_as_a_covenant_breach() -> Result<()>
+{
+    // The failure this prevents, and it was live: the same loan, with nobody
+    // having captured its credit agreement, reached the operator as
+    // "covenant breached: obj-LOAN (Overlevered Ltd): net_debt_to_ebitda
+    // (ceiling 6) observed at 9.4: breached" — a sentence that cannot be told
+    // apart from a breach of a term the agreement actually contains. The
+    // ceiling was manufactured by `LOAN_LEVERAGE_COVENANT` for every
+    // non-covenant-lite loan in the universe.
+    let mut universe = Universe::new();
+    universe.insert(govvie("UST5", 5, 0.0420)?)?;
+    universe.insert(leveraged_loan(None)?)?;
+
+    let mut platform = platform_over(universe)?;
+    let register = platform.credit_register();
+
+    // Premise: the register profiled the borrower and did read its leverage,
+    // so an assertion about the sentence is about the sentence and not about a
+    // claim that went missing.
+    let (_, profile) = register
+        .profiles()
+        .find(|(id, _)| id.as_str() == "obj-LOAN")
+        .expect("the loan is not in the register");
+    assert_eq!(
+        profile.covenants().count(),
+        1,
+        "the borrower's leverage stopped being tested at all, which trades a \
+         mislabelled control for a missing one"
+    );
+    assert_eq!(
+        profile.covenant_state(),
+        None,
+        "an obligor whose only test is this platform's own assumption reported a \
+         covenant state, which is the reading `covenant_state` returns an Option to prevent"
+    );
+    assert!(
+        register.breaches().is_empty(),
+        "a level nobody agreed to was reported as a breach: {:?}",
+        register.breaches()
+    );
+    assert_eq!(
+        register.leverage_above_assumed_levels().len(),
+        1,
+        "the borrower's nine turns of leverage were dropped rather than reported"
+    );
+
+    let report = platform.run_cycle(start());
+    let understand = report
+        .stages
+        .iter()
+        .find(|stage| stage.stage == Stage::Understand)
+        .expect("the cycle ran no UNDERSTAND stage");
+    assert!(understand.ran, "the UNDERSTAND stage did not run");
+
+    // The operator-visible distinction, on the rendered sentence. Matched with
+    // `starts_with` on the delimited leading clause rather than on a substring:
+    // "breach" appears in both sentences, and the assumed one says so on
+    // purpose.
+    assert!(
+        !understand
+            .problems
+            .iter()
+            .any(|problem| problem.starts_with("covenant breached:")),
+        "an assumed level was escalated as a covenant breach: {:?}",
+        understand.problems
+    );
+    let finding = understand
+        .problems
+        .iter()
+        .find(|problem| problem.starts_with("leverage above an assumed level:"))
+        .unwrap_or_else(|| panic!("the leverage finding is missing: {:?}", understand.problems));
+    assert!(
+        finding.contains("no agreement level supplied"),
+        "the finding does not say the agreement was never captured: {finding}"
+    );
+    assert!(
+        finding.contains("not a covenant breach"),
+        "the finding does not say what it is not: {finding}"
+    );
+
+    // And the same loan with its agreement's own ceiling reports the other
+    // way, so this is a distinction the register draws rather than a channel
+    // it always uses. Without this half the test would pass on a platform that
+    // had simply stopped reporting breaches.
+    let mut agreed = Universe::new();
+    agreed.insert(govvie("UST5", 5, 0.0420)?)?;
+    agreed.insert(breached_loan()?)?;
+    let agreed = platform_over(agreed)?;
+    assert_eq!(
+        agreed.credit_register().breaches().len(),
+        1,
+        "an agreed ceiling stopped being reported as a breach"
+    );
+    assert!(
+        agreed
+            .credit_register()
+            .leverage_above_assumed_levels()
+            .is_empty(),
+        "a contractual breach was filed as an assumption being exceeded"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_sovereign_yield_quoted_in_percent_is_refused_rather_than_valuing_every_claim_at_zero()
+-> Result<()> {
+    // The failure this prevents, and it was live: a vendor quoting
+    // `yield_to_maturity` in percent — 4.35 rather than 0.0435 — built a
+    // perfectly valid curve, and `exp(-4.35 * 10)` rounded to `Decimal::ZERO`
+    // at the nine decimal places money is held at. Every
+    // `discounted_expected_loss` returned exactly 0, and the UNDERSTAND stage
+    // printed "worst claim obj-UST2 at 0.000001489 of discounted expected loss
+    // per unit" — a universe rendered as carrying almost no credit risk, with
+    // the ranking decided by whose arithmetic collapsed last rather than by
+    // whose credit is worst.
+    let mut percent = Universe::new();
+    percent.insert(govvie("UST2", 2, 4.50)?)?;
+    percent.insert(govvie("UST10", 10, 4.35)?)?;
+    percent.insert(breached_loan()?)?;
+    let mut platform = platform_over(percent)?;
+    let register = platform.credit_register();
+
+    // Premise: the claims are in the register, so what follows is about the
+    // curve and not about a universe the platform never read.
+    assert_eq!(
+        register.profiles().count(),
+        3,
+        "the fixture's credit claims are not in the register"
+    );
+    assert!(
+        register.curve(qip_core::Currency::USD).is_none(),
+        "a curve was built through a yield quoted in percent"
+    );
+    assert!(
+        register.worst_claim().is_none(),
+        "a worst claim was reported off a curve nothing could discount on: {:?}",
+        register.worst_claim()
+    );
+    assert!(
+        !register.summary().contains("worst claim"),
+        "the summary still names a worst claim: {}",
+        register.summary()
+    );
+
+    // Both benchmarks are named as excluded, and each says what to do. A point
+    // that silently vanished would take the curve's shape with it while the
+    // remaining points still fit a curve that answers every query.
+    let excluded: Vec<_> = register.excluded_curve_points().collect();
+    assert_eq!(excluded.len(), 2, "the excluded benchmarks were not named");
+    assert!(
+        excluded
+            .iter()
+            .all(|(_, reason)| reason.contains("as a fraction rather than a percentage")),
+        "the refusal does not say what to do instead: {excluded:?}"
+    );
+
+    let report = platform.run_cycle(start());
+    let understand = report
+        .stages
+        .iter()
+        .find(|stage| stage.stage == Stage::Understand)
+        .expect("the cycle ran no UNDERSTAND stage");
+    assert!(
+        understand
+            .problems
+            .iter()
+            .any(|problem| problem.starts_with("sovereign issue obj-UST2 is not on")),
+        "the unit error did not reach the cycle report: {:?}",
+        understand.problems
+    );
+    assert!(
+        understand
+            .problems
+            .iter()
+            .any(|problem| problem.starts_with("credit claim obj-LOAN could not be discounted:")),
+        "a claim nothing could value was silently skipped: {:?}",
+        understand.problems
+    );
+
+    // The other half of a working gate: the same universe in the right unit is
+    // admitted and produces a real worst claim. A guard that refused both
+    // would be indistinguishable from one that refused everything.
+    let mut fraction = Universe::new();
+    fraction.insert(govvie("UST2", 2, 0.0450)?)?;
+    fraction.insert(govvie("UST10", 10, 0.0435)?)?;
+    fraction.insert(breached_loan()?)?;
+    let admitted = platform_over(fraction)?;
+    let admitted = admitted.credit_register();
+    assert!(
+        admitted.curve(qip_core::Currency::USD).is_some(),
+        "a correctly quoted curve was refused too"
+    );
+    let (worst_id, worst_loss) = admitted
+        .worst_claim()
+        .expect("a universe with three credit claims has a worst one");
+    assert_eq!(
+        worst_id, "obj-LOAN",
+        "the worst claim is not the 8%-default loan"
+    );
+    assert!(
+        worst_loss.is_positive(),
+        "the worst claim carries a loss of {worst_loss}, which is the manufactured \
+         zero this guard exists to refuse"
+    );
+    assert!(
+        admitted.excluded_curve_points().count() == 0,
+        "a well-quoted benchmark was excluded"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_claim_maturing_beyond_the_curves_longest_quote_is_refused_rather_than_flat_extrapolated()
+-> Result<()> {
+    // The failure this prevents: `qip_numerics`'s curve flat-extrapolates by
+    // design, which is right for a government curve read at 50y off a 2y-30y
+    // fit and wrong here. A universe holding one 5y benchmark answered a
+    // 30-year claim with the 5y rate, and the resulting present value carried
+    // an observation's provenance without an observation behind it.
+    let mut universe = Universe::new();
+    universe.insert(govvie("UST5", 5, 0.0420)?)?;
+    universe.insert(breached_loan()?)?;
+    let platform = platform_over(universe)?;
+    let register = platform.credit_register();
+
+    let curve = register
+        .curve(qip_core::Currency::USD)
+        .expect("the sovereign issue did not produce a USD curve");
+    let (shortest, longest) = curve.tenor_range();
+    // Premise: the curve still answers outside its own range, so the refusal
+    // below is the register's decision and not the curve running out of
+    // arithmetic.
+    assert!(
+        curve.rate_at(longest + 25.0).is_finite(),
+        "the curve stopped extrapolating, so this proves nothing about the guard"
+    );
+    // And the premise that the guard admits the tenor it was quoted at.
+    assert!(
+        register
+            .discounted_expected_loss(
+                "obj-LOAN",
+                qip_core::Currency::USD,
+                dec!("1000000"),
+                longest
+            )
+            .is_ok(),
+        "the guard refuses the curve's own longest quoted tenor"
+    );
+
+    let refusal = register
+        .discounted_expected_loss(
+            "obj-LOAN",
+            qip_core::Currency::USD,
+            dec!("1000000"),
+            longest + 25.0,
+        )
+        .expect_err("a claim was discounted 25 years past the curve's longest quote");
+    assert!(
+        refusal.to_string().contains("outside the"),
+        "the refusal does not name the range: {refusal}"
+    );
+    assert!(
+        refusal
+            .to_string()
+            .contains("supply a sovereign issue at that tenor"),
+        "the refusal does not say what to do instead: {refusal}"
+    );
+
+    // The short end refuses too, and for the same reason: a three-month claim
+    // read off a 5y-only curve is the 5y rate wearing a three-month label.
+    assert!(
+        register
+            .discounted_expected_loss(
+                "obj-LOAN",
+                qip_core::Currency::USD,
+                dec!("1000000"),
+                shortest / 2.0,
+            )
+            .is_err(),
+        "a claim shorter than anything quoted was discounted anyway"
     );
     Ok(())
 }

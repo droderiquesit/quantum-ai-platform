@@ -42,6 +42,12 @@ const P: Record<string, string[]> = {
     "M12 22V12",
   ],
   "user-round": ["M18 20a6 6 0 0 0-12 0", "M12 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"],
+  "scroll-text": [
+    "M15 12h-5",
+    "M15 8h-5",
+    "M19 17V5a2 2 0 0 0-2-2H4",
+    "M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3",
+  ],
 };
 
 export type IconName = keyof typeof P & string;
@@ -108,6 +114,7 @@ export const ITEM_ICON: Record<string, IconName> = {
   // The treasury section shipped without entries here and every item fell
   // back to the dashboard glyph, so four different pages wore the same icon.
   "/treasury/ledger": "table-2",
+  "/treasury/mandates": "scroll-text",
   "/treasury/products": "package",
   "/treasury/accounts": "user-round",
   "/treasury/wallet": "wallet",

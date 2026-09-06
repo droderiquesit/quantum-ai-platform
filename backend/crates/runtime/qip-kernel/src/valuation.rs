@@ -15,9 +15,13 @@
 //! risk-profile struct. This register is what calls both, from the universe
 //! the platform was assembled with, and the UNDERSTAND stage is what reports
 //! it — including, as stage problems, every credit claim whose terms will not
-//! support a valuation and every breached covenant. A register that computed
-//! an expected loss and reported nothing would be the shape of control this
-//! platform already has one recorded example of.
+//! support a valuation, every sovereign benchmark kept off its own currency's
+//! curve, every claim nothing could discount, every breached covenant, and —
+//! under different leading words, because it is a different fact — every
+//! borrower past a leverage level this platform assumed rather than read out
+//! of a credit agreement. A register that computed an expected loss and
+//! reported nothing would be the shape of control this platform already has
+//! one recorded example of.
 //!
 //! # Money and statistics
 //!
@@ -29,7 +33,7 @@
 
 use std::collections::BTreeMap;
 
-use qip_core::error::Result;
+use qip_core::error::{Error, Result};
 use qip_core::{Currency, Decimal, ObjectId, Timestamp};
 use qip_financial::asset_class::InstrumentType;
 use qip_financial::credit::{CovenantState, CreditProfile};
@@ -43,6 +47,27 @@ use qip_market::curve::{CurvePoint, TermStructure};
 /// curve built on 365.25 disagree by a basis point at the long end, and a
 /// difference nobody can attribute is worse than either.
 const SECONDS_PER_YEAR: f64 = 365.25 * 24.0 * 60.0 * 60.0;
+
+/// The magnitude at or above which a quoted yield is a unit error rather than
+/// a yield.
+///
+/// A yield on this platform is a fraction: `0.0435` is 4.35%. A value of
+/// `4.35` therefore claims 435%, which no sovereign benchmark has ever been
+/// quoted at — a claim that distressed trades on price, not on yield. The
+/// overwhelmingly likelier cause is a vendor publishing the field in percent,
+/// which is the same unit error
+/// [`qip_financial::credit::CreditProfile::new`] already refuses for a default
+/// probability with the same sentence.
+///
+/// One hundred percent, not something tighter, so the gate refuses the error
+/// and admits every rate a curve is actually built from: deeply negative
+/// sovereign yields are real and are accepted, and so is a distressed
+/// sovereign at 90%. What it catches is a decimal point in the wrong place.
+/// Left unrefused it does not produce a wrong number — it produces
+/// `exp(-4.35 × 10)`, a discount factor that rounds to zero at the scale money
+/// is held at, and every credit claim in the universe reported as carrying
+/// exactly zero discounted expected loss.
+const IMPLAUSIBLE_YIELD_MAGNITUDE: f64 = 1.0;
 
 /// What the platform knows about the credit in its universe, and the
 /// government curve it discounts against.
@@ -67,6 +92,18 @@ pub struct CreditRegister {
     /// Why a currency has no curve, when sovereign issues existed but would
     /// not form one — two benchmarks quoted at the same tenor, most often.
     curve_refusals: BTreeMap<Currency, String>,
+    /// Object id to why a sovereign issue was kept out of its currency's
+    /// curve. Held rather than dropped for the same reason `refusals` is: a
+    /// benchmark that silently vanished takes the curve's shape with it, and
+    /// the remaining points still fit a curve that answers every query.
+    excluded_curve_points: BTreeMap<String, String>,
+    /// Object id to why a profiled claim could not be discounted at all.
+    ///
+    /// [`Self::find_worst_claim`] used to swallow this error and move on, so a
+    /// universe in which nothing could be valued was indistinguishable from
+    /// one in which nothing was worth much. Recorded at the seam where the
+    /// failure is known, and reported through [`Self::problems`].
+    valuation_refusals: BTreeMap<String, String>,
     /// The claim carrying the most discounted expected loss per unit, decided
     /// at assembly while the universe is in hand. Held rather than recomputed
     /// per cycle because the universe moves into the desk after assembly and a
@@ -101,12 +138,21 @@ impl CreditRegister {
             if object.instrument_type == InstrumentType::GovernmentBond
                 && let Some(maturity) = object.maturity()
                 && let Some(tenor_years) = years_between(as_of, maturity)
-                && let Some(yield_to_maturity) = quoted_yield(object)
             {
-                points.entry(object.currency).or_default().push(CurvePoint {
-                    tenor_years,
-                    value: yield_to_maturity,
-                });
+                match quoted_yield(object) {
+                    Some(Ok(yield_to_maturity)) => {
+                        points.entry(object.currency).or_default().push(CurvePoint {
+                            tenor_years,
+                            value: yield_to_maturity,
+                        });
+                    }
+                    Some(Err(error)) => {
+                        register
+                            .excluded_curve_points
+                            .insert(id.clone(), error.to_string());
+                    }
+                    None => {}
+                }
             }
         }
 
@@ -125,7 +171,9 @@ impl CreditRegister {
                 }
             }
         }
-        register.worst_claim = register.find_worst_claim(universe, as_of);
+        let (worst, unvalued) = register.find_worst_claim(universe, as_of);
+        register.worst_claim = worst;
+        register.valuation_refusals = unvalued;
         register
     }
 
@@ -156,6 +204,22 @@ impl CreditRegister {
     /// Refuses rather than substituting a flat rate when no curve exists for
     /// the currency — a discounted loss quoted off a rate nobody observed is
     /// a number that reads as a measurement.
+    ///
+    /// # Why this guards the curve's domain and the curve does not
+    ///
+    /// [`TermStructure::rate_at`] flat-extrapolates outside its quoted tenors
+    /// and that is right for what it is: a market-data primitive read at 50y
+    /// off a 2y-30y fit is a marginal extension of an observed shape, and the
+    /// macro path's slope and inversion readings depend on it. It is not right
+    /// *here*. A credit claim's tenor is the claim's own fact, not a curve
+    /// reading, and the two arrive from different objects: a universe holding
+    /// one 10y benchmark answered a 40y claim with the 10y rate, which is not
+    /// an extension of a shape but an invention carrying an observation's
+    /// provenance. This is the composition point — the only place that knows
+    /// both the claim's maturity and the curve's range — so the guard belongs
+    /// here, exactly as
+    /// [`qip_market::volatility::VolatilitySurface::vol_at`] refuses an expiry
+    /// outside its own grid rather than asking the interpolator to.
     pub fn discounted_expected_loss(
         &self,
         object_id: &str,
@@ -164,23 +228,48 @@ impl CreditRegister {
         years: f64,
     ) -> Result<Decimal> {
         let profile = self.profiles.get(object_id).ok_or_else(|| {
-            qip_core::error::Error::not_found(format!(
+            Error::not_found(format!(
                 "no credit profile for {object_id}; the register names why every credit claim \
                  it refused was refused"
             ))
         })?;
         let curve = self.curves.get(&currency).ok_or_else(|| {
-            qip_core::error::Error::not_found(format!(
+            Error::not_found(format!(
                 "no sovereign curve in {currency} to discount the expected loss on \
                  {object_id}; supply a sovereign issue in that currency rather than \
                  discounting at a rate nobody quoted"
             ))
         })?;
+        let (shortest, longest) = curve.tenor_range();
+        if years < shortest || years > longest {
+            return Err(Error::invalid(format!(
+                "the claim on {object_id} runs {years} years, outside the {shortest}..{longest} \
+                 years the {currency} sovereign curve is quoted at; the curve flat-extrapolates \
+                 beyond its own points, so discounting there would price the claim at a rate \
+                 nobody quoted — supply a sovereign issue at that tenor rather than reading \
+                 past the last one"
+            )));
+        }
         curve.present_value(profile.expected_loss(exposure, years)?, years)
     }
 
-    /// Every breached covenant across the register, as a sentence naming the
-    /// object, the obligor and the test.
+    pub fn excluded_curve_points(&self) -> impl Iterator<Item = (&String, &String)> {
+        self.excluded_curve_points.iter()
+    }
+
+    pub fn valuation_refusals(&self) -> impl Iterator<Item = (&String, &String)> {
+        self.valuation_refusals.iter()
+    }
+
+    /// Every breached **agreement** covenant across the register, as a
+    /// sentence naming the object, the obligor and the test.
+    ///
+    /// A borrower past a level this platform assumed is not here; it is in
+    /// [`Self::leverage_above_assumed_levels`], under its own sentence.
+    /// Merging the two is what produced
+    /// `"covenant breached: obj-X (Borrower): net_debt_to_ebitda (ceiling 6)
+    /// observed at 6.4: breached"` for a loan whose agreement nobody had
+    /// captured — an operator escalating a contract term that did not exist.
     pub fn breaches(&self) -> Vec<String> {
         let mut breaches = Vec::new();
         for (id, profile) in &self.profiles {
@@ -193,6 +282,22 @@ impl CreditRegister {
             }
         }
         breaches
+    }
+
+    /// Every borrower past a level this platform assumed, as a sentence that
+    /// says so.
+    pub fn leverage_above_assumed_levels(&self) -> Vec<String> {
+        let mut findings = Vec::new();
+        for (id, profile) in &self.profiles {
+            for covenant in profile.assumed_tests_exceeded() {
+                findings.push(format!(
+                    "{id} ({}): {}",
+                    profile.obligor(),
+                    covenant.describe()
+                ));
+            }
+        }
+        findings
     }
 
     /// How many obligors are within touching distance of a covenant without
@@ -220,8 +325,21 @@ impl CreditRegister {
         self.worst_claim.as_ref()
     }
 
-    fn find_worst_claim(&self, universe: &Universe, as_of: Timestamp) -> Option<(String, Decimal)> {
+    /// The worst claim, and why every claim that could not be valued could
+    /// not be.
+    ///
+    /// The second half is not bookkeeping. This loop used to drop the refusal
+    /// on the floor, so a universe whose curve was unusable produced a worst
+    /// claim of `None` or — worse, once the discount factor underflowed — a
+    /// ranking decided by which claim's arithmetic collapsed last, with
+    /// nothing anywhere saying why.
+    fn find_worst_claim(
+        &self,
+        universe: &Universe,
+        as_of: Timestamp,
+    ) -> (Option<(String, Decimal)>, BTreeMap<String, String>) {
         let mut worst: Option<(String, Decimal)> = None;
+        let mut unvalued: BTreeMap<String, String> = BTreeMap::new();
         for id in self.profiles.keys() {
             let Some(object) = universe.get(&ObjectId::from_string(id.clone())) else {
                 continue;
@@ -232,16 +350,18 @@ impl CreditRegister {
             let Some(years) = years_between(as_of, maturity) else {
                 continue;
             };
-            let Ok(loss) =
-                self.discounted_expected_loss(id, object.currency, object.price.abs(), years)
-            else {
-                continue;
-            };
-            if worst.as_ref().is_none_or(|(_, seen)| loss > *seen) {
-                worst = Some((id.clone(), loss));
+            match self.discounted_expected_loss(id, object.currency, object.price.abs(), years) {
+                Ok(loss) => {
+                    if worst.as_ref().is_none_or(|(_, seen)| loss > *seen) {
+                        worst = Some((id.clone(), loss));
+                    }
+                }
+                Err(error) => {
+                    unvalued.insert(id.clone(), error.to_string());
+                }
             }
         }
-        worst
+        (worst, unvalued)
     }
 
     /// The one-line summary the UNDERSTAND stage reports.
@@ -276,6 +396,16 @@ impl CreditRegister {
                 ", {breaches} breached covenant(s) and {watch} obligor(s) on watch"
             ));
         }
+        // Counted separately from the breaches above and never folded into
+        // them: one is a term somebody agreed to, the other is this
+        // platform's assumption, and a single total would let the second be
+        // read as the first — which is the defect this split closes.
+        let assumed = self.leverage_above_assumed_levels().len();
+        if assumed > 0 {
+            clause.push_str(&format!(
+                ", {assumed} borrower(s) past an assumed level with no covenant supplied"
+            ));
+        }
         if let Some((id, loss)) = self.worst_claim() {
             clause.push_str(&format!(
                 ", worst claim {id} at {loss} of discounted expected loss per unit"
@@ -286,8 +416,17 @@ impl CreditRegister {
 
     /// Everything the register found that a person should be told about, as
     /// stage problems: a credit claim the platform cannot quantify, a
-    /// currency whose sovereign curve would not form, and a breached
-    /// covenant.
+    /// currency whose sovereign curve would not form, a benchmark kept out of
+    /// a curve, a claim nothing could discount, a breached covenant, and —
+    /// under its own leading words — a borrower past a level this platform
+    /// assumed.
+    ///
+    /// The last two are separate lines rather than one, because the leading
+    /// words are what an operator scanning a list acts on. `covenant
+    /// breached:` means a term of a credit agreement has been broken and
+    /// begins an escalation; `leverage above an assumed level` means the
+    /// agreement was never captured and begins a data request. They were the
+    /// same sentence, and the second was being read as the first.
     pub fn problems(&self) -> Vec<String> {
         let mut problems: Vec<String> = self
             .refusals
@@ -299,10 +438,23 @@ impl CreditRegister {
                 .iter()
                 .map(|(currency, reason)| format!("no {currency} sovereign curve: {reason}")),
         );
+        problems.extend(self.excluded_curve_points.iter().map(|(id, reason)| {
+            format!("sovereign issue {id} is not on its currency's curve: {reason}")
+        }));
+        problems.extend(
+            self.valuation_refusals
+                .iter()
+                .map(|(id, reason)| format!("credit claim {id} could not be discounted: {reason}")),
+        );
         problems.extend(
             self.breaches()
                 .into_iter()
                 .map(|breach| format!("covenant breached: {breach}")),
+        );
+        problems.extend(
+            self.leverage_above_assumed_levels()
+                .into_iter()
+                .map(|finding| format!("leverage above an assumed level: {finding}")),
         );
         problems
     }
@@ -324,15 +476,68 @@ fn years_between(from: Timestamp, to: Timestamp) -> Option<f64> {
 
 /// The yield the object's own terms quote, where it quotes one.
 ///
-/// Only a bond quotes a yield to maturity, and only a finite positive-or-zero
-/// one is a curve point: a zero-filled default would anchor the curve's front
-/// end at zero and flat-extrapolate every shorter tenor onto it.
-fn quoted_yield(object: &qip_financial::object::FinancialObject) -> Option<f64> {
-    match &object.extension {
-        qip_financial::extensions::Extension::Bond(details) => {
-            let y = details.yield_to_maturity;
-            (y.is_finite() && y != 0.0).then_some(y)
-        }
-        _ => None,
+/// `None` means the object quotes no yield at all — only a bond does — and is
+/// not a failure. `Some(Err(_))` means it quotes one the curve will not take,
+/// and the caller records it against the object rather than dropping the
+/// benchmark, because a point that silently vanished takes the curve's shape
+/// with it while the remaining points still fit a curve that answers every
+/// query.
+///
+/// # What is refused, and what the doc used to say
+///
+/// This doc previously read "only a finite positive-or-zero one is a curve
+/// point", and the code did neither of those things: it *rejected* zero and
+/// *accepted* negative. The code was right on both counts and the sentence was
+/// wrong, so the sentence is what changed.
+///
+/// * **Negative is accepted.** Negative sovereign yields are not a defect;
+///   they were the quoted level across the EUR, CHF and JPY curves for years,
+///   and a gate refusing them would refuse the bunds.
+/// * **Exactly zero is refused.** Not because a zero yield is impossible — a
+///   JGB under yield-curve control printed one — but because `0.0` is
+///   indistinguishable from a `yield_to_maturity` field the feed never
+///   populated, and a zero-filled default would anchor the curve's front end
+///   at zero and flat-extrapolate every shorter tenor onto it. The refusal
+///   names the ambiguity so a genuine zero can be quoted as a hair either side
+///   of it.
+/// * **A magnitude at or above [`IMPLAUSIBLE_YIELD_MAGNITUDE`] is refused**,
+///   as a percent-for-fraction unit error, which is the finding this arm was
+///   added for.
+///
+/// Refused, never corrected: dividing a suspicious `4.35` by a hundred would
+/// build a curve out of a guess about what a vendor meant.
+fn quoted_yield(object: &qip_financial::object::FinancialObject) -> Option<Result<f64>> {
+    let qip_financial::extensions::Extension::Bond(details) = &object.extension else {
+        return None;
+    };
+    let y = details.yield_to_maturity;
+    let id = object.object_id.as_str();
+    if !y.is_finite() {
+        return Some(Err(Error::invalid(format!(
+            "the yield to maturity on {id} is {y}, which is not a finite rate; quote the yield \
+             the benchmark trades at or leave it off the curve"
+        ))));
     }
+    if y == 0.0 {
+        return Some(Err(Error::invalid(format!(
+            "the yield to maturity on {id} is exactly zero, which this platform cannot tell \
+             apart from a field the feed never filled in; quote the benchmark's own yield, and \
+             if it really is zero quote it as such a hair either side rather than as the value \
+             an empty field also takes"
+        ))));
+    }
+    if y.abs() >= IMPLAUSIBLE_YIELD_MAGNITUDE {
+        return Some(Err(Error::invalid(format!(
+            // Two decimal places because the exact binary expansion of
+            // `4.35 * 100.0` is 434.99999999999994, and a refusal whose own
+            // arithmetic looks broken is a refusal an operator argues with
+            // rather than acts on.
+            "the yield to maturity on {id} is {y}, which as a fraction is {percent:.2}%; supply \
+             it as a fraction rather than a percentage. Discounting on a curve through this \
+             point would return a present value of exactly zero for every claim in the \
+             currency, which reads as a universe carrying no credit risk",
+            percent = y * 100.0
+        ))));
+    }
+    Some(Ok(y))
 }

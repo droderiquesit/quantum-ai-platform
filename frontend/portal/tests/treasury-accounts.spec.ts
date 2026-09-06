@@ -258,6 +258,63 @@ test("an account with no book says no book has been opened rather than showing a
   );
 });
 
+test("the page names the two routes that would bind the account to the reader, and neither is presented as served", async ({
+  page,
+}) => {
+  await servePlatform(page, { ...healthy(), "/ledger/users": LEDGER_USERS });
+  await page.goto("/treasury/accounts?user=alice");
+
+  // The premise: the account rendered, so the panel below sits beside data
+  // rather than standing in for it — the binding is missing, the account is
+  // not.
+  await expect(page.getByTestId("account-id")).toHaveText("alice");
+
+  // The reason, in the register agreed for the venue-registration dialog: what
+  // the platform sees is the console's deployment credential, not the person.
+  const binding = page.getByTestId("account-binding");
+  await expect(binding).toBeVisible();
+  await expect(binding).toContainText("operator@env");
+  await expect(binding).toContainText("It is not resolved from whoever is signed in");
+
+  // The two routes, from NOT_YET_SERVED, rendered as missing endpoints — the
+  // same block every other absent endpoint on this console uses, so an
+  // operator reads one vocabulary. Before this they existed only in a source
+  // comment and a handoff document.
+  const missing = page.locator("[data-state-block=endpoint-missing]");
+  await expect(missing).toHaveCount(2);
+  await expect(missing.first()).toContainText("GET /api/v1/account/me is missing");
+  await expect(missing.nth(1)).toContainText("GET /api/v1/ledger/users/{user} is missing");
+  await expect(page.locator("#content")).toContainText(
+    "this console must not say “your account”",
+  );
+
+  // Nothing was invented to stand in for either. No control appeared with them.
+  const content = page.locator("#content");
+  await expect(content.locator("button[type=submit], form")).toHaveCount(0);
+});
+
+test("who is signed in is reported as a console identity and never as the ledger account on screen", async ({
+  page,
+}) => {
+  await servePlatform(page, { ...healthy(), "/ledger/users": LEDGER_USERS });
+  await page.goto("/treasury/accounts?user=alice");
+
+  // The premise: the session line resolved. These suites run with the gate
+  // opted out, so `/api/auth/session` answers with no session and the line
+  // settles on the unauthenticated wording rather than staying on "reading…".
+  const session = page.getByTestId("account-session");
+  await expect(session).toBeVisible();
+  await expect(session).not.toContainText("reading who is signed in");
+
+  // And what it says is that the platform is not asked who is reading — which
+  // is the fact that makes the account above an operator's pick.
+  await expect(session).toContainText("the platform is not asked who is reading");
+  // The account on screen is still alice, and the session line has not been
+  // allowed to name her.
+  await expect(page.getByTestId("account-id")).toHaveText("alice");
+  await expect(session).not.toContainText("alice");
+});
+
 test("a credential the route refuses says so, and is not shown as an account the ledger does not hold", async ({
   page,
 }) => {

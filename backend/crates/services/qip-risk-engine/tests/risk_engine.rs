@@ -415,6 +415,81 @@ fn reduction_is_opt_in_and_finds_a_permissible_size() -> Result<()> {
 }
 
 #[test]
+fn an_order_is_refused_while_the_state_names_a_figure_nobody_could_compute() -> Result<()> {
+    // A limit whose figure is missing records no breach: `MinLiquidity` looks
+    // its fraction up by horizon and takes the `None` arm when the key is
+    // absent. So an unevaluated control and a control that passed arrive here
+    // as the same thing, silence, and the platform shipped exactly that — a
+    // liquidity ladder refused over one instrument's quoted spread emptied
+    // `liquidatable_within`, the floor abstained, and every order was
+    // approved with the floor never run.
+    let checker = PreTradeChecker::new(limits());
+    let clean = state("10000000", "0");
+    let small = order("AAA", "1000", "100");
+
+    // The premise, and the half that proves this is a control rather than an
+    // outage: the identical state and order, with nothing filed as
+    // unevaluated, is approved.
+    assert!(
+        checker.check(&small, &clean, now())?.is_approved(),
+        "the premise failed: the order was refused before anything was filed as unevaluated"
+    );
+
+    let unevaluated = clean.clone().with_unevaluated(
+        "liquidity",
+        "the ladder refused: rung a costs more than rung b",
+    );
+    let result = checker.check(&small, &unevaluated, now())?;
+    assert!(
+        !result.is_approved(),
+        "an order was approved while a control that would have judged it did not run"
+    );
+    let reason = result.decision.describe();
+    assert!(
+        reason.contains("liquidity could not be evaluated")
+            && reason.contains("rung a costs more than rung b"),
+        "the refusal names neither the figure nor why it is missing: {reason}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_figure_nobody_could_compute_cannot_be_reduced_away() -> Result<()> {
+    // Reduction answers "how much of this order would pass", and nothing
+    // about a smaller order makes an uncomputed figure computable. A
+    // reduction here would hand back a quantity that some control had
+    // permitted when none had looked at it.
+    let checker = PreTradeChecker::new(limits()).allowing_reduction();
+    let clean = state("10000000", "0");
+    let oversized = order("AAA", "20000", "100");
+
+    // The premise: with every figure computed, this order is reducible rather
+    // than refused, so the arm below is a decision about the missing figure.
+    assert!(
+        matches!(
+            checker.check(&oversized, &clean, now())?.decision,
+            PreTradeDecision::Reduced { .. }
+        ),
+        "the premise failed: the order was not reducible even with every figure computed"
+    );
+
+    let unevaluated = clean
+        .clone()
+        .with_unevaluated("liquidity", "the ladder refused");
+    let result = checker.check(&oversized, &unevaluated, now())?;
+    assert!(
+        !result.decision.permits_anything(),
+        "an unevaluated control was reduced away rather than refused: {}",
+        result.decision.describe()
+    );
+    assert_eq!(
+        result.decision.permitted_quantity(dec!("20000")),
+        Decimal::ZERO
+    );
+    Ok(())
+}
+
+#[test]
 fn the_permitted_quantity_is_the_exact_boundary_and_one_more_unit_breaches() -> Result<()> {
     // The bisection used to rebuild each trial quantity through
     // `Decimal::from_f64(full.to_f64() * mid)`, so the size it handed back was

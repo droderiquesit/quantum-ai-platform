@@ -247,6 +247,19 @@ export const NAV: readonly NavGroup[] = [
         reads: ["/ledger/users"],
       },
       {
+        // The agreements themselves, side by side. The ledger page carries a
+        // mandate inside a card per user; this is every mandate at once, which
+        // is the only shape in which "which jurisdictions, which floors, which
+        // families" can be read. It also names the three fields the platform
+        // holds about a mandate and this route does not carry.
+        href: "/treasury/mandates",
+        label: "Mandates",
+        mark: "MD",
+        description:
+          "Every mandate the ledger holds, term by term, and the three facts about an agreement this route does not carry",
+        reads: ["/ledger/users"],
+      },
+      {
         // The catalogue down the other axis from the ledger: one card per
         // product, every account's evaluation inside it. Same route, no
         // capability decided here — the browser holds no entitlement logic.

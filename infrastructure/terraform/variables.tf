@@ -866,3 +866,26 @@ variable "console_egress_cidr" {
   type        = string
   default     = null
 }
+
+variable "image_bake_subnet_cidr" {
+  description = <<-EOT
+    CIDR of the subnet the throwaway machine `.github/workflows/image.yml`
+    bakes the execution node's boot image on. Null means this environment
+    bakes no image, and `modules/image-bake` creates nothing at all — no
+    bucket, no identity, no subnet.
+
+    Null everywhere by default and on purpose. Three of the four environments
+    will never bake an image: ADR 0035 authorises one node, in dev. A default
+    range would create a subnet, a bucket and a service account in all four
+    because a variable had a value, which is the shape `console_egress_cidr`
+    already refuses.
+
+    Setting it is what unblocks the boot image ADR 0035 needs and ADR 0024
+    records as remaining work. The bake's own preflight refuses with this
+    variable's name and the file to edit rather than failing on a bucket that
+    is not there.
+  EOT
+
+  type    = string
+  default = null
+}

@@ -143,6 +143,38 @@ export const NOT_YET_SERVED: Record<string, MissingEndpoint> = {
     note:
       "assembled here from /system, /mesh, /regions and /agents; the platform serves no single topology document.",
   },
+  /**
+   * The route that would make `/treasury/accounts` the reader's own account
+   * rather than one an operator picked.
+   *
+   * Written down here, in the table every page renders from, because it was
+   * previously stated only in a source comment and in a handoff document —
+   * neither of which an operator looking at the screen can read. The console
+   * shows one account because that is all it can honestly show; the reason is
+   * a missing route, and a missing route is a thing this console has a way of
+   * saying.
+   */
+  accountForSession: {
+    method: "GET",
+    path: "/api/v1/account/me",
+    needed_for: "an account bound to the person signed in, instead of one an operator selected",
+    note:
+      "this console authenticates to the platform with one deployment credential, so every browser session arrives as the same subject and the platform has no ledger account to resolve it to. Binding one needs a keyed assertion the API verifies — an architecture decision, not a page.",
+  },
+  /**
+   * The single-account read. `GET /ledger/users` answers every account and
+   * requires `analyst`; there is no `GET /ledger/users/{user}`, which is why
+   * the account page filters a list it had to fetch whole, and why an id the
+   * ledger does not hold is this console's finding rather than the platform's
+   * 404.
+   */
+  accountByUser: {
+    method: "GET",
+    path: "/api/v1/ledger/users/{user}",
+    needed_for: "one account without reading every account",
+    note:
+      "GET /ledger/users lists them all, so a page about one account is served a body carrying the rest. A 404 for an id the ledger does not hold would also be the platform's answer rather than this console's inference from a list.",
+  },
 } as const;
 
 /**

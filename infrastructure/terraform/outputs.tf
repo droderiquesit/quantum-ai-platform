@@ -326,3 +326,30 @@ output "console_service_account_email" {
   description = "The identity scripts/deploy-frontends.sh must deploy the portal under. Null where the console has no platform to read."
   value       = module.secrets.console_service_account_email
 }
+
+# --- What the boot-image bake runs on ---------------------------------------
+#
+# `.github/workflows/image.yml` does not read these: it derives every name the
+# way `deploy.yml` derives the attestor's, from the environment's committed
+# tfvars and this module's naming rule, so nothing in the pipeline depends on
+# an output somebody pasted. They are here for the plan a person reads before
+# applying, and for `terraform output` to answer "did the bake's preflight
+# refuse because this environment has none, or because the apply failed".
+
+output "image_bake" {
+  description = <<-EOT
+    The staging bucket, the builder identity and the builder subnet the boot
+    image is baked on, or null where `image_bake_subnet_cidr` is unset and this
+    environment bakes nothing.
+
+    The image itself is not here and must never be: an image Terraform owned
+    could be destroyed while a node's instance template still named it.
+  EOT
+
+  value = length(module.image_bake) == 0 ? null : {
+    payload_bucket  = module.image_bake[0].payload_bucket
+    builder_account = module.image_bake[0].builder_service_account_email
+    builder_subnet  = module.image_bake[0].builder_subnet
+    builder_tag     = module.image_bake[0].builder_tag
+  }
+}

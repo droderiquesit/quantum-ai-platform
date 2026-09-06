@@ -298,6 +298,18 @@ pub struct LoanDetails {
     pub covenant_lite: bool,
     /// Leverage of the borrower, a primary covenant metric.
     pub net_debt_to_ebitda: f64,
+    /// The `net_debt_to_ebitda` ceiling the credit agreement itself sets, when
+    /// the agreement was captured.
+    ///
+    /// `None` is the honest state for a loan whose terms nobody recorded, and
+    /// it is what [`crate::credit::CovenantSource::Assumed`] exists to report:
+    /// without this field every non-covenant-lite loan was tested against a
+    /// ceiling the platform manufactured, and a borrower past it was told to
+    /// the operator in the sentence a real breach uses. `serde(default)` so a
+    /// catalogue written before the field existed still loads, absent, rather
+    /// than being refused or defaulted to a level nobody set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leverage_covenant: Option<f64>,
     pub is_amortising: bool,
 }
 

@@ -326,6 +326,19 @@ pub struct PlatformConfig {
     /// a single agent's answer is good enough for this deployment, and the
     /// router will then route below the panel and the panel will not convene.
     ///
+    /// Read in exactly one place: `Platform::reason_decision_context`, which
+    /// caps `opportunity.rank.importance` with it to produce the
+    /// `qip_cost_router::DecisionContext` requirement. That reader is new. The
+    /// field, its default and its builder shipped with **nothing in the kernel
+    /// consulting any of them** — `grep -rn reasoning_confidence_bar` returned
+    /// this declaration, its default, its builder and one assertion in an app
+    /// test — while `reason_decision_context` passed `rank.confidence` under a
+    /// call-site comment arguing for that instead. Two contradictory arguments
+    /// about the same number, one of them a control an operator could set and
+    /// watch do nothing: the `MaxExpectedShortfall` shape
+    /// `.claude/rules/domains/risk-and-execution.md` names by example. Say
+    /// where a number is read, or delete it.
+    ///
     /// `#[serde(default)]` for the same reason every field below it carries
     /// one: a configuration stored before this field existed keeps
     /// deserialising, to the behaviour the platform had when it was written.
@@ -521,9 +534,17 @@ impl PlatformConfig {
     /// State the most confidence the REASON stage may demand of an answer.
     ///
     /// Not clamped on the way in. A bar outside `(0, 1]` is not a probability,
-    /// and `qip_cost_router::DecisionContext::validate` refuses it by name on
-    /// every cycle rather than quietly routing as though a plausible value had
-    /// been configured — which is the failure a clamp here would introduce.
+    /// and `Platform::reason_decision_context` refuses it by name on every
+    /// cycle rather than quietly routing as though a plausible value had been
+    /// configured — which is the failure a clamp here would introduce.
+    ///
+    /// The refusal is the kernel's own and deliberately not left to
+    /// `qip_cost_router::DecisionContext::validate`, which this doc used to
+    /// name. The requirement handed to the router is
+    /// `importance.min(reasoning_confidence_bar)` and importance is at most
+    /// one, so a bar of 1.5 would never bind: the context would validate, the
+    /// routing would look ordinary, and the nonsense setting would live in the
+    /// deployment unremarked.
     pub fn with_reasoning_confidence_bar(mut self, bar: f64) -> Self {
         self.reasoning_confidence_bar = bar;
         self
