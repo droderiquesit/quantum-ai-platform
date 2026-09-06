@@ -163,6 +163,53 @@ jobs:
               exit 1
               ;;
           esac
+          # An environment still carrying the marker is refused here, before
+          # anything authenticates. deploy.yml and vendor.yml already did this;
+          # this workflow did not, and the argument for leaving it out was real
+          # enough to be worth answering rather than deleting.
+          #
+          # The objection: `infra.yml` exists to recover a broken bootstrap. It
+          # deliberately reads nothing a failed bootstrap sets — no repository
+          # variable, only the committed tfvars — precisely so that an
+          # environment in a bad state can still be planned and applied from
+          # here. A refusal keyed on the tfvars looks like exactly the kind of
+          # gate that locks the recovery tool out of the case it was built for.
+          #
+          # The answer: `unprovisioned` is not a broken bootstrap. It is the
+          # state of an environment that has never had one, and every single
+          # thing this job needs is created *by* the bootstrap it has not had.
+          # `modules/cicd` creates the pool `qip-github-<env>` and the account
+          # `qip-infra-<env>`, so the audience two steps below and the identity
+          # beside it name resources that do not exist. The backend this job
+          # would initialise against further down is `<project>-qip-tfstate`, a
+          # bucket `scripts/bootstrap-deploy.sh` creates because state cannot
+          # bootstrap itself. And the plan itself would refuse anyway:
+          # `variables.tf`
+          # rejects `project_id == "unprovisioned"` by name. There is no action
+          # — not `plan`, not `up`, not `down` — that this workflow could
+          # complete for such an environment, so refusing costs no recovery
+          # path. It only moves where the run dies.
+          #
+          # Where it died mattered. A probe of this workflow emitted
+          # `account=qip-infra-dev@unprovisioned.iam.gserviceaccount.com` and
+          # the run then failed at the OIDC exchange with a message about an
+          # invalid audience — the same class of message an install advisory in
+          # a repository variable once produced, and the reason this workflow
+          # derives its identity from the tfvars at all. An operator reading it
+          # goes looking at workload identity federation, which is working. The
+          # truth is cheaper than that and it is in the file in front of them.
+          #
+          # The recovery path for this state is unchanged and named below: a
+          # person creates a project, records its id and number here, and runs
+          # `scripts/bootstrap-deploy.sh <env>`, which refuses the marker too
+          # rather than half-provisioning against a project that is not there.
+          # After that this workflow is the tool again, marker gone.
+          if [ "$project" = "unprovisioned" ]; then
+            echo "environment '${ENVIRONMENT}' is not provisioned: $tfvars carries the 'unprovisioned' marker." >&2
+            echo "There is nothing this workflow can plan, apply or tear down for it: the workload-identity pool and the qip-infra account it would authenticate with, and the state bucket it would init against, are all created by the first bootstrap, and terraform refuses this project id at plan time in any case." >&2
+            echo "Create a project for it (its own, never one another environment uses), record the id and number in $tfvars, then run scripts/bootstrap-deploy.sh ${ENVIRONMENT} as a person. Dispatch this workflow after that." >&2
+            exit 1
+          fi
           {
             echo "project=$project"
             echo "provider=projects/$number/locations/global/workloadIdentityPools/qip-github-${ENVIRONMENT}/providers/github"

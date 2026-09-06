@@ -60,6 +60,65 @@ tfvar() {
 }
 PROJECT="$(tfvar project_id)"
 readonly PROJECT
+# Shape-checked before anything is derived from it, for the same reason the
+# `infra_sa` output is shape-checked at step 6 rather than only tested for
+# emptiness — and that reason started here. `tfvar` is a `sed` over a file, so
+# what it returns is whatever the file held: nothing, one word, or several
+# lines. There was no check at all on this one, and it is the value that
+# becomes the bootstrap account's domain, the state bucket's name, and the
+# positional argument of `gcloud projects add-iam-policy-binding … --role
+# roles/owner`. Empty, the first thing that notices is `gcloud services enable`
+# in step 2, which reports a project problem rather than a configuration one —
+# and the operator is by then reading gcloud's output for an answer that is in
+# a file two directories away.
+#
+# Google's own rule: 6-30 characters, a lowercase letter first, lowercase
+# letters, digits and hyphens after, and never a trailing hyphen. Refused
+# rather than corrected — a project id quietly repaired is an apply against a
+# project nobody named.
+#
+# The pattern is the one `infrastructure/terraform/variables.tf` already uses
+# on `var.project_id`, deliberately character-for-character, and the split into
+# a shape rule and a marker rule below is that file's split for that file's
+# stated reason. This admits exactly what a plan admits: anything narrower here
+# would refuse an id the apply would take, and anything wider would let this
+# script spend twenty minutes creating an account, a bucket and two IAM
+# bindings before terraform refused the same value.
+#
+# This is not a shell-injection guard and should not be read as one. Every use
+# of ${PROJECT} below is quoted, and a quoted expansion in bash is data: unlike
+# a `${{ … }}` expression in a workflow, which the runner pastes into the
+# script before bash parses a byte of it, nothing here re-parses the value as
+# source. What this stops is an apply pointed somewhere nobody chose.
+if [[ ! "${PROJECT}" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]]; then
+  echo "project_id in ${TFVARS} is not a Google Cloud project id: '${PROJECT}'" >&2
+  echo "Expected 6-30 characters, starting with a lowercase letter, then lowercase letters," >&2
+  echo "digits and hyphens, not ending in a hyphen. Record the real project id there." >&2
+  exit 65
+fi
+# The marker is a valid project-id *shape*, so the check above admits it and
+# this one has to be separate. Every environment except dev carries it today,
+# and this script is the path both environments/README.md and infra.yml's own
+# refusal name for clearing it — so this is the message an operator provisioning
+# test, stage or prod actually reaches, and it should say what to do.
+#
+# Without it the run proceeds to `gcloud config set project unprovisioned`,
+# which sets a local configuration value without checking anything, and then
+# fails at `gcloud services enable` with a permission error about a project id
+# — a message about access, for a project that was never created. It is also
+# not a state this script can resolve on its own: it creates a service account,
+# a bucket and IAM bindings *in* a project, and it never creates the project,
+# which is an act against an organisation or a billing account and a person's
+# to perform.
+if [[ "${PROJECT}" == "unprovisioned" ]]; then
+  echo "environment '${ENVIRONMENT}' is not provisioned: ${TFVARS} carries the 'unprovisioned' marker." >&2
+  echo "This script provisions resources inside a project; it does not create the project." >&2
+  echo "Create one for this environment (its own, never one another environment uses), then" >&2
+  echo "record its id and number in that file and run this again:" >&2
+  echo "  gcloud projects create <id> --name=<name>          # and attach billing" >&2
+  echo "  gcloud projects describe <id> --format='value(projectNumber)'" >&2
+  exit 65
+fi
 GITHUB_REPOSITORY="$(tfvar github_repository)"
 readonly GITHUB_REPOSITORY
 REGION="$(tfvar region)"
