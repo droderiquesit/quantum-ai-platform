@@ -299,3 +299,55 @@ fn apply_bps_scales_correctly() {
     assert_eq!(notional.apply_bps(25.0), Decimal::from_int(2500));
     assert_eq!(notional.apply_bps(0.0), Decimal::ZERO);
 }
+
+/// `apply_bps` is the workspace's one `Decimal` → `f64` → `Decimal` crossing
+/// on the money path, and it used to substitute `Decimal::ZERO` for both of
+/// its failures: a rate `from_f64` rejected, and a product that overflowed. A
+/// cost, fee or spread of exactly zero is the direction that admits trades.
+/// `qip-financial`'s `ladder::prove_quotes_can_coexist` records the concrete
+/// case — a `NaN` spread made a liquidity rung read as free to exit, and only
+/// `qip-kernel`'s `ladder_reference_of` stood in front of it. Nothing stood in
+/// front of the other call sites in routing, execution, simulation and the
+/// capital fabric.
+#[test]
+fn a_basis_point_rate_that_cannot_be_applied_is_refused_rather_than_priced_as_free() {
+    let notional = Decimal::from_int(1_000_000);
+
+    // Premise: the ordinary path answers, and answers something other than
+    // the zero this test is about, so a `None` below is a refusal rather than
+    // a method that refuses everything.
+    assert_eq!(
+        notional.checked_apply_bps(2.5),
+        Some(Decimal::from_int(250))
+    );
+
+    // A rate that is not a number, either infinity, and a finite rate whose
+    // factor is too large to represent.
+    for bps in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e35] {
+        assert_eq!(
+            notional.checked_apply_bps(bps),
+            None,
+            "{bps}bp was applied instead of refused"
+        );
+    }
+
+    // And the other half of the old silent zero: a rate that converts cleanly
+    // but whose product does not fit. The premise separates the two arms —
+    // 1e20bp is a factor of 1e16, which `from_f64` represents, so the refusal
+    // below can only have come from the multiplication.
+    assert!(Decimal::from_f64(1e20 / 10_000.0).is_some());
+    assert_eq!(
+        Decimal::MAX.checked_apply_bps(1e20),
+        None,
+        "an overflowing product was reported as a cost of zero"
+    );
+}
+
+/// The panicking form, which every one of the nineteen non-test call sites
+/// still uses. It must stop rather than answer, because the answer it used to
+/// give was "free".
+#[test]
+#[should_panic(expected = "apply_bps cannot scale")]
+fn applying_a_rate_that_is_not_a_number_stops_rather_than_answering_zero() {
+    let _ = Decimal::from_int(1_000_000).apply_bps(f64::NAN);
+}

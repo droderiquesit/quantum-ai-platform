@@ -8,8 +8,11 @@
 //! [`Decimal::from_f64`].
 //!
 //! Arithmetic operators panic on overflow rather than wrapping, matching Rust's
-//! debug-mode integer semantics. Call the `checked_*` methods where a caller
-//! must handle overflow as data.
+//! debug-mode integer semantics, and [`Decimal::apply_bps`] panics on the same
+//! terms. Call the `checked_*` methods where a caller must handle the failure
+//! as data. Nothing here substitutes a value for arithmetic it could not
+//! perform: a fabricated zero is a cost, a fee or a spread that reads as free,
+//! and it defeats the reason money is a `Decimal` at all.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp::Ordering;
@@ -216,9 +219,47 @@ impl Decimal {
     }
 
     /// Scale by a basis-point figure: `notional.apply_bps(2.5)` is 2.5bp of it.
+    ///
+    /// This is the workspace's one `Decimal` → `f64` → `Decimal` crossing on
+    /// the money path, and it panics on a rate it cannot apply, exactly as
+    /// [`Mul`] panics on a product it cannot represent. Use
+    /// [`Self::checked_apply_bps`] where the failure has to be handled as
+    /// data.
+    ///
+    /// It used to answer `Decimal::ZERO` to both failures — a bps the
+    /// conversion rejected, and a product that overflowed — which made a
+    /// `NaN`, an infinity or an astronomical rate come back as a **cost of
+    /// exactly zero**, the direction that admits trades. `qip-financial`'s
+    /// `ladder::prove_quotes_can_coexist` names that hazard: a `NaN` spread
+    /// turned a liquidity rung into one that read as free to exit, and only
+    /// `qip-kernel`'s `ladder_reference_of` stood in front of it. Nothing
+    /// stood in front of the other call sites in routing, execution,
+    /// simulation and the capital fabric. Money is [`Decimal`] here precisely
+    /// so arithmetic that fails is visible when it fails; a silent zero is the
+    /// one answer that defeats that.
+    ///
+    /// # Panics
+    ///
+    /// If `bps` is not a finite number, if `bps / 10_000` is too large to
+    /// represent, or if the product overflows.
     pub fn apply_bps(self, bps: f64) -> Self {
-        let factor = Self::from_f64(bps / 10_000.0).unwrap_or(Self::ZERO);
-        self.checked_mul(factor).unwrap_or(Self::ZERO)
+        self.checked_apply_bps(bps).unwrap_or_else(|| {
+            panic!(
+                "decimal apply_bps cannot scale {self} by {bps}bp; the rate must be a finite \
+                 number whose product is representable — call checked_apply_bps to handle it \
+                 as data"
+            )
+        })
+    }
+
+    /// [`Self::apply_bps`] with the failure as data: `None` for a rate that is
+    /// not a finite number, a rate too large to convert, or a product that
+    /// overflows.
+    ///
+    /// `None` and never a zero, because a zero here is a cost, a fee or a
+    /// spread that reads as free.
+    pub fn checked_apply_bps(self, bps: f64) -> Option<Self> {
+        self.checked_mul(Self::from_f64(bps / 10_000.0)?)
     }
 
     /// Parse a decimal string such as `-1234.5678`. Rejects anything else.

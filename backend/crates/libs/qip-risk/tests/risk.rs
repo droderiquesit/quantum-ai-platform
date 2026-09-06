@@ -9,7 +9,10 @@ use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::testing::approx_eq;
 use qip_numerics::matrix::Matrix;
 use qip_risk::factor::FactorRisk;
-use qip_risk::limits::{Limit, LimitKind, LimitSet, RiskState, Severity};
+use qip_risk::limits::{
+    EXPECTED_SHORTFALL_FIGURE, Limit, LimitKind, LimitSet, RiskState, Severity,
+    VALUE_AT_RISK_FIGURE, VOLATILITY_FIGURE,
+};
 use qip_risk::metrics::{
     self, DrawdownProfile, RiskMetrics, TailRisk, drawdown_profile, expected_shortfall,
     historical_var, parametric_var,
@@ -1041,4 +1044,223 @@ fn a_volatility_series_too_short_to_measure_leaves_the_field_untouched() {
         bare.volatility, 0.0,
         "a series too short to measure must leave the field alone, not record zero"
     );
+}
+
+// --- a figure that is not a number -------------------------------------------
+//
+// `Limit::assess` decided every breach with bare `<` and `>` on `f64`, and the
+// file held no finiteness check at all. IEEE-754 makes both comparisons false
+// against a `NaN`, so a poisoned figure came back as "no breach" while the
+// limit went on counting in `LimitCheck::evaluated` — an evaluated, passing
+// control that could not fire. This crate has shipped that shape twice
+// already: `MaxExpectedShortfall` over an always-empty map, and the
+// `daily-loss` cap over a field no producer wrote. A `NaN` is worse than
+// either, because it arrives from arithmetic rather than from a missing
+// writer, so it disarms whichever limit reads it on a book that is otherwise
+// fully populated and looks healthy.
+
+/// One poisoning of the shared fixture: the `limit_kind` label of the rule
+/// that reads the figure, and the mutation that makes the figure unreadable.
+type StatePoisoning = (&'static str, fn(&mut RiskState));
+
+/// One poisoning of a limit's own configuration: the field name, for the
+/// failure message, and the mutation.
+type LimitPoisoning = (&'static str, fn(&mut Limit));
+
+#[test]
+fn a_shipped_limit_refuses_a_figure_that_is_not_a_number_instead_of_passing_it() {
+    let limits = LimitSet::conservative_default();
+
+    // Premise: the fixture passes the whole shipped set, so anything that
+    // blocks below is the poisoned figure and not the fixture.
+    let clean = limits.check(&state());
+    assert!(
+        !clean.is_blocked(),
+        "premise: the clean fixture must pass, got {}",
+        clean.reason()
+    );
+
+    let poisonings: [StatePoisoning; 6] = [
+        ("max_volatility", |s| s.volatility = f64::NAN),
+        ("max_drawdown", |s| s.drawdown = f64::NAN),
+        ("max_daily_loss", |s| s.daily_loss = f64::NAN),
+        ("max_value_at_risk", |s| {
+            s.value_at_risk.insert("0.99".to_string(), f64::NAN);
+        }),
+        ("max_expected_shortfall", |s| {
+            s.expected_shortfall.insert("0.97".to_string(), f64::NAN);
+        }),
+        ("min_liquidity", |s| {
+            s.liquidatable_within.insert("5".to_string(), f64::NAN);
+        }),
+    ];
+
+    for (limit_kind, poison) in poisonings {
+        let mut poisoned = state();
+        poison(&mut poisoned);
+        let check = limits.check(&poisoned);
+        assert!(
+            check.is_blocked(),
+            "a {limit_kind} figure of NaN read as a passing check: {}",
+            check.reason()
+        );
+        let breach = check
+            .blocking()
+            .into_iter()
+            .find(|b| b.limit_kind == limit_kind)
+            .unwrap_or_else(|| {
+                panic!("{limit_kind} did not refuse its own poisoned figure: {check:?}")
+            });
+        assert_eq!(
+            breach.severity,
+            Severity::Critical,
+            "{limit_kind}: a figure nobody could compute is not fixed by sending less, which \
+             is what Breach means and Critical does not"
+        );
+        assert!(
+            breach.detail.contains("is not a comparison"),
+            "{limit_kind} reported an ordinary breach rather than a refusal: {}",
+            breach.detail
+        );
+        assert!(
+            breach.observed.is_nan(),
+            "{limit_kind} substituted {} for the figure it could not read; a substituted \
+             number reads downstream as a measurement",
+            breach.observed
+        );
+    }
+}
+
+#[test]
+fn a_limit_whose_own_threshold_is_not_a_number_refuses_rather_than_going_quiet() {
+    // The two thresholds are read by the same comparisons and fail the same
+    // way: `bound * NaN` is `NaN` and `observed > NaN` is false, so a warning
+    // threshold nobody validated silences the warning arm, and `ratio >= NaN`
+    // is false, so a critical multiple of `NaN` downgrades every critical
+    // breach to an ordinary one. Neither reads as wrong anywhere.
+    let poisonings: [LimitPoisoning; 2] = [
+        ("warning_threshold", |l| l.warning_threshold = f64::NAN),
+        ("critical_multiple", |l| l.critical_multiple = f64::NAN),
+    ];
+
+    for (field, poison) in poisonings {
+        let mut limit =
+            Limit::new("leverage", LimitKind::MaxLeverage { limit: 1.5 }).with_rationale("fixture");
+
+        // Premise: with both thresholds finite the fixture book (900k gross
+        // on 1m of equity) is inside this limit, so the block below is the
+        // threshold and not the book.
+        let premise = LimitSet::new("fixture").with(limit.clone()).check(&state());
+        assert_eq!(premise.evaluated, 1);
+        assert!(
+            !premise.is_blocked(),
+            "premise for {field}: {}",
+            premise.reason()
+        );
+
+        poison(&mut limit);
+        let check = LimitSet::new("fixture").with(limit).check(&state());
+        assert!(
+            check.is_blocked(),
+            "a limit whose {field} is NaN evaluated anyway and passed"
+        );
+    }
+}
+
+#[test]
+fn an_insolvent_book_no_longer_passes_the_cash_buffer_floor() {
+    // `RiskState::ratio` answers infinity when there is no equity to divide
+    // by. On a ceiling that breached by ordinary arithmetic, which is what
+    // the sentinel was for; on a floor it passed in silence, because `inf` is
+    // not less than a cash bound of 0.02. So the one limit that exists to
+    // notice a book has run out of money reported it inside its buffer.
+    // `a_zero_equity_book_is_blocked_rather_than_dividing_by_zero` above could
+    // not see this: the ceilings blocked, and the floor's abstention was
+    // invisible behind them.
+    let limits = LimitSet::conservative_default();
+
+    // Premise: a solvent book passes the floor, so the breach below is the
+    // insolvency and not a floor that refuses every book.
+    let solvent = limits.check(&state());
+    assert!(
+        !solvent
+            .breaches
+            .iter()
+            .any(|b| b.limit_kind == "min_cash_buffer"),
+        "premise: {}",
+        solvent.reason()
+    );
+
+    let mut insolvent = state();
+    insolvent.equity = Decimal::ZERO;
+    let check = limits.check(&insolvent);
+    assert!(
+        check
+            .blocking()
+            .iter()
+            .any(|b| b.limit_kind == "min_cash_buffer"),
+        "the cash floor abstained on a book with no equity: {}",
+        check.reason()
+    );
+}
+
+#[test]
+fn a_return_series_carrying_a_value_that_is_not_a_number_refuses_the_tail_figures() {
+    let limits = LimitSet::conservative_default();
+    let bare = || {
+        let mut state = state();
+        state.value_at_risk.clear();
+        state.expected_shortfall.clear();
+        state.volatility = 0.0;
+        state
+    };
+    let clean = [0.004, -0.09, 0.005, -0.11, 0.003, -0.13];
+
+    // Premise: on a series it can measure the derivation fills all three
+    // figures and files nothing, so an empty map below is a decision.
+    let measured = bare().with_tail_risk(&limits, &clean);
+    assert!(!measured.value_at_risk.is_empty());
+    assert!(!measured.expected_shortfall.is_empty());
+    assert!(measured.volatility > 0.0);
+    assert!(measured.unevaluated.is_empty());
+
+    let mut poisoned = clean.to_vec();
+    poisoned[2] = f64::NAN;
+    let refused = bare().with_tail_risk(&limits, &poisoned);
+
+    // The hazard this catches and `Limit::assess` cannot see:
+    // `qip_numerics::stats::quantile` *filters* non-finite values before it
+    // sorts, so a value at risk derived from this series comes back finite and
+    // plausible — a measurement of a book that does not exist — while
+    // `stats::stddev` propagates, so volatility comes back NaN. One poisoned
+    // series, two figures disagreeing about whether it could be measured at
+    // all, and only the second visible to any comparison downstream.
+    assert!(
+        refused.value_at_risk.is_empty() && refused.expected_shortfall.is_empty(),
+        "a tail figure was derived from a series that cannot be measured: {:?} / {:?}",
+        refused.value_at_risk,
+        refused.expected_shortfall
+    );
+    assert_eq!(
+        refused.volatility, 0.0,
+        "volatility was written from an unmeasurable series"
+    );
+
+    let named: Vec<&str> = refused.unevaluated.keys().map(String::as_str).collect();
+    assert_eq!(
+        named,
+        vec![
+            EXPECTED_SHORTFALL_FIGURE,
+            VALUE_AT_RISK_FIGURE,
+            VOLATILITY_FIGURE
+        ],
+        "the refusal must name every figure the limit set asked this producer for; an \
+         unnamed one is a control whose silence nothing explains"
+    );
+    for (figure, refusal) in &refused.unevaluated {
+        assert!(
+            refusal.contains("return 2 of 6"),
+            "{figure} does not say which return it could not use: {refusal}"
+        );
+    }
 }

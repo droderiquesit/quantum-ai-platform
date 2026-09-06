@@ -23,6 +23,22 @@ use std::collections::BTreeMap;
 /// [`RiskState`].
 pub const COUNTERPARTY_AXIS: &str = "counterparty";
 
+/// The name [`RiskState::with_tail_risk`] files its value-at-risk refusal
+/// under, when the return series it was handed cannot be measured.
+///
+/// Exported for the same reason as [`COUNTERPARTY_AXIS`]: the producer and
+/// every reader of [`RiskState::unevaluated`] must spell the figure one way.
+/// A refusal filed under a name nobody looks up is a refusal nobody reads.
+pub const VALUE_AT_RISK_FIGURE: &str = "value_at_risk";
+
+/// The name [`RiskState::with_tail_risk`] files its expected-shortfall
+/// refusal under. See [`VALUE_AT_RISK_FIGURE`].
+pub const EXPECTED_SHORTFALL_FIGURE: &str = "expected_shortfall";
+
+/// The name [`RiskState::with_tail_risk`] files its volatility refusal under.
+/// See [`VALUE_AT_RISK_FIGURE`].
+pub const VOLATILITY_FIGURE: &str = "volatility";
+
 /// How serious a breach is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -236,7 +252,32 @@ impl Limit {
     /// Evaluate an observed value against the limit.
     ///
     /// `observed` and `bound` are in the limit's own units.
-    fn assess(&self, observed: f64, bound: f64) -> Option<Severity> {
+    ///
+    /// **A figure that is not a finite number is refused, never compared.**
+    /// IEEE-754 makes every ordering comparison against a `NaN` false in both
+    /// directions, so `observed > bound` and `observed < bound` used to answer
+    /// "no breach" to a figure nobody could compute, and the limit went on
+    /// counting in [`LimitCheck::evaluated`]. The two thresholds are checked
+    /// for the same reason: `bound * NaN` is `NaN`, so a non-finite
+    /// [`Self::warning_threshold`] silences the warning arm and a non-finite
+    /// [`Self::critical_multiple`] downgrades every critical breach, both
+    /// without anything reading as wrong.
+    ///
+    /// The infinity [`RiskState::ratio`] answers on non-positive equity comes
+    /// through this arm too, and that is a strengthening rather than a
+    /// regression: it used to breach every *ceiling* by ordinary arithmetic
+    /// and pass every *floor* silently, because `inf < 0.02` is false, so an
+    /// insolvent book was inside its cash buffer. One rule now covers both
+    /// directions.
+    fn assess(&self, observed: f64, bound: f64) -> Assessment {
+        if !observed.is_finite()
+            || !bound.is_finite()
+            || !self.warning_threshold.is_finite()
+            || !self.critical_multiple.is_finite()
+        {
+            return Assessment::Uncomparable;
+        }
+
         if self.kind.is_minimum() {
             if observed < bound {
                 let shortfall = if bound > 1e-12 {
@@ -244,16 +285,16 @@ impl Limit {
                 } else {
                     1.0
                 };
-                return Some(if shortfall > self.critical_multiple - 1.0 {
+                return Assessment::Binds(if shortfall > self.critical_multiple - 1.0 {
                     Severity::Critical
                 } else {
                     Severity::Breach
                 });
             }
             if bound > 1e-12 && observed < bound / self.warning_threshold.max(1e-9) {
-                return Some(Severity::Warning);
+                return Assessment::Binds(Severity::Warning);
             }
-            return None;
+            return Assessment::Within;
         }
 
         if observed > bound {
@@ -262,17 +303,44 @@ impl Limit {
             } else {
                 f64::INFINITY
             };
-            return Some(if ratio >= self.critical_multiple {
+            return Assessment::Binds(if ratio >= self.critical_multiple {
                 Severity::Critical
             } else {
                 Severity::Breach
             });
         }
         if bound > 1e-12 && observed > bound * self.warning_threshold {
-            return Some(Severity::Warning);
+            return Assessment::Binds(Severity::Warning);
         }
-        None
+        Assessment::Within
     }
+}
+
+/// What comparing one observed figure against one bound established.
+///
+/// Three arms rather than the `Option<Severity>` this replaced, because that
+/// `None` merged two facts a risk desk must be able to tell apart: the
+/// comparison was made and the book is inside the limit, and the comparison
+/// could not be made at all. Merged, the second reads at the venue exactly
+/// like the first — no breach — which is the shape of defect this crate has
+/// already shipped twice, as `MaxExpectedShortfall` over an always-empty map
+/// and as the `daily-loss` cap over a field no producer wrote. A non-finite
+/// observation is worse than either, because it arrives from arithmetic
+/// rather than from a missing writer and so disarms *every* limit that reads
+/// the poisoned figure rather than one.
+///
+/// The enum is exhaustively matched at the single call site with no wildcard,
+/// so a fourth outcome cannot be added without someone deciding whether it
+/// blocks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Assessment {
+    /// The comparison was made and the observation is inside the limit.
+    Within,
+    /// The comparison was made and the limit binds at this severity.
+    Binds(Severity),
+    /// The comparison was not made, because one of the four numbers it needs
+    /// is not a finite number.
+    Uncomparable,
 }
 
 /// A limit that bound, and by how much.
@@ -401,6 +469,16 @@ pub struct RiskState {
 }
 
 impl RiskState {
+    /// `value` as a fraction of equity, or infinity when there is no equity to
+    /// divide by.
+    ///
+    /// The infinity is a statement that the ratio is undefined, and
+    /// [`Limit::assess`] now reads it as one: a non-positive-equity book
+    /// refuses every limit measured against equity. It used to breach the
+    /// ceilings by ordinary arithmetic and pass the floors in silence — `inf`
+    /// is not less than a cash-buffer bound of 0.02 — so an insolvent book was
+    /// reported as inside the one limit that exists to notice it had run out
+    /// of money.
     fn ratio(&self, value: Decimal) -> f64 {
         if !self.equity.is_positive() {
             return f64::INFINITY;
@@ -462,8 +540,54 @@ impl RiskState {
     /// volatility field untouched rather than recording zero, because a zero
     /// nobody computed would pass every one of these limits and look like
     /// evidence the book has no risk at all.
+    ///
+    /// **A series carrying a value that is not finite is refused here rather
+    /// than measured**, and the refusal is filed under [`Self::unevaluated`]
+    /// for each of the three figures the limit set actually asked for, so
+    /// `PreTradeChecker::check` rejects while it stands. It cannot be left for
+    /// [`Limit::assess`] to catch downstream, because one poisoned return
+    /// leaves the three figures disagreeing about whether they were
+    /// measurable at all: `qip_numerics::stats::quantile` *filters* non-finite
+    /// values before it sorts, so value at risk and expected shortfall come
+    /// back finite, plausible, and computed over a series that is not the one
+    /// supplied — a measurement of a book that does not exist — while
+    /// `stats::stddev` propagates, so volatility comes back `NaN`. Only the
+    /// second of those is visible to a comparison. Refusing the input is the
+    /// only place both are caught.
+    ///
+    /// Filing [`Self::unevaluated`] from here is not the move
+    /// `with_liquidity_horizons` was deleted for making. That method would
+    /// have had to invent a reason for somebody else's silence; this one is
+    /// the producer of these three figures and states its own — which index of
+    /// the series it could not use, and what was there.
     pub fn with_tail_risk(mut self, limits: &LimitSet, returns: &[f64]) -> Self {
         if returns.len() < 2 {
+            return self;
+        }
+        if let Some((index, value)) = returns
+            .iter()
+            .enumerate()
+            .find(|(_, value)| !value.is_finite())
+        {
+            let refusal = format!(
+                "return {index} of {} is {value}, so the series cannot be measured; the tail \
+                 statistics are not derived from it",
+                returns.len()
+            );
+            for limit in &limits.limits {
+                match limit.kind {
+                    LimitKind::MaxValueAtRisk { .. } => {
+                        self = self.with_unevaluated(VALUE_AT_RISK_FIGURE, refusal.as_str());
+                    }
+                    LimitKind::MaxExpectedShortfall { .. } => {
+                        self = self.with_unevaluated(EXPECTED_SHORTFALL_FIGURE, refusal.as_str());
+                    }
+                    LimitKind::MaxVolatility { .. } => {
+                        self = self.with_unevaluated(VOLATILITY_FIGURE, refusal.as_str());
+                    }
+                    _ => {}
+                }
+            }
             return self;
         }
         for limit in &limits.limits {
@@ -625,23 +749,45 @@ impl LimitSet {
     fn evaluate(&self, limit: &Limit, state: &RiskState) -> Vec<LimitBreach> {
         let mut out = Vec::new();
         let mut record = |observed: f64, bound: f64, subject: Option<String>, detail: String| {
-            if let Some(severity) = limit.assess(observed, bound) {
-                out.push(LimitBreach {
-                    limit_name: limit.name.clone(),
-                    limit_kind: limit.kind.label().to_string(),
-                    severity,
-                    observed,
-                    bound,
-                    utilisation: if bound.abs() > 1e-12 {
-                        observed / bound
-                    } else {
-                        f64::INFINITY
-                    },
-                    subject,
-                    detail,
-                    forces_reduction: limit.forces_reduction,
-                });
-            }
+            let (severity, detail) = match limit.assess(observed, bound) {
+                Assessment::Within => return,
+                Assessment::Binds(severity) => (severity, detail),
+                // Blocking, and [`Severity::Critical`] rather than
+                // [`Severity::Breach`] because the two mean different things
+                // to the desk: a breach is fixed by sending less, and a figure
+                // that is not a number is not fixed by sending less at all —
+                // it is fixed by whoever produced it. That is exactly the
+                // "intervention beyond blocking one order" the arm names.
+                //
+                // `observed` and `bound` are carried through untouched. A
+                // substituted figure would read downstream as a measurement,
+                // and the whole defect being closed here is a number nobody
+                // computed being read as one somebody did.
+                Assessment::Uncomparable => (
+                    Severity::Critical,
+                    format!(
+                        "{detail}: {observed} against a bound of {bound} is not a comparison — \
+                         a limit is not evaluated against a figure that is not a finite number, \
+                         so the order is refused rather than passed; correct the producer of \
+                         the figure, not the limit"
+                    ),
+                ),
+            };
+            out.push(LimitBreach {
+                limit_name: limit.name.clone(),
+                limit_kind: limit.kind.label().to_string(),
+                severity,
+                observed,
+                bound,
+                utilisation: if bound.abs() > 1e-12 {
+                    observed / bound
+                } else {
+                    f64::INFINITY
+                },
+                subject,
+                detail,
+                forces_reduction: limit.forces_reduction,
+            });
         };
 
         match &limit.kind {
@@ -720,11 +866,12 @@ impl LimitSet {
                 for (bucket, value) in buckets {
                     // No guard on a zero denominator and no early return:
                     // `RiskState::ratio` answers `f64::INFINITY` on
-                    // non-positive equity, so a book with no equity fails
-                    // every weight limit instead of silently skipping them.
-                    // The share-of-gross arm above returns early on a zero
-                    // axis total, and that early return is the fail-open half
-                    // of the same defect.
+                    // non-positive equity, which `Limit::assess` refuses as a
+                    // comparison it could not make, so a book with no equity
+                    // fails every weight limit instead of silently skipping
+                    // them. The share-of-gross arm above returns early on a
+                    // zero axis total, and that early return is the fail-open
+                    // half of the same defect.
                     record(
                         state.ratio(value.abs()),
                         *bound,
