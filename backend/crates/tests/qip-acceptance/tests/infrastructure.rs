@@ -1457,6 +1457,79 @@ fn a_dispatch_input_cannot_carry_a_second_line_into_a_shell_the_bake_runs() {
 }
 
 #[test]
+fn no_workflow_pastes_a_dispatch_input_or_an_event_value_into_a_shell() {
+    // The generalisation of the test above, which is scoped to `image.yml`
+    // because when it was written the other four workflows were outside the
+    // paths that change could touch. They are not now, and three of them
+    // carried the same defect.
+    //
+    // `infra.yml`'s prod refusal read `[ "${{ inputs.environment }}" = "prod" ]`.
+    // The runner substitutes that text into the script before bash parses a
+    // byte of it, so a dispatch value of
+    //
+    //     dev" ]; then :; fi
+    //     touch /tmp/pwned
+    //     if [ "x
+    //
+    // rendered a complete `if`, then the injected command, then a comparison
+    // against `prod` that is false. Driven in a shell, the command ran and the
+    // step exited 0 — inside the step whose only job is to refuse prod, with
+    // the WIF credential for `qip-infra-<env>` on the runner: compute.admin,
+    // projectIamAdmin, secretmanager.admin, container.clusterAdmin. Seven
+    // further uses of the same value followed it in the same job.
+    //
+    // `deploy.yml` pasted `${{ github.event.workflow_run.conclusion }}` between
+    // a pair of single quotes, where one apostrophe ends the string.
+    //
+    // The property is one property in both directions: a value from outside
+    // the file reaches a shell through the step's `env:`, where a newline is
+    // data, and never through an expression, which is source text whatever it
+    // holds. Read as blocks rather than searched for as text, because *where*
+    // the expression appears is the whole question — the identical `${{ … }}`
+    // three lines higher, in the step's `env:`, is exactly what this asks for.
+    //
+    // `github.repository` is deliberately not in the list. It is fixed for a
+    // repository and no dispatcher, committer or pull request chooses it, and
+    // a rule that refused it would refuse `image.yml`'s provenance record for
+    // nothing.
+    let workflows = files_with_extension(".github/workflows", "yml");
+    assert!(
+        workflows.len() >= 5,
+        "only {} workflow files were found; this check would pass on an empty \
+         directory",
+        workflows.len()
+    );
+    let mut bodies_read = 0usize;
+    for path in workflows {
+        let display = path
+            .strip_prefix(repository_root())
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        let workflow = read(&display);
+        for (step, body) in shell_bodies(&workflow) {
+            bodies_read += 1;
+            let code = shell_without_comment_lines(&body);
+            for pasted in ["${{ inputs.", "${{ github.event."] {
+                assert!(
+                    !code.contains(pasted),
+                    "{display}'s step `{step}` interpolates `{pasted}…` into its \
+                     shell. The runner substitutes that as text before bash sees \
+                     the script, so a value containing a newline or a quote is a \
+                     second command running with the job's credential. Bind it in \
+                     the step's `env:` and read it as a shell variable."
+                );
+            }
+        }
+    }
+    assert!(
+        bodies_read >= 30,
+        "only {bodies_read} `run:` bodies were read across every workflow; the \
+         walk is not reaching them and the loop above would pass on nothing"
+    );
+}
+
+#[test]
 fn every_download_this_bake_hashes_refuses_an_error_page_rather_than_staging_it() {
     // `curl -sSLo destination url` writes the server's error page to the
     // destination and exits 0 on a 404. The next line hashes it, the hash does
@@ -4073,10 +4146,37 @@ fn the_infrastructure_workflow_cannot_touch_production() {
         !choices.contains("- prod"),
         "infra.yml offers prod as a dispatch choice"
     );
+    // The refusal, and the route the value takes to reach it.
+    //
+    // This assertion used to read `infra.contains("inputs.environment }}\" =
+    // \"prod\" ]")`, which pinned the refusal to the spelling that was itself
+    // the defect: `[ "${{ inputs.environment }}" = "prod" ]` is pasted into the
+    // script as source text, so a dispatch value whose first line closed the
+    // test and whose second line was a command of its own ran that command
+    // inside this very step, and the step exited 0. Both halves are asserted
+    // now, because the comparison alone is what was already there and it is the
+    // half that was never in doubt.
+    let refusal = block_under(&infra, "- name: refuse what this workflow must never do");
     assert!(
-        infra.contains("inputs.environment }}\" = \"prod\" ]"),
-        "infra.yml no longer refuses prod in a step, so a fork that adds the \
-         choice gets it"
+        refusal.contains("ENVIRONMENT: ${{ inputs.environment }}"),
+        "infra.yml's refusal step no longer binds the dispatch value in its \
+         `env:`; an expression inside `run:` is text the runner pastes in \
+         before bash parses it"
+    );
+    let compare = refusal.find("[ \"$ENVIRONMENT\" = \"prod\" ]").expect(
+        "infra.yml no longer refuses prod in a step, so a fork that adds the choice gets it",
+    );
+    let guard = refusal.find("case \"$ENVIRONMENT\" in").expect(
+        "infra.yml's refusal step no longer checks the character set of the dispatch value \
+         before comparing it; a pattern is not enough, because every pattern tool in a shell \
+         matches per line",
+    );
+    assert!(
+        guard < compare,
+        "infra.yml checks the dispatch value's character set at byte {guard} and \
+         compares it to prod at byte {compare}. The guard has to come first: it \
+         is what makes the comparison below it a comparison rather than a \
+         parser's first sight of somebody else's script."
     );
     // And the destructive action is targeted, never a full destroy: KMS keys
     // and the workload identity pool are soft-deleted by name, so a full
