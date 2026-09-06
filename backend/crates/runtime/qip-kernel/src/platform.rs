@@ -1017,6 +1017,72 @@ fn instrument_grid_of(
     })
 }
 
+/// Period returns from a series of equity marks.
+///
+/// Simple returns between consecutive samples. **A step from a non-positive
+/// equity is skipped rather than divided by, and skipped rather than replaced
+/// with zero.** Both halves of that are the point:
+///
+/// * Dividing by it produces an infinity — or, from a negative base, a
+///   sign-flipped return, which is worse because it is finite and therefore
+///   survives every `is_finite` guard downstream. Either poisons the
+///   volatility, the value at risk and the expected shortfall that
+///   `RiskState::with_tail_risk` fits on this series, and those are limits.
+/// * Substituting `0.0` fabricates an observation. "The book was flat over
+///   this step" is a measurement, and a book that had reached zero made no
+///   measurement at all. A tail statistic fitted on invented calm reports
+///   less risk than the book carries, which is the direction that matters.
+///
+/// A free function rather than a method so the rule can be asserted directly,
+/// and because it is the unit that should move: **there are three
+/// implementations of "equity marks to returns" in this workspace and they do
+/// not agree.** `qip_numerics::stats::simple_returns` substitutes `0.0` when
+/// the previous value is exactly zero and sign-flips on a negative one;
+/// `qip_simulation_engine::backtest`'s private `equity_returns` substitutes
+/// `0.0` below `1e-12` and sign-flips likewise; this one skips. All three feed
+/// risk statistics. The structural fix is one implementation in a lib both a
+/// service and the runtime may depend on — `qip_numerics::stats`, beside
+/// `simple_returns` and `log_returns`, under a name that says it takes a
+/// series whose base may be negative, because a *price* series cannot be and
+/// that is why `simple_returns` is not it. That change is not made here: the
+/// kernel may not be the home for it (a service may not depend on the
+/// runtime), and moving it is a change to another crate.
+fn equity_returns(history: &[f64]) -> Vec<f64> {
+    history
+        .windows(2)
+        .filter(|w| w[0] > 0.0)
+        .map(|w| (w[1] - w[0]) / w[0])
+        .collect()
+}
+
+/// Gross over equity as a gauge may carry it, or `None` for a book that has
+/// no leverage to state.
+///
+/// The same quotient `qip_risk::limits::RiskState::ratio` computes for
+/// `LimitKind::MaxLeverage`, and deliberately the same order of operations:
+/// each side crosses from `Decimal` to `f64` first and the division happens
+/// after. **This is the `Decimal` → `f64` crossing point for the leverage
+/// series.** Money is `Decimal` everywhere it is arithmetic; a gauge is a
+/// statistic and the exposition is `f64`, so the boundary is here and nothing
+/// downstream crosses back. Dividing as `Decimal` and crossing afterwards
+/// would round differently from the control and leave a chart and a limit
+/// disagreeing in the last place about one book.
+///
+/// `None` on a non-positive equity, where `ratio` answers `f64::INFINITY` so
+/// that every ratio limit breaches. That sentinel is right for a control and
+/// wrong for a series: `MetricsRegistry::to_prometheus` formats a gauge with
+/// `Display`, which renders infinity as `inf` where the text format spells it
+/// `+Inf`, and `to_otlp_metrics` hands it to `serde_json`, which encodes a
+/// non-finite double as `null`. Either way one unpublishable number costs the
+/// whole payload — including the halt and breach series an operator needs at
+/// exactly the moment a book runs out of equity. A wiped-out book is charted
+/// by those, not by this.
+fn publishable_leverage(gross: Decimal, equity: Decimal) -> Option<f64> {
+    equity
+        .is_positive()
+        .then(|| gross.to_f64() / equity.to_f64())
+}
+
 /// Bars the twin estimates liquidity over when pricing a declined path — the
 /// same window the platform's own counterfactual tests price with, so a path
 /// priced here and one priced in a test are priced by the same law.
@@ -3982,13 +4048,31 @@ impl Platform {
     /// therefore compares cell-and-desk gross against desk-only equity,
     /// which errs toward refusing and is stated here rather than hidden.
     ///
+    /// Each fill is additionally charged to the
+    /// [`qip_risk::limits::COUNTERPARTY_AXIS`] bucket named by the venue the
+    /// cell reported it from — the same running balance
+    /// `LimitKind::MaxCounterpartyExposure` reads and the same one
+    /// [`Self::aggregate_fill`] charges a desk fill to. Until `AbsorbedFill`
+    /// carried a venue this could not be done, and the consequence was a cap
+    /// that **read low** on any book that also trades through cells: the
+    /// exposure existed, the balance did not carry it, and the next desk
+    /// order was admitted against a number smaller than the book. A limit
+    /// that reads low is a control that admits an order it exists to refuse.
+    /// The cell's venue is used, never the desk's broker, because charging a
+    /// cell's fill to the desk's broker would put exposure against a
+    /// counterparty that never saw the trade.
+    ///
     /// A refusal is recorded as a capture problem rather than returned, for
     /// the reason [`Self::aggregate_fill`] gives: the fill has happened and
     /// the strategy books hold it, and an error here would tell the caller
     /// the report failed when it did not.
     fn charge_cell_fills(&mut self, cell: &str, fills: &[AbsorbedFill]) {
         for fill in fills {
-            let axes = self.exposure_axes_for(&fill.object_id);
+            let mut axes = self.exposure_axes_for(&fill.object_id);
+            axes.insert(
+                qip_risk::limits::COUNTERPARTY_AXIS.to_string(),
+                fill.venue.clone(),
+            );
             if let Err(error) =
                 self.aggregates
                     .apply_fill(cell, &fill.object_id, &axes, fill.signed_notional)
@@ -5072,6 +5156,11 @@ impl Platform {
     /// "a bad moment during a busy one". A per-fill series would weight the
     /// cycles that traded most, which is the opposite of what a tail statistic
     /// wants.
+    /// **The `Decimal` → `f64` crossing for the equity series happens here.**
+    /// Equity is money and is `Decimal` wherever it is arithmetic; the tail
+    /// statistics fitted on this series are `f64`, and this is the single
+    /// point where one becomes the other. Nothing downstream crosses back:
+    /// `RiskState::with_tail_risk` takes the returns, not the book.
     fn record_equity(&mut self) {
         self.equity_history.push(self.capital.equity().to_f64());
         if self.equity_history.len() > EQUITY_HISTORY {
@@ -5081,17 +5170,8 @@ impl Platform {
     }
 
     /// The book's period returns, from the equity series.
-    ///
-    /// Simple returns between consecutive samples. A step from a non-positive
-    /// equity is skipped rather than divided by: a book that reached zero has
-    /// no meaningful return, and dividing by it would produce an infinity that
-    /// poisons every statistic downstream of it.
     fn equity_returns(&self) -> Vec<f64> {
-        self.equity_history
-            .windows(2)
-            .filter(|w| w[0] > 0.0)
-            .map(|w| (w[1] - w[0]) / w[0])
-            .collect()
+        equity_returns(&self.equity_history)
     }
 
     /// Charge the rungs this cycle actually used.
@@ -5393,6 +5473,13 @@ impl Platform {
         // bounded on a long-running process. Retention is far outside the
         // catalyst detector's own explanation window, so it never decides
         // what the detector sees.
+        //
+        // This is the *older-than* half of retention only, and it cannot be
+        // the whole of it: `Timestamp::since` saturates at zero, so
+        // `now.since(known_at)` is zero for every event stamped in the future
+        // and zero is inside every window. The not-yet-knowable half is aged
+        // out below, after the audit has named it — see there for why the two
+        // halves are not one line.
         self.market_events
             .retain(|event| now.since(event.known_at()) <= MARKET_EVENT_RETENTION);
 
@@ -5425,8 +5512,7 @@ impl Platform {
         // zero events, coverage claimed, and the catalyst detector licensed to
         // call the next large move *unexplained* — an opportunity manufactured
         // out of a feed's clock skew. Nothing could see it happen, because the
-        // dropping is silent and `Timestamp::since` saturates, so the retention
-        // line above can never age a future-stamped event out either.
+        // dropping is silent.
         //
         // So the claim is checked rather than asserted, by the detector
         // `qip_compliance::pit` exists for — the module that covers "inputs
@@ -5461,6 +5547,47 @@ impl Platform {
             .audit(knowability.iter().map(|(id, fact)| (id.as_str(), fact)));
         let unknowable = audit.findings().len();
         let knowable = audit.inspected().saturating_sub(unknowable);
+
+        // The not-yet-knowable half of retention, applied here and not at the
+        // retention line above, for two reasons that are both about evidence.
+        //
+        // *Why it is needed.* `market_events` holds **knowable** events for
+        // the catalyst path — that is what `Self::push_market_event` is for —
+        // and `KnownEvents::known_by` withholds an event stamped after `now`
+        // from every scan regardless. So holding one buys the current cycle
+        // nothing, while `Timestamp::since` saturating means the line above
+        // sees it as zero seconds old and keeps it for the life of the
+        // process. One vendor record stamped in 2099 therefore sat in the
+        // working set forever, naming itself a leak on every cycle: a
+        // permanent DISCOVER problem an operator can neither clear nor act
+        // on, which is how a real finding gets tuned out.
+        //
+        // *Why it is dropped rather than refused at the door.*
+        // `Platform::observe` reads no clock, deliberately — "a replay
+        // absorbs exactly what the live run absorbed" — so the door has no
+        // honest instant to refuse against, and refusing against a clock
+        // would make a replay discard records the live run kept. The cycle
+        // instant is the first honest `now` on this path, so this is the
+        // first place the question can be asked at all.
+        //
+        // *Why nothing legitimate is lost.* `MarketEvent::new` clamps a
+        // known-time forward to the occurrence, so the type cannot express
+        // "knowable now, true later": a scheduled release modelled as its own
+        // future happening is unknowable until it happens, and that type's
+        // own doc says such a thing must be modelled as its announcement
+        // instead — which the corporate-action arm of `observe` already does,
+        // stamping the announcement and leaving the ex-date in the
+        // description. What is dropped is therefore a record the platform
+        // could not act on today and must not act on later either, because
+        // its content was absorbed today; charting it as tomorrow's catalyst
+        // would be the point-in-time inversion with the sign reversed.
+        //
+        // It is dropped *after* the audit rather than before, so the event is
+        // named on the cycle it leaves. Dropping it at the retention line
+        // would discard the event id, which is the only part of this an
+        // operator can take back to the publisher.
+        self.market_events.retain(|event| event.known_at() <= now);
+
         if knowable > 0 {
             detection = detection.with_events(self.market_events.clone());
         }
@@ -5493,10 +5620,17 @@ impl Platform {
         // input because a feed fixed for one event and left broken for three
         // reads clean afterwards, and the event id is the only part of this an
         // operator can take back to the publisher.
+        //
+        // "and dropped" is load-bearing in the message: the record is gone
+        // from the working set, so the fix is at the publisher and a corrected
+        // record has to be re-absorbed. A message that said only "withheld"
+        // would read as though the platform were holding it until it ripened,
+        // which is exactly what it did before and exactly what made the
+        // problem permanent.
         if let Err(leak) = audit.require_clean() {
             outcome = outcome.with_problem(format!(
-                "the catalyst path holds event(s) this platform could not yet know, so they were \
-                 withheld from the detectors{}: {}",
+                "the catalyst path held event(s) this platform could not yet know, so they were \
+                 withheld from the detectors and dropped{}: {}",
                 if knowable == 0 {
                     " and no catalyst coverage was claimed for this pass"
                 } else {
@@ -7270,6 +7404,44 @@ impl Platform {
         self.telemetry
             .metrics
             .count(names::RISK_EVALUATIONS, labels([]));
+
+        // The book, marked, and its leverage. Both were computed on every
+        // cycle and published nowhere: `qip_portfolio_value` and
+        // `qip_portfolio_leverage` were declared in
+        // `qip_observability::metrics::names` with no recording site at all,
+        // kept alive only as fixtures for the exposition encoders. A name in
+        // that module reads as a series the platform publishes, and the two
+        // most basic questions an operator asks of a trading platform — how
+        // big is the book, and how levered — had no answer on any chart.
+        //
+        // Recorded here rather than at a fill because this is the seam where
+        // the fact becomes *ruled on*: `risk_state` is the object the monitor
+        // has just observed, so the gauge an operator reads and the figure
+        // `LimitKind::MaxLeverage` evaluated are one state rather than two
+        // readings that will eventually disagree. Unconditional, like the
+        // breach gauge below it: a book that stopped trading still has a size,
+        // and a gauge written only on the interesting cycles never falls back.
+        //
+        // **The `Decimal` → `f64` crossing happens here**, at the recording
+        // site, and nothing downstream crosses back. Equity and gross are
+        // money and are `Decimal` everywhere they are arithmetic; Prometheus
+        // exposition is `f64`, so this is the boundary. Leverage crosses
+        // *first* and divides *after*, in that order, because that is exactly
+        // what `qip_risk::limits::RiskState::ratio` does for the leverage
+        // limit — dividing as `Decimal` and crossing after would round
+        // differently from the control and leave a gauge and a limit
+        // disagreeing in the last place about one book.
+        self.telemetry.metrics.gauge(
+            names::PORTFOLIO_VALUE,
+            labels([]),
+            risk_state.equity.to_f64(),
+        );
+        if let Some(leverage) = publishable_leverage(risk_state.gross_exposure, risk_state.equity) {
+            self.telemetry
+                .metrics
+                .gauge(names::PORTFOLIO_LEVERAGE, labels([]), leverage);
+        }
+
         // The gauge the `qip_limit_breaches` alert policy queries, read off the
         // observation the monitor just recorded rather than recounted from the
         // action it returned. `MonitorAction` carries breaches as sentences and
@@ -8717,13 +8889,16 @@ impl Platform {
     /// executed it. That is the running balance
     /// `LimitKind::MaxCounterpartyExposure` reads, and it is the same axis the
     /// pre-trade projection adds the order under, so the cap's before and
-    /// after are one number rather than two. It carries **the desk's own
-    /// executions only**: a cell's fills arrive through
-    /// [`Self::charge_cell_fills`] and `AbsorbedFill` names no venue, so a
-    /// book that also trades through cells is under-charged here and a
-    /// counterparty cap will read low on it. Stated rather than papered over,
-    /// because the alternative — charging a cell's fill to the desk's broker —
-    /// would put exposure against a counterparty that never saw the trade.
+    /// after are one number rather than two. This path carries the desk's own
+    /// executions; a cell's fills reach the same axis through
+    /// [`Self::charge_cell_fills`], each under the venue its own
+    /// `AbsorbedFill` names. `AbsorbedFill` named no venue until it did, and
+    /// while it did not, a book that also traded through cells was
+    /// under-charged here and a counterparty cap read low on it. The two
+    /// paths deliberately name different counterparties — the desk's broker
+    /// and the cell's venue — because charging a cell's fill to the desk's
+    /// broker would put exposure against a counterparty that never saw the
+    /// trade.
     fn aggregate_fill(&mut self, object_id: &str, moved: Decimal) {
         let mut axes = self.exposure_axes_for(object_id);
         axes.insert(
@@ -13677,5 +13852,206 @@ mod backwards_cycle_tests {
         // The boundary: nothing here reached a venue.
         assert!(!platform.orders.has_live_fills());
         assert!(!platform.is_live_capable());
+    }
+}
+
+#[cfg(test)]
+mod publishable_leverage_tests {
+    //! A book with no equity has a leverage the limits act on and no leverage
+    //! a scrape can carry, and those are two different facts.
+    //!
+    //! `RiskState::ratio` answers `f64::INFINITY` on a non-positive equity so
+    //! that every ratio limit breaches — the fail-closed reading, and the
+    //! right one for a control. Put on a gauge it is neither: the Prometheus
+    //! text encoder formats a gauge with `Display`, which writes `inf` where
+    //! the format spells it `+Inf`, and the OTLP encoder hands it to
+    //! `serde_json`, which writes a non-finite double as `null`. One
+    //! unpublishable number costs every other series in the same payload.
+    //!
+    //! Unit tests because `Platform::new` refuses a non-positive risk budget —
+    //! "a risk budget must be positive" — so the arm cannot be reached by
+    //! building a platform, only by a book that loses everything it had. The
+    //! rule is therefore asserted where it lives.
+
+    use super::*;
+    use qip_core::dec;
+
+    #[test]
+    fn a_solvent_books_leverage_is_gross_over_equity() {
+        // The premise the equality rests on: this fixture is not one where
+        // every plausible arithmetic agrees. Gross is not equity, so a gauge
+        // fed from the wrong side would read wrong, and the quotient is
+        // neither 0 nor 1, so a constant would not reproduce it.
+        let gross = dec!("1500000");
+        let equity = dec!("1000000");
+        assert_ne!(gross, equity);
+
+        let leverage = publishable_leverage(gross, equity).expect("a positive equity has leverage");
+        assert!(
+            (leverage - 1.5).abs() < f64::EPSILON,
+            "leverage is {leverage}"
+        );
+    }
+
+    #[test]
+    fn a_leverage_that_does_not_divide_evenly_is_crossed_before_it_is_divided() {
+        // `LimitKind::MaxLeverage` reads `state.ratio(state.gross_exposure)`,
+        // which crosses each side to `f64` and divides after. This gauge must
+        // be the *identical* `f64`, not a close one, or a chart and a control
+        // disagree in the last place about one book and nobody ever finds out
+        // which was right.
+        //
+        // Ten over seven, because a fixture that divides evenly cannot tell
+        // the two orders of operation apart: 1.5 is exact in both, and a
+        // version of this test written on 1_500_000 over 1_000_000 passed a
+        // mutation that replaced the whole body with a `Decimal` division. The
+        // premise below is that assertion — the two orders really do give
+        // different bits here — and it is checked rather than asserted in a
+        // comment, because it is the only thing making the equality mean
+        // anything. `Decimal` carries nine fractional digits, so it rounds
+        // 1.428571428571… to 1.428571429 while `f64` keeps going.
+        let gross = dec!("1000000");
+        let equity = dec!("700000");
+        let crossed_first = gross.to_f64() / equity.to_f64();
+        let divided_first = gross
+            .checked_div(equity)
+            .expect("seven hundred thousand is not zero")
+            .to_f64();
+        assert_ne!(
+            crossed_first.to_bits(),
+            divided_first.to_bits(),
+            "this fixture divides evenly enough that both orders agree, so the assertion below \
+             would hold whichever the implementation used"
+        );
+
+        let leverage = publishable_leverage(gross, equity).expect("a positive equity has leverage");
+        // Compared bit for bit rather than with a tolerance, which is what
+        // makes this an assertion instead of a hope: a tolerance would admit
+        // exactly the last-place disagreement being ruled out. It is also why
+        // `clippy::float_cmp` has nothing to object to.
+        assert_eq!(
+            leverage.to_bits(),
+            crossed_first.to_bits(),
+            "the gauge's leverage is not the identical f64 the limit computes"
+        );
+    }
+
+    #[test]
+    fn a_book_with_no_equity_left_states_no_leverage_at_all() {
+        // Premise: this is the input the control turns into infinity. Stated
+        // here so the `None` below is read as a decision about that value and
+        // not as an arbitrary special case.
+        for equity in [Decimal::ZERO, dec!("-1")] {
+            let gross = dec!("1500000");
+            assert!(!equity.is_positive());
+            assert_eq!(
+                publishable_leverage(gross, equity),
+                None,
+                "a leverage was published for a book with {equity} of equity; it would be \
+                 non-finite, and neither encoder can carry that"
+            );
+        }
+    }
+
+    #[test]
+    fn a_flat_book_still_states_its_leverage() {
+        // The half that keeps the refusal above from being an outage. A guard
+        // that answered `None` whenever gross was zero would silently drop the
+        // series on every idle book — the common case — and an operator would
+        // read the gap as a platform that had stopped rather than one holding
+        // nothing.
+        assert_eq!(
+            publishable_leverage(Decimal::ZERO, dec!("1000000")),
+            Some(0.0),
+            "a solvent book holding nothing published no leverage"
+        );
+    }
+}
+
+#[cfg(test)]
+mod equity_returns_tests {
+    //! The degenerate step in the equity series is skipped, not invented.
+    //!
+    //! This series is what `RiskState::with_tail_risk` fits volatility, value
+    //! at risk and expected shortfall on, and all three are read by limits
+    //! that stop trading. Two other implementations of the same conversion
+    //! exist in this workspace — `qip_numerics::stats::simple_returns` and a
+    //! private one in `qip_simulation_engine::backtest` — and both answer
+    //! `0.0` for a step this one drops, and both sign-flip a step from a
+    //! negative base. A sign-flipped return is the more dangerous of the two
+    //! because it is finite: it passes every `is_finite` guard downstream and
+    //! reports a loss as a gain.
+    //!
+    //! Unit tests because the arithmetic is what is being pinned. Reaching it
+    //! through a `Platform` would need a book that lost everything it had, and
+    //! `Platform::new` refuses to open one at zero.
+
+    use super::*;
+
+    #[test]
+    fn a_solvent_series_returns_one_figure_per_step() {
+        // Premise: three marks, so two steps, and neither is degenerate —
+        // otherwise the assertions below would be about the skipping rule
+        // rather than about the arithmetic.
+        let history = [100.0, 110.0, 99.0];
+        assert!(history.iter().all(|equity| *equity > 0.0));
+
+        let returns = equity_returns(&history);
+        assert_eq!(returns.len(), 2, "a step was dropped from a solvent series");
+        assert!((returns[0] - 0.1).abs() < 1e-12, "{returns:?}");
+        assert!((returns[1] + 0.1).abs() < 1e-12, "{returns:?}");
+    }
+
+    #[test]
+    fn a_step_from_a_wiped_out_book_is_dropped_rather_than_reported_as_flat() {
+        // Zero, and then a recovery. `qip_numerics::stats::simple_returns`
+        // answers `0.0` for this step — "the book was flat" — which is an
+        // observation nobody made, and a tail statistic fitted on invented
+        // calm reports less risk than the book carries.
+        let history = [100.0, 0.0, 50.0];
+        let returns = equity_returns(&history);
+
+        // The first step is real and is kept: -100%.
+        assert_eq!(
+            returns.len(),
+            1,
+            "expected only the solvent step: {returns:?}"
+        );
+        assert!((returns[0] + 1.0).abs() < 1e-12, "{returns:?}");
+        // Said explicitly, because the failure being prevented is a zero in
+        // this position rather than a shorter list.
+        assert!(
+            !returns.contains(&0.0),
+            "a step out of a zero book was reported as a flat one: {returns:?}"
+        );
+    }
+
+    #[test]
+    fn a_step_from_a_negative_book_is_dropped_rather_than_sign_flipped() {
+        // The arm the two other implementations get wrong in a way no
+        // downstream guard catches. From -50 to -25 the book recovered half
+        // its deficit; `current / previous - 1.0` answers -0.5, a loss, and
+        // it is finite, so nothing rejects it.
+        let history: [f64; 2] = [-50.0, -25.0];
+        // Premise: the wrong answer is real arithmetic and not a NaN somebody
+        // would have noticed.
+        let sign_flipped = history[1] / history[0] - 1.0;
+        assert!(sign_flipped.is_finite() && sign_flipped < 0.0);
+
+        let returns = equity_returns(&history);
+        assert!(
+            returns.is_empty(),
+            "a step from a negative book produced a return of {returns:?}, and a book that \
+             halved its deficit would be charted as having lost half of it"
+        );
+    }
+
+    #[test]
+    fn a_series_too_short_to_have_a_step_has_no_returns() {
+        // The boundary `windows(2)` depends on. A fresh platform has one mark
+        // after its first cycle, and a panic or a fabricated return there
+        // would land on every deployment's opening cycle.
+        assert!(equity_returns(&[]).is_empty());
+        assert!(equity_returns(&[1_000_000.0]).is_empty());
     }
 }

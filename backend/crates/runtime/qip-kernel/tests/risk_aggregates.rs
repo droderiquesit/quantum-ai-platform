@@ -32,7 +32,7 @@ use qip_kernel::config::PlatformConfig;
 use qip_kernel::platform::Platform;
 use qip_mesh::delta::DeltaOrder;
 use qip_observability::Telemetry;
-use qip_observability::metrics::names;
+use qip_observability::metrics::{labels, names};
 use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use std::cell::RefCell;
@@ -505,10 +505,26 @@ fn cell_buy(symbol: &str, shares: Decimal) -> DeltaOrder {
 
 /// The venue's report on [`cell_buy`]'s order, for `shares` of it.
 fn cell_fill(symbol: &str, shares: Decimal) -> FillRecord {
+    cell_fill_at(symbol, shares, "XNYS")
+}
+
+/// The name the desk's own simulated broker reports itself under, and so the
+/// counterparty bucket every desk fill is charged to.
+///
+/// Taken from `qip_execution_engine::broker::SimulatedBroker`'s `name()`. It
+/// is a literal here rather than a lookup because the point of the test below
+/// is that the *cell's* venue and the *desk's* broker land in one bucket; a
+/// fixture that derived the cell's venue from the platform could not tell that
+/// case apart from the kernel charging every cell fill to the desk's broker,
+/// which is the wrong fix for the same gap.
+const DESK_VENUE: &str = "simulated-venue";
+
+/// [`cell_fill`] against a named venue.
+fn cell_fill_at(symbol: &str, shares: Decimal, venue: &str) -> FillRecord {
     FillRecord {
         order_id: format!("cell-ord-{symbol}"),
         object_id: object(symbol),
-        venue: VenueId::new("XNYS"),
+        venue: VenueId::new(venue),
         side: BookSide::Ask,
         quantity: shares,
         price: dec!("100"),
@@ -820,6 +836,229 @@ fn an_order_that_keeps_its_counterparty_under_the_cap_is_admitted() -> Result<()
     assert!(
         after < ceiling,
         "the premise failed: the book ended over its own cap"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cell_fill_is_charged_to_the_venue_that_executed_it_and_a_desk_order_over_the_cap_is_refused()
+-> Result<()> {
+    // The gap this closes, which was written into `Platform::aggregate_fill`
+    // as a known one: the counterparty axis was fed only by the desk's own
+    // executions, because `AbsorbedFill` named no venue. A book that also
+    // trades through regional cells therefore held counterparty exposure that
+    // the running balance did not carry, so `MaxCounterpartyExposure` read
+    // low on it and admitted the next desk order against a number smaller
+    // than the book. A limit that reads low is not a conservative limit; it
+    // is a control that admits the order it exists to refuse.
+    //
+    // The cell here trades through the *same* counterparty the desk does,
+    // which is the case the under-charge was invisible in: the bucket already
+    // existed and simply held too little, so nothing on a dashboard and
+    // nothing in a limit check looked wrong.
+    let mut platform = platform_under(dec!("1000000"), limits_with_counterparty_cap())?;
+
+    // Premise: nothing is charged to any counterparty before the cell
+    // reports, so the balance below is the cell's fill and only that.
+    assert!(
+        counterparty_bucket(&platform).is_none(),
+        "a counterparty balance existed before anything traded"
+    );
+
+    let shares = dec!("900");
+    let cell_notional = shares * dec!("100");
+    // Driven through `ingest_cell_report`, the seam a deployed centre uses,
+    // with the order and the venue's confirmation of it in one report. The
+    // limit evaluator is never called directly here: the point is that the
+    // production path charges the bucket, not that the evaluator can read one.
+    let report = CellReport::new(CELL, start())
+        .with_orders(vec![cell_buy("BBB", shares)])
+        .with_fills(vec![cell_fill_at("BBB", shares, DESK_VENUE)]);
+    let ingestion = platform.ingest_cell_report(report, start())?;
+
+    // Premise: the plane settled the fill, so there was something to charge,
+    // and what it absorbed names the venue the cell reported it from.
+    assert!(
+        ingestion.halted.is_none(),
+        "{:?}",
+        ingestion.settlement.breaks
+    );
+    assert_eq!(ingestion.settlement.fills_settled, 1);
+    assert_eq!(ingestion.settlement.absorbed.len(), 1);
+    assert_eq!(
+        ingestion.settlement.absorbed[0].venue, DESK_VENUE,
+        "the settlement absorbed a fill naming a venue the report never carried"
+    );
+
+    // The bucket moved, filed under the venue the cell reported. Both halves
+    // matter: an unmoved bucket is the old under-charge, and a bucket under
+    // another name would be exposure booked against a counterparty that never
+    // saw the trade.
+    let (name, balance) =
+        counterparty_bucket(&platform).expect("the cell's fill reached no counterparty bucket");
+    assert_eq!(
+        name, DESK_VENUE,
+        "the cell's fill is filed under a name its report never mentioned"
+    );
+    assert_eq!(
+        balance, cell_notional,
+        "the counterparty balance holds something other than the cell's fill"
+    );
+    let ceiling = dec!("100000");
+    assert!(
+        balance < ceiling,
+        "the cell's fill {balance} overfilled the counterparty by itself, so the refusal below \
+         would not need the desk order at all"
+    );
+
+    // A desk order that takes the counterparty over, and only the
+    // counterparty: a hundred shares more than the room the cell left, in a
+    // name nothing has traded, so it sits under the ten-percent per-name
+    // weight and under the single-order notional cap on its own.
+    let room = (ceiling - balance)
+        .checked_div(dec!("100"))
+        .expect("a hundred is not zero")
+        .truncate_dp(0);
+    let desk_shares = room + Decimal::from_int(100);
+    assert!(
+        desk_shares * dec!("100") < ceiling,
+        "the desk order breaches a per-name limit alone, so a refusal proves nothing"
+    );
+    let refused = buy(&mut platform, "AAA", desk_shares, "cell-cp-over").expect_err(
+        "the desk order was admitted, so the cell's fill never reached the counterparty balance",
+    );
+    // Matched with the delimiter the refusal formats after a limit name, so
+    // this cannot be satisfied by another limit whose name merely contains
+    // the word.
+    assert!(
+        refused.message().contains("counterparty:"),
+        "refused for another reason: {}",
+        refused.message()
+    );
+    assert!(
+        !refused.message().contains("position-weight:"),
+        "the per-name cap fired too, so this run does not isolate the counterparty: {}",
+        refused.message()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_desk_order_that_keeps_the_cells_counterparty_under_the_cap_is_still_admitted() -> Result<()> {
+    // The other half, and it is not ceremony: charging cell fills to the
+    // counterparty axis moves a number that every desk order is now measured
+    // against, and a change that only ever tightens is indistinguishable from
+    // one that refuses everything. A single-broker paper deployment routes
+    // both the desk and its cells through one counterparty, so if this
+    // charging were wrong by an order of magnitude the desk would simply stop
+    // trading, and the test above would still pass.
+    let mut platform = platform_under(dec!("1000000"), limits_with_counterparty_cap())?;
+
+    let shares = dec!("900");
+    let report = CellReport::new(CELL, start())
+        .with_orders(vec![cell_buy("BBB", shares)])
+        .with_fills(vec![cell_fill_at("BBB", shares, DESK_VENUE)]);
+    platform.ingest_cell_report(report, start())?;
+    let (_, charged) =
+        counterparty_bucket(&platform).expect("the cell's fill reached no counterparty bucket");
+
+    // Premise: the balance is live and inside its cap, so the admission below
+    // is a limit that read a real figure and found room, not one that read
+    // nothing.
+    assert_eq!(charged, shares * dec!("100"));
+    let ceiling = dec!("100000");
+    assert!(charged.is_positive() && charged < ceiling);
+
+    // Fifty shares in another name: five thousand against the ten thousand
+    // the cell left, so the counterparty ends under its cap.
+    let desk_shares = dec!("50");
+    assert!(
+        charged + desk_shares * dec!("100") < ceiling,
+        "the desk order would breach the cap, so an admission proves nothing"
+    );
+    buy(&mut platform, "AAA", desk_shares, "cell-cp-under")?;
+
+    let (_, after) =
+        counterparty_bucket(&platform).expect("the desk's own fill reached no counterparty bucket");
+    assert!(
+        after > charged,
+        "the desk's fill did not join the cell's in one bucket: {charged} then {after}"
+    );
+    assert!(
+        after < ceiling,
+        "the premise failed: the book ended over its own cap"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cycle_publishes_the_books_value_and_leverage_from_the_state_the_monitor_ruled_on() -> Result<()>
+{
+    // `qip_portfolio_value` and `qip_portfolio_leverage` were declared in
+    // `qip_observability::metrics::names` and recorded by nothing at all —
+    // kept alive as fixtures for the exposition encoders while the kernel
+    // marked both figures every cycle and published neither. A name in that
+    // module reads as a series the platform publishes, so the two most basic
+    // questions asked of a trading platform, how big the book is and how
+    // levered it is, had no answer on any chart.
+    let mut platform = platform(dec!("1000000"))?;
+
+    // Premise: neither gauge exists before a cycle, so what is read below was
+    // recorded by this pass rather than at assembly.
+    let before = platform.telemetry().metrics.snapshot();
+    assert!(
+        before.gauge(names::PORTFOLIO_VALUE, &labels([])).is_none(),
+        "the book's value was already on a gauge before any cycle ran"
+    );
+    assert!(
+        before
+            .gauge(names::PORTFOLIO_LEVERAGE, &labels([]))
+            .is_none()
+    );
+
+    // A real position first. A book with no exposure is levered zero however
+    // the quotient is computed, so a leverage gauge asserted on an empty book
+    // would survive a recording site that published a constant.
+    buy(&mut platform, "AAA", dec!("900"), "gauge")?;
+    let equity = platform.risk_figures().equity();
+    let gross = platform.risk_figures().gross_exposure();
+    assert!(
+        gross.is_positive(),
+        "the simulated venue filled nothing, so leverage is zero either way"
+    );
+    assert_ne!(
+        gross, equity,
+        "gross and equity are equal on this fixture, so a gauge fed from the wrong one would \
+         read correct"
+    );
+
+    platform.run_cycle(start());
+
+    // Premise: the cycle itself traded nothing, so the state ACT ruled on is
+    // the state still standing here and the comparison is against one book.
+    assert_eq!(platform.risk_figures().equity(), equity);
+    assert_eq!(platform.risk_figures().gross_exposure(), gross);
+
+    let after = platform.telemetry().metrics.snapshot();
+    assert_eq!(
+        after.gauge(names::PORTFOLIO_VALUE, &labels([])),
+        Some(equity.to_f64()),
+        "the book's value on the gauge is not the equity the limits were evaluated against"
+    );
+    // Crossed and then divided, in that order, because that is what
+    // `qip_risk::limits::RiskState::ratio` does for `LimitKind::MaxLeverage`:
+    // a gauge that divided as `Decimal` and crossed after would disagree with
+    // the control in the last place.
+    let expected = gross.to_f64() / equity.to_f64();
+    assert!(
+        expected > 0.0 && expected < 1.0,
+        "the fixture's leverage is {expected}, which is 0 or 1 and so indistinguishable from a \
+         constant"
+    );
+    assert_eq!(
+        after.gauge(names::PORTFOLIO_LEVERAGE, &labels([])),
+        Some(expected),
+        "the leverage gauge is not gross over equity"
     );
     Ok(())
 }

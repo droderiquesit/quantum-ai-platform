@@ -1486,9 +1486,12 @@ fn a_move_is_called_unexplained_only_when_the_event_stream_was_watched_by_the_in
     // says must never be claimed, because it is what licenses the catalyst
     // detector to call a move `UnexplainedMove`. One vendor clock running fast
     // was enough to manufacture "information is leaking on this name" out of
-    // nothing, and nothing anywhere would have said so: the dropping is
-    // silent, and `Timestamp::since` saturates, so the retention line cannot
-    // age a future-stamped event out either.
+    // nothing, and nothing anywhere would have said so, because the dropping
+    // is silent.
+    //
+    // What the record then did with the named event is the subject of
+    // `an_event_stamped_in_the_future_is_named_once_and_then_aged_out_of_the_working_set`
+    // below; this test is about the coverage claim alone.
 
     // The premise, and it has to come first: with the release knowable, the
     // detector does raise an unexplained move on this tape. Without this the
@@ -1533,6 +1536,119 @@ fn a_move_is_called_unexplained_only_when_the_event_stream_was_watched_by_the_in
          operator has to know about: {}",
         named[0]
     );
+    Ok(())
+}
+
+/// Hold one macro release known at `ingested_at`, then run `cycles` cycles an
+/// hour apart from `start()`, returning each cycle's DISCOVER problems and how
+/// many market events the platform still holds at the end.
+///
+/// The cycles are spaced rather than repeated at one instant because the
+/// platform refuses a cycle asked for as of an instant it has already reasoned
+/// past, and a helper that tripped that refusal would report an empty problem
+/// list for the wrong reason.
+fn discover_problems_over_cycles(
+    ingested_at: Timestamp,
+    cycles: usize,
+) -> Result<(Vec<Vec<String>>, usize)> {
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.observe(bars_with_a_final_jump("AAA", 120));
+    platform.observe(vec![macro_release(object("BBB").as_str(), ingested_at)]);
+    let mut problems = Vec::new();
+    for cycle in 0..cycles {
+        let at = start().saturating_add(Duration::from_hours(cycle as i64));
+        let report = platform.run_cycle(at);
+        problems.push(
+            report
+                .stage(Stage::Discover)
+                .cloned()
+                .expect("DISCOVER ran")
+                .problems,
+        );
+    }
+    Ok((problems, platform.market_events().len()))
+}
+
+#[test]
+fn an_event_stamped_in_the_future_is_named_once_and_then_aged_out_of_the_working_set() -> Result<()>
+{
+    // The defect, and it was live: `stage_discover`'s retention line reads
+    // `now.since(event.known_at()) <= MARKET_EVENT_RETENTION`, and
+    // `Timestamp::since` saturates at zero. Every event stamped in the future
+    // therefore measured zero seconds old, zero is inside every window, and
+    // the working set could not expire one however far out it was stamped.
+    // Once the leakage detector was wired into this stage the consequence
+    // became loud rather than silent: one mis-stamped vendor record produced
+    // the same DISCOVER problem on every cycle for the life of the process —
+    // a finding an operator can neither clear nor act on, which is how a real
+    // finding gets tuned out.
+    //
+    // Ten years out, so no plausible retention window could reach it by
+    // ageing alone.
+    let (problems, held) =
+        discover_problems_over_cycles(start().saturating_add(Duration::from_days(3_650)), 2)?;
+
+    // Premise: the first cycle really did find it and say so. Without this
+    // the second assertion passes on a platform that never held the event.
+    let first: Vec<&String> = problems[0]
+        .iter()
+        .filter(|problem| problem.contains("could not yet know"))
+        .collect();
+    assert_eq!(
+        first.len(),
+        1,
+        "the premise failed: the first cycle named no unknowable event, so the silence on the \
+         second cycle proves nothing — {:?}",
+        problems[0]
+    );
+    assert!(
+        first[0].contains("dropped"),
+        "the problem does not say the record left the working set, so an operator reading it \
+         would wait for it to ripen instead of going back to the publisher: {}",
+        first[0]
+    );
+
+    // The property: it is said once, not once per cycle for ever.
+    let second: Vec<&String> = problems[1]
+        .iter()
+        .filter(|problem| problem.contains("could not yet know"))
+        .collect();
+    assert!(
+        second.is_empty(),
+        "a future-stamped event is still in the working set a cycle later, so the DISCOVER \
+         problem repeats for the life of the process: {:?}",
+        problems[1]
+    );
+    assert_eq!(
+        held, 0,
+        "the platform still holds {held} market event(s) it could not know, so the working set \
+         grows with every mis-stamped record a feed sends"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_event_the_platform_could_already_know_is_kept_by_the_same_retention_pass() -> Result<()> {
+    // The half that makes the ageing above a control rather than an outage.
+    // A retention pass that dropped everything would satisfy the test above
+    // exactly as well as the correct one does, and it would silently empty
+    // the catalyst path on every cycle — a platform that explains no move,
+    // which reads on a dashboard as a quiet market.
+    //
+    // Same tape, same release, knowable six hours before the first cycle.
+    let (problems, held) =
+        discover_problems_over_cycles(start().saturating_sub(Duration::from_hours(6)), 2)?;
+
+    assert_eq!(
+        held, 1,
+        "a knowable event was aged out of the working set with the unknowable ones"
+    );
+    for (cycle, problems) in problems.iter().enumerate() {
+        assert!(
+            !problems.iter().any(|p| p.contains("could not yet know")),
+            "cycle {cycle} called a knowable event unknowable: {problems:?}"
+        );
+    }
     Ok(())
 }
 

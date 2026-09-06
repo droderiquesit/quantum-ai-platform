@@ -193,6 +193,25 @@ pub struct PlatformConfig {
     /// Paper trading by default. A platform that was never explicitly
     /// configured for live trading cannot get there, and raising this is a
     /// deployment change rather than a runtime one.
+    ///
+    /// **Deserialisation goes through [`AutonomyLevel::deployable`]**, which
+    /// is the second of the three layers `.claude/rules/01-security-and-safety.md`
+    /// names. The plain derive was a way past it: `AutonomyLevel` is a
+    /// six-variant enum with an ordinary `Deserialize`, so
+    /// `serde_json::from_str::<PlatformConfig>` on a file naming
+    /// `autonomous_live` produced a config carrying a live ceiling, which
+    /// `Platform::new` hands to `AutonomyController::with_live_ceiling`
+    /// unexamined. `qip-api`, `qip-fastbrain` and `qip-deepbrain` each call
+    /// `deployable` on their own configured string and so were never exposed;
+    /// `qip-cli`'s `--config` reads a whole `PlatformConfig` off disk and does
+    /// not, so the layer held only because three callers out of four
+    /// remembered to hold it. A boundary that depends on every caller
+    /// remembering is one caller away from being no boundary.
+    ///
+    /// The refusal is the same function the composition roots call, not a
+    /// second copy of the rule: two statements of which levels are live
+    /// disagree eventually, and the louder one is wrong.
+    #[serde(deserialize_with = "deployable_ceiling")]
     pub autonomy_ceiling: AutonomyLevel,
     /// Whether a quantum provider is attached at all.
     pub quantum_enabled: bool,
@@ -398,6 +417,27 @@ fn default_initial_equity() -> Decimal {
 /// number in a diff somebody reviews.
 fn default_reasoning_confidence_bar() -> f64 {
     0.90
+}
+
+/// Read an autonomy ceiling from a stored configuration, refusing a live one.
+///
+/// The entire body of this function is the delegation: the level is decoded by
+/// its own `Deserialize` and then put through [`AutonomyLevel::deployable`],
+/// which is layer 2 of the paper-trading boundary. Nothing here re-states
+/// which levels are live, because a second statement of that would be the
+/// defect this closes wearing different clothes.
+///
+/// The refusal arrives as a `serde` error, so a config file naming a live
+/// ceiling fails to *parse* rather than producing a `PlatformConfig` a caller
+/// must remember to check. `deployable`'s message — which names the level and
+/// says what to set instead — is carried through verbatim.
+fn deployable_ceiling<'de, D>(deserializer: D) -> std::result::Result<AutonomyLevel, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let level = AutonomyLevel::deserialize(deserializer)?;
+    AutonomyLevel::deployable(Some(level.as_str()))
+        .map_err(|error| serde::de::Error::custom(error.message()))
 }
 
 impl Default for PlatformConfig {

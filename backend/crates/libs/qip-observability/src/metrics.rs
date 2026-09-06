@@ -654,12 +654,35 @@ pub mod names {
     /// Named by no recording site in the platform, and kept because the
     /// exposition tests use it as the histogram fixture: the encoder has to be
     /// proven against some name, and a fabricated one would be a name in this
-    /// module with no meaning at all. The same is true of [`PORTFOLIO_VALUE`]
-    /// and [`PORTFOLIO_LEVERAGE`] below.
+    /// module with no meaning at all.
+    ///
+    /// It stays a fixture because there is no honest source for it. The
+    /// kernel's one venue path is the simulated broker, which fills inside the
+    /// call; the latency that would be worth charting is a real gateway's, and
+    /// no deployed process has one. A gauge fed from the simulator would chart
+    /// the cost of a function call under a name an operator would read as the
+    /// venue's. [`PORTFOLIO_VALUE`] and [`PORTFOLIO_LEVERAGE`] below were on
+    /// this footing too and are not any more.
     pub const EXECUTION_LATENCY_MS: &str = "qip_execution_latency_milliseconds";
 
-    // Portfolio. Fixtures for the exposition tests; see EXECUTION_LATENCY_MS.
+    /// The book's equity, as the risk state the ACT stage ruled on holds it.
+    ///
+    /// Recorded once per cycle by `qip_kernel`'s `Platform::stage_act`, from
+    /// the same `RiskState` the monitor observed, so the size on the chart and
+    /// the size the limits were evaluated against are one figure. It was a
+    /// fixture for the exposition encoders and nothing else for as long as it
+    /// existed: the kernel marked equity every cycle and published it nowhere,
+    /// so "how big is the book" had no answer outside a stage report.
     pub const PORTFOLIO_VALUE: &str = "qip_portfolio_value";
+    /// Gross exposure over equity — the quotient `LimitKind::MaxLeverage`
+    /// itself evaluates, recorded beside [`PORTFOLIO_VALUE`] from the same
+    /// state.
+    ///
+    /// Absent, rather than zero, on a book with no equity left. The quotient
+    /// is `f64::INFINITY` there, `to_prometheus` would render it `inf` rather
+    /// than the `+Inf` the text format defines, and one malformed line costs
+    /// the whole scrape. The recording site says so and names what is charted
+    /// instead.
     pub const PORTFOLIO_LEVERAGE: &str = "qip_portfolio_leverage";
 
     // The cycle. One turn of SENSE → … → LEARN, as the kernel runs it.

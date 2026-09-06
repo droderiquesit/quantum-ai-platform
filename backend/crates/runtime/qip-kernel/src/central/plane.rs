@@ -416,6 +416,22 @@ pub struct AbsorbedFill {
     ///
     /// [`RiskAggregates::apply_fill`]: qip_risk::aggregate::RiskAggregates::apply_fill
     pub signed_notional: Decimal,
+    /// Who executed it, as the cell's own [`FillRecord`] named the venue.
+    ///
+    /// Carried so `Platform::charge_cell_fills` can charge the fill to the
+    /// same [`qip_risk::limits::COUNTERPARTY_AXIS`] bucket a desk fill is
+    /// charged to. It was absent, and the consequence was not that the cap
+    /// was approximate: a book that traded through cells as well as the desk
+    /// held counterparty exposure the running balance did not carry, so
+    /// `LimitKind::MaxCounterpartyExposure` read low on it and admitted
+    /// orders it existed to refuse. A limit that reads low is a defect, not
+    /// a conservative reading.
+    ///
+    /// Required rather than `#[serde(default)]`: a `Settlement` is an
+    /// in-process return value and nothing replays one, and an empty default
+    /// would file a real fill under a counterparty named by nobody — which
+    /// is the same failure wearing a name.
+    pub venue: String,
 }
 
 impl Settlement {
@@ -1505,6 +1521,11 @@ impl CentralPlane {
             settlement.absorbed.push(AbsorbedFill {
                 object_id: fill.object_id.as_str().to_string(),
                 signed_notional: direction * fill.quantity * fill.price,
+                // The venue the cell reported the fill from, taken here at the
+                // line that counts the fill settled rather than re-read from
+                // the report later: what the aggregate is charged and what the
+                // settlement says it absorbed stay one list.
+                venue: fill.venue.as_str().to_string(),
             });
         }
 
