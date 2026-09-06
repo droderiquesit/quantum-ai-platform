@@ -138,12 +138,13 @@ impl FrankfurterRatesConnector {
     /// The smallest rate this connector will publish: one euro buying a
     /// millionth of a unit of the quote currency.
     ///
-    /// Nothing the ECB publishes comes close. The most valuable currency in
-    /// existence per unit is the Kuwaiti dinar at roughly 0.3 per euro, and
-    /// the ECB's table has never held anything below about 0.8. A floor six
-    /// orders of magnitude below that admits a currency a million times
-    /// stronger per unit than the euro — which does not exist and would not
-    /// arrive without a redenomination that also changed the code.
+    /// Nothing the ECB publishes comes close. The smallest its own table has
+    /// held is sterling, near 0.57 at its 2007 strongest; the strongest
+    /// currency in existence per unit, the Kuwaiti dinar at roughly 0.26 per
+    /// euro, is not on the table at all. A floor nearly six orders of
+    /// magnitude below that admits a currency a million times stronger per
+    /// unit than the euro — which does not exist and would not arrive without
+    /// a redenomination that also changed the code.
     pub const MIN_RATE: f64 = 1e-6;
 
     /// The largest rate this connector will publish.
@@ -154,8 +155,8 @@ impl FrankfurterRatesConnector {
     /// published far larger: the Turkish lira stood near 1.8 *million* per
     /// euro before the 2005 redenomination struck six zeros off it. A band
     /// whose ceiling a real hyperinflation could reach is a band that takes
-    /// the feed down for a true event, so this one sits three orders of
-    /// magnitude above the largest rate the ECB has ever published.
+    /// the feed down for a true event, so this one sits roughly three orders
+    /// of magnitude above the largest rate the ECB has ever published.
     ///
     /// It is deliberately loose. It is not here to catch a rate that is wrong
     /// by ten per cent — the surprise and data-quality paths are for that. It

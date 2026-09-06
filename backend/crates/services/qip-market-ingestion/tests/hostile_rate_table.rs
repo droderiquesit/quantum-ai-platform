@@ -230,8 +230,14 @@ fn the_band_admits_every_rate_the_ecb_has_ever_actually_published() -> Result<()
     // than only as prose. The band is deliberately loose: it exists to refuse
     // a number that cannot be an exchange rate, not one that is wrong by ten
     // per cent.
-    let strongest = 0.26; // the Kuwaiti dinar, the strongest currency per unit
-    let hyperinflation = 1_800_000.0; // the Turkish lira before the 2005 redenomination
+    // The Kuwaiti dinar, the strongest currency in existence per unit. It is
+    // not on the ECB's table; it is the bound the floor has to clear anyway,
+    // because a floor that a currency could legitimately cross is a floor that
+    // refuses a real rate.
+    let strongest = 0.26;
+    // The Turkish lira the ECB actually published, before the 2005
+    // redenomination struck six zeros off it.
+    let hyperinflation = 1_800_000.0;
     assert!(
         FrankfurterRatesConnector::MIN_RATE < strongest,
         "the floor would refuse the strongest currency in existence"

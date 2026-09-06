@@ -474,7 +474,7 @@ pub const ROUTES: &[Route] = &[
     Route {
         method: Method::Get,
         pattern: "/registrations/slots",
-        required_role: Role::Viewer,
+        required_role: Role::Operator,
         summary: "the same list with the credential slots beside each source: the deployment \
                   variable the connector manifest reads the credential under, the one Secret \
                   Manager command that puts a version behind it, any companion variable, and \
