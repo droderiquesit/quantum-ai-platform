@@ -19,11 +19,18 @@
 //! because a fabricated mark is indistinguishable downstream from an observed
 //! one and will support leverage on its own authority.
 //!
-//! **Marks decay.** A last-round valuation six months old carries less
-//! confidence than one six days old, and [`AssetValuation::confidence_at`]
-//! reduces its weight rather than treating it as equally true. Confidence is
-//! `f64` because it is a statistic; the mark is [`Decimal`] because it is
-//! money. The crossing point is marked where a confidence multiplies a value.
+//! **Marks decay, from the instant the evidence was observed.** A last-round
+//! valuation six months old carries less confidence than one six days old, and
+//! [`AssetValuation::confidence_at`] reduces its weight rather than treating it
+//! as equally true. The clock starts at [`AssetValuation::as_of`], which for
+//! [`IlliquidValuator::mark_object`] is the record's own observation instant
+//! and never the instant the platform happened to assemble itself: a mark
+//! struck at the assembly instant decays with process uptime, so byte-identical
+//! catalogue data would size differently on a host up six months and on one
+//! restarted this morning, and a restart would refresh a mark from 2010.
+//! Confidence is `f64` because it is a statistic; the mark is [`Decimal`]
+//! because it is money. The crossing point is marked where a confidence
+//! multiplies a value.
 //!
 //! **Every input is checked for knowability.** An input stamped after the
 //! valuation instant is refused. A mark struck as of January from a comparable
@@ -574,39 +581,75 @@ impl IlliquidValuator {
     ///    returns an error rather than a zero — a zero would be summed into
     ///    book equity as though somebody had observed it.
     ///
-    /// `known_at` is the instant the record became knowable, and every derived
-    /// input is stamped with it, so [`Self::assemble`]'s knowability check
-    /// refuses a mark struck before the record existed.
+    /// **Three instants, and confusing any two of them is a defect.**
+    ///
+    /// * `observed_at` — when the evidence was true. Every rung of the ladder
+    ///   is struck as of this instant, so the mark's confidence decays with
+    ///   the age of the administrator's report and its review falls due a
+    ///   fixed interval after that report, exactly as §16.3 says. It is the
+    ///   only instant on the mark, and it comes off the record.
+    /// * `known_at` — when the platform could first have read the record.
+    ///   Bounds readability rather than dating the evidence.
+    /// * `read_at` — the instant the caller is asking as of. It buys one
+    ///   refusal and nothing else: a record not yet knowable at `read_at` is
+    ///   not marked, because a mark readable before it was knowable is a
+    ///   point-in-time leak and a backtest resting on it is better than
+    ///   reality by exactly the information it should not have had.
+    ///
+    /// `observed_at` after `known_at` is refused rather than reconciled. Such
+    /// a record claims its evidence was true after the platform wrote it down,
+    /// and there is no instant to date the mark from that is not a guess —
+    /// taking the later would let a vendor field make a 2010 report decay as
+    /// though it were current, and taking the earlier would silently rewrite
+    /// the vendor's own claim.
     pub fn mark_private_asset(
         asset: impl Into<String>,
         details: &PrivateAssetDetails,
         origin: Timestamp,
+        observed_at: Timestamp,
         known_at: Timestamp,
         required_yield: Option<f64>,
-        as_of: Timestamp,
+        read_at: Timestamp,
     ) -> Result<AssetValuation> {
         let asset = asset.into();
+        if observed_at > known_at {
+            return Err(Error::invalid(format!(
+                "{asset} reports evidence observed at {} but became knowable at {}; correct the \
+                 record — a mark cannot be dated from an observation the platform recorded before \
+                 it happened, and this plane will not pick one of the two instants for you",
+                observed_at.to_rfc3339(),
+                known_at.to_rfc3339()
+            )));
+        }
+        if known_at > read_at {
+            return Err(Error::invalid(format!(
+                "{asset} became knowable at {} and cannot be marked as of {}; mark it at {} or \
+                 later, because a mark that reads the future is a point-in-time leak however good \
+                 the backtest looks",
+                known_at.to_rfc3339(),
+                read_at.to_rfc3339(),
+                known_at.to_rfc3339()
+            )));
+        }
         if details.residual_value.is_positive() {
-            let lockup_end =
-                origin.saturating_add(Duration::from_days((details.lockup_years * 365.0) as i64));
+            let lockup_end = origin.saturating_add(details.lockup()?);
             if let Some(rate) = required_yield.filter(|r| r.is_finite() && *r > -1.0)
-                && lockup_end > as_of
+                && lockup_end > observed_at
             {
-                let forecast = CashflowForecast::new(asset.clone(), origin, known_at)?.with_flow(
-                    crate::cashflow::ForecastCashflow::new(
+                let forecast = CashflowForecast::new(asset.clone(), origin, observed_at)?
+                    .with_flow(crate::cashflow::ForecastCashflow::new(
                         crate::cashflow::CashflowKind::Distribution,
                         lockup_end,
                         details.residual_value,
                         1.0,
-                    )?,
-                )?;
-                return Self::from_discounted_cashflow(asset, &forecast, rate, as_of);
+                    )?)?;
+                return Self::from_discounted_cashflow(asset, &forecast, rate, observed_at);
             }
-            return Self::from_last_round(asset, details.residual_value, known_at, as_of);
+            return Self::from_last_round(asset, details.residual_value, observed_at, observed_at);
         }
         let net_cost = details.called_capital - details.distributed_capital;
         if net_cost.is_positive() {
-            return Self::at_cost(asset, net_cost, known_at, as_of);
+            return Self::at_cost(asset, net_cost, observed_at, observed_at);
         }
         Err(Error::invalid(format!(
             "{asset} reports no residual value and no capital called beyond what has been \
@@ -621,10 +664,27 @@ impl IlliquidValuator {
     /// one that is not a private asset — so a caller sweeping a universe can
     /// tell "not my instrument" from "your instrument cannot be marked",
     /// which are different facts and must not share a representation.
+    ///
+    /// **The decay origin is `provenance.event_time`, not `updated_at` and
+    /// certainly not `read_at`.** `event_time` is when the fact was true —
+    /// the administrator's reporting date — and staleness is a statement about
+    /// the evidence, so that is the instant to measure from. `updated_at` is
+    /// when this platform last rewrote its copy, which a nightly re-ingestion
+    /// moves without any new evidence existing; marking from it would refresh
+    /// a decade-old report every night. `read_at` is worse still: it is the
+    /// clock, and a mark struck from the clock decays with process uptime.
+    ///
+    /// `event_time` is trustworthy here in the one way that matters:
+    /// `ObjectBuilder::build` refuses an object whose `ingestion_time`
+    /// precedes its `event_time` ("record was ingested before it happened"),
+    /// so no object in a universe carries a fact dated after the platform
+    /// ingested it. It can still be dated after `updated_at`, which is a
+    /// separate stamp nothing reconciles against it, and
+    /// [`Self::mark_private_asset`] refuses that case rather than choosing.
     pub fn mark_object(
         object: &FinancialObject,
         origin: Timestamp,
-        as_of: Timestamp,
+        read_at: Timestamp,
     ) -> Result<Option<AssetValuation>> {
         let Extension::PrivateAsset(details) = &object.extension else {
             return Ok(None);
@@ -633,9 +693,10 @@ impl IlliquidValuator {
             object.object_id.as_str().to_string(),
             details,
             origin,
+            object.provenance.event_time,
             object.updated_at,
             object.yield_rate,
-            as_of,
+            read_at,
         )
         .map(Some)
     }

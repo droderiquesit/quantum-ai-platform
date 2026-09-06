@@ -89,6 +89,7 @@ fn a_private_asset_with_no_residual_and_no_net_cost_is_refused_rather_than_marke
         &details(Decimal::ZERO, dec!("400"), dec!("100")),
         origin(),
         origin(),
+        origin(),
         None,
         day(1),
     )?;
@@ -98,6 +99,7 @@ fn a_private_asset_with_no_residual_and_no_net_cost_is_refused_rather_than_marke
     let refusal = IlliquidValuator::mark_private_asset(
         "obj-venture",
         &details(Decimal::ZERO, dec!("400"), dec!("400")),
+        origin(),
         origin(),
         origin(),
         None,
@@ -291,6 +293,7 @@ fn a_private_record_with_a_required_yield_is_discounted_rather_than_taken_at_fac
         &record,
         origin(),
         origin(),
+        origin(),
         Some(0.12),
         day(1),
     )?;
@@ -306,6 +309,7 @@ fn a_private_record_with_a_required_yield_is_discounted_rather_than_taken_at_fac
     let face = IlliquidValuator::mark_private_asset(
         "obj-fund",
         &record,
+        origin(),
         origin(),
         origin(),
         None,
@@ -401,6 +405,260 @@ fn the_confidence_table_ranks_the_methods_strictly() -> Result<()> {
             "{} must be strictly more confident than {}",
             pair[0].label(),
             pair[1].label()
+        );
+    }
+    Ok(())
+}
+
+fn private_object_observed_at(
+    symbol: &str,
+    observed: Timestamp,
+    details: PrivateAssetDetails,
+) -> Result<FinancialObject> {
+    FinancialObject::builder(
+        ObjectId::from_string(format!("obj-{symbol}")),
+        symbol,
+        InstrumentType::PrivateEquityFund,
+    )
+    .venue("OTC")
+    .price(dec!("1"))
+    .extension(Extension::PrivateAsset(details))
+    .provenance(Provenance::new("administrator", observed, observed))
+    .build(observed)
+}
+
+#[test]
+fn a_mark_decays_with_the_age_of_the_record_and_not_with_the_instant_it_was_assembled() -> Result<()>
+{
+    // The defect this prevents, which shipped: `mark_object` struck every mark
+    // as of the caller's instant, so the decay clock measured how long the
+    // process had been up rather than how old the evidence was. A fastbrain up
+    // 180 days sized a last-round mark at 0.20 and one restarted that morning
+    // sized the byte-identical record at 0.40 — a sizing input that could not
+    // be reproduced from the event log, and a restart that refreshed a report
+    // from 2010. Both marks below are read at the same instant; only the
+    // record's own observation instant differs.
+    let read_at = day(4000);
+    let fresh = private_object_observed_at(
+        "FRESH",
+        day(3999),
+        details(dec!("1000"), dec!("800"), Decimal::ZERO),
+    )?;
+    let ancient = private_object_observed_at(
+        "OLD",
+        origin(),
+        details(dec!("1000"), dec!("800"), Decimal::ZERO),
+    )?;
+
+    let fresh_mark = IlliquidValuator::mark_object(&fresh, origin(), read_at)?
+        .expect("a private record with a residual value is markable");
+    let ancient_mark = IlliquidValuator::mark_object(&ancient, origin(), read_at)?
+        .expect("a private record with a residual value is markable");
+
+    // Premise: the two marks are the same method at the same struck
+    // confidence, so every difference below is age and nothing else.
+    assert_eq!(fresh_mark.method(), ValuationMethod::LastRound);
+    assert_eq!(ancient_mark.method(), ValuationMethod::LastRound);
+    let base = ValuationMethod::LastRound.base_confidence();
+    assert!((fresh_mark.struck_confidence() - base).abs() < 1e-12);
+    assert!((ancient_mark.struck_confidence() - base).abs() < 1e-12);
+
+    assert_eq!(
+        fresh_mark.as_of(),
+        day(3999),
+        "a mark is struck as of the instant its evidence was observed"
+    );
+    assert_eq!(
+        ancient_mark.as_of(),
+        origin(),
+        "a ten-year-old report is struck as of ten years ago, not as of the sweep"
+    );
+
+    let fresh_confidence = fresh_mark.confidence_at(read_at)?;
+    let ancient_confidence = ancient_mark.confidence_at(read_at)?;
+    assert!(
+        fresh_confidence > 0.39,
+        "a report a day old keeps almost all of its weight, was {fresh_confidence}"
+    );
+    assert!(
+        ancient_confidence < 0.001,
+        "a report twenty-two half-lives old must be worth almost nothing, was \
+         {ancient_confidence}"
+    );
+
+    assert!(
+        !fresh_mark.is_stale(read_at),
+        "a report a day old is inside its review interval"
+    );
+    assert!(
+        ancient_mark.is_stale(read_at),
+        "a report ten years past its annual review is stale, and the staleness control exists to \
+         say so"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_record_whose_evidence_postdates_the_platforms_copy_of_it_is_refused_rather_than_dated()
+-> Result<()> {
+    // Two instants that disagree about when a fact existed leave no honest
+    // origin for the decay clock, and picking the later would let a vendor
+    // field make an old report size as though it were current.
+    let observed = day(10);
+    let object = FinancialObject::builder(
+        ObjectId::from_string("obj-AHEAD"),
+        "AHEAD",
+        InstrumentType::PrivateEquityFund,
+    )
+    .venue("OTC")
+    .price(dec!("1"))
+    .extension(Extension::PrivateAsset(details(
+        dec!("1000"),
+        dec!("800"),
+        Decimal::ZERO,
+    )))
+    .provenance(Provenance::new("administrator", observed, observed))
+    .build(day(5))?;
+
+    // Premise: the same record with the two stamps in order is marked, so the
+    // refusal is about their order and not about the record.
+    let ordered = private_object_observed_at(
+        "ORDERED",
+        observed,
+        details(dec!("1000"), dec!("800"), Decimal::ZERO),
+    )?;
+    assert!(
+        IlliquidValuator::mark_object(&ordered, origin(), day(20))?.is_some(),
+        "a record observed at or before the platform recorded it is markable"
+    );
+
+    let refusal = IlliquidValuator::mark_object(&object, origin(), day(20))
+        .expect_err("evidence dated after the platform's own copy has no honest observation date");
+    let message = refusal.message();
+    assert!(
+        message.contains("recorded before it happened"),
+        "the refusal must name the contradiction, said: {message}"
+    );
+    assert!(
+        message.contains("will not pick one of the two instants for you"),
+        "the refusal must say the plane does not choose between them, said: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_mark_cannot_be_read_before_the_record_it_rests_on_was_knowable() -> Result<()> {
+    // Bitemporality: `known_at <= as_of`. A mark readable before it was
+    // knowable is a point-in-time leak, and a backtest resting on one is
+    // better than reality by exactly the information it should not have had.
+    let object = private_object_observed_at(
+        "LATER",
+        day(100),
+        details(dec!("1000"), dec!("800"), Decimal::ZERO),
+    )?;
+    // Premise: read at the knowability instant itself, the mark exists.
+    assert!(
+        IlliquidValuator::mark_object(&object, origin(), day(100))?.is_some(),
+        "a record is markable as of the instant it became knowable"
+    );
+
+    let refusal = IlliquidValuator::mark_object(&object, origin(), day(99))
+        .expect_err("a record not yet knowable must not be marked");
+    assert!(
+        refusal.message().contains("point-in-time leak"),
+        "the refusal must name the leak, said: {}",
+        refusal.message()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_vintage_year_outside_the_representable_range_is_refused_rather_than_overflowing() -> Result<()>
+{
+    // `Timestamp` is an i64 nanosecond count and tops out near 2262.
+    // `Timestamp::from_civil(2300, 1, 1)` multiplies unchecked, so a catalogue
+    // record stating 2300 — or a typed 20204 — aborted the debug build inside
+    // `Platform::new` and wrapped to a negative instant in the release build,
+    // where it became the commitment origin and the discounting origin.
+    let mut sound = details(dec!("1000"), dec!("800"), Decimal::ZERO);
+    sound.vintage_year = 2262;
+    // Premise: the last representable vintage is admitted, so the range check
+    // is a range check and not a blanket refusal.
+    assert_eq!(
+        sound.clone().checked()?.vintage_origin()?.to_date_string(),
+        "2262-01-01"
+    );
+
+    for year in [2263_u32, 2300, 20204, u32::MAX] {
+        let mut broken = details(dec!("1000"), dec!("800"), Decimal::ZERO);
+        broken.vintage_year = year;
+        let refusal = broken
+            .checked()
+            .expect_err("a vintage year that is not an instant must be refused");
+        assert!(
+            refusal
+                .message()
+                .contains(&format!("vintage year of {year}")),
+            "the refusal must name the value it read, said: {}",
+            refusal.message()
+        );
+        assert!(
+            refusal.message().contains("between 1678 and 2262"),
+            "the refusal must say what to supply instead, said: {}",
+            refusal.message()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_catalogue_file_cannot_smuggle_an_unrepresentable_vintage_year_past_deserialisation()
+-> Result<()> {
+    // The record arrives as vendor data, so the constructor is only half the
+    // guard; `serde(try_from)` is the other half.
+    let wire = |year: u32| {
+        format!(
+            r#"{{"vintage_year":{year},"committed_capital":"1000","called_capital":"800",
+                 "distributed_capital":"0","residual_value":"1000","stage":"buyout",
+                 "lockup_years":7.0,"capital_call_notice_days":10}}"#
+        )
+    };
+    // Premise: a sound record deserialises, so the failure below is the year.
+    let sound: PrivateAssetDetails = serde_json::from_str(&wire(2020))
+        .map_err(|e| qip_core::error::Error::invalid(e.to_string()))?;
+    assert_eq!(sound.vintage_year, 2020);
+
+    let refused = serde_json::from_str::<PrivateAssetDetails>(&wire(2300))
+        .expect_err("a file stating an unrepresentable vintage must be refused at load");
+    assert!(
+        refused.to_string().contains("vintage year of 2300"),
+        "the refusal must survive into the deserialisation error, said: {refused}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_lockup_that_is_not_a_finite_term_is_refused_rather_than_saturating() -> Result<()> {
+    // `(lockup_years * 365.0) as i64` turns NaN into a lockup of zero and
+    // infinity into `i64::MAX` days, which `Duration::from_days` then
+    // multiplied unchecked. Neither number was on any record.
+    let mut sound = details(dec!("1000"), dec!("800"), Decimal::ZERO);
+    sound.lockup_years = 7.0;
+    // Premise: an ordinary term is admitted and is seven years of days.
+    assert_eq!(sound.lockup()?, Duration::from_days(2555));
+
+    for term in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -5.0, 1.0e18] {
+        let mut broken = details(dec!("1000"), dec!("800"), Decimal::ZERO);
+        broken.lockup_years = term;
+        let refusal = broken
+            .checked()
+            .expect_err("a lockup that is not a finite non-negative term must be refused");
+        assert!(
+            refusal
+                .message()
+                .contains("supply a finite term between 0 and 100"),
+            "the refusal must say what a term may be, said: {}",
+            refusal.message()
         );
     }
     Ok(())
