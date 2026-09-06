@@ -68,6 +68,53 @@ impl CovenantKind {
     }
 }
 
+/// Whether a covenant is a term of the credit agreement or a level this
+/// platform supplied because the agreement's own was not reported.
+///
+/// The distinction is in the type, not in a comment, because it decides what
+/// the operator is told. A borrower above a level nobody agreed to has not
+/// breached anything; reporting it in the sentence a real breach uses is the
+/// inverse of the failure [`CreditProfile::covenant_state`] returns an
+/// `Option` to avoid. That method exists so "nothing tested" cannot read as
+/// "tested and passed"; without this enum, "nothing tested" read as **tested
+/// and failed**, which is worse, because a breach is escalated and an absence
+/// is investigated.
+///
+/// This has happened here: every non-covenant-lite loan was given a six-turn
+/// leverage ceiling manufactured for it, and a borrower at 6.4 turns was
+/// reported as `"net_debt_to_ebitda (ceiling 6) observed at 6.4: breached"` —
+/// textually indistinguishable from a breach of a covenant the credit
+/// agreement actually contains.
+///
+/// Modelled on [`DefaultPrior`], for the same reason: a platform assumption
+/// and a counterparty's own term are not the same claim, and a register that
+/// reported only the number would let the weaker one be read as the stronger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CovenantSource {
+    /// A test the credit agreement contains, at the level the agreement sets.
+    /// Only these can be breached.
+    Agreement,
+    /// A level this platform supplied because none was reported with the
+    /// instrument. Exceeding one is a finding about the borrower, not a
+    /// breach of anything.
+    Assumed,
+}
+
+impl CovenantSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Agreement => "agreement",
+            Self::Assumed => "assumed",
+        }
+    }
+
+    /// True only for a term somebody actually agreed to.
+    pub fn is_contractual(self) -> bool {
+        matches!(self, Self::Agreement)
+    }
+}
+
 /// Where a covenant stands: met with room, met without room, or breached.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -100,20 +147,54 @@ pub struct Covenant {
     pub threshold: f64,
     /// The borrower's most recently reported level for this test.
     pub observed: f64,
+    /// Whether the threshold above is the agreement's or this platform's.
+    pub source: CovenantSource,
 }
 
 impl Covenant {
+    /// A test the credit agreement contains, at the level it sets.
+    ///
+    /// There is deliberately no `new`. A covenant's provenance decides whether
+    /// exceeding it is escalated as a breach or investigated as a finding, and
+    /// a constructor that did not ask would hand every caller a provenance it
+    /// never chose — the shape of defect this enum was added to close. Naming
+    /// the two constructors makes the choice structural rather than a fifth
+    /// positional argument a reader has to decode.
+    pub fn agreed(
+        name: impl Into<String>,
+        kind: CovenantKind,
+        threshold: f64,
+        observed: f64,
+    ) -> Result<Self> {
+        Self::build(name, kind, threshold, observed, CovenantSource::Agreement)
+    }
+
+    /// A test at a level this platform supplied because the instrument
+    /// reported none.
+    ///
+    /// Exceeding one is not a breach and [`Self::describe`] says so in the
+    /// sentence an operator reads, not only in this doc.
+    pub fn assumed(
+        name: impl Into<String>,
+        kind: CovenantKind,
+        threshold: f64,
+        observed: f64,
+    ) -> Result<Self> {
+        Self::build(name, kind, threshold, observed, CovenantSource::Assumed)
+    }
+
     /// Refuses rather than clamps: a non-finite threshold or observation is a
     /// reporting error upstream, and a covenant carrying one would test
     /// `NaN <= threshold`, which is `false` in the ceiling direction and
     /// `false` in the floor direction — so the same missing number reads as a
     /// breach either way, and an operator would be paged on arithmetic rather
     /// than on a borrower.
-    pub fn new(
+    fn build(
         name: impl Into<String>,
         kind: CovenantKind,
         threshold: f64,
         observed: f64,
+        source: CovenantSource,
     ) -> Result<Self> {
         let name = name.into();
         if name.trim().is_empty() {
@@ -139,6 +220,7 @@ impl Covenant {
             kind,
             threshold,
             observed,
+            source,
         })
     }
 
@@ -160,6 +242,13 @@ impl Covenant {
         Some(room / self.threshold.abs())
     }
 
+    /// Where the observation sits relative to the threshold.
+    ///
+    /// Arithmetic, and so the same question for either
+    /// [`CovenantSource`]. What differs is what the answer *means*, which is
+    /// [`Self::is_breached`]'s and [`Self::describe`]'s business: an
+    /// observation past an assumed level is `Breached` here and is not a
+    /// breach of anything.
     pub fn state(&self) -> CovenantState {
         let breached = match self.kind {
             CovenantKind::Ceiling => self.observed > self.threshold,
@@ -174,16 +263,60 @@ impl Covenant {
         }
     }
 
+    /// True only when a term somebody agreed to has been broken.
+    ///
+    /// The pairing with [`Self::state`] is the whole point of
+    /// [`CovenantSource`]: an assumed level that has been exceeded returns
+    /// `CovenantState::Breached` from `state` and `false` from here, because
+    /// only one of the two is a fact about the credit agreement.
+    pub fn is_breached(&self) -> bool {
+        self.source.is_contractual() && self.state().is_breached()
+    }
+
+    /// True when an assumed level has been exceeded — a finding about the
+    /// borrower, and never a breach.
+    pub fn exceeds_assumed_level(&self) -> bool {
+        !self.source.is_contractual() && self.state().is_breached()
+    }
+
     /// The refusal-shaped sentence a caller puts in front of a person.
+    ///
+    /// The two arms do not share a template on purpose. A shared one would
+    /// differ by a single word, and the reader who most needs the distinction
+    /// is the one scanning a list of stage problems at speed. An assumed test
+    /// therefore says, in the same sentence, that nobody agreed the level and
+    /// that exceeding it is not a breach.
     pub fn describe(&self) -> String {
-        format!(
-            "{} ({} {}) observed at {}: {}",
-            self.name,
-            self.kind.label(),
-            self.threshold,
-            self.observed,
-            self.state().label()
-        )
+        match self.source {
+            CovenantSource::Agreement => format!(
+                "{} (agreement {} {}) observed at {}: {}",
+                self.name,
+                self.kind.label(),
+                self.threshold,
+                self.observed,
+                self.state().label()
+            ),
+            CovenantSource::Assumed => format!(
+                "{} (no agreement level supplied; tested against this platform's assumed {} {}) \
+                 observed at {}: {}",
+                self.name,
+                self.kind.label(),
+                self.threshold,
+                self.observed,
+                self.assumed_verdict()
+            ),
+        }
+    }
+
+    /// The verdict word for an assumed test. Never `breached`: that word is
+    /// reserved for a term of a credit agreement, and the sentence spends the
+    /// extra clause saying so rather than leaving the reader to infer it.
+    fn assumed_verdict(&self) -> &'static str {
+        match self.state() {
+            CovenantState::Breached => "past the assumed level, which is not a covenant breach",
+            CovenantState::Watch => "near the assumed level",
+            CovenantState::Compliant => "within the assumed level",
+        }
     }
 }
 
@@ -510,23 +643,51 @@ impl CreditProfile {
         })
     }
 
-    /// The worst state across the registered covenants, or `None` when none is
-    /// registered.
+    /// The worst state across the obligor's **agreement** covenants, or `None`
+    /// when it has none.
     ///
     /// `None` rather than `Compliant` on an empty register, deliberately. A
     /// covenant state of "compliant" asserts that tests were run and passed;
     /// an obligor nobody wrote a covenant for has had nothing tested, and
     /// reporting the two identically is precisely the shape of control that
     /// reads as protection and is not.
+    ///
+    /// An assumed test is excluded for exactly that argument, one step on. A
+    /// level this platform supplied is not a test anybody ran, so counting it
+    /// here would answer `Some(Compliant)` for every borrower whose agreement
+    /// nobody captured — reinstating, through the back door, the reading this
+    /// method returns an `Option` to prevent.
+    /// [`Self::assumed_tests_exceeded`] is where those are reported instead.
     pub fn covenant_state(&self) -> Option<CovenantState> {
-        self.covenants.values().map(Covenant::state).max()
+        self.covenants
+            .values()
+            .filter(|covenant| covenant.source.is_contractual())
+            .map(Covenant::state)
+            .max()
     }
 
-    /// Every breached covenant, in registration order.
+    /// Every breached agreement covenant, in name order.
+    ///
+    /// An assumed level that has been exceeded is deliberately absent: it is
+    /// not a breach, and the caller that reports breaches reports it under
+    /// [`Self::assumed_tests_exceeded`] with its own sentence.
     pub fn breached_covenants(&self) -> Vec<&Covenant> {
         self.covenants
             .values()
-            .filter(|covenant| covenant.state().is_breached())
+            .filter(|covenant| covenant.is_breached())
+            .collect()
+    }
+
+    /// Every assumed test the borrower is past, in name order.
+    ///
+    /// Reported rather than dropped. `net_debt_to_ebitda` is a number the
+    /// borrower actually filed, and a platform that stayed silent about nine
+    /// turns of leverage because nobody captured the agreement would have
+    /// swapped a false breach for a missing control.
+    pub fn assumed_tests_exceeded(&self) -> Vec<&Covenant> {
+        self.covenants
+            .values()
+            .filter(|covenant| covenant.exceeds_assumed_level())
             .collect()
     }
 
@@ -581,12 +742,25 @@ impl CreditProfile {
                     ))));
                 }
                 if !details.covenant_lite {
-                    let covenant = match Covenant::new(
-                        "net_debt_to_ebitda",
-                        CovenantKind::Ceiling,
-                        LOAN_LEVERAGE_COVENANT,
-                        details.net_debt_to_ebitda,
-                    ) {
+                    // The agreement's own ceiling where it was captured, and
+                    // this platform's assumption where it was not — labelled
+                    // as which, because the two produce different sentences
+                    // and only one of them can be breached.
+                    let covenant = match details.leverage_covenant {
+                        Some(agreed) => Covenant::agreed(
+                            "net_debt_to_ebitda",
+                            CovenantKind::Ceiling,
+                            agreed,
+                            details.net_debt_to_ebitda,
+                        ),
+                        None => Covenant::assumed(
+                            "net_debt_to_ebitda",
+                            CovenantKind::Ceiling,
+                            LOAN_LEVERAGE_COVENANT,
+                            details.net_debt_to_ebitda,
+                        ),
+                    };
+                    let covenant = match covenant {
                         Ok(covenant) => covenant,
                         Err(error) => return Some(Err(error)),
                     };
@@ -647,10 +821,21 @@ impl CreditProfile {
 }
 
 /// The leverage ceiling a loan's `net_debt_to_ebitda` is tested against where
-/// the credit agreement's own level has not been supplied.
+/// [`crate::extensions::LoanDetails::leverage_covenant`] is absent.
 ///
 /// Six turns is the level above which the US and European regulators' leveraged
 /// lending guidance asks a lender to justify the credit. It is a default, not a
-/// contract: a loan whose agreement sets another level should carry that level
-/// as its own covenant rather than being tested against this one.
+/// contract — and that sentence used to live only here, in the source, while
+/// the sentence the operator read said `"net_debt_to_ebitda (ceiling 6)
+/// observed at 6.4: breached"`, which is what a real covenant breach looks
+/// like. A disclosure only the implementer sees is not a disclosure.
+///
+/// The default is kept rather than deleted because deleting it would make the
+/// platform silent about a leverage number the borrower actually filed, and a
+/// missing control is not an improvement on a mislabelled one. It earns its
+/// place by being labelled: every covenant this constant produces is a
+/// [`CovenantSource::Assumed`] one, which cannot be breached, is excluded from
+/// [`CreditProfile::covenant_state`], and renders a sentence that names both
+/// the absence of an agreed level and the fact that being past it is not a
+/// breach.
 pub const LOAN_LEVERAGE_COVENANT: f64 = 6.0;

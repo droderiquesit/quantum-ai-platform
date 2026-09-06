@@ -116,30 +116,43 @@ fn the_reachable_value_within_a_horizon_counts_only_the_rungs_that_clear_it() {
     let ladder = book();
 
     // Premise: the book totals 1.5m across five rungs.
-    assert_eq!(ladder.total_value(), dec!("1500000"));
+    assert_eq!(
+        ladder.total_value().expect("the book adds up"),
+        dec!("1500000")
+    );
 
     assert_eq!(
-        ladder.reachable_within(LiquidationHorizon::Immediate),
+        ladder
+            .reachable_within(LiquidationHorizon::Immediate)
+            .expect("the book adds up"),
         dec!("100000"),
         "only cash is immediate"
     );
     assert_eq!(
-        ladder.reachable_within(LiquidationHorizon::Seconds),
+        ladder
+            .reachable_within(LiquidationHorizon::Seconds)
+            .expect("the book adds up"),
         dec!("300000"),
         "cash plus liquid spot"
     );
     assert_eq!(
-        ladder.reachable_within(LiquidationHorizon::SameDay),
+        ladder
+            .reachable_within(LiquidationHorizon::SameDay)
+            .expect("the book adds up"),
         dec!("700000"),
         "plus listed equity"
     );
     assert_eq!(
-        ladder.reachable_within(LiquidationHorizon::Days),
+        ladder
+            .reachable_within(LiquidationHorizon::Days)
+            .expect("the book adds up"),
         dec!("1000000"),
         "plus the corporate bond"
     );
     assert_eq!(
-        ladder.reachable_within(LiquidationHorizon::Years),
+        ladder
+            .reachable_within(LiquidationHorizon::Years)
+            .expect("the book adds up"),
         dec!("1500000"),
         "everything, eventually"
     );
@@ -206,7 +219,10 @@ fn a_ladder_whose_costs_rise_as_it_descends_is_admitted() {
         ),
     ])
     .expect("a ladder that gets dearer as it descends must be admitted");
-    assert_eq!(ladder.total_value(), dec!("200000"));
+    assert_eq!(
+        ladder.total_value().expect("the book adds up"),
+        dec!("200000")
+    );
 }
 
 #[test]
@@ -320,7 +336,9 @@ fn a_request_smaller_than_the_top_rung_is_served_from_cash_alone_at_no_cost() {
 
     // Premise: there is 100,000 of cash, so a 50,000 request need go no deeper.
     assert_eq!(
-        ladder.reachable_within(LiquidationHorizon::Immediate),
+        ladder
+            .reachable_within(LiquidationHorizon::Immediate)
+            .expect("the book adds up"),
         dec!("100000")
     );
 
@@ -392,7 +410,10 @@ fn a_request_deeper_than_the_book_is_refused_and_names_the_shortfall() {
     let ladder = book();
 
     // Premise: the book holds exactly 1.5m, and a request for all of it works.
-    assert_eq!(ladder.total_value(), dec!("1500000"));
+    assert_eq!(
+        ladder.total_value().expect("the book adds up"),
+        dec!("1500000")
+    );
     assert!(
         ladder.plan(dec!("1500000")).is_ok(),
         "a request for the whole book must be served"
@@ -461,21 +482,27 @@ fn a_plan_carries_no_field_any_execution_surface_could_act_on() {
 fn an_instrument_lands_on_the_rung_its_class_and_its_liquidity_together_imply() {
     let listed = LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0);
 
-    assert_eq!(Rung::classify(AssetClass::Cash, &listed), Rung::CashAtVenue);
     assert_eq!(
-        Rung::classify(AssetClass::DigitalAsset, &listed),
+        Rung::classify(AssetClass::Cash, &listed).expect("a stated number of days places a rung"),
+        Rung::CashAtVenue
+    );
+    assert_eq!(
+        Rung::classify(AssetClass::DigitalAsset, &listed)
+            .expect("a stated number of days places a rung"),
         Rung::LiquidSpotAndPerpetual
     );
     assert_eq!(
-        Rung::classify(AssetClass::Equity, &listed),
+        Rung::classify(AssetClass::Equity, &listed).expect("a stated number of days places a rung"),
         Rung::ListedEquityAndFutures
     );
     assert_eq!(
-        Rung::classify(AssetClass::FixedIncome, &listed),
+        Rung::classify(AssetClass::FixedIncome, &listed)
+            .expect("a stated number of days places a rung"),
         Rung::BondsAndLessLiquidListed
     );
     assert_eq!(
-        Rung::classify(AssetClass::PrivateMarket, &listed),
+        Rung::classify(AssetClass::PrivateMarket, &listed)
+            .expect("a stated number of days places a rung"),
         Rung::PrivateEquityCommitments
     );
 }
@@ -492,12 +519,14 @@ fn a_negotiated_instrument_cannot_sit_on_a_listed_rung_however_its_class_is_labe
         Rung::classify(
             AssetClass::Equity,
             &LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0)
-        ),
+        )
+        .expect("a stated number of days places a rung"),
         Rung::ListedEquityAndFutures
     );
 
     assert_eq!(
-        Rung::classify(AssetClass::Equity, &negotiated),
+        Rung::classify(AssetClass::Equity, &negotiated)
+            .expect("a stated number of days places a rung"),
         Rung::PrivateCreditAndRealAssets,
         "a negotiated instrument is pushed down the ladder, never up"
     );
@@ -516,12 +545,12 @@ fn an_instrument_taking_more_than_a_day_to_exit_falls_to_the_bond_rung() {
         ..LiquidityProfile::listed(Decimal::from_int(1000), 3.0)
     };
     assert_eq!(
-        Rung::classify(AssetClass::Equity, &fast),
+        Rung::classify(AssetClass::Equity, &fast).expect("a stated number of days places a rung"),
         Rung::ListedEquityAndFutures
     );
 
     assert_eq!(
-        Rung::classify(AssetClass::Equity, &slow),
+        Rung::classify(AssetClass::Equity, &slow).expect("a stated number of days places a rung"),
         Rung::BondsAndLessLiquidListed
     );
 }
@@ -542,7 +571,7 @@ fn classification_never_returns_the_resting_rung_because_no_instrument_property_
     for class in AssetClass::ALL {
         for profile in &profiles {
             assert_ne!(
-                Rung::classify(class, profile),
+                Rung::classify(class, profile).expect("a stated number of days places a rung"),
                 Rung::RestingAndAnchored,
                 "{} must not be classified as resting",
                 class.as_str()
@@ -675,4 +704,161 @@ fn the_two_horizon_functions_agree_on_every_rungs_own_floor() {
             round_trip.as_str()
         );
     }
+}
+
+// --- refusals the arithmetic used to swallow ---------------------------------
+
+#[test]
+fn a_liquidity_record_that_is_not_a_number_of_days_is_refused_rather_than_classified() {
+    // The failure this prevents, confirmed against the tree before it was
+    // fixed. `days_to_liquidate` is an `f64` and the comparison that pushes a
+    // holding below its asset class is `> 1.0`, which `f64` makes `false` for
+    // `NaN` and for a negative and `true` for infinity. So an equity whose
+    // exit time nobody had measured classified `ListedEquityAndFutures` —
+    // same day — and one stated to take *forever* classified
+    // `BondsAndLessLiquidListed`, two days. Both figures reach
+    // `RiskState::liquidatable_within` and therefore `LimitKind::MinLiquidity`,
+    // which vetoes new risk, so an unreadable measurement was a liquidity
+    // floor computed over a book nobody had measured.
+    //
+    // The premise, first and deliberately: a real number of days does push the
+    // holding down, so what is refused below is the figure and not the field.
+    let measured = LiquidityProfile {
+        days_to_liquidate: 30.0,
+        ..LiquidityProfile::listed(Decimal::from_int(1_000_000), 5.0)
+    };
+    assert_eq!(
+        Rung::classify(AssetClass::Equity, &measured).expect("thirty days is a number of days"),
+        Rung::BondsAndLessLiquidListed,
+        "the premise failed: the classifier is not reading days_to_liquidate at all"
+    );
+
+    // Refused — not merely landed on a different rung. A rung assertion would
+    // pass on a classifier that had quietly picked the bottom of the ladder,
+    // which is still a number nobody computed.
+    for (label, days) in [
+        ("not a number", f64::NAN),
+        ("infinite", f64::INFINITY),
+        ("negatively infinite", f64::NEG_INFINITY),
+        ("negative", -7.0),
+    ] {
+        let unreadable = LiquidityProfile {
+            days_to_liquidate: days,
+            ..LiquidityProfile::listed(Decimal::from_int(1_000_000), 5.0)
+        };
+        for class in AssetClass::ALL {
+            let refusal = match Rung::classify(class, &unreadable) {
+                Ok(rung) => panic!(
+                    "a {label} days-to-liquidate on a {} was classified {rung:?} instead of \
+                     refused",
+                    class.as_str()
+                ),
+                Err(error) => error,
+            };
+            let message = refusal.message();
+            assert!(
+                message.contains("days to liquidate"),
+                "the refusal does not name the figure it could not read: {message}"
+            );
+            assert!(
+                message.contains("correct the record"),
+                "the refusal does not say what to do instead: {message}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_book_whose_value_leaves_the_decimal_range_is_refused_rather_than_under_reported() {
+    // The failure this prevents, measured on the tree before it was fixed: a
+    // ladder of one unit of cash beside 1.7e29 of liquid spot reported a
+    // `total_value` of **1** and a `reachable_within(Seconds)` of **1**. The
+    // fold kept its accumulator on overflow — `checked_add(...).unwrap_or(acc)`
+    // — so the entry that did not fit was silently dropped. That total is the
+    // denominator `RiskState::liquidatable_within` divides by and the
+    // numerator it files under the horizon `LimitKind::MinLiquidity` reads, so
+    // the clamp sat inside a control that vetoes trading.
+    //
+    // Premise: the same two-rung shape with representable marks is admitted
+    // and totals exactly their sum, so the refusal below is about the range
+    // and not about the shape.
+    let representable = LiquidityLadder::new(vec![
+        LadderEntry::new("obj-usd", Rung::CashAtVenue, Decimal::ONE, Decimal::ZERO),
+        LadderEntry::new(
+            "obj-btc",
+            Rung::LiquidSpotAndPerpetual,
+            dec!("1000"),
+            Decimal::ZERO,
+        ),
+    ])
+    .expect("the premise failed: a two-rung book of ordinary size must be admitted");
+    assert_eq!(
+        representable
+            .total_value()
+            .expect("the premise failed: an ordinary book must add up"),
+        dec!("1001")
+    );
+
+    // The same book with the lower rung marked at the top of the range. Its
+    // per-rung totals each fit; their sum does not.
+    let refusal = LiquidityLadder::new(vec![
+        LadderEntry::new("obj-usd", Rung::CashAtVenue, Decimal::ONE, Decimal::ZERO),
+        LadderEntry::new(
+            "obj-btc",
+            Rung::LiquidSpotAndPerpetual,
+            Decimal::MAX,
+            Decimal::ZERO,
+        ),
+    ])
+    .expect_err("a book whose value does not add up was admitted");
+    let message = refusal.message();
+    assert!(
+        message.contains("total value leaves the decimal range"),
+        "the refusal does not name what could not be computed: {message}"
+    );
+    assert!(
+        message.contains("obj-btc"),
+        "the refusal does not name the holding the sum failed at: {message}"
+    );
+}
+
+#[test]
+fn a_rung_total_that_leaves_the_decimal_range_is_refused_rather_than_saturated() {
+    // The other half of the same clamp, and the worse half: the per-rung
+    // totals saturated at `Decimal::MAX` instead of dropping an entry, and
+    // `prove_monotonic` then compared that fabricated total against a real one
+    // and pronounced the ladder sound. A ladder is admitted on the strength of
+    // that proof.
+    //
+    // Premise: two holdings of ordinary size on one rung are admitted and the
+    // rung reports their sum.
+    let representable = LiquidityLadder::new(vec![
+        LadderEntry::new("obj-usd", Rung::CashAtVenue, dec!("400"), Decimal::ZERO),
+        LadderEntry::new("obj-eur", Rung::CashAtVenue, dec!("600"), Decimal::ZERO),
+    ])
+    .expect("the premise failed: two ordinary holdings on one rung must be admitted");
+    assert_eq!(
+        representable
+            .value_by_rung()
+            .expect("the premise failed: an ordinary rung must add up")
+            .get(&Rung::CashAtVenue)
+            .copied(),
+        Some(dec!("1000")),
+        "the premise failed: the rung total is not the sum of its holdings"
+    );
+
+    let refusal = LiquidityLadder::new(vec![
+        LadderEntry::new("obj-usd", Rung::CashAtVenue, Decimal::ONE, Decimal::ZERO),
+        LadderEntry::new("obj-eur", Rung::CashAtVenue, Decimal::MAX, Decimal::ZERO),
+    ])
+    .expect_err("a rung whose value does not add up was admitted");
+    let message = refusal.message();
+    assert!(
+        message.contains("value on rung cash_at_venue"),
+        "the refusal does not name the rung whose total could not be computed: {message}"
+    );
+    assert!(
+        message.contains("monotonicity proof"),
+        "the refusal does not say why a saturated rung total matters: {message}"
+    );
 }

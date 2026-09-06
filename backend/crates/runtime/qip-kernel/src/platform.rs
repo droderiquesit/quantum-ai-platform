@@ -750,13 +750,18 @@ struct LadderReference {
 ///
 /// Fallible for the same reason `instrument_grid_of` is: a record whose
 /// stated spread cannot be turned into an exit cost should stop assembly
-/// rather than be quietly given a made-up one. The three refusals are a
-/// non-finite spread, a negative spread, and a spread of a hundred percent or
-/// more — the last because `LiquidityLadder::new` refuses an entry costing
-/// more to exit than it is marked at, so a record stating 10,000bps would
-/// take the whole book's liquidity read down with it, one cycle at a time and
-/// for a reason no operator could see from the risk report. Better to name
-/// the record at start-up.
+/// rather than be quietly given a made-up one. Four refusals: a non-finite
+/// spread, a negative spread, a spread of a hundred percent or more, and an
+/// exit time that is not a number of days. The third because
+/// `LiquidityLadder::new` refuses an entry costing more to exit than it is
+/// marked at, so a record stating 10,000bps would take the whole book's
+/// liquidity read down with it, one cycle at a time and for a reason no
+/// operator could see from the risk report. The fourth is `Rung::classify`'s
+/// own, raised here rather than swallowed: a `NaN` or negative exit time used
+/// to leave the holding on its asset class's rung and an infinite one used to
+/// place it two days out, and both figures reach the shipped `liquidity`
+/// limit. Better to name the record at start-up than to veto trading on a
+/// number nobody computed.
 fn ladder_reference_of(
     object: &qip_financial::object::FinancialObject,
 ) -> Result<(String, LadderReference)> {
@@ -776,12 +781,20 @@ fn ladder_reference_of(
             object.object_id.as_str()
         )));
     }
+    // A fourth refusal, and it arrives from the ladder rather than from here:
+    // `Rung::classify` will not place a holding whose stated days to
+    // liquidate is not a number of days. Named with the object id, because
+    // the classifier sees a liquidity record and not which record it is.
+    let rung = Rung::classify(object.asset_class, &object.liquidity).map_err(|error| {
+        Error::invalid(format!(
+            "{}: {}",
+            object.object_id.as_str(),
+            error.message()
+        ))
+    })?;
     Ok((
         object.object_id.as_str().to_string(),
-        LadderReference {
-            rung: Rung::classify(object.asset_class, &object.liquidity),
-            spread_bps,
-        },
+        LadderReference { rung, spread_bps },
     ))
 }
 
@@ -5979,29 +5992,75 @@ impl Platform {
     }
 
     /// Free capital after every unfunded private commitment has been taken
-    /// off it.
+    /// off it, refused whenever that leaves nothing to deploy.
     ///
     /// Read by `construct_from` before anything is sized, so this is the
     /// figure the platform actually deploys against rather than a second
-    /// opinion about it. Refuses when the obligations meet or exceed what is
-    /// free: a book that could not meet a call has a funding problem, and
-    /// sizing against a budget of zero would report that as an ordinary quiet
-    /// cycle.
+    /// opinion about it.
+    ///
+    /// **The refusal covers both branches, and used to cover only one.** A
+    /// book whose obligations meet or exceed its free capital was refused; a
+    /// book with no private commitments at all and nothing free returned
+    /// `Ok(0)` — the case this doc claimed to prevent, in the commoner of the
+    /// two. A zero budget then travelled on: the constructor refused it as
+    /// "no equity", which is a false statement about a book that has equity
+    /// and cannot reach it, and the DECIDE stage recorded the pass as though
+    /// no thesis had cleared the action bar. Two states that must never read
+    /// alike — nobody had an idea, and everybody's idea was unfundable — read
+    /// identically. Both are now refusals naming the capital state, and
+    /// `stage_decide` puts a construction refusal on the cycle as a problem
+    /// rather than as silence.
+    ///
+    /// **Anchored here rather than trusted to a caller**, which is why this
+    /// takes `&mut self`. The ledger's free balance is derived from equity
+    /// less the active holds, and only [`ReservationLedger::resync_free`]
+    /// re-derives it; a caller who read this before that ran got the last
+    /// mutation's balance instead of the book's — zero on a platform that had
+    /// never sized anything, and stale in whichever direction the book had
+    /// moved since. A public answer to "how much will this platform deploy"
+    /// must not depend on who called what first. `stage_decide` still resyncs
+    /// at the top of every pass, including the quiet ones this is never
+    /// reached on, and counts the shortfall where the alerts look; re-deriving
+    /// the same identity from the same two numbers twice is not a second claim
+    /// about the balance.
+    ///
+    /// A drawdown that leaves the holds above equity is propagated rather than
+    /// read through: `resync_free` floors free at zero there, and a floor read
+    /// as a budget is a clamp entering a sizing decision.
     pub fn deployable_capital(&mut self, now: Timestamp) -> Result<Decimal> {
+        self.reservations
+            .resync_free(self.capital.equity(), now)
+            .map_err(|error| {
+                Error::invalid(format!(
+                    "the capital available to deploy cannot be established: {}",
+                    error.message()
+                ))
+            })?;
         let free = self.reservations.free(now);
         let obligations = self.commitments.unfunded_total(now)?;
-        if !obligations.is_positive() {
-            return Ok(free);
+        if obligations.is_positive() {
+            return free
+                .checked_sub(obligations)
+                .filter(|remaining| remaining.is_positive())
+                .ok_or_else(|| {
+                    Error::invalid(format!(
+                        "unfunded capital commitments of {obligations} meet or exceed the free \
+                         capital {free}; fund the reserve or reduce the commitment before sizing \
+                         anything — a called commitment that cannot be met forfeits the position"
+                    ))
+                });
         }
-        free.checked_sub(obligations)
-            .filter(|remaining| remaining.is_positive())
-            .ok_or_else(|| {
-                Error::invalid(format!(
-                    "unfunded capital commitments of {obligations} meet or exceed the free capital \
-                     {free}; fund the reserve or reduce the commitment before sizing anything — a \
-                     called commitment that cannot be met forfeits the position"
-                ))
-            })
+        if !free.is_positive() {
+            return Err(Error::invalid(format!(
+                "there is no capital free to deploy: tracked equity of {equity} less {held} on \
+                 active reservations leaves {free}; fund the book, release a hold or let one \
+                 expire before sizing anything — a budget of zero sizes nothing and would be \
+                 recorded as an ordinary quiet cycle",
+                equity = self.capital.equity(),
+                held = self.reservations.reserved_total(),
+            )));
+        }
+        Ok(free)
     }
 
     fn construct_from(
@@ -6423,6 +6482,14 @@ impl Platform {
         // the queue every cycle would pyramid the same idea until the mandate
         // cap alone stopped it.
         let theses = std::mem::take(&mut self.pending_theses);
+        let approved = theses.len();
+        // The refusal, kept so the stage itself carries it. A construction
+        // that was attempted and refused is not a quiet cycle, and until this
+        // was recorded the two read alike: DECIDE reported "no thesis cleared
+        // the action bar" with no problems whether nobody had an idea or every
+        // idea was unfundable, and only the proposal's rationale — one level
+        // further in — told them apart.
+        let mut refusal: Option<String> = None;
         let proposal = if theses.is_empty() {
             self.constructor.nothing_to_do(
                 ProposalId::from_string(format!("prop-{}", self.cycle)),
@@ -6439,17 +6506,19 @@ impl Platform {
                 // theses are not requeued — an idea that could not be sized
                 // against this history will not size better against the same
                 // history next cycle, and the event log keeps the attempt.
-                Err(error) => self.constructor.nothing_to_do(
-                    ProposalId::from_string(format!("prop-{}", self.cycle)),
-                    Money::new(self.capital.equity(), Currency::USD),
-                    now,
-                    now,
-                    format!(
-                        "{} thesis(es) approved and none sized: {}",
-                        theses.len(),
-                        error.message()
-                    ),
-                ),
+                Err(error) => {
+                    refusal = Some(error.message().to_string());
+                    self.constructor.nothing_to_do(
+                        ProposalId::from_string(format!("prop-{}", self.cycle)),
+                        Money::new(self.capital.equity(), Currency::USD),
+                        now,
+                        now,
+                        format!(
+                            "{approved} thesis(es) approved and none sized: {}",
+                            error.message()
+                        ),
+                    )
+                }
             }
         };
         let legs = proposal.len();
@@ -6481,15 +6550,25 @@ impl Platform {
             )
         };
 
-        StageOutcome::ran(
+        let outcome = StageOutcome::ran(
             Stage::Decide,
             legs,
-            if legs == 0 {
-                format!("no thesis cleared the action bar; nothing to propose{funding}")
-            } else {
-                format!("{legs} leg(s) proposed{funding}")
+            match (legs, &refusal) {
+                (0, None) => {
+                    format!("no thesis cleared the action bar; nothing to propose{funding}")
+                }
+                (0, Some(_)) => {
+                    format!("{approved} approved thesis(es) and none sized{funding}")
+                }
+                _ => format!("{legs} leg(s) proposed{funding}"),
             },
-        )
+        );
+        match refusal {
+            Some(message) => outcome.with_problem(format!(
+                "{approved} approved thesis(es) could not be sized: {message}"
+            )),
+            None => outcome,
+        }
     }
 
     fn stage_act(&mut self, now: Timestamp, correlation: &CorrelationId) -> StageOutcome {
@@ -7440,9 +7519,15 @@ impl Platform {
         let returns = self.equity_returns();
         let mut state =
             RiskState::from_figures(figures).with_tail_risk(self.monitor.limits(), &returns);
-        if let Ok(ladder) = self.liquidity_ladder(figures) {
+        // Both maps or neither. The fractions are a sum over the same ladder
+        // the day counts come from, so filling one from a ladder whose totals
+        // could not be computed would leave the two halves of one liquidity
+        // read disagreeing about which book they described.
+        if let Ok(ladder) = self.liquidity_ladder(figures)
+            && let Ok(fractions) = self.liquidatable_within(&ladder)
+        {
             state.days_to_liquidate = Self::days_to_liquidate_of(&ladder);
-            state.liquidatable_within = self.liquidatable_within(&ladder);
+            state.liquidatable_within = fractions;
         }
         state
     }
@@ -7548,11 +7633,17 @@ impl Platform {
     /// A limit whose horizon is not a number of days —
     /// `LiquidationHorizon::deepest_within` returns `None` — records nothing
     /// either, so it reads as unevaluated rather than as passed.
-    fn liquidatable_within(&self, ladder: &LiquidityLadder) -> BTreeMap<String, f64> {
+    /// A book whose value does not add up inside the decimal range records
+    /// nothing either, and says so rather than dividing by a sum that dropped
+    /// a holding. That refusal is raised by `LiquidityLadder::new` and so
+    /// arrives through [`Self::liquidity_ladder`], where `stage_act` already
+    /// puts it on the cycle report; the propagation here is what stops a
+    /// later reader reintroducing the clamp the sums used to carry.
+    fn liquidatable_within(&self, ladder: &LiquidityLadder) -> Result<BTreeMap<String, f64>> {
         let mut fractions = BTreeMap::new();
-        let total = ladder.total_value();
+        let total = ladder.total_value()?;
         if !total.is_positive() {
-            return fractions;
+            return Ok(fractions);
         }
         for limit in &self.monitor.limits().limits {
             let qip_risk::limits::LimitKind::MinLiquidity { days, .. } = limit.kind else {
@@ -7565,10 +7656,10 @@ impl Platform {
             // become one ratio, because the limit is stated as a fraction.
             fractions.insert(
                 format!("{days:.0}"),
-                ladder.reachable_within(horizon).to_f64() / total.to_f64(),
+                ladder.reachable_within(horizon)?.to_f64() / total.to_f64(),
             );
         }
-        fractions
+        Ok(fractions)
     }
 
     /// Submit one order through the full control path.
@@ -9592,6 +9683,194 @@ mod decide_tests {
         );
     }
 
+    /// A book that can reach none of its equity refuses to size, and the
+    /// cycle says so rather than reading like a cycle where nobody had an
+    /// idea.
+    ///
+    /// The failure this prevents was live until this test was written.
+    /// `deployable_capital` returned `Ok(0)` whenever the book carried no
+    /// unfunded private commitment — the commoner of its two branches —
+    /// although its own doc claimed it refused precisely so that "sizing
+    /// against a budget of zero" could not "report that as an ordinary quiet
+    /// cycle". The zero travelled on to `PortfolioConstructor::construct`,
+    /// which refused it as `cannot size a proposal against no equity`: a
+    /// false statement about a book holding 200,000 it simply could not
+    /// reach. DECIDE then recorded `no thesis cleared the action bar;
+    /// nothing to propose` with an empty problem list — verbatim what a
+    /// cycle records when nothing was approved at all. Two states an
+    /// operator must be able to tell apart read identically.
+    ///
+    /// Every assertion below is on what the cycle recorded rather than on
+    /// what `deployable_capital` returns. An accessor-level assertion is
+    /// what let this seam go unguarded in the first place.
+    #[test]
+    fn a_cycle_that_can_reach_none_of_its_equity_refuses_rather_than_reading_as_quiet() {
+        let now = Timestamp::from_secs(1_760_000_100);
+
+        // Premise, and the admitting half of the gate: the identical fixture
+        // with its capital free sizes a real proposal and reports no problem.
+        // Without this the refusal below could be the history, the mandate or
+        // the theses rather than the capital, and a control that refuses
+        // everything is an outage rather than a control.
+        let mut funded = small_book_platform();
+        feed_history(&mut funded, "AAPL", 30);
+        feed_history(&mut funded, "MSFT", 30);
+        funded.pending_theses.push(thesis("AAPL", 0.6));
+        funded.pending_theses.push(thesis("MSFT", -0.4));
+        let funded_decide = funded
+            .run_cycle(now)
+            .stage(Stage::Decide)
+            .cloned()
+            .expect("DECIDE ran");
+        assert!(
+            funded_decide.produced > 0,
+            "the premise failed: the funded book sized nothing either, so the refusal below \
+             proves nothing — {}",
+            funded_decide.detail
+        );
+        assert!(
+            funded_decide.problems.is_empty(),
+            "the premise failed: the funded book already reports a problem: {:?}",
+            funded_decide.problems
+        );
+
+        // The sentence a genuinely quiet cycle records, read off a platform
+        // that was given nothing to think about rather than restated as a
+        // literal here. It is the string the subject below must *not* match.
+        let quiet = small_book_platform()
+            .run_cycle(now)
+            .stage(Stage::Decide)
+            .cloned()
+            .expect("DECIDE ran")
+            .detail;
+
+        // The subject: the same book, every unit of its equity held by a
+        // standing reservation, so the resync at the top of DECIDE leaves
+        // nothing free and no commitment is involved at all.
+        let mut held = small_book_platform();
+        feed_history(&mut held, "AAPL", 30);
+        feed_history(&mut held, "MSFT", 30);
+        let equity = held.capital.equity();
+        assert!(
+            equity.is_positive(),
+            "the premise failed: the fixture's book is empty, so 'no equity' would be true"
+        );
+        held.reservations
+            .resync_free(equity, now)
+            .expect("holds are zero, so free is the whole equity");
+        held.reservations
+            .reserve("standing-hold", equity, now, Duration::from_hours(24))
+            .expect("the whole equity is free to hold");
+        held.pending_theses.push(thesis("AAPL", 0.6));
+        held.pending_theses.push(thesis("MSFT", -0.4));
+
+        let report = held.run_cycle(now);
+        let decide = report.stage(Stage::Decide).expect("DECIDE ran");
+
+        // Premise: the book still holds its equity. What it cannot do is
+        // reach it, so a refusal naming an empty book would be the wrong
+        // refusal.
+        assert_eq!(
+            held.capital.equity(),
+            equity,
+            "the premise failed: the cycle moved the book, so the refusal may be about that"
+        );
+        assert_eq!(
+            decide.produced, 0,
+            "a book with nothing free sized {} leg(s)",
+            decide.produced
+        );
+
+        // The consequence an operator experiences: the cycle carries the
+        // refusal, and it names the capital state.
+        let problem = decide
+            .problems
+            .iter()
+            .find(|problem| problem.contains("no capital free to deploy"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the cycle recorded no funding refusal; DECIDE said {:?} with problems {:?}",
+                    decide.detail, decide.problems
+                )
+            });
+        assert!(
+            problem.contains(&format!("tracked equity of {equity}")),
+            "the refusal does not name the equity the book cannot reach: {problem}"
+        );
+
+        // And it does not read as the quiet cycle. Compared against the idle
+        // platform's own sentence rather than a literal, so a reword of that
+        // sentence cannot silently make the two match again.
+        assert_ne!(
+            decide.detail, quiet,
+            "a cycle that could fund none of two approved theses recorded the same DECIDE line \
+             as one where nothing was approved"
+        );
+
+        // The proposal must not tell an operator this book has no equity.
+        let proposal = held
+            .proposals
+            .last()
+            .expect("every cycle records a proposal");
+        assert!(
+            !proposal.rationale.contains("no equity"),
+            "the cycle told an operator that a book of {equity} has no equity: {}",
+            proposal.rationale
+        );
+        assert_eq!(
+            held.reservations.reserved_total(),
+            equity,
+            "the cycle took a further hold against capital it did not have"
+        );
+
+        // The boundary: everything above happened against the simulator.
+        assert!(!held.orders.has_live_fills());
+        assert!(!held.is_live_capable());
+    }
+
+    /// The capital the platform says it will deploy is read from the book,
+    /// not from whether a sizing pass happened to run first.
+    ///
+    /// `ReservationLedger` holds a *derived* free balance — equity less the
+    /// active holds — and `Platform::new` opens it at zero, leaving
+    /// `resync_free` to re-derive it at each sizing pass. A public caller
+    /// asking how much this platform would deploy before any pass had run
+    /// therefore got zero from a book of ten million: not an approximate
+    /// answer, a wrong one, and one that reads as "this platform will deploy
+    /// nothing". `deployable_capital` now anchors before it reads.
+    #[test]
+    fn the_capital_the_platform_will_deploy_is_read_from_the_book_not_from_who_called_first() {
+        let mut platform = platform();
+        let now = Timestamp::from_secs(1_760_000_100);
+        let equity = platform.capital.equity();
+        assert!(
+            equity.is_positive(),
+            "the premise failed: the fixture's book is empty, so zero would be the right answer"
+        );
+        assert_eq!(
+            platform.reservations.reserved_total(),
+            Decimal::ZERO,
+            "the premise failed: capital is already held, so the whole book is not deployable"
+        );
+        assert_eq!(
+            platform
+                .commitments()
+                .unfunded_total(now)
+                .expect("an empty commitment book totals"),
+            Decimal::ZERO,
+            "the premise failed: a commitment would come off the answer below"
+        );
+
+        assert_eq!(
+            platform
+                .deployable_capital(now)
+                .expect("a book with nothing held and nothing promised deploys all of it"),
+            equity,
+            "a platform that has run no sizing pass reported a deployable budget other than its \
+             whole book"
+        );
+    }
+
     /// A drawdown that leaves the active holds above equity is counted where
     /// the alerts look, under the name the registry exports.
     ///
@@ -11051,5 +11330,79 @@ mod liquidity_ladder_tests {
             "the refusal must name the record and the spread it stated: {}",
             error.message()
         );
+    }
+
+    /// A universe assembles over a stated `days_to_liquidate` and refuses one
+    /// it cannot read.
+    ///
+    /// Every record in the universe is classified here, at assembly, so a
+    /// figure the ladder cannot read stops the process rather than producing
+    /// a liquidity floor computed over an instrument nobody measured. That is
+    /// a deliberate change of behaviour: an equity whose exit time was `NaN`
+    /// used to classify same-day, and one stated to take forever used to
+    /// classify at two days, both of which entered
+    /// `RiskState::liquidatable_within` and therefore the shipped `liquidity`
+    /// limit that vetoes new risk.
+    #[test]
+    fn a_reference_record_whose_exit_time_is_not_a_number_of_days_stops_assembly() {
+        let assemble = |days: f64| -> Result<Platform> {
+            let mut universe = Universe::new();
+            universe
+                .insert(
+                    FinancialObject::builder(
+                        ObjectId::from_string(FAST),
+                        FAST,
+                        InstrumentType::CommonStock,
+                    )
+                    .venue("XNYS")
+                    .sector(Sector::InformationTechnology)
+                    .price(Decimal::from_int(100))
+                    .liquidity(LiquidityProfile {
+                        days_to_liquidate: days,
+                        ..LiquidityProfile::listed(Decimal::from_int(10_000_000), 5.0)
+                    })
+                    .provenance(Provenance::synthetic("test", start()))
+                    .build(start())
+                    .expect("valid object"),
+                )
+                .expect("insertable");
+            let config = PlatformConfig::default();
+            let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+            Platform::new(
+                config,
+                context,
+                Telemetry::silent(),
+                universe,
+                LimitSet::conservative_default(),
+            )
+        };
+
+        // The premise and the admitting half: the identical universe with a
+        // stated number of days assembles. A gate that refused every record
+        // would stop every platform, which is an outage rather than a control.
+        assert!(
+            assemble(30.0).is_ok(),
+            "the premise failed: a record stating thirty days was refused too"
+        );
+
+        for (label, days) in [
+            ("not a number", f64::NAN),
+            ("infinite", f64::INFINITY),
+            ("negative", -7.0),
+        ] {
+            let error = assemble(days)
+                .err()
+                .unwrap_or_else(|| panic!("a {label} exit time assembled a platform"));
+            assert!(
+                error.message().contains(FAST),
+                "the {label} refusal does not name the record: {}",
+                error.message()
+            );
+            assert!(
+                error.message().contains("days to liquidate"),
+                "the {label} refusal does not name the figure it could not read: {}",
+                error.message()
+            );
+        }
     }
 }

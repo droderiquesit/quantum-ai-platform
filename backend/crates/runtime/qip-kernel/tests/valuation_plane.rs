@@ -108,9 +108,11 @@ fn an_undrawn_commitment_is_taken_off_the_capital_the_platform_will_deploy() -> 
     let mut listed = Universe::new();
     listed.insert(equity("AAA")?)?;
     let mut bare = platform_over(listed, dec!("1000000"))?;
-    // One cycle, because `stage_decide` anchors the reservation ledger to
-    // tracked equity before anything is sized; reading the budget before that
-    // would read a ledger nobody had anchored.
+    // One cycle, so the two halves of this test are compared over books that
+    // have had the same thing happen to them. It is no longer what makes the
+    // number readable: `deployable_capital` anchors the reservation ledger
+    // itself now, and before it did, a caller who read the budget first got
+    // zero from a book of a million.
     let _ = bare.run_cycle(start());
     let unencumbered = bare.deployable_capital(start())?;
     assert_eq!(

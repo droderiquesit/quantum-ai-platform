@@ -207,7 +207,8 @@ impl Rung {
         }
     }
 
-    /// The rung an instrument sits on, from its class and its liquidity.
+    /// The rung an instrument sits on, from its class and its liquidity, or a
+    /// refusal naming the figure that could not be read.
     ///
     /// Two facts decide it, and the second can only push an object *down*: an
     /// instrument that trades by negotiation cannot settle in seconds however
@@ -216,10 +217,39 @@ impl Rung {
     /// correction of a bad input — a negotiated equity in a private placement
     /// is genuinely on a lower rung than a listed one.
     ///
+    /// **A `days_to_liquidate` that is not a number of days is refused rather
+    /// than compared.** The comparison that pushes an instrument below its
+    /// class is `> 1.0`, and `f64` makes that `false` for `NaN` and for a
+    /// negative: the liquidity arm then answered [`Self::CashAtVenue`], which
+    /// can push nothing down, so an instrument nobody had measured kept its
+    /// asset class's rung and the book reported it exitable on that class's
+    /// horizon. An equity with `NaN` days classified `ListedEquityAndFutures`
+    /// — same day. Infinity was worse in the other direction: `inf > 1.0` is
+    /// `true`, so an instrument stated never to liquidate landed on
+    /// [`Self::BondsAndLessLiquidListed`] and read as exitable in two days.
+    /// `credit.rs` in this crate refuses a non-finite covenant observation for
+    /// exactly this reason; a liquidity measurement is no different, and this
+    /// one feeds a floor that vetoes trading.
+    ///
+    /// The refusal is deliberate and it fires early: `qip-kernel`'s
+    /// `ladder_reference_of` classifies every universe record at assembly, so
+    /// a catalogue carrying such a figure stops `Platform::new` rather than
+    /// producing a liquidity floor computed over an instrument nobody
+    /// measured.
+    ///
     /// [`Rung::RestingAndAnchored`] is never returned. A position is on that
     /// rung because a strategy is holding it deliberately, and no property of
     /// the instrument reveals that; the caller who knows the strategy sets it.
-    pub fn classify(class: AssetClass, liquidity: &LiquidityProfile) -> Self {
+    pub fn classify(class: AssetClass, liquidity: &LiquidityProfile) -> Result<Self> {
+        let days = liquidity.days_to_liquidate;
+        if !days.is_finite() || days < 0.0 {
+            return Err(Error::invalid(format!(
+                "a liquidity record states {days} days to liquidate, which is not a number of \
+                 days an exit can take; correct the record before placing the holding — the \
+                 ladder cannot read this figure, and a figure it cannot read leaves the holding \
+                 on its asset class's rung and reports the book more exitable than it is"
+            )));
+        }
         let by_class = match class {
             AssetClass::Cash => Self::CashAtVenue,
             AssetClass::DigitalAsset | AssetClass::ForeignExchange => Self::LiquidSpotAndPerpetual,
@@ -236,12 +266,12 @@ impl Rung {
         };
         let by_liquidity = if liquidity.is_negotiated {
             Self::PrivateCreditAndRealAssets
-        } else if liquidity.days_to_liquidate > 1.0 {
+        } else if days > 1.0 {
             Self::BondsAndLessLiquidListed
         } else {
             Self::CashAtVenue
         };
-        by_class.max(by_liquidity)
+        Ok(by_class.max(by_liquidity))
     }
 }
 
@@ -326,7 +356,18 @@ impl LiquidityLadder {
     ///   higher one. The ladder's entire purpose is that serving from the top
     ///   downward is serving from the cheapest downward. If that does not
     ///   hold, the rungs are assigned wrongly and every plan built on them
-    ///   picks the expensive source first.
+    ///   picks the expensive source first;
+    /// * a book whose value **does not add up inside the decimal range**.
+    ///   Proved here so that every reader afterwards is reading a total
+    ///   somebody computed. It was not: the sums saturated at
+    ///   [`Decimal::MAX`] or dropped the entry that overflowed, so a ladder
+    ///   holding one unit of cash beside 1.7e29 of spot reported a total
+    ///   value of one, and a rung holding more than the range can express
+    ///   reported exactly [`Decimal::MAX`] into the monotonicity proof above.
+    ///   Under-reporting the book is not a safe direction here:
+    ///   `reachable_within` feeds `RiskState::liquidatable_within`, which
+    ///   `LimitKind::MinLiquidity` divides, and a clamp inside a control that
+    ///   vetoes trading is a control reading a number nobody computed.
     pub fn new(entries: Vec<LadderEntry>) -> Result<Self> {
         let mut map: BTreeMap<(Rung, String), LadderEntry> = BTreeMap::new();
         let mut seen: BTreeMap<String, Rung> = BTreeMap::new();
@@ -372,6 +413,10 @@ impl LiquidityLadder {
 
         let ladder = Self { entries: map };
         ladder.prove_monotonic()?;
+        // The whole book, proved to add up before anything reads it. The
+        // per-rung totals inside `prove_monotonic` can each fit while their
+        // sum does not, so this is a second question rather than the same one.
+        ladder.total_value()?;
         Ok(ladder)
     }
 
@@ -382,7 +427,7 @@ impl LiquidityLadder {
     /// `cost_a * value_b > cost_b * value_a`, which keeps money in [`Decimal`]
     /// and never rounds a comparison into or out of a refusal.
     fn prove_monotonic(&self) -> Result<()> {
-        let totals = self.value_and_cost_by_rung();
+        let totals = self.value_and_cost_by_rung()?;
         let mut previous: Option<(Rung, Decimal, Decimal)> = None;
         for (rung, (value, cost)) in totals {
             if let Some((above, above_value, above_cost)) = previous {
@@ -418,19 +463,39 @@ impl LiquidityLadder {
         Ok(())
     }
 
-    fn value_and_cost_by_rung(&self) -> BTreeMap<Rung, (Decimal, Decimal)> {
+    /// Value and cost on each occupied rung, or a refusal where a rung's
+    /// total leaves the decimal range.
+    ///
+    /// Fallible because the alternative was a fabrication: this used to
+    /// saturate at [`Decimal::MAX`] on overflow, and [`Self::prove_monotonic`]
+    /// then compared a number nobody had computed against a real one and
+    /// pronounced the ladder sound.
+    fn value_and_cost_by_rung(&self) -> Result<BTreeMap<Rung, (Decimal, Decimal)>> {
         let mut totals: BTreeMap<Rung, (Decimal, Decimal)> = BTreeMap::new();
         for entry in self.entries.values() {
             let slot = totals
                 .entry(entry.rung)
                 .or_insert((Decimal::ZERO, Decimal::ZERO));
-            slot.0 = slot.0.checked_add(entry.value).unwrap_or(Decimal::MAX);
-            slot.1 = slot
-                .1
-                .checked_add(entry.cost_to_liquidate)
-                .unwrap_or(Decimal::MAX);
+            slot.0 = slot.0.checked_add(entry.value).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the value on rung {rung} leaves the decimal range at holding {id}; split \
+                     the book or correct the marks — a saturated rung total is read by the \
+                     monotonicity proof as though somebody had computed it",
+                    rung = entry.rung.as_str(),
+                    id = entry.object_id
+                ))
+            })?;
+            slot.1 = slot.1.checked_add(entry.cost_to_liquidate).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the exit cost on rung {rung} leaves the decimal range at holding {id}; \
+                     split the book or correct the cost model — a saturated rung cost is read \
+                     by the monotonicity proof as though somebody had computed it",
+                    rung = entry.rung.as_str(),
+                    id = entry.object_id
+                ))
+            })?;
         }
-        totals
+        Ok(totals)
     }
 
     /// Every entry, ladder order, top rung first.
@@ -438,33 +503,73 @@ impl LiquidityLadder {
         self.entries.values()
     }
 
-    /// Value on each occupied rung, ladder order.
-    pub fn value_by_rung(&self) -> BTreeMap<Rung, Decimal> {
-        self.value_and_cost_by_rung()
+    /// Value on each occupied rung, ladder order, or a refusal where a rung's
+    /// total leaves the decimal range.
+    pub fn value_by_rung(&self) -> Result<BTreeMap<Rung, Decimal>> {
+        Ok(self
+            .value_and_cost_by_rung()?
             .into_iter()
             .map(|(rung, (value, _))| (rung, value))
-            .collect()
+            .collect())
     }
 
-    /// Everything the ladder holds.
-    pub fn total_value(&self) -> Decimal {
-        self.entries.values().fold(Decimal::ZERO, |acc, e| {
-            acc.checked_add(e.value).unwrap_or(acc)
+    /// Everything the ladder holds, or a refusal where the book does not add
+    /// up inside the decimal range.
+    ///
+    /// The fold used to keep the accumulator on overflow, which **dropped the
+    /// entry**: a ladder holding one unit of cash beside 1.7e29 of spot
+    /// answered one. Fallible rather than saturating because both directions
+    /// lie, and this total is the denominator of the fraction
+    /// `LimitKind::MinLiquidity` vetoes trading on.
+    ///
+    /// [`Self::new`] proves this before returning, so no ladder reachable
+    /// through the constructor can take the refusal. It is still a `Result`
+    /// rather than a `Decimal`, because the only two ways to write a fallible
+    /// sum with an infallible signature are a clamp and a panic, and this
+    /// module's whole argument is that it refuses rather than lies. The proof
+    /// belongs in the constructor so that a refusal reaches the cycle report
+    /// through `Platform::liquidity_ladder`; the `Result` here is what makes
+    /// the proof's absence impossible to write by accident.
+    pub fn total_value(&self) -> Result<Decimal> {
+        self.entries.values().try_fold(Decimal::ZERO, |acc, e| {
+            acc.checked_add(e.value).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the ladder's total value leaves the decimal range at holding {id}; split \
+                     the book or correct the marks — a total that dropped a holding would \
+                     under-report the book, and the liquidity floor divides by it",
+                    id = e.object_id
+                ))
+            })
         })
     }
 
-    /// How much of the book could become cash within `horizon`.
+    /// How much of the book could become cash within `horizon`, or a refusal
+    /// where that sum leaves the decimal range.
     ///
     /// The risk read the ladder exists to give: a book where nine tenths of
     /// the value is reachable only in months is a different book from one
     /// where nine tenths is reachable the same day, whatever their marks say
     /// they are worth.
-    pub fn reachable_within(&self, horizon: LiquidationHorizon) -> Decimal {
+    ///
+    /// Fallible for the reason [`Self::total_value`] is, and it matters more
+    /// here: this is the numerator `RiskState::liquidatable_within` files
+    /// under the horizon `LimitKind::MinLiquidity` looks up, so an entry
+    /// silently dropped is a liquidity floor evaluated against a book that
+    /// was never counted.
+    pub fn reachable_within(&self, horizon: LiquidationHorizon) -> Result<Decimal> {
         self.entries
             .values()
             .filter(|e| e.rung.horizon() <= horizon)
-            .fold(Decimal::ZERO, |acc, e| {
-                acc.checked_add(e.value).unwrap_or(acc)
+            .try_fold(Decimal::ZERO, |acc, e| {
+                acc.checked_add(e.value).ok_or_else(|| {
+                    Error::numeric(format!(
+                        "the value reachable within {horizon} leaves the decimal range at \
+                         holding {id}; split the book or correct the marks — a sum that dropped \
+                         a holding would report the book less exitable than it is",
+                        horizon = horizon.as_str(),
+                        id = e.object_id
+                    ))
+                })
             })
     }
 
@@ -486,9 +591,17 @@ impl LiquidityLadder {
                 "cannot plan for {amount}; ask for a positive amount of cash"
             )));
         }
-        let available = self.total_value();
+        let available = self.total_value()?;
         if amount > available {
-            let short = amount.checked_sub(available).unwrap_or(Decimal::ZERO);
+            // Named exactly, or not at all. A shortfall floored at zero would
+            // have read as "nothing missing" inside a refusal about something
+            // missing.
+            let short = amount.checked_sub(available).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the shortfall between the {amount} asked for and the {available} this \
+                     ladder holds leaves the decimal range; ask for an amount inside it"
+                ))
+            })?;
             return Err(Error::invalid(format!(
                 "the ladder holds {available} but {amount} was asked for, {short} short; ask \
                  for no more than the book holds — a plan that raises less than it was asked \
