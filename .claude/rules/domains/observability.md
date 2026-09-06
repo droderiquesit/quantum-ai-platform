@@ -90,9 +90,29 @@ still answers the JSON health body. The series and what each is keyed on:
 Every label is bounded by something fixed at deployment or by an enum or a
 source-file literal: `cell` and `region` are one value per process, `venue`
 is the configured venue list, `gate` is the set of string literals
-`Cell::refuse` is called with, and `source`, `capability`, `kind`, `outcome`
-and `state` are enums. Nothing is labelled by instrument, strategy or order
-id. Each recording site is proven by a test in
+`Cell::refuse` is called with **plus the `GATE_LIVE_VENUE` constant**, and
+`source`, `capability`, `kind`, `outcome` and `state` are enums. Nothing is
+labelled by instrument, strategy or order id.
+
+That "plus" is not decoration. Since `dde60ca` the cell refuses an order bound
+for a live-class venue, and it does so at two seams: the `Cell::work` pass
+gate, which goes through `Cell::refuse` like every other gate, and `Cell::send`
+— the one place a `Placer` is called — which has no `WorkReport` to push a
+refusal onto and so records `qip_edge_refusals_total{gate="live_venue"}`
+directly. `Cell::refuse` is therefore no longer the whole enumeration of the
+label, and this file said it was until 2026-09-06; `telemetry.rs`'s module doc
+was corrected in `dde60ca` itself and this one was outside that lane's
+territory. Recount both sites rather than trusting the prose:
+`grep -n 'metrics\.refusal(' backend/crates/edge/qip-edge/src/cell.rs`
+printed exactly two lines on 2026-09-06 — one taking `gate` inside
+`Cell::refuse`, one naming `GATE_LIVE_VENUE` inside `Cell::send` — and
+`grep -n 'GATE_LIVE_VENUE' backend/crates/edge/qip-edge/src/cell.rs` finds the
+constant's definition. The cardinality bound still holds, because a constant is
+as fixed as a literal; what changed is where you must look to enumerate it. A
+third recording site added at a third seam would break the bound silently,
+which is why the command is here.
+
+Each recording site is proven by a test in
 `backend/crates/edge/qip-edge/tests/telemetry.rs` that drives the cell through
 the event and asserts the series moved, and each was mutation-verified.
 

@@ -115,7 +115,7 @@ it is not. Four defensible readings of that one row give four composites:
 | **wired, against §16.1's six** — the corrected row above | 4/6 | 54/71 | **76.06%** |
 | wired, as the row used to count it (liquidity ladder swapped in for corporate actions) | 5/6 | 55/71 | 77.46% |
 | TESTED literally — every engine has a named passing test | 6/6 | 56/71 | 78.87% |
-| MISSING-CURRENT, as `completion-plan.md` still scores the plane | 0/6 | 50/71 | 70.42% |
+| MISSING-CURRENT — the reading `completion-plan.md` §2.2 carried until 2026-09-06, **retained as a floor and no longer as another document's live score** | 0/6 | 50/71 | 70.42% |
 
 **The spread is 70% to 79% on one row's bar.** Quote the range, or quote a
 single figure *with* the reading it used; a bare "76%" hides a nine-point
