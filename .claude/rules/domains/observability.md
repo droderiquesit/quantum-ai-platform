@@ -151,15 +151,19 @@ filled are two series — for one slice the centre billed every sent order as a
 fill, and there was no series in which the two claims could disagree. Two
 facts that once had no production caller now have one, in the LEARN stage:
 `Platform::learn_from`, which produces the belief calibration, is called from
-`calibrate_resolved` (`platform.rs:7749`, reached from `stage_learn` at
-`:7477`; `04738ee`), and `Platform::evaluate_alternatives`, which scores
-counterfactuals, is called from `score_declined` (`platform.rs:9032`, reached
-from `stage_learn` at `:7494`; `b9e2242`). **All four of those numbers were
-wrong until 2026-09-06** — they read `:4086`, `:3965`, `:5107`, `:3982`, from
-a `platform.rs` roughly half the length of the present one, and every one of
-them landed in unrelated code. The paragraph carried its own recount command
-and the command was not run, which is the specific way a citation rots in this
-repository: it is quoted forward because it is quoted forward. Recount with
+`calibrate_resolved`, which `stage_learn` calls (`04738ee`), and
+`Platform::evaluate_alternatives`, which scores counterfactuals, is called
+from `score_declined`, which `stage_learn` also calls (`b9e2242`). **The four
+line numbers this passage used to give — `:4086`, `:3965`, `:5107`, `:3982` —
+were all wrong and are removed rather than replaced.** They came from a
+`platform.rs` roughly half the length of the present one and every one of them
+landed in unrelated code; the passage already carried a recount command and
+the command was not run, which is the exact way a citation rots here — it is
+quoted forward because it was quoted forward. They are not replaced with
+fresh numbers because fresh numbers do not survive either: on 2026-09-06 the
+four call sites moved by more than a hundred lines each inside a single
+working session, while a parallel lane was editing the file. Name the symbol,
+run the command. Recount with
 `grep -n "learn_from\|evaluate_alternatives" backend/crates/runtime/qip-kernel/src/platform.rs`
 before quoting either line.
 
