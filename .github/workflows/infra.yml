@@ -91,7 +91,8 @@ jobs:
           # Character set first, and it must come before anything else reads
           # the value — including the prod refusal below.
           #
-          # That refusal used to read `[ "${{ inputs.environment }}" = "prod" ]`
+          # That refusal used to read `[ "<inputs.environment>" = "prod" ]`,
+          # spelled with the runner's own `${`+`{ }` expression syntax,
           # and the runner substitutes that text into this script before bash
           # parses a byte of it. A value whose first line was `dev"` and whose
           # second line was a command of its own would have run that command
@@ -151,7 +152,7 @@ jobs:
           # The character set of what was read, before any of it is pasted
           # anywhere. The tfvars are reviewed configuration, but this step reads
           # them out of the tree the dispatch checked out rather than out of the
-          # reviewed branch, and `${{ steps.identity.outputs.project }}` is
+          # reviewed branch, and `steps.identity.outputs.project` is
           # substituted into five scripts below as source text. A project id is
           # lowercase letters, digits and hyphens; anything else is not a
           # malformed project id, it is somebody else's command. Emptiness is
