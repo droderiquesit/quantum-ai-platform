@@ -237,9 +237,14 @@ clear it with a scanner exception.
 
 One correction of fact this file used to get wrong by inheritance:
 `NOT-SCRAPED.md` said "nothing has been applied", and `dev` has been —
-`module.observability` is instantiated unconditionally at
-`terraform/main.tf:461` (`grep -n 'module "observability"' infrastructure/terraform/main.tf`;
-this read `:400` until 2026-09-06), so it was in `infra.yml`'s `up`. With the
+`module.observability` is instantiated unconditionally in
+`infrastructure/terraform/main.tf` — **located by
+`grep -n 'module "observability"' infrastructure/terraform/main.tf`, and no
+line number is given here on purpose.** This read `:400` until 2026-09-06,
+when it was corrected to `:461`; the correction was stale within the hour
+(`:468`) because another lane was editing that file, which is the second time
+in one day this rule file has proved that a line number into a live file is
+not a fact worth writing down. So it was in `infra.yml`'s `up`. With the
 gate false, `count = 0` on all **seven policies that existed at that apply** —
 there are nine now, and the sentence is kept in the past tense on purpose so
 that a reader does not take it for a present count — so that apply created no
