@@ -20,6 +20,31 @@ const ENDPOINT = "https://identitytoolkit.googleapis.com/v1";
 /** Every call that leaves the process carries an explicit timeout. */
 const TIMEOUT_MS = 10_000;
 
+/**
+ * The name of the variable this provider needs and does not have, or `null`
+ * when it is whole.
+ *
+ * Read *before* a credential call rather than inside one. `apiKey()` and
+ * `projectId()` throw, and a throw crossing a route handler becomes an HTML
+ * 500 — which the console's own client cannot parse and reports as "the
+ * identity service answered in a shape this page does not understand"
+ * (`(auth)/_lib/api.ts`, `garbled`). So a deployment that names an identity
+ * project and was given no key reads, to the person in front of it, exactly
+ * like a bug in the console. It is not: it is a half-configured deployment,
+ * and the two need different people to fix them.
+ *
+ * What this must never become is a fallback. The development store is the
+ * offline provider, and signing somebody in against it because Google could
+ * not be reached would authenticate a stranger out of a JSON file on one
+ * instance's disk. The caller refuses instead; `tests/identity-provider.spec.ts`
+ * is what holds that line.
+ */
+export function identityPlatformGap(): string | null {
+  if (!process.env.ALGORIK_IDENTITY_PROJECT_ID?.trim()) return "ALGORIK_IDENTITY_PROJECT_ID";
+  if (!process.env.ALGORIK_IDENTITY_API_KEY?.trim()) return "ALGORIK_IDENTITY_API_KEY";
+  return null;
+}
+
 function apiKey(): string {
   const key = process.env.ALGORIK_IDENTITY_API_KEY?.trim();
   if (!key) {

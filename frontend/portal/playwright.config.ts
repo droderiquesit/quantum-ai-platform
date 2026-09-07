@@ -51,6 +51,27 @@ const GATE_PORT = Number(process.env.PLAYWRIGHT_GATE_PORT ?? 3315);
 const GATE_BASE_URL = `http://127.0.0.1:${GATE_PORT}`;
 
 /**
+ * A sixth instance in the posture a deployment is in when it names an identity
+ * project: `ALGORIK_IDENTITY_PROJECT_ID` set, so `developmentProviderActive()`
+ * is false and every credential question goes to Google.
+ *
+ * It is deliberately given no API key, which is the one way to exercise that
+ * branch without a credential, a project or a byte leaving the process — the
+ * provider refuses before it would call out. What the suite against it proves
+ * is the property that has no other test: a console pointed at Identity
+ * Platform **refuses** rather than falling back to the development store. That
+ * fallback is the failure this instance exists to make impossible to
+ * introduce; nothing else in the suite would notice it, because every other
+ * instance is in development mode where the local store is the right answer.
+ *
+ * It cannot share the auth instance: that one has no project configured, which
+ * is the opposite posture, and a test of the platform branch that runs on the
+ * development branch proves the development branch.
+ */
+const IDENTITY_PORT = Number(process.env.PLAYWRIGHT_IDENTITY_PORT ?? 3316);
+const IDENTITY_BASE_URL = `http://127.0.0.1:${IDENTITY_PORT}`;
+
+/**
  * `next start` runs as NODE_ENV=production, where the session signer refuses
  * to invent a key (replicas could not verify each other's cookies). The test
  * key is set here, visibly a test value, and long enough to pass the length
@@ -84,7 +105,7 @@ export default defineConfig({
       // and gate.spec needs the one where nothing was said about it; running
       // any of them here would test the wrong server — this one is pointed at
       // a dead port on purpose.
-      testIgnore: /(worker|wire|auth|gate)\.spec\.ts/,
+      testIgnore: /(worker|wire|auth|gate|identity-provider)\.spec\.ts/,
     },
     {
       name: "tablet-chromium",
@@ -114,6 +135,11 @@ export default defineConfig({
       name: "gate-chromium",
       use: { ...devices["Desktop Chrome"], baseURL: GATE_BASE_URL },
       testMatch: /gate\.spec\.ts/,
+    },
+    {
+      name: "identity-chromium",
+      use: { ...devices["Desktop Chrome"], baseURL: IDENTITY_BASE_URL, viewport: { width: 1280, height: 900 } },
+      testMatch: /identity-provider\.spec\.ts/,
     },
   ],
   webServer: [
@@ -184,6 +210,29 @@ export default defineConfig({
         // Playwright serves plain HTTP on 127.0.0.1, where Chromium refuses
         // to store a Secure cookie at all. This is the one explicit downgrade
         // — production defaults to the strict __Host- form.
+        ALGORIK_COOKIE_SECURE: "false",
+      },
+    },
+    {
+      // The store directory is named and wiped like the auth instance's, and
+      // the suite asserts it is never created: in this posture the console
+      // must not touch the development store at all. See IDENTITY_PORT.
+      command: `rm -rf .algorik-test-identity-provider && npm run start -- --port ${IDENTITY_PORT} --hostname 127.0.0.1`,
+      url: `${IDENTITY_BASE_URL}/sign-in`,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: "ignore",
+      stderr: "pipe",
+      env: {
+        QIP_API_BASE_URL: "http://127.0.0.1:9",
+        QIP_API_TIMEOUT_MS: "1500",
+        NEXT_PUBLIC_QIP_ENVIRONMENT: "test",
+        ALGORIK_AUTH_REQUIRED: "true",
+        // A project name, not a project: no call is ever made with it, because
+        // the missing API key refuses first. Visibly a test value.
+        ALGORIK_IDENTITY_PROJECT_ID: "algorik-playwright-no-such-project",
+        ALGORIK_IDENTITY_STORE_DIR: ".algorik-test-identity-provider",
+        ALGORIK_SESSION_SECRET: TEST_SESSION_SECRET,
         ALGORIK_COOKIE_SECURE: "false",
       },
     },

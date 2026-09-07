@@ -10,6 +10,7 @@ import {
   gipSignUp,
   gipVerifyEmail,
   gipWriteProfile,
+  identityPlatformGap,
   type StoredProfileClaims,
 } from "./identity-platform";
 import {
@@ -141,6 +142,33 @@ export function developmentProviderActive(): boolean {
   return !process.env.ALGORIK_IDENTITY_PROJECT_ID?.trim();
 }
 
+/**
+ * The refusal a half-configured deployment answers with, in place of a throw.
+ *
+ * Two properties are load-bearing and are asserted in
+ * `tests/identity-provider.spec.ts`. First, it is a *refusal*: no session is
+ * issued and the development store is never consulted, so a deployment that
+ * names an identity project cannot silently sign somebody in against a JSON
+ * file. Second, it says which variable is absent — a variable *name* is not a
+ * secret, and the alternative is an operator reading a generic 500 and looking
+ * for the fault in the console instead of in the deployment.
+ *
+ * 503 rather than 401: nothing about the credential was judged. A 401 here
+ * would tell the person their password was wrong when it was never checked.
+ */
+function providerUnavailable(gap: string): { ok: false; failure: AuthFailure; status: number } {
+  return {
+    ok: false,
+    status: 503,
+    failure: failure(
+      "provider_unavailable",
+      "This console cannot check credentials at the moment: the deployment names an identity " +
+        `project but ${gap} is not set, so nobody can be signed in and nobody was. ` +
+        "Tell the operator who runs this console.",
+    ),
+  };
+}
+
 export interface SignUpInput {
   readonly email: string;
   readonly password: string;
@@ -190,6 +218,8 @@ export async function signUp(input: SignUpInput): Promise<ServiceResult<{ devCod
   }
 
   if (!developmentProviderActive()) {
+    const gap = identityPlatformGap();
+    if (gap) return providerUnavailable(gap);
     const created = await gipSignUp(email, input.password);
     if (created.ok) {
       // The agreements record is written before the verification mail is
@@ -258,6 +288,8 @@ export async function signIn(
   device: string,
 ): Promise<ServiceResult<SessionClaims>> {
   if (!developmentProviderActive()) {
+    const gap = identityPlatformGap();
+    if (gap) return providerUnavailable(gap);
     const signedIn = await gipSignIn(email.trim().toLowerCase(), password);
     if (!signedIn.ok) {
       // Google answers INVALID_LOGIN_CREDENTIALS for missing account and
@@ -379,6 +411,8 @@ export async function signIn(
 
 export async function verifyEmail(email: string, code: string): Promise<ServiceResult<null>> {
   if (!developmentProviderActive()) {
+    const gap = identityPlatformGap();
+    if (gap) return providerUnavailable(gap);
     const redeemed = await gipVerifyEmail(code);
     if (!redeemed.ok) {
       return {
@@ -423,6 +457,14 @@ export function resendVerification(email: string): { devCode: string | null } {
 
 export async function forgotPassword(email: string): Promise<{ devCode: string | null }> {
   if (!developmentProviderActive()) {
+    // A half-configured deployment answers the same shape as a configured one,
+    // deliberately: this endpoint must not distinguish between addresses, and
+    // it must not distinguish between deployments in front of an address
+    // either. Stated rather than reached by accident — without this line the
+    // rejected provider call is swallowed by the `.catch` below and the same
+    // answer arrives for a different reason, which is the kind of coincidence
+    // that stops holding the day somebody removes the catch.
+    if (identityPlatformGap()) return { devCode: null };
     // Google sends the mail; EMAIL_NOT_FOUND is swallowed inside the
     // provider so this answer never says which addresses exist.
     await gipSendPasswordReset(email.trim().toLowerCase());
@@ -435,6 +477,8 @@ export async function forgotPassword(email: string): Promise<{ devCode: string |
 
 export async function resetPassword(email: string, code: string, password: string): Promise<ServiceResult<null>> {
   if (!developmentProviderActive()) {
+    const gap = identityPlatformGap();
+    if (gap) return providerUnavailable(gap);
     const reset = await gipResetPassword(code, password);
     if (!reset.ok) {
       return {
