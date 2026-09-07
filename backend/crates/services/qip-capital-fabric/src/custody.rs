@@ -542,6 +542,21 @@ impl CustodyPolicy {
     /// `USDC@addr-10`, and a substring check would admit the wrong address in
     /// the one place the address is the entire control.
     ///
+    /// It is compared as a **parsed [`DestinationKey`]** rather than as the
+    /// destination's rendering, and a reference that does not parse is
+    /// refused. Whole-string equality against `destination.to_string()` is
+    /// only as strong as that rendering's injectivity, and the rendering was
+    /// not injective: [`crate::destination::Asset::new`] now refuses the `@`
+    /// separator, but serde
+    /// calls no constructor, and a [`DestinationKey`] arrives here off the
+    /// event log inside [`crate::journal::GateCommand`] on every replay. A key
+    /// whose asset holds an `@` — asset `USDC@a`, address `b` — renders
+    /// `USDC@a@b`, exactly as asset `USDC` with address `a@b` does, so one
+    /// attestation would mirror two different destinations. Parsing the
+    /// attested reference and comparing the structured key refuses that
+    /// pairing whichever of the two the corridor runs to, because the parse
+    /// splits at the first `@` and can only produce one of them.
+    ///
     /// Asked by [`crate::gate::TransferGate::assess`] rather than at
     /// construction, for the reason [`CustodyPolicy::conforms`] gives at
     /// length: every input here arrives deserialised off the event log on a
@@ -565,15 +580,22 @@ impl CustodyPolicy {
             return Ok(());
         }
         let expected = destination.to_string();
-        // An absent attestation renders as the empty string, which a
-        // `DestinationKey` can never equal — it refuses an empty asset and an
-        // empty address — so one comparison covers both "said nothing" and
-        // "said something else", and neither arm is unreachable.
+        // An absent attestation renders as the empty string, which parses as
+        // no `DestinationKey` at all, so one comparison covers "said nothing",
+        // "said something that is not a destination key" and "said another
+        // destination", and no arm is unreachable.
         let attested = agreement
             .attestation(EnforcementPoint::VenueAllowlist)
             .map(|attestation| attestation.reference.as_str())
             .unwrap_or_default();
-        if attested != expected {
+        let mirrored = match attested.parse::<DestinationKey>() {
+            // Equality on the parsed key, not on the two renderings: see the
+            // doc comment for why the renderings can agree where the keys do
+            // not.
+            Ok(reference) => reference == *destination,
+            Err(_) => false,
+        };
+        if !mirrored {
             return Err(Refusal {
                 class: Some(class),
                 corridor: None,
@@ -582,7 +604,8 @@ impl CustodyPolicy {
                     "{class} requires the venue's own allowlist to be mirrored, and the \
                      {point} attestation references [{attested}] rather than the destination \
                      [{expected}]; have the venue allowlist this destination out of band and \
-                     file the attestation against it, rather than against another entry",
+                     file the attestation against it, written asset@address, rather than \
+                     against another entry",
                     point = EnforcementPoint::VenueAllowlist
                 ),
             });

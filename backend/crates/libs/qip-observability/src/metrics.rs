@@ -907,6 +907,22 @@ pub mod names {
     /// fixed here and at the call sites, so the series is bounded whatever
     /// the deployment enrols.
     pub const CENTRAL_ELIGIBILITY_DECISIONS: &str = "qip_central_eligibility_decisions_total";
+    /// Investment requests the mandate decided, by `outcome`: `admitted`, or
+    /// the token of the limit that refused it — `no_mandate`, `eligibility`,
+    /// `entitlement`, `currency`, `amount`, `investable_capital`,
+    /// `risk_tolerance`. Eight values, bounded by the ledger's own
+    /// `RefusedLimit` enum through the kernel's exhaustive `limit_name`.
+    ///
+    /// The failure this makes visible: a request surface can refuse every
+    /// caller and look exactly like a surface nobody used. Which limit is
+    /// doing the refusing is the difference between a mandate working and a
+    /// product nobody can be sold, and until this series existed the only
+    /// record was the event log, which nothing charts.
+    ///
+    /// Neither the user nor the strategy is a label, for the reason
+    /// [`CENTRAL_ELIGIBILITY_DECISIONS`] gives: an outcome per person is a
+    /// person's financial standing in every scrape.
+    pub const CENTRAL_INVESTMENT_REQUESTS: &str = "qip_central_investment_requests_total";
     /// Venue registrations the platform adopted, by `source`: `configuration`
     /// for one the deployment committed and `operator` for one an
     /// authenticated person approved at runtime — the two arms of the

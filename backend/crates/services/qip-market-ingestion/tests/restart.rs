@@ -52,12 +52,14 @@
 use qip_core::error::{Error, Result};
 use qip_core::kv::KeyValueStore;
 use qip_core::{Clock, Duration, ManualClock, Timestamp};
+use qip_market_ingestion::adapter::DataAdapter;
 use qip_market_ingestion::connector::emulator::SourceEmulator;
 use qip_market_ingestion::connector::journal::StreamJournal;
 use qip_market_ingestion::connector::transport::SourceTransport;
 use qip_market_ingestion::connector::{
     Checkpoint, ConnectorRuntime, PollReport, RuntimeConfig, SourceConnector,
 };
+use qip_market_ingestion::connector_feed::ConnectorFeed;
 use qip_market_ingestion::connectors::{FrankfurterRatesConnector, frankfurter_rates};
 use qip_storage::kv::MemoryKeyValueStore;
 use qip_transport::RecordingSleeper;
@@ -650,4 +652,204 @@ fn seven_simulated_days_across_eight_processes_leave_one_ledger_with_both_time_a
         "seven simulated days must cost no real time"
     );
     Ok(())
+}
+
+// --- the bridge the composition roots actually construct ---------------------
+//
+// Everything above drives `ConnectorRuntime` and `StreamJournal` directly, in
+// the right order, by hand. No production code did that: `qip-fastbrain` and
+// `qip-api` construct a `ConnectorFeed` and call `poll`, and the four calls
+// that make a restart resume — open the journal, resume the checkpoint, record
+// the report, commit the position — had exactly one caller in the workspace,
+// and it was this file. A control assembled only by its own test is the shape
+// of a control, which is the failure `MaxExpectedShortfall` is the house
+// example of. The test below drives the bridge instead.
+
+/// The point-in-time discipline is not re-asserted here — `soak.rs` owns it.
+/// What is asserted is that the ordering survives being moved a seam down.
+#[test]
+fn a_feed_given_a_store_resumes_the_previous_processs_window_and_one_without_a_store_republishes_the_table()
+-> Result<()> {
+    let first_poll = at(START);
+    let second_poll = first_poll.saturating_add(Duration::from_hours(1));
+    let recorded = recorded_body()?;
+    let body = rates_body(&recorded, at(FIRST_REFERENCE_DATE))?;
+    let store: Arc<dyn KeyValueStore> = Arc::new(MemoryKeyValueStore::new());
+
+    // --- process one, through the bridge ------------------------------------
+    let mut feed = feed_over_emulator(&body, first_poll)?;
+    // Premise: a feed with no store keeps no ledger at all, so every assertion
+    // below about a ledger is `journal_to`'s doing.
+    assert!(
+        feed.ledger().is_none(),
+        "a feed nobody gave a store must report no ledger rather than a ledger of zeroes"
+    );
+    let taken = feed.journal_to(store.clone())?;
+    assert_eq!(
+        taken, 0,
+        "an empty store carries nothing forward, or the suppression below would be resuming from \
+         something this test did not write"
+    );
+
+    let released = feed.poll(first_poll)?;
+    assert_eq!(
+        released.len() as u64,
+        RATES_PER_TABLE,
+        "the recorded table must reach the loop as three observations, or this run proves nothing \
+         about three being recognised again"
+    );
+    let ledger = feed
+        .ledger()
+        .ok_or_else(|| Error::invalid("a journalled feed must report its ledger"))?;
+    assert_eq!(ledger.sessions, 1);
+    assert_eq!(ledger.admitted, RATES_PER_TABLE);
+    assert_eq!(
+        ledger.duplicates, 0,
+        "nothing has been redelivered yet, so a non-zero count here would mean the ledger is \
+         counting something other than redeliveries"
+    );
+    // Killed rather than stopped: dropped without `shutdown`, which is the
+    // eviction and the out-of-memory kill rather than the rollout. If the
+    // position were committed at shutdown instead of at each poll, everything
+    // below would fail — and the failures worth surviving are exactly the ones
+    // that never reach a shutdown.
+    drop(feed);
+
+    // --- the control: the same second poll, on a feed with no store ---------
+    //
+    // Byte-for-byte the behaviour of every restart before this change. It is
+    // here so the assertion after it cannot pass because the emulator stopped
+    // serving, the knowability gate closed, or the rate limiter deferred.
+    let mut blind = feed_over_emulator(&body, second_poll)?;
+    let republished = blind.poll(second_poll)?;
+    assert_eq!(
+        republished.len() as u64,
+        RATES_PER_TABLE,
+        "without a restored window the identical table is republished in full — this is the \
+         defect the wiring closes, and if this line ever fails the assertion below proves nothing"
+    );
+    drop(blind);
+
+    // --- process two, given the same store ----------------------------------
+    let mut feed = feed_over_emulator(&body, second_poll)?;
+    let taken = feed.journal_to(store.clone())?;
+    assert_eq!(
+        taken as u64, RATES_PER_TABLE,
+        "the whole table the last process absorbed must be taken back into the window"
+    );
+
+    let released = feed.poll(second_poll)?;
+    assert!(
+        released.is_empty(),
+        "the identical table after a restart must be recognised, not republished; {} record(s) \
+         reached the loop",
+        released.len()
+    );
+
+    let ledger = feed
+        .ledger()
+        .ok_or_else(|| Error::invalid("a journalled feed must report its ledger"))?;
+    assert_eq!(
+        ledger.sessions, 2,
+        "two processes carried this stream and the durable record must say so, or seven days \
+         across two hundred sessions would read as a clean run"
+    );
+    assert_eq!(
+        ledger.admitted, RATES_PER_TABLE,
+        "the table was published once and must be admitted once across both processes"
+    );
+    assert_eq!(
+        ledger.duplicates, RATES_PER_TABLE,
+        "the second process's redeliveries must be counted, not merely dropped"
+    );
+    assert_eq!(
+        ledger.duplicate_ratio(),
+        Some(0.5),
+        "three admitted and three duplicate is half, and a ratio computed off the wrong \
+         denominator is how a stream that republished everything reads as a healthy one"
+    );
+    // Both axes, across the restart. The knowledge axis spans the two polls;
+    // the world's axis does not move, because the ECB published one table.
+    let ingested = ledger
+        .ingested
+        .ok_or_else(|| Error::invalid("records were admitted, so the ingest span exists"))?;
+    assert_eq!(ingested.first, first_poll);
+    assert_eq!(ingested.last, first_poll);
+    let event = ledger
+        .event
+        .ok_or_else(|| Error::invalid("records were admitted, so the event span exists"))?;
+    assert_eq!(event.first, at(FIRST_REFERENCE_DATE));
+    assert_eq!(event.last, at(FIRST_REFERENCE_DATE));
+    Ok(())
+}
+
+/// The two ways a root can get the ordering wrong, and what happens instead of
+/// a partial restore.
+#[test]
+fn a_feed_refuses_a_second_journal_and_refuses_to_resume_a_window_it_has_already_polled()
+-> Result<()> {
+    let first_poll = at(START);
+    let recorded = recorded_body()?;
+    let body = rates_body(&recorded, at(FIRST_REFERENCE_DATE))?;
+    let store: Arc<dyn KeyValueStore> = Arc::new(MemoryKeyValueStore::new());
+
+    // --- a second journal on the same feed ----------------------------------
+    let mut feed = feed_over_emulator(&body, first_poll)?;
+    feed.journal_to(store.clone())?;
+    let refused = feed
+        .journal_to(store.clone())
+        .expect_err("a second journal on one feed must be refused");
+    assert!(
+        refused.message().contains("already keeps a journal"),
+        "the refusal must name the cause: {}",
+        refused.message()
+    );
+
+    // --- resuming after the window has been used ----------------------------
+    //
+    // The order this protects is not hypothetical: `journal_to` is the call a
+    // root adds last, and adding it after the poll loop rather than before it
+    // is the natural mistake. A window half-restored would suppress some
+    // redeliveries and republish others, and nothing downstream would show
+    // which, so this refuses instead.
+    let released = feed.poll(first_poll)?;
+    assert_eq!(
+        released.len() as u64,
+        RATES_PER_TABLE,
+        "the premise: this feed has genuinely observed the table, so the refusal below is about a \
+         used window rather than an empty one"
+    );
+    feed.shutdown(first_poll.saturating_add(Duration::from_mins(30)))?;
+    drop(feed);
+
+    let mut late = feed_over_emulator(&body, first_poll)?;
+    let released = late.poll(first_poll)?;
+    assert_eq!(
+        released.len() as u64,
+        RATES_PER_TABLE,
+        "the premise again, on the feed that will be asked to resume too late"
+    );
+    let refused = late
+        .journal_to(store.clone())
+        .expect_err("a resume after a poll must be refused rather than partially applied");
+    assert!(
+        !refused.message().is_empty(),
+        "a refusal with no message tells a root nothing to do instead"
+    );
+    Ok(())
+}
+
+/// A whole feed over the emulator: the production assembly with the transport
+/// swapped, which is the only difference between this and a deployment.
+fn feed_over_emulator(body: &str, at: Timestamp) -> Result<ConnectorFeed> {
+    let manifest = FrankfurterRatesConnector::shipped_manifest()?;
+    let connector = FrankfurterRatesConnector::new(manifest.clone())?;
+    let transport = Box::new(SourceEmulator::serving(&manifest.endpoint.path, body));
+    ConnectorFeed::over_transport(
+        Box::new(connector),
+        manifest,
+        transport,
+        0x0EC8_0000_0000_0002,
+        at,
+    )
 }

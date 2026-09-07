@@ -17,8 +17,9 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_capital::ledger::{
-    DecidedBy, Eligibility, EligibilityDecision, EligibilityTerms, Jurisdiction, Mandate,
-    MandateId, MandateTerms, PermittedFamilies, ProductEligibility, UserId, UserShare,
+    DecidedBy, Eligibility, EligibilityDecision, EligibilityTerms, InvestmentRequest, Jurisdiction,
+    Mandate, MandateId, MandateTerms, PermittedFamilies, ProductEligibility, RefusedLimit, UserId,
+    UserShare,
 };
 use qip_capital_fabric::corridor::{CorridorCaps, CorridorId, CorridorStage, PermittedHours};
 use qip_capital_fabric::custody::{
@@ -54,7 +55,8 @@ use qip_kernel::central::{CellReport, StrategyCandidate};
 use qip_kernel::config::{PlatformConfig, UserEligibility, UserMandate};
 use qip_kernel::cycle::Stage;
 use qip_kernel::platform::{
-    BookingBasis, EligibilityEntry, EligibilitySource, LedgerEntry, Platform,
+    BookingBasis, EligibilityEntry, EligibilitySource, InvestmentEntry, InvestmentJudgement,
+    LedgerEntry, Platform,
 };
 use qip_lifecycle::corridor::{CorridorRoute, CorridorSubject};
 use qip_lifecycle::trials::StrategyFamily;
@@ -1690,6 +1692,307 @@ fn a_venue_registration_is_counted_under_the_source_that_brought_it() -> Result<
             .snapshot()
             .counter_total(REGISTRATION_SERIES),
         1
+    );
+    Ok(())
+}
+
+// --- investment requests ----------------------------------------------------
+
+/// The producer every investment-request record carries, written out here
+/// rather than imported from the kernel: a test that selected records with the
+/// same constant the writer stamps them with would still pass if the producer
+/// moved, and the producer is what tells these records from the eligibility
+/// and product ones on the topic they share.
+const INVESTMENT_PRODUCER: &str = "kernel/investment";
+
+const INVESTMENT_SERIES: &str = "qip_central_investment_requests_total";
+
+/// The investment-request records the platform's own event log holds.
+fn investment_entries(platform: &Platform) -> Result<Vec<InvestmentEntry>> {
+    platform
+        .event_log()
+        .records()
+        .iter()
+        .filter(|record| {
+            record.event.topic == Topic::ComplianceEvaluated
+                && record.event.lineage.producer == INVESTMENT_PRODUCER
+        })
+        .map(|record| {
+            Ok(
+                qip_streaming::envelope::StreamEnvelope::from_frame(&record.event)?
+                    .decode::<InvestmentEntry>()?
+                    .body,
+            )
+        })
+        .collect()
+}
+
+/// A request for `amount` at `alpha`, in the family this suite registers it
+/// under and the currency every mandate here is denominated in.
+fn request(user: &str, family: &str, amount: Decimal) -> Result<InvestmentRequest> {
+    Ok(InvestmentRequest {
+        user: UserId::new(user)?,
+        strategy: StrategyId::new("alpha"),
+        family: family.to_string(),
+        currency: Currency::USD,
+        amount,
+        requested_at: start(),
+    })
+}
+
+/// A platform with alice enrolled at `capital` under the `carry` family,
+/// verified for a year, with `alpha` registered under `carry` and `carry`
+/// cleared for sale in GB — everything an investment request needs before the
+/// only thing left to refuse it is the mandate's own arithmetic.
+fn ready_for_requests(capital: Decimal) -> Result<Platform> {
+    let mut platform = platform(
+        PlatformConfig::default()
+            .with_user_mandates(vec![enrolment_only("alice", capital, "carry")?])
+            .with_user_eligibilities(vec![cleared_for_a_year("alice")?]),
+    )?;
+    register_family(&mut platform, "alpha", "carry")?;
+    platform.offer_product(
+        ProductEligibility::new("carry").eligible_in(Jurisdiction::new("GB")?),
+        &compliance_officer(),
+        "cleared for retail distribution in GB by the compliance committee",
+        start(),
+    )?;
+    Ok(platform)
+}
+
+#[test]
+fn a_request_past_what_the_mandate_leaves_investable_is_refused_by_name_and_both_outcomes_are_journalled()
+-> Result<()> {
+    // The failure this closes: `UserLedger::admit` — the gate that decides
+    // whether a user's mandate would admit this much at this strategy — was
+    // written, tested in its own crate and reached by no runtime path at all.
+    // A limit no deployed process can consult reads as protection and is not;
+    // this is the same shape as `MaxExpectedShortfall`, which shipped in every
+    // default limit set and could never fire.
+    //
+    // Premise first, because a test that only asserts a refusal passes
+    // against a gate that refuses everything: the same user, the same
+    // strategy and the same mandate admit a request inside the mandate.
+    let mut platform = ready_for_requests(dec!("1000"))?;
+    let alice = UserId::new("alice")?;
+    let alpha = StrategyId::new("alpha");
+    assert!(
+        investment_entries(&platform)?.is_empty(),
+        "the premise: no request has been decided yet"
+    );
+
+    let admitted = platform.decide_investment(
+        request("alice", "carry", dec!("400"))?,
+        &compliance_officer(),
+        "the client asked for four hundred at alpha in writing",
+        start(),
+    )?;
+    assert!(
+        admitted.is_admitted(),
+        "400 of a 1000 mandate is inside it: {:?}",
+        admitted.outcome()
+    );
+    assert_eq!(admitted.refused_by(), None);
+
+    // The refusal, and which limit made it. The limit is asserted as a value
+    // rather than by searching the sentence: a `contains` on prose passes on
+    // any refusal whose wording happens to overlap.
+    let refused = platform.decide_investment(
+        request("alice", "carry", dec!("5000"))?,
+        &compliance_officer(),
+        "the client asked for five thousand at alpha in writing",
+        start(),
+    )?;
+    assert!(!refused.is_admitted());
+    assert_eq!(
+        refused.refused_by(),
+        Some(RefusedLimit::InvestableCapital),
+        "1000 of capital does not admit 5000: {:?}",
+        refused.outcome()
+    );
+
+    // Neither outcome moved capital. This is the property that separates a
+    // request surface from an order path: an admitted request is a statement
+    // about what the mandate would admit, and funding is `fund_user`.
+    assert_eq!(
+        settled(&platform, &alice, &alpha),
+        None,
+        "an admitted request opened a book"
+    );
+
+    // Both are on the log, in the order they were decided, and the record
+    // carries the limit's own token rather than only a sentence. A refusal
+    // that leaves no trace is indistinguishable from a request never made.
+    let entries = investment_entries(&platform)?;
+    assert_eq!(
+        entries.len(),
+        2,
+        "both outcomes are journalled: {entries:?}"
+    );
+    assert!(matches!(
+        entries[0].outcome,
+        InvestmentJudgement::Admitted { .. }
+    ));
+    match &entries[1].outcome {
+        InvestmentJudgement::Refused { limit, .. } => {
+            assert_eq!(limit, "investable_capital")
+        }
+        other => panic!("the second outcome is not a refusal: {other:?}"),
+    }
+    assert_eq!(entries[1].user, alice);
+    assert_eq!(entries[1].amount, dec!("5000"));
+    assert_eq!(
+        entries[1].family, "carry",
+        "the record carries the registered family"
+    );
+
+    // And the series an operator charts moved for each outcome under its own
+    // label, so "is this surface refusing everybody, and on which limit" is a
+    // question that can be answered without replaying the log.
+    assert_eq!(
+        counter(&platform, INVESTMENT_SERIES, ("outcome", "admitted")),
+        Some(1)
+    );
+    assert_eq!(
+        counter(
+            &platform,
+            INVESTMENT_SERIES,
+            ("outcome", "investable_capital")
+        ),
+        Some(1)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_request_naming_a_family_the_factory_did_not_register_the_strategy_under_is_refused_rather_than_re_labelled()
+-> Result<()> {
+    // The failure this closes: `InvestmentRequest` carries the family as the
+    // caller's claim, because nothing at that seam maps a strategy to one, and
+    // the ledger's mandate gate then checks the *claim* against the product.
+    // A mandate permitting only `carry` would therefore be satisfied by
+    // writing "carry" over a strategy the factory holds under another family.
+    // The kernel knows the registered family, so the claim is refused rather
+    // than corrected — correcting it would decide, on the caller's behalf,
+    // which family their capital went into.
+    let mut platform = ready_for_requests(dec!("1000"))?;
+
+    // Premise: the truthful request is admitted, so what follows is the
+    // family check and not some other gate refusing everything.
+    assert!(
+        platform
+            .decide_investment(
+                request("alice", "carry", dec!("100"))?,
+                &compliance_officer(),
+                "the truthful request, to establish the premise",
+                start(),
+            )?
+            .is_admitted()
+    );
+
+    let mislabelled = platform
+        .decide_investment(
+            request("alice", "momentum", dec!("100"))?,
+            &compliance_officer(),
+            "the same request with another family written over it",
+            start(),
+        )
+        .expect_err("a mislabelled family is refused");
+    assert!(
+        mislabelled.message().contains("registered under carry"),
+        "the refusal names the family the factory holds: {}",
+        mislabelled.message()
+    );
+
+    // A strategy the factory has never seen is refused too, rather than
+    // evaluated against an offering nobody cleared.
+    let unknown = InvestmentRequest {
+        strategy: StrategyId::new("unregistered"),
+        ..request("alice", "carry", dec!("100"))?
+    };
+    let refused = platform
+        .decide_investment(
+            unknown,
+            &compliance_officer(),
+            "a strategy no factory candidate names",
+            start(),
+        )
+        .expect_err("an unregistered strategy is refused");
+    assert!(
+        refused.message().contains("registered no family"),
+        "{}",
+        refused.message()
+    );
+
+    // Neither refusal is journalled as a decision: nothing was decided. Only
+    // the premise's admitted request is on the log.
+    let entries = investment_entries(&platform)?;
+    assert_eq!(
+        entries.len(),
+        1,
+        "a request the kernel would not evaluate is not a decision: {entries:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_operator_credential_older_than_the_kernel_accepts_raises_no_investment_request() -> Result<()>
+{
+    // The same fifteen minutes an autonomy change and an eligibility decision
+    // are held to. Raising a request writes a person's name to the event log
+    // beside a claim about their client's capital, and a session token from
+    // this morning is not evidence that anyone is at the keyboard now.
+    // Premise: the identical request from a fresh credential is decided.
+    let mut platform = ready_for_requests(dec!("1000"))?;
+    assert!(
+        platform
+            .decide_investment(
+                request("alice", "carry", dec!("100"))?,
+                &compliance_officer(),
+                "the fresh credential, to establish the premise",
+                start(),
+            )?
+            .is_admitted()
+    );
+
+    let stale = OperatorIdentity::verified(
+        "ops-erin",
+        "hardware-token",
+        start().saturating_sub(Duration::from_mins(16)),
+    );
+    let refused = platform
+        .decide_investment(
+            request("alice", "carry", dec!("100"))?,
+            &stale,
+            "a credential sixteen minutes old",
+            start(),
+        )
+        .expect_err("a stale credential decides nothing");
+    assert!(
+        refused.message().contains("re-authenticate"),
+        "{}",
+        refused.message()
+    );
+
+    // And a blank reason is refused for the same purpose: the audit trail.
+    let unreasoned = platform
+        .decide_investment(
+            request("alice", "carry", dec!("100"))?,
+            &compliance_officer(),
+            "  ",
+            start(),
+        )
+        .expect_err("an unreasoned request decides nothing");
+    assert!(
+        unreasoned.message().contains("stated reason"),
+        "{}",
+        unreasoned.message()
+    );
+
+    assert_eq!(
+        investment_entries(&platform)?.len(),
+        1,
+        "only the premise's request reached the log"
     );
     Ok(())
 }

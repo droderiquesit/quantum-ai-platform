@@ -81,11 +81,21 @@
 //! `qip_data_finder::legal`, where unknown is a third value and is never a
 //! grant.
 //!
-//! What this does **not** promise: it labels, it does not redact. A
-//! `Restricted` news item still arrives with its body, because the reasoning
-//! engine's use of the text is a derived use and stripping it would blind the
-//! platform to comply with a rule about *display*. The class travels with the
-//! record so that the boundary which does display it can decide.
+//! What this does **not** promise: it labels, it does not adjudicate. The
+//! class travels with the record so that the boundary which would display
+//! something can decide, and this adapter refuses no document on the strength
+//! of its terms.
+//!
+//! This passage used to end "a `Restricted` news item still arrives with its
+//! body, because the reasoning engine's use of the text is a derived use". The
+//! derived use had no reader — nothing outside this crate consumed
+//! `NewsItem::body` — while [`NewsItem`] is an `EventBody`, so the one thing
+//! the retained article reliably did was write a vendor's non-displayable
+//! prose into a hash-chained log that is sealed against deletion. Blueprint
+//! §7.2 and §56.4 rules 34 and 36 ask for the opposite, and the record now
+//! carries a [`SourceManifest`] — the address the document stays retrievable
+//! at, and the SHA-256 of the bytes that were read — instead of a copy of it.
+//! See [`NarrativeAdapter::manifest_for`].
 //!
 //! # Bounds
 //!
@@ -106,6 +116,7 @@ use qip_financial::intelligence::{
     EntityMention, FiscalPeriod, FundamentalUpdate, MacroObservation, NewsItem, NewsSource,
     Sentiment,
 };
+use qip_financial::manifest::SourceManifest;
 use qip_financial::quality::{DataQuality, LicensingClass, Provenance};
 use qip_transport::{ClientLimits, HttpClient, HttpRequest, Method, Url};
 use serde::Deserialize;
@@ -198,8 +209,10 @@ pub struct NarrativeFeedConfig {
     /// Most records one response may expand into, counting one per figure in a
     /// filing rather than one per filing.
     pub max_records: usize,
-    /// Largest single news document, in bytes of headline plus body. A
-    /// document over this is refused, never truncated.
+    /// Largest single news document, in bytes of the document as served —
+    /// headline, a newline, body — which is the same extent
+    /// `NewsItem::manifest` reports the length of, so the cap and the record
+    /// count the same bytes. A document over this is refused, never truncated.
     pub max_document_bytes: usize,
     /// Transport limits. The peer chooses how much to send; these decide how
     /// much this process will hold and how long it will wait.
@@ -760,6 +773,48 @@ impl NarrativeAdapter {
         provenance
     }
 
+    /// What is kept of a document instead of the document.
+    ///
+    /// Blueprint §56.4 rule 36: ingested source text is not retained; facts,
+    /// entity links and a manifest with a hash are. `NewsItem` is an event
+    /// body, so text on it is text in the hash-chained log, which is permanent
+    /// and sealed — a `Restricted` feed's non-displayable prose went in there
+    /// and could never be taken out again. So the article is hashed here and
+    /// the bytes are dropped on the way out of `decode_news`.
+    ///
+    /// The locator names the endpoint that served the document and the
+    /// vendor's own id for it, because those two together are what makes it
+    /// retrievable again and neither alone does. It is not invented: both are
+    /// stated — one by this deployment's configuration, one by the vendor —
+    /// and the document id is already refused when blank.
+    ///
+    /// Refuses when the adapter has no endpoint rather than naming the feed
+    /// alone. That cannot happen on the fetch path, since a poll with no
+    /// endpoint never reaches a decode; it is a refusal and not an
+    /// `expect` because a manifest whose locator resolves to nothing is a
+    /// reference that has quietly become a deletion.
+    fn manifest_for(
+        &self,
+        document_id: &str,
+        read_at: Timestamp,
+        document: &[u8],
+    ) -> Result<SourceManifest> {
+        let Some(endpoint) = &self.endpoint else {
+            return Err(Error::invalid(format!(
+                "{}: the document {document_id:?} was decoded with no endpoint configured, so \
+                 there is nowhere its original could be read again and referencing it instead of \
+                 copying it would lose it; set `base_url`",
+                self.config.name
+            )));
+        };
+        SourceManifest::of(
+            self.config.name.clone(),
+            format!("{endpoint}#{document_id}"),
+            read_at,
+            document,
+        )
+    }
+
     /// A news item is knowable when it was published, plus the vendor's delay.
     ///
     /// `published_at` is taken from the vendor's publication field and from
@@ -777,7 +832,15 @@ impl NarrativeAdapter {
                 self.config.name
             )));
         }
-        let size = wire.headline.len() + wire.body.len();
+        // The document as this vendor served it, and the only form of it that
+        // exists after this function returns: it is hashed into the manifest
+        // and dropped. Headline and body are joined by a newline so the extent
+        // the hash covers is stated exactly rather than left for a re-fetch to
+        // guess, and the cap below counts the same bytes the manifest reports
+        // — a cap counting one length while the manifest records another would
+        // be two claims about one document.
+        let document = format!("{}\n{}", wire.headline, wire.body);
+        let size = document.len();
         if size > self.config.max_document_bytes {
             return Err(Error::guard(format!(
                 "{}: the news item {:?} carries {size} bytes of text and the per-document cap is \
@@ -833,6 +896,7 @@ impl NarrativeAdapter {
             &wire.document_id,
             &revision,
         );
+        let manifest = self.manifest_for(&wire.document_id, until, document.as_bytes())?;
         if revision.is_revision() {
             self.stats.revisions += 1;
         }
@@ -840,7 +904,7 @@ impl NarrativeAdapter {
         let item = NewsItem {
             item_id: wire.document_id,
             headline: wire.headline,
-            body: wire.body,
+            manifest,
             source,
             // The publication instant, and the only instant this record keys on.
             published_at: wire.published_at,

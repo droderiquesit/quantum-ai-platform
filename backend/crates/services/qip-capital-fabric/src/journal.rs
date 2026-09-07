@@ -468,6 +468,15 @@ impl EventBody for FabricRecord {
     /// had been permitted — which is the one reading a missing field must
     /// never be given, and is why this is a version bump and not a
     /// defaulted field.
+    ///
+    /// The refusal is [`crate::replay::replay`]'s own, by version, and
+    /// deliberately not left to serde. `AnyEvent::decode` guards only against
+    /// a version *newer* than this constant, so what refused a version 1
+    /// record before that check was the absence of `#[serde(default)]` on
+    /// `funding` and of a `Default` for [`CorridorFunding`] — an outcome that
+    /// held for a reason nobody had written down and that adding either line
+    /// would have reversed in silence. Do not add either without reading
+    /// `a_fabric_record_written_under_the_old_schema_is_refused_by_name`.
     const SCHEMA_VERSION: u32 = 2;
 }
 

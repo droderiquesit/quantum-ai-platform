@@ -781,7 +781,13 @@ fn route_table() -> Vec<(String, String)> {
 }
 
 #[test]
-fn every_mutating_route_is_one_of_five_and_each_raises_a_typed_intent() {
+// Named without a count on purpose. This test was
+// `every_mutating_route_is_one_of_five_...` and the set below has been four,
+// then five, then six; a number in a test's own name goes stale silently while
+// the assertion beside it stays exact, which is the failure mode
+// `.claude/rules/domains/observability.md` documents about figures written into
+// prose. The set is the enumeration; the name says what the set is for.
+fn every_mutating_route_is_reviewed_here_and_each_raises_a_typed_intent() {
     let routes = route_table();
     assert!(
         routes.len() > 20,
@@ -798,13 +804,21 @@ fn every_mutating_route_is_one_of_five_and_each_raises_a_typed_intent() {
     // asserted by name below beside the other three. The fifth is the
     // investor-eligibility decision, admitted on the same terms and for the
     // same reason: `Platform::decide_eligibility`, an operator identity taken
-    // from the session rather than the body, journalled before it stands.
+    // from the session rather than the body, journalled before it stands. The
+    // sixth is the investment request: the blueprint's §40.9 gives
+    // `investment-api` one intent and forbids it an order, and this is that
+    // intent — `Platform::decide_investment`, the same operator identity from
+    // the session, journalled on both outcomes. It is admitted here on the
+    // narrow ground that it *decides* and does not fund: no book moves, the
+    // answer carries a constant `funded: false`, and funding remains
+    // `Platform::fund_user`, which no route calls.
     let expected: BTreeSet<(String, String)> = [
         ("Post", "/cycle"),
         ("Post", "/kill-switch"),
         ("Delete", "/kill-switch"),
         ("Post", "/registrations/:source/approve"),
         ("Post", "/ledger/users/:user/eligibility"),
+        ("Post", "/ledger/users/:user/investment-requests"),
     ]
     .into_iter()
     .map(|(method, pattern)| (method.to_string(), pattern.to_string()))
@@ -845,10 +859,34 @@ fn every_mutating_route_is_one_of_five_and_each_raises_a_typed_intent() {
             && routes_text.contains("crate::registration_views::ApprovalRequest::parse"),
         "the registration approval no longer screens its body and raises the kernel's intent"
     );
+    // The investment request likewise: screened, then handed to the kernel's
+    // one decision path. What matters more is the negative — the API raises
+    // the *request* and never the funding — so `fund_user`, the mutator that
+    // would move a user's capital, is asserted absent from every shipped
+    // source of the crate rather than merely left off the allowlist below.
+    assert!(
+        routes_text.contains("platform.decide_investment(")
+            && routes_text.contains("crate::ledger_views::InvestmentRequestBody::parse"),
+        "the investment request no longer screens its body and raises the kernel's intent"
+    );
+    for (path, source) in shipped_sources("qip-api") {
+        let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            !compact.contains("platform.fund_user("),
+            "{} funds a user from the API; §40.9's investment surface raises a request and \
+             nothing else",
+            path.display()
+        );
+    }
 }
 
 #[test]
-fn the_api_calls_no_platform_mutator_beyond_the_ten_it_is_allowed() {
+// Named without a count, for the reason the mutating-route test above gives.
+// This read `..._beyond_the_ten_it_is_allowed` while the list below held
+// eleven, so the name was already false before this change added a twelfth:
+// exactly the silent rot a number in a name invites. The list is the
+// enumeration.
+fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
     // Enumerate every `&mut self` method the platform exposes, from the
     // kernel's source rather than from memory, so a mutator added to the
     // kernel tomorrow is refused here the day it is called from a route.
@@ -953,6 +991,14 @@ fn the_api_calls_no_platform_mutator_beyond_the_ten_it_is_allowed() {
         "observe_statement",
         "approve_registration",
         "decide_eligibility",
+        // `decide_investment` — §40.9's `investment-api` intent, and the one
+        // the blueprint gives it. It is `&mut` for the journal append: the
+        // decision is the ledger's answer about what the mandate *would*
+        // admit, and no book, reservation or position moves on either
+        // outcome. The mutator that would move capital is `fund_user`, which
+        // is deliberately absent from this list and asserted absent from
+        // every source of the crate above.
+        "decide_investment",
     ]
     .into_iter()
     .collect();

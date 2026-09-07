@@ -79,7 +79,7 @@ first two are now false, read against the current tree rather than the tree this
    `a_sized_proposal_is_signed_by_two_controls_and_released_as_orders` (`platform.rs`, `#[cfg(test)]` module at
    `:5894`). Because `stage_act` runs inside `Platform::run_cycle`, and `qip-api`'s `POST /cycle` route calls
    `platform.run_cycle(now)` directly (`qip-api/src/routes.rs`, pinned by
-   `api_boundary.rs::every_mutating_route_is_one_of_five_and_each_raises_a_typed_intent`), a cycle that clears
+   `api_boundary.rs::every_mutating_route_is_reviewed_here_and_each_raises_a_typed_intent`), a cycle that clears
    the action bar, signs off and releases is reachable from a running `qip-api` process, not only from a test.
    What remains true of the original finding: nothing in the synthetic/replay-only data path (Layer 1) reliably
    clears the action bar, so the seam is wired rather than proven busy in any deployment — the rows below that

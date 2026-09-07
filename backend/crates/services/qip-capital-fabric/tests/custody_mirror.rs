@@ -318,6 +318,85 @@ fn a_class_whose_row_does_not_demand_the_mirror_is_not_asked_for_one() -> Result
     Ok(())
 }
 
+/// The failure this prevents: the mirror compares `destination.to_string()`
+/// against the attestation's reference, and that rendering names two different
+/// destinations.
+///
+/// `DestinationKey` renders `asset@address`. Nothing forbade an `@` inside
+/// either half, so asset `USDC` with address `a@b` and asset `USDC@a` with
+/// address `b` both rendered `USDC@a@b`: one venue-allowlist attestation
+/// mirrored two destinations, and a corridor running to the second was
+/// satisfied by an entry the venue allowlisted for the first. Whole-value
+/// equality does not catch it — the strings really are equal — so this is not
+/// the prefix trap the test above covers and would have survived that fix.
+///
+/// Two things close it and both are asserted here, because either alone leaves
+/// a path open. `Asset::new` refuses `@`, so the pair cannot be *constructed*;
+/// and the mirror compares a parsed `DestinationKey`, so the pair cannot be
+/// *deserialised* into a match either — which matters because a
+/// `DestinationKey` reaches this control off the hash-chained event log inside
+/// a `GateCommand`, where serde builds an `Asset` from its field and calls no
+/// constructor.
+#[test]
+fn an_attestation_is_mirrored_against_the_parsed_key_so_one_rendering_cannot_name_two_destinations()
+-> Result<()> {
+    // Premise 1: the constructor closes the constructible half.
+    let refused =
+        Asset::new("USDC@a").expect_err("an asset name holding the key separator must be refused");
+    assert!(
+        refused.message().contains("may not contain '@'"),
+        "the refusal must name the character and why; got: {}",
+        refused.message()
+    );
+
+    // Premise 2: serde builds the pair the constructor refuses, exactly as the
+    // event log would hand it to the gate.
+    let ambiguous: DestinationKey = serde_json::from_str(r#"{"asset":"USDC@a","address":"b"}"#)?;
+    let legitimate = DestinationKey::new(Asset::new("USDC")?, "a@b")?;
+    assert_ne!(
+        ambiguous, legitimate,
+        "premise: these are two different destinations — different asset, different address"
+    );
+    assert_eq!(
+        ambiguous.to_string(),
+        legitimate.to_string(),
+        "premise: and they share one rendering, which is the whole defect; if this ever fails \
+         the fixture no longer reproduces it and the assertions below prove nothing"
+    );
+
+    // The attestation is filed against the destination the venue actually
+    // allowlisted, written the only way a key is written.
+    let agreement = authority_referencing(&legitimate.to_string())?
+        .agreement()
+        .map_err(|refusal| Error::invalid(refusal.to_string()))?;
+    let policy = CustodyPolicy::blueprint();
+    assert!(
+        policy
+            .mirrors_the_venue_allowlist(
+                CustodyClass::CryptoInVenueCustody,
+                &legitimate,
+                &agreement,
+            )
+            .is_ok(),
+        "premise: the destination the attestation names must mirror, or the refusal below \
+         would prove only that the check refuses everything"
+    );
+
+    let refusal = policy
+        .mirrors_the_venue_allowlist(CustodyClass::CryptoInVenueCustody, &ambiguous, &agreement)
+        .expect_err(
+            "an attestation filed against USDC/a@b must not mirror a corridor running to \
+             USDC@a/b, however the two render",
+        );
+    assert_eq!(
+        refusal.reason,
+        RefusalReason::VenueAllowlistNotMirrored {
+            class: CustodyClass::CryptoInVenueCustody
+        }
+    );
+    Ok(())
+}
+
 // --- the table half ---------------------------------------------------------
 
 /// The flag cannot be cleared to switch the mirror off.

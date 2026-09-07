@@ -429,14 +429,23 @@ impl WorldModel {
             }
         }
 
+        // The headline, and the manifest's locator so a reader can go and get
+        // the article this platform did not keep. The full text used to be
+        // indexed here; it reached this working set because `NewsItem` carried
+        // it, and `NewsItem` carried it into the permanent event log as well —
+        // blueprint §56.4 rules 34 and 36 forbid exactly that, and the record
+        // now holds a hash and an address instead. Nothing lost a reader in
+        // the change: `WorldModel::search_as_of` has no caller outside this
+        // crate and its tests.
         self.index.add(
             Document::new(
                 format!("news:{}", item.item_id),
-                format!("{}\n{}", item.headline, item.body),
+                item.headline.clone(),
                 item.published_at,
             )
             .with_attribute("source", item.source.as_str())
             .with_attribute("kind", "news")
+            .with_attribute("original", item.manifest.locator())
             .with_reliability(item.evidential_weight()),
         );
 

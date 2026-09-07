@@ -1,16 +1,21 @@
 //! The JSON shapes of the treasury surface: the four read routes
-//! `/ledger/users`, `/wallet`, `/corridors` and `/transfer-gate`, and the one
-//! operator route beside them, `POST /ledger/users/{user}/eligibility`.
+//! `/ledger/users`, `/wallet`, `/corridors` and `/transfer-gate`, and the two
+//! operator routes beside them, `POST /ledger/users/{user}/eligibility` and
+//! `POST /ledger/users/{user}/investment-requests`.
 //!
-//! The operator route is not an exception to what the rest of this file says
-//! about the layer's authority. It decides nothing itself: it screens a body,
-//! resolves the user against the mandate registry, and hands
-//! `Platform::decide_eligibility` an identity built from the authenticated
-//! session — the same intent-raising shape the kill switch and the venue
-//! approval take. It answers the user's `/ledger/users` row, so what an
-//! operator reads back is the ledger's own answer and not the route's claim
-//! about it. Nothing here can move capital: an eligibility record is a
-//! precondition the ledger checks before a funding, never a transfer.
+//! The operator routes are not an exception to what the rest of this file says
+//! about the layer's authority. Neither decides anything itself: each screens
+//! a body, resolves the user against the mandate registry, and hands the
+//! kernel — `Platform::decide_eligibility`, `Platform::decide_investment` — an
+//! identity built from the authenticated session, the same intent-raising
+//! shape the kill switch and the venue approval take. Each answers the
+//! ledger's own answer rather than its own claim about it: the user's
+//! `/ledger/users` row, and for a request the verdict the mandate returned.
+//! Nothing here can move capital: an eligibility record is a precondition the
+//! ledger checks before a funding, and an admitted investment request is a
+//! statement that the mandate would admit one. Neither is a transfer, and the
+//! request body carries a constant `funded: false` so no interface can imply
+//! otherwise.
 //!
 //! The contract these serialise to is written out in `ROUTES-LEDGER.md`
 //! beside the crate manifest, and a page is built against that file rather
@@ -573,6 +578,268 @@ pub fn decided_eligibility(
     Ok(EligibilityDecisionView {
         posture: POSTURE,
         served_at: now.to_rfc3339(),
+        user: rows.remove(0),
+    })
+}
+
+// --- POST /ledger/users/{user}/investment-requests ---------------------------
+
+/// The sentence every unknown key on an investment-request body is refused
+/// with.
+///
+/// It answers the mistake this shape invites, which is not a typo: §40.9's
+/// investment step ends in a *funded* position, and a caller who sends
+/// `fund`, `execute` or `order` believes this route places one. A key
+/// silently ignored would let them keep believing it until they wondered why
+/// nothing traded.
+pub const NO_FUNDING_FIELD: &str = "an investment request reads `strategy`, `family`, `currency`, \
+    `amount` and `reason`, and nothing else. It raises a request and funds nothing: the mandate \
+    decides whether this much could be put to work at this strategy now, and there is no field \
+    on this route that could place an order or move capital";
+
+/// What `POST /ledger/users/{user}/investment-requests` accepts.
+///
+/// Parsed by hand for the reason the eligibility body is: a refusal here has
+/// to name the *field* a person must fix rather than quote a Rust type.
+/// `user` and `requested_at` are not read from the body — the user is the
+/// path's, resolved against the mandate registry, and the instant is the
+/// server's clock. A caller-stated instant is a caller-chosen position in the
+/// mandate's history, and the ledger decides against the books as they are
+/// now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvestmentRequestBody {
+    request: serde_json::Value,
+    reason: String,
+}
+
+impl InvestmentRequestBody {
+    /// The keys the body may carry, and the only ones.
+    const FIELDS: [&'static str; 5] = ["strategy", "family", "currency", "amount", "reason"];
+
+    pub fn parse(body: &str, user: &str, now: Timestamp) -> Result<Self, String> {
+        let value: serde_json::Value = serde_json::from_str(body).map_err(|_| {
+            "the body is not JSON; send {\"strategy\": \"<id>\", \"family\": \"<family>\", \
+             \"currency\": \"USD\", \"amount\": \"1000.00\", \"reason\": \"<why>\"}"
+                .to_string()
+        })?;
+        let Some(object) = value.as_object() else {
+            return Err(
+                "the body must be a JSON object carrying an investment request".to_string(),
+            );
+        };
+        if let Some(position) = object
+            .keys()
+            .position(|key| !Self::FIELDS.contains(&key.as_str()))
+        {
+            // Named by position and never quoted, for the reason the
+            // eligibility body's refusal is: echoing what a caller sent
+            // publishes it to the response and to every log that copies it.
+            return Err(format!(
+                "the body's key at position {} is not one this route reads; {NO_FUNDING_FIELD}",
+                position + 1
+            ));
+        }
+        let reason = Self::text(object, "reason")?;
+        // Built from pieces this function validated, never from `object`, so
+        // no key this route does not read can reach the ledger by accident —
+        // and `user` and `requested_at` are supplied here rather than
+        // accepted.
+        let request = serde_json::json!({
+            "user": user,
+            "strategy": Self::text(object, "strategy")?,
+            "family": Self::text(object, "family")?,
+            "currency": Self::text(object, "currency")?,
+            "amount": Self::amount(object)?,
+            "requested_at": now.to_rfc3339(),
+        });
+        Ok(Self { request, reason })
+    }
+
+    /// The request as the kernel's own type.
+    ///
+    /// Generic so the type is inferred from `Platform::decide_investment`'s
+    /// signature and this crate never names it: the application layer ships
+    /// no edge to `qip-capital` (`api_boundary.rs`), and every rule the type
+    /// keeps — a valid user id, a currency code, an exact decimal — is
+    /// enforced by the type rather than restated here where a second copy
+    /// would be free to drift.
+    pub fn request<R: serde::de::DeserializeOwned>(&self) -> Result<R, String> {
+        serde_json::from_value(self.request.clone())
+            .map_err(|error| format!("the investment request was refused: {error}"))
+    }
+
+    /// Why the request was raised, for the audit trail. The kernel holds it
+    /// to a length of its own; this only refuses a blank.
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    /// The amount, as text and only as text.
+    ///
+    /// A JSON number is refused rather than converted. `1000.10` does not
+    /// exist as an IEEE double, and a request for someone's capital rounded
+    /// by the parser is the exact failure `Decimal` exists to prevent — the
+    /// rest of this surface renders money as strings for the same reason.
+    fn amount(object: &serde_json::Map<String, serde_json::Value>) -> Result<String, String> {
+        match object.get("amount") {
+            None => Err("the body has no `amount`; it is required".to_string()),
+            Some(serde_json::Value::String(amount)) if !amount.trim().is_empty() => {
+                Ok(amount.trim().to_string())
+            }
+            Some(serde_json::Value::String(_)) => Err("`amount` is blank".to_string()),
+            Some(_) => Err(
+                "`amount` must be a JSON string such as \"1000.00\", never a number: a \
+                            number is parsed as a float and an amount of capital that a parser \
+                            rounded is not the amount anyone asked for"
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// A non-blank string field, or a refusal naming the field.
+    fn text(
+        object: &serde_json::Map<String, serde_json::Value>,
+        field: &str,
+    ) -> Result<String, String> {
+        let Some(value) = object.get(field) else {
+            return Err(format!("the body has no `{field}`; it is required"));
+        };
+        let Some(text) = value.as_str() else {
+            return Err(format!("`{field}` must be a JSON string"));
+        };
+        if text.trim().is_empty() {
+            return Err(format!("`{field}` is blank"));
+        }
+        Ok(text.to_string())
+    }
+}
+
+/// The request as the ledger understood it, echoed back from the ledger's own
+/// record of the decision rather than from what was posted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct InvestmentRequestView {
+    pub user_id: String,
+    pub strategy: String,
+    pub family: String,
+    pub currency: String,
+    pub amount: String,
+    pub requested_at: String,
+}
+
+/// What the investment-request route answers.
+///
+/// `admitted` is the mandate's verdict; `refused_limit` is the ledger's own
+/// variant name for the gate that refused — a value a page can group on and a
+/// test can assert — and `detail` is its sentence, or the basis of a grant.
+///
+/// `funded` is a literal `false` that is not decoration. §40.9's investment
+/// step ends in capital at work, and an interface that showed an admitted
+/// request without saying it moved nothing would be read as a funding by
+/// every person who saw it. The user's row travels with the answer so the
+/// figures the verdict was reached against — mandate, balances, eligibility —
+/// are readable beside it rather than fetched again from a ledger that may
+/// have moved.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct InvestmentDecisionView {
+    pub posture: &'static str,
+    pub served_at: String,
+    pub decided_at: String,
+    pub request: InvestmentRequestView,
+    pub admitted: bool,
+    pub funded: bool,
+    pub refused_limit: Option<String>,
+    pub detail: String,
+    pub user: UserView,
+}
+
+/// Build the answer to an investment request from the decision the ledger
+/// returned, read through its own serialisation.
+///
+/// The API may not name `InvestmentDecision`, so the decision arrives as the
+/// JSON it serialises to and every field is read out of that. A shape this
+/// reader does not understand is an error rather than a defaulted body: a
+/// variant added to the ledger's outcome enum must surface here and not as a
+/// request that silently reads refused.
+pub fn decided_investment(
+    platform: &Platform,
+    decision: &serde_json::Value,
+    user: &str,
+    now: Timestamp,
+) -> Result<InvestmentDecisionView, String> {
+    let field = |path: &[&str]| -> Result<String, String> {
+        let mut value = decision;
+        for key in path {
+            value = value
+                .get(*key)
+                .ok_or_else(|| format!("the decision carries no {}: {decision}", path.join(".")))?;
+        }
+        value
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| format!("{} is not a string: {decision}", path.join(".")))
+    };
+    let outcome = decision
+        .get("outcome")
+        .ok_or_else(|| format!("the decision carries no outcome: {decision}"))?;
+    let (admitted, refused_limit, detail) = if let Some(arm) = outcome.get("Admitted") {
+        let basis = arm
+            .get("basis")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("an admitted decision carries no basis: {decision}"))?;
+        (true, None, basis.to_string())
+    } else if let Some(arm) = outcome.get("Refused") {
+        let reason = arm
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("a refused decision carries no reason: {decision}"))?;
+        // The limit is an externally tagged enum where it carries a payload
+        // (`{"Eligibility":"expired"}`) and a bare string where it does not,
+        // so the name is the tag in the first case and the string in the
+        // second. Read rather than matched: the API cannot name the type.
+        let limit = arm
+            .get("limit")
+            .ok_or_else(|| format!("a refused decision names no limit: {decision}"))?;
+        let name = match limit {
+            serde_json::Value::String(name) => name.clone(),
+            serde_json::Value::Object(map) => map
+                .keys()
+                .next()
+                .cloned()
+                .ok_or_else(|| format!("the limit is an empty object: {decision}"))?,
+            _ => return Err(format!("the limit is neither a name nor a tag: {decision}")),
+        };
+        (false, Some(name), reason.to_string())
+    } else {
+        return Err(format!(
+            "the decision's outcome is neither Admitted nor Refused: {decision}"
+        ));
+    };
+    let mut rows = user_rows(platform, now, Some(user))?;
+    if rows.len() != 1 {
+        // Unreachable through the route, which resolves the user against the
+        // mandate registry first. Answered rather than indexed: a panic here
+        // would poison the lock every other route waits on.
+        return Err(format!(
+            "the ledger holds {} rows for `{user}`; it must hold exactly one",
+            rows.len()
+        ));
+    }
+    Ok(InvestmentDecisionView {
+        posture: POSTURE,
+        served_at: now.to_rfc3339(),
+        decided_at: field(&["decided_at"])?,
+        request: InvestmentRequestView {
+            user_id: field(&["request", "user"])?,
+            strategy: field(&["request", "strategy"])?,
+            family: field(&["request", "family"])?,
+            currency: field(&["request", "currency"])?,
+            amount: field(&["request", "amount"])?,
+            requested_at: field(&["request", "requested_at"])?,
+        },
+        admitted,
+        funded: false,
+        refused_limit,
+        detail,
         user: rows.remove(0),
     })
 }

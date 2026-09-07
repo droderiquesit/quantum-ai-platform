@@ -25,6 +25,7 @@ pub mod extensions;
 pub mod identifiers;
 pub mod intelligence;
 pub mod ladder;
+pub mod manifest;
 pub mod object;
 pub mod quality;
 pub mod risk_profile;
@@ -46,6 +47,7 @@ pub use intelligence::{
 pub use ladder::{
     LadderEntry, LiquidationHorizon, LiquidationPlan, LiquidityLadder, PlanLeg, Rung,
 };
+pub use manifest::SourceManifest;
 pub use object::{FinancialObject, ObjectBuilder};
 pub use quality::{DataQuality, LicensingClass, Provenance};
 pub use risk_profile::{FactorExposures, Greeks, RiskCharacteristics};

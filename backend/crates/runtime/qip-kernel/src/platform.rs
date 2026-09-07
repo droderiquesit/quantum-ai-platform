@@ -51,8 +51,9 @@ use qip_ai::memory::{
 use qip_ai::retrieval::SearchIndex;
 use qip_capital::ledger::{
     AttributedFill, Capability, DecidedBy, EligibilityDecision, EligibilityRecord,
-    EligibilityRegistry, Entitlement, PermittedFamilies, ProductCatalogue, ProductEligibility,
-    Role, UserId, UserLedger, UserShare,
+    EligibilityRegistry, Entitlement, InvestmentDecision, InvestmentOutcome, InvestmentRequest,
+    PermittedFamilies, ProductCatalogue, ProductEligibility, RefusedLimit, Role, UserId,
+    UserLedger, UserShare,
 };
 use qip_capital::reservation::ReservationLedger;
 use qip_capital::{AllocationLimits, CapitalAllocator, DrawdownSchedule};
@@ -122,7 +123,7 @@ use qip_lifecycle::corridor::{
 };
 use qip_lifecycle::trials::TrialBook;
 use qip_market::bar::Bar;
-use qip_market::corporate_action::CorporateActionKind;
+use qip_market::corporate_action::{CorporateAction, CorporateActionKind};
 use qip_market::snapshot::MarketSnapshot;
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_market_ingestion::connector::manifest::SecretRef;
@@ -167,7 +168,7 @@ use qip_world_model::features::{Feature, FeatureValue};
 use qip_world_model::graph::{Node, NodeKind};
 use qip_world_model::liquidity::{DepthObservation, LiquidityTopology};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// The assembled platform.
@@ -616,7 +617,39 @@ pub struct Platform {
     pending_theses: Vec<qip_portfolio_engine::construction::ApprovedThesis>,
     /// Proposals produced since assembly, including those aged out above.
     proposals_made: u64,
+    /// Corporate actions absorbed whose ex-date the tape has not yet reached,
+    /// keyed by the action's own idempotency key.
+    ///
+    /// An action is held rather than applied on announcement because the
+    /// announcement is knowable weeks before the ex-date, and adjusting a
+    /// series that has not yet split *creates* the step it exists to remove:
+    /// the prior closes would be halved while the current close was not. The
+    /// tape crossing the ex-date is the only evidence this platform has that
+    /// the split happened, so that is what releases the adjustment. Bounded by
+    /// [`PENDING_CORPORATE_ACTIONS`]; an action beyond the bound is refused and
+    /// reported rather than dropped, because a silently forgotten split is the
+    /// corruption itself.
+    corporate_actions_pending: BTreeMap<String, CorporateAction>,
+    /// Keys of actions already applied to the series and the book.
+    ///
+    /// Without this a replayed announcement — the same action arriving from two
+    /// feeds, or a re-sensed batch — halves the history and doubles the
+    /// position twice. `CorporateAction::idempotency_key` is the same key the
+    /// event log dedups on, so the two agree by construction rather than by a
+    /// second rule that could drift.
+    corporate_actions_applied: BTreeSet<String>,
 }
+
+/// How many announced-but-not-yet-due corporate actions the platform holds.
+///
+/// Bounded like every other working set here. A corporate-action feed for a
+/// broad universe announces further ahead than any other record kind — a
+/// dividend calendar runs a quarter out — so this is generous relative to the
+/// number of instruments a cell trades, and an overflow means the feed is
+/// wrong rather than that the bound is tight. That is why the overflow is a
+/// refusal on the record and not a quiet eviction: evicting the oldest pending
+/// action drops exactly the one whose ex-date is nearest.
+const PENDING_CORPORATE_ACTIONS: usize = 4_096;
 
 /// How many recent proposals the platform keeps in memory.
 ///
@@ -724,6 +757,12 @@ const ELIGIBILITY_CREDENTIAL_AGE: Duration = Duration::from_mins(15);
 /// journal's producer on the topic they share, so each replay passes over
 /// the other's records rather than refusing them as undecodable.
 const ELIGIBILITY_ORIGIN: &str = "kernel/eligibility";
+
+/// The producer every investment-request record carries. Its own, on the
+/// topic it shares with the eligibility, product, registration and fabric
+/// records, so a reader selecting one kind passes over the rest rather than
+/// failing to decode them.
+const INVESTMENT_ORIGIN: &str = "kernel/investment";
 
 /// How recently an operator must have authenticated to approve a venue
 /// registration — the same fifteen minutes an eligibility decision and an
@@ -1948,6 +1987,83 @@ impl EventBody for EligibilityEntry {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// The stable token for the limit that refused an investment request.
+///
+/// One place, used by both the journalled record and the metric label, so the
+/// two cannot come to name the same refusal differently — which is the
+/// disagreement `.claude/rules` principle 6 is about: two independent claims
+/// about one fact, and the louder one wrong. The match is exhaustive over
+/// [`RefusedLimit`] on purpose: an eighth limit does not compile until it has
+/// been given a name here, so a new gate cannot arrive unlabelled and be
+/// counted as one of the others.
+///
+/// `Eligibility` collapses its inner [`qip_capital::ledger::Ineligible`] to
+/// one token deliberately. The inner reason is on the journalled record's
+/// `reason`, where it is access-controlled; as a metric label it would be a
+/// second, finer statement about one person's compliance standing in every
+/// scrape.
+fn limit_name(limit: RefusedLimit) -> &'static str {
+    match limit {
+        RefusedLimit::NoMandate => "no_mandate",
+        RefusedLimit::Eligibility(_) => "eligibility",
+        RefusedLimit::Entitlement => "entitlement",
+        RefusedLimit::Currency => "currency",
+        RefusedLimit::Amount => "amount",
+        RefusedLimit::InvestableCapital => "investable_capital",
+        RefusedLimit::RiskTolerance => "risk_tolerance",
+    }
+}
+
+/// How an investment request was answered, as the event log keeps it.
+///
+/// Deliberately not [`InvestmentOutcome`] itself. That type does not
+/// deserialise — "a stored decision is never an input that decides", as its
+/// own module says — and an [`EventBody`] must, so this is the record *of* a
+/// decision rather than a decision that could be read back and acted on. The
+/// limit is carried as [`limit_name`]'s token rather than as the enum, so a
+/// replayed record names a refusal without offering a value any gate would
+/// accept.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvestmentJudgement {
+    Admitted { basis: String },
+    Refused { limit: String, reason: String },
+}
+
+/// One investment request and the mandate's answer, as the event log keeps
+/// it: who asked, for how much at which strategy, which family the *factory*
+/// holds that strategy under, what the ledger said, who raised it and why.
+///
+/// Journalled on both outcomes. Nothing replays these into state — an
+/// investment request funds nothing — so this record exists for the question
+/// an operator asks afterwards and cannot ask of anything else: who was
+/// turned away, by which limit, and on whose authority the request was
+/// raised.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InvestmentEntry {
+    pub user: UserId,
+    pub strategy: StrategyId,
+    /// The registered family, not the one the request claimed. The claim is
+    /// refused when the two differ, so the record only ever carries the
+    /// factory's.
+    pub family: String,
+    pub currency: Currency,
+    pub amount: Decimal,
+    pub requested_at: Timestamp,
+    pub decided_at: Timestamp,
+    pub outcome: InvestmentJudgement,
+    pub by: DecidedBy,
+    pub reason: String,
+}
+
+impl EventBody for InvestmentEntry {
+    /// A determination about whose capital may go where, in the Decide group
+    /// the log never evicts — beside the eligibility and product records it
+    /// is read with, told apart by producer ([`INVESTMENT_ORIGIN`]).
+    const TOPIC: Topic = Topic::ComplianceEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 /// One product offering as the event log keeps it: which family compliance
 /// cleared, where, who took the determination and why.
 ///
@@ -2763,6 +2879,8 @@ impl Platform {
             proposals: Vec::new(),
             equity_history: Vec::new(),
             proposals_made: 0,
+            corporate_actions_pending: BTreeMap::new(),
+            corporate_actions_applied: BTreeSet::new(),
         };
         platform.describe_metrics();
         // Written once, at assembly, because the universe does not change
@@ -3814,6 +3932,137 @@ impl Platform {
             records.push(envelope.decode::<EligibilityEntry>()?.body.record);
         }
         EligibilityRegistry::replay(records)
+    }
+
+    // --- investment requests ----------------------------------------------------
+
+    /// Decide a user's investment request against their mandate, and journal
+    /// the answer.
+    ///
+    /// The blueprint's §40.9 `investment-api` raises exactly one thing — an
+    /// investment request — and never an order, and this is the runtime path
+    /// that raises it. Until it existed [`UserLedger::admit`] was written,
+    /// tested and reached by nothing outside its own crate's tests: a mandate
+    /// gate no deployed process could run is the `MaxExpectedShortfall` shape
+    /// `.claude/rules/domains/risk-and-execution.md` names, a control that
+    /// reads as protection and is not.
+    ///
+    /// **Nothing here moves capital.** An admitted request is a statement that
+    /// the mandate would admit this much at this strategy *now*;
+    /// [`Platform::fund_user`] is what funds, and it re-runs the eligibility
+    /// and product gates on its own because the books may have moved in
+    /// between. The two are deliberately not chained: a request that funded
+    /// itself would be an order raised by an API, which K3 refuses.
+    ///
+    /// The family is not taken from the caller's word. [`InvestmentRequest`]
+    /// carries a family because nothing at that seam maps a strategy to one,
+    /// but the kernel does — [`Platform::strategy_family`] — so a request
+    /// naming a family the factory did not register for the strategy is
+    /// refused rather than re-labelled. Without that check a mandate
+    /// permitting only one family could be satisfied by naming that family
+    /// over a strategy belonging to another, and the ledger's own family gate
+    /// would pass on the caller's claim. A strategy the factory does not know
+    /// is refused too, rather than evaluated against an offering nobody
+    /// cleared.
+    ///
+    /// Both outcomes are journalled. A refusal that leaves no trace is
+    /// indistinguishable from a request never made, which is the same
+    /// argument [`LedgerEntry::FundingRefused`] carries, and the question an
+    /// operator asks afterwards — "who was turned away, and by which limit" —
+    /// has no other record.
+    pub fn decide_investment(
+        &mut self,
+        request: InvestmentRequest,
+        operator: &OperatorIdentity,
+        reason: impl Into<String>,
+        now: Timestamp,
+    ) -> Result<InvestmentDecision> {
+        let reason = reason.into();
+        if reason.trim().len() < 10 {
+            return Err(Error::denied(
+                "an investment request needs a stated reason; whose capital was asked to be put \
+                 to work, and why, is what the audit trail is for",
+            ));
+        }
+        if !operator.is_fresh(now, ELIGIBILITY_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to raise an \
+                 investment request",
+                operator.subject(),
+                ELIGIBILITY_CREDENTIAL_AGE
+            )));
+        }
+        let Some(family) = self.strategy_family(&request.strategy) else {
+            return Err(Error::invalid(format!(
+                "the factory has registered no family for {}, so there is no product offering to \
+                 evaluate a request against; register the strategy before asking for capital at \
+                 it",
+                request.strategy
+            )));
+        };
+        if family != request.family {
+            return Err(Error::invalid(format!(
+                "the request names the family {} and {} is registered under {family}; a request \
+                 is evaluated against the family the factory holds, and correcting the claim \
+                 here would let a mandate that permits only {} be satisfied by a strategy in \
+                 another family",
+                request.family, request.strategy, request.family
+            )));
+        }
+        let product = self.products.offering(&family);
+        // `Role::Investor` rather than `Role::Viewer`, for the reason
+        // [`Platform::product_refusal`] gives: asking for capital is an
+        // investment act, and evaluating it as a viewer refuses on the role
+        // before the mandate is reached and reports a gate that is not the
+        // one that matters.
+        let decision = self
+            .user_ledger
+            .admit(&request, Role::Investor, &product, now);
+        let outcome = match decision.outcome() {
+            InvestmentOutcome::Admitted { basis } => InvestmentJudgement::Admitted {
+                basis: basis.clone(),
+            },
+            InvestmentOutcome::Refused { limit, reason } => InvestmentJudgement::Refused {
+                limit: limit_name(*limit).to_string(),
+                reason: reason.clone(),
+            },
+        };
+        let mut by = DecidedBy::operator(operator.subject(), operator.method())?;
+        if let Some(approver) = operator.second_approver() {
+            by = by.with_second_approver(approver);
+        }
+        self.journal_record(
+            InvestmentEntry {
+                user: request.user.clone(),
+                strategy: request.strategy.clone(),
+                family,
+                currency: request.currency,
+                amount: request.amount,
+                requested_at: request.requested_at,
+                decided_at: decision.decided_at(),
+                outcome,
+                by,
+                reason,
+            },
+            INVESTMENT_ORIGIN,
+            now,
+        )?;
+        // Counted after the record is on the log, so a decision the log
+        // refused charts nothing. The label is the limit's own name through
+        // [`limit_name`], whose match is exhaustive over `RefusedLimit`: an
+        // eighth limit cannot be added without this series being given a
+        // value for it.
+        self.telemetry.metrics.count(
+            names::CENTRAL_INVESTMENT_REQUESTS,
+            labels([(
+                "outcome",
+                match decision.refused_by() {
+                    None => "admitted",
+                    Some(limit) => limit_name(limit),
+                },
+            )]),
+        );
+        Ok(decision)
     }
 
     // --- venue registrations --------------------------------------------------
@@ -4973,6 +5222,16 @@ impl Platform {
                         action.ex_date.to_rfc3339()
                     ));
                     self.push_market_event(event);
+                    // The event above makes the announcement *readable*. It
+                    // does not make the position survive the split, which is
+                    // what blueprint §16.1 calls "a prerequisite for equities,
+                    // not an enhancement" — this arm published the event and
+                    // priced nothing until now, so an equity book held through
+                    // a two-for-one split reported half the shares at twice
+                    // the price for as long as the process ran. Queued here,
+                    // released at SENSE by `apply_due_corporate_actions` once
+                    // the tape has crossed the ex-date.
+                    self.queue_corporate_action(*action);
                     absorbed += 1;
                 }
                 SensedRecord::AlternativeData(point) => {
@@ -5619,7 +5878,226 @@ impl Platform {
     /// as coverage rather than as a count of observations; they are absorbed
     /// and named in the `from N absorbed` clause here rather than being
     /// silently invisible.
+    /// Hold an absorbed corporate action until the tape reaches its ex-date.
+    ///
+    /// Not applied on arrival. The announcement is knowable — often a quarter —
+    /// before the ex-date, and adjusting a series that has not yet split
+    /// *creates* the discontinuity the adjustment exists to remove: every prior
+    /// close halved while the current close still is not. Held here, released
+    /// by [`Self::apply_due_corporate_actions`].
+    ///
+    /// Three things are refused rather than guessed. An action with no
+    /// idempotency key cannot be deduplicated, so applying it risks halving the
+    /// history twice; an action already applied is dropped silently, which is
+    /// the whole purpose of the key; and an overflow of the bound is reported
+    /// rather than evicting the oldest pending action, because the oldest
+    /// pending action is the one whose ex-date is nearest and evicting it drops
+    /// exactly the adjustment about to be needed.
+    fn queue_corporate_action(&mut self, action: CorporateAction) {
+        let Some(key) = action.idempotency_key() else {
+            self.capture_problems.push(format!(
+                "a corporate action on {} ex {} carries no idempotency key and was not queued for \
+                 adjustment; without one it cannot be applied exactly once, and twice is a \
+                 corrupted position",
+                action.object_id,
+                action.ex_date.to_rfc3339()
+            ));
+            return;
+        };
+        if self.corporate_actions_applied.contains(&key) {
+            return;
+        }
+        if !self.corporate_actions_pending.contains_key(&key)
+            && self.corporate_actions_pending.len() >= PENDING_CORPORATE_ACTIONS
+        {
+            self.capture_problems.push(format!(
+                "a corporate action on {} ex {} was not queued: {PENDING_CORPORATE_ACTIONS} \
+                 actions are already awaiting their ex-date; narrow the corporate-action feed to \
+                 the traded universe — an action dropped here is a position that silently stops \
+                 matching the tape",
+                action.object_id,
+                action.ex_date.to_rfc3339()
+            ));
+            return;
+        }
+        self.corporate_actions_pending.insert(key, action);
+    }
+
+    /// Apply every held corporate action whose ex-date the tape has reached,
+    /// returning how many were applied.
+    ///
+    /// Due-ness is decided by the instrument's own bar series and not by a
+    /// clock: an action is due once the platform has observed a close at or
+    /// after the ex-date, which is the only evidence this process has that the
+    /// instrument actually traded ex. Reading `now` here would apply the
+    /// adjustment on a day the tape had not reached, and would make a replay
+    /// diverge from the live run it replays.
+    ///
+    /// An action that cannot be applied is removed from the queue and reported.
+    /// It is deliberately *not* marked applied: a corrected record re-announced
+    /// under the same key is queued again and retried, whereas marking it would
+    /// make the correction unreachable forever. Leaving it pending instead
+    /// would re-report the same corrupt record on every cycle for the life of
+    /// the process.
+    fn apply_due_corporate_actions(&mut self) -> usize {
+        let due: Vec<String> = self
+            .corporate_actions_pending
+            .iter()
+            .filter(|(_, action)| {
+                self.bar_history
+                    .get(action.object_id.as_str())
+                    .is_some_and(|bars| bars.iter().any(|bar| bar.close_time() >= action.ex_date))
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        let mut applied = 0;
+        for key in due {
+            let Some(action) = self.corporate_actions_pending.remove(&key) else {
+                continue;
+            };
+            match self.apply_corporate_action(&action) {
+                Ok(()) => {
+                    self.corporate_actions_applied.insert(key);
+                    applied += 1;
+                }
+                Err(error) => self.capture_problems.push(format!(
+                    "the corporate action on {} ex {} was not applied and the series and book \
+                     still read as though it had not happened: {}",
+                    action.object_id,
+                    action.ex_date.to_rfc3339(),
+                    error.message()
+                )),
+            }
+        }
+        applied
+    }
+
+    /// Adjust one instrument's retained history and its open lot for one
+    /// action.
+    ///
+    /// **The history.** Every price field of every bar strictly before the
+    /// ex-date is multiplied by
+    /// [`CorporateAction::price_adjustment_factor`], taken against the last
+    /// close strictly before the ex-date — the reference rule
+    /// [`qip_market::corporate_action::adjust_prices`] states, applied to the
+    /// whole bar rather than to a close series, because the detectors read
+    /// highs, lows and volumes too and a bar whose close moved while its high
+    /// did not is a bar with a close above its high. That batch helper is not
+    /// called: it compounds a set of actions in reverse chronological order,
+    /// and the kernel applies exactly one action at the moment it falls due,
+    /// so compounding across actions happens by successive calls to this and
+    /// handing it a one-element slice would be the same arithmetic wearing a
+    /// loop.
+    ///
+    /// **The book.** The lot's quantity is multiplied by
+    /// [`CorporateAction::quantity_adjustment_factor`] and its average price
+    /// divided by the same figure, so quantity times cost is unchanged to the
+    /// unit. Deliberately *not* the price-adjustment factor: for a split and a
+    /// stock dividend the two agree exactly, but a cash dividend carries a
+    /// price factor below one and a quantity factor of one, and the book is
+    /// held at cost — a dividend pays cash and does not write down what the
+    /// shares cost. Using the series factor here would reduce cost basis by the
+    /// dividend yield on every ex-date, which is the silent drift §16.1 names.
+    ///
+    /// Because cost is preserved exactly, [`RiskAggregates`]' at-cost gross and
+    /// net do not move and need no second adjustment that could disagree with
+    /// this one.
+    fn apply_corporate_action(&mut self, action: &CorporateAction) -> Result<()> {
+        let object = action.object_id.as_str();
+        let bars = self.bar_history.get_mut(object).ok_or_else(|| {
+            Error::invalid(format!(
+                "the corporate action on {object} came due with no bar series to adjust; feed the \
+                 instrument's bars before its actions"
+            ))
+        })?;
+        // The last close strictly before the ex-date. With none the action
+        // predates every bar held and adjusts nothing here, so it is applied to
+        // the book alone rather than priced against a reference nobody
+        // observed.
+        let reference = bars
+            .iter()
+            .rev()
+            .find(|bar| bar.close_time() < action.ex_date)
+            .map(|bar| bar.close);
+        if let Some(reference) = reference {
+            let factor = action.price_adjustment_factor(reference)?;
+            if factor != Decimal::ONE {
+                for bar in bars.iter_mut() {
+                    if bar.close_time() >= action.ex_date {
+                        continue;
+                    }
+                    for price in [&mut bar.open, &mut bar.high, &mut bar.low, &mut bar.close] {
+                        *price = price.checked_mul(factor).ok_or_else(|| {
+                            Error::numeric(format!(
+                                "adjusting {object} by {factor} overflows a price it holds; \
+                                 correct the action or the series"
+                            ))
+                        })?;
+                    }
+                    if let Some(vwap) = bar.vwap.as_mut() {
+                        *vwap = vwap.checked_mul(factor).ok_or_else(|| {
+                            Error::numeric(format!(
+                                "adjusting {object}'s volume-weighted price by {factor} overflows; \
+                                 correct the action or the series"
+                            ))
+                        })?;
+                    }
+                }
+                // Money to statistic, at the one place it happens for this
+                // path: the bars carry `Decimal` closes and the detector series
+                // is `f64`. Rebuilt from the adjusted bars rather than scaled
+                // in parallel, so the two cannot disagree about what the tape
+                // was — which is the second-source-of-truth failure this
+                // platform keeps finding.
+                let closes: Vec<f64> = bars.iter().map(|bar| bar.close.to_f64()).collect();
+                self.price_history.insert(object.to_string(), closes);
+            }
+        }
+
+        let quantity_factor = action.quantity_adjustment_factor();
+        if quantity_factor == Decimal::ONE {
+            return Ok(());
+        }
+        if !quantity_factor.is_positive() {
+            return Err(Error::invalid(format!(
+                "the corporate action on {object} adjusts share counts by {quantity_factor}; \
+                 supply a strictly positive factor — a non-positive one would flip or void a \
+                 holding the platform still owns"
+            )));
+        }
+        let Some(lot) = self.capital.positions.get_mut(object) else {
+            return Ok(());
+        };
+        let quantity = lot.quantity.checked_mul(quantity_factor).ok_or_else(|| {
+            Error::numeric(format!(
+                "the corporate action on {object} multiplies a holding of {} by \
+                 {quantity_factor} and the product is not representable; correct the action",
+                lot.quantity
+            ))
+        })?;
+        let average_price = lot
+            .average_price
+            .checked_div(quantity_factor)
+            .ok_or_else(|| {
+                Error::numeric(format!(
+                    "the corporate action on {object} divides a cost basis of {} by \
+                 {quantity_factor} and the quotient is not representable; correct the action",
+                    lot.average_price
+                ))
+            })?;
+        lot.quantity = quantity;
+        lot.average_price = average_price;
+        Ok(())
+    }
+
     fn stage_sense(&mut self, _now: Timestamp) -> StageOutcome {
+        // Before anything is counted: an action whose ex-date the tape has
+        // crossed is applied to the history this stage is about to report and
+        // to the lot the risk stages read. Here rather than in `observe`
+        // because a batch may carry the action and the bar that makes it due in
+        // any order, and an adjustment applied mid-batch would see half a tape.
+        let adjusted = self.apply_due_corporate_actions();
+        let pending_actions = self.corporate_actions_pending.len();
         let instruments = self.price_history.len();
         let prices: usize = self.price_history.values().map(Vec::len).sum();
         let depth = self.liquidity.observation_count();
@@ -5635,12 +6113,32 @@ impl Platform {
         } else {
             format!("; {sources} registered source(s)")
         };
+        // Said out loud rather than left as a silent rewrite. An applied split
+        // changes every figure derived from the retained history — volatility,
+        // drawdown, every return — and an operator who sees one move has to be
+        // able to see why from the same line. A pending count beside it is the
+        // schedule: an action that never leaves this queue is an instrument
+        // whose bars stopped arriving, which reads as a healthy feed otherwise.
+        let corporate = match (adjusted, pending_actions) {
+            (0, 0) => String::new(),
+            (0, pending) => format!("; {pending} corporate action(s) awaiting an ex-date"),
+            (applied, 0) => {
+                format!("; {applied} corporate action(s) applied to the history and the book")
+            }
+            (applied, pending) => format!(
+                "; {applied} corporate action(s) applied to the history and the book, {pending} \
+                 awaiting an ex-date"
+            ),
+        };
         let absorbed = self.observations_absorbed;
         if absorbed == 0 {
             return StageOutcome::ran(
                 Stage::Sense,
                 0,
-                format!("no observations have been fed in; the platform is running blind{sourced}"),
+                format!(
+                    "no observations have been fed in; the platform is running \
+                     blind{sourced}{corporate}"
+                ),
             );
         }
         let mut surfaces: Vec<String> = Vec::new();
@@ -5668,7 +6166,10 @@ impl Platform {
         StageOutcome::ran(
             Stage::Sense,
             held,
-            format!("{held} observation(s) held from {absorbed} absorbed: {breakdown}{sourced}"),
+            format!(
+                "{held} observation(s) held from {absorbed} absorbed: \
+                 {breakdown}{sourced}{corporate}"
+            ),
         )
     }
 
@@ -14525,6 +15026,410 @@ mod exit_cost_tests {
         assert_eq!(
             exit_cost_of("obj-AAA", dec!("1000000"), 0.0),
             Ok(Decimal::ZERO)
+        );
+    }
+}
+
+#[cfg(test)]
+mod corporate_action_tests {
+    //! The corporate-actions engine of blueprint §16.1, and its caller.
+    //!
+    //! §16.1 calls this one "a prerequisite for equities, not an enhancement":
+    //! "without it an equity position quietly becomes wrong after the first
+    //! split, cost basis drifts, reconciliation halts, and every downstream
+    //! number is contaminated." Until this module existed the kernel absorbed a
+    //! corporate action as a knowable [`MarketEvent`] and priced nothing from
+    //! it — `qip_market::corporate_action`'s factors and
+    //! `qip_portfolio::position::Position::apply_adjustment` had no caller
+    //! outside a test in the whole workspace — so a book held through a
+    //! two-for-one split reported half the shares at twice the price for as
+    //! long as the process ran, and the retained price history carried a step
+    //! that reads as a fifty-percent crash to every detector that scans it.
+    //!
+    //! The tests drive [`Platform::run_cycle`], not the private helpers, so
+    //! what they prove is that the SENSE stage reaches the adjustment.
+
+    use super::*;
+    use qip_core::dec;
+    use qip_financial::quality::DataQuality;
+    use qip_market::bar::Interval;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    /// The ex-date every fixture here uses: three days after [`start`].
+    fn ex_date() -> Timestamp {
+        start().saturating_add(Duration::from_days(3))
+    }
+
+    fn platform() -> Platform {
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            qip_financial::universe::Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    /// A daily bar closing at `close` on the day `day` days after [`start`].
+    ///
+    /// The open, high and low are pinned to the close plus small offsets so a
+    /// test can tell whether the adjustment touched the whole bar or only the
+    /// close: an adjustment that halves the close and leaves the high is a bar
+    /// whose close sits above its high, which every downstream range,
+    /// true-range and gap statistic reads as a valid measurement.
+    fn bar(close: &str, day: i64) -> SensedRecord {
+        let close = Decimal::parse(close).expect("the fixture's close parses");
+        SensedRecord::Bar(Box::new(Bar {
+            object_id: ObjectId::from_string("obj-AAA"),
+            venue: "XNYS".to_string(),
+            interval: Interval::Day,
+            // `close_time` is the open time plus the interval, so a bar opened
+            // one interval before the instant we want closes at it.
+            open_time: start()
+                .saturating_add(Duration::from_days(day))
+                .saturating_sub(Interval::Day.duration()),
+            open: close,
+            high: close + dec!("2"),
+            low: close - dec!("2"),
+            close,
+            volume: Decimal::from_int(1_000),
+            trade_count: 100,
+            vwap: Some(close),
+            quality: DataQuality::default(),
+        }))
+    }
+
+    fn action(kind: CorporateActionKind) -> SensedRecord {
+        SensedRecord::CorporateAction(Box::new(CorporateAction {
+            object_id: ObjectId::from_string("obj-AAA"),
+            ex_date: ex_date(),
+            record_date: None,
+            payment_date: None,
+            kind,
+            announced_at: start(),
+        }))
+    }
+
+    fn split() -> SensedRecord {
+        action(CorporateActionKind::Split {
+            ratio: Decimal::from_int(2),
+        })
+    }
+
+    /// The three bars strictly before the ex-date. Closes chosen so that after
+    /// a two-for-one split they read 50, 51, 52 — continuous with the 52 the
+    /// post-split bar closes at, which is the property the adjustment exists to
+    /// restore and which a wrong factor cannot produce by accident.
+    fn bars_before_the_ex_date() -> Vec<SensedRecord> {
+        vec![bar("100", 0), bar("102", 1), bar("104", 2)]
+    }
+
+    /// The first bar the instrument trades ex, at half the prior close.
+    fn bar_on_the_ex_date() -> SensedRecord {
+        bar("52", 3)
+    }
+
+    /// Open a hundred shares at 100 in the book the risk stages read.
+    ///
+    /// Written straight into the lot rather than through a fill, because a
+    /// fill would also move cash and realised P&L and this test is about what
+    /// the split does to a holding, not about what booking one costs.
+    fn hold_a_hundred_shares(platform: &mut Platform) {
+        platform.capital.positions.insert(
+            "obj-AAA".to_string(),
+            PositionLot {
+                quantity: Decimal::from_int(100),
+                average_price: Decimal::from_int(100),
+            },
+        );
+    }
+
+    fn closes(platform: &Platform) -> Vec<f64> {
+        platform
+            .price_history
+            .get("obj-AAA")
+            .expect("the series exists")
+            .clone()
+    }
+
+    fn lot(platform: &Platform) -> PositionLot {
+        *platform
+            .capital
+            .positions
+            .get("obj-AAA")
+            .expect("the holding survives")
+    }
+
+    #[test]
+    fn a_split_the_tape_has_crossed_makes_the_history_continuous_and_leaves_the_holding_worth_the_same()
+     {
+        let mut platform = platform();
+        hold_a_hundred_shares(&mut platform);
+        let mut records = bars_before_the_ex_date();
+        records.push(split());
+        records.push(bar_on_the_ex_date());
+        platform.observe(records);
+
+        // The premise, asserted rather than assumed: before the cycle the
+        // series still contains the step. A test that only checked the
+        // adjusted values would pass against a platform that never held the
+        // unadjusted ones.
+        assert_eq!(
+            closes(&platform),
+            vec![100.0, 102.0, 104.0, 52.0],
+            "the premise: the unadjusted series contains the split as a fifty-percent fall"
+        );
+        assert_eq!(
+            platform.corporate_actions_pending.len(),
+            1,
+            "the premise: the action was absorbed and is waiting to be applied"
+        );
+
+        platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+
+        assert_eq!(
+            closes(&platform),
+            vec![50.0, 51.0, 52.0, 52.0],
+            "the retained history still contains the split; every volatility, drawdown and \
+             return computed from it reads a fifty-percent crash that never happened"
+        );
+        // The whole bar, not just the close. A bar whose close was halved and
+        // whose high was not is a bar with a close above its high.
+        let bars = platform
+            .bar_history
+            .get("obj-AAA")
+            .expect("the bar series exists");
+        assert_eq!(
+            bars[0].high,
+            dec!("51"),
+            "the close was adjusted and the high was not, so the bar now reports a close of 50 \
+             inside a range topping out at 102"
+        );
+        assert_eq!(
+            bars[0].low,
+            dec!("49"),
+            "the low was not adjusted with the close"
+        );
+        assert_eq!(
+            bars[0].vwap,
+            Some(dec!("50")),
+            "the volume-weighted price was not adjusted with the close"
+        );
+        assert_eq!(
+            bars[3].close,
+            dec!("52"),
+            "a bar on or after the ex-date was adjusted; it already trades ex and adjusting it \
+             puts the step back in from the other side"
+        );
+
+        let lot = lot(&platform);
+        assert_eq!(
+            lot.quantity,
+            Decimal::from_int(200),
+            "the holding did not survive the split: the book still reports the pre-split share \
+             count against a post-split tape"
+        );
+        assert_eq!(
+            lot.average_price,
+            Decimal::from_int(50),
+            "the cost basis did not survive the split; §16.1's 'cost basis drifts' is exactly this"
+        );
+        assert_eq!(
+            lot.quantity * lot.average_price,
+            Decimal::from_int(10_000),
+            "the split changed what the holding cost, which no split does — the at-cost notional \
+             the risk aggregates read moved on a day nothing traded"
+        );
+        assert!(
+            platform.corporate_actions_pending.is_empty(),
+            "the applied action is still queued and will be applied again next cycle"
+        );
+    }
+
+    #[test]
+    fn a_split_announced_before_its_ex_date_adjusts_nothing_until_the_tape_reaches_it() {
+        let mut platform = platform();
+        hold_a_hundred_shares(&mut platform);
+        let mut records = bars_before_the_ex_date();
+        records.push(split());
+        platform.observe(records);
+
+        let report = platform.run_cycle(start().saturating_add(Duration::from_days(2)));
+
+        // The announcement is knowable now; the ex-date is a schedule.
+        // Adjusting here would halve three closes while the current close was
+        // still unsplit — inventing the discontinuity the adjustment exists to
+        // remove, in the opposite direction.
+        assert_eq!(
+            closes(&platform),
+            vec![100.0, 102.0, 104.0],
+            "the history was adjusted for a split the tape has not reached; the platform has \
+             halved prices at which the instrument is still trading"
+        );
+        assert_eq!(
+            lot(&platform).quantity,
+            Decimal::from_int(100),
+            "the holding was doubled before the split happened"
+        );
+        assert_eq!(
+            platform.corporate_actions_pending.len(),
+            1,
+            "the action was neither applied nor held; a dropped split is a position that \
+             silently stops matching the tape"
+        );
+        let sense = report
+            .stages
+            .iter()
+            .find(|stage| stage.stage == Stage::Sense)
+            .expect("the sense stage ran");
+        assert!(
+            sense
+                .detail
+                .contains("1 corporate action(s) awaiting an ex-date"),
+            "the operator is not told a scheduled adjustment is outstanding: {}",
+            sense.detail
+        );
+
+        // The tape reaches the ex-date on the next batch, and the same queued
+        // action is released.
+        platform.observe(vec![bar_on_the_ex_date()]);
+        platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+        assert_eq!(
+            closes(&platform),
+            vec![50.0, 51.0, 52.0, 52.0],
+            "the action was held past the ex-date the tape crossed, so the step stayed in"
+        );
+        assert_eq!(lot(&platform).quantity, Decimal::from_int(200));
+    }
+
+    #[test]
+    fn the_same_split_absorbed_twice_adjusts_the_history_and_the_holding_exactly_once() {
+        let mut platform = platform();
+        hold_a_hundred_shares(&mut platform);
+        let mut records = bars_before_the_ex_date();
+        records.push(split());
+        records.push(bar_on_the_ex_date());
+        // The same record again, as two feeds carrying one action produce, or
+        // a re-sensed batch after a restart. Applied twice it is a four-for-one
+        // split nobody declared.
+        records.push(split());
+        platform.observe(records);
+        assert_eq!(
+            platform.corporate_actions_pending.len(),
+            1,
+            "the premise: the duplicate collapsed onto one idempotency key"
+        );
+
+        platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+        // And a third arrival after the adjustment has already been made,
+        // which the pending queue alone cannot catch.
+        platform.observe(vec![split()]);
+        platform.run_cycle(start().saturating_add(Duration::from_days(4)));
+
+        assert_eq!(
+            closes(&platform),
+            vec![50.0, 51.0, 52.0, 52.0],
+            "a replayed announcement adjusted the history a second time; the series now reads a \
+             four-for-one split that was never declared"
+        );
+        assert_eq!(
+            lot(&platform).quantity,
+            Decimal::from_int(200),
+            "a replayed announcement doubled the holding twice"
+        );
+    }
+
+    #[test]
+    fn a_cash_dividend_adjusts_the_price_series_and_leaves_the_cost_basis_alone() {
+        let mut platform = platform();
+        hold_a_hundred_shares(&mut platform);
+        let mut records = bars_before_the_ex_date();
+        records.push(action(CorporateActionKind::CashDividend {
+            amount: dec!("5.2"),
+        }));
+        records.push(bar_on_the_ex_date());
+        platform.observe(records);
+
+        platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+
+        // A dividend of 5.20 against a reference close of 104 is a factor of
+        // 0.95, so the series is scaled and the step at the ex-date is removed.
+        assert_eq!(
+            closes(&platform),
+            vec![95.0, 96.9, 98.8, 52.0],
+            "the price series was not adjusted for the dividend, so the ex-date drop reads as a \
+             fall the instrument did not have"
+        );
+        // The book is held at cost. A cash dividend pays cash; it does not
+        // change what the shares cost. Applying the price-series factor here —
+        // the obvious shortcut, since it is the factor already in hand — would
+        // write cost basis down by the dividend yield on every ex-date, which
+        // is precisely the silent drift §16.1 names.
+        let lot = lot(&platform);
+        assert_eq!(
+            lot.quantity,
+            Decimal::from_int(100),
+            "a cash dividend changed the share count"
+        );
+        assert_eq!(
+            lot.average_price,
+            Decimal::from_int(100),
+            "a cash dividend wrote down the cost basis by its yield; the book is held at cost and \
+             the dividend paid cash, so nothing about what the shares cost has changed"
+        );
+    }
+
+    #[test]
+    fn a_split_whose_ratio_cannot_be_priced_leaves_the_book_alone_and_is_reported() {
+        let mut platform = platform();
+        hold_a_hundred_shares(&mut platform);
+        let mut records = bars_before_the_ex_date();
+        // A zero ratio is a corrupt record. The engine refuses it rather than
+        // answering `Decimal::ONE`, and the kernel must not turn that refusal
+        // into a holding multiplied by nothing.
+        records.push(action(CorporateActionKind::Split {
+            ratio: Decimal::ZERO,
+        }));
+        records.push(bar_on_the_ex_date());
+        platform.observe(records);
+
+        let report = platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+
+        assert_eq!(
+            closes(&platform),
+            vec![100.0, 102.0, 104.0, 52.0],
+            "an unpriceable action was applied anyway"
+        );
+        assert_eq!(
+            lot(&platform).quantity,
+            Decimal::from_int(100),
+            "an unpriceable split reached the holding; a factor of zero voids a position the \
+             platform still owns"
+        );
+        let learned = report
+            .stages
+            .iter()
+            .find(|stage| stage.stage == Stage::Learn)
+            .expect("the learn stage ran");
+        // Matched on the instrument the record names and on the word the
+        // engine's own refusal uses for the field, not on a substring every
+        // learn-stage problem carries.
+        assert!(
+            learned
+                .problems
+                .iter()
+                .any(|problem| problem.contains("obj-AAA") && problem.contains("split ratio of 0")),
+            "the refused action is not reported against the instrument it corrupts, so the \
+             series and the book silently disagree with the tape: {:?}",
+            learned.problems
         );
     }
 }

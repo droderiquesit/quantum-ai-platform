@@ -13,6 +13,7 @@ use qip_core::{Decimal, Timestamp};
 use qip_events::{EventBody, Topic};
 use serde::{Deserialize, Serialize};
 
+use crate::manifest::SourceManifest;
 use crate::quality::{DataQuality, Provenance};
 
 /// Directional reading of a piece of text, in `[-1, 1]`.
@@ -120,7 +121,22 @@ impl NewsSource {
 pub struct NewsItem {
     pub item_id: String,
     pub headline: String,
-    pub body: String,
+    /// Where the article text is, and what it hashed to when it was read.
+    ///
+    /// **Not the text.** This record is an [`EventBody`]: every news item the
+    /// platform ingested was copied verbatim into the hash-chained event log,
+    /// which is permanent and sealed against edit, so a vendor's licensed,
+    /// non-displayable prose went in and could never come out. Blueprint §7.2
+    /// and §56.4 rules 34 and 36 say the opposite — retain the entities, the
+    /// facts and a manifest with a content hash; discard the copy — and this
+    /// field is the type system holding that line rather than a reviewer
+    /// holding it: with no `String` to put the article in, no adapter can
+    /// archive one by writing the obvious code.
+    ///
+    /// The headline stays because it is what the platform *says* about the
+    /// document — the graph's node label, the catalyst's description — and a
+    /// node labelled by a hash is a node no operator can read.
+    pub manifest: SourceManifest,
     pub source: NewsSource,
     /// When the item was published.
     pub published_at: Timestamp,
@@ -157,7 +173,16 @@ impl NewsItem {
 
 impl EventBody for NewsItem {
     const TOPIC: Topic = Topic::NewsReceived;
-    const SCHEMA_VERSION: u32 = 1;
+    // 1 → 2: version 1 carried the article text in a `body` field and no
+    // manifest. The two are not the same record with a field renamed — a v1
+    // payload is a copy of a document and a v2 payload is a reference to one —
+    // so a v1 record must fail to decode as v2 rather than arrive with an
+    // invented hash. `Envelope::decode` refuses a payload whose version is
+    // *higher* than the reader's; this direction is held by `manifest` having
+    // no serde default, which is deliberate: a defaulted manifest would name
+    // no source and hash nothing, and would read downstream as a document the
+    // platform had referenced.
+    const SCHEMA_VERSION: u32 = 2;
 
     fn idempotency_key(&self) -> Option<String> {
         Some(format!("{}:{}", self.provenance.source, self.item_id))

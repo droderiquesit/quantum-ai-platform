@@ -851,11 +851,19 @@ fn a_fabric_record_that_cannot_be_decoded_is_refused_rather_than_passed_over() -
     let mut log = EventLog::in_memory();
     let mut event = foreign_event(proposed_at(), PRODUCER)?;
     event.topic = FabricRecord::TOPIC;
+    // Stamped with the fabric's current schema version as well as its topic,
+    // so the only thing wrong with this record is its payload. `Note` declares
+    // version 1, and leaving that would have the replay refuse this record as
+    // one from another schema version — a true refusal, and not the one this
+    // test is about.
+    event.schema_version = FabricRecord::SCHEMA_VERSION;
     log.append(&event)?;
-    // Premise: the record is on the fabric topic under the fabric producer.
+    // Premise: the record is on the fabric topic under the fabric producer, at
+    // a version this build reads.
     let record = &log.records()[0];
     assert_eq!(record.event.topic, FabricRecord::TOPIC);
     assert_eq!(record.event.lineage.producer, PRODUCER);
+    assert_eq!(record.event.schema_version, FabricRecord::SCHEMA_VERSION);
     assert_eq!(log.verify_chain(), Ok(()));
 
     let err = replay(log.records()).expect_err("an undecodable fabric record must refuse");
@@ -867,6 +875,81 @@ fn a_fabric_record_that_cannot_be_decoded_is_refused_rather_than_passed_over() -
     assert!(
         FabricJournal::resume(log, 7, correlation()).is_err(),
         "a journal must not resume a log it cannot replay"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_fabric_record_written_under_the_old_schema_is_refused_by_name() -> Result<()> {
+    // The failure this prevents: a version 1 fabric record — written before a
+    // `GateCommand` carried the Intelligence layer's funding ruling — read as
+    // though the corridor had been ruled on. `FabricRecord::SCHEMA_VERSION`
+    // went 1 → 2 for exactly that reason, but `AnyEvent::decode` guards only
+    // against a version *newer* than the build's, so nothing in the version
+    // machinery refused a version 1 record. What refused it was serde: the two
+    // assertions below hold the two halves apart, because the second is the
+    // one that is refusing today and the first is the one that says why.
+    let journal = journal_of(11, mixed_sequence()?)?;
+    let mut records = journal.records().to_vec();
+    // Premise: the log replays clean before this test alters one record, so
+    // the refusal below is caused by the alteration and not by the fixture.
+    assert_eq!(replay(&records)?.applied, 18);
+
+    let index = records
+        .iter()
+        .position(|record| record.event.payload["command"]["subject"] == "gate")
+        .expect("the mixed sequence journals gate assessments");
+    let record = &mut records[index];
+    // Premise: as written this is a version 2 record and it carries the field
+    // version 1 did not have.
+    assert_eq!(record.event.schema_version, 2);
+    assert!(
+        record.event.payload["command"]["funding"].is_object(),
+        "premise: a version 2 gate record carries the funding ruling"
+    );
+
+    // A record as a version 1 writer would have produced it: no `funding`, the
+    // version it was written under, and a payload hash over its own bytes —
+    // not a tampered version 2 record, which the chain would catch for a
+    // different reason and prove nothing about the schema.
+    record.event.schema_version = 1;
+    record.event.payload["command"]
+        .as_object_mut()
+        .expect("a gate command serialises as an object")
+        .remove("funding");
+    record.event.payload_hash = sha256_hex(canonical_json(&record.event.payload).as_bytes());
+    rechain(&mut records, index)?;
+
+    // Half one: what refuses this today, if the explicit check were absent.
+    // `GateCommand::funding` has no `#[serde(default)]` and `CorridorFunding`
+    // derives no `Default`, so serde cannot build the command with the field
+    // missing. Adding either would turn this `Err` into an `Ok` — and, without
+    // the schema check below, would silently re-admit every version 1 record
+    // as an assessment made against a funding ruling that never existed. If
+    // this assertion ever fails, the schema check below is the only thing
+    // still refusing, and it is refusing for the stated reason.
+    assert!(
+        records[index].event.decode::<FabricRecord>().is_err(),
+        "serde must not build a gate command with no funding ruling"
+    );
+
+    // Half two: the refusal is the replay's own and names the version.
+    let err = replay(&records).expect_err("a record from another schema version must refuse");
+    let message = err.message();
+    assert!(
+        message.contains(&format!("position {} ", index + 1)),
+        "the refusal must name the record's position: {message}"
+    );
+    assert!(
+        message.contains("schema version 1") && message.contains("reads version 2"),
+        "the refusal must name the version written and the version read, so the reason is in \
+         the error rather than in a serde message about a missing field: {message}"
+    );
+    assert!(
+        !message.contains("cannot be decoded"),
+        "the version must be refused before the payload is decoded, or the reason an operator \
+         sees is 'missing field funding' — which reads as a corruption rather than as a record \
+         from a schema this build does not read: {message}"
     );
     Ok(())
 }
