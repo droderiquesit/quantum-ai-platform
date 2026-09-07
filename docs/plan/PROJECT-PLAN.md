@@ -744,8 +744,16 @@ workflow's existence** — earlier the same day the endpoint answered `404`
 because GitHub had not yet seen the file, and a reader who wrote that down
 would now find a `200` and mistake registration for a run — and
 `image_bake_subnet_cidr` is commented out in
-`environments/dev/terraform.tfvars:203`, so `module.image_bake` has
-`count = 0` (`terraform/main.tf:631`) and creates nothing. `boot_image` has no
+`environments/dev/terraform.tfvars` (locate with
+`grep -n image_bake_subnet_cidr infrastructure/environments/dev/terraform.tfvars`
+— it read `:203` until 2026-09-07 and was `:215` by then), so
+`module.image_bake` has `count = 0` (`grep -n 'image_bake_subnet_cidr == null'
+infrastructure/terraform/main.tf` — cited as `:631`, actually `:699`) and
+creates nothing. **Both citations rotted under `665c506` and `76c677f`, and
+they are replaced with commands rather than fresh numbers**: they sat inside a
+passage arguing that these lines had been re-checked and were therefore safe
+to quote as lines. The facts they support are unchanged; what failed is the
+form of the citation, in the paragraph that vouched for it. `boot_image` has no
 value in any environment: every occurrence in a tfvars file is inside a
 comment. So the value a person writes into `execution_nodes` still does not
 exist; what changed is that producing one is now three human acts named in the

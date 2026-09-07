@@ -23,7 +23,7 @@ runtime     qip-kernel  ─── the only place that knows how it fits together
               │
 agents      qip-investment-agents
               │
-services    ingestion → normalisation → entity-resolution → world-model
+services    ingestion → entity-resolution → world-model
             → opportunity-engine → reasoning-engine → simulation-engine
             → optimization-engine → portfolio-engine → risk-engine
             → execution-engine → learning-engine
@@ -43,7 +43,7 @@ clock or an unseeded random number, which is what makes a replay reproduce.
 
 | Stage | Crate | What it produces |
 |---|---|---|
-| SENSE | `qip-market-ingestion`, `qip-normalization` | observations with provenance |
+| SENSE | `qip-market-ingestion` | observations with provenance |
 | UNDERSTAND | `qip-entity-resolution`, `qip-world-model` | a bitemporal model of the world |
 | DISCOVER | `qip-opportunity-engine` | ranked opportunities |
 | REASON | `qip-investment-agents`, `qip-reasoning-engine` | reviewed hypotheses |
