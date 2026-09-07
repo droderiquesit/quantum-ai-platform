@@ -5825,9 +5825,22 @@ impl Platform {
             // — must journal no comparison rather than inherit the last
             // cycle's, and attributing a baseline computed on one cycle's
             // problem to a cycle that had no problem is an audit trail worse
-            // than an empty one, because it looks complete. Moving the value
-            // out here makes that structural rather than a clearing statement
-            // somebody has to remember to keep at the top of the loop.
+            // than an empty one, because it looks complete.
+            //
+            // Its four siblings above are cleared at the top of LEARN and this
+            // one cannot be: it is set in DECIDE, which runs before LEARN, so
+            // clearing it there would erase the comparison on its way to this
+            // line. Taking it here is the alternative, and the honest statement
+            // of what that buys is narrower than "structural", which is what
+            // this comment claimed until 2026-09-07. The guarantee is: the
+            // field is empty after every journalling, so the next cycle can
+            // only journal what its own DECIDE put there. It rests on
+            // `journal_cycle` being the sole reader and on `run_cycle` reaching
+            // it — which it does on every path past its one early return, the
+            // `now < reasoned_through` refusal at the top, and that path runs
+            // no stage and so sets nothing to leak. An early return added
+            // between DECIDE and here would break it silently, and there is no
+            // type that would notice.
             solver_routing: self.cycle_solver_routing.take(),
         };
 
@@ -7564,7 +7577,14 @@ impl Platform {
     /// * the **drawdown**, from realised equity against its peak, which is what
     ///   the allocator shrinks the budgets by. The gate then reconciles the
     ///   sizes the platform would actually deploy today rather than the ones it
-    ///   would have deployed before the book fell.
+    ///   would have deployed before the book fell — **the charges, and only the
+    ///   charges**. The pools are not scaled by the drawdown response;
+    ///   [`CentralPlane::arm_horizons`] argues why, and the argument is not
+    ///   restated here so that it cannot drift into two versions. This bullet
+    ///   ended at "before the book fell" until an independent review read it as
+    ///   a claim about both sides of the comparison. It was only ever true of
+    ///   the numerator, and a doc silent about the denominator of a control is
+    ///   read as a doc describing the whole of it.
     ///
     /// `Ok(None)` where the desk has stated no `CentralConfig::horizons`. See
     /// [`CentralPlane::arm_horizons`] for why that is a refusal to arm rather

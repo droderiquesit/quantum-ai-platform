@@ -62,7 +62,13 @@ use crate::legal::{LicensingPosture, SourceLicense};
 use crate::registration::{RegistrationRegistry, RegistrationStanding};
 
 /// One catalogued source: the evaluation of its actual terms.
-#[derive(Debug)]
+///
+/// `Clone` so that a caller holding a borrowed catalogue can hand a
+/// [`StandingAdmission`] the entries it must keep re-asking. The gate holds the
+/// question, not the answer — see its documentation — and a question it could
+/// not own would have to be rebuilt from [`catalogue`] on every poll, which is
+/// a second reading of the same code and a second place for the two to differ.
+#[derive(Clone, Debug)]
 pub struct CatalogueEntry {
     /// Must match the manifest's `source_id` exactly.
     pub source_id: &'static str,

@@ -204,22 +204,60 @@ impl StreamLedger {
         });
     }
 
-    /// Redeliveries as a share of everything the source delivered.
+    /// Records the dedup window judged: everything that reached
+    /// [`super::dedup::DedupWindow::observe`] and was found new or repeated.
     ///
-    /// `None` when nothing was delivered, rather than zero: a stream that has
-    /// seen no records has not got a duplicate ratio of nought, it has not got
-    /// one, and reporting the two the same way is how a dead feed reads as a
-    /// perfectly deduplicated one.
+    /// The denominator of [`Self::duplicate_ratio`], given a name of its own so
+    /// that the ratio has one definition rather than one in arithmetic and
+    /// another in prose. A quarantined record was fingerprinted before it was
+    /// mapped, so it belongs here; a withheld one never was, so it does not.
+    pub fn fingerprinted(&self) -> u64 {
+        self.admitted
+            .saturating_add(self.duplicates)
+            .saturating_add(self.quarantined)
+    }
+
+    /// Redeliveries as a share of the records the dedup window judged, which is
+    /// **not** a share of everything the source delivered.
+    ///
+    /// This doc said "everything the source delivered" while the arithmetic
+    /// divided by `admitted + duplicates`, and its own warning applies to it:
+    /// getting the denominator wrong is how a stream that republished
+    /// everything reads as a healthy one. The denominator is now
+    /// [`Self::fingerprinted`], and the two records it deliberately treats
+    /// differently are the reason a sentence had to be picked and kept:
+    ///
+    /// * A **withheld** record is real but not yet knowable at the poll's
+    ///   horizon, and `ConnectorRuntime::admit` returns before it is ever
+    ///   fingerprinted. It cannot be a duplicate and cannot be found one, so
+    ///   counting it below the line would depress the ratio in proportion to
+    ///   the manifest's publication delay — a number about dissemination,
+    ///   reported as a number about republication.
+    /// * A **quarantined** record *was* fingerprinted — the window observes
+    ///   before the connector maps or validates — so it is counted. Leaving it
+    ///   out understated the denominator by exactly the records a broken feed
+    ///   produces most of, which is the wrong direction to be wrong in.
+    ///
+    /// The two are therefore not a partition of `delivered`:
+    /// `admitted + duplicates + withheld + quarantined` is what the source
+    /// served, and this ratio is over that sum less `withheld`. Whoever quotes
+    /// the figure has to say so, which is why [`Self::describe`] prints the
+    /// denominator beside it rather than a bare number a reader must guess at.
+    ///
+    /// `None` when nothing was fingerprinted, rather than zero: a stream that
+    /// has seen no records has not got a duplicate ratio of nought, it has not
+    /// got one, and reporting the two the same way is how a dead feed reads as
+    /// a perfectly deduplicated one.
     ///
     /// `f64` and not `Decimal`: this is a statistic about the feed, not money.
     pub fn duplicate_ratio(&self) -> Option<f64> {
-        let delivered = self.admitted.saturating_add(self.duplicates);
-        if delivered == 0 {
+        let fingerprinted = self.fingerprinted();
+        if fingerprinted == 0 {
             return None;
         }
         // The crossing point from exact counts to statistics. Both counts are
         // u64 and the ratio is descriptive; nothing sizes a position from it.
-        Some(self.duplicates as f64 / delivered as f64)
+        Some(self.duplicates as f64 / fingerprinted as f64)
     }
 
     /// How long this stream has been ingesting, across every session.
@@ -252,9 +290,20 @@ impl StreamLedger {
         let event = self
             .event
             .map_or_else(|| "none".to_string(), |span| span.describe());
+        // The denominator is printed with the figure, never the figure alone.
+        // A bare ratio is one a reader completes from the counters beside it,
+        // and the obvious completion — everything the source delivered — is
+        // the wrong one: withheld records are not fingerprinted and are not
+        // below the line. See `duplicate_ratio`.
         let ratio = self.duplicate_ratio().map_or_else(
-            || "no records delivered".to_string(),
-            |ratio| format!("{:.4}", ratio),
+            || "no records fingerprinted".to_string(),
+            |ratio| {
+                format!(
+                    "{:.4} of {} fingerprinted (withheld excluded)",
+                    ratio,
+                    self.fingerprinted()
+                )
+            },
         );
         format!(
             "stream `{}`: {} session(s), {} poll(s) ({} delivered, {} deferred, {} refused); \

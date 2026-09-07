@@ -464,11 +464,33 @@ impl CorridorFunding {
     /// and the louder one would be whichever check happened to be asked
     /// first. An unexplained ruling is a cap an operator cannot trace to a
     /// named rung, which is exactly the veto nobody can argue with.
+    ///
+    /// A ceiling of **zero** under any standing but [`FundingStanding::Suspended`]
+    /// is the same suspension in the same clothes, and refusing only the
+    /// negatives left the gap open at the one value a person actually types.
+    /// It passed every branch here, passed check 1 — the corridor is not
+    /// suspended, so it is admitted — and then refused every transfer ever
+    /// proposed at check 2 with "exceeds the narrowed ceiling of 0", which
+    /// tells an operator to promote a strategy when the cause is a zero in a
+    /// declaration. `CorridorSubject::new` in `qip-lifecycle` refuses a
+    /// zero ceiling at the seam a person writes, and this asks the same
+    /// question again for the reason the whole type documents: a ruling
+    /// reaches this gate deserialised off the event log, where no constructor
+    /// runs. Both, not either.
     pub fn well_formed(&self) -> std::result::Result<(), String> {
         if self.permitted.is_negative() {
             return Err(format!(
                 "the corridor is {} at {}; a ceiling is a non-negative amount, and a corridor \
                  that may carry nothing is suspended rather than capped below zero",
+                self.standing, self.permitted
+            ));
+        }
+        if self.standing != FundingStanding::Suspended && !self.permitted.is_positive() {
+            return Err(format!(
+                "the corridor is {} and carries a ceiling of {}; a standing that is not suspended \
+                 says the corridor may carry something, and a ceiling of zero says it may not. \
+                 Suspend it, or state the ceiling the strategies it funds have earned — as it \
+                 stands the corridor would be admitted and then refuse every transfer through it",
                 self.standing, self.permitted
             ));
         }
@@ -496,7 +518,8 @@ impl CorridorFunding {
     }
 
     /// The most the corridor may carry in one transfer under this ruling.
-    /// Zero when suspended.
+    /// Zero when suspended, and — since [`Self::well_formed`] refuses the
+    /// alternative — only then.
     ///
     /// Per transfer, and deliberately not against the corridor's lifetime
     /// total: a ruling narrows when a strategy's rung moves, and a ceiling

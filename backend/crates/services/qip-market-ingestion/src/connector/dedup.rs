@@ -159,15 +159,42 @@ impl Novelty {
     }
 }
 
+/// Where a fingerprint in the window came from.
+///
+/// Carried on the entry rather than inferred from a position, so that
+/// [`DedupWindow::carried`] is a count of what is actually there. The
+/// alternative — `order.len() - admitted` — is right only while eviction is
+/// oldest-first *and* the carry is always the oldest thing in the window, which
+/// are two facts about other code holding one arithmetic identity together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Origin {
+    /// Seeded by [`DedupWindow::restore`] from the last session's checkpoint.
+    Carried,
+    /// Observed by this process, from a poll.
+    Session,
+}
+
+/// One fingerprint in the window, and which session put it there.
+#[derive(Clone, Debug)]
+struct Held {
+    fingerprint: EventFingerprint,
+    origin: Origin,
+}
+
 /// A bounded set of recently seen fingerprints.
 #[derive(Clone, Debug)]
 pub struct DedupWindow {
     capacity: usize,
     seen: BTreeSet<EventFingerprint>,
-    order: VecDeque<EventFingerprint>,
+    order: VecDeque<Held>,
     duplicates: u64,
     admitted: u64,
     evicted: u64,
+    /// Fingerprints held now that this session did not observe. Maintained at
+    /// the two seams that can change it — the insert and the eviction — and
+    /// never derived from the counters, because a counter's meaning is a
+    /// sentence and a window's contents are a fact.
+    carried: usize,
 }
 
 impl DedupWindow {
@@ -185,6 +212,7 @@ impl DedupWindow {
             duplicates: 0,
             admitted: 0,
             evicted: 0,
+            carried: 0,
         })
     }
 
@@ -217,19 +245,47 @@ impl DedupWindow {
 
     /// Whether this fingerprint has been seen, recording it if not.
     pub fn observe(&mut self, fingerprint: &EventFingerprint) -> Novelty {
+        self.take_in(fingerprint, Origin::Session)
+    }
+
+    /// The one path by which a fingerprint enters or is recognised, whichever
+    /// session it belongs to.
+    ///
+    /// `origin` decides which counters move, and that is the whole difference
+    /// between a poll and a resume: a carried fingerprint is not traffic this
+    /// process saw, so it moves neither `admitted` nor `duplicates`. Not
+    /// counting it is what [`Self::restore`] used to achieve by counting it and
+    /// then zeroing the counters afterwards — the same result reached by never
+    /// making the claim, which leaves nothing for a later reader to wonder
+    /// about having been cleared or not.
+    fn take_in(&mut self, fingerprint: &EventFingerprint, origin: Origin) -> Novelty {
         if self.seen.contains(fingerprint) {
-            self.duplicates = self.duplicates.saturating_add(1);
+            if origin == Origin::Session {
+                self.duplicates = self.duplicates.saturating_add(1);
+            }
             return Novelty::Duplicate;
         }
         if self.order.len() >= self.capacity
             && let Some(oldest) = self.order.pop_front()
         {
-            self.seen.remove(&oldest);
+            self.seen.remove(&oldest.fingerprint);
             self.evicted = self.evicted.saturating_add(1);
+            // Decided by what left, not by where it sat. An eviction policy
+            // that ever stopped being oldest-first would silently falsify a
+            // positional count and would not falsify this one.
+            if oldest.origin == Origin::Carried {
+                self.carried = self.carried.saturating_sub(1);
+            }
         }
         self.seen.insert(fingerprint.clone());
-        self.order.push_back(fingerprint.clone());
-        self.admitted = self.admitted.saturating_add(1);
+        self.order.push_back(Held {
+            fingerprint: fingerprint.clone(),
+            origin,
+        });
+        match origin {
+            Origin::Session => self.admitted = self.admitted.saturating_add(1),
+            Origin::Carried => self.carried = self.carried.saturating_add(1),
+        }
         Novelty::New
     }
 
@@ -246,15 +302,11 @@ impl DedupWindow {
     /// what keeps a checkpoint a fixed size whatever the window's capacity is.
     pub fn recent(&self, limit: usize) -> Vec<EventFingerprint> {
         let skip = self.order.len().saturating_sub(limit);
-        self.order.iter().skip(skip).cloned().collect()
-    }
-
-    /// The newest fingerprint admitted, if any.
-    ///
-    /// What a checkpoint records as the boundary event, so a resume can tell a
-    /// redelivery of it from a genuinely new record.
-    pub fn newest(&self) -> Option<&EventFingerprint> {
-        self.order.back()
+        self.order
+            .iter()
+            .skip(skip)
+            .map(|held| held.fingerprint.clone())
+            .collect()
     }
 
     /// Seed an unused window from a checkpoint's carry, oldest first.
@@ -284,16 +336,22 @@ impl DedupWindow {
         }
         let mut taken: usize = 0;
         for fingerprint in carried {
-            if self.observe(&fingerprint).is_new() {
+            // Taken in as the last session's, not this one's. `admitted` keeps
+            // meaning "events this process took in" — which is what the
+            // ledger's duplicate ratio divides by — because the carry never
+            // enters it, rather than because a statement afterwards subtracts
+            // it out again.
+            if self.take_in(&fingerprint, Origin::Carried).is_new() {
                 taken = taken.saturating_add(1);
             }
         }
-        // The carry is not this session's traffic. Zeroing the counters keeps
-        // `admitted` meaning "events this process took in", which is what the
-        // ledger's duplicate ratio divides by; leaving them would make the
-        // first poll after a restart report a batch it never fetched.
-        self.admitted = 0;
-        self.duplicates = 0;
+        // `evicted` is deliberately *not* reset, and is the one counter here
+        // that does not describe this session's traffic. It counts capacity
+        // pressure whatever caused it, and a carry longer than the capacity is
+        // capacity pressure a deployment needs to see: it means the last
+        // session handed over more than this window can hold, so the oldest of
+        // it was dropped at start-up. Zeroing it would hide a sizing mistake at
+        // the one moment it is visible.
         Ok(taken)
     }
 
@@ -301,9 +359,14 @@ impl DedupWindow {
     ///
     /// Zero once the carry has been evicted, which is how a deployment sees
     /// that its restart protection has aged out rather than inferring it.
-    pub fn carried(&self) -> usize {
-        self.order
-            .len()
-            .saturating_sub(usize::try_from(self.admitted).unwrap_or(usize::MAX))
+    ///
+    /// Counted, not derived. This was `order.len() - admitted`, which gives the
+    /// right answer today for reasons that live in two other functions —
+    /// eviction is oldest-first and the carry is seeded before any poll, so the
+    /// carry is always the first thing to go. Both are true; neither is stated
+    /// anywhere near the subtraction, and a window that ever evicted by some
+    /// other rule would have gone on answering confidently and wrongly.
+    pub const fn carried(&self) -> usize {
+        self.carried
     }
 }

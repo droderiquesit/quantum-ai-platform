@@ -1109,6 +1109,48 @@ impl CentralPlane {
     /// that cannot size the book — leaves whatever the previous cycle armed in
     /// place, and leaves nothing armed if no cycle has succeeded yet. The
     /// caller records it as a problem on the cycle rather than swallowing it.
+    ///
+    /// # The drawdown moves the charges and not the pools
+    ///
+    /// The two sides of the §23.4 comparison scale differently and that is
+    /// deliberate. The pools are [`CentralConfig::total_budget`] split four
+    /// ways, unscaled; every budget charged against them has already been
+    /// multiplied by `DrawdownSchedule::multiplier_at(drawdown)` inside
+    /// [`qip_capital::CapitalAllocator::allocate`]. An independent review
+    /// queried the asymmetry, so the argument is written down here rather than
+    /// left to be re-derived by whoever asks next:
+    ///
+    /// * The four pools state capital the desk **holds** and how liquid it is.
+    ///   The drawdown schedule is an appetite response, not a balance sheet —
+    ///   the shipped one takes the multiplier to 0.5 at a ten per cent
+    ///   drawdown, and a book that has lost a tenth does not hold half its
+    ///   capital. Scaling the pools by it would put a figure nobody measured on
+    ///   the side of the comparison that is supposed to be the measurement.
+    /// * The years pool is charged the unfunded commitment liability, which is
+    ///   not scaled and must not be: a capital call does not shrink because the
+    ///   platform chose to deploy less this cycle. A scaled reserved pool
+    ///   against an unscaled liability would breach the years bucket at every
+    ///   drawdown, refusing promotions against reserved capital the desk still
+    ///   has.
+    /// * At the schedule's deepest step the multiplier is zero, so a scaled
+    ///   split would be four zero pools, which `CapitalPools::new` refuses by
+    ///   name. The gate would fail to arm and [`UnarmedHorizons`] would refuse
+    ///   every promotion — a control firing on the claim that the desk holds
+    ///   nothing, which is false, and at the one drawdown where the allocator
+    ///   has already sized everything at zero and nothing can breach.
+    ///
+    /// So fewer promotions breach while the book is falling, because the
+    /// platform is committing less capital against unchanged pools. That is the
+    /// appetite control working at the numerator, where it fires once; §23.4 is
+    /// a liquidity-mismatch control and asks a different question. The honest
+    /// limit is that a promotion admitted during a drawdown is not revisited
+    /// when the multiplier returns to one: the next arming reports the bucket
+    /// breached and refuses the *next* promotion, which is what a
+    /// reconciliation does and a position limit does not.
+    /// `a_drawdown_shrinks_the_charges_and_leaves_the_pools_at_the_capital_the_desk_holds`
+    /// and
+    /// `a_drawdown_deep_enough_to_stop_all_deployment_still_charges_the_commitment_liability`
+    /// in `qip-kernel/tests/central.rs` pin both halves.
     pub fn arm_horizons(
         &mut self,
         unfunded_commitments: Decimal,
@@ -1144,6 +1186,10 @@ impl CentralPlane {
         drawdown: f64,
         now: Timestamp,
     ) -> Result<Option<HorizonArming>> {
+        // `total_budget` unscaled, on purpose: the pools are capital the desk
+        // holds, and `drawdown` does not reach them. See the "drawdown moves
+        // the charges and not the pools" section on `arm_horizons` — this line
+        // is the denominator that section is about.
         let mut reconciler =
             PoolReconciler::from_policy(policy, self.config.total_budget, unfunded_commitments)?;
 
@@ -1151,6 +1197,13 @@ impl CentralPlane {
         // candidate at a promotion is by definition not yet at a capital rung,
         // and a reconciler that knew nothing about it would refuse it for want
         // of a budget every time.
+        //
+        // `drawdown` is a statistic and stays one across this call: it selects
+        // a step of the `DrawdownSchedule`, and the multiplier that step holds
+        // is already `Decimal`, so the only multiplication is money by money.
+        // The statistic never crosses into a currency figure here or inside
+        // `allocate` — which is why the numerator shrinks exactly rather than
+        // to whatever an `f64` product rounded to.
         let proposals: Vec<StrategyProposal> = self.proposals.values().cloned().collect();
         let plan = self.allocator.allocate(&proposals, drawdown, now)?;
         let mut budgeted = Decimal::ZERO;

@@ -742,6 +742,81 @@ fn a_ruling_that_suspends_a_corridor_and_gives_it_a_ceiling_is_refused_by_the_ga
 }
 
 #[test]
+fn a_ruling_that_narrows_a_corridor_to_zero_is_refused_as_a_suspension_rather_than_enforced_as_a_cap()
+-> Result<()> {
+    // The failure prevented, and it was reachable: `well_formed` refused a
+    // negative ceiling with the argument that a corridor which may carry
+    // nothing is suspended rather than capped — and then admitted the one
+    // value a person actually writes. `Narrowed` at zero passed every branch,
+    // passed check 1 because the standing is not `Suspended`, and refused
+    // every transfer ever proposed at check 2 with "exceeds the narrowed
+    // ceiling of 0". That veto sends an operator to promote a strategy; the
+    // cause is a zero in a declaration. It is refused at both seams — the
+    // constructor here, and `CorridorSubject::new` in `qip-lifecycle` where a
+    // person writes the figure.
+    for standing in [FundingStanding::Permitted, FundingStanding::Narrowed] {
+        let refused = CorridorFunding::new(
+            standing,
+            Decimal::ZERO,
+            "alpha-1 is at pilot, which is live with capital and deliberately limited",
+        );
+        let error = refused.expect_err("a ceiling of zero under a live standing must be refused");
+        assert!(
+            error.message().contains("carries a ceiling of 0"),
+            "the refusal must name the ceiling it refused: {error}"
+        );
+        assert!(
+            error.message().contains("Suspend it"),
+            "the refusal must name what to write instead: {error}"
+        );
+    }
+
+    // Off the log, past the constructor, exactly as a replay would build it —
+    // which is the path that matters, because a `CorridorFunding` reaches this
+    // gate deserialised inside a `GateCommand` and no constructor runs there.
+    let malformed: CorridorFunding = serde_json::from_str(
+        r#"{"standing":"narrowed","permitted":"0","reason":"alpha-1 is at pilot"}"#,
+    )
+    .map_err(|err| qip_core::error::Error::invalid(err.to_string()))?;
+    assert_eq!(
+        malformed.permitted(),
+        Decimal::ZERO,
+        "premise: serde built the ruling the constructor refuses"
+    );
+    let mut inputs = Inputs::satisfied()?;
+    inputs.funding = malformed;
+    let veto = inputs.veto();
+    // Check 1, not check 2. The distinction is the finding: at check 2 the
+    // veto reads as a cap that a promotion would lift, and at check 1 it reads
+    // as a ruling nobody can act on until it is corrected.
+    assert_eq!(veto.check, GateCheck::CorridorAuthority);
+    assert!(
+        veto.alert,
+        "a ruling the gate cannot act on is a check 1 veto, and §37.3 pairs those with an alert"
+    );
+    assert!(
+        veto.reason.contains("contradicts itself"),
+        "the veto is not the well-formedness refusal: {}",
+        veto.reason
+    );
+
+    // The premise that keeps this from passing against a gate that refuses
+    // every ruling: the same standing with the smallest positive ceiling above
+    // the fixture's amount is admitted.
+    let mut admitted = Inputs::satisfied()?;
+    admitted.funding = CorridorFunding::new(
+        FundingStanding::Narrowed,
+        admitted.intent.amount(),
+        "alpha-1 is at pilot, which is live with capital and deliberately limited",
+    )?;
+    match admitted.assess() {
+        Ok(approved) => assert_eq!(approved.funding().standing(), FundingStanding::Narrowed),
+        Err(veto) => panic!("a narrowed corridor with a real ceiling was vetoed: {veto}"),
+    }
+    Ok(())
+}
+
+#[test]
 fn an_admitted_assessment_records_the_ruling_it_was_admitted_under() -> Result<()> {
     // The same reason the agreement is kept: an approval read six months
     // later must say which standing the corridor was on at the time, not

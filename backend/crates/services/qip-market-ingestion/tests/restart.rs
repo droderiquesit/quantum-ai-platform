@@ -54,7 +54,7 @@ use qip_core::kv::KeyValueStore;
 use qip_core::{Clock, Duration, ManualClock, Timestamp};
 use qip_market_ingestion::adapter::DataAdapter;
 use qip_market_ingestion::connector::emulator::SourceEmulator;
-use qip_market_ingestion::connector::journal::StreamJournal;
+use qip_market_ingestion::connector::journal::{StreamJournal, StreamLedger};
 use qip_market_ingestion::connector::transport::SourceTransport;
 use qip_market_ingestion::connector::{
     Checkpoint, ConnectorRuntime, PollReport, RuntimeConfig, SourceConnector,
@@ -650,6 +650,80 @@ fn seven_simulated_days_across_eight_processes_leave_one_ledger_with_both_time_a
         sleeper.total(),
         Duration::ZERO,
         "seven simulated days must cost no real time"
+    );
+    Ok(())
+}
+
+// --- the ratio's denominator -------------------------------------------------
+
+#[test]
+fn the_duplicate_ratio_divides_by_what_the_dedup_window_judged_and_the_line_an_operator_reads_says_so()
+-> Result<()> {
+    // The failure prevented, and it was live in the doc rather than in the
+    // arithmetic: `duplicate_ratio` was documented as "redeliveries as a share
+    // of everything the source delivered" and divided by `admitted +
+    // duplicates`, which is neither that nor what the window judged. Two
+    // records make the difference visible, and they pull in opposite
+    // directions — so a test that only checked one of them would pass against
+    // the wrong denominator.
+    let judged = StreamLedger {
+        source_id: "frankfurter-ecb-reference-rates".to_string(),
+        admitted: 1,
+        duplicates: 1,
+        // Never fingerprinted: `ConnectorRuntime::admit` returns before
+        // `DedupWindow::observe` when a record is not yet knowable. Counting
+        // these below the line would report a publication delay as a
+        // republication rate — here it would read 0.02 for a feed serving one
+        // redelivery for every fresh record.
+        withheld: 98,
+        // Fingerprinted and then found unmappable: the window observed it and
+        // said "new". Leaving it out understated the denominator by exactly
+        // the records a broken feed produces most of.
+        quarantined: 2,
+        ..StreamLedger::default()
+    };
+    // Premise: both of the counts that decide this are non-zero, so neither
+    // assertion below can pass on an empty field.
+    assert!(judged.withheld > 0 && judged.quarantined > 0);
+    assert_eq!(
+        judged.fingerprinted(),
+        4,
+        "the denominator is admitted + duplicates + quarantined"
+    );
+    assert_eq!(
+        judged.duplicate_ratio(),
+        Some(0.25),
+        "one redelivery among the four records the window judged is a quarter; 0.5 would be the \
+         old denominator and 0.01 would be everything the source served"
+    );
+    // And the number is never rendered alone. A bare ratio is one a reader
+    // completes from the counters printed beside it, and the obvious
+    // completion is the wrong one.
+    let line = judged.describe();
+    for expected in ["duplicate ratio 0.2500 of 4 fingerprinted", "98 withheld"] {
+        assert!(
+            line.contains(expected),
+            "the line an operator reads must state {expected:?}: {line}"
+        );
+    }
+
+    // A feed that served nothing has no ratio rather than a perfect one, and
+    // says which it is.
+    let silent = StreamLedger {
+        source_id: "frankfurter-ecb-reference-rates".to_string(),
+        withheld: 3,
+        ..StreamLedger::default()
+    };
+    assert_eq!(silent.fingerprinted(), 0);
+    assert_eq!(
+        silent.duplicate_ratio(),
+        None,
+        "a stream whose every record was withheld has not got a duplicate ratio of nought"
+    );
+    assert!(
+        silent.describe().contains("no records fingerprinted"),
+        "{}",
+        silent.describe()
     );
     Ok(())
 }

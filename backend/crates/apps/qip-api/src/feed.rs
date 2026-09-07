@@ -38,14 +38,28 @@
 //! refuses it, and it replaces the open connector only after the new one is
 //! built — a refusal leaves the process sensing exactly what it was.
 //!
+//! Nor does the licensing half run only at start-up. A connector arm holds a
+//! [`qip_data_finder::admission::StandingAdmission`] and re-asks the whole gate
+//! — catalogue, class agreement, both usages, registration — at the instant of
+//! every `POST /cycle`, in [`ApiFeed::sense`], before the socket. A licence that
+//! expired on day three of a seven-day run used to keep granting for the
+//! remaining four, because the only consultation was at boot.
+//!
+//! A connector arm also keeps a durable stream record, when the composition
+//! root gives it a store through [`ApiFeed::journal_to`]. Without it every
+//! restart began with an empty dedup window and republished whatever the source
+//! re-serves — the ECB rates are a whole table per poll — as new observations,
+//! and the session and span figures reset at every start-up.
+//!
 //! A tape and a connector at once is a contradiction rather than a
 //! precedence question: whichever this code preferred, the operator meant the
 //! other one somewhere, and the only answer that cannot be wrong is a refusal
 //! that names both variables.
 
 use qip_core::error::{Error, Result};
+use qip_core::kv::KeyValueStore;
 use qip_core::{Clock, ManualClock, Timestamp};
-use qip_data_finder::admission::{self, CatalogueEntry, LicensingDecision};
+use qip_data_finder::admission::{self, CatalogueEntry, LicensingDecision, StandingAdmission};
 use qip_data_finder::registration::RegistrationRegistry;
 use qip_kernel::Platform;
 use qip_market_ingestion::adapter::{DataAdapter, SensedRecord, SourceDescriptor};
@@ -244,6 +258,26 @@ pub enum ApiFeed {
         /// single selection at start-up exists to prevent.
         settings: ConnectorSettings,
         seed: u64,
+        /// The licensing gate held open for as long as the source is polled.
+        ///
+        /// `decision` beside it is what the gate said at start-up and is what
+        /// the banner reads; this is the gate itself, re-asked at the instant
+        /// of every `POST /cycle`. Both, because a decision taken once is a
+        /// fact about one instant, and a process that senses for a week is
+        /// asked about a great many more: a licence expiring on day three of a
+        /// seven-day run kept granting for the remaining four when the only
+        /// consultation was at boot.
+        admission: Box<StandingAdmission>,
+        /// The store this stream's durable record is kept on, when a root has
+        /// given one.
+        ///
+        /// Held rather than passed once so that [`Self::readmit`] can re-attach
+        /// it. Re-admission replaces the whole connector, and a journal that
+        /// was attached only at start-up would be silently dropped by the first
+        /// operator approval — leaving the process streaming with no record and
+        /// nothing saying so, which is the exact failure the journal exists to
+        /// close, reintroduced through the one door that reopens the source.
+        journal: Option<Arc<dyn KeyValueStore>>,
     },
 }
 
@@ -343,9 +377,14 @@ impl ApiFeed {
         at: Timestamp,
     ) -> Result<Self> {
         let class = shipped_class(&settings.source_id)?;
-        let decision = admission::admit_from_registered(
-            entries,
-            registrations,
+        // The gate is opened rather than merely consulted: `StandingAdmission`
+        // runs the identical admission — the catalogue, the class agreement,
+        // both usages and the registration — and returns the same decision, so
+        // nothing is weakened here, and what is gained is that the same gate
+        // can be re-asked at every poll instead of never again.
+        let (admission, decision) = StandingAdmission::over(
+            entries.to_vec(),
+            registrations.clone(),
             &settings.source_id,
             class,
             at,
@@ -356,7 +395,36 @@ impl ApiFeed {
             decision: Box::new(decision),
             settings: settings.clone(),
             seed,
+            admission: Box::new(admission),
+            journal: None,
         })
+    }
+
+    /// Keep this source's stream record on `store`, resuming the last
+    /// process's position, and say how many fingerprints came back.
+    ///
+    /// `None` for a tape, which carries its own records and has no vendor to
+    /// redeliver from.
+    ///
+    /// The failure this closes at the root: without it every restart began
+    /// with an empty dedup window, so a table-shaped source republished its
+    /// whole table as new observations at each rollout, and the session and
+    /// span figures that make "streamed for a week" a checkable claim reset to
+    /// zero at every start-up. Call it before the first [`Self::sense`]: the
+    /// dedup window refuses a restore once it has observed anything, so a
+    /// later call is a refusal rather than a partial restore.
+    ///
+    /// The store is kept so that [`Self::readmit`] re-attaches it to the
+    /// connector it opens.
+    pub fn journal_to(&mut self, store: Arc<dyn KeyValueStore>) -> Result<Option<usize>> {
+        match self {
+            Self::Tape(_) => Ok(None),
+            Self::Connector { feed, journal, .. } => {
+                let resumed = feed.journal_to(store.clone())?;
+                *journal = Some(store);
+                Ok(Some(resumed))
+            }
+        }
     }
 
     /// The source this feed's connector opens, or `None` for a tape.
@@ -388,17 +456,33 @@ impl ApiFeed {
     /// still refuse it. `self` is left exactly as it was on any refusal — the
     /// replacement is the last step and a feed that failed to re-open keeps
     /// serving the cycle it was already serving.
+    /// The stream journal is re-attached to the replacement, because the
+    /// replacement is the same stream. A re-admission that dropped it would
+    /// leave the process streaming with no durable record from the first
+    /// operator approval onwards, and the ledger would read as a stream that
+    /// simply stopped — the journal resumes from the checkpoint the previous
+    /// connector committed, so the dedup window survives the swap too and the
+    /// source is not republished wholesale by an approval.
     pub fn readmit(&mut self, registrations: &RegistrationRegistry, at: Timestamp) -> Result<()> {
-        let (settings, seed) = match self {
+        let (settings, seed, journal) = match self {
             Self::Tape(_) => {
                 return Err(Error::invalid(
                     "this process senses a tape, not a connector, so there is no source to \
                      re-admit; a tape carries its own records and no registration gates it",
                 ));
             }
-            Self::Connector { settings, seed, .. } => (settings.clone(), *seed),
+            Self::Connector {
+                settings,
+                seed,
+                journal,
+                ..
+            } => (settings.clone(), *seed, journal.clone()),
         };
-        *self = Self::connector_registered(&settings, registrations, seed, at)?;
+        let mut replacement = Self::connector_registered(&settings, registrations, seed, at)?;
+        if let Some(store) = journal {
+            replacement.journal_to(store)?;
+        }
+        *self = replacement;
         Ok(())
     }
 
@@ -427,6 +511,19 @@ impl ApiFeed {
         match self {
             Self::Tape(feed) => Some(feed.clock()),
             Self::Connector { .. } => None,
+        }
+    }
+
+    /// The standing gate's own account of itself, for the banner.
+    ///
+    /// `None` for a tape. Printed rather than kept private because the number
+    /// that distinguishes a gate consulted on every cycle from one consulted at
+    /// start-up is its check count, and an operator who cannot read it can only
+    /// believe the claim.
+    pub fn licensing_standing(&self) -> Option<String> {
+        match self {
+            Self::Tape(_) => None,
+            Self::Connector { admission, .. } => Some(admission.describe()),
         }
     }
 
@@ -527,6 +624,12 @@ impl ApiFeed {
     /// clock is moved to it; for a connector it is `wall`. A spent tape is a
     /// refusal, not an empty batch: the caller checks
     /// [`Self::is_exhausted`] first and answers the request accordingly.
+    /// A connector's licensing gate is re-asked at `at` **before** the socket,
+    /// and a refusal returns here rather than producing an empty batch: an
+    /// empty batch and a source this process is no longer licensed to read are
+    /// indistinguishable to every route downstream, and the second must refuse
+    /// the cycle rather than quietly starve it. Evaluation *then* use is a rule
+    /// about every use, not about the first one.
     pub fn sense(&mut self, wall: Timestamp) -> Result<Sensed> {
         let at = match self {
             Self::Tape(feed) => feed.advance().ok_or_else(|| {
@@ -535,7 +638,10 @@ impl ApiFeed {
                      instant to cycle at. Restart the process to replay it",
                 )
             })?,
-            Self::Connector { .. } => wall,
+            Self::Connector { admission, .. } => {
+                admission.check(wall)?;
+                wall
+            }
         };
         let source = self.descriptor().name;
         let mut sensed = Sensed {

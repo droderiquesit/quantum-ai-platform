@@ -3405,3 +3405,205 @@ fn an_arming_that_fails_refuses_promotions_rather_than_reusing_the_last_successf
     );
     Ok(())
 }
+
+/// The drawdown response shrinks what is charged to the §23.4 pools and leaves
+/// the pools themselves at the capital the desk holds.
+///
+/// The asymmetry is the design, not an oversight, and this test exists because
+/// an independent review could not tell the two apart from the code: nothing
+/// exercised a non-unit drawdown multiplier through `arm_horizons`, so both
+/// readings passed the suite. The pools are a statement of capital held and how
+/// liquid it is; the multiplier is an appetite schedule (0.25 at a fifteen per
+/// cent drawdown in the shipped one), and a book that has lost fifteen per cent
+/// does not hold a quarter of its capital. Scaling the denominator too would
+/// put a figure nobody measured on the measuring side of the comparison.
+///
+/// Both halves are asserted because either alone proves nothing: that the
+/// charges moved, and that the pools did not.
+#[test]
+fn a_drawdown_shrinks_the_charges_and_leaves_the_pools_at_the_capital_the_desk_holds() -> Result<()>
+{
+    let first = StrategyId::new("horizon-first");
+    let second = StrategyId::new("horizon-second");
+    // Room in the deployable pool for both budgets, so nothing here turns on a
+    // breach; what is measured is the two sides of the comparison.
+    let mut platform =
+        platform_with_horizons(horizon_policy(&[&first, &second], dec!("4000000"))?)?;
+    register(platform.central_mut(), &first, CELL)?;
+    register(platform.central_mut(), &second, CELL)?;
+
+    // Premise: the schedule really does respond at the drawdown this test uses.
+    // Without this the assertions below would pass on a flat schedule, which is
+    // the shape of a test that guards nothing.
+    let schedule = qip_capital::allocation::DrawdownSchedule::default();
+    assert_eq!(
+        schedule.multiplier_at(0.0),
+        Decimal::ONE,
+        "premise: an undrawn book allocates in full"
+    );
+    let drawn_multiplier = schedule.multiplier_at(0.15);
+    assert!(
+        drawn_multiplier.is_positive() && drawn_multiplier < Decimal::ONE,
+        "premise: a fifteen per cent drawdown allocates less than in full and \
+         more than nothing, so both sides of the comparison are non-trivial: \
+         {drawn_multiplier}"
+    );
+
+    let full = platform
+        .central_mut()
+        .arm_horizons(Decimal::ZERO, 0.0, start())?
+        .ok_or_else(|| qip_core::Error::not_found("the undrawn arming produced a standing"))?;
+    let drawn = platform
+        .central_mut()
+        .arm_horizons(Decimal::ZERO, 0.15, start())?
+        .ok_or_else(|| qip_core::Error::not_found("the drawn arming produced a standing"))?;
+
+    // Premise: the same book was sized both times, and it was sized at all.
+    assert_eq!(full.strategies_budgeted, 2, "{}", full.describe());
+    assert_eq!(drawn.strategies_budgeted, 2, "{}", drawn.describe());
+    assert!(
+        full.budgeted.is_positive(),
+        "premise: the undrawn arming charged something: {}",
+        full.describe()
+    );
+
+    // The numerator moved.
+    assert!(
+        drawn.budgeted < full.budgeted,
+        "the drawdown shrank what is charged: {} against {}",
+        drawn.budgeted,
+        full.budgeted
+    );
+
+    // And the denominator did not. Compared bucket by bucket rather than on the
+    // total, because a scaling that moved capital between pools while holding
+    // the sum would read identically on a total.
+    let pools_of = |arming: &HorizonArming| -> BTreeMap<String, Decimal> {
+        arming
+            .standings
+            .iter()
+            .map(|standing| (standing.bucket.to_string(), standing.pool))
+            .collect()
+    };
+    let undrawn_pools = pools_of(&full);
+    assert_eq!(
+        undrawn_pools.get("hours_to_days"),
+        Some(&dec!("4000000")),
+        "premise: the standings name the desk's stated split: {undrawn_pools:?}"
+    );
+    assert_eq!(
+        pools_of(&drawn),
+        undrawn_pools,
+        "every pool is the capital the desk holds, whatever the drawdown \
+         response is doing to the charges against it"
+    );
+
+    // The committed side of the same standings moved, which is what makes the
+    // equality above a statement about the pools and not about an empty book.
+    let committed_of = |arming: &HorizonArming| -> Option<Decimal> {
+        arming
+            .standings
+            .iter()
+            .find(|standing| standing.bucket.to_string() == "hours_to_days")
+            .map(|standing| standing.committed)
+    };
+    let undrawn_committed = committed_of(&full)
+        .ok_or_else(|| qip_core::Error::not_found("the undrawn standing names the bucket"))?;
+    let drawn_committed = committed_of(&drawn)
+        .ok_or_else(|| qip_core::Error::not_found("the drawn standing names the bucket"))?;
+    assert!(
+        drawn_committed < undrawn_committed,
+        "the charge against the bucket fell with the book: {drawn_committed} \
+         against {undrawn_committed}"
+    );
+    Ok(())
+}
+
+/// A drawdown deep enough to stop all deployment still charges the unfunded
+/// commitment liability against the reserved pool, and the years bucket can
+/// still breach.
+///
+/// This is the case that decides which reading of §23.4 is right. At the
+/// schedule's deepest step the multiplier is zero, so the allocator budgets
+/// nothing and no charge a drawdown could scale exists. If the pools scaled
+/// with it they would all be zero, `CapitalPools::new` would refuse the split
+/// by name, the arming would fail and `UnarmedHorizons` would refuse every
+/// promotion to a capital-holding rung — a control firing on the claim that the
+/// desk holds nothing, at the one drawdown where nothing could breach anyway. A
+/// capital call does not shrink because the platform chose to deploy less, so
+/// the liability is charged in full against reserved capital the desk still
+/// has, and the gate keeps the only judgement it can still usefully make.
+#[test]
+fn a_drawdown_deep_enough_to_stop_all_deployment_still_charges_the_commitment_liability()
+-> Result<()> {
+    let first = StrategyId::new("horizon-first");
+    let second = StrategyId::new("horizon-second");
+    // A reserved pool of a million, taken out of the inventory bucket so the
+    // four still sum exactly to the risk budget.
+    let mut policy = horizon_policy(&[&first, &second], dec!("1000000"))?;
+    policy.available_inventory = policy
+        .available_inventory
+        .checked_sub(dec!("1000000"))
+        .ok_or_else(|| qip_core::Error::numeric("the inventory pool carries the reserve"))?;
+    policy.reserved_capital = dec!("1000000");
+    let mut platform = platform_with_horizons(policy)?;
+    register(platform.central_mut(), &first, CELL)?;
+    register(platform.central_mut(), &second, CELL)?;
+
+    // Premise: this drawdown really does stop deployment altogether.
+    let schedule = qip_capital::allocation::DrawdownSchedule::default();
+    assert_eq!(
+        schedule.multiplier_at(0.25),
+        Decimal::ZERO,
+        "premise: a twenty-five per cent drawdown deploys nothing"
+    );
+
+    // Twice the reserved pool, so the breach is unambiguous.
+    let arming = platform
+        .central_mut()
+        .arm_horizons(dec!("2000000"), 0.25, start())?
+        .ok_or_else(|| {
+            qip_core::Error::not_found(
+                "the gate arms in a deep drawdown rather than refusing to measure",
+            )
+        })?;
+    assert_eq!(
+        arming.strategies_budgeted,
+        0,
+        "premise: the allocator sized nothing, so no charge here is a scaled \
+         budget: {}",
+        arming.describe()
+    );
+    assert_eq!(
+        arming.budgeted,
+        Decimal::ZERO,
+        "premise: and nothing was charged from the plan: {}",
+        arming.describe()
+    );
+
+    let years = arming
+        .standings
+        .iter()
+        .find(|standing| standing.bucket.to_string() == "years")
+        .ok_or_else(|| qip_core::Error::not_found("the standings name the years bucket"))?;
+    assert_eq!(
+        years.pool,
+        dec!("1000000"),
+        "the reserved pool is the capital the desk holds, undisturbed by a \
+         deployment schedule: {}",
+        arming.describe()
+    );
+    assert_eq!(
+        years.committed,
+        dec!("2000000"),
+        "and the liability is charged in full against it: {}",
+        arming.describe()
+    );
+    assert!(
+        arming.is_breached(),
+        "so the gate still finds the book short at the years horizon, which is \
+         the only judgement left to make once deployment has stopped: {}",
+        arming.describe()
+    );
+    Ok(())
+}

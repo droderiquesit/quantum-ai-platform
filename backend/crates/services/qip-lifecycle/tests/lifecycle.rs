@@ -2962,6 +2962,59 @@ fn a_corridors_cap_tracks_the_weakest_rung_the_strategies_it_funds_stand_on() ->
 }
 
 #[test]
+fn a_corridor_declared_with_a_ceiling_of_zero_is_refused_rather_than_published_as_a_narrowing()
+-> Result<()> {
+    // The failure prevented, and it has already been reachable once: the
+    // constructor refused only *negative* ceilings, so a pilot ceiling of zero
+    // was admitted. A strategy at pilot then derived `Narrowed` with a
+    // permitted of zero; `CorridorFunding::well_formed` in the fabric found
+    // nothing wrong with it, the transfer gate's check 1 admitted the corridor
+    // because it was not suspended, and check 2 refused every transfer ever
+    // proposed with "exceeds the narrowed ceiling of 0". The operator is told
+    // to promote a strategy and the cause is a zero somebody typed. A corridor
+    // that may carry nothing is suspended by its rungs, and that is a standing
+    // rather than a cap.
+    for (label, ceiling, pilot) in [
+        ("pilot ceiling", dec!("1000000"), Decimal::ZERO),
+        ("ceiling", Decimal::ZERO, Decimal::ZERO),
+    ] {
+        let error = CorridorSubject::new(
+            CorridorRoute::new("reserve", "venue-alpha", "USD")?,
+            ceiling,
+            pilot,
+            [strategy()],
+        )
+        .expect_err("a ceiling of zero must be refused");
+        assert_eq!(error.code(), "invalid", "{error:?}");
+        assert!(
+            error.message().contains(label),
+            "the refusal must name which of the two ceilings is zero: {error}"
+        );
+        // Matched as a delimited phrase rather than on "positive", which is a
+        // substring of the message's own "a cap is a positive amount" whatever
+        // the check refused.
+        assert!(
+            error.message().contains("may carry nothing is suspended"),
+            "the refusal must say what to write instead: {error}"
+        );
+    }
+
+    // The premise, and the half that keeps this from passing against a
+    // constructor that refuses everything: the same route with two positive
+    // ceilings is admitted, and the smallest positive pilot ceiling is still a
+    // corridor rather than a suspension.
+    assert_eq!(treasury_corridor()?.pilot_ceiling(), dec!("100000"));
+    let minimal = CorridorSubject::new(
+        CorridorRoute::new("reserve", "venue-alpha", "USD")?,
+        dec!("1000000"),
+        dec!("0.01"),
+        [strategy()],
+    )?;
+    assert_eq!(minimal.pilot_ceiling(), dec!("0.01"));
+    Ok(())
+}
+
+#[test]
 fn a_corridor_that_funds_no_strategy_is_refused_rather_than_permitted_by_default() -> Result<()> {
     // The subject is the whole capability. A corridor funding nobody has no
     // lifecycle standing to be judged on, and admitting it would permit the

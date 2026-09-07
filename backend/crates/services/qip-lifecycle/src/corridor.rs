@@ -121,12 +121,28 @@ pub struct CorridorSubject {
 }
 
 impl CorridorSubject {
-    /// Refuses a ceiling that is negative, a pilot ceiling above the full one,
-    /// and a corridor funding nobody.
+    /// Refuses a ceiling that is not positive, a pilot ceiling above the full
+    /// one, and a corridor funding nobody.
     ///
     /// A pilot ceiling above the full ceiling is refused rather than clamped:
     /// it means whoever wrote the two numbers had them the wrong way round, and
     /// a silent correction would leave that belief in place for the next pair.
+    ///
+    /// **Zero is refused alongside the negatives, and this is where that
+    /// refusal belongs.** A ceiling of zero is not a narrow corridor; it is a
+    /// suspension expressed as a cap, and every control downstream reads it as
+    /// the former. [`emit`] derives [`CorridorStanding::Narrowed`] (or
+    /// `Permitted`) at zero because the rung holds capital,
+    /// `CorridorFunding::well_formed` in the fabric sees a non-negative ceiling
+    /// under a standing that is not suspended, the transfer gate's check 1
+    /// admits the corridor, and check 2 then refuses every transfer ever
+    /// proposed with "exceeds the narrowed ceiling of 0" — sending an operator
+    /// to promote a strategy when the cause is a zero somebody typed into a
+    /// declaration. Refusing it here makes the state unconstructible rather
+    /// than detectable: the two honest ways to say "this corridor carries
+    /// nothing" are to state a real ceiling and let the rungs narrow it, or to
+    /// stop funding the strategy, and both are the declarer's to choose rather
+    /// than this crate's to guess.
     pub fn new(
         route: CorridorRoute,
         ceiling: Decimal,
@@ -134,10 +150,12 @@ impl CorridorSubject {
         funds: impl IntoIterator<Item = StrategyId>,
     ) -> Result<Self> {
         for (label, value) in [("ceiling", ceiling), ("pilot ceiling", pilot_ceiling)] {
-            if value.is_negative() {
+            if !value.is_positive() {
                 return Err(Error::invalid(format!(
-                    "the {label} for the corridor {route} is {value}; a cap is a non-negative \
-                     amount — suspend the corridor rather than capping it below zero"
+                    "the {label} for the corridor {route} is {value}; a cap is a positive amount \
+                     — a corridor that may carry nothing is suspended by where the strategies it \
+                     funds stand, and a ceiling of {value} would be published as a policy that \
+                     permits the corridor and then refuses every transfer through it"
                 )));
             }
         }

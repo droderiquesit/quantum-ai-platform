@@ -28,6 +28,7 @@ use qip_core::{Clock, SystemClock};
 use qip_data_finder::registration::RegistrationRecord;
 use qip_kernel::central::ArbitragePolicy;
 use qip_kernel::{Platform, PlatformConfig};
+use qip_market_ingestion::connector::journal::StreamJournal;
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
 use qip_risk_engine::autonomy::AutonomyLevel;
@@ -153,8 +154,40 @@ fn run() -> Result<()> {
     let registrations = config
         .registration_registry()
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
-    let feed = qip_api::feed::ApiFeed::open(&feed_settings, &registrations, config.seed, now)
-        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let mut feed =
+        qip_api::feed::ApiFeed::open(&feed_settings, &registrations, config.seed, now)
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    // The stream's durable record, opened on the same storage the event log
+    // archives to and before anything is served. Until this call every restart
+    // began with an empty dedup window, so a table-shaped source — the ECB
+    // reference rates serve their whole table on every poll — republished all
+    // of it as new observations at each rollout, and the session and span
+    // figures that turn "streamed for a week" into a checkable claim reset to
+    // zero at every start-up.
+    //
+    // `StreamJournal::open` writes the ledger as it opens, so a store this
+    // process cannot write to stops it here rather than at the first
+    // `POST /cycle`, after the process has reported ready. A zero resume is a
+    // first session, not a failure, and is said out loud because the next poll
+    // then republishes whatever the source re-serves.
+    let journal_banner = match feed.as_mut() {
+        Some(feed) => feed
+            .journal_to(storage.key_value(StreamJournal::NAMESPACE)?)
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?
+            .map(|resumed| match resumed {
+                0 => format!(
+                    "on {}; nothing resumed, so this is a first session (or the last checkpoint \
+                     carried nothing) and the next poll republishes whatever the source re-serves",
+                    StreamJournal::NAMESPACE
+                ),
+                resumed => format!(
+                    "on {}; {resumed} fingerprint(s) resumed from the previous session, so a \
+                     redelivery of them is absorbed rather than republished",
+                    StreamJournal::NAMESPACE
+                ),
+            }),
+        None => None,
+    };
     // The clock the platform reasons on. A tape owns its own, and the
     // platform must be assembled on it: opportunities expire at tape time,
     // and a router asked for a latency budget measured from the wall clock
@@ -218,6 +251,12 @@ fn run() -> Result<()> {
         },
         qip_api::feed::ApiFeed::describe,
     );
+    // The standing gate, named so an operator can see it is consulted rather
+    // than take the claim on trust: its check count rises once per admitted
+    // cycle and can be held against the stream ledger's poll count.
+    let licensing_banner = feed
+        .as_ref()
+        .and_then(qip_api::feed::ApiFeed::licensing_standing);
     let feed = feed.map(|feed| Arc::new(Mutex::new(feed)));
 
     // The durable trial book, on the same storage the event log archives to.
@@ -440,6 +479,12 @@ fn run() -> Result<()> {
     );
     println!("  capital trust:    {}", provenance.describe());
     println!("  feed:             {feed_banner}");
+    if let Some(line) = &journal_banner {
+        println!("  stream journal:   {line}");
+    }
+    if let Some(line) = &licensing_banner {
+        println!("  licensing:        {line}");
+    }
     if let Some(feed) = &feed {
         let Ok(feed) = feed.lock() else {
             return Err(Error::invalid(

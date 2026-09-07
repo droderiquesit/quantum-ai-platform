@@ -297,7 +297,7 @@ fn a_keyless_source_is_admitted_through_the_nodes_own_door_as_it_was_before() ->
         start(),
     )?;
     assert!(
-        matches!(feed, Feed::Connector(_)),
+        matches!(feed, Feed::Connector { .. }),
         "a configured connector was replaced by another source"
     );
     assert_eq!(feed.descriptor().name, KEYLESS_SOURCE);
@@ -379,4 +379,162 @@ fn line_for(lines: &[String], source_id: &str) -> String {
         .find(|line| line.contains(&format!(" {source_id}: ")))
         .unwrap_or_else(|| panic!("no banner line names {source_id}: {lines:?}"))
         .clone()
+}
+
+// --- what the node keeps across a restart, and asks again mid-run -------------
+//
+// Two controls that existed complete and unreachable: `ConnectorFeed::journal_to`
+// and `StandingAdmission`, each built, tested and mutation-verified in the crate
+// that owns it, and neither called from a composition root. A control nothing
+// calls reads as protection and is not. These tests sit at the node's own feed
+// seam because that is the only place the wiring can be observed.
+
+/// After the shipped Frankfurter fixture's reference date plus the ECB's
+/// publication delay, so a poll at this instant releases the table rather than
+/// withholding it as not yet knowable. `start()` is ten months earlier and
+/// would release nothing, which would make every count below a zero that meant
+/// nothing.
+fn streaming_instant() -> Timestamp {
+    Timestamp::parse_rfc3339("2026-08-27T00:00:00Z").expect("a literal instant parses")
+}
+
+fn keyless_settings(base_url: &str) -> ConnectorFeedSettings {
+    ConnectorFeedSettings {
+        source_id: KEYLESS_SOURCE.to_string(),
+        base_url: base_url.to_string(),
+        seed: 7,
+    }
+}
+
+fn open_keyless(base_url: &str) -> Result<Feed> {
+    Feed::open(
+        None,
+        Some(&keyless_settings(base_url)),
+        None,
+        None,
+        &PlatformConfig::default().registration_registry()?,
+        7,
+        Duration::from_secs(1),
+        streaming_instant(),
+    )
+}
+
+/// A store that outlives a "process" the way a mounted volume does, so two
+/// feeds opened one after another are two sessions of one stream.
+fn journal_store() -> Arc<dyn qip_core::kv::KeyValueStore> {
+    Arc::new(qip_storage::kv::MemoryKeyValueStore::new())
+}
+
+#[test]
+fn a_restarted_node_resumes_the_dedup_window_instead_of_republishing_the_whole_table() -> Result<()>
+{
+    let server = RateServer::serving(RATE_TABLE);
+
+    // The premise, and the failure the wiring closes: this source serves its
+    // whole table on every poll, so a node whose dedup window begins empty
+    // republishes all of it as new observations. Two unjournalled restarts,
+    // three records each — what every deployed restart did until `journal_to`
+    // had a caller in `main`.
+    let mut first_run = open_keyless(&server.url)?;
+    assert_eq!(first_run.poll(streaming_instant())?.accepted.len(), 3);
+    let mut second_run = open_keyless(&server.url)?;
+    assert_eq!(
+        second_run.poll(streaming_instant())?.accepted.len(),
+        3,
+        "without a journal a restart must republish the table; if it does not, the assertion \
+         below proves nothing"
+    );
+
+    let store = journal_store();
+    let mut journalled = open_keyless(&server.url)?;
+    assert_eq!(
+        journalled.journal_to(store.clone())?,
+        Some(0),
+        "a first session has no previous checkpoint, so nothing may be resumed"
+    );
+    assert_eq!(journalled.poll(streaming_instant())?.accepted.len(), 3);
+    drop(journalled);
+
+    let mut restarted = open_keyless(&server.url)?;
+    let resumed = restarted
+        .journal_to(store)?
+        .expect("a connector arm keeps a journal");
+    assert_eq!(
+        resumed, 3,
+        "the previous session admitted three records, so three fingerprints must come back"
+    );
+    assert!(
+        restarted.poll(streaming_instant())?.accepted.is_empty(),
+        "the restarted node republished the table it had already published"
+    );
+
+    // The other arms have no vendor to redeliver from, so that the assertions
+    // above are about the connector and not about a method that answers the
+    // same thing for everything.
+    let mut synthetic = Feed::synthetic(7, Duration::from_secs(60), streaming_instant());
+    assert_eq!(synthetic.journal_to(journal_store())?, None);
+    Ok(())
+}
+
+#[test]
+fn a_licence_that_expires_mid_run_stops_the_next_poll_rather_than_the_next_restart() -> Result<()> {
+    let server = RateServer::serving(RATE_TABLE);
+    let opened = streaming_instant();
+    let expiry = opened.saturating_add(Duration::from_days(3));
+    // A licence with an end date. No entry in the shipped catalogue carries
+    // one, which is why this arm needs a catalogue of its own: putting an
+    // expiry into the evaluation of a real vendor's terms to satisfy a test is
+    // the opposite of what that file is for.
+    let expiring = vec![CatalogueEntry {
+        source_id: KEYLESS_SOURCE,
+        expected_class: LicensingClass::Public,
+        posture: LicensingPosture::declared(
+            SourceLicense::new("terms-with-an-end-date", [Usage::Derive, Usage::Trade])?
+                .expiring_at(expiry),
+        ),
+    }];
+    let registrations = PlatformConfig::default().registration_registry()?;
+    let mut feed = Feed::connector_admitted_by(
+        &expiring,
+        &registrations,
+        &keyless_settings(&server.url),
+        opened,
+    )?;
+
+    // Premise: the gate grants for as long as the licence runs, so the refusal
+    // below is the expiry doing its work rather than an entry that never
+    // admitted anything.
+    let granted = feed.poll(opened.saturating_add(Duration::from_days(1)))?;
+    assert_eq!(granted.accepted.len(), 3);
+    let served = server.served();
+    assert!(served >= 1, "the admitted source opened no socket");
+
+    // Until the standing gate had a caller here, the node would have gone on
+    // polling for the remaining four days of a seven-day run, stamping records
+    // with a class the terms no longer grant.
+    let refusal = feed
+        .poll(expiry)
+        .expect_err("an expired licence went on feeding the node");
+    assert!(
+        refusal.message().contains("expired"),
+        "the refusal does not say the licence expired: {}",
+        refusal.message()
+    );
+    assert_eq!(
+        server.served(),
+        served,
+        "a refused poll still opened a socket, so the gate ran after the transport rather than \
+         before it"
+    );
+
+    // And the operator can see the gate is consulted rather than take it on
+    // trust: two grants, and the refusal is not counted as one.
+    let standing = feed
+        .licensing_standing()
+        .expect("a connector carries its standing gate");
+    assert!(
+        standing.contains("2 check(s)"),
+        "the banner line does not say how often the gate ran: {standing}"
+    );
+    Ok(())
 }
