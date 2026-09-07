@@ -462,12 +462,31 @@ impl EventBody for FabricRecord {
     /// refuses the append instead; a fabric decision that could be dropped
     /// from the working set would be a decision nobody could replay.
     const TOPIC: Topic = Topic::ComplianceEvaluated;
-    /// Two since a [`GateCommand`] began carrying the Intelligence layer's
-    /// ruling on the corridor. A version 1 record has no `funding` field, and
-    /// the replay refuses it rather than assessing it as though the corridor
-    /// had been permitted — which is the one reading a missing field must
-    /// never be given, and is why this is a version bump and not a
-    /// defaulted field.
+    /// Three since ADR 0051 bound §37.4's other two enforcement points to what
+    /// they agreed to.
+    ///
+    /// Each bump names a fact an older record does not carry, and the reading
+    /// a missing fact must never be given:
+    ///
+    /// * **Version 1** has no `funding` field on a [`GateCommand`]. Assessing
+    ///   it as though the corridor had been permitted is that reading.
+    /// * **Version 2** has attestation references whose meaning has changed
+    ///   under it. A version 2 `transfer_gate` reference is a filing note and
+    ///   a version 2 `custody_policy` reference is a hand-written version
+    ///   string; neither is checked against anything, because nothing checked
+    ///   them when it was written. Replaying one under this build re-runs the
+    ///   control, and the control now asks a question the record was never
+    ///   made to answer: the reference would be compared against an
+    ///   [`crate::assessment::AssessmentId`] and a
+    ///   [`crate::custody::PolicyFingerprint`] and would not match. The record
+    ///   would be refused — but refused as a *veto the control produced*,
+    ///   which reads in the log as a movement the gate declined rather than as
+    ///   a record this build cannot judge. Those are different findings, and
+    ///   an operator acting on the first would go looking for an attestor who
+    ///   disagreed. Refusing by version says the true thing.
+    ///
+    /// Nothing is deployed and no sealed version 2 record exists, so there is
+    /// nothing to migrate; see ADR 0051.
     ///
     /// The refusal is [`crate::replay::replay`]'s own, by version, and
     /// deliberately not left to serde. `AnyEvent::decode` guards only against
@@ -475,9 +494,12 @@ impl EventBody for FabricRecord {
     /// record before that check was the absence of `#[serde(default)]` on
     /// `funding` and of a `Default` for [`CorridorFunding`] — an outcome that
     /// held for a reason nobody had written down and that adding either line
-    /// would have reversed in silence. Do not add either without reading
+    /// would have reversed in silence. A version 2 record has no such
+    /// accident to lean on at all: every field still deserialises, and only
+    /// the explicit check refuses it. Do not remove it, and do not add either
+    /// of those two lines, without reading
     /// `a_fabric_record_written_under_the_old_schema_is_refused_by_name`.
-    const SCHEMA_VERSION: u32 = 2;
+    const SCHEMA_VERSION: u32 = 3;
 }
 
 /// Everything the fabric's controls have decided, rebuilt from records.

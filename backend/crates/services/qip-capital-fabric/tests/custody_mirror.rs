@@ -28,6 +28,7 @@
 // assertion is the deliverable and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
 
+use qip_capital_fabric::assessment::AssessmentId;
 use qip_capital_fabric::corridor::{Corridor, CorridorCaps, CorridorId, PermittedHours};
 use qip_capital_fabric::custody::{
     Attestation, ClassConstraints, CorridorKind, CustodyClass, CustodyPolicy, EnforcementPoint,
@@ -141,18 +142,32 @@ fn active_venue_corridor() -> Result<Corridor> {
 /// The three enforcement points, under three distinct identities, none of them
 /// the one that trades — with the venue-allowlist point attesting against
 /// `venue_reference`.
+///
+/// The other two references are the bound ones ADR 0051 added: the transfer
+/// gate's is the `AssessmentId` of the movement `assess_with` proposes, and
+/// the custody policy's is the fingerprint of the blueprint table. They are
+/// derived here so that the only reference a test in this file varies is the
+/// venue's — otherwise a mirror test would be refused on a different point's
+/// binding and would assert the wrong refusal.
 fn authority_referencing(venue_reference: &str) -> Result<TransferAuthority> {
     let mut points = EnforcementPoints::new();
     for (point, identity, reference) in [
         (
             EnforcementPoint::TransferGate,
             "gate-svc",
-            "gate-record-1".to_string(),
+            AssessmentId::of(
+                active_venue_corridor()?.id(),
+                &venue_wallet(),
+                &allowlisted()?,
+                dec!("500"),
+                now(),
+            )
+            .to_string(),
         ),
         (
             EnforcementPoint::CustodyPolicy,
             "custody-policy-svc",
-            "custody-policy-v3".to_string(),
+            CustodyPolicy::blueprint().fingerprint().to_string(),
         ),
         (
             EnforcementPoint::VenueAllowlist,

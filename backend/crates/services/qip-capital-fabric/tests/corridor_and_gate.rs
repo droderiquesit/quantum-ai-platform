@@ -16,6 +16,7 @@
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
 
+use qip_capital_fabric::assessment::AssessmentId;
 use qip_capital_fabric::corridor::{
     Corridor, CorridorCaps, CorridorId, CorridorStage, PermittedHours,
 };
@@ -155,31 +156,64 @@ fn attesting_identity(point: EnforcementPoint) -> &'static str {
     }
 }
 
-fn attestation(point: EnforcementPoint, identity: &str) -> Result<Attestation> {
-    Attestation::new(
-        point,
-        Identity::new(identity)?,
-        format!("{}-record-1", point.as_str()),
-        signed_at(),
-    )
+/// What each point references in the satisfied fixture.
+///
+/// Two of the three are values the gate checks rather than filing notes, and
+/// they are derived from the assessment the fixture is about — the transfer
+/// gate's from the movement's [`AssessmentId`], the custody policy's from the
+/// [`CustodyPolicy::fingerprint`] of the table in force. Derived rather than
+/// written out, because a hard-coded digest would have to be edited by hand
+/// every time a fixture amount changed, and the edit that is easiest to make
+/// is the edit that turns a control into a constant.
+///
+/// The venue allowlist's is still a filing note: this fixture's class is fiat
+/// at an institution of record, whose §37.4 row does not set
+/// `venue_allowlist_mirrored`, so nothing reads it here. `custody_mirror.rs`
+/// is where that reference is the control.
+fn satisfied_reference(
+    point: EnforcementPoint,
+    corridor: &Corridor,
+    intent: &TransferIntent,
+    custody: &CustodyPolicy,
+    now: Timestamp,
+) -> String {
+    match point {
+        EnforcementPoint::TransferGate => AssessmentId::of(
+            corridor.id(),
+            intent.source(),
+            intent.destination(),
+            intent.amount(),
+            now,
+        )
+        .to_string(),
+        EnforcementPoint::CustodyPolicy => custody.fingerprint().to_string(),
+        EnforcementPoint::VenueAllowlist => format!("{}-record-1", point.as_str()),
+    }
 }
 
-/// §37.4's closing rule satisfied: all three points attested, under three
-/// distinct identities, none of which is the one that trades.
-fn authority() -> Result<TransferAuthority> {
-    authority_with(|point| Some(attesting_identity(point)))
+fn attestation(point: EnforcementPoint, identity: &str, reference: String) -> Result<Attestation> {
+    Attestation::new(point, Identity::new(identity)?, reference, signed_at())
 }
 
 /// A [`TransferAuthority`] whose attestations are whatever `identity` says:
 /// `None` leaves the point silent, and a repeated name collapses two points
-/// onto one identity.
+/// onto one identity. Every reference is the satisfied one for the assessment
+/// described by `corridor`, `intent`, `custody` and `now`.
 fn authority_with(
+    corridor: &Corridor,
+    intent: &TransferIntent,
+    custody: &CustodyPolicy,
+    now: Timestamp,
     identity: impl Fn(EnforcementPoint) -> Option<&'static str>,
 ) -> Result<TransferAuthority> {
     let mut points = EnforcementPoints::new();
     for point in EnforcementPoint::ALL {
         if let Some(name) = identity(point) {
-            points.attest(attestation(point, name)?)?;
+            points.attest(attestation(
+                point,
+                name,
+                satisfied_reference(point, corridor, intent, custody, now),
+            )?)?;
         }
     }
     Ok(TransferAuthority::new(points, Identity::new(TRADING)?))
@@ -206,7 +240,18 @@ struct Inputs {
     corridor: Corridor,
     registry: DestinationRegistry,
     custody: CustodyPolicy,
-    authority: TransferAuthority,
+    /// `None` means "whatever the satisfied authority is for these inputs",
+    /// derived inside [`Inputs::assess`] rather than fixed at construction.
+    ///
+    /// It has to be derived, and that is the point of the field being an
+    /// `Option`. Two of §37.4's three references are now bound to the
+    /// assessment being made — the transfer gate's to the movement's
+    /// `AssessmentId`, the custody policy's to the table's fingerprint — so an
+    /// authority frozen at `satisfied()` would stop matching the moment a test
+    /// overrode the amount or the clock, and every cap and interval test would
+    /// then veto on check 1 for a reason it was not written about. A test that
+    /// is *about* the authority sets `Some`.
+    authority: Option<TransferAuthority>,
     funding: CorridorFunding,
     history: TransferHistory,
     balances: SourceBalances,
@@ -223,7 +268,7 @@ impl Inputs {
             registry: usable_registry()?,
             custody: CustodyPolicy::blueprint(),
             funding: funding()?,
-            authority: authority()?,
+            authority: None,
             history: TransferHistory::empty(),
             balances: balances()?,
             velocity: VelocityState::CLEAR,
@@ -232,13 +277,30 @@ impl Inputs {
         })
     }
 
+    /// The authority these inputs are assessed under: the caller's if it set
+    /// one, otherwise the satisfied one for these exact inputs.
+    fn authority(&self) -> TransferAuthority {
+        match &self.authority {
+            Some(authority) => authority.clone(),
+            None => authority_with(
+                &self.corridor,
+                &self.intent,
+                &self.custody,
+                self.now,
+                |point| Some(attesting_identity(point)),
+            )
+            .expect("the satisfied fixture's three attestations are constructible"),
+        }
+    }
+
     fn assess(&self) -> std::result::Result<qip_capital_fabric::gate::Approved, Vetoed> {
+        let authority = self.authority();
         TransferGate::assess(
             &self.intent,
             &self.corridor,
             &self.registry,
             &self.custody,
-            &self.authority,
+            &authority,
             &self.funding,
             &self.history,
             &self.balances,
@@ -442,14 +504,20 @@ fn an_intent_whose_enforcement_points_have_not_all_attested_vetoes_on_corridor_a
 
     for missing in EnforcementPoint::ALL {
         let mut inputs = Inputs::satisfied()?;
-        inputs.authority =
-            authority_with(|point| (point != missing).then(|| attesting_identity(point)))?;
+        inputs.authority = Some(authority_with(
+            &inputs.corridor,
+            &inputs.intent,
+            &inputs.custody,
+            inputs.now,
+            |point| (point != missing).then(|| attesting_identity(point)),
+        )?);
         // Premise for this iteration: exactly the other two attested.
-        assert!(inputs.authority.points().attestation(missing).is_none());
+        let authority = inputs.authority();
+        assert!(authority.points().attestation(missing).is_none());
         assert_eq!(
             EnforcementPoint::ALL
                 .iter()
-                .filter(|point| inputs.authority.points().attestation(**point).is_some())
+                .filter(|point| authority.points().attestation(**point).is_some())
                 .count(),
             2
         );
@@ -507,21 +575,26 @@ fn an_intent_whose_enforcement_points_share_an_identity_vetoes_on_corridor_autho
     ];
     for (first, second) in pairs {
         let mut inputs = Inputs::satisfied()?;
-        inputs.authority = authority_with(|point| {
-            Some(if point == first || point == second {
-                "shared-svc"
-            } else {
-                attesting_identity(point)
-            })
-        })?;
+        inputs.authority = Some(authority_with(
+            &inputs.corridor,
+            &inputs.intent,
+            &inputs.custody,
+            inputs.now,
+            |point| {
+                Some(if point == first || point == second {
+                    "shared-svc"
+                } else {
+                    attesting_identity(point)
+                })
+            },
+        )?);
         // Premise: all three attested, so this is a refusal of the collapse
         // and not of a silent point.
+        let authority = inputs.authority();
         assert!(
-            EnforcementPoint::ALL.iter().all(|point| inputs
-                .authority
-                .points()
-                .attestation(*point)
-                .is_some())
+            EnforcementPoint::ALL
+                .iter()
+                .all(|point| authority.points().attestation(*point).is_some())
         );
 
         let veto = inputs.veto();
@@ -563,18 +636,24 @@ fn an_intent_attested_by_the_trading_identity_vetoes_on_corridor_authority() -> 
 
     for attestor in EnforcementPoint::ALL {
         let mut inputs = Inputs::satisfied()?;
-        inputs.authority = authority_with(|point| {
-            Some(if point == attestor {
-                TRADING
-            } else {
-                attesting_identity(point)
-            })
-        })?;
+        inputs.authority = Some(authority_with(
+            &inputs.corridor,
+            &inputs.intent,
+            &inputs.custody,
+            inputs.now,
+            |point| {
+                Some(if point == attestor {
+                    TRADING
+                } else {
+                    attesting_identity(point)
+                })
+            },
+        )?);
         // Premise: the three identities are still pairwise distinct, so the
         // pairwise check cannot be what fires and the refusal below is about
         // trading authority specifically.
         assert!(
-            inputs.authority.points().all_agree().is_ok(),
+            inputs.authority().points().all_agree().is_ok(),
             "premise: the three attesting identities are pairwise distinct"
         );
 

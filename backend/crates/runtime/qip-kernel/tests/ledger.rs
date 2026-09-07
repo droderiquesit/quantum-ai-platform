@@ -21,6 +21,7 @@ use qip_capital::ledger::{
     Mandate, MandateId, MandateTerms, PermittedFamilies, ProductEligibility, RefusedLimit, UserId,
     UserShare,
 };
+use qip_capital_fabric::assessment::AssessmentId;
 use qip_capital_fabric::corridor::{CorridorCaps, CorridorId, CorridorStage, PermittedHours};
 use qip_capital_fabric::custody::{
     Attestation, EnforcementPoint, EnforcementPoints, Identity, TransferAuthority,
@@ -722,17 +723,44 @@ fn active_corridor(platform: &mut Platform) -> Result<(CorridorId, Timestamp)> {
 /// §37.4's closing rule satisfied — three points, three identities, none of
 /// them the one that trades — so a gate command's check 1 turns on the
 /// corridor rather than on the attestations.
-fn transfer_authority() -> Result<TransferAuthority> {
+///
+/// Since ADR 0051 two of the three references are values check 1 compares
+/// rather than filing notes, so the authority is a function of the assessment:
+/// the transfer gate's is the `AssessmentId` of this corridor, this movement
+/// and this instant, and the custody policy's is the fingerprint of the table
+/// the command carries. A fixed reference would refuse every gate command in
+/// this suite on check 1, which is exactly the "turns on the corridor" the
+/// fixture is here to arrange.
+fn transfer_authority(corridor: &CorridorId, now: Timestamp) -> Result<TransferAuthority> {
     let mut points = EnforcementPoints::new();
-    for (point, identity) in [
-        (EnforcementPoint::TransferGate, "gate-svc"),
-        (EnforcementPoint::CustodyPolicy, "custody-policy-svc"),
-        (EnforcementPoint::VenueAllowlist, "venue-ops-oob"),
+    for (point, identity, reference) in [
+        (
+            EnforcementPoint::TransferGate,
+            "gate-svc",
+            AssessmentId::of(
+                corridor,
+                &transfer_source(),
+                &transfer_destination()?,
+                dec!("500"),
+                now,
+            )
+            .to_string(),
+        ),
+        (
+            EnforcementPoint::CustodyPolicy,
+            "custody-policy-svc",
+            CustodyPolicy::blueprint().fingerprint().to_string(),
+        ),
+        (
+            EnforcementPoint::VenueAllowlist,
+            "venue-ops-oob",
+            format!("{}-record-1", EnforcementPoint::VenueAllowlist.as_str()),
+        ),
     ] {
         points.attest(Attestation::new(
             point,
             Identity::new(identity)?,
-            format!("{}-record-1", point.as_str()),
+            reference,
             start(),
         )?)?;
     }
@@ -742,6 +770,20 @@ fn transfer_authority() -> Result<TransferAuthority> {
     ))
 }
 
+/// Where the fixture's transfers leave from.
+fn transfer_source() -> CapitalLocation {
+    CapitalLocation::new(
+        Region::new("home"),
+        Currency::USD,
+        VenueId::new("simulated-venue"),
+    )
+}
+
+/// Where they run to.
+fn transfer_destination() -> Result<DestinationKey> {
+    DestinationKey::new(DestinationAsset::new("USD")?, "treasury-account")
+}
+
 fn gate_command(
     corridor: CorridorId,
     funding: CorridorFunding,
@@ -749,18 +791,14 @@ fn gate_command(
 ) -> Result<FabricCommand> {
     Ok(FabricCommand::Gate(GateCommand {
         intent: TransferIntent::new(
-            CapitalLocation::new(
-                Region::new("home"),
-                Currency::USD,
-                VenueId::new("simulated-venue"),
-            ),
-            DestinationKey::new(DestinationAsset::new("USD")?, "treasury-account")?,
+            transfer_source(),
+            transfer_destination()?,
             dec!("500"),
             StatedPurpose::new(dec!("1000"), dec!("500"))?,
         )?,
+        authority: transfer_authority(&corridor, now)?,
         corridor,
         custody: CustodyPolicy::blueprint(),
-        authority: transfer_authority()?,
         funding,
         history: TransferHistory::empty(),
         balances: SourceBalances::new(dec!("10000"), dec!("1000"), dec!("1000"), dec!("1000"))?,

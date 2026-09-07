@@ -41,7 +41,21 @@
 //! other instance — a limit that cannot fire reads as protection and is not —
 //! and it is why the check lives in the control that a replay re-runs rather
 //! than in a constructor a replay never calls.
+//!
+//! The venue's allowlist was the first of the three references to be bound to
+//! a value and, until ADR 0051, the only one. The other two were checked for
+//! being non-empty and nothing else, so an approval named three identities as
+//! having agreed to a movement while two of them had agreed to nothing in
+//! particular — the same defect in the same module, one row along.
+//! [`Agreement::binds_to_assessment`] holds the transfer gate's attestation to
+//! the [`crate::assessment::AssessmentId`] of the movement being assessed, and
+//! [`CustodyPolicy::attested_against_this_table`] holds the custody policy's
+//! attestation to the [`PolicyFingerprint`] of the table actually in force.
+//! Both are asked by [`crate::gate::TransferGate::assess`], for the reason
+//! every other rule in this module is asked there: an attestation reaches this
+//! crate deserialised off the hash-chained log, where no constructor runs.
 
+use crate::assessment::{AssessmentId, push_field};
 use crate::destination::DestinationKey;
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
@@ -105,6 +119,30 @@ pub enum Custodian {
     SelfCustody,
     /// The fund administrator.
     FundAdministrator,
+}
+
+impl Custodian {
+    /// A stable label for logs, refusals and the policy fingerprint.
+    ///
+    /// The fingerprint digests this string rather than the serde
+    /// representation, so a rename of the `#[serde]` attribute and a rename of
+    /// this label are two separate decisions. A digest taken over a
+    /// representation somebody else may change is a digest that changes
+    /// without anybody deciding it should.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::InstitutionOfRecord => "institution_of_record",
+            Self::Venue => "venue",
+            Self::SelfCustody => "self_custody",
+            Self::FundAdministrator => "fund_administrator",
+        }
+    }
+}
+
+impl fmt::Display for Custodian {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// The kinds of corridor §37.4 and §38.2 name as the only ways capital moves.
@@ -225,6 +263,12 @@ pub enum RefusalReason {
         /// The class whose row demanded the mirror.
         class: CustodyClass,
     },
+    /// The transfer-gate attestation names an assessment other than the one
+    /// being made, so the gate agreed to some other movement.
+    GateAttestationNamesAnotherAssessment,
+    /// The custody-policy attestation was made against a table other than the
+    /// one this assessment is being made under.
+    CustodyAttestationNamesAnotherTable,
     /// The table itself contradicts a rule §37.4 states unconditionally, so
     /// no answer it gives about that class can be relied on.
     PolicyContradictsBlueprint {
@@ -288,6 +332,10 @@ impl RefusalReason {
                 "trading_identity_holds_transfer_authority"
             }
             Self::VenueAllowlistNotMirrored { .. } => "venue_allowlist_not_mirrored",
+            Self::GateAttestationNamesAnotherAssessment => {
+                "gate_attestation_names_another_assessment"
+            }
+            Self::CustodyAttestationNamesAnotherTable => "custody_attestation_names_another_table",
             Self::PolicyContradictsBlueprint { .. } => "policy_contradicts_blueprint",
         }
     }
@@ -339,6 +387,47 @@ impl fmt::Display for Refusal {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustodyPolicy {
     classes: BTreeMap<CustodyClass, ClassConstraints>,
+}
+
+/// Domain separation for the custody-policy fingerprint.
+///
+/// Prefixed for the reason [`crate::assessment::AssessmentId`]'s domain is:
+/// two digests over different things must not be able to collide, or a
+/// `custody_policy` attestation would satisfy the `transfer_gate` binding and
+/// the two enforcement points would collapse into one.
+const POLICY_DOMAIN: &str = "qip.capital-fabric.custody-policy.v1";
+
+/// A canonical digest of a [`CustodyPolicy`] — the table as it stood, in one
+/// value an attestation can name.
+///
+/// §37.4's second enforcement point is the custody policy. An attestation from
+/// it said only that *a* policy had agreed; the reference was checked for
+/// being non-empty, so a record replayed years later proved the point had
+/// spoken and not which table it had spoken about. A fingerprint makes the
+/// claim checkable: the gate re-derives it from the [`CustodyPolicy`] carried
+/// on the record and refuses an attestation naming a different one.
+///
+/// **Derived rather than stored.** The obvious alternative was a `version`
+/// field on [`CustodyPolicy`], and it is rejected: a version an editor sets by
+/// hand is a second claim about the same fact, and — following
+/// `CLAUDE.md`'s sixth principle — the two will disagree and the louder one
+/// will be wrong. A row edited without bumping the version would carry a
+/// version that certifies the table it is no longer. A digest cannot disagree
+/// with the table because it *is* the table, reduced.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct PolicyFingerprint(String);
+
+impl PolicyFingerprint {
+    /// The digest, lower-case hex, as an attestation would reference it.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for PolicyFingerprint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 impl CustodyPolicy {
@@ -520,6 +609,111 @@ impl CustodyPolicy {
                     ),
                 });
             }
+        }
+        Ok(())
+    }
+
+    /// A canonical digest of the whole table, computed the same way every
+    /// time.
+    ///
+    /// **Every row, not the row in question.** A fingerprint over one class
+    /// would let the rest of the table be rewritten under an attestation that
+    /// still verified, and §37.4's rules are cross-row: `conforms` refuses a
+    /// self-custody row that is single-party and a collateral row that
+    /// transfers, whatever class an assessment is about. What the custody
+    /// point attests to is the policy in force, and the policy is the table.
+    ///
+    /// Iteration is over a [`BTreeMap`] and each row's corridors over a
+    /// [`BTreeSet`], so the material is built in one order on every machine and
+    /// every run. A digest over a hash map would be a different number each
+    /// time and would refuse the table it was made against, which is a control
+    /// that fires for no reason and is therefore removed.
+    ///
+    /// Each component goes in through [`push_field`], length-prefixed, so no
+    /// row's content can be read as a field boundary: without that, a class
+    /// whose custodian rendered `venue|crypto_self_custody` would produce the
+    /// material of an entirely different table.
+    ///
+    /// The row count is digested before the rows. Length-prefixing already
+    /// makes the concatenation injective; stating the count as well means a
+    /// truncated table — the one a re-serialisation could produce by dropping
+    /// a row — differs in the first field rather than only in the last.
+    pub fn fingerprint(&self) -> PolicyFingerprint {
+        let mut material = String::new();
+        push_field(&mut material, POLICY_DOMAIN);
+        push_field(&mut material, &self.classes.len().to_string());
+        for (class, row) in &self.classes {
+            push_field(&mut material, class.as_str());
+            push_field(&mut material, row.custodian.as_str());
+            push_field(&mut material, &row.permitted_corridors.len().to_string());
+            for corridor in &row.permitted_corridors {
+                push_field(&mut material, corridor.as_str());
+            }
+            for flag in [
+                row.may_be_transfer_source,
+                row.venue_allowlist_mirrored,
+                row.requires_multi_party_release,
+            ] {
+                push_field(&mut material, if flag { "true" } else { "false" });
+            }
+        }
+        PolicyFingerprint(qip_core::sha256_hex(material.as_bytes()))
+    }
+
+    /// Whether the custody-policy attestation was made against *this* table.
+    ///
+    /// §37.4's second enforcement point is this policy, and
+    /// [`EnforcementPoints::all_agree`] proves only that it spoke. Before this
+    /// check the reference was validated for being non-empty by
+    /// [`Attestation::new`] and read by nothing, so an attestation filed
+    /// against the table as it stood in one epoch satisfied an assessment made
+    /// under a table rewritten since — the point counted as an enforcement
+    /// point while enforcing nothing about the rules being applied. That is
+    /// the venue-allowlist defect this module already fixed once, one row
+    /// along.
+    ///
+    /// Compared whole against the fingerprint's hex, never by containment: a
+    /// digest is a fixed-width hex string and one digest is not a prefix of
+    /// another, but a containment check would also admit a reference that
+    /// merely *mentioned* the fingerprint inside a longer note, which is a
+    /// reference an attestor can write by accident.
+    ///
+    /// Asked by [`crate::gate::TransferGate::assess`] rather than at
+    /// construction, for the reason [`CustodyPolicy::conforms`] gives at
+    /// length: the table and the attestation both arrive deserialised off the
+    /// event log inside a [`crate::journal::GateCommand`], so the fingerprint
+    /// on the replay is re-derived from the table the record carries and is
+    /// never taken from the record. A replayed record therefore proves the
+    /// attestation was made against the policy actually in force at the time,
+    /// rather than against today's.
+    pub fn attested_against_this_table(
+        &self,
+        agreement: &Agreement,
+    ) -> std::result::Result<(), Refusal> {
+        let expected = self.fingerprint();
+        // An absent attestation reads as the empty string, which is not a
+        // digest, so one comparison covers "said nothing", "said something
+        // that is not a fingerprint" and "said another table's". No arm here
+        // is unreachable: `all_agree` runs first in the gate and would already
+        // have refused the absent case, and this method is public and must not
+        // depend on that.
+        let attested = agreement
+            .attestation(EnforcementPoint::CustodyPolicy)
+            .map(|attestation| attestation.reference.as_str())
+            .unwrap_or_default();
+        if attested != expected.as_str() {
+            return Err(Refusal {
+                class: None,
+                corridor: None,
+                reason: RefusalReason::CustodyAttestationNamesAnotherTable,
+                detail: format!(
+                    "the {point} attestation references [{attested}] rather than the fingerprint \
+                     [{expected}] of the custody table this assessment is being made under; the \
+                     point that attested agreed to some other table, so file the attestation \
+                     against the table in force or put the table it agreed to back in force",
+                    point = EnforcementPoint::CustodyPolicy
+                ),
+            });
         }
         Ok(())
     }
@@ -886,6 +1080,57 @@ impl Agreement {
         self.attestations
             .iter()
             .find(|attestation| attestation.point == point)
+    }
+
+    /// Whether the transfer gate's attestation was made about *this*
+    /// assessment.
+    ///
+    /// [`EnforcementPoints::all_agree`] proves the gate's point spoke;
+    /// [`Attestation::new`] proves it said something. Neither reads what it
+    /// said, so an attestation filed for one movement satisfied the agreement
+    /// for every other movement ever assessed — the reference was a string
+    /// that any assessment matched, which is the same thing as no reference at
+    /// all. An approval then named three identities as having agreed to a
+    /// movement one of them had never been shown.
+    ///
+    /// The identity compared against is a content digest and not the id of the
+    /// record the decision is written under, because that id does not exist
+    /// yet: [`crate::journal::FabricJournal::decide`] mints it after
+    /// [`crate::gate::TransferGate::assess`] has returned. See
+    /// [`crate::assessment`] for the full argument and for the two rejected
+    /// alternatives.
+    ///
+    /// Compared whole, never by containment, for the reason the venue mirror
+    /// gives: a containment check admits a reference that mentions the digest
+    /// inside a longer note, and a note is not an agreement to a movement.
+    pub fn binds_to_assessment(
+        &self,
+        assessment: &AssessmentId,
+    ) -> std::result::Result<(), Refusal> {
+        // An absent attestation reads as the empty string, which is not a
+        // digest, so "said nothing", "said something that is not an assessment
+        // identity" and "said another assessment's" are one comparison. The
+        // gate reaches this only after `all_agree`, which would already have
+        // refused the first; this method is public and does not lean on that.
+        let attested = self
+            .attestation(EnforcementPoint::TransferGate)
+            .map(|attestation| attestation.reference.as_str())
+            .unwrap_or_default();
+        if attested != assessment.as_str() {
+            return Err(Refusal {
+                class: None,
+                corridor: None,
+                reason: RefusalReason::GateAttestationNamesAnotherAssessment,
+                detail: format!(
+                    "the {point} attestation references [{attested}] rather than [{assessment}], \
+                     the identity of the movement being assessed; an attestation is made about \
+                     one assessment and cannot be carried onto another, so file it against this \
+                     corridor, source, destination, amount and instant",
+                    point = EnforcementPoint::TransferGate
+                ),
+            });
+        }
+        Ok(())
     }
 
     /// The other half of §37.4's closing rule: none of the three transfer

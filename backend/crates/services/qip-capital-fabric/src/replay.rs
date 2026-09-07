@@ -19,6 +19,16 @@
 //! `a_fabric_record_written_under_the_old_schema_is_refused_by_name` pins both
 //! halves.
 //!
+//! Version 2 has no such accident to lean on and is the reason the check must
+//! stay. Every field of a version 2 record still deserialises under this
+//! build; what changed with ADR 0051 is the *meaning* of two attestation
+//! references, which version 2 filled with filing notes because nothing read
+//! them. Re-running the control over one produces a veto — the references do
+//! not match the assessment identity and the policy fingerprint — and a veto
+//! in the log reads as a movement the gate declined, not as a record this
+//! build cannot judge. Refusing by version is the difference between those
+//! two findings.
+//!
 //! It never skips: a replay
 //! that stepped over a bad record and carried on would produce a state that
 //! looks rebuilt from the log and is not, which is worse than no state at
@@ -135,10 +145,13 @@ pub fn replay(records: &[LogRecord]) -> Result<Replayed> {
             return Err(Error::invalid(format!(
                 "record at position {position} (sequence {}) is a fabric record written under \
                  schema version {}, and this build reads version {}; a record from another \
-                 version is refused by name rather than re-interpreted, because the fields it \
-                 lacks are the ones a control ruled on — a version 1 gate record carries no \
-                 funding ruling, and assessing it as though the corridor had been permitted is \
-                 the one reading a missing field must never be given",
+                 version is refused by name rather than re-interpreted, because what it lacks is \
+                 what a control ruled on — a version 1 gate record carries no funding ruling, and \
+                 a version 2 gate record's transfer-gate and custody-policy attestations name \
+                 nothing checkable, because nothing checked them when it was written. Re-running \
+                 the control over either would produce a verdict about a question the record was \
+                 never made to answer, and a veto is not the same finding as a record this build \
+                 cannot judge",
                 record.sequence,
                 record.event.schema_version,
                 FabricRecord::SCHEMA_VERSION,

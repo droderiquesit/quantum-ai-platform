@@ -44,6 +44,7 @@
 //! hand it the same arguments and get the same veto — and so that no path
 //! exists by which the gate could learn something the log did not record.
 
+use crate::assessment::AssessmentId;
 use crate::corridor::{Corridor, CorridorStage};
 use crate::custody::{Agreement, CustodyPolicy, TransferAuthority};
 use crate::destination::{DestinationKey, DestinationRegistry};
@@ -546,10 +547,14 @@ pub enum GateCheck {
     /// definition, destination allowlisted and usable, the custody table
     /// conforming to §37.4's unconditional rules and permitting the class
     /// through this kind of corridor, and §37.4's three enforcement points
-    /// agreeing under three identities none of which trades, the venue's own
-    /// allowlist mirrored against *this* destination where the class's row
-    /// demands it, and the Intelligence layer's ruling on the corridor not
-    /// being [`FundingStanding::Suspended`].
+    /// agreeing under three identities none of which trades — each bound to
+    /// what it agreed to rather than merely to having spoken: the gate's
+    /// attestation to this assessment's [`crate::assessment::AssessmentId`],
+    /// the custody policy's to the
+    /// [`crate::custody::PolicyFingerprint`] of the table in force, and the
+    /// venue's own allowlist mirrored against *this* destination where the
+    /// class's row demands it — and the Intelligence layer's ruling on the
+    /// corridor not being [`FundingStanding::Suspended`].
     CorridorAuthority,
     /// Within the Intelligence layer's ceiling for the corridor, and within
     /// the per-transfer, hourly, daily and cumulative caps, and inside
@@ -644,6 +649,7 @@ pub struct Approved {
     intent: TransferIntent,
     corridor: crate::corridor::CorridorId,
     signature_reference: String,
+    assessment: AssessmentId,
     assessed_at: Timestamp,
     checks_passed: [GateCheck; 7],
     authority: Agreement,
@@ -665,6 +671,21 @@ impl Approved {
     /// so the approval can be traced to the signed definition.
     pub fn signature_reference(&self) -> &str {
         &self.signature_reference
+    }
+
+    /// The identity of the assessment, which the transfer gate's attestation
+    /// was required to name.
+    ///
+    /// Recorded rather than recomputed on demand so an operator reading an
+    /// approval can compare it against the attestation beside it without
+    /// re-running the digest, and so the value the control compared against is
+    /// visible in the record rather than only inside the check. It is
+    /// re-derived on every replay from the command's own fields and the
+    /// recomputed outcome is compared with the recorded one, so a record
+    /// carrying an identity the movement does not produce is refused by
+    /// [`crate::replay::replay`] rather than trusted.
+    pub fn assessment(&self) -> &AssessmentId {
+        &self.assessment
     }
 
     /// When.
@@ -740,7 +761,7 @@ impl TransferGate {
         // 1. Corridor active, signature valid, destination allowlisted,
         //    custody table permitting, three enforcement points agreeing, and
         //    the Intelligence layer not having suspended the corridor.
-        let (signature_reference, agreement) =
+        let (signature_reference, agreement, assessment) =
             Self::corridor_authority(intent, corridor, registry, custody, authority, funding, now)
                 .map_err(|reason| veto(GateCheck::CorridorAuthority, reason))?;
 
@@ -823,6 +844,7 @@ impl TransferGate {
             intent: intent.clone(),
             corridor: corridor.id().clone(),
             signature_reference,
+            assessment,
             assessed_at: now,
             checks_passed: GateCheck::ALL,
             authority: agreement,
@@ -830,8 +852,9 @@ impl TransferGate {
         })
     }
 
-    /// Check 1. Returns the filing reference of the signature relied on and
-    /// the three attestations §37.4 required.
+    /// Check 1. Returns the filing reference of the signature relied on, the
+    /// three attestations §37.4 required, and the identity of the assessment
+    /// each of them was held to.
     fn corridor_authority(
         intent: &TransferIntent,
         corridor: &Corridor,
@@ -840,7 +863,7 @@ impl TransferGate {
         authority: &TransferAuthority,
         funding: &CorridorFunding,
         now: Timestamp,
-    ) -> std::result::Result<(String, Agreement), String> {
+    ) -> std::result::Result<(String, Agreement, AssessmentId), String> {
         if intent.source() != corridor.source() || intent.destination() != corridor.destination() {
             return Err(format!(
                 "the intent is {} -> {} but corridor {} runs {} -> {}; an intent is assessed \
@@ -973,13 +996,57 @@ impl TransferGate {
                 corridor.id()
             )
         })?;
-        // And what the venue's allowlist agreed *to*, where the class demands
-        // its own allowlist be mirrored. `all_agree` proves the point spoke;
-        // it does not read the reference, so before this the venue-allowlist
-        // attestation for one address admitted a corridor running to any
-        // other. `ClassConstraints::venue_allowlist_mirrored` had until now no
-        // reader at all — a documented precondition enforced nowhere, which is
-        // the failure `risk-and-execution.md` names by its other instance.
+        // And what each of the three agreed *to*. `all_agree` proves the
+        // points spoke and reads no reference, so until each of these three
+        // existed the reference was validated only for being non-empty and an
+        // approval could name three identities as having agreed to a movement
+        // two of them had never been shown (ADR 0051). Asked in
+        // `EnforcementPoint::ALL` order, so a record with more than one
+        // unbound reference is named by the point §37.4 lists first rather
+        // than by whichever check happened to be written last.
+        //
+        // The transfer gate: bound to the identity of this assessment, minted
+        // from the movement's own content before the gate runs. The record's
+        // `EventId` cannot serve, because `FabricJournal::decide` mints it
+        // after `assess` has returned — the value would not exist at the seam
+        // that checks it. `crate::assessment` argues it in full.
+        let assessment = AssessmentId::of(
+            corridor.id(),
+            intent.source(),
+            intent.destination(),
+            intent.amount(),
+            now,
+        );
+        agreement
+            .binds_to_assessment(&assessment)
+            .map_err(|refusal| {
+                format!(
+                    "corridor {} would carry {} from {} to {} at {now}, and the {refusal}",
+                    corridor.id(),
+                    intent.amount(),
+                    intent.source(),
+                    intent.destination()
+                )
+            })?;
+        // The custody policy: bound to the fingerprint of the table this
+        // assessment is being made under, re-derived here from the table
+        // itself rather than read from the record, so a replay proves the
+        // point agreed to the policy that was in force and not to today's.
+        custody
+            .attested_against_this_table(&agreement)
+            .map_err(|refusal| {
+                format!(
+                    "corridor {} is being assessed against the custody table in force, and the \
+                     {refusal}",
+                    corridor.id()
+                )
+            })?;
+        // The venue's allowlist: bound to the destination, where the class
+        // demands its own allowlist be mirrored. This was the first of the
+        // three to be bound, and `ClassConstraints::venue_allowlist_mirrored`
+        // had until then no reader at all — a documented precondition enforced
+        // nowhere, which is the failure `risk-and-execution.md` names by its
+        // other instance.
         custody
             .mirrors_the_venue_allowlist(
                 corridor.source_class(),
@@ -993,7 +1060,7 @@ impl TransferGate {
                     corridor.destination()
                 )
             })?;
-        Ok((signed.signature.reference.clone(), agreement))
+        Ok((signed.signature.reference.clone(), agreement, assessment))
     }
 
     /// Check 2.

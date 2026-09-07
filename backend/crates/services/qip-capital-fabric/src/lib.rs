@@ -153,6 +153,7 @@
 //! # }
 //! ```
 
+pub mod assessment;
 pub mod corridor;
 pub mod custody;
 pub mod destination;
