@@ -536,3 +536,60 @@ fn translate_disputes(disputes: &[HorizonDispute]) -> Result<Vec<HorizonDisagree
 fn numeric(strategy: &StrategyId) -> NumericStrategyId {
     NumericStrategyId::from_string(strategy.as_str())
 }
+
+/// The reconciler a failed arming leaves in place: it refuses everything and
+/// says why.
+///
+/// # Why this type exists rather than a detach
+///
+/// `LifecycleLedger` holds its assurance as an `Option`, and `None` is the
+/// **ungated** state — the legitimate one a plane with no stated
+/// [`HorizonPolicy`] is in. So detaching on error would not refuse promotions,
+/// it would admit every one of them, which is the opposite of what a failure
+/// to measure the pools should mean.
+///
+/// Leaving the previous cycle's assurance attached is no better and was the
+/// original defect: [`super::plane::CentralPlane::arm_horizons`] attached only
+/// on its success path, so a cycle whose `CommitmentBook::unfunded_total`
+/// began returning an error went on reconciling promotions against pool bounds
+/// computed when the unfunded liability was some other number. The gate stayed
+/// green by being out of date, which is the failure mode a stale control has
+/// and a refusing one does not. Found by an independent security review of
+/// `27da0c5`, before the gate had a production producer.
+///
+/// So the third option, and the one CLAUDE.md's third principle asks for:
+/// every promotion to a capital-holding rung is refused until an arming
+/// succeeds. Refusing a promotion is recoverable — the next cycle arms and the
+/// promotion proceeds. Admitting one against a liability nobody measured this
+/// cycle is not.
+#[derive(Debug)]
+pub struct UnarmedHorizons {
+    reason: String,
+}
+
+impl UnarmedHorizons {
+    /// Refuse every promotion, naming `reason` — the arming failure — in each
+    /// refusal, so an operator reads why the gate is closed rather than
+    /// discovering that it is.
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+impl HorizonReconciler for UnarmedHorizons {
+    fn fund(
+        &self,
+        candidate: &StrategyId,
+        _alongside: &BTreeSet<StrategyId>,
+    ) -> Result<HorizonFunding> {
+        Err(Error::denied(format!(
+            "{candidate} cannot take a rung that holds capital: the §23.4 pool gate could not be \
+             armed this cycle, so no pool bound has been measured against today's liability. The \
+             arming failed because: {}. This refusal clears itself as soon as one cycle arms the \
+             gate; it is not a judgement about {candidate}",
+            self.reason
+        )))
+    }
+}

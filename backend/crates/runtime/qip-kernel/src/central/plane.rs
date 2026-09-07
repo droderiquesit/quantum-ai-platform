@@ -22,7 +22,7 @@
 
 use super::dna::StrategyDna;
 use super::factory::StrategyFactory;
-use super::horizon::{HorizonArming, HorizonPolicy, PoolReconciler};
+use super::horizon::{HorizonArming, HorizonPolicy, PoolReconciler, UnarmedHorizons};
 use super::learning::CellOutcome;
 use super::realised::{RealisedCalendar, RealisedSeries};
 use super::regions::{GrantManifests, RegionMembership, RegionShares, partition};
@@ -1118,8 +1118,34 @@ impl CentralPlane {
         let Some(policy) = self.config.horizons.clone() else {
             return Ok(None);
         };
+
+        // Every `?` from here on would otherwise leave the PREVIOUS cycle's
+        // assurance attached, so the gate would keep measuring promotions
+        // against pool bounds computed from a liability it can no longer read.
+        // `arm_or_refuse` attaches `UnarmedHorizons` on the way out of any
+        // failure, so the gate closes rather than going stale. See
+        // `super::horizon::UnarmedHorizons` for why this is not a detach.
+        let armed = self.arm_or_refuse(&policy, unfunded_commitments, drawdown, now);
+        if let Err(error) = &armed {
+            self.factory
+                .attach_horizons(HorizonAssurance::new(Arc::new(UnarmedHorizons::new(
+                    error.message(),
+                )) as Arc<_>));
+        }
+        armed
+    }
+
+    /// The arming itself. Every failure here is turned into a closed gate by
+    /// [`Self::arm_horizons`], which is the only caller.
+    fn arm_or_refuse(
+        &mut self,
+        policy: &HorizonPolicy,
+        unfunded_commitments: Decimal,
+        drawdown: f64,
+        now: Timestamp,
+    ) -> Result<Option<HorizonArming>> {
         let mut reconciler =
-            PoolReconciler::from_policy(&policy, self.config.total_budget, unfunded_commitments)?;
+            PoolReconciler::from_policy(policy, self.config.total_budget, unfunded_commitments)?;
 
         // Every proposal, not only the strategies already holding capital: the
         // candidate at a promotion is by definition not yet at a capital rung,

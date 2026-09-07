@@ -3313,3 +3313,95 @@ fn a_horizon_split_that_does_not_sum_to_the_risk_budget_stops_the_plane_rather_t
     assert!(error.message().contains("names no strategy"), "{error:?}");
     Ok(())
 }
+
+/// A cycle whose arming fails closes the gate rather than leaving the last
+/// successful arming in force.
+///
+/// The defect this pins was found by an independent security review of
+/// `27da0c5`, while the gate still had no production producer.
+/// `CentralPlane::arm_horizons` attached its assurance only on the success
+/// path, so a cycle that could no longer measure the pools went on reconciling
+/// promotions against bounds computed from an older liability — the gate
+/// stayed green by being out of date. Refusing a promotion is recoverable; the
+/// next successful arming lets it through. Admitting one against a liability
+/// nobody measured this cycle is not.
+///
+/// Note what is deliberately NOT asserted: that the assurance is detached.
+/// `LifecycleLedger` holds it as an `Option` and `None` is the *ungated*
+/// state — the legitimate one for a plane with no stated policy — so a detach
+/// would admit every promotion instead of refusing it.
+#[test]
+fn an_arming_that_fails_refuses_promotions_rather_than_reusing_the_last_successful_one()
+-> Result<()> {
+    let incumbent = StrategyId::new("horizon-incumbent");
+    let candidate = StrategyId::new("horizon-candidate");
+    let mut platform =
+        platform_with_horizons(horizon_policy(&[&incumbent, &candidate], dec!("1000000"))?)?;
+    register(platform.central_mut(), &incumbent, CELL)?;
+    walk_to(platform.central_mut(), &incumbent, GateStage::Pilot)?;
+    register(platform.central_mut(), &candidate, CELL)?;
+    walk_to(platform.central_mut(), &candidate, GateStage::Shadow)?;
+
+    // The premise, and the half without which the refusal below proves nothing:
+    // one good cycle arms the gate, and a promotion IS admitted through it. If
+    // this ever fails, the assertion after it is passing because the gate was
+    // never armed rather than because a failed arming closed it.
+    let report = platform.run_cycle(start());
+    let learn = report
+        .stage(Stage::Learn)
+        .ok_or_else(|| qip_core::Error::not_found("the LEARN stage ran"))?;
+    assert!(
+        learn
+            .detail
+            .contains("the §23.4 horizon gate is armed on 2"),
+        "the premise: a good cycle armed the gate: {}",
+        learn.detail
+    );
+
+    // Now an arming that fails, at the seam a failing `unfunded_total` reaches:
+    // a negative liability, which `CapitalPools::new` refuses by name.
+    let failed = platform
+        .central_mut()
+        .arm_horizons(dec!("-1"), 0.0, start())
+        .expect_err("a negative liability must refuse the arming");
+    assert!(
+        failed.to_string().contains("unfunded_commitments"),
+        "the arming failed for the reason this test intends, not another: {failed}"
+    );
+
+    // The gate is now closed, not stale. A promotion the FIRST arming would
+    // have admitted — the pool is a million against two small budgets — is
+    // refused, and the refusal names the arming failure rather than a bucket.
+    let approval = dual_approval(
+        candidate.as_str(),
+        start(),
+        "every gate check passed with the evidence attached",
+    )?;
+    let error = platform
+        .central_mut()
+        .factory_mut()
+        .promote(&candidate, Some(approval), "the gate passed", start())
+        .expect_err("a failed arming must close the gate, not leave the old one in force");
+    assert_eq!(error.code(), "denied", "{error:?}");
+    let message = error.to_string();
+    assert!(
+        message.contains("could not be armed this cycle"),
+        "the refusal says the gate is unarmed rather than naming a pool it did not \
+         measure: {message}"
+    );
+    assert!(
+        message.contains("unfunded_commitments"),
+        "and carries the arming failure through, so an operator reads why: {message}"
+    );
+    assert!(
+        message.contains("clears itself as soon as one cycle arms"),
+        "and says the refusal is recoverable rather than a judgement about the \
+         strategy: {message}"
+    );
+    assert_eq!(
+        platform.central().factory().stage_of(&candidate),
+        GateStage::Shadow,
+        "the refusal left the candidate where it was"
+    );
+    Ok(())
+}

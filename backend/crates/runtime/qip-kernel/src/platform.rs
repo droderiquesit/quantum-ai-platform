@@ -8824,9 +8824,8 @@ impl Platform {
             Ok(None) => {}
             Err(error) => {
                 outcome = outcome.with_problem(format!(
-                    "the §23.4 horizon gate could not be armed this cycle, so promotions to a \
-                     capital-holding rung are reconciled against whatever the last successful \
-                     arming left: {}",
+                    "the §23.4 horizon gate could not be armed this cycle, so every promotion \
+                     to a capital-holding rung is refused until one arms: {}",
                     error.message()
                 ));
             }
