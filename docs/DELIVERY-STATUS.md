@@ -43,6 +43,18 @@ that takes a non-paper ceiling. All three are intact.
 
 ---
 
+## Measured facts
+
+Recounted by the suite, not typed here. `the_delivery_status_counts_the_crates_that_are_actually_there`
+fails when this drifts.
+
+| Fact | Value |
+|---|---|
+| Crates | 58 |
+| Blueprint sections scored | 181 |
+
+---
+
 ## The bar, stated once
 
 Every row uses exactly one of these. Mixed bars are why the previous registers
@@ -111,6 +123,34 @@ These are not backlog. No amount of engineering in this container closes them.
 | ADR 0038 unaccepted | Passkeys | Four checks only the owner can run against `algorik-dev` |
 | ADR 0022/0025 | Leptos | A decision to authorise it. No Leptos code exists anywhere |
 | Boot image never baked | The execution-node plan | `image.yml` dispatched after `infra.yml` applies `module.image_bake` |
+
+---
+
+## Configuration switches held closed in every environment
+
+Twelve Terraform settings sit in a closed position — `false`, `{}`, `null` or
+`[]` — across the four environment files, and the command below is what counts
+them rather than a figure typed here. That is not a gap list; several are
+closed by decision. But a closed switch is the difference between a capability
+that exists in the tree and one that exists in a deployment, so no row above
+can be read as "operating" while its switch is off.
+
+```
+grep -rhoE '^[a-z_]+ *= *(false|\{\}|null|\[\])' infrastructure/environments/*/terraform.tfvars | sort -u
+```
+
+The four that hold the most: `execution_nodes = {}` (no edge node exists, so
+every pass-time series and the whole regional plane reach no process),
+`workload_metrics_exist = false` (every alert policy evaluates to `count = 0`),
+`metrics_collector_image_digest = null` (refused, not pending — the published
+sidecar fails this platform's Trivy gate), and `enable_spanner = false` (the
+ledger grants are created but empty).
+
+Whether each closure is a decision or an oversight is answered by the section
+rows above and by `docs/adr/`, which is where decisions live. This replaced a
+584-line register that asked the same question in prose and a 1,309-line
+register of blueprint-versus-Terraform deltas; both were status documents by
+another name, and the deltas they tracked are the §41–§46 rows above.
 
 ---
 

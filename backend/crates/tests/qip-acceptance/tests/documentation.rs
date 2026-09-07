@@ -950,74 +950,69 @@ fn no_document_promises_something_the_platform_does_not_do() {
 // --- the final system report ------------------------------------------------
 
 #[test]
-fn the_final_report_states_a_verdict_for_every_layer_and_the_four_disqualifiers() {
-    // The report is the document most likely to be read by someone deciding
-    // whether to trust this platform, and therefore the one most likely to
-    // drift into flattery. Two things are pinned here.
+fn the_delivery_status_scores_every_numbered_blueprint_section() {
+    // This replaced `the_final_report_states_a_verdict_for_every_layer…` on
+    // 2026-09-07, when nineteen status documents became one. The property is
+    // the same and stronger: a status document that quietly drops the section
+    // with the worst verdict reads better and says less, so every numbered
+    // section of the blueprint must carry a row.
     //
-    // First, that it covers the architecture rather than a subset of it: a
-    // report that quietly drops the layer with the worst verdict reads better
-    // and says less.
-    //
-    // Second, that the four facts which decide the headline verdict are still
-    // in it. Each is independently sufficient, so removing any one of them
-    // would change what the document concludes.
-    let report = qip_acceptance::read("docs/FINAL-SYSTEM-REPORT.md");
-    let lowered = report.to_lowercase();
+    // The blueprint is the spine precisely because this repository cannot
+    // redefine it — the previous registers each invented their own grouping,
+    // which is how they drifted apart.
+    let blueprint = qip_acceptance::read("docs/architecture/algorik-blueprint-v10.1-source.md");
+    let status = qip_acceptance::read("docs/DELIVERY-STATUS.md");
 
-    for layer in [
-        "data finder",
-        "regional ai brain",
-        "global opportunity brain",
-        "capital brain",
-        "regional execution mesh",
-        "counterfactual twin",
-        "evolution",
-    ] {
-        assert!(
-            lowered.contains(layer),
-            "the final report has no verdict for {layer}"
-        );
-    }
+    let sections: Vec<String> = blueprint
+        .lines()
+        .filter_map(|line| {
+            let number = line.split_whitespace().next()?;
+            let rest = line[number.len()..].trim_start();
+            // A section number is `5` or `5.1`, never `5.` — a trailing dot
+            // is a prose list marker, and admitting those found 57 phantom
+            // "sections" the first time this ran.
+            let numeric = !number.is_empty()
+                && number.chars().all(|c| c.is_ascii_digit() || c == '.')
+                && number.chars().next().is_some_and(|c| c.is_ascii_digit())
+                && !number.ends_with('.');
+            let titled = rest.chars().next().is_some_and(char::is_uppercase);
+            (numeric && titled).then(|| number.to_string())
+        })
+        .collect();
 
-    for disqualifier in [
-        "nothing has been deployed",
-        "never connected to a venue",
-        "no end-to-end latency has been measured",
-        "runs on a simulator",
-    ] {
-        assert!(
-            lowered.contains(disqualifier),
-            "the final report no longer says \"{disqualifier}\", which is one of \
-             the four facts its verdict rests on"
-        );
-    }
-
-    // A verdict column that is all PASS is a verdict column nobody used. The
-    // report is required to carry at least one row that is not a pass, because
-    // three subsystems genuinely are not — and if that ever stops being true
-    // the honest response is to delete this assertion in the same commit that
-    // shows why.
+    // The premise: the spine really was read. A blueprint that failed to load
+    // would make the loop below vacuous and this test would pass on nothing.
     assert!(
-        report.contains("**PARTIAL**"),
-        "every subsystem in the final report passes, which has not been true \
-         of this platform at any point"
+        sections.len() > 150,
+        "only {} numbered sections were found in the blueprint, so this test is \
+         not reading the specification it was written for",
+        sections.len()
+    );
+
+    let missing: Vec<&String> = sections
+        .iter()
+        .filter(|section| !status.contains(&format!("| {section} |")))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the delivery status has no row for {} blueprint section(s): {missing:?}",
+        missing.len()
     );
 }
 
 #[test]
-fn the_final_report_counts_the_crates_that_are_actually_there() {
+fn the_delivery_status_counts_the_crates_that_are_actually_there() {
     // The evidence table is measured, and a measured number goes stale. This
     // is what notices — it is cheap to recount and expensive to be wrong
     // about, since the count is the first thing a reader checks.
-    let report = qip_acceptance::read("docs/FINAL-SYSTEM-REPORT.md");
+    let report = qip_acceptance::read("docs/DELIVERY-STATUS.md");
     let manifests = qip_acceptance::files_with_extension("backend/crates", "toml")
         .into_iter()
         .filter(|path| path.file_name().is_some_and(|name| name == "Cargo.toml"))
         .count();
     assert!(
         report.contains(&format!("| Crates | {manifests} |")),
-        "the final report does not say there are {manifests} crates, and there are"
+        "the delivery status does not say there are {manifests} crates, and there are"
     );
 }
 

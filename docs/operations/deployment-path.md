@@ -199,7 +199,7 @@ answer.
 
 `scripts/deploy-frontends.sh` is the only path for the portal and the
 landing, and register decision F8 in
-[missing-infrastructure-register.md](../ops/missing-infrastructure-register.md)
+missing-infrastructure-register.md (consolidated into [`../DELIVERY-STATUS.md`](../DELIVERY-STATUS.md) on 2026-09-07)
 asks whether the script should exist. The decision recorded here and
 restated by ADR 0036: **it stays, for now, and the way to retire it is a
 `catalogue.tf` entry and a `RunService` manifest for each, not a Kargo

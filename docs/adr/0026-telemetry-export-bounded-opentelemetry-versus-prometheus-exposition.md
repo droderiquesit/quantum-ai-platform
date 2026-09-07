@@ -24,7 +24,7 @@ leave it reading as an open question if its status line is not corrected.
   published tag above 1.9.2 to move to, refused by `vendor.yml`'s
   `--severity CRITICAL --exit-code 1` pass at run 11 and re-checked against
   the registry's tag list on 2026-09-05 with the same result. The evidence is
-  quoted in full in [the missing-infrastructure register](../ops/missing-infrastructure-register.md),
+  quoted in full in the missing-infrastructure register (`docs/ops/missing-infrastructure-register.md`, consolidated into `docs/DELIVERY-STATUS.md` on 2026-09-07),
   under "A6 … is REFUSED, not open". So the scrape path this record
   recommended for Cloud Run has no collector, and — as the same reversal
   condition predicted — **the push shape of option (b) becomes the only path
