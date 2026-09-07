@@ -1828,3 +1828,124 @@ fn a_cycle_ships_slot_four_stamped_with_the_memorys_instant_and_the_pause_return
     assert!(!platform.is_live_capable());
     Ok(())
 }
+
+// --- the register of unproduced slots, held to what the centre can source ---
+//
+// `qip-kernel/src/central/whitelist.rs` carries an audit of all twelve §41.5
+// items and a stated reason each of the eight unproduced ones cannot be
+// filled. The audit is prose, and prose does not fail. This does.
+//
+// The failure it prevents is specific and has a shape: a slot filled from a
+// default, a zero, a constant, or from the centre's own state re-keyed to
+// look like an observation — an empty `CausalDigest`, a `RegimeState` read
+// off the house's drawdown, a per-instrument tick filed under a venue. Every
+// one of those ships as a *produced* slot, and a produced slot is not inert:
+// `PolicyItem::capability` maps three of the twelve onto §6.2 rows, so
+// producing the belief, causal or episodic slot **widens** what a receiving
+// cell may do. The payload is signed and cells size against it, so a
+// fabricated slot is a wrong position rather than a wrong log line.
+//
+// This test is meant to be edited — by whoever produces the fifth slot, in
+// the same change that strikes that slot's paragraph from the register. What
+// it refuses is a fifth slot appearing while the register still explains why
+// it cannot exist.
+#[test]
+fn a_shipped_payload_produces_exactly_the_four_slots_the_register_names() -> Result<()> {
+    let (mut platform, _resolved_at, asked_at) = remembering_platform()?;
+    let pending = qip_api::mesh::pending_policy(
+        &mut platform,
+        [CELL.to_string()].into_iter(),
+        None,
+        asked_at,
+    );
+    assert_eq!(pending.payloads.len(), 1, "one cell, one payload");
+    let (_, payload) = &pending.payloads[0];
+
+    // The premise, asserted before the refusals: this payload came off a
+    // producing path. Without it every assertion below would hold on a
+    // `PolicyPayload::unproduced`, which is the shape a centre that ships
+    // nothing at all emits — and the test would guard nothing.
+    for item in [
+        PolicyItem::CapitalGrants,
+        PolicyItem::RiskEnvelope,
+        PolicyItem::CycleWhitelist,
+        PolicyItem::EpisodicDigest,
+    ] {
+        assert_eq!(
+            payload.freshness(item, asked_at),
+            Freshness::Fresh,
+            "premise: {} is one of the four the centre really produces, and this payload does \
+             not carry it — so the refusals below would hold on a payload carrying nothing",
+            item.as_str()
+        );
+    }
+
+    // Then slot by slot, each naming the reason `whitelist.rs` records, so a
+    // fabricated slot fails under the argument it violated rather than under
+    // a set comparison that only says a count moved.
+    assert!(
+        payload.trained_models.value().is_none(),
+        "slot 1 shipped a model manifest; the shipping process holds no model state and \
+         `register_fit` is reached only from qip-deepbrain"
+    );
+    assert!(
+        payload.compiled_plan.value().is_none(),
+        "slot 2 shipped a plan digest; it must equal a sha256 of bytes in a file on the node's \
+         disk, and any other digest makes every node refuse every plan as tampering"
+    );
+    assert!(
+        payload.belief_priors.value().is_none(),
+        "slot 3 shipped belief priors; `BeliefState` holds no per-subject prior, and a produced \
+         slot 3 widens every receiving cell's sizing multiplier"
+    );
+    assert!(
+        payload.causal_digest.value().is_none(),
+        "slot 5 shipped a causal digest; nothing outside tests calls `claim_causal`, so the \
+         only digest available is an empty one asserted as a fact"
+    );
+    assert!(
+        payload.regime_state.value().is_none(),
+        "slot 6 shipped a regime; `market_regime` is per subject and answers Crisis from this \
+         house's own drawdown, and `RegimeState::confidence` has no source"
+    );
+    assert!(
+        payload.inventory_targets.value().is_none(),
+        "slot 10 shipped inventory targets; the centre's targets are its own book (ADR 0008) \
+         and `InventoryTargets` has no band field at all"
+    );
+    assert!(
+        payload.feasibility_constraints.value().is_none(),
+        "slot 11 shipped feasibility constraints; the centre's grids are keyed by instrument \
+         and the slot is keyed by venue, which `feasibility::effective` prefers over the \
+         cell's own grid"
+    );
+    assert!(
+        payload.adversary_profiles.value().is_none(),
+        "slot 12 shipped adversary profiles; no adversary monitor exists to measure one"
+    );
+
+    // And the catch-all, read through the accessor a *cell* uses rather than
+    // through the values above: whatever the twelve become, the set a payload
+    // carries is the four the register names and no other. This is the line
+    // that fails if a thirteenth item is added and produced, or if a slot is
+    // filled by some route the eight assertions above do not name.
+    let produced: Vec<&'static str> = PolicyItem::all()
+        .into_iter()
+        .filter(|item| payload.freshness(*item, asked_at) != Freshness::Unavailable)
+        .map(|item| item.as_str())
+        .collect();
+    assert_eq!(
+        produced,
+        vec![
+            "episodic_digest",
+            "capital_grants",
+            "cycle_whitelist",
+            "risk_envelope",
+        ],
+        "the produced set is not the four the register names; if a producer was added, say so \
+         in `qip-kernel/src/central/whitelist.rs` and edit this test in the same change"
+    );
+
+    assert!(!platform.is_live_capable());
+    Ok(())
+}
