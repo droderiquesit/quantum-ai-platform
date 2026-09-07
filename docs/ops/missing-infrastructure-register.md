@@ -1249,6 +1249,55 @@ One claim this section does **not** make: that `image.yml` has never been
 dispatched. The runbook records `total_count: 0` checked on 2026-09-06 through
 the GitHub API; this session had no `gh` and no token and did not re-check it.
 
+### 2026-09-07: the evidence is now a plan, not a validate — and still proposes nothing
+
+The section above is accurate and is left standing; this extends it by one
+step. The domain rule asks for "a real plan proving the gate fires on a bad
+value **and admits a good one**", and what had been recorded was `validate`.
+`terraform plan` has now been run — same shape of harness, a root outside this
+repository, the google provider, **no** credential, no state and no backend,
+calling `modules/execution-node` with the complete entry
+`environments/dev/terraform.tfvars` carries as a comment.
+
+The gate fires at plan time, quoting the rule that names each value:
+
+```
+=== region_allocation=0 ===         Error: Invalid value for variable
+  region_allocation must be a positive decimal such as "250000.50" — digits,
+=== region_allocation=1,000,000 === Error: Invalid value for variable
+=== boot_image=debian-12 ===        Error: Invalid value for variable
+  boot_image must be a full image self-link —
+=== boot_image=…/images/family/debian-12 ===
+  An image family is a moving pointer, not an immutable image.
+```
+
+And it admits a good one. With ADR 0045's `region_allocation = "1000000"` and
+a full self-link, **no `Invalid value for variable` error appears at all** —
+the run reaches provider configuration and stops there:
+
+```
+Error: Attempted to load application default credentials since neither
+`credentials` nor `access_token` was set in the provider block.
+  with provider["registry.terraform.io/hashicorp/google"],
+Planning failed.
+```
+
+**What this is not, stated as plainly as the paragraph above states its own
+limit.** `Planning failed.` — no resource of this module was proposed, no
+state was refreshed, no API was called, and the three `lifecycle`
+preconditions were *still* not evaluated, because Terraform aborts at provider
+configuration before it reaches them. The module has still never been in a
+plan that proposes a resource, and PHASE-B17 does not close on this. The
+advance is narrow and worth exactly what it says: the variable validations are
+now proven **in both directions under `plan`**, the command the rule asks for,
+rather than only under `validate`.
+
+No credential was created to get further, and none should be: closing the row
+needs an authenticated plan against `algorik-dev` through Workload Identity
+Federation, dispatched by a person via `infra.yml`. The two values a person
+must supply are unchanged — a boot image self-link from a bake that has never
+run, and ADR 0045's `region_allocation`, which is *proposed*, not accepted.
+
 ## The paper-trading boundary
 
 Intact and untouched by this audit. Nothing here changes
