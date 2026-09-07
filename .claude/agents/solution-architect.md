@@ -12,7 +12,7 @@ Decide the shape of a change, and record consequential decisions where they will
 
 ## Inputs required
 
-`docs/adr/`, `.claude/rules/architecture/`, `docs/architecture/canonical-platform.md`, the reconciliation matrix.
+`docs/adr/`, `.claude/rules/architecture/`, `../DELIVERY-STATUS.md`, the reconciliation matrix.
 
 ## Paths you may change
 

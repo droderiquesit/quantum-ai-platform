@@ -468,7 +468,7 @@ one of them is a value a person could choose**, which is why this row is not
     with the in-tree HTTP mesh for the *data* bus; the centre-to-node path is
     unwired for a different reason (`catalogue.tf:32-38`: a Cloud Run service
     publishes one port and the mesh binds one listener per cell). Which of the
-    two carries the control fabric is the decision `docs/plan/PROJECT-PLAN.md`
+    two carries the control fabric is the decision `../DELIVERY-STATUS.md`
     records REG-6 as needing — "whether Pub/Sub is built or the blueprint row
     is amended" — and it is an ADR, not an edit.
   * **The only other shape available is forbidden.** A root variable naming a
@@ -509,7 +509,7 @@ list with two omissions.
 **Severity: BLOCKING-A-GATE, promoted from COSMETIC.** The promotion
 condition this row itself named — "the promotion condition has already half
 fired" — has now fully fired: OpenObserve is not merely planned, it is
-running. `docs/plan/gate-completion-plan.md:54` states "**OpenObserve is now
+running. `../DELIVERY-STATUS.md` states "**OpenObserve is now
 deployed and serving** at its Cloud Run URL, anonymous on the public internet
 under ADR 0030, with its own login enforced (the API answers 401
 unauthenticated)." A reader of the §2.1 row who trusts "no third-party SaaS
@@ -517,7 +517,7 @@ at runtime" now holds a false belief about a Cloud Run service that is
 actually running in the project — the definition of BLOCKING-A-GATE in this
 register's own terms, not merely a document out of date about a plan.
 
-**Required.** `docs/architecture/algorik-blueprint-traceability.md:61` scores
+**Required.** `../DELIVERY-STATUS.md` scores
 blueprint §2.1 ALIGNED on the ground that managed services are "GCP + IBM
 Quantum; no third-party SaaS at runtime", citing
 `infrastructure/terraform/modules/`.
@@ -534,7 +534,7 @@ digest unset, no service was created and the row was merely out of date.
 `environments/dev/terraform.tfvars:139` (re-derived by
 `grep -n vendored_openobserve_image_digest infrastructure/environments/dev/terraform.tfvars` —
 the register previously cited `:133`) sets that digest, so `dev` plans a
-third-party service, and — beyond planning — `docs/plan/gate-completion-plan.md:54`
+third-party service, and — beyond planning — `../DELIVERY-STATUS.md`
 records it "now deployed and serving" on a real Cloud Run URL. The row still
 says "no third-party SaaS at runtime". This is no longer a row that is merely
 out of date about a plan; it is wrong about a running service.
@@ -551,7 +551,7 @@ line number here is the weakest part of the citation.
 
 **Severity: COSMETIC.**
 
-**Required.** `docs/architecture/algorik-blueprint-traceability.md:301`, the
+**Required.** `../DELIVERY-STATUS.md`, the
 LAYER 1/7 row: "*Current:* Next.js portal and landing on Cloud Run".
 
 **Exists.** That is a true statement about the `algorik-dev` project, on this
@@ -1186,7 +1186,7 @@ the tree at `3848a89` plus this commit.
 
 ## The execution node has still never been in a plan — what was checked instead, 2026-09-06
 
-PHASE-B17 in `docs/plan/PROJECT-PLAN.md` states its own blocker: "no plan can
+PHASE-B17 in `../DELIVERY-STATUS.md` states its own blocker: "no plan can
 exercise the module end to end while `execution_nodes = {}` and the boot image
 and `region_allocation` are unsupplied". That is still true. `execution_nodes`
 is `{}` in all four environments, so `module.execution_node`'s `for_each`

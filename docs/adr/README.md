@@ -1,5 +1,20 @@
 # Architecture decisions
 
+> **The registers these decisions cite were consolidated on 2026-09-07.**
+> Nineteen status documents — `completion-plan.md`, `PROJECT-PLAN.md`,
+> `gap-matrix.md`, `algorik-blueprint-traceability.md`,
+> `integration-truth-pass.md` and fourteen others — were replaced by the single
+> `../DELIVERY-STATUS.md`, which scores all 181 numbered blueprint sections.
+>
+> **The ADR bodies below still name the old files, deliberately.** An ADR
+> records a decision made at a time, on the evidence available then; rewriting
+> its citations to point at a document that did not exist would be
+> anachronistic, and in at least one case the mechanical substitution produced
+> a sentence asserting what the new document says about a line — a claim nobody
+> had checked. Read a citation to a deleted register as "the register that said
+> this when the decision was taken", and read current status only in
+> `../DELIVERY-STATUS.md`.
+
 Each record states what was decided, what it costs, and what would make it
 wrong. A decision with no stated cost has not been thought about, and one with
 no stated reversal condition cannot be revisited honestly.

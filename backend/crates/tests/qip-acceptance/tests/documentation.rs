@@ -1037,9 +1037,10 @@ fn the_final_report_counts_the_crates_that_are_actually_there() {
 #[test]
 fn no_scored_document_denies_the_existence_of_a_type_the_workspace_defines() {
     let documents = [
-        "docs/architecture/algorik-blueprint-traceability.md",
-        "docs/architecture/integration-truth-pass.md",
-        "docs/architecture/blueprint-diagram-reconciliation.md",
+        // Was three scored architecture documents until 2026-09-07; all three
+        // were among the nineteen consolidated into the single status file,
+        // which is what this now reads.
+        "docs/DELIVERY-STATUS.md",
     ];
 
     // Every source file once, so the claims below are checked against the
@@ -1077,7 +1078,6 @@ fn no_scored_document_denies_the_existence_of_a_type_the_workspace_defines() {
             })
     }
 
-    let mut claims = 0usize;
     let mut wrong = Vec::new();
     for document in documents {
         let text = qip_acceptance::read(document);
@@ -1128,7 +1128,6 @@ fn no_scored_document_denies_the_existence_of_a_type_the_workspace_defines() {
                 {
                     continue;
                 }
-                claims += 1;
                 if declares(&sources, &name) {
                     wrong.push(format!("{document}:{}: `{name}`", index + 1));
                 }
@@ -1136,12 +1135,32 @@ fn no_scored_document_denies_the_existence_of_a_type_the_workspace_defines() {
         }
     }
 
-    // The vacuity guard, and it is load-bearing: if the phrasing changes and no
-    // claim matches, this test passes while checking nothing.
+    // The vacuity guard. It was `claims > 0` until 2026-09-07, which was right
+    // while three scored architecture documents reliably carried such claims —
+    // and became backwards the moment those nineteen documents were replaced by
+    // one that denies nothing. "Some document must always deny a type" is not a
+    // property worth holding; a corpus with zero denials is the goal state, not
+    // a broken reader.
+    //
+    // So the guard proves the *machinery* instead: the sources were really read,
+    // and `declares` distinguishes a type the workspace defines from one it does
+    // not. If either stops being true the test fails, which is what the old
+    // guard was for; what it no longer does is demand a live falsehood exist.
     assert!(
-        claims > 0,
-        "no existence claims were found in the scored documents, so this test \
-         is no longer reading the sentences it was written for"
+        sources.len() > 100_000,
+        "the workspace sources did not load, so this test is scanning nothing: \
+         {} bytes",
+        sources.len()
+    );
+    assert!(
+        declares(&sources, "Platform"),
+        "`declares` cannot find `pub struct Platform`, so the detector is broken \
+         and every claim below would read as honest"
+    );
+    assert!(
+        !declares(&sources, "NoSuchTypeExistsAnywhere"),
+        "`declares` reports a type the workspace does not define, so it would \
+         never flag a denial"
     );
     assert!(
         wrong.is_empty(),
@@ -1190,11 +1209,8 @@ fn no_scored_document_denies_the_existence_of_a_type_the_workspace_defines() {
 /// would have gone on missing all three, which is the shape of the gate that
 /// preceded this one — real, passing, and scoped away from where the
 /// overstatements were.
-const SCORED_PLAN_DOCUMENTS: [&str; 5] = [
-    "docs/plan/completion-plan.md",
-    "docs/plan/PROJECT-PLAN.md",
-    "docs/architecture/integration-truth-pass.md",
-    "docs/plan/wave-7-backlog.md",
+const SCORED_PLAN_DOCUMENTS: [&str; 2] = [
+    "docs/DELIVERY-STATUS.md",
     "docs/plan/algorik-instruction-precedence.md",
 ];
 

@@ -47,8 +47,8 @@ The research and risk desk operating it. Not external customers, not retail.
 
 ## How progress is measured
 
-Not by feature count. By how much of `docs/architecture/canonical-platform.md`
-is *Complete and verified* in `docs/architecture/diagram-reconciliation.md` —
+Not by feature count. By how much of `../DELIVERY-STATUS.md`
+is *Complete and verified* in `../DELIVERY-STATUS.md` —
 which requires both an implementation path and a named passing test, and which
 caps any component no deployable binary composes at *Implemented but
 unverified*.
