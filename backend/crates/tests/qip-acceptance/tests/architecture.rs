@@ -1162,6 +1162,163 @@ fn no_crate_that_vetoes_or_executes_reaches_a_solver_through_its_dev_dependencie
     );
 }
 
+/// The dev-dependency edges of each workspace member, as Cargo resolved them.
+///
+/// The same source as [`dependency_graph`] and the complement of its filter:
+/// that one keeps what a crate's shipped code links against, this one keeps
+/// what its tests link against. Both read `cargo metadata`'s structured `kind`
+/// rather than a section heading, so the four manifest forms that defeated a
+/// hand-written reader in this file — the desynchronising quote, the
+/// `cfg(not(target_os = "dependencies"))` table, the rename, the inheritance
+/// from `[workspace.dependencies]` — have nothing left to defeat.
+///
+/// Returned separately rather than merged into the graph on purpose. Cargo
+/// permits cycles among dev edges, and the transitive walk below therefore
+/// takes *one* dev step and then continues through shipped edges only, which
+/// is both what a test binary can actually reach and a walk that terminates.
+fn dev_dependency_edges() -> BTreeMap<String, BTreeSet<String>> {
+    let metadata = workspace_metadata();
+    let members = workspace_member_names(&metadata);
+    let mut edges = BTreeMap::new();
+    for package in packages(&metadata) {
+        let mut targets = BTreeSet::new();
+        for dependency in dependencies_of(package) {
+            if dependency.get("kind").and_then(serde_json::Value::as_str) != Some("dev") {
+                continue;
+            }
+            let depended = dependency_name(dependency);
+            if members.contains(&depended) {
+                targets.insert(depended);
+            }
+        }
+        edges.insert(package_name(package), targets);
+    }
+    edges
+}
+
+/// Which of `roots`' dev dependencies can reach `forbidden`, and by what hop.
+///
+/// One function rather than one per caller, because the check below and the
+/// proof that the check can fire must ask the same question of the same graph.
+/// Two implementations of one rule is how a rule ends up enforced in the case
+/// nobody writes and absent in the case somebody does.
+///
+/// A dev edge *onto* the forbidden crate counts as well as one that reaches it
+/// through an intermediate, so the direct case the older test covers by reading
+/// the manifest is covered here too rather than assumed elsewhere.
+fn dev_edges_reaching(
+    graph: &BTreeMap<String, BTreeSet<String>>,
+    dev: &BTreeMap<String, BTreeSet<String>>,
+    roots: &[&str],
+    forbidden: &str,
+) -> Vec<String> {
+    let mut found = Vec::new();
+    for root in roots {
+        for hop in dev.get(*root).into_iter().flatten() {
+            if hop == forbidden {
+                found.push(format!("{root} -[dev]-> {hop}"));
+                continue;
+            }
+            let onward = reachable_from(graph, hop);
+            if onward.contains(forbidden) {
+                found.push(format!("{root} -[dev]-> {hop} -> … -> {forbidden}"));
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn no_crate_that_vetoes_or_executes_reaches_a_solver_transitively_through_its_dev_dependencies() {
+    // The gap in the test above, which asks only about a *direct* dev edge to
+    // `qip-quantum`. The danger has never been the direct edge: nobody writes
+    // `qip-quantum` under the `[dev-dependencies]` of a risk crate without a
+    // reviewer asking why. They write `qip-optimization-engine`, which looks
+    // like a reasonable fixture and drags the solver behind it —
+    // `nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver`
+    // makes exactly that argument about shipped edges, and the argument does
+    // not stop being true one section lower in the same manifest.
+    //
+    // `qip-lifecycle/Cargo.toml` carries the prohibition as a comment today,
+    // and a comment enforces nothing: an `qip-optimization-engine.workspace =
+    // true` under `[dev-dependencies]` there passed the direct-edge test (not
+    // `qip-quantum`) and the main graph (dev edges excluded), which is two
+    // gates and no coverage. Verified by adding that line: this test failed
+    // naming the hop, the two older tests stayed green.
+    //
+    // One dev step then shipped edges only. That is what a test binary can
+    // actually link, and it keeps the walk over the acyclic half of the graph.
+    let graph = dependency_graph();
+    let dev = dev_dependency_edges();
+
+    // Premise one: the crates this constrains are crates. Every finding below
+    // is an absence, so a renamed crate silently drops out of the check.
+    for crate_name in NO_SOLVER_AUTHORITY {
+        assert!(
+            dev.contains_key(*crate_name),
+            "{crate_name} is not a workspace member cargo metadata reports, so its dev \
+             dependencies are being read from nothing"
+        );
+    }
+
+    // Premise two: dev edges are being read at all. Every authority crate has
+    // an empty dev table today, so the loop below is vacuous on this tree and
+    // would be equally vacuous if `kind == "dev"` never matched anything. This
+    // anchor is the difference between the two. `qip-investment-agents` tests
+    // against `qip-reasoning-engine` and does not ship against it — the exact
+    // pair `dependency_graph`'s doc comment names as the reason dev edges are
+    // excluded there.
+    let anchor = dev
+        .get("qip-investment-agents")
+        .expect("qip-investment-agents is a workspace member");
+    assert!(
+        anchor.contains("qip-reasoning-engine"),
+        "the dev edge qip-investment-agents -> qip-reasoning-engine is not being read, so this \
+         test is reading no dev dependencies and its findings mean nothing: {anchor:?}"
+    );
+    assert!(
+        !graph
+            .get("qip-investment-agents")
+            .is_some_and(|shipped| shipped.contains("qip-reasoning-engine")),
+        "that anchor edge is also a shipped edge, so it proves nothing about dev edges being read"
+    );
+
+    // Premise three: the solver is still reachable from the crate that is
+    // allowed to reach it. Without this, renaming `qip-quantum` would make
+    // every finding below trivially absent.
+    assert!(
+        reachable_from(&graph, "qip-optimization-engine").contains("qip-quantum"),
+        "the optimisation engine no longer reaches a quantum solver, so a dev edge to it would \
+         prove nothing and this test constrains nothing"
+    );
+
+    // Premise four, and the one that matters most: the check can fire. Every
+    // authority crate's dev table is empty today, so the assertion below is
+    // satisfied by a detector that always returns nothing. This asks the same
+    // function about the graph with the one edge the comment in
+    // `qip-lifecycle/Cargo.toml` forbids, and requires it to be found.
+    let mut hypothetical = dev.clone();
+    hypothetical
+        .entry("qip-lifecycle".to_string())
+        .or_default()
+        .insert("qip-optimization-engine".to_string());
+    assert_eq!(
+        dev_edges_reaching(&graph, &hypothetical, &["qip-lifecycle"], "qip-quantum"),
+        vec!["qip-lifecycle -[dev]-> qip-optimization-engine -> … -> qip-quantum".to_string()],
+        "the transitive dev check does not find the edge it exists to forbid, so its silence on \
+         the real graph says nothing"
+    );
+
+    let offenders = dev_edges_reaching(&graph, &dev, NO_SOLVER_AUTHORITY, "qip-quantum");
+    assert!(
+        offenders.is_empty(),
+        "a crate that vetoes, executes, transfers or issues can reach a quantum solver through a \
+         dev dependency: {offenders:?}. Test code links what it declares here just as readily as \
+         shipped code links what it declares above, and a fixture that asks an optimiser what the \
+         risk answer should be is a boundary bypass that happens to compile only under `cargo test`"
+    );
+}
+
 // --- layering ---------------------------------------------------------------
 
 #[test]

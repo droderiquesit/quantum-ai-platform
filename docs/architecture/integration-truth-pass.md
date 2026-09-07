@@ -190,7 +190,7 @@ against the same free balance (`docs/plan/gap-matrix.md` item 10).
 | Deposit / withdrawal | MISSING | `qip-portfolio/src/portfolio.rs:131` has "deposit or withdraw cash" — a simulated book operation, not a money movement |
 | Transfer intent | PARTIAL | `qip-capital-fabric/src/transfer.rs`, `settlement.rs`, `plan.rs`, `location.rs` — internal capital placement, no external boundary |
 | Corridor | MISSING | `grep -rn corridor --include=*.rs` returns **nothing** |
-| Transfer gate | MISSING | `grep -rn TransferGate` returns **nothing** |
+| Transfer gate | BUILT, no production producer | **Corrected 2026-09-07.** This cell previously read "grep -rn TransferGate returns nothing"; the search in fact names ten files, `qip-capital-fabric/src/gate.rs` and `custody.rs` among them. The gate is built and its seven checks run; what is absent is a producer — no production code issues a `FabricCommand::Gate`, so `assessments()` is permanently empty. ADR 0021 permits this gate by name ("a deterministic transfer gate — permitted, and desirable: a gate that refuses is the safe half") and refuses only the signing and withdrawal engines behind an approval, so the missing producer is a route nobody has written, not a decision against it |
 | Custody | MISSING | Only `VenueClass::Custodian` (`venue.rs:53-54`) as a venue kind |
 | Destination registry | MISSING | Nothing |
 | Reconciliation | PARTIAL, and real where it exists | The cell reconciles fills against the venue drop-copy and **self-halts on disagreement** (`cell.rs:774-786`) |

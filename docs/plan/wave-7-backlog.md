@@ -139,7 +139,7 @@ set — no new test is needed, only the call.
 **Closes:** completion-plan.md B8; gap-matrix.md's Governance & Guardrails
 strong-but-incomplete row.
 
-`grep -rln -i passkey backend/crates frontend/portal/src` is empty, confirmed
+The passkey search names four files, all under `frontend/portal/src` and all deprecation copy rather than an implementation — **corrected 2026-09-07**, when this line read "grep -rln -i passkey backend/crates frontend/portal/src is empty, confirmed". No passkey ceremony exists; ADR 0038 is *proposed*, not accepted, and blocks on four checks only the owner can run
 again this session — no change since the last scoring. This is Phase 0 work
 with no code dependency on anything in this session's wave; it is listed here
 because it remains the cheapest fully-unblocked item that touches the

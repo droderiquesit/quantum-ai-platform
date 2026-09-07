@@ -74,11 +74,22 @@ pub const NO_PRODUCTS: &str = "no product to evaluate against: an entitlement is
     strategy family the central factory has registered, and none is registered in this process.";
 
 /// What `/transfer-gate` says about itself.
+///
+/// The last clause was added on 2026-09-07 because the one before it was true
+/// and still misleading. "null when none has been made" reads as *not yet* —
+/// an operator refreshing a page waits for a first assessment that cannot
+/// arrive. `last_assessment` is null **structurally**: no production code
+/// issues a `FabricCommand::Gate`, so `assessments()` is permanently empty,
+/// not transiently. A page that renders a control's history as pending when
+/// the control has no producer is the same defect this platform keeps finding
+/// in its own registers, moved to a surface an operator actually reads.
 pub const GATE_NOTE: &str = "the gate is veto-only and has no transfer engine behind it: an \
     approval is a record that the seven checks passed, and nothing in this platform consumes \
     one. An intent reaches the gate only through the kernel's fabric journal, and every \
     assessment is a record in the event log; last_assessment is the newest, or null when none \
-    has been made.";
+    has been made. No production code issues a transfer-gate command today, so this is null \
+    structurally rather than while waiting for a first assessment: the checks below are the \
+    roster the gate would apply, not a history of it applying them.";
 
 // --- /ledger/users ----------------------------------------------------------
 

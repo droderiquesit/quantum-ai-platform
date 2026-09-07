@@ -94,7 +94,7 @@ a mode an operator selects. Recorded as ADR 0014.
 
 ### C3 — Repository identity: "Algorik" vs. what is in the tree
 
-`grep -rni algorik` over the whole repository returns nothing. There is no
+The same search over `backend/crates` names three files, all acceptance tests that assert on deployment identifiers — **corrected 2026-09-07**, when this line read "grep -rni algorik over the whole repository returns nothing" — and the claim it was making survives the correction unchanged, because those matches are test assertions about environment names rather than an instruction source. There is no
 Algorik brand package, logo, font, icon set, landing page, admin application,
 mobile application or licensed template in the tree. The existing frontend is a
 single Next.js console, currently branded PEOS Quantum AI, with 11 permitted

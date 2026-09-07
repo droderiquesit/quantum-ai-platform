@@ -159,13 +159,16 @@ impl Novelty {
     }
 }
 
-/// Where a fingerprint in the window came from.
+/// Which session a fingerprint entering the window belongs to.
 ///
-/// Carried on the entry rather than inferred from a position, so that
-/// [`DedupWindow::carried`] is a count of what is actually there. The
-/// alternative — `order.len() - admitted` — is right only while eviction is
-/// oldest-first *and* the carry is always the oldest thing in the window, which
-/// are two facts about other code holding one arithmetic identity together.
+/// An argument to [`DedupWindow::take_in`] and nothing else: it decides which
+/// counters move, which is the whole difference between a poll and a resume.
+/// It is deliberately *not* stored on the entry. It was, for one day, to make a
+/// `carried()` accessor exact rather than derived — and that accessor had no
+/// caller outside tests, so the bookkeeping was state maintained at two seams
+/// to answer a question nothing in this platform asked. Storing a field to make
+/// an unused accessor honest is the same defect as the accessor, one level
+/// down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Origin {
     /// Seeded by [`DedupWindow::restore`] from the last session's checkpoint.
@@ -174,27 +177,15 @@ enum Origin {
     Session,
 }
 
-/// One fingerprint in the window, and which session put it there.
-#[derive(Clone, Debug)]
-struct Held {
-    fingerprint: EventFingerprint,
-    origin: Origin,
-}
-
 /// A bounded set of recently seen fingerprints.
 #[derive(Clone, Debug)]
 pub struct DedupWindow {
     capacity: usize,
     seen: BTreeSet<EventFingerprint>,
-    order: VecDeque<Held>,
+    order: VecDeque<EventFingerprint>,
     duplicates: u64,
     admitted: u64,
     evicted: u64,
-    /// Fingerprints held now that this session did not observe. Maintained at
-    /// the two seams that can change it — the insert and the eviction — and
-    /// never derived from the counters, because a counter's meaning is a
-    /// sentence and a window's contents are a fact.
-    carried: usize,
 }
 
 impl DedupWindow {
@@ -212,7 +203,6 @@ impl DedupWindow {
             duplicates: 0,
             admitted: 0,
             evicted: 0,
-            carried: 0,
         })
     }
 
@@ -268,23 +258,13 @@ impl DedupWindow {
         if self.order.len() >= self.capacity
             && let Some(oldest) = self.order.pop_front()
         {
-            self.seen.remove(&oldest.fingerprint);
+            self.seen.remove(&oldest);
             self.evicted = self.evicted.saturating_add(1);
-            // Decided by what left, not by where it sat. An eviction policy
-            // that ever stopped being oldest-first would silently falsify a
-            // positional count and would not falsify this one.
-            if oldest.origin == Origin::Carried {
-                self.carried = self.carried.saturating_sub(1);
-            }
         }
         self.seen.insert(fingerprint.clone());
-        self.order.push_back(Held {
-            fingerprint: fingerprint.clone(),
-            origin,
-        });
-        match origin {
-            Origin::Session => self.admitted = self.admitted.saturating_add(1),
-            Origin::Carried => self.carried = self.carried.saturating_add(1),
+        self.order.push_back(fingerprint.clone());
+        if origin == Origin::Session {
+            self.admitted = self.admitted.saturating_add(1);
         }
         Novelty::New
     }
@@ -302,11 +282,7 @@ impl DedupWindow {
     /// what keeps a checkpoint a fixed size whatever the window's capacity is.
     pub fn recent(&self, limit: usize) -> Vec<EventFingerprint> {
         let skip = self.order.len().saturating_sub(limit);
-        self.order
-            .iter()
-            .skip(skip)
-            .map(|held| held.fingerprint.clone())
-            .collect()
+        self.order.iter().skip(skip).cloned().collect()
     }
 
     /// Seed an unused window from a checkpoint's carry, oldest first.
@@ -353,20 +329,5 @@ impl DedupWindow {
         // it was dropped at start-up. Zeroing it would hide a sizing mistake at
         // the one moment it is visible.
         Ok(taken)
-    }
-
-    /// Fingerprints held right now that were not admitted by this session.
-    ///
-    /// Zero once the carry has been evicted, which is how a deployment sees
-    /// that its restart protection has aged out rather than inferring it.
-    ///
-    /// Counted, not derived. This was `order.len() - admitted`, which gives the
-    /// right answer today for reasons that live in two other functions —
-    /// eviction is oldest-first and the carry is seeded before any poll, so the
-    /// carry is always the first thing to go. Both are true; neither is stated
-    /// anywhere near the subtraction, and a window that ever evicted by some
-    /// other rule would have gone on answering confidently and wrongly.
-    pub const fn carried(&self) -> usize {
-        self.carried
     }
 }

@@ -4248,6 +4248,46 @@ impl Platform {
     /// gate assess an intent — each a record, none a movement: the gate's
     /// admitted verdict carries no way to execute (ADR 0021), and nothing
     /// in this process consumes one.
+    ///
+    /// # No deployed process issues a `Gate` command, and why
+    ///
+    /// Stated here because this is where a reader arrives believing the gate
+    /// is reached. In production this method is called from exactly one
+    /// place — `stage_learn`, through `reconcile_wallet` — and that caller
+    /// passes only `FabricCommand::Wallet`. Nothing outside tests issues a
+    /// `Corridor`, a `Destination` or a `Gate` command, and nothing outside
+    /// tests calls [`Platform::declare_corridors`]. So the seven-check
+    /// transfer gate assesses nothing in any deployed process, and
+    /// `qip-api`'s `GET /transfer-gate` renders `last_assessment: null`
+    /// permanently rather than transiently.
+    ///
+    /// **ADR 0021 does not refuse that producer.** Reading it as though it
+    /// does would file a buildable route as permanently impossible, so the
+    /// text is worth quoting: its decision table permits "Typed transfer
+    /// intents (§37.3) | Permitted — an intent is a record, not a movement"
+    /// and "A deterministic transfer gate | Permitted, and desirable: a gate
+    /// that refuses is the safe half". What it refuses is "MPC signing
+    /// corridors, withdrawal APIs, live venue submission" — the engine behind
+    /// an approved intent, never the caller in front of the gate.
+    ///
+    /// The producer is absent for a different reason, and naming it is what
+    /// stops the wrong one being built. Every input the gate weighs is a fact
+    /// somebody declared rather than one this cycle measures: the corridor
+    /// and its destination are proposed records, the custody agreements and
+    /// the three enforcement attestations are operator statements, and the
+    /// ruling comes from [`Platform::corridor_funding`], which refuses until a
+    /// policy has been declared. A cycle stage that manufactured those in
+    /// order to have something to assess would be a control weighing inputs it
+    /// invented — and with no corridor proposed the gate would veto at check 1
+    /// on every pass, which reads as a working control and is a constant.
+    ///
+    /// The honest producer is therefore an operator route, of the shape
+    /// `qip-api`'s `statement` module already has for
+    /// [`Platform::observe_statement`]: a person states the facts, the kernel
+    /// derives the ruling, the gate assesses, the record lands in the log.
+    /// That is a `backend/crates/apps/**` change and it is not made here.
+    /// This paragraph is the limit recorded in the place it bites, rather than
+    /// a caller invented in the kernel to make the arm look reached.
     pub fn decide_fabric(
         &mut self,
         command: FabricCommand,

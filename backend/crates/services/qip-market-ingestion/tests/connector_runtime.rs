@@ -589,20 +589,23 @@ fn a_restored_window_holds_its_carry_as_the_last_sessions_and_lets_go_of_it_as_i
 -> Result<()> {
     // What this pins, and why it is worth a test rather than an argument: the
     // carry and this session's traffic are two different facts about the same
-    // window, and the only thing that used to keep them apart was a
-    // subtraction — `order.len() - admitted` — whose correctness lived in two
-    // other functions. It was right, and it was right by coincidence of
-    // eviction order. Now the origin travels on the entry and the count is
-    // maintained where an eviction happens, so a window that ever stopped
-    // evicting oldest-first would be caught here rather than answering
-    // confidently and wrongly.
+    // window, and a restore that counted the carry as traffic would make the
+    // first poll after a restart report a batch it never fetched. The carry is
+    // visible here through the window's contents and the counters it does not
+    // move, which is the whole of what the platform relies on: there was
+    // briefly a `carried()` accessor and an `Origin` stored per entry to make
+    // it exact, and both were deleted because nothing outside this file ever
+    // called it.
     let mut window = DedupWindow::new(4)?;
     let body = serde_json::json!({});
     let mark = |n: u32| EventFingerprint::of("s", "1.0", &n.to_string(), now(), &body);
 
     let taken = window.restore(vec![mark(0), mark(1)])?;
     assert_eq!(taken, 2, "premise: the carry was installed");
-    assert_eq!(window.carried(), 2);
+    assert!(
+        window.contains(&mark(0)) && window.contains(&mark(1)),
+        "premise: the carry is in the window, so what follows is about a window that holds one"
+    );
     assert_eq!(
         window.admitted(),
         0,
@@ -615,7 +618,10 @@ fn a_restored_window_holds_its_carry_as_the_last_sessions_and_lets_go_of_it_as_i
     // is the whole point of carrying it — and recognising it consumes nothing.
     assert_eq!(window.observe(&mark(0)), Novelty::Duplicate);
     assert_eq!(window.duplicates(), 1);
-    assert_eq!(window.carried(), 2);
+    assert!(
+        window.contains(&mark(0)),
+        "recognising a redelivery consumed the carried fingerprint it matched"
+    );
     assert_eq!(window.admitted(), 0);
 
     // Four fresh records against a window of four: the carry is the oldest
@@ -626,13 +632,12 @@ fn a_restored_window_holds_its_carry_as_the_last_sessions_and_lets_go_of_it_as_i
     assert_eq!(window.len(), 4, "the window grew past its capacity");
     assert_eq!(window.admitted(), 4);
     assert_eq!(window.evicted(), 2);
-    assert_eq!(
-        window.carried(),
-        0,
-        "the restart protection has aged out and the window must say so; a deployment learns \
-         its carry is too small here or from duplicated records downstream"
+    assert!(
+        !window.contains(&mark(0)) && !window.contains(&mark(1)),
+        "the carry was the oldest thing in the window and this session's four records filled it, \
+         so the restart protection must have aged out; a carry that survived would mean eviction \
+         had stopped being oldest-first and a redelivery of mark(2) would be published as new"
     );
-    assert!(!window.contains(&mark(0)) && !window.contains(&mark(1)));
     Ok(())
 }
 
@@ -656,7 +661,11 @@ fn a_carry_longer_than_the_window_is_counted_as_evicted_rather_than_growing_it()
         "the surplus of a carry the window cannot hold is dropped, and a restore that reported \
          nothing would leave a deployment sizing its carry by guesswork"
     );
-    assert_eq!(window.carried(), 2);
+    assert!(
+        window.contains(&mark(3)) && window.contains(&mark(4)),
+        "the surplus dropped must be the oldest of the carry, so the newest two survive; keeping \
+         the oldest would hand a restart the fingerprints the next poll is least likely to see"
+    );
     assert_eq!(window.admitted(), 0);
     Ok(())
 }

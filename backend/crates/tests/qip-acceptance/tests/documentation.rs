@@ -1149,3 +1149,505 @@ fn no_scored_document_denies_the_existence_of_a_type_the_workspace_defines() {
          {wrong:?}"
     );
 }
+
+// --- a document that quotes a command as its evidence ------------------------
+//
+// The test above reads three architecture documents and matches one phrasing,
+// roughly ``no `X` type``. On 2026-09-07 a completeness audit found six
+// contradictions by hand, and **not one of them was in either the documents it
+// reads or the shape it matches**. They were in the scored *plan* documents,
+// and the worst of them read, verbatim:
+//
+//     | 9 Self-model and exploration | Value of information measured |
+//     | Nothing (`grep -rln SelfModel` empty) | MISSING, deliberately |
+//
+// That command returns eight files. The cell carried its own disproof, the same
+// document said the opposite two hundred lines above, and no gate in this
+// repository could have fired on it — which is why it survived long enough for
+// a person to find it. An understatement of this kind is not the harmless
+// direction: it sends an engineer to build a second copy of something that
+// already works, beside the first.
+//
+// So the shape is read *and the command is run*. A document that quotes a
+// command as proof is held to what the command prints; anything less would be
+// this file believing a citation for the same reason the reader it protects
+// would.
+
+/// The documents whose commands are re-run against the tree.
+///
+/// The plan documents rather than the architecture ones because that is where
+/// the register lives — every finding of the 2026-09-07 audit was in one of
+/// these two. Adding a third is fine; the premise below asserts each named
+/// document is present and substantial, so a rename fails loudly rather than
+/// silently shrinking the corpus to nothing.
+/// Widened from two to five on 2026-09-07. The three added here each carried
+/// exactly the defect this gate exists to catch, found by the audit that
+/// prompted the gate and corrected in the same commit that widened the list:
+/// `integration-truth-pass.md` said ``grep -rn TransferGate`` returned nothing
+/// while it named ten files, `wave-7-backlog.md` called a passkey search
+/// "empty, confirmed" against four, and `algorik-instruction-precedence.md`
+/// said ``grep -rni algorik`` returned nothing against three. A corpus of two
+/// would have gone on missing all three, which is the shape of the gate that
+/// preceded this one — real, passing, and scoped away from where the
+/// overstatements were.
+const SCORED_PLAN_DOCUMENTS: [&str; 5] = [
+    "docs/plan/completion-plan.md",
+    "docs/plan/PROJECT-PLAN.md",
+    "docs/architecture/integration-truth-pass.md",
+    "docs/plan/wave-7-backlog.md",
+    "docs/plan/algorik-instruction-precedence.md",
+];
+
+/// A cell claiming that a quoted search command comes back empty.
+#[derive(Debug)]
+struct EmptinessClaim {
+    line: usize,
+    command: String,
+}
+
+/// The word-boundary rule, applied to the prose around a quoted command.
+///
+/// `names_token` and not `contains`, throughout, and for the reason this file
+/// already carries three scars about: `contains("none")` is true of "nonetheless"
+/// and `contains("but")` of "attribute", and a qualifier missed is a claim
+/// evaluated that the document never made.
+fn names_any(text: &str, tokens: &[&str]) -> bool {
+    tokens.iter().any(|token| names_token(text, token))
+}
+
+/// Every claim on one line that a quoted `grep` finds nothing.
+///
+/// Four things disqualify a candidate, and each of them exists because a real
+/// line in these documents would otherwise be read as a claim it does not make:
+///
+/// * **Reported speech.** The corrections of 2026-09-07 quote the old cell
+///   inside double quotes — `read "Nothing (\`grep -rln SelfModel\` empty)" and
+///   its own command disproves it` — so a command inside a quoted region is the
+///   document describing a claim, not making one. This is a bypass in
+///   principle: a false claim written inside quotation marks is not checked.
+///   It is accepted because the alternative fails on every document that
+///   corrects itself, and a gate that fires on the fix is a gate that gets
+///   deleted.
+/// * **A qualifier.** ``finds nothing but "preserved"`` is a claim about what
+///   the matches *are*, not that there are none, and running it finds the
+///   match the sentence already names.
+/// * **An anchor.** "is still empty at `296e187`" is a claim about a commit,
+///   and this test reads the working tree. Detected by the window being cut
+///   short by a backtick directly after a preposition, which is the shape of
+///   "at `<commit>`", "on `<date>`", "in `<file>`".
+/// * **No emptiness word at all** within the cell, which is the ordinary case:
+///   these documents quote greps far more often as evidence that something *is*
+///   there.
+fn emptiness_claims(text: &str) -> Vec<EmptinessClaim> {
+    const EMPTINESS: [&str; 3] = ["empty", "nothing", "none"];
+    const QUALIFIERS: [&str; 6] = ["but", "except", "only", "other", "besides", "unless"];
+    const ANCHORS: [&str; 9] = [
+        "at", "in", "on", "since", "under", "before", "after", "as", "against",
+    ];
+    const WINDOW: usize = 80;
+
+    let mut claims = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let characters: Vec<char> = line.chars().collect();
+        let ticks: Vec<usize> = characters
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| **c == '`')
+            .map(|(at, _)| at)
+            .collect();
+        for pair in ticks.chunks_exact(2) {
+            let (open, close) = (pair[0], pair[1]);
+            let command: String = characters[open + 1..close].iter().collect();
+            let command = command.trim().to_string();
+            if command != "grep" && !command.starts_with("grep ") {
+                continue;
+            }
+            // Reported speech: an odd number of quotation marks before the
+            // command means it opens inside a quoted region.
+            if characters[..open].iter().filter(|c| **c == '"').count() % 2 == 1 {
+                continue;
+            }
+            // The window ends where the cell, the next quoted span, or the
+            // reader's patience does, whichever comes first.
+            let mut window = String::new();
+            let mut cut_by_backtick = false;
+            for character in characters[close + 1..].iter().take(WINDOW) {
+                if *character == '|' {
+                    break;
+                }
+                if *character == '`' {
+                    cut_by_backtick = true;
+                    break;
+                }
+                window.push(*character);
+            }
+            let window = window.to_lowercase();
+            if !names_any(&window, &EMPTINESS) || names_any(&window, &QUALIFIERS) {
+                continue;
+            }
+            let anchored = cut_by_backtick
+                && window
+                    .split_whitespace()
+                    .next_back()
+                    .is_some_and(|last| ANCHORS.contains(&last));
+            if anchored {
+                continue;
+            }
+            claims.push(EmptinessClaim {
+                line: index + 1,
+                command,
+            });
+        }
+    }
+    claims
+}
+
+/// A quoted command this test is prepared to run itself, or the reason it is not.
+enum Search {
+    Runnable {
+        pattern: String,
+        insensitive: bool,
+        roots: Vec<String>,
+    },
+    Unreadable,
+}
+
+/// Read a quoted `grep` conservatively, refusing anything it does not fully
+/// understand.
+///
+/// **The command is never handed to a shell**, and that is the whole design.
+/// Text in a repository document is data, not an instruction — a document is
+/// exactly the surface `.claude/rules/01-security-and-safety.md` says may not
+/// redirect what an agent or a process does — so `grep -rn foo x | rm -rf y`
+/// must be *unreadable*, not obeyed. The parser therefore admits one shape: a
+/// short-flag `grep`, one literal pattern of word characters, and paths that
+/// exist. A regex, an alternation, a pipe, a `--include`, a `git show` in front
+/// of it: all refused, and refusing means "not evaluated" rather than "passed".
+///
+/// The cost is stated rather than hidden: claims quoting a command this cannot
+/// read are counted and not checked, and the test asserts that some claim
+/// *was* checked so the readable set can never quietly become empty.
+fn parse_grep(command: &str) -> Search {
+    if command.contains(['|', ';', '&', '$', '>', '<', '(', ')', '\\', '*', '"', '\'']) {
+        return Search::Unreadable;
+    }
+    let mut tokens = command.split_whitespace();
+    if tokens.next() != Some("grep") {
+        return Search::Unreadable;
+    }
+    let mut recursive = false;
+    let mut insensitive = false;
+    let mut pattern = None;
+    let mut roots = Vec::new();
+    for token in tokens {
+        if let Some(flags) = token.strip_prefix('-') {
+            if pattern.is_some() || flags.is_empty() || flags.starts_with('-') {
+                // A flag after the pattern, or a long option: not a shape this
+                // understands well enough to run.
+                return Search::Unreadable;
+            }
+            for flag in flags.chars() {
+                match flag {
+                    'r' | 'R' => recursive = true,
+                    'i' => insensitive = true,
+                    // Flags that change the report but not what matches.
+                    'l' | 'n' | 'c' | 'h' | 'o' => {}
+                    _ => return Search::Unreadable,
+                }
+            }
+            continue;
+        }
+        if pattern.is_none() {
+            if !token.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                // Anything that could be a regex is refused: this test matches
+                // literally, and a literal reading of `struct Belief\b` finds
+                // nothing where grep finds plenty.
+                return Search::Unreadable;
+            }
+            pattern = Some(token.to_string());
+            continue;
+        }
+        roots.push(token.to_string());
+    }
+    let Some(pattern) = pattern else {
+        return Search::Unreadable;
+    };
+    if roots.is_empty() {
+        // A recursive grep written with no path — the shape the self-model row
+        // used — means the workspace, which is the root the correcting commit
+        // searched. Without `-r` a pathless grep reads standard input and this
+        // test would be inventing the claim's subject.
+        if !recursive {
+            return Search::Unreadable;
+        }
+        roots.push("backend/crates".to_string());
+    }
+    for root in &roots {
+        let path = repository_root().join(root);
+        if !path.exists() {
+            return Search::Unreadable;
+        }
+        if path.is_dir() && !recursive {
+            return Search::Unreadable;
+        }
+    }
+    Search::Runnable {
+        pattern,
+        insensitive,
+        roots,
+    }
+}
+
+/// The files a readable `grep` would name.
+///
+/// Substring matching here, deliberately and in the one place it is right:
+/// `grep` matches substrings, so a delimited match would answer a question the
+/// document did not ask and could report a cell empty that the command it
+/// quotes fills.
+///
+/// This file excludes itself. A test that quotes a document's search term would
+/// otherwise satisfy or falsify the document's claim with its own prose, which
+/// is the self-measurement the test above had to strip comments to avoid.
+fn files_matching(pattern: &str, insensitive: bool, roots: &[String]) -> Vec<String> {
+    let repository = repository_root();
+    let needle = if insensitive {
+        pattern.to_lowercase()
+    } else {
+        pattern.to_string()
+    };
+    let mut found = Vec::new();
+    let mut stack: Vec<std::path::PathBuf> =
+        roots.iter().map(|root| repository.join(root)).collect();
+    while let Some(path) = stack.pop() {
+        if path.is_dir() {
+            if path
+                .file_name()
+                .is_some_and(|name| name == "target" || name == ".git" || name == "node_modules")
+            {
+                continue;
+            }
+            for entry in std::fs::read_dir(&path).into_iter().flatten().flatten() {
+                stack.push(entry.path());
+            }
+            continue;
+        }
+        if path.ends_with("qip-acceptance/tests/documentation.rs") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let haystack = if insensitive {
+            content.to_lowercase()
+        } else {
+            content
+        };
+        if haystack.contains(&needle) {
+            let shown = path.strip_prefix(&repository).unwrap_or(path.as_path());
+            found.push(shown.display().to_string());
+        }
+    }
+    found.sort();
+    found
+}
+
+/// What one document's emptiness claims are worth: how many were made, how many
+/// this test could run, and which of them the tree contradicts.
+fn audit_emptiness_claims(document: &str, text: &str) -> (usize, usize, Vec<String>) {
+    let claims = emptiness_claims(text);
+    let mut evaluated = 0usize;
+    let mut contradicted = Vec::new();
+    for claim in &claims {
+        let Search::Runnable {
+            pattern,
+            insensitive,
+            roots,
+        } = parse_grep(&claim.command)
+        else {
+            continue;
+        };
+        evaluated += 1;
+        let matches = files_matching(&pattern, insensitive, &roots);
+        if !matches.is_empty() {
+            contradicted.push(format!(
+                "{document}:{}: the row quotes `{}` as finding nothing, and it names {} file(s), \
+                 among them {:?}",
+                claim.line,
+                claim.command,
+                matches.len(),
+                matches.iter().take(3).collect::<Vec<_>>()
+            ));
+        }
+    }
+    (claims.len(), evaluated, contradicted)
+}
+
+#[test]
+fn no_scored_plan_document_calls_a_search_empty_that_is_not() {
+    let mut claims = 0usize;
+    let mut evaluated = 0usize;
+    let mut contradicted = Vec::new();
+    for document in SCORED_PLAN_DOCUMENTS {
+        let text = read(document);
+        // The premise, per document. `read` panics on a missing file, so what
+        // is left to prove is that the file is the register and not a stub
+        // someone left behind a rename.
+        //
+        // The floor was 200 until 2026-09-07 and was calibrated to the two
+        // large registers this test started with. It refused
+        // `wave-7-backlog.md` at 186 lines — a real document carrying a real
+        // false claim, rejected for being short. A premise guard that excludes
+        // the evidence it was written to protect is worse than none, because
+        // it fails loudly and gets *narrowed* rather than fixed: the cheapest
+        // way out is dropping the document, which restores the blind spot this
+        // whole gate exists to remove. 100 still refuses a stub left behind a
+        // rename, and the assertions below — claims found, claims evaluated —
+        // are what actually prevent this passing on an empty corpus.
+        assert!(
+            text.lines().count() > 100,
+            "{document} has only {} lines, which is not the scored register this test was written \
+             to read",
+            text.lines().count()
+        );
+        let (found, ran, wrong) = audit_emptiness_claims(document, &text);
+        claims += found;
+        evaluated += ran;
+        contradicted.extend(wrong);
+    }
+
+    // The vacuity guards, and both are load-bearing. The first fails if the
+    // documents stop writing the shape — which is how the test above could
+    // have been left reading nothing. The second fails if every claim becomes
+    // unreadable to the conservative parser, at which point this is a test that
+    // recognises sentences and checks none of them.
+    assert!(
+        claims > 0,
+        "no cell in the scored plan documents claims a quoted command comes back empty, so this \
+         test is reading none of the sentences it was written for"
+    );
+    assert!(
+        evaluated > 0,
+        "{claims} emptiness claims were found and none was in a shape this test could run, so \
+         nothing was checked against the tree"
+    );
+
+    assert!(
+        contradicted.is_empty(),
+        "a scored plan document quotes a command as evidence that something is absent, and the \
+         command finds it: {contradicted:#?}"
+    );
+}
+
+#[test]
+fn the_emptiness_claim_reader_fires_on_the_cell_that_disproved_itself_and_not_on_an_honest_missing_row()
+ {
+    // Written out rather than left to the documents, for the reason the
+    // delimiter test above is: the rows that would prove each branch have been
+    // corrected, and a gate whose only proof is a text nobody may restore is a
+    // gate nobody can re-verify. Every string here is verbatim from
+    // `docs/plan/completion-plan.md` before and after `8812982`.
+
+    // The cell that disproved itself, at the revision it was written. It is a
+    // contradiction because the type is there — the assertion is on the
+    // *finding*, not merely on the shape, so a reader that recognised the row
+    // and then ran nothing would fail here.
+    let historical = "| 9 Self-model and exploration | Value of information measured | Nothing \
+         (`grep -rln SelfModel` empty) | MISSING, deliberately | Phase 8 gate |";
+    let (found, ran, wrong) = audit_emptiness_claims("completion-plan.md", historical);
+    assert_eq!(
+        found, 1,
+        "the reader did not recognise the row that has already been wrong once"
+    );
+    assert_eq!(ran, 1, "the row's command was recognised and then not run");
+    assert_eq!(
+        wrong.len(),
+        1,
+        "the row claims a search is empty, the workspace defines the type it searches for, and the \
+         reader reported no contradiction"
+    );
+    assert!(
+        wrong[0].contains("completion-plan.md:1:"),
+        "the failure does not name the row it is about: {wrong:?}"
+    );
+
+    // The same shape about something genuinely absent must stay silent, or the
+    // gate fires on every honest register entry and is removed within the week.
+    let (_, ran_absent, absent) = audit_emptiness_claims(
+        "synthetic",
+        "| 9 | x | Nothing (`grep -rln ZzNoSuchIdentifierZz` empty) | MISSING | gate |",
+    );
+    assert_eq!(ran_absent, 1, "the honest row's command was not run either");
+    assert!(
+        absent.is_empty(),
+        "the reader contradicted a row whose search really is empty: {absent:?}"
+    );
+
+    // A row may say a deliverable is missing. What it may not do is assert a
+    // search comes back empty when it does not. None of these three is a claim
+    // about a command, and a reader that counted them would fire on the whole
+    // register.
+    for honest in [
+        "| 12 Wallet and treasury | Every holding reconciled | Nothing beyond internal placement; \
+         refused by ADR 0021 | MISSING, bounded | Separate owner decision |",
+        "| 19 Market creation | Per class, on evidence | Nothing | MISSING, and the blueprint says \
+         last | Phases 7, 8, 14 |",
+        "`grep -rln SelfModel backend/crates` returns eight files, among them the learning engine \
+         and the platform |",
+    ] {
+        let (found, _, wrong) = audit_emptiness_claims("synthetic", honest);
+        assert_eq!(
+            found, 0,
+            "the reader treated an honest row as a claim about a command: {honest}"
+        );
+        assert!(
+            wrong.is_empty(),
+            "and reported it as contradicted: {wrong:?}"
+        );
+    }
+
+    // The four disqualifiers, each on the real line that motivated it. All are
+    // claims the tree would contradict if they were evaluated, so a reader that
+    // dropped any one of these rules turns this repository's own corrections
+    // into failures.
+    for excluded in [
+        // Reported speech: the correction quoting the cell it replaced.
+        "| 9 | x | **Corrected 2026-09-07: this cell read \"Nothing (`grep -rln SelfModel` empty)\" \
+         and its own command disproves it** |",
+        // A qualifier: a claim about what the matches are.
+        "`grep -n -i SelfModel backend/crates` finds nothing but a doc comment |",
+        // An anchor: a claim about a commit, not about the working tree.
+        "`grep -rln SelfModel backend/crates` is still empty at `296e187` |",
+        // No emptiness word: the ordinary citation, which is evidence that
+        // something is present.
+        "`grep -rln SelfModel backend/crates` names the composed self-model |",
+    ] {
+        let (found, _, wrong) = audit_emptiness_claims("synthetic", excluded);
+        assert_eq!(
+            found, 0,
+            "the reader made a claim out of a line that makes none: {excluded}"
+        );
+        assert!(wrong.is_empty(), "and contradicted it: {wrong:?}");
+    }
+
+    // And the parser refuses what it cannot read rather than guessing. A shell
+    // pipeline is the case that matters: document text is data, and a test that
+    // executed it would be a repository document choosing what a process runs.
+    for unreadable in [
+        "grep -rn \"struct Belief\\b\" backend/crates",
+        "git show HEAD:x | grep -n foo",
+        "grep -rn Foo backend/crates --include=*.rs",
+        "grep -c -i alpaca",
+        "grep -rn Foo no/such/path",
+    ] {
+        assert!(
+            matches!(parse_grep(unreadable), Search::Unreadable),
+            "the parser claims it can run {unreadable}, which it cannot read safely"
+        );
+    }
+    // The other direction, which matters just as much: a parser that refused
+    // everything would satisfy every assertion above and check nothing.
+    assert!(
+        matches!(parse_grep("grep -rln SelfModel"), Search::Runnable { .. }),
+        "the parser refuses the exact command the row that has already been wrong once quoted"
+    );
+}
