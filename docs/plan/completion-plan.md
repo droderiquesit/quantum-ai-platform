@@ -188,15 +188,27 @@ one-capability moves had a commit this document already cites elsewhere. A
 figure re-derived from rows nobody re-read reproduces itself, which is what
 happened here for four planes running.
 
-**Where this and `PROJECT-PLAN.md` §1 still differ, and why.** §1's plane
-numerators are Ingestion 4/5 · Cognition 7/7 · Valuation 4/6 · Intelligence
-6/7 · Optimisation 4/5 · Execution 15/15 · Ledger 11/12, summing to 51 of 57;
-this table now reads **52 of 57**, because Optimisation moved to 5/5 on
-2026-09-07 when the multi-horizon gate gained a cycle-stage caller (`27da0c5`)
-and §1 has not been re-derived since. That is a real disagreement of one and
-the sum is the thing to distrust: §1's figure is the older measurement. **The totals now agree and the memberships do
-not, which is a worse state to be in than a visible disagreement, so read the
-two differences rather than the sum.** The first is **Cognition's belief
+**Where this and `PROJECT-PLAN.md` §1 still differ, and why.** Both now total
+**52 of 57**, and both were re-derived on 2026-09-07 when Optimisation moved
+to 5/5 — the multi-horizon gate gained a cycle-stage caller at `27da0c5`.
+§1's numerators are Ingestion 4/5 · Cognition 7/7 · Valuation 4/6 ·
+Intelligence 6/7 · Optimisation 5/5 · Execution 15/15 · Ledger 11/12; this
+table's are the same except **Cognition 6/7 and Ledger 12/12**. **The totals
+agree and the memberships do not, which is a worse state to be in than a
+visible disagreement, so read the two differences rather than the sum** — and
+note precisely why the sum hides them: the two differ by one in *opposite*
+directions and cancel exactly. A reader checking the arithmetic finds it
+correct in both documents and concludes they agree about the platform, which
+they do not.
+
+An earlier revision of this paragraph, written on 2026-09-07, said §1 "has not
+been re-derived since" and called the gap "a real disagreement of one" — while
+the same commit had already re-derived §1, and while the next sentence said
+the totals agree. Both halves were false and they contradicted each other two
+lines apart. It was corrected after an independent review found it. The defect
+is the one this project keeps re-finding and had just written a commit message
+about: a figure patched in prose while the list a reader actually sums was
+left alone. The first is **Cognition's belief
 item**, and the two documents are not counting the same
 thing — see that row: §1 counts belief *grading*, which exists and is called
 from LEARN, while this table counts a belief *stage in the cycle*, and
