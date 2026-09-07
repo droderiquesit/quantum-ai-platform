@@ -126,8 +126,16 @@ choice, and this is where the choice is stated.
 **The other terms, and one that had to be corrected to make the total
 reconcile.** Numerators: Ingestion 4/5 · Cognition 7/7 · Valuation as above ·
 Intelligence 6/7 · Optimisation 4/5 · Execution 15/15 · Ledger 11/12 · UI
-(Layer 1) 3/7 · Infrastructure (Layer 6) 0/7. The Optimisation term is **4/5,
-not the 3/5 the Intelligence & optimisation row carried until 2026-09-06**;
+(Layer 1) 3/7 · Infrastructure (Layer 6) 0/7. The Optimisation term is **5/5
+as of 2026-09-07** — it was 4/5 from 2026-09-06, and 3/5 in the Intelligence &
+optimisation row before that. Multi-horizon reconciliation was the item
+holding it below 5, and `27da0c5` gave it a cycle-stage caller
+(`Platform::stage_learn` → `arm_horizon_gate`), on the same bar that promoted
+family clustering: a production caller, not an existence. The plane total is
+therefore **52 of 57**, not 51. Two limits ride with it and are written into
+`completion-plan.md`'s row rather than here: no composition root loads
+`CentralConfig::horizons`, so a deployment arms nothing, and nothing promotes
+a strategy outside a test, so the refusal has no producer yet;
 that row is corrected above with the production caller verified rather than
 quoted. Without that correction the composite and the table it sits under
 disagreed by one.
