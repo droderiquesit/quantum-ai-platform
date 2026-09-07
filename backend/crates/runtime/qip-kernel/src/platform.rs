@@ -36,7 +36,7 @@
 
 use crate::central::{
     AbsorbedFill, CellIngestion, CellOutcome, CellReport, CentralPlane, DispositionOutcome,
-    EpisodicIssue, FamilyStructureJournal, LearningReport, WhitelistIssue,
+    EpisodicIssue, FamilyStructureJournal, HorizonArming, LearningReport, WhitelistIssue,
 };
 use crate::config::PlatformConfig;
 use crate::cycle::{CycleReport, Stage, StageOutcome};
@@ -56,6 +56,8 @@ use qip_capital::ledger::{
 };
 use qip_capital::reservation::ReservationLedger;
 use qip_capital::{AllocationLimits, CapitalAllocator, DrawdownSchedule};
+use qip_capital_fabric::corridor::{Corridor, CorridorId};
+use qip_capital_fabric::gate::{CorridorFunding, FundingStanding};
 use qip_capital_fabric::journal::{
     FabricCommand, FabricJournal, FabricRecord, FabricState, PRODUCER as FABRIC_PRODUCER,
     WalletCommand,
@@ -115,6 +117,9 @@ use qip_learning_engine::evaluation::{
 };
 use qip_learning_engine::feedback::{CalibrationReport, FeedbackEngine, FeedbackReport};
 use qip_learning_engine::self_model::{ComponentKey, SelfModel};
+use qip_lifecycle::corridor::{
+    CorridorRoute, CorridorStanding as LifecycleCorridorStanding, CorridorSubject,
+};
 use qip_lifecycle::trials::TrialBook;
 use qip_market::bar::Bar;
 use qip_market::corporate_action::CorporateActionKind;
@@ -329,6 +334,17 @@ pub struct Platform {
     /// What the LEARN stage measured of family structure this cycle, for the
     /// journal. Cleared as each cycle's LEARN begins.
     cycle_family_structure: Option<FamilyStructureJournal>,
+    /// What the LEARN stage armed the §23.4 pool gate with this cycle, for the
+    /// journal. Cleared as each cycle's LEARN begins, so a cycle whose arming
+    /// failed reports nothing rather than the last cycle's pools — a stale
+    /// standing read as this cycle's is a claim about capital nobody measured
+    /// now.
+    cycle_horizon_arming: Option<HorizonArming>,
+    /// The solver comparison the DECIDE stage's construction produced, held
+    /// only until the cycle's journal entry is sealed, which takes it. Never
+    /// read twice: a cycle that reaches no construction journals nothing
+    /// rather than the last cycle's comparison.
+    cycle_solver_routing: Option<SolverRoutingJournal>,
     /// The durable, hash-chained mirror of the cycle journal.
     journal: DurableLogTransport,
     /// Everything the platform decided, and what came of it — refusals
@@ -1532,6 +1548,28 @@ pub struct CycleJournalEntry {
     /// older journal replays.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub family_structure: Option<FamilyStructureJournal>,
+    /// What LEARN armed the blueprint §23.4 pool gate with this cycle: the
+    /// budgets the allocator sized, the unfunded commitment liability the
+    /// commitment book held, and each bucket's pool against what is charged to
+    /// it. Absent on a cycle where the desk has stated no
+    /// [`crate::central::HorizonPolicy`], which is every deployment today.
+    /// Defaulted so an older journal replays.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub horizon_arming: Option<HorizonArming>,
+    /// Which solver sized this cycle's proposal and what the classical
+    /// baseline scored (ADR 0006).
+    ///
+    /// Absent exactly when the cycle reached no construction — REASON approved
+    /// no thesis, so `construct_from` refused before any solver ran. Present,
+    /// and correctly so, on a cycle whose DECIDE stage reports "no thesis
+    /// cleared the action bar": construction runs and the action bar rejects
+    /// what it produced, so a solve did happen and the comparison over that
+    /// (degenerate) problem is a fact this cycle established. The distinction
+    /// is measured rather than assumed — see
+    /// `qip-kernel/tests/solver_routing.rs`. Defaulted so a journal written
+    /// before the field existed replays.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub solver_routing: Option<SolverRoutingJournal>,
 }
 
 /// What the LEARN stage's counterfactual pass left in the journal.
@@ -1543,6 +1581,97 @@ pub struct CounterfactualJournal {
     pub regrets: usize,
     /// Declined paths due for pricing and left for a later cycle by the cap.
     pub deferred: usize,
+}
+
+/// Which solver sized the cycle's proposal, and what the classical baseline
+/// it was measured against actually scored.
+///
+/// The failure this closes. ADR 0006 requires a classical baseline every time
+/// a quantum path runs, and
+/// [`qip_optimization_engine::router::ComputeRouter::solve`] computes one on
+/// every construction — it is not optional there, and the quantum arm is only
+/// taken when it beats the baseline by the policy's margin. But
+/// `ConstructionOutcome::routing`, the record of that comparison, was read by
+/// exactly one test in `qip-portfolio-engine` and by nothing else in the
+/// workspace: the kernel took `outcome.proposal` and dropped the decision. So
+/// the platform ran the control on every cycle and kept no evidence that it
+/// had, which is the shape ADR 0006 exists to prevent — "we used a quantum
+/// computer" is not a result, and neither is "we computed a baseline" when
+/// nothing can say what the baseline scored. This is the evidence, and it
+/// sits on [`CycleJournalEntry`] rather than in a log line, so it reaches the
+/// event log with the cycle and the claim is reproducible from the log alone
+/// — [`Platform::journal_entries`] replays it.
+///
+/// Every figure here is `f64` and stays one. Objectives are statistics — the
+/// portfolio problem's own objective function, evaluated at weights — and no
+/// money crosses into them; the proposal's money is `Decimal` on
+/// [`qip_portfolio_engine::proposal::ProposalLeg`] and is not restated here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SolverRoutingJournal {
+    /// The solver whose answer sized the proposal.
+    pub chosen: String,
+    /// Every solver that ran, in the order the router ran them. A list rather
+    /// than a set: which solvers were *tried* and not chosen is the half of
+    /// the record that says whether the choice was contested, and a cycle
+    /// that ran one solver is a different fact from a cycle that ran three
+    /// and picked the first.
+    pub ran: Vec<String>,
+    /// The chosen answer's objective.
+    pub objective: f64,
+    /// The classical baseline's objective. Always present, because the router
+    /// always solves it — a journal entry with no baseline would mean the
+    /// router returned without one, which is unreachable, and asserting it
+    /// here is how that stays true.
+    pub classical_objective: f64,
+    /// The chosen answer's improvement over the baseline, as a fraction.
+    /// Zero when the classical answer *is* the chosen one, which is the
+    /// common case and the honest reading of it.
+    pub improvement_over_classical: f64,
+    /// The measured advantage, present only when a quantum solver won. `None`
+    /// on every classical cycle — not zero, because a quantum path that never
+    /// ran has no advantage to report and a zero would read as one measured
+    /// and found to be nothing.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub measured_quantum_advantage: Option<f64>,
+    /// Whether a quantum path was attempted at all, and why or why not, in
+    /// the router's own words.
+    pub quantum_note: String,
+}
+
+impl SolverRoutingJournal {
+    fn of(decision: &qip_optimization_engine::RoutingDecision) -> Self {
+        Self {
+            chosen: decision.chosen.as_str().to_string(),
+            ran: decision
+                .runs
+                .iter()
+                .map(|run| run.solver.as_str().to_string())
+                .collect(),
+            objective: decision.objective,
+            classical_objective: decision.classical_objective,
+            improvement_over_classical: decision.improvement_over_classical(),
+            measured_quantum_advantage: decision.measured_quantum_advantage(),
+            quantum_note: decision.quantum_note.clone(),
+        }
+    }
+
+    /// The line an operator reads when asking what sized a cycle.
+    pub fn describe(&self) -> String {
+        let advantage = match self.measured_quantum_advantage {
+            Some(measured) => format!("measured quantum advantage {measured:.6}"),
+            None => "no quantum answer was used, so no advantage is claimed".to_string(),
+        };
+        format!(
+            "sized by {} against a classical baseline of {:.6} (chosen objective {:.6}, \
+             improvement {:.6}); ran {}; {advantage}; {}",
+            self.chosen,
+            self.classical_objective,
+            self.objective,
+            self.improvement_over_classical,
+            self.ran.join(", "),
+            self.quantum_note
+        )
+    }
 }
 
 /// What the LEARN stage's strategy review left in the journal: how many
@@ -2547,6 +2676,8 @@ impl Platform {
             cycle_counterfactuals: None,
             cycle_strategy_review: None,
             cycle_family_structure: None,
+            cycle_horizon_arming: None,
+            cycle_solver_routing: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
             outcomes: OutcomeCapture::new(),
             counterfactuals,
@@ -3874,6 +4005,42 @@ impl Platform {
         now: Timestamp,
     ) -> Result<FabricRecord> {
         let at = command.at();
+        // A gate command *states* the Intelligence layer's ruling on the
+        // corridor, and this is the seam where that statement is checked
+        // against the layer that makes it. Without this, the caller — an
+        // operator, a composition root, anything holding a `Platform` — would
+        // be free to hand the gate a ruling of its own invention, and the
+        // control would be measuring a corridor against a number the layer
+        // that sets corridor policy never derived.
+        //
+        // The ruling is re-derived and compared rather than substituted. A
+        // platform that silently replaced the caller's figures would leave a
+        // caller believing a stale policy, and would be correcting an input
+        // instead of refusing it; the refusal names both figures and the
+        // method that produces the right one.
+        //
+        // A command naming a corridor no record has proposed is deliberately
+        // left alone: the journal refuses it as a *record*, with the control's
+        // own words, and pre-empting that with an error here would delete the
+        // only evidence the attempt was made.
+        if let FabricCommand::Gate(gate) = &command
+            && self.fabric.state().corridor(&gate.corridor).is_some()
+        {
+            let derived = self.corridor_funding(&gate.corridor)?;
+            if gate.funding != derived {
+                return Err(Error::denied(format!(
+                    "the gate command for corridor {} states the corridor is {} at {} and the \
+                     layer that sets corridor policy derives {} at {}; take the ruling from \
+                     Platform::corridor_funding rather than stating one, because a corridor \
+                     assessed against a ruling nobody derived is a control measuring itself",
+                    gate.corridor,
+                    gate.funding.standing(),
+                    gate.funding.permitted(),
+                    derived.standing(),
+                    derived.permitted()
+                )));
+            }
+        }
         let record = self.fabric.decide(command)?;
         let correlation_id = self
             .context
@@ -4008,6 +4175,94 @@ impl Platform {
             now,
         )?;
         Ok(())
+    }
+
+    /// Declare the corridors the Intelligence layer sets policy for, and emit
+    /// that policy against the rungs the lifecycle ledger holds now.
+    ///
+    /// This is where the two services meet, and the kernel is where they are
+    /// allowed to: `qip-capital-fabric` holds corridors as records and
+    /// `qip-lifecycle` holds the rungs, neither depends on the other, and a
+    /// dependency either way would put a capital-vetoing crate downstream of
+    /// something it has no business reaching.
+    ///
+    /// Both ceilings on a [`CorridorSubject`] are the desk's own figures. The
+    /// platform selects between two numbers a person wrote down; it computes
+    /// neither, because a cap this process invented would be a number with no
+    /// owner and the veto it produced would be unarguable for the wrong
+    /// reason.
+    pub fn declare_corridors(
+        &mut self,
+        subjects: Vec<CorridorSubject>,
+        now: Timestamp,
+    ) -> Result<()> {
+        self.central.factory_mut().declare_corridors(subjects, now)
+    }
+
+    /// The route the corridor policy names a fabric corridor by.
+    ///
+    /// Derived from the corridor's own record rather than held beside it, so
+    /// there is one statement of where a corridor runs and not two. The
+    /// consequence is deliberate and is the reason
+    /// [`Platform::corridor_funding`] refuses rather than defaults: a desk
+    /// that declares its lifecycle subject under any other spelling gets no
+    /// ruling for the corridor at all, which stops the transfer, where a
+    /// tolerant match would quietly assess it against the policy for a
+    /// different route.
+    fn corridor_route(corridor: &Corridor) -> Result<CorridorRoute> {
+        CorridorRoute::new(
+            corridor.source().to_string(),
+            corridor.destination().address.clone(),
+            corridor.destination().asset.to_string(),
+        )
+    }
+
+    /// What the Intelligence layer permits this corridor to carry, as the
+    /// lifecycle ledger's rungs stand right now.
+    ///
+    /// The figure a caller must put in a [`qip_capital_fabric::journal::GateCommand`],
+    /// and the one [`Platform::decide_fabric`] checks it against.
+    ///
+    /// Refuses, rather than answering "permitted", when no policy has been
+    /// declared or when the declared policy has no ruling for this corridor's
+    /// route. A corridor nobody set a policy for is not a corridor the policy
+    /// permits: the scorecard row this whole capability answers read "corridor
+    /// policy has no subject", and defaulting an unruled corridor to open
+    /// would recreate exactly that — a control whose quiet answer is always
+    /// yes.
+    pub fn corridor_funding(&self, corridor: &CorridorId) -> Result<CorridorFunding> {
+        let Some(record) = self.fabric.state().corridor(corridor) else {
+            return Err(Error::invalid(format!(
+                "corridor {corridor} has never been proposed, so there is no route to look a \
+                 ruling up by; propose it through Platform::decide_fabric first"
+            )));
+        };
+        let route = Self::corridor_route(record)?;
+        let Some(policy) = self.central.factory().ledger().corridor_policy() else {
+            return Err(Error::denied(format!(
+                "no corridor policy has been declared, so nothing rules on {route}; declare the \
+                 corridors and their ceilings through Platform::declare_corridors — a corridor \
+                 assessed without a policy would be assessed against nothing at all"
+            )));
+        };
+        let Some(ruling) = policy.ruling_for(&route) else {
+            return Err(Error::denied(format!(
+                "the corridor policy rules on {} route(s) and none of them is {route}; declare \
+                 this corridor's subject — the strategies it funds and the two ceilings — \
+                 because a corridor the policy does not name is one the platform cannot say \
+                 anything about, and silence is not permission",
+                policy.rulings().len()
+            )));
+        };
+        // The three arms map one-to-one and are matched exhaustively rather
+        // than defaulted: a fourth standing added to the lifecycle would stop
+        // this compiling, which is where it should stop.
+        let standing = match ruling.standing {
+            LifecycleCorridorStanding::Permitted => FundingStanding::Permitted,
+            LifecycleCorridorStanding::Narrowed => FundingStanding::Narrowed,
+            LifecycleCorridorStanding::Suspended => FundingStanding::Suspended,
+        };
+        CorridorFunding::new(standing, ruling.permitted, ruling.reason.clone())
     }
 
     /// The fabric's state as the records built it — the wallet as last
@@ -5305,6 +5560,16 @@ impl Platform {
             counterfactuals: self.cycle_counterfactuals.clone(),
             strategy_review: self.cycle_strategy_review.clone(),
             family_structure: self.cycle_family_structure,
+            horizon_arming: self.cycle_horizon_arming.clone(),
+            // Taken, not cloned. A cycle that reaches no construction — a
+            // platform that has observed nothing, so REASON approves no thesis
+            // — must journal no comparison rather than inherit the last
+            // cycle's, and attributing a baseline computed on one cycle's
+            // problem to a cycle that had no problem is an audit trail worse
+            // than an empty one, because it looks complete. Moving the value
+            // out here makes that structural rather than a clearing statement
+            // somebody has to remember to keep at the top of the loop.
+            solver_routing: self.cycle_solver_routing.take(),
         };
 
         let facts = EventFacts::derived(
@@ -6778,6 +7043,41 @@ impl Platform {
         })
     }
 
+    /// Arm the blueprint §23.4 pool gate over the lifecycle ledger, on this
+    /// platform's own figures.
+    ///
+    /// The LEARN stage calls this every cycle. It is the production caller the
+    /// §23.4 reconciliation did not have: the arithmetic, the seam and the gate
+    /// were each complete, tested and reachable by nobody, which
+    /// `.claude/rules/domains/risk-and-execution.md` calls a defect rather than
+    /// a spare part.
+    ///
+    /// Two of the gate's inputs are measured here and nowhere else:
+    ///
+    /// * the **unfunded commitment liability**, from the commitment book at
+    ///   `now`. It is the reason the years pool can be short while every
+    ///   strategy budgeted at it fits — a commitment nobody allocated against
+    ///   is exactly the one that surprises a desk when it is called — and
+    ///   restating it in configuration beside the split would be a second claim
+    ///   on a number the book already holds;
+    /// * the **drawdown**, from realised equity against its peak, which is what
+    ///   the allocator shrinks the budgets by. The gate then reconciles the
+    ///   sizes the platform would actually deploy today rather than the ones it
+    ///   would have deployed before the book fell.
+    ///
+    /// `Ok(None)` where the desk has stated no `CentralConfig::horizons`. See
+    /// [`CentralPlane::arm_horizons`] for why that is a refusal to arm rather
+    /// than an empty arming.
+    ///
+    /// Public as well as called from the stage, so an operator surface can
+    /// re-arm after changing a proposal without waiting a cycle, and so a
+    /// reviewer can drive it in isolation.
+    pub fn arm_horizon_gate(&mut self, now: Timestamp) -> Result<Option<HorizonArming>> {
+        let liability = self.commitments.unfunded_total(now)?;
+        let drawdown = self.capital.drawdown();
+        self.central.arm_horizons(liability, drawdown, now)
+    }
+
     /// Free capital after every unfunded private commitment has been taken
     /// off it, refused whenever that leaves nothing to deploy.
     ///
@@ -6973,6 +7273,17 @@ impl Platform {
             now,
             ProposalId::from_string(format!("prop-{}", self.cycle)),
         )?;
+
+        // Recorded here rather than in `stage_decide`, because here is where
+        // the fact becomes known: the router has just solved the classical
+        // baseline and whatever else the policy allowed, and this is the only
+        // moment the comparison exists. Recorded *before* the reservation
+        // below, so a proposal whose capital cannot be held still leaves the
+        // evidence that a baseline was computed for it — the solve happened
+        // whether or not the hold did, and a record that vanished on the
+        // refusal path would make ADR 0006's control look like it had not run
+        // on exactly the cycles an operator most wants to read.
+        self.cycle_solver_routing = Some(SolverRoutingJournal::of(&outcome.routing));
 
         // Hold what the proposal was sized for, keyed by its id, until the
         // act stage commits or releases it. A proposal whose capital cannot
@@ -7894,6 +8205,7 @@ impl Platform {
         self.cycle_calibration = None;
         self.cycle_counterfactuals = None;
         self.cycle_family_structure = None;
+        self.cycle_horizon_arming = None;
         // The wallet, against the book ACT left. A refusal by the control is
         // a record the journal keeps; an error here is the journal or the
         // log refusing the record, which is a problem on the cycle's record
@@ -7982,6 +8294,38 @@ impl Platform {
             Err(error) => {
                 outcome = outcome.with_problem(format!(
                     "the realised corpus could not be clustered into families: {}",
+                    error.message()
+                ));
+            }
+        }
+        // Re-arm the blueprint §23.4 pool gate on the figures this cycle
+        // leaves: the allocator's own sizing of the proposal book at the
+        // book's drawdown, and the commitment book's unfunded total at `now`.
+        // Here rather than at the promotion because the gate is a property of
+        // the ledger and a promotion is not a cycle stage — and here rather
+        // than once at start-up because pools reconciled against a liability
+        // measured months ago are pools nobody measured.
+        match self.arm_horizon_gate(now) {
+            Ok(Some(arming)) => {
+                let detail = format!("{}; {}", outcome.detail, arming.describe());
+                outcome = StageOutcome { detail, ..outcome };
+                if arming.is_breached() {
+                    // Reported as a problem as well as journalled: a bucket
+                    // already over its pool is not a refusal anybody has seen
+                    // yet, because nothing has tried to promote into it.
+                    outcome = outcome.with_problem(format!(
+                        "a §23.4 capital pool is over-committed before any promotion: {}",
+                        arming.describe()
+                    ));
+                }
+                self.cycle_horizon_arming = Some(arming);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                outcome = outcome.with_problem(format!(
+                    "the §23.4 horizon gate could not be armed this cycle, so promotions to a \
+                     capital-holding rung are reconciled against whatever the last successful \
+                     arming left: {}",
                     error.message()
                 ));
             }

@@ -64,7 +64,7 @@ pub mod whitelist;
 pub use dna::{DnaPayload, StrategyDna};
 pub use episodic::{EpisodicIssue, EpisodicOutcome};
 pub use factory::{StrategyCandidate, StrategyFactory, StrategyReview};
-pub use horizon::PoolReconciler;
+pub use horizon::{HorizonArming, HorizonClaim, HorizonPolicy, PoolReconciler};
 pub use learning::{
     CellOutcome, DispositionInstruction, DispositionOutcome, DispositionRefused,
     DispositionedPosition, LearningReport, LearningVerdict, PositionDiscrepancy,

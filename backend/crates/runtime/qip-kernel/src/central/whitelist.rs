@@ -58,6 +58,17 @@
 //! paragraph that ruled it out is corrected below rather than deleted,
 //! because the reason it stopped being true is the useful part.
 //!
+//! **Do not quote a count from this file; run the command.** The slots that
+//! reach a shipped payload are the ones assigned at the shipping seam, and
+//! the only way to enumerate them is to look:
+//! `grep -n 'Slot::produced\|= episodic' backend/crates/apps/qip-api/src/mesh.rs`,
+//! whose assignments name `capital_grants`, `risk_envelope`,
+//! `cycle_whitelist` and `episodic_digest` — four of twelve on 2026-09-07.
+//! Three plan documents said three of twelve on that date; all were written
+//! before `ece7602` added the episodic producer and none re-counted
+//! afterwards, which is exactly the failure a command avoids and a figure
+//! does not.
+//!
 //! Three of the nine — belief priors, the episodic digest and the causal
 //! digest — are the three `PolicyItem::capability` maps to a §6.2
 //! capability, which means producing one *relaxes* the cell rather than
@@ -91,19 +102,57 @@
 //! that stops absorbing goes stale at the cell inside ten minutes and the
 //! pause returns. An empty memory still produces nothing at all.
 //!
-//! Of the other six: a model manifest names each model by content digest and
-//! `ModelCard` carries no digest of any artifact, because weights are never
-//! materialised here; the compiled plan's digest must match bytes an edge
-//! node reads from a file the centre is never handed; inventory targets are
-//! exact quantities and the centre holds realised books, not targets, and
-//! holds no marks to price them with; the feasibility constraints are per
-//! venue while the only tick this platform states is per instrument, and a
-//! catalogue that omits a tick is indistinguishable from one that states the
-//! builder's default, so signing it would be signing a default as a venue's
-//! grid — and `qip_edge::feasibility::effective` takes the slot's value in
-//! *preference* to the cell's own per-instrument grid, so the wrong number
-//! there does not sit beside the right one, it replaces it; there is no
-//! adversary monitor at all. The regime is the closest —
+//! Of the other six, re-verified 2026-09-07 against the workspace rather than
+//! against this paragraph's previous wording — **one clause of which was
+//! false, and is corrected rather than deleted below, because the way it was
+//! wrong is the useful part**:
+//!
+//! A model manifest names each model by content digest and `ModelCard`
+//! carries no digest of any artifact, because weights are never materialised
+//! here. The stronger fact, and the one to check first, is that the process
+//! which ships payloads holds no model state at all: `grep -n
+//! 'ModelRegistry\|TrainedTeacher' backend/crates/runtime/qip-kernel/src/platform.rs`
+//! is empty, and `register_fit` — this crate's own registration seam — is
+//! reached only from `qip-deepbrain` (`grep -rn 'register_fit'
+//! backend/crates/apps`), a different binary with no path to `pending_policy`.
+//!
+//! The compiled plan's digest must match bytes an edge node reads from a file
+//! the centre is never handed, and `StrategyCandidate` retains `compiled` and
+//! `program` and not the `StrategySpec`, so the centre cannot reconstruct the
+//! bytes it would be digesting.
+//!
+//! **Inventory targets: the reason previously given here was wrong.** This
+//! said the centre "holds realised books, not targets, and holds no marks to
+//! price them with", and it holds both — `ProposalLeg` carries
+//! `reference_price` (the mark the sizing was computed at) and `target_weight`
+//! beside `current_weight`, on every leg of every proposal the DECIDE stage
+//! constructs. The refusal survives on a different and narrower argument. The
+//! target is the *centre's own book*, sized per cycle against the centre's
+//! equity, and slot 10 names a cell's per-instrument inventory target on a
+//! fast clock; shipping one as the other would tell seven cells each to hold
+//! the whole central book, which is precisely the reading ADR 0008 exists to
+//! prevent. The exact per-instrument quantity the type wants is also not what
+//! a leg holds: `quantity` is units *to trade*, a delta, and deriving a target
+//! inventory from it would go through the `f64` weight to produce a number the
+//! platform never computes and never acts on. And `InventoryTargets` has no
+//! band field at all despite its own doc naming mirror bands, so a producer
+//! would be filling two thirds of a type whose third is undefined.
+//!
+//! The feasibility constraints are per venue while the only grid this platform
+//! states is per instrument — and note which installer the centre actually
+//! calls: `with_instrument_feasibility`, keyed on `object_id`, never
+//! `with_venue_feasibility`, which no composition root calls (`grep -rn
+//! 'with_venue_feasibility' backend/crates` finds only the execution engine's
+//! own tests). `qip_edge::feasibility::effective` looks the slot's fields up
+//! by `venue` and takes them in *preference* to the cell's own per-instrument
+//! grid, so a per-instrument tick filed under a venue key does not sit beside
+//! the right number, it replaces it. A catalogue that omits a tick is also
+//! indistinguishable from one that states `qip_financial`'s builder default,
+//! so signing it would be signing a default as a venue's grid.
+//!
+//! There is no adversary monitor at all: the only `adversar*` in the
+//! non-test tree is `qip-agents`' agent role, which is a governance
+//! independence rule and not a venue posture. The regime is the closest —
 //! the tape statistics are real and drive routing every cycle — but
 //! `Platform::market_regime` is per subject and answers `Crisis` from this
 //! process's own drawdown, so shipping it per cell would sign a house state

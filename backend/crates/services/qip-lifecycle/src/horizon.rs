@@ -61,12 +61,27 @@
 //! else's verdict is the `MaxExpectedShortfall` defect this repository names:
 //! it reads as protection and is not.
 //!
-//! # The honest limit
+//! # Who attaches one, and the limit that is left
 //!
 //! The assurance is **optional**. A [`crate::LifecycleLedger`] with none
-//! attached promotes exactly as it did before this module existed, and no
-//! composition root attaches one yet, so in a deployment the gate is wired and
-//! unfed. That is a real gap and it is not dressed up as anything else.
+//! attached promotes exactly as it did before this module existed.
+//!
+//! `qip-kernel`'s `CentralPlane::arm_horizons` attaches one, and the LEARN
+//! stage calls it every cycle through `Platform::arm_horizon_gate`, so the
+//! figures it refuses on are computed rather than typed: the budgets are the
+//! capital allocator's own sizing of the proposal book at the cycle's
+//! drawdown, and the unfunded commitment liability is the commitment book's at
+//! the cycle's instant. This paragraph said "no composition root attaches one
+//! yet" until that landed.
+//!
+//! Two things are still true and are stated rather than glossed. The desk's
+//! §23.4 statement — how the risk budget divides four ways and which horizon
+//! each strategy sits at — is configuration nobody measures, and no deployment
+//! states one yet, so in a deployment the plane arms nothing and says so on
+//! every cycle. And nothing in the tree promotes a strategy outside a test, so
+//! the gate has no production *event* to refuse either. The gap has moved from
+//! "the gate is unreachable" to "the gate is reachable and its two stated
+//! inputs are unstated"; it has not closed.
 
 use crate::ledger::LifecycleLedger;
 use qip_contracts::signal::StrategyId;

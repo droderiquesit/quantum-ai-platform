@@ -82,8 +82,17 @@ impl OrderType {
 
     /// Whether the order accepts whatever price the market gives.
     ///
-    /// A market order in an illiquid name is how a small position becomes a
-    /// large loss, so this is checked before one is sent.
+    /// **Nothing calls this, and the sentence that used to end this comment —
+    /// "so this is checked before one is sent" — described a check that does
+    /// not exist.** The protection against a market order in an illiquid name
+    /// is [`crate::oms::order_type_for`], which chooses the type by
+    /// participation rather than inspecting one afterwards; that function has
+    /// no production caller either, so the choice it makes is currently made
+    /// nowhere and `stage_act` sends [`OrderType::Market`] unconditionally. A
+    /// doc comment asserting a control is how an operator comes to believe in
+    /// one, which is the failure this rewrite prevents. Left in place rather
+    /// than deleted because the seam that should ask it is named above and is
+    /// tracked work, not because something asks it today.
     pub const fn is_unpriced(&self) -> bool {
         matches!(self, Self::Market)
     }

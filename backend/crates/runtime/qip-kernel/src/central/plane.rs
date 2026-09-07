@@ -22,6 +22,7 @@
 
 use super::dna::StrategyDna;
 use super::factory::StrategyFactory;
+use super::horizon::{HorizonArming, HorizonPolicy, PoolReconciler};
 use super::learning::CellOutcome;
 use super::realised::{RealisedCalendar, RealisedSeries};
 use super::regions::{GrantManifests, RegionMembership, RegionShares, partition};
@@ -48,6 +49,7 @@ use qip_contracts::{CapitalEnvelope, Utilisation};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
 use qip_learning_engine::attribution::{Attribution, Attributor, PositionPeriod};
+use qip_lifecycle::horizon::HorizonAssurance;
 use qip_mesh::delta::DeltaOrder;
 use qip_observability::metrics::{Metrics, labels, names};
 use qip_risk_engine::autonomy::KillSwitch;
@@ -125,6 +127,20 @@ pub struct CentralConfig {
     /// and reads as the fail-closed empty whitelist.
     #[serde(default)]
     pub arbitrage: Option<ArbitragePolicy>,
+    /// How [`Self::total_budget`] divides across the four blueprint §23.4
+    /// horizons, and which horizon each strategy sits at — or `None` for no
+    /// pool reconciliation at all.
+    ///
+    /// Stated by an operator for the same reason [`Self::arbitrage`] is: the
+    /// centre measures neither a capital split nor a strategy's holding
+    /// horizon, and inferring either would be asserting an attribute nobody
+    /// measured. `#[serde(default)]` so a configuration written before this
+    /// field existed still reads, and reads as no reconciliation — which is
+    /// what every deployment does today, and is why
+    /// [`CentralPlane::arm_horizons`] says so on the cycle rather than
+    /// silently arming nothing.
+    #[serde(default)]
+    pub horizons: Option<HorizonPolicy>,
 }
 
 impl Default for CentralConfig {
@@ -148,6 +164,7 @@ impl Default for CentralConfig {
             minimum_cells_for_crowding: 3,
             response_floor: Severity::Observation,
             arbitrage: None,
+            horizons: None,
         }
     }
 }
@@ -654,6 +671,15 @@ impl CentralPlane {
         if let Some(policy) = &config.arbitrage {
             policy.validate()?;
         }
+        // And the §23.4 posture, for the same reason and one more: a split
+        // that does not sum to the budget reaches the lifecycle gate as a
+        // refusal of every promotion to a capital-holding rung, which is
+        // indistinguishable months later from a book that is genuinely
+        // over-committed. A configuration that cannot be reconciled against is
+        // one this plane will not start with.
+        if let Some(policy) = &config.horizons {
+            policy.validate(config.total_budget)?;
+        }
         let key = SigningKey::from_secret(CENTRAL_KEY_ID, signing_secret)?;
         let limits = AllocationLimits::new(
             config.total_budget,
@@ -1047,6 +1073,91 @@ impl CentralPlane {
             .filter_map(|strategy| self.proposals.get(strategy).cloned())
             .collect();
         self.allocator.allocate(&proposals, drawdown, now)
+    }
+
+    /// Arm the blueprint §23.4 pool gate over this plane's lifecycle ledger,
+    /// on the figures as they stand.
+    ///
+    /// From here on every promotion to a rung that holds capital is reconciled
+    /// against the four pools, and one whose bucket would push a pool past its
+    /// total is refused by [`qip_lifecycle::horizon::HorizonAssurance`] rather
+    /// than trimmed. `Ok(None)` where the desk has stated no
+    /// [`HorizonPolicy`]: with no split and no claims there is nothing to
+    /// reconcile against, and arming a gate that would refuse every promotion
+    /// for want of a claim is the `MaxExpectedShortfall` shape — a control that
+    /// reads as protection and is not.
+    ///
+    /// **Three of the four inputs are computed rather than stated.** The pools'
+    /// total is the configured risk budget; the split and the claims are the
+    /// desk's statement; the liability is the commitment book's at `now`; and
+    /// the budgets are this allocator's own sizing of the whole proposal book
+    /// at `drawdown`. That last is the one that matters: the figure the gate
+    /// reconciles is the figure the platform would actually deploy, not a
+    /// number typed beside the split. A proposal the allocator sized at nothing
+    /// carries **no** budget rather than a budget of zero, so promoting it is
+    /// refused for want of a stated claim — a claim of zero and an unknown
+    /// claim are not the same thing, and the second lets a strategy hold
+    /// capital no pool was charged for.
+    ///
+    /// The assurance is attached **before** the standings are computed, so a
+    /// register the platform's own sources are still arguing over arms the gate
+    /// (which refuses on the dispute) instead of leaving it unarmed. Failing to
+    /// describe a disagreement must not be the reason a promotion goes
+    /// unchecked.
+    ///
+    /// An error before the attachment — an unreconcilable split, an allocator
+    /// that cannot size the book — leaves whatever the previous cycle armed in
+    /// place, and leaves nothing armed if no cycle has succeeded yet. The
+    /// caller records it as a problem on the cycle rather than swallowing it.
+    pub fn arm_horizons(
+        &mut self,
+        unfunded_commitments: Decimal,
+        drawdown: f64,
+        now: Timestamp,
+    ) -> Result<Option<HorizonArming>> {
+        let Some(policy) = self.config.horizons.clone() else {
+            return Ok(None);
+        };
+        let mut reconciler =
+            PoolReconciler::from_policy(&policy, self.config.total_budget, unfunded_commitments)?;
+
+        // Every proposal, not only the strategies already holding capital: the
+        // candidate at a promotion is by definition not yet at a capital rung,
+        // and a reconciler that knew nothing about it would refuse it for want
+        // of a budget every time.
+        let proposals: Vec<StrategyProposal> = self.proposals.values().cloned().collect();
+        let plan = self.allocator.allocate(&proposals, drawdown, now)?;
+        let mut budgeted = Decimal::ZERO;
+        for allocation in &plan.allocations {
+            reconciler.budget(&allocation.strategy, allocation.notional)?;
+            budgeted = budgeted.checked_add(allocation.notional).ok_or_else(|| {
+                Error::numeric(
+                    "the allocator's own budgets overflow when summed; check the units of the \
+                     central plane's risk budget",
+                )
+            })?;
+        }
+
+        let armed = Arc::new(reconciler);
+        self.factory
+            .attach_horizons(HorizonAssurance::new(Arc::clone(&armed) as Arc<_>));
+
+        let (standings, unsettled) = match armed.standing() {
+            Ok(standings) => (standings, None),
+            Err(refusal) => (Vec::new(), Some(refusal.message().to_string())),
+        };
+        Ok(Some(HorizonArming {
+            strategies_budgeted: plan.allocations.len(),
+            budgeted,
+            liability: unfunded_commitments,
+            standings,
+            unsettled,
+            unbudgeted: plan
+                .refusals
+                .iter()
+                .map(|(strategy, reason)| format!("{strategy}: {reason}"))
+                .collect(),
+        }))
     }
 
     /// Partition a plan into disjoint per-cell shares of each region's grant

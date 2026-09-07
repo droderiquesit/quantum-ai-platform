@@ -20,10 +20,21 @@ use qip_capital::ledger::{
     DecidedBy, Eligibility, EligibilityDecision, EligibilityTerms, Jurisdiction, Mandate,
     MandateId, MandateTerms, PermittedFamilies, ProductEligibility, UserId, UserShare,
 };
-use qip_capital_fabric::corridor::{CorridorCaps, CorridorId, PermittedHours};
-use qip_capital_fabric::custody::{CorridorKind, CustodyClass};
+use qip_capital_fabric::corridor::{CorridorCaps, CorridorId, CorridorStage, PermittedHours};
+use qip_capital_fabric::custody::{
+    Attestation, EnforcementPoint, EnforcementPoints, Identity, TransferAuthority,
+};
+use qip_capital_fabric::custody::{CorridorKind, CustodyClass, CustodyPolicy};
+use qip_capital_fabric::destination::{ACTIVATION_DELAY, SignatureRecord};
 use qip_capital_fabric::destination::{Approver, Asset as DestinationAsset, DestinationKey};
-use qip_capital_fabric::journal::{CorridorAction, DestinationAction, FabricCommand, Outcome};
+use qip_capital_fabric::gate::{
+    CorridorFunding, FundingStanding, GateCheck, KillSwitchState, SourceBalances, StatedPurpose,
+    TransferHistory, TransferIntent, VelocityState,
+};
+use qip_capital_fabric::journal::{
+    CorridorAction, CorridorStep, DestinationAction, FabricCommand, FabricOutcome, GateCommand,
+    GateVerdict, Outcome,
+};
 use qip_capital_fabric::{CapitalLocation, Region};
 use qip_contracts::intent::Contributor;
 use qip_contracts::message::BookSide;
@@ -45,6 +56,7 @@ use qip_kernel::cycle::Stage;
 use qip_kernel::platform::{
     BookingBasis, EligibilityEntry, EligibilitySource, LedgerEntry, Platform,
 };
+use qip_lifecycle::corridor::{CorridorRoute, CorridorSubject};
 use qip_lifecycle::trials::StrategyFamily;
 use qip_market_ingestion::connector::manifest::SecretRef;
 use qip_mesh::delta::DeltaOrder;
@@ -626,6 +638,288 @@ fn the_fabric_journal_replays_from_the_platforms_event_log_to_the_live_state_aft
         })
         .count();
     assert_eq!(refused_records, 1);
+    Ok(())
+}
+
+// --- corridor policy --------------------------------------------------------------
+
+/// The corridor every test below assesses against: proposed, reviewed,
+/// signed, delayed and active on the platform's own clock, through the same
+/// seam an operator uses. Returns the id and the instant the gate is asked.
+fn active_corridor(platform: &mut Platform) -> Result<(CorridorId, Timestamp)> {
+    let desk_venue = VenueId::new("simulated-venue");
+    let destination = DestinationKey::new(DestinationAsset::new("USD")?, "treasury-account")?;
+    let alice = Approver::new("treasury-desk")?;
+    let bob = Approver::new("treasury-reviewer")?;
+    let carol = Approver::new("treasury-signer")?;
+    for action in [
+        DestinationAction::Propose {
+            key: destination.clone(),
+            by: alice.clone(),
+            at: start(),
+        },
+        DestinationAction::Verify {
+            key: destination.clone(),
+            by: bob.clone(),
+            at: start(),
+        },
+        DestinationAction::RecordSignature {
+            key: destination.clone(),
+            signature: SignatureRecord::new(carol.clone(), start(), "vault/dest/1")?,
+        },
+    ] {
+        let record = platform.decide_fabric(FabricCommand::Destination(action), start())?;
+        assert!(!record.outcome.is_refused(), "{record:?}");
+    }
+    let id = CorridorId::new("treasury-sweep")?;
+    let proposal = FabricCommand::Corridor(CorridorAction::Propose {
+        id: id.clone(),
+        source: CapitalLocation::new(Region::new("home"), Currency::USD, desk_venue),
+        source_class: CustodyClass::FiatAtInstitutionOfRecord,
+        kind: CorridorKind::InstitutionApprovalFlow,
+        destination,
+        caps: CorridorCaps::new(
+            dec!("1000"),
+            dec!("1000"),
+            dec!("5000"),
+            dec!("10000"),
+            Duration::from_hours(1),
+            PermittedHours::ALL_DAY,
+        )?,
+        purpose: "sweep realised cash to the treasury account".to_string(),
+        by: alice,
+        at: start(),
+    });
+    let record = platform.decide_fabric(proposal, start())?;
+    assert!(!record.outcome.is_refused(), "{record:?}");
+    let activation = start().saturating_add(ACTIVATION_DELAY);
+    for step in [
+        CorridorStep::Review {
+            by: bob,
+            at: start(),
+        },
+        CorridorStep::RecordSignature {
+            signature: SignatureRecord::new(carol, start(), "vault/corridor/1")?,
+        },
+        CorridorStep::BeginDelay { now: start() },
+        CorridorStep::Activate { now: activation },
+    ] {
+        let record = platform.decide_fabric(
+            FabricCommand::Corridor(CorridorAction::Step {
+                id: id.clone(),
+                step,
+            }),
+            start(),
+        )?;
+        assert!(!record.outcome.is_refused(), "{record:?}");
+    }
+    let now = activation.saturating_add(Duration::from_hours(1));
+    Ok((id, now))
+}
+
+/// §37.4's closing rule satisfied — three points, three identities, none of
+/// them the one that trades — so a gate command's check 1 turns on the
+/// corridor rather than on the attestations.
+fn transfer_authority() -> Result<TransferAuthority> {
+    let mut points = EnforcementPoints::new();
+    for (point, identity) in [
+        (EnforcementPoint::TransferGate, "gate-svc"),
+        (EnforcementPoint::CustodyPolicy, "custody-policy-svc"),
+        (EnforcementPoint::VenueAllowlist, "venue-ops-oob"),
+    ] {
+        points.attest(Attestation::new(
+            point,
+            Identity::new(identity)?,
+            format!("{}-record-1", point.as_str()),
+            start(),
+        )?)?;
+    }
+    Ok(TransferAuthority::new(
+        points,
+        Identity::new("trading-svc")?,
+    ))
+}
+
+fn gate_command(
+    corridor: CorridorId,
+    funding: CorridorFunding,
+    now: Timestamp,
+) -> Result<FabricCommand> {
+    Ok(FabricCommand::Gate(GateCommand {
+        intent: TransferIntent::new(
+            CapitalLocation::new(
+                Region::new("home"),
+                Currency::USD,
+                VenueId::new("simulated-venue"),
+            ),
+            DestinationKey::new(DestinationAsset::new("USD")?, "treasury-account")?,
+            dec!("500"),
+            StatedPurpose::new(dec!("1000"), dec!("500"))?,
+        )?,
+        corridor,
+        custody: CustodyPolicy::blueprint(),
+        authority: transfer_authority()?,
+        funding,
+        history: TransferHistory::empty(),
+        balances: SourceBalances::new(dec!("10000"), dec!("1000"), dec!("1000"), dec!("1000"))?,
+        velocity: VelocityState::CLEAR,
+        kill_switch: KillSwitchState::Armed,
+        now,
+    }))
+}
+
+/// The corridor's subject: the strategy it funds and the two ceilings the
+/// desk stated. Nothing promotes `alpha-1` in this suite, so the lifecycle
+/// ledger has it at the rung an unpromoted strategy stands on — one that
+/// holds no capital.
+fn subject(funds: &str) -> Result<CorridorSubject> {
+    CorridorSubject::new(
+        CorridorRoute::new("home/USD/simulated-venue", "treasury-account", "USD")?,
+        dec!("900"),
+        dec!("100"),
+        [StrategyId::new(funds)],
+    )
+}
+
+#[test]
+fn a_corridor_no_policy_rules_on_is_refused_a_ruling_rather_than_being_treated_as_permitted()
+-> Result<()> {
+    // The failure this closes: the fabric held the corridor lifecycle, the
+    // allowlist, the caps and the seven-veto gate, and nothing set the policy
+    // those records were measured against — the scorecard row read "corridor
+    // policy has no subject". The dangerous repair is a default: an unruled
+    // corridor treated as permitted is a control whose quiet answer is always
+    // yes, which reads exactly like a control that is working.
+    let mut platform = platform(PlatformConfig::default())?;
+    let (corridor, _now) = active_corridor(&mut platform)?;
+    // Premise: the corridor really is there and really is active, so the
+    // refusal below is about the policy and not about the corridor.
+    assert!(platform.fabric_state().corridor(&corridor).is_some());
+    let refusal = platform
+        .corridor_funding(&corridor)
+        .expect_err("an undeclared corridor was given a ruling");
+    assert!(
+        refusal
+            .message()
+            .contains("no corridor policy has been declared"),
+        "{}",
+        refusal.message()
+    );
+
+    // Declared, but for a different route: still no ruling for this one, and
+    // still no default.
+    platform.declare_corridors(
+        vec![CorridorSubject::new(
+            CorridorRoute::new("home/USD/other-venue", "treasury-account", "USD")?,
+            dec!("900"),
+            dec!("100"),
+            [StrategyId::new("alpha-1")],
+        )?],
+        start(),
+    )?;
+    let refusal = platform
+        .corridor_funding(&corridor)
+        .expect_err("a corridor the policy does not name was given a ruling");
+    assert!(
+        refusal
+            .message()
+            .contains("none of them is home/USD/simulated-venue -> treasury-account in USD"),
+        "{}",
+        refusal.message()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_corridor_funding_a_strategy_that_holds_no_capital_is_suspended_and_the_gate_vetoes_it()
+-> Result<()> {
+    // The wiring this proves, end to end: the rung a strategy stands on in
+    // `qip-lifecycle` reaches `qip-capital-fabric`'s seven-veto gate. Before
+    // it did, the derived standing existed only in the lifecycle crate's own
+    // tests, and a corridor funding a retired book was assessed exactly like
+    // one funding a scaled book — signed, allowlisted, capped, attested, and
+    // admitted at full size.
+    let mut platform = platform(PlatformConfig::default())?;
+    let (corridor, now) = active_corridor(&mut platform)?;
+    platform.declare_corridors(vec![subject("alpha-1")?], start())?;
+
+    // Premise: nothing has promoted alpha-1, so it holds no capital, and the
+    // corridor is active — the veto below is therefore the policy's and not
+    // the lifecycle table's.
+    assert!(
+        !platform
+            .central()
+            .factory()
+            .holds_capital(&StrategyId::new("alpha-1"))
+    );
+    assert_eq!(
+        platform
+            .fabric_state()
+            .corridor(&corridor)
+            .map(|record| record.stage()),
+        Some(CorridorStage::Active)
+    );
+
+    let funding = platform.corridor_funding(&corridor)?;
+    assert_eq!(funding.standing(), FundingStanding::Suspended);
+    assert_eq!(funding.permitted(), Decimal::ZERO);
+    assert!(
+        funding.reason().contains("alpha-1"),
+        "the ruling does not name the strategy that decided it: {}",
+        funding.reason()
+    );
+
+    let record = platform.decide_fabric(gate_command(corridor.clone(), funding, now)?, now)?;
+    let FabricOutcome::Gate(Outcome::Applied(GateVerdict::Vetoed(vetoed))) = record.outcome else {
+        panic!("the gate admitted a suspended corridor: {record:?}");
+    };
+    assert_eq!(vetoed.check, GateCheck::CorridorAuthority);
+    assert!(
+        vetoed.reason.contains("alpha-1"),
+        "the veto does not name the rung that refused it: {}",
+        vetoed.reason
+    );
+    Ok(())
+}
+
+#[test]
+fn a_gate_command_stating_a_ruling_the_policy_did_not_derive_is_refused_before_the_gate_sees_it()
+-> Result<()> {
+    // The failure this closes: every input to the gate is a value the caller
+    // supplies, which is what makes the gate replayable — and it is also what
+    // would let a caller hand it a ruling of its own invention. A corridor
+    // measured against a ceiling nobody derived is a control measuring
+    // itself, and it would look identical in the log to one that was
+    // governed.
+    let mut platform = platform(PlatformConfig::default())?;
+    let (corridor, now) = active_corridor(&mut platform)?;
+    platform.declare_corridors(vec![subject("alpha-1")?], start())?;
+    // Premise: the derived ruling suspends this corridor, and the log holds
+    // no gate assessment yet.
+    assert_eq!(
+        platform.corridor_funding(&corridor)?.standing(),
+        FundingStanding::Suspended
+    );
+    let before = platform.fabric_records();
+    assert!(platform.fabric_state().assessments().is_empty());
+
+    let invented = CorridorFunding::new(
+        FundingStanding::Permitted,
+        dec!("900"),
+        "every strategy this corridor funds has reached scaled",
+    )?;
+    let refusal = platform
+        .decide_fabric(gate_command(corridor, invented, now)?, now)
+        .expect_err("the platform assessed a corridor against an invented ruling");
+    assert!(
+        refusal.message().contains("Platform::corridor_funding"),
+        "{}",
+        refusal.message()
+    );
+    // And nothing was journalled: a command the platform refuses to put to
+    // the gate must not leave a record saying the gate saw it.
+    assert_eq!(platform.fabric_records(), before);
+    assert!(platform.fabric_state().assessments().is_empty());
     Ok(())
 }
 

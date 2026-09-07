@@ -173,8 +173,10 @@ pub struct LifecycleLedger {
     /// consequence rather than the registry's, but scoped: a ledger with none
     /// promotes exactly as it did before this field existed, and one that has
     /// been given an assurance refuses every promotion to a capital-holding
-    /// rung the assurance will not admit. See `crate::horizon` for the honest
-    /// limit that no composition root attaches one yet.
+    /// rung the assurance will not admit. `qip-kernel`'s
+    /// `CentralPlane::arm_horizons` attaches one each cycle from the LEARN
+    /// stage; see `crate::horizon` for the two stated inputs no deployment
+    /// supplies yet.
     horizons: Option<HorizonAssurance>,
     /// The corridors this desk has declared, and the policy last emitted for
     /// them. Re-derived on every recorded move, so the policy is never older

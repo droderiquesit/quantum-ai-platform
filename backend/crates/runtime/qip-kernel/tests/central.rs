@@ -36,6 +36,7 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Currency, Decimal, ObjectId, dec};
 use qip_financial::asset_class::{InstrumentType, Sector};
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
+use qip_financial::extensions::{Extension, PrivateAssetDetails};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance as DataProvenance};
 use qip_financial::universe::Universe;
@@ -45,6 +46,7 @@ use qip_kernel::central::{
     ReconciliationBreak, RetirementDisposition, StrategyCandidate, StrategyDna, WhitelistIssue,
     WhitelistOutcome, WhitelistedMarket, WhitelistedVenue, capital_subject,
 };
+use qip_kernel::central::{HorizonArming, HorizonClaim, HorizonPolicy};
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::Stage;
 use qip_kernel::platform::Platform;
@@ -57,6 +59,7 @@ use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
 use qip_observability::metrics::{labels, names};
+use qip_optimization_engine::horizons::Horizon;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use qip_simulation_engine::validation::PurgedSplit;
 use qip_strategy::catalogue::FeatureCatalogue;
@@ -2907,5 +2910,406 @@ fn the_learn_stage_measures_no_family_structure_on_a_corpus_the_centre_never_gra
         entry.family_structure, None,
         "and no family structure was measured on capital nobody granted"
     );
+    Ok(())
+}
+
+// --- blueprint §23.4: the horizon gate the LEARN stage arms ------------------
+
+/// The desk's §23.4 statement, with the whole risk budget in one bucket and a
+/// single unit in the one every fixture below claims against.
+///
+/// `deployable` is the pool `Horizon::HoursToDays` is allocated against, and
+/// every claim here names that horizon, so a test can make a pool tight or
+/// roomy by moving one number without disturbing the sum — which
+/// `CapitalPools::new` refuses to let drift.
+fn horizon_policy(strategies: &[&StrategyId], deployable: Decimal) -> Result<HorizonPolicy> {
+    let inventory = Decimal::from_int(10_000_000)
+        .checked_sub(deployable)
+        .ok_or_else(|| qip_core::Error::numeric("the split fits inside the budget"))?;
+    Ok(HorizonPolicy {
+        available_inventory: inventory,
+        deployable_capital: deployable,
+        capital_not_reserved_for_calls: Decimal::ZERO,
+        reserved_capital: Decimal::ZERO,
+        claims: strategies
+            .iter()
+            .map(|strategy| HorizonClaim {
+                strategy: (*strategy).clone(),
+                source: "research-enrolment".to_string(),
+                horizon: Horizon::HoursToDays,
+            })
+            .collect(),
+        despite: None,
+    })
+}
+
+/// A platform whose central plane carries `policy`, with room at the cell for
+/// more than the two grants the default per-cell limit leaves.
+fn platform_with_horizons(policy: HorizonPolicy) -> Result<Platform> {
+    let mut config = PlatformConfig::default();
+    config.central.per_cell = Decimal::from_int(9_000_000);
+    config.central.horizons = Some(policy);
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    Platform::new(config, context, Telemetry::silent(), universe(), limits())
+}
+
+/// The arming the LEARN stage journalled on the last cycle.
+fn journalled_arming(platform: &Platform) -> Result<Option<HorizonArming>> {
+    Ok(platform
+        .replay_journal(
+            &qip_events::EventFilter::new().topic(qip_events::Topic::LearningCompleted),
+        )?
+        .last()
+        .ok_or_else(|| qip_core::Error::not_found("the cycle journalled an entry"))?
+        .decode::<qip_kernel::platform::CycleJournalEntry>()?
+        .body
+        .horizon_arming)
+}
+
+/// Blueprint §23.4 through the cycle: LEARN arms the pool gate on the
+/// allocator's own budgets, and a promotion whose bucket is already over its
+/// pool is refused rather than trimmed.
+///
+/// The arithmetic, the seam and the gate were each complete and tested before
+/// this, and reachable by nobody — the shape
+/// `.claude/rules/domains/risk-and-execution.md` names as a defect rather than
+/// a spare part. What is proven here is the call path and nothing else: a real
+/// cycle's LEARN stage, the plane's own allocator sizing the proposal book, and
+/// the refusal arriving out of `StrategyFactory::promote`.
+#[test]
+fn a_promotion_whose_bucket_is_over_its_pool_is_refused_once_the_learn_stage_has_armed_the_gate()
+-> Result<()> {
+    let incumbent = StrategyId::new("horizon-incumbent");
+    let candidate = StrategyId::new("horizon-candidate");
+    // One currency unit of deployable capital, so any budget at all breaches.
+    let mut platform =
+        platform_with_horizons(horizon_policy(&[&incumbent, &candidate], dec!("1"))?)?;
+
+    // The incumbent reaches a capital-holding rung *before* the gate is armed,
+    // which is the position a desk is really in: the pool was divided after
+    // strategies were already drawing on it.
+    register(platform.central_mut(), &incumbent, CELL)?;
+    walk_to(platform.central_mut(), &incumbent, GateStage::Pilot)?;
+    register(platform.central_mut(), &candidate, CELL)?;
+    walk_to(platform.central_mut(), &candidate, GateStage::Shadow)?;
+
+    let report = platform.run_cycle(start());
+    let learn = report
+        .stage(Stage::Learn)
+        .ok_or_else(|| qip_core::Error::not_found("the LEARN stage ran"))?;
+    assert!(
+        learn
+            .detail
+            .contains("the §23.4 horizon gate is armed on 2"),
+        "the stage says what it armed the gate with: {}",
+        learn.detail
+    );
+
+    // The premise, and the half that makes the refusal below mean anything: the
+    // allocator really did size both strategies, and the figures the gate holds
+    // are its sizes rather than a number typed beside the split.
+    let arming = journalled_arming(&platform)?
+        .ok_or_else(|| qip_core::Error::not_found("the cycle journalled its arming"))?;
+    assert_eq!(
+        arming.strategies_budgeted, 2,
+        "both proposals were sized by the allocator: {arming:?}"
+    );
+    assert!(
+        arming.budgeted > dec!("1"),
+        "the budgets the allocator produced exceed the deployable pool, or this \
+         test measures nothing: {}",
+        arming.budgeted
+    );
+    let deployable = arming
+        .standings
+        .iter()
+        .find(|standing| standing.bucket.as_str() == "hours_to_days")
+        .ok_or_else(|| qip_core::Error::not_found("the contested bucket is reported"))?;
+    assert_eq!(deployable.pool, dec!("1"));
+    assert_eq!(
+        deployable.committed, arming.budgeted,
+        "both budgets are charged to the one pool both strategies claimed"
+    );
+
+    // And the refusal, out of the ordinary promotion path.
+    let approval = dual_approval(
+        candidate.as_str(),
+        start(),
+        "every gate check passed with the evidence attached",
+    )?;
+    let error = platform
+        .central_mut()
+        .factory_mut()
+        .promote(&candidate, Some(approval), "the gate passed", start())
+        .expect_err("an over-committed pool must refuse the promotion");
+    assert_eq!(error.code(), "denied", "{error:?}");
+    let message = error.to_string();
+    assert!(
+        message.contains("horizon-candidate"),
+        "the refusal names the promotion it is about: {message}"
+    );
+    assert!(
+        message.contains("hours_to_days is over its pool of 1 by"),
+        "the refusal names the bucket, its pool and the overdraft: {message}"
+    );
+    assert!(
+        message.contains("will not trim them for you"),
+        "and says it declined to trim rather than choosing which strategy goes \
+         unfunded: {message}"
+    );
+    assert_eq!(
+        platform.central().factory().stage_of(&candidate),
+        GateStage::Shadow,
+        "the refusal left the candidate where it was"
+    );
+    Ok(())
+}
+
+/// The other half, without which the test above proves only that something
+/// refuses: a gate that refused every promotion would satisfy every assertion
+/// in it.
+#[test]
+fn the_gate_the_learn_stage_arms_admits_a_promotion_the_pools_have_room_for() -> Result<()> {
+    let incumbent = StrategyId::new("horizon-incumbent");
+    let candidate = StrategyId::new("horizon-candidate");
+    // The whole budget deployable: every claim below is at that horizon, and
+    // the allocator cannot size more than the budget it was given.
+    let mut platform = platform_with_horizons(horizon_policy(
+        &[&incumbent, &candidate],
+        Decimal::from_int(10_000_000),
+    )?)?;
+    register(platform.central_mut(), &incumbent, CELL)?;
+    walk_to(platform.central_mut(), &incumbent, GateStage::Pilot)?;
+    register(platform.central_mut(), &candidate, CELL)?;
+    walk_to(platform.central_mut(), &candidate, GateStage::Shadow)?;
+
+    platform.run_cycle(start());
+    let arming = journalled_arming(&platform)?
+        .ok_or_else(|| qip_core::Error::not_found("the cycle journalled its arming"))?;
+    // Premise: the gate really is armed and really is holding figures, so the
+    // admission below is a gate passing rather than a gate absent.
+    assert_eq!(arming.strategies_budgeted, 2);
+    assert!(!arming.is_breached(), "{arming:?}");
+
+    let approval = dual_approval(
+        candidate.as_str(),
+        start(),
+        "every gate check passed with the evidence attached",
+    )?;
+    platform.central_mut().factory_mut().promote(
+        &candidate,
+        Some(approval),
+        "the gate passed",
+        start(),
+    )?;
+    assert_eq!(
+        platform.central().factory().stage_of(&candidate),
+        GateStage::Pilot
+    );
+
+    // And the verdict is on the record, because a promotion taken over an
+    // unresolved horizon disagreement is otherwise indistinguishable afterwards
+    // from one taken on agreement.
+    let verdict = platform
+        .central()
+        .factory()
+        .ledger()
+        .history(&candidate)
+        .last()
+        .and_then(|entry| entry.horizon.clone())
+        .ok_or_else(|| {
+            qip_core::Error::not_found("the ledger entry carries the horizon verdict")
+        })?;
+    assert_eq!(verdict.horizon.as_str(), "hours_to_days");
+    assert!(verdict.treatment.contains("deployable capital"));
+    assert!(!verdict.decided_over_disagreement());
+    Ok(())
+}
+
+/// The unfunded commitment liability the platform's own commitment book holds
+/// reaches the gate, and the reserved pool has to meet it as well as the
+/// positions booked at the years horizon.
+///
+/// A commitment nobody allocated against is exactly the one that surprises a
+/// desk when it is called. The liability is measured at the cycle's instant
+/// rather than restated in the policy beside the split: two claims about one
+/// number disagree, and the one in configuration would be the one nobody
+/// re-derived.
+#[test]
+fn the_commitment_books_unfunded_total_reaches_the_gate_the_learn_stage_arms() -> Result<()> {
+    let candidate = StrategyId::new("horizon-candidate");
+    let mut policy = horizon_policy(&[&candidate], Decimal::from_int(9_000_000))?;
+    // A million of reserved capital against nine hundred thousand of unfunded
+    // commitments, so the years pool has room for the liability and not for
+    // much else.
+    policy.available_inventory = Decimal::ZERO;
+    policy.capital_not_reserved_for_calls = Decimal::ZERO;
+    policy.reserved_capital = Decimal::from_int(1_000_000);
+    let mut config = PlatformConfig::default();
+    config.central.per_cell = Decimal::from_int(9_000_000);
+    config.central.horizons = Some(policy);
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut universe = universe();
+    universe.insert(private_fund(
+        "PEF",
+        dec!("1000000"),
+        dec!("100000"),
+        dec!("0"),
+        dec!("400000"),
+    )?)?;
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe, limits())?;
+
+    register(platform.central_mut(), &candidate, CELL)?;
+    walk_to(platform.central_mut(), &candidate, GateStage::Shadow)?;
+    platform.run_cycle(start());
+
+    let arming = journalled_arming(&platform)?
+        .ok_or_else(|| qip_core::Error::not_found("the cycle journalled its arming"))?;
+    assert_eq!(
+        arming.liability,
+        dec!("900000"),
+        "the liability is the commitment book's own unfunded total, not a \
+         figure the policy restated: {arming:?}"
+    );
+    let years = arming
+        .standings
+        .iter()
+        .find(|standing| standing.bucket.as_str() == "years")
+        .ok_or_else(|| qip_core::Error::not_found("the years bucket is reported"))?;
+    assert_eq!(
+        years.committed,
+        dec!("900000"),
+        "the reserved pool is charged the liability although no strategy \
+         budgeted for it"
+    );
+    // Premise: nothing is budgeted at the years horizon at all, so the charge
+    // above is the liability and nothing else.
+    assert!(!years.is_breached(), "the reserved pool still covers it");
+    assert_eq!(years.headroom()?, dec!("100000"));
+    Ok(())
+}
+
+/// A private fund, so the platform's commitment book has an unfunded total to
+/// charge the reserved pool with.
+fn private_fund(
+    symbol: &str,
+    committed: Decimal,
+    called: Decimal,
+    distributed: Decimal,
+    residual: Decimal,
+) -> Result<FinancialObject> {
+    FinancialObject::builder(
+        ObjectId::from_string(format!("obj-{symbol}")),
+        symbol,
+        InstrumentType::PrivateEquityFund,
+        LiquidityProfile::illiquid(90.0, 250.0),
+    )
+    .venue("OTC")
+    .price(dec!("100"))
+    .extension(Extension::PrivateAsset(PrivateAssetDetails {
+        vintage_year: 2024,
+        committed_capital: committed,
+        called_capital: called,
+        distributed_capital: distributed,
+        residual_value: residual,
+        stage: "buyout".to_string(),
+        lockup_years: 7.0,
+        capital_call_notice_days: 10,
+    }))
+    .provenance(DataProvenance::synthetic("administrator", start()))
+    .build(start())
+}
+
+/// A desk that has stated no §23.4 split arms no gate, and its promotions are
+/// exactly what they were before this existed.
+///
+/// The `MaxExpectedShortfall` shape, avoided from the other side. A plane that
+/// armed an empty reconciler would refuse every promotion to a capital-holding
+/// rung for want of a claim — a control that reads as protection, fires always,
+/// and measured nothing.
+#[test]
+fn a_desk_that_has_stated_no_horizon_split_arms_no_gate_and_promotes_as_it_did_before() -> Result<()>
+{
+    let candidate = StrategyId::new("horizon-candidate");
+    let mut platform = platform()?;
+    // Premise: no policy is stated, which is every deployment as this is
+    // written.
+    assert_eq!(platform.central().config().horizons, None);
+    register(platform.central_mut(), &candidate, CELL)?;
+    walk_to(platform.central_mut(), &candidate, GateStage::Shadow)?;
+
+    let report = platform.run_cycle(start());
+    let learn = report
+        .stage(Stage::Learn)
+        .ok_or_else(|| qip_core::Error::not_found("the LEARN stage ran"))?;
+    assert!(
+        !learn.detail.contains("horizon gate"),
+        "the stage arms nothing and says nothing about it: {}",
+        learn.detail
+    );
+    assert_eq!(journalled_arming(&platform)?, None);
+
+    let approval = dual_approval(
+        candidate.as_str(),
+        start(),
+        "every gate check passed with the evidence attached",
+    )?;
+    platform.central_mut().factory_mut().promote(
+        &candidate,
+        Some(approval),
+        "the gate passed",
+        start(),
+    )?;
+    assert_eq!(
+        platform.central().factory().stage_of(&candidate),
+        GateStage::Pilot
+    );
+    assert!(
+        platform
+            .central()
+            .factory()
+            .ledger()
+            .history(&candidate)
+            .last()
+            .is_some_and(|entry| entry.horizon.is_none()),
+        "no assurance was attached, so the entry records no horizon verdict"
+    );
+    Ok(())
+}
+
+/// A split that does not sum to the risk budget stops the plane at start-up.
+///
+/// Refused here rather than at the first promotion, because a split that does
+/// not sum reaches the lifecycle gate as a refusal of every promotion to a
+/// capital-holding rung — indistinguishable, months later, from a book that is
+/// genuinely over-committed.
+#[test]
+fn a_horizon_split_that_does_not_sum_to_the_risk_budget_stops_the_plane_rather_than_the_promotion()
+-> Result<()> {
+    let candidate = StrategyId::new("horizon-candidate");
+    let mut config = CentralConfig::default();
+    let mut policy = horizon_policy(&[&candidate], dec!("1"))?;
+    // One unit short of the budget the desk configured.
+    policy.available_inventory = policy
+        .available_inventory
+        .checked_sub(dec!("1"))
+        .ok_or_else(|| qip_core::Error::numeric("the inventory pool carries a unit to remove"))?;
+    config.horizons = Some(policy);
+    let error = CentralPlane::new(&[7u8; 32], config).expect_err("the plane refuses to start");
+    assert_eq!(error.code(), "invalid", "{error:?}");
+    assert!(
+        error.message().contains("sum exactly"),
+        "the refusal says the pools must sum to the total: {error:?}"
+    );
+
+    // And a policy naming no strategy is refused for the opposite reason: it
+    // would refuse every promotion for want of a claim, which reads as a
+    // control working and is a control with no subject.
+    let empty = CentralConfig {
+        horizons: Some(horizon_policy(&[], dec!("1"))?),
+        ..CentralConfig::default()
+    };
+    let error = CentralPlane::new(&[7u8; 32], empty).expect_err("the plane refuses to start");
+    assert!(error.message().contains("names no strategy"), "{error:?}");
     Ok(())
 }

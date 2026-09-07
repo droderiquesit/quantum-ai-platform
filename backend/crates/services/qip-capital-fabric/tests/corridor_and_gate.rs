@@ -28,8 +28,9 @@ use qip_capital_fabric::destination::{
     SignatureRecord,
 };
 use qip_capital_fabric::gate::{
-    AnomalyFlag, CarriedTransfer, GateCheck, KillSwitchState, SourceBalances, StatedPurpose,
-    TransferGate, TransferHistory, TransferIntent, VelocityBreaker, VelocityState, Vetoed,
+    AnomalyFlag, CarriedTransfer, CorridorFunding, FundingStanding, GateCheck, KillSwitchState,
+    SourceBalances, StatedPurpose, TransferGate, TransferHistory, TransferIntent, VelocityBreaker,
+    VelocityState, Vetoed,
 };
 use qip_capital_fabric::location::{CapitalLocation, Region};
 use qip_contracts::venue::VenueId;
@@ -184,6 +185,20 @@ fn authority_with(
     Ok(TransferAuthority::new(points, Identity::new(TRADING)?))
 }
 
+/// The Intelligence layer's ruling as the satisfied fixture carries it: every
+/// strategy the corridor funds has reached the rung that holds capital at full
+/// size, so the corridor may carry up to a ceiling above every amount any test
+/// here proposes. Deliberately not the binding constraint in the fixture — a
+/// ruling that refused first would make every other check's test pass for the
+/// wrong reason. A test about the ruling overrides this one field.
+fn funding() -> Result<CorridorFunding> {
+    CorridorFunding::new(
+        FundingStanding::Permitted,
+        dec!("50000"),
+        "every strategy this corridor funds has reached scaled; the weakest, alpha-1, is at scaled",
+    )
+}
+
 /// Run the gate with every input satisfied except whatever the caller
 /// overrode.
 struct Inputs {
@@ -192,6 +207,7 @@ struct Inputs {
     registry: DestinationRegistry,
     custody: CustodyPolicy,
     authority: TransferAuthority,
+    funding: CorridorFunding,
     history: TransferHistory,
     balances: SourceBalances,
     velocity: VelocityState,
@@ -206,6 +222,7 @@ impl Inputs {
             corridor: active_corridor()?,
             registry: usable_registry()?,
             custody: CustodyPolicy::blueprint(),
+            funding: funding()?,
             authority: authority()?,
             history: TransferHistory::empty(),
             balances: balances()?,
@@ -222,6 +239,7 @@ impl Inputs {
             &self.registry,
             &self.custody,
             &self.authority,
+            &self.funding,
             &self.history,
             &self.balances,
             self.velocity,
@@ -612,6 +630,129 @@ fn an_admitted_assessment_records_the_three_identities_it_was_admitted_on() -> R
         attested.iter().all(|(_, identity)| *identity != TRADING),
         "the approval names the trading identity among its attestors: {attested:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn a_corridor_the_intelligence_layer_suspended_is_vetoed_on_check_one_with_every_other_input_satisfied()
+-> Result<()> {
+    // The failure prevented, and it is the one this input exists for: the
+    // fabric held corridors as records — signed, allowlisted, capped,
+    // attested — that nothing measured against a policy. A corridor whose
+    // strategies have all been retired satisfies every one of those records
+    // exactly as well as one funding a scaled book, so before the ruling
+    // reached the gate a retired book's corridor was admitted at full size.
+    let mut inputs = Inputs::satisfied()?;
+    inputs.funding = CorridorFunding::new(
+        FundingStanding::Suspended,
+        Decimal::ZERO,
+        "alpha-1 is at retired and holds no capital, so this corridor has nothing to fund",
+    )?;
+    let veto = inputs.veto();
+    assert_eq!(veto.check, GateCheck::CorridorAuthority);
+    assert!(
+        veto.alert,
+        "§37.3 pairs a check 1 veto with an alert, and a corridor that should never have \
+         generated an intent is exactly that case"
+    );
+    // The reason must carry the deriving layer's own words, not a summary:
+    // an operator reading "suspended" alone would go looking for a corridor
+    // fault, which is the wrong problem. The rung is what they need.
+    assert!(
+        veto.reason.contains("alpha-1 is at retired"),
+        "the veto does not name the rung that decided it: {}",
+        veto.reason
+    );
+    Ok(())
+}
+
+#[test]
+fn an_amount_above_the_narrowed_ceiling_is_vetoed_on_caps_though_every_signed_cap_admits_it()
+-> Result<()> {
+    // The failure prevented: a pilot-rung strategy is "live with capital,
+    // deliberately limited", and a corridor that keeps its full signed
+    // ceiling while the strategy behind it is limited has undone the limit.
+    // The signed caps cannot express this — they were signed before the rung
+    // moved and are wider on purpose.
+    let mut inputs = Inputs::satisfied()?;
+    inputs.funding = CorridorFunding::new(
+        FundingStanding::Narrowed,
+        dec!("100"),
+        "alpha-1 is at pilot, which is live with capital and deliberately limited",
+    )?;
+    // Premise: the amount is inside every cap the desk signed, so the veto
+    // below can only be the derived ceiling. Without this the test would pass
+    // on a fixture the per-transfer cap already refused.
+    assert!(inputs.intent.amount() < caps()?.max_per_transfer());
+    assert!(inputs.intent.amount() < caps()?.max_per_hour());
+    let veto = inputs.veto();
+    assert_eq!(veto.check, GateCheck::Caps);
+    assert!(
+        veto.reason.contains("narrowed ceiling of 100"),
+        "the veto does not name the ceiling that refused it: {}",
+        veto.reason
+    );
+    assert!(
+        veto.reason.contains("alpha-1 is at pilot"),
+        "the veto does not name the rung that set the ceiling: {}",
+        veto.reason
+    );
+    Ok(())
+}
+
+#[test]
+fn a_ruling_that_suspends_a_corridor_and_gives_it_a_ceiling_is_refused_by_the_gate_as_well_as_by_its_constructor()
+-> Result<()> {
+    // The failure prevented is the one `CustodyPolicy::conforms` and
+    // `TransferAuthority::agreement` already document: a `CorridorFunding`
+    // travels inside a `GateCommand` and arrives deserialised off the event
+    // log, where the constructor never runs. A ruling that says "suspended"
+    // and carries a ceiling of 400 is two claims about the same fact, and
+    // whichever check was asked first would decide — check 1 would refuse it
+    // and check 2 would admit 400 through a corridor carrying nothing.
+    let refused = CorridorFunding::new(
+        FundingStanding::Suspended,
+        dec!("400"),
+        "alpha-1 is at retired and holds no capital",
+    );
+    assert!(
+        refused.is_err(),
+        "the constructor admitted a suspended corridor with a ceiling"
+    );
+    // Off the log, past the constructor, exactly as a replay would build it.
+    let malformed: CorridorFunding = serde_json::from_str(
+        r#"{"standing":"suspended","permitted":"400","reason":"alpha-1 is at retired and holds no capital"}"#,
+    )
+    .map_err(|err| qip_core::error::Error::invalid(err.to_string()))?;
+    assert_eq!(
+        malformed.permitted(),
+        dec!("400"),
+        "premise: serde built the contradiction the constructor refuses"
+    );
+    let mut inputs = Inputs::satisfied()?;
+    inputs.funding = malformed;
+    let veto = inputs.veto();
+    assert_eq!(veto.check, GateCheck::CorridorAuthority);
+    assert!(
+        veto.reason.contains("contradicts itself"),
+        "the veto is not the well-formedness refusal: {}",
+        veto.reason
+    );
+    Ok(())
+}
+
+#[test]
+fn an_admitted_assessment_records_the_ruling_it_was_admitted_under() -> Result<()> {
+    // The same reason the agreement is kept: an approval read six months
+    // later must say which standing the corridor was on at the time, not
+    // which one it is on now. A rung moves; the record does not.
+    let inputs = Inputs::satisfied()?;
+    let approved = match inputs.assess() {
+        Ok(approved) => approved,
+        Err(veto) => panic!("the satisfied fixture was vetoed: {veto}"),
+    };
+    assert_eq!(approved.funding(), &funding()?);
+    assert_eq!(approved.funding().standing(), FundingStanding::Permitted);
     Ok(())
 }
 

@@ -27,11 +27,22 @@
 //! adapter *and the gate together*: real pools, real reconciliation, real
 //! refusal.
 //!
-//! # What is deliberately not claimed
+//! # What is proven here, and where the caller is proven
 //!
-//! No composition root constructs a `PoolReconciler` yet, so in a deployment
-//! this seam is wired and unfed. These tests prove the seam is correct, not
-//! that anything runs it.
+//! These tests drive the adapter and the gate directly, so what they prove is
+//! that the seam is *correct*. That something runs it is proven elsewhere and
+//! deliberately not here: `CentralPlane::arm_horizons` builds a
+//! `PoolReconciler` and attaches it to the lifecycle ledger, the LEARN stage
+//! calls it every cycle through `Platform::arm_horizon_gate`, and
+//! `tests/central.rs::a_promotion_whose_bucket_is_over_its_pool_is_refused_once_the_learn_stage_has_armed_the_gate`
+//! drives a whole cycle and then a real promotion into the refusal. This
+//! paragraph said "no composition root constructs a `PoolReconciler` yet"
+//! until that landed.
+//!
+//! What is still unfed is narrower and is stated in `central::horizon`: the
+//! desk's own §23.4 statement — the four-way split and the per-strategy
+//! horizon claims — is configuration no deployment sets, and nothing in this
+//! tree promotes a strategy outside a test.
 
 // The workspace denies `panic_in_result_fn` for production code, where an
 // assertion that aborts a `Result`-returning function is a bug. In a test the

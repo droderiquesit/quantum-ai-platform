@@ -56,8 +56,8 @@ use crate::destination::{
     Approver, DestinationKey, DestinationRegistry, DestinationStatus, SignatureRecord,
 };
 use crate::gate::{
-    Approved, KillSwitchState, SourceBalances, TransferGate, TransferHistory, TransferIntent,
-    VelocityState, Vetoed,
+    Approved, CorridorFunding, KillSwitchState, SourceBalances, TransferGate, TransferHistory,
+    TransferIntent, VelocityState, Vetoed,
 };
 use crate::location::CapitalLocation;
 use crate::wallet::{
@@ -341,16 +341,25 @@ pub enum WalletOutcome {
 /// breaker and the kill switch — is carried, because the fabric holds none of
 /// it and the log is the only place it is written down.
 ///
-/// `authority` is carried rather than validated on the way in: the replay
-/// re-runs the gate over it, so a record naming three attestations that are
-/// not independent is refused by the control rather than trusted because its
-/// chain verified.
+/// `authority` and `funding` are carried rather than validated on the way in:
+/// the replay re-runs the gate over them, so a record naming three
+/// attestations that are not independent, or a funding ruling that suspends a
+/// corridor and gives it a ceiling in the same breath, is refused by the
+/// control rather than trusted because its chain verified.
+///
+/// `funding` is the Intelligence layer's ruling as it stood when the intent
+/// was assessed, and it is written down rather than looked up on replay for
+/// the reason the whole record exists: the rungs the corridor's strategies
+/// stand on today are not the ones they stood on then, and a replay that
+/// re-derived the ruling would re-decide the transfer under a policy that did
+/// not exist at the time.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateCommand {
     pub intent: TransferIntent,
     pub corridor: CorridorId,
     pub custody: CustodyPolicy,
     pub authority: TransferAuthority,
+    pub funding: CorridorFunding,
     pub history: TransferHistory,
     pub balances: SourceBalances,
     pub velocity: VelocityState,
@@ -453,7 +462,13 @@ impl EventBody for FabricRecord {
     /// refuses the append instead; a fabric decision that could be dropped
     /// from the working set would be a decision nobody could replay.
     const TOPIC: Topic = Topic::ComplianceEvaluated;
-    const SCHEMA_VERSION: u32 = 1;
+    /// Two since a [`GateCommand`] began carrying the Intelligence layer's
+    /// ruling on the corridor. A version 1 record has no `funding` field, and
+    /// the replay refuses it rather than assessing it as though the corridor
+    /// had been permitted — which is the one reading a missing field must
+    /// never be given, and is why this is a version bump and not a
+    /// defaulted field.
+    const SCHEMA_VERSION: u32 = 2;
 }
 
 /// Everything the fabric's controls have decided, rebuilt from records.
@@ -673,6 +688,7 @@ impl FabricState {
             &self.destinations,
             &command.custody,
             &command.authority,
+            &command.funding,
             &command.history,
             &command.balances,
             command.velocity,

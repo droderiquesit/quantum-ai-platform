@@ -4,10 +4,20 @@
 //! intent and anything that would act on it. This module is that gate with
 //! nothing behind it. [`TransferGate::assess`] takes an intent, the corridor
 //! it claims, the allowlist, the custody table, the three enforcement points'
-//! attestations, the balances, the velocity state and the kill-switch state —
-//! every one of them supplied by the caller, with the platform clock — and
-//! returns either an [`Approved`] record or a [`Vetoed`] record naming the
-//! check that failed and what would satisfy it.
+//! attestations, the Intelligence layer's ruling on the corridor, the
+//! balances, the velocity state and the kill-switch state — every one of them
+//! supplied by the caller, with the platform clock — and returns either an
+//! [`Approved`] record or a [`Vetoed`] record naming the check that failed and
+//! what would satisfy it.
+//!
+//! Blueprint §2 gives the Intelligence layer "sets risk and corridor policy",
+//! and this gate is where that policy stops being a document. A
+//! [`CorridorFunding`] is what that layer derived from the rungs the corridor's
+//! strategies stand on; the gate refuses a suspended corridor in check 1 and
+//! holds a narrowed one to its ceiling in check 2. The fabric does not derive
+//! it — the lifecycle is a different service, and the two meet in `qip-kernel`.
+//! Before this input existed, the fabric held corridors as records that nothing
+//! measured against a policy, which is a control with nothing to control.
 //!
 //! §37.4's closing rule rides inside check 1 rather than becoming an eighth
 //! check, for the same reason the custody table already does: §37.3 names
@@ -365,6 +375,146 @@ pub enum KillSwitchState {
     Tripped,
 }
 
+/// Where the Intelligence layer says the strategies behind a corridor stand.
+///
+/// The fabric does not derive this and cannot: the rungs live in the strategy
+/// lifecycle, which is a different service, and a corridor's standing is a
+/// statement about the strategies it funds rather than about the corridor's
+/// own record. It arrives as a value the caller derived, like every other
+/// input to this gate, and `qip-kernel` is where the two services meet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FundingStanding {
+    /// Every strategy the corridor funds is on a rung that holds capital at
+    /// full size. The corridor may carry up to its stated ceiling.
+    Permitted,
+    /// The weakest strategy it funds is deliberately limited, so the corridor
+    /// is held to a smaller stated ceiling. Not a fault.
+    Narrowed,
+    /// Something it funds holds no capital at all, so the corridor carries
+    /// nothing. **This is the control working, not failing** — the platform
+    /// has stopped funding a strategy that no longer holds capital, and an
+    /// operator who reads it as a corridor fault will look for the wrong
+    /// problem.
+    Suspended,
+}
+
+impl FundingStanding {
+    /// The standing's name, for vetoes and logs.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Permitted => "permitted",
+            Self::Narrowed => "narrowed",
+            Self::Suspended => "suspended",
+        }
+    }
+}
+
+impl fmt::Display for FundingStanding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The Intelligence layer's ruling on a corridor, as the caller derived it.
+///
+/// Two figures and the sentence that produced them: what the corridor may
+/// carry, and why that is the number. The ceiling is *stated*, never computed
+/// here — the fabric would be inventing a cap with no owner, and a veto with
+/// no owner is unarguable for the wrong reason.
+///
+/// Nothing is validated at construction alone, for the reason
+/// [`crate::custody::TransferAuthority`] gives at length: this type travels
+/// inside [`crate::journal::GateCommand`] and so arrives deserialised off the
+/// event log on every replay, where a constructor is a check nothing runs.
+/// [`Self::well_formed`] states the rules and [`TransferGate::assess`] asks
+/// them again on every assessment, live and replayed alike.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CorridorFunding {
+    standing: FundingStanding,
+    permitted: Decimal,
+    reason: String,
+}
+
+impl CorridorFunding {
+    /// Record a ruling. Refuses what [`Self::well_formed`] refuses, so a
+    /// caller building one by hand hears about it at the seam rather than at
+    /// the gate.
+    pub fn new(
+        standing: FundingStanding,
+        permitted: Decimal,
+        reason: impl Into<String>,
+    ) -> Result<Self> {
+        let funding = Self {
+            standing,
+            permitted,
+            reason: reason.into(),
+        };
+        funding.well_formed().map_err(Error::invalid)?;
+        Ok(funding)
+    }
+
+    /// Whether this ruling is one the gate can act on.
+    ///
+    /// Every rule here is load-bearing and none is cosmetic. A negative
+    /// ceiling would make the funding check in [`TransferGate::caps`] admit
+    /// nothing and read as a cap, which is a suspension wearing a cap's
+    /// clothes — suspend the corridor instead and say so. A suspended
+    /// standing carrying a positive ceiling is two claims about the same fact,
+    /// and the louder one would be whichever check happened to be asked
+    /// first. An unexplained ruling is a cap an operator cannot trace to a
+    /// named rung, which is exactly the veto nobody can argue with.
+    pub fn well_formed(&self) -> std::result::Result<(), String> {
+        if self.permitted.is_negative() {
+            return Err(format!(
+                "the corridor is {} at {}; a ceiling is a non-negative amount, and a corridor \
+                 that may carry nothing is suspended rather than capped below zero",
+                self.standing, self.permitted
+            ));
+        }
+        if self.standing == FundingStanding::Suspended && self.permitted.is_positive() {
+            return Err(format!(
+                "the corridor is suspended and carries a ceiling of {}; a suspended corridor \
+                 carries nothing, and the two figures disagree about which is true",
+                self.permitted
+            ));
+        }
+        if self.reason.trim().is_empty() {
+            return Err(format!(
+                "the corridor is {} at {} with no reason given; name the strategy and the rung \
+                 that decided it, because a cap an operator cannot trace to one named rung is a \
+                 cap nobody can argue with",
+                self.standing, self.permitted
+            ));
+        }
+        Ok(())
+    }
+
+    /// Permitted, narrowed or suspended.
+    pub fn standing(&self) -> FundingStanding {
+        self.standing
+    }
+
+    /// The most the corridor may carry in one transfer under this ruling.
+    /// Zero when suspended.
+    ///
+    /// Per transfer, and deliberately not against the corridor's lifetime
+    /// total: a ruling narrows when a strategy's rung moves, and a ceiling
+    /// measured against what the corridor has already carried would re-decide
+    /// history — a corridor narrowed this morning would refuse everything for
+    /// ever because of transfers a wider ruling admitted last year. The
+    /// lifetime total is what [`crate::corridor::CorridorCaps::max_cumulative`]
+    /// is for, and it is the desk's signed figure rather than a derived one.
+    pub fn permitted(&self) -> Decimal {
+        self.permitted
+    }
+
+    /// Why, in the deriving layer's own words.
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+}
+
 /// The seven checks of §37.3, in the order the gate runs them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -373,9 +523,13 @@ pub enum GateCheck {
     /// definition, destination allowlisted and usable, the custody table
     /// conforming to §37.4's unconditional rules and permitting the class
     /// through this kind of corridor, and §37.4's three enforcement points
-    /// agreeing under three identities none of which trades.
+    /// agreeing under three identities none of which trades, the venue's own
+    /// allowlist mirrored against *this* destination where the class's row
+    /// demands it, and the Intelligence layer's ruling on the corridor not
+    /// being [`FundingStanding::Suspended`].
     CorridorAuthority,
-    /// Within per-transfer, hourly, daily and cumulative caps, and inside
+    /// Within the Intelligence layer's ceiling for the corridor, and within
+    /// the per-transfer, hourly, daily and cumulative caps, and inside
     /// permitted hours.
     Caps,
     /// Minimum interval elapsed since the corridor last carried anything.
@@ -470,6 +624,7 @@ pub struct Approved {
     assessed_at: Timestamp,
     checks_passed: [GateCheck; 7],
     authority: Agreement,
+    funding: CorridorFunding,
 }
 
 impl Approved {
@@ -508,6 +663,16 @@ impl Approved {
     pub fn authority(&self) -> &Agreement {
         &self.authority
     }
+
+    /// The Intelligence layer's ruling the assessment was made under.
+    ///
+    /// Kept for the reason [`Approved::authority`] is kept: an admitted
+    /// assessment names the rung that permitted it, so an operator reading an
+    /// approval afterwards can see which standing the corridor was on at the
+    /// time rather than which one it is on now.
+    pub fn funding(&self) -> &CorridorFunding {
+        &self.funding
+    }
 }
 
 /// The deterministic, veto-only gate.
@@ -535,6 +700,7 @@ impl TransferGate {
         registry: &DestinationRegistry,
         custody: &CustodyPolicy,
         authority: &TransferAuthority,
+        funding: &CorridorFunding,
         history: &TransferHistory,
         balances: &SourceBalances,
         velocity: VelocityState,
@@ -549,13 +715,15 @@ impl TransferGate {
         };
 
         // 1. Corridor active, signature valid, destination allowlisted,
-        //    custody table permitting, three enforcement points agreeing.
+        //    custody table permitting, three enforcement points agreeing, and
+        //    the Intelligence layer not having suspended the corridor.
         let (signature_reference, agreement) =
-            Self::corridor_authority(intent, corridor, registry, custody, authority, now)
+            Self::corridor_authority(intent, corridor, registry, custody, authority, funding, now)
                 .map_err(|reason| veto(GateCheck::CorridorAuthority, reason))?;
 
-        // 2. Within per-transfer, hourly, daily, cumulative caps and hours.
-        Self::caps(intent, corridor, history, now)
+        // 2. Within the derived ceiling and within the per-transfer, hourly,
+        //    daily, cumulative caps and hours.
+        Self::caps(intent, corridor, funding, history, now)
             .map_err(|reason| veto(GateCheck::Caps, reason))?;
 
         // 3. Minimum interval elapsed.
@@ -635,6 +803,7 @@ impl TransferGate {
             assessed_at: now,
             checks_passed: GateCheck::ALL,
             authority: agreement,
+            funding: funding.clone(),
         })
     }
 
@@ -646,6 +815,7 @@ impl TransferGate {
         registry: &DestinationRegistry,
         custody: &CustodyPolicy,
         authority: &TransferAuthority,
+        funding: &CorridorFunding,
         now: Timestamp,
     ) -> std::result::Result<(String, Agreement), String> {
         if intent.source() != corridor.source() || intent.destination() != corridor.destination() {
@@ -673,6 +843,37 @@ impl TransferGate {
                     CorridorStage::Revoked => "; revocation is permanent".to_string(),
                     _ => "; it has not completed review, signature and delay".to_string(),
                 }
+            ));
+        }
+        // §37.4's closing rule is not the only answer to "may this corridor
+        // carry anything at all". A corridor exists to fund strategies, and
+        // the layer that sets corridor policy has the last word on whether the
+        // ones behind this corridor still hold capital. Asked here, in check
+        // 1, for the reason the custody table is asked here: it is the same
+        // question, and the answer's source does not change which check it
+        // belongs to.
+        //
+        // The ruling is re-derived rather than trusted, because a
+        // `CorridorFunding` arrives inside a `GateCommand` deserialised off
+        // the log on every replay and `CorridorFunding::new` never runs on
+        // that path. A malformed one — a suspended corridor carrying a
+        // positive ceiling — would otherwise pass this check and then be
+        // measured against its own contradiction in check 2.
+        funding.well_formed().map_err(|refusal| {
+            format!(
+                "corridor {} would be assessed against a funding ruling that contradicts itself, \
+                 and {refusal}; correct the ruling rather than the corridor",
+                corridor.id()
+            )
+        })?;
+        if funding.standing() == FundingStanding::Suspended {
+            return Err(format!(
+                "corridor {} is suspended by the layer that sets corridor policy and carries \
+                 nothing: {}. This is that control working rather than a corridor fault; the \
+                 corridor reopens when the strategies it funds hold capital again, not by being \
+                 re-signed",
+                corridor.id(),
+                funding.reason()
             ));
         }
         let signed = corridor.signed().ok_or_else(|| {
@@ -749,6 +950,26 @@ impl TransferGate {
                 corridor.id()
             )
         })?;
+        // And what the venue's allowlist agreed *to*, where the class demands
+        // its own allowlist be mirrored. `all_agree` proves the point spoke;
+        // it does not read the reference, so before this the venue-allowlist
+        // attestation for one address admitted a corridor running to any
+        // other. `ClassConstraints::venue_allowlist_mirrored` had until now no
+        // reader at all — a documented precondition enforced nowhere, which is
+        // the failure `risk-and-execution.md` names by its other instance.
+        custody
+            .mirrors_the_venue_allowlist(
+                corridor.source_class(),
+                corridor.destination(),
+                &agreement,
+            )
+            .map_err(|refusal| {
+                format!(
+                    "corridor {} runs to {}, and the {refusal}",
+                    corridor.id(),
+                    corridor.destination()
+                )
+            })?;
         Ok((signed.signature.reference.clone(), agreement))
     }
 
@@ -756,6 +977,7 @@ impl TransferGate {
     fn caps(
         intent: &TransferIntent,
         corridor: &Corridor,
+        funding: &CorridorFunding,
         history: &TransferHistory,
         now: Timestamp,
     ) -> std::result::Result<(), String> {
@@ -775,6 +997,23 @@ impl TransferGate {
             ));
         }
         history.well_formed()?;
+        // The derived ceiling before the signed ones, because it is the only
+        // cap here that can be *below* what the desk signed, and it is the one
+        // that names a strategy rung. Reporting the signed per-transfer cap
+        // when the binding constraint was the narrowing would send an operator
+        // to loosen a cap that is not what refused the transfer — and loosening
+        // a signed cap costs a fresh signature and a delay, spent on the wrong
+        // control.
+        if amount > funding.permitted() {
+            return Err(format!(
+                "{amount} exceeds the {} ceiling of {} the layer that sets corridor policy \
+                 derived for this corridor: {}. Lower the amount; the ceiling moves when the \
+                 strategies this corridor funds do",
+                funding.standing(),
+                funding.permitted(),
+                funding.reason()
+            ));
+        }
         if amount > caps.max_per_transfer() {
             return Err(format!(
                 "{amount} exceeds the per-transfer cap of {}; split it across the minimum \

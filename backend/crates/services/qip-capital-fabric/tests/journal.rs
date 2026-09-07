@@ -23,8 +23,8 @@ use qip_capital_fabric::destination::{
     ACTIVATION_DELAY, Approver, Asset, DestinationKey, DestinationStatus, SignatureRecord,
 };
 use qip_capital_fabric::gate::{
-    GateCheck, KillSwitchState, SourceBalances, StatedPurpose, TransferHistory, TransferIntent,
-    VelocityState,
+    CorridorFunding, FundingStanding, GateCheck, KillSwitchState, SourceBalances, StatedPurpose,
+    TransferHistory, TransferIntent, VelocityState,
 };
 use qip_capital_fabric::journal::{
     CorridorAction, CorridorStep, DestinationAction, FabricCommand, FabricJournal, FabricOutcome,
@@ -137,6 +137,19 @@ fn authority() -> Result<TransferAuthority> {
     ))
 }
 
+/// The Intelligence layer's ruling as every journalled gate command carries
+/// it: permitted, at a ceiling above the fixture's amount. The gate's check 1
+/// refuses a suspended corridor and check 2 a narrowed one, so a journalled
+/// command needs a ruling that admits the amount or the mixed sequence would
+/// be all vetoes.
+fn funding() -> Result<CorridorFunding> {
+    CorridorFunding::new(
+        FundingStanding::Permitted,
+        dec!("900"),
+        "every strategy this corridor funds has reached scaled; the weakest, alpha-1, is at scaled",
+    )
+}
+
 fn gate(
     kill_switch: KillSwitchState,
     corridor: CorridorId,
@@ -152,6 +165,7 @@ fn gate(
         corridor,
         custody: CustodyPolicy::blueprint(),
         authority: authority()?,
+        funding: funding()?,
         history: TransferHistory::empty(),
         balances: SourceBalances::new(dec!("10000"), dec!("1000"), dec!("1000"), dec!("1000"))?,
         velocity: VelocityState::CLEAR,

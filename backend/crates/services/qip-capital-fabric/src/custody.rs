@@ -25,12 +25,24 @@
 //! because there is no movement here to authorise. What they decide is whether
 //! the gate refuses.
 //!
+//! Agreement is also asked *what* the venue agreed to, not only that it did.
+//! [`EnforcementPoints::all_agree`] reads no attestation's `reference`, so a
+//! venue-allowlist attestation filed against one address once satisfied a
+//! corridor running to any other — the venue's allowlist counted as an
+//! enforcement point while enforcing nothing about the destination.
+//! [`CustodyPolicy::mirrors_the_venue_allowlist`] closes that for every class
+//! whose row sets [`ClassConstraints::venue_allowlist_mirrored`], and
+//! [`CustodyPolicy::conforms`] refuses a table that offers
+//! [`CorridorKind::VenueAllowlistedWithdrawal`] with the flag clear, so the
+//! check cannot be disabled by a row rather than by a review.
+//!
 //! Both halves were unreachable from any non-test caller until the gate was
 //! wired to them. That is the defect `risk-and-execution.md` names by its
 //! other instance — a limit that cannot fire reads as protection and is not —
 //! and it is why the check lives in the control that a replay re-runs rather
 //! than in a constructor a replay never calls.
 
+use crate::destination::DestinationKey;
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -151,7 +163,24 @@ pub struct ClassConstraints {
     /// never moved from it.
     pub may_be_transfer_source: bool,
     /// Whether the venue's own allowlist, configured out of band, must be
-    /// mirrored by the corridor registry before a corridor is permissible.
+    /// mirrored before a corridor of this class is permissible.
+    ///
+    /// `true` obliges the [`EnforcementPoint::VenueAllowlist`] attestation to
+    /// name the destination the corridor runs to, checked by
+    /// [`CustodyPolicy::mirrors_the_venue_allowlist`] from inside the gate. It
+    /// is what turns "the venue agreed to something" into "the venue agreed to
+    /// *this address*", which is the only form of the claim worth having for a
+    /// class whose sole corridor is a venue-side withdrawal.
+    ///
+    /// **This field read nothing until that check existed.** It was set by
+    /// [`CustodyPolicy::blueprint`], published through the API, and consulted
+    /// by no code — a documented precondition enforced nowhere, which is the
+    /// shape `risk-and-execution.md` names by its other instance: a limit that
+    /// cannot fire reads as protection and is not. [`CustodyPolicy::conforms`]
+    /// now also refuses a table that lists
+    /// [`CorridorKind::VenueAllowlistedWithdrawal`] for a class with this
+    /// `false`, so the check cannot be switched off by a table arriving off
+    /// the event log.
     pub venue_allowlist_mirrored: bool,
     /// §37.4's rule for self-custody, as a fact: *no single component can
     /// sign*. `true` means any release requires more than one independent
@@ -190,6 +219,12 @@ pub enum RefusalReason {
         /// Which point.
         point: EnforcementPoint,
     },
+    /// The class requires the venue's own allowlist to be mirrored, and the
+    /// venue-allowlist attestation does not name the destination in question.
+    VenueAllowlistNotMirrored {
+        /// The class whose row demanded the mirror.
+        class: CustodyClass,
+    },
     /// The table itself contradicts a rule §37.4 states unconditionally, so
     /// no answer it gives about that class can be relied on.
     PolicyContradictsBlueprint {
@@ -214,6 +249,12 @@ pub enum PolicyRule {
     CollateralNeverTransfers,
     /// A class that is not a transfer source lists no corridors.
     CorridorsImplyATransferSource,
+    /// A class that may leave through a venue-side withdrawal mirrors the
+    /// venue's own allowlist. §37.4 makes the venue's allowlist one of the
+    /// three enforcement points, so a row offering that corridor while
+    /// declaring the mirror unnecessary removes an enforcement point by
+    /// setting a flag.
+    VenueWithdrawalMirrorsTheAllowlist,
 }
 
 impl PolicyRule {
@@ -223,6 +264,7 @@ impl PolicyRule {
             Self::SelfCustodyIsMultiParty => "self_custody_is_multi_party",
             Self::CollateralNeverTransfers => "collateral_never_transfers",
             Self::CorridorsImplyATransferSource => "corridors_imply_a_transfer_source",
+            Self::VenueWithdrawalMirrorsTheAllowlist => "venue_withdrawal_mirrors_the_allowlist",
         }
     }
 }
@@ -245,6 +287,7 @@ impl RefusalReason {
             Self::TradingIdentityHoldsTransferAuthority { .. } => {
                 "trading_identity_holds_transfer_authority"
             }
+            Self::VenueAllowlistNotMirrored { .. } => "venue_allowlist_not_mirrored",
             Self::PolicyContradictsBlueprint { .. } => "policy_contradicts_blueprint",
         }
     }
@@ -453,6 +496,96 @@ impl CustodyPolicy {
                     ),
                 });
             }
+        }
+        for (class, row) in &self.classes {
+            if row
+                .permitted_corridors
+                .contains(&CorridorKind::VenueAllowlistedWithdrawal)
+                && !row.venue_allowlist_mirrored
+            {
+                return Err(Refusal {
+                    class: Some(*class),
+                    corridor: Some(CorridorKind::VenueAllowlistedWithdrawal),
+                    reason: RefusalReason::PolicyContradictsBlueprint {
+                        class: *class,
+                        rule: PolicyRule::VenueWithdrawalMirrorsTheAllowlist,
+                    },
+                    detail: format!(
+                        "{class} may leave through {kind} but its row says the venue's own \
+                         allowlist need not be mirrored; §37.4 counts that allowlist as one of \
+                         the three enforcement points, and a table that waives it removes a \
+                         point by flipping a flag — set venue_allowlist_mirrored, or remove \
+                         the corridor",
+                        kind = CorridorKind::VenueAllowlistedWithdrawal
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the venue's own allowlist has been mirrored *for this
+    /// destination*, where the class's row demands it.
+    ///
+    /// §37.4 names the venue's out-of-band allowlist as one of the three
+    /// enforcement points, and [`EnforcementPoints::all_agree`] proves it
+    /// spoke. It does not prove *what it spoke about*: an
+    /// [`Attestation::reference`] is checked only for being non-empty, so a
+    /// venue-allowlist attestation filed against one address satisfied the
+    /// agreement for a corridor running to any other. For a class whose
+    /// [`ClassConstraints::venue_allowlist_mirrored`] is set — crypto in venue
+    /// custody, whose sole corridor *is* a venue-side withdrawal — that is the
+    /// difference between mirroring an allowlist and asserting one exists.
+    ///
+    /// So the reference must be the destination key exactly, compared whole
+    /// rather than by containment: `USDC@addr-1` is a prefix of
+    /// `USDC@addr-10`, and a substring check would admit the wrong address in
+    /// the one place the address is the entire control.
+    ///
+    /// Asked by [`crate::gate::TransferGate::assess`] rather than at
+    /// construction, for the reason [`CustodyPolicy::conforms`] gives at
+    /// length: every input here arrives deserialised off the event log on a
+    /// replay, and a rule only a constructor holds is a rule the replay never
+    /// re-derives.
+    pub fn mirrors_the_venue_allowlist(
+        &self,
+        class: CustodyClass,
+        destination: &DestinationKey,
+        agreement: &Agreement,
+    ) -> std::result::Result<(), Refusal> {
+        let Some(row) = self.classes.get(&class) else {
+            return Err(Refusal {
+                class: Some(class),
+                corridor: None,
+                reason: RefusalReason::ClassNotInPolicy,
+                detail: format!("{class} has no row in the custody policy; add one before asking"),
+            });
+        };
+        if !row.venue_allowlist_mirrored {
+            return Ok(());
+        }
+        let expected = destination.to_string();
+        // An absent attestation renders as the empty string, which a
+        // `DestinationKey` can never equal — it refuses an empty asset and an
+        // empty address — so one comparison covers both "said nothing" and
+        // "said something else", and neither arm is unreachable.
+        let attested = agreement
+            .attestation(EnforcementPoint::VenueAllowlist)
+            .map(|attestation| attestation.reference.as_str())
+            .unwrap_or_default();
+        if attested != expected {
+            return Err(Refusal {
+                class: Some(class),
+                corridor: None,
+                reason: RefusalReason::VenueAllowlistNotMirrored { class },
+                detail: format!(
+                    "{class} requires the venue's own allowlist to be mirrored, and the \
+                     {point} attestation references [{attested}] rather than the destination \
+                     [{expected}]; have the venue allowlist this destination out of band and \
+                     file the attestation against it, rather than against another entry",
+                    point = EnforcementPoint::VenueAllowlist
+                ),
+            });
         }
         Ok(())
     }
@@ -722,6 +855,14 @@ impl Agreement {
     /// The attestations, in [`EnforcementPoint::ALL`] order.
     pub fn attestations(&self) -> &[Attestation] {
         &self.attestations
+    }
+
+    /// The attestation one point gave, so a caller can ask what it agreed to
+    /// rather than only that it agreed.
+    pub fn attestation(&self, point: EnforcementPoint) -> Option<&Attestation> {
+        self.attestations
+            .iter()
+            .find(|attestation| attestation.point == point)
     }
 
     /// The other half of §37.4's closing rule: none of the three transfer
