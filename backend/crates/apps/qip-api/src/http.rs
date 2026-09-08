@@ -307,6 +307,26 @@ pub trait Handler: Send + Sync {
     }
 }
 
+/// A shared handler is a handler, so the middlewares that wrap one can be
+/// nested through the erased type the composition root builds.
+///
+/// The root decides at run time how many wrappers a process has — a wallet
+/// statement feed, a capital-fabric declaration, both, or neither — and the
+/// only type that can hold "whatever was decided" is `Arc<dyn Handler>`.
+/// Without this, each wrapper would have to be applied to a concrete inner
+/// type, and the root would carry one match arm per combination of feeds: two
+/// feeds is four arms, and the third feed anyone adds is eight. The
+/// forwarding is total — both methods, no behaviour of its own.
+impl<H: Handler + ?Sized> Handler for std::sync::Arc<H> {
+    fn handle(&self, request: &Request) -> Response {
+        (**self).handle(request)
+    }
+
+    fn stream(&self, request: &Request) -> StreamDecision {
+        (**self).stream(request)
+    }
+}
+
 /// What a handler decided about streaming one request.
 pub enum StreamDecision {
     /// Not a request for a stream. [`Handler::handle`] answers it.

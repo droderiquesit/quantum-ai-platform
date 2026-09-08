@@ -482,6 +482,49 @@ variable "wallet_statement_file" {
   }
 }
 
+variable "capital_fabric_file" {
+  description = <<-EOT
+    A committed JSON capital-fabric declaration the API mounts and reads as
+    `QIP_CAPITAL_FABRIC_PATH`, or null where the desk has declared no
+    destination, corridor or transfer intent.
+
+    Same convention as the universe, the registrations and the statement
+    above: a path in this repository, read with `file()`. Null renders no
+    variable, and the API then says in its banner that nothing is declared and
+    answers `/transfer-gate` with `last_assessment: null` — the truthful
+    answer for a platform to which no corridor has been proposed, and the
+    answer every deployment gave before the declaration existed because no
+    production caller could put one there at all.
+
+    What a person setting this must know, because the platform will not soften
+    it. The file is a **ledger of acts, appended to**: every command in it
+    becomes a record on the hash-chained event log the first time the API
+    applies it, and from then on the API refuses to start, and refuses the
+    cycle, if a command that has already been journalled is edited or removed.
+    Correcting a mistake means appending the act that corrects it — a revoke,
+    a suspend — exactly as it would with a counterparty. A sealed record is
+    not edited, and a declaration is the operator's copy of that history.
+
+    It is also the one place a transfer *intent* is stated. The gate that
+    assesses it can only veto: ADR 0021 permits the deterministic gate and
+    refuses the engine behind it, an admitted verdict carries no way to
+    execute, and no code in this workspace consumes one. Setting this cannot
+    move money, and no value of it can.
+
+    Every environment leaves this null today, for the reason recorded in each
+    tfvars: the desk holds no external destination, and a declaration naming
+    one would put an act on the chain that nobody had performed.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.capital_fabric_file == null ? true : can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.capital_fabric_file))
+    error_message = "The capital fabric file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read."
+  }
+}
+
 variable "notification_channels" {
   description = "Where alerts are sent. An alert with nowhere to go is not an alert."
   type        = list(string)

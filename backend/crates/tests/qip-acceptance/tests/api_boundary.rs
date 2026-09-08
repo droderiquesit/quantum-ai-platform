@@ -702,6 +702,17 @@ fn the_api_owns_no_field_typed_as_money_and_every_store_it_holds_is_named_here()
     //   number (the field scan above holds that). Records in transit from a
     //   file into `Platform::observe_statement`; the wallet the platform
     //   assembles from them is the platform's, not the API's.
+    // * `FabricFeed` — the capital-fabric declaration file the root opened
+    //   (`QIP_CAPITAL_FABRIC_PATH`): its path, the mtime and length last
+    //   read, how many of its commands have been journalled, and the parsed
+    //   declaration as an *opaque* `qip_kernel` type whose commands are
+    //   private. That privacy is load-bearing: this layer is forbidden an
+    //   edge to `qip-capital-fabric` by the graph test above, and a public
+    //   field would have handed it the command vocabulary through a type it
+    //   is allowed to name, leaving the dependency check green over the very
+    //   thing it protects. Acts in transit from a file into
+    //   `Platform::decide_fabric`; the registry, the corridors and the gate
+    //   assessments they produce are the platform's, not the API's.
     //
     // A new store is a reviewed change: name it here with its reason.
     let known_stores: BTreeSet<&str> = [
@@ -714,6 +725,7 @@ fn the_api_owns_no_field_typed_as_money_and_every_store_it_holds_is_named_here()
         "Option<HealthReading>",
         "crate::feed::ApiFeed",
         "StatementFeed",
+        "FabricFeed",
     ]
     .into_iter()
     .collect();
@@ -1048,6 +1060,108 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
     assert!(
         offenders.is_empty(),
         "the API mutates the platform directly rather than raising an intent:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every function the API hands `&mut Platform` to is reviewed here.
+///
+/// The scan above reads `platform.<mutator>(`, and that is the whole of what
+/// it reads. A function elsewhere that *takes* `&mut Platform` and calls a
+/// mutator on it is a second door into the same state, opened from the API
+/// and invisible to that scan — a caller could reach `submit_order` through
+/// one and the allowlist above would stay green. Two such doors already
+/// exist, both deliberate, and this test is what stops a third from arriving
+/// unremarked.
+///
+/// Written after the capital-fabric declaration added the second one. The
+/// first, `Statement::observe_into`, had gone unenumerated since the wallet
+/// statement landed: not a defect in it, but a hole in the check, and a hole
+/// in a check is the same shape of defect as a limit that cannot fire.
+#[test]
+fn every_function_the_api_hands_a_mutable_platform_to_is_named_here() {
+    // What may take `&mut Platform` from this layer, and why:
+    //
+    // * `observe_into` — `Statement::observe_into`, which walks the holdings
+    //   of the custodian statement the root read and hands each to
+    //   `Platform::observe_statement`, itself on the allowlist above. The
+    //   file is a mount, never a request body.
+    // * `apply_pending` — `FabricFeed::apply_pending`, which walks the
+    //   commands of the capital-fabric declaration the root read and hands
+    //   each, through the kernel's own `Declaration::apply_counting`, to
+    //   `Platform::decide_fabric`. Same class as the statement: a file a
+    //   person put on the mount, no request body, and every command becomes a
+    //   record whether the control admits it or refuses it. `decide_fabric`
+    //   moves nothing — ADR 0021 permits the gate and refuses the engine, an
+    //   admitted verdict carries no way to execute, and nothing in this
+    //   process consumes one.
+    // * `drain_into` — `MeshBackbone::drain_into`, which hands each decoded
+    //   cell delta to `Platform::ingest_cell_report`, itself on the allowlist
+    //   above. The centre judges the report; the cell does not write state.
+    // * `harden_central` — start-up assembly, once, before anything is
+    //   served: it installs the operator key on the empty plane and refuses
+    //   the combination that must not run. Assembly, not a route.
+    // * `pending_policy` — the shipping seam, which asks the platform for the
+    //   slots as it builds each cell's payload; `&mut` is for the journal
+    //   append, and the mutators it reaches (`issue_cycle_whitelist`,
+    //   `issue_episodic_digest`) are reviewed above.
+    // * `load_wallet_statement`, `load_fabric_declaration` — the root's own
+    //   two loaders, which exist to call the first and second entries here.
+    //
+    // A new entry is a reviewed change: name it with its reason, and say
+    // which platform mutator it reaches.
+    let reviewed: BTreeSet<&str> = [
+        "observe_into",
+        "apply_pending",
+        "drain_into",
+        "harden_central",
+        "pending_policy",
+        "load_wallet_statement",
+        "load_fabric_declaration",
+    ]
+    .into_iter()
+    .collect();
+
+    let mut seen = BTreeSet::new();
+    let mut offenders = Vec::new();
+    for path in files_with_extension("backend/crates/apps/qip-api/src", "rs") {
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+        let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+        for (index, _) in compact.match_indices("(&mutplatform") {
+            // The callee is the identifier immediately left of the `(`, which
+            // for a method call is the method and for a free function is its
+            // last path segment. Either is the name a reviewer looks up.
+            let name: String = compact[..index]
+                .chars()
+                .rev()
+                .take_while(|c| is_identifier_char(*c))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            if name.is_empty() {
+                continue;
+            }
+            seen.insert(name.clone());
+            if !reviewed.contains(name.as_str()) {
+                offenders.push(format!("{} hands &mut Platform to {name}", path.display()));
+            }
+        }
+    }
+
+    // Premise: the scan found the doors that are known to exist. A scan that
+    // matched nothing would pass this test for ever while every door stood
+    // open, which is the failure mode the test is about.
+    for expected in ["observe_into", "apply_pending", "drain_into"] {
+        assert!(
+            seen.contains(expected),
+            "{expected} was not seen; the `&mut Platform` scan is blind, and it found {seen:?}"
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "the API hands a mutable platform to a function this test has not reviewed:\n{}",
         offenders.join("\n")
     );
 }

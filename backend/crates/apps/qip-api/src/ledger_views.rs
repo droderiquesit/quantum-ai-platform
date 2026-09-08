@@ -87,9 +87,12 @@ pub const GATE_NOTE: &str = "the gate is veto-only and has no transfer engine be
     approval is a record that the seven checks passed, and nothing in this platform consumes \
     one. An intent reaches the gate only through the kernel's fabric journal, and every \
     assessment is a record in the event log; last_assessment is the newest, or null when none \
-    has been made. No production code issues a transfer-gate command today, so this is null \
-    structurally rather than while waiting for a first assessment: the checks below are the \
-    roster the gate would apply, not a history of it applying them.";
+    has been made. Null now means none has been made, not that none can be: an intent is \
+    stated in the capital-fabric declaration the deployment mounts at \
+    QIP_CAPITAL_FABRIC_PATH, and this said the null was structural until that mount existed. \
+    With nothing declared the checks below are the roster the gate would apply rather than a \
+    history of it applying them, and the banner of this process says which of the two you are \
+    reading.";
 
 // --- /ledger/users ----------------------------------------------------------
 

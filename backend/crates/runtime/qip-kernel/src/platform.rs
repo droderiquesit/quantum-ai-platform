@@ -4249,17 +4249,21 @@ impl Platform {
     /// admitted verdict carries no way to execute (ADR 0021), and nothing
     /// in this process consumes one.
     ///
-    /// # No deployed process issues a `Gate` command, and why
+    /// # Where the `Destination`, `Corridor` and `Gate` commands come from
     ///
-    /// Stated here because this is where a reader arrives believing the gate
-    /// is reached. In production this method is called from exactly one
-    /// place — `stage_learn`, through `reconcile_wallet` — and that caller
-    /// passes only `FabricCommand::Wallet`. Nothing outside tests issues a
-    /// `Corridor`, a `Destination` or a `Gate` command, and nothing outside
-    /// tests calls [`Platform::declare_corridors`]. So the seven-check
-    /// transfer gate assesses nothing in any deployed process, and
-    /// `qip-api`'s `GET /transfer-gate` renders `last_assessment: null`
-    /// permanently rather than transiently.
+    /// Stated here because this is where a reader arrives asking whether the
+    /// gate is reached. Two callers, and the difference between them is the
+    /// point. `stage_learn`, through `reconcile_wallet`, passes only
+    /// `FabricCommand::Wallet` — the cycle's own reconciliation. Everything
+    /// else arrives from the capital-fabric declaration a deployment mounts,
+    /// parsed by [`crate::fabric_declaration`] and applied by the composition
+    /// root at start-up and on an admitted cycle whose file has grown.
+    ///
+    /// This paragraph read "no deployed process issues a `Gate` command, and
+    /// why" until that producer existed, and the reasoning it gave for the
+    /// absence is kept below, because it is still the reasoning that decides
+    /// what the producer may be. What changed is not the argument; it is that
+    /// somebody wrote the operator route the argument called for.
     ///
     /// **ADR 0021 does not refuse that producer.** Reading it as though it
     /// does would file a buildable route as permanently impossible, so the
@@ -4285,9 +4289,18 @@ impl Platform {
     /// `qip-api`'s `statement` module already has for
     /// [`Platform::observe_statement`]: a person states the facts, the kernel
     /// derives the ruling, the gate assesses, the record lands in the log.
-    /// That is a `backend/crates/apps/**` change and it is not made here.
-    /// This paragraph is the limit recorded in the place it bites, rather than
-    /// a caller invented in the kernel to make the arm look reached.
+    /// That is what [`crate::fabric_declaration`] and `qip-api`'s `fabric`
+    /// module now are — a mounted file of declared acts, applied in order,
+    /// append-only, with the ruling still re-derived and compared here rather
+    /// than taken from the caller. No cycle stage manufactures an input to
+    /// this gate, and none may: the check above is what keeps a caller from
+    /// stating a ruling of its own, and it applies to the declaration exactly
+    /// as it applied to a test.
+    ///
+    /// With nothing mounted the behaviour is the old one and it is honest:
+    /// no corridor is proposed, no assessment is made, and
+    /// `GET /transfer-gate` answers `last_assessment: null` because none has
+    /// been made rather than because none could be.
     pub fn decide_fabric(
         &mut self,
         command: FabricCommand,

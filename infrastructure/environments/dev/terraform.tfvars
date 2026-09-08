@@ -276,9 +276,10 @@ github_repository = "droderiquesit/quantum-ai-platform"
 # same sha256, so the tag had not moved under the reviewed line.
 vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9e105491d58d29ac2739560b3b"
 
-# --- The two optional files the API is given, and why neither is named here ---
+# --- The three optional files the API is given, and why none is named here ---
 #
-# `venue_registrations_file` and `wallet_statement_file` stay at their default
+# `venue_registrations_file`, `wallet_statement_file` and
+# `capital_fabric_file` stay at their default
 # of null, so `catalogue.tf` renders no configuration file for either and the
 # API sees neither QIP_VENUE_REGISTRATIONS_PATH nor QIP_WALLET_STATEMENT_PATH.
 # Absent is a state each variable documents, not an omission:
@@ -302,6 +303,26 @@ vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7ec
 #   start tomorrow. Unset, the banner says there is no feed and /wallet
 #   answers `assembled: false`, which is the truthful answer for a process
 #   nothing has reported to.
+#
+# capital_fabric_file = "data/fabric/<the desk's declaration>.json"
+#   would mount the destinations, corridors and transfer intents §37 and §38
+#   are about — the only production route by which any of them reaches the
+#   chain, and the reason /transfer-gate answered `last_assessment: null`
+#   permanently rather than transiently before the mount existed. This desk
+#   holds no external destination: it trades the paper book on the in-process
+#   simulated venue (ADR 0003), and there is nowhere a corridor could carry
+#   capital to. Declaring one anyway would put an act on the hash-chained log
+#   that nobody performed, and the log is not a place to write a rehearsal.
+#
+#   It is also append-only in a way the other two are not. Every command in
+#   it is journalled the first time the API applies it, and from then on
+#   editing or removing that command refuses the start and refuses the cycle:
+#   a sealed record is not rewritten, so a correction is another act — a
+#   revoke, a suspend — appended after it.
+#
+#   What it cannot do, whatever it says: move money. ADR 0021 permits the
+#   deterministic gate and refuses the engine behind it, an admitted verdict
+#   carries no way to execute, and no code in this workspace consumes one.
 
 # --- Customer identity ------------------------------------------------------
 # Identity Platform for customer sign-in, activated once real hostnames
