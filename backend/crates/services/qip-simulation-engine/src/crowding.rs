@@ -50,11 +50,12 @@ use qip_core::error::{Error, Result};
 use qip_market::bar::Bar;
 use qip_market::book::Side;
 
-/// The panel's sizes, as fractions of the instrument's own daily volume.
+/// The panel's sizes, as fractions of the volume one step of the tape recorded.
 ///
-/// Stated relative to the instrument rather than absolutely, so a panel
-/// attached to a thinly traded name is not the same panel as one attached to a
-/// liquid one. **These are proportionate, not calibrated** — see the module
+/// Stated relative to the tape rather than absolutely, so a panel attached to a
+/// thinly traded name is not the same panel as one attached to a liquid one —
+/// and, see [`observed_step_volume`], relative to the *tape* rather than to a
+/// liquidity profile's claim about it. **These are proportionate, not calibrated** — see the module
 /// header and ADR 0053. They are constants rather than parameters because a
 /// caller free to choose them could tune the measurement until it said what the
 /// caller wanted, and the whole value of the comparison is that both runs faced
@@ -122,20 +123,19 @@ fn observed_step_volume(bars: &[Bar]) -> Result<f64> {
 /// off a volume the tape did not record is a set of numbers with no relation to
 /// the market being simulated, and would look exactly like a panel that had.
 pub fn standard_panel(step_volume: f64) -> Result<Vec<CounterpartyAgent>> {
-    let daily_volume = step_volume;
-    if !daily_volume.is_finite() || daily_volume <= 0.0 {
+    if !step_volume.is_finite() || step_volume <= 0.0 {
         return Err(Error::invalid(format!(
-            "a counterparty panel is sized off the volume the tape recorded, and {daily_volume} \
+            "a counterparty panel is sized off the volume the tape recorded, and {step_volume} \
              is not one; a panel sized off a volume the tape did not record has no relation to \
              the market it would trade in"
         )));
     }
     let share = |fraction: f64| -> Result<Decimal> {
-        Decimal::from_f64(daily_volume * fraction)
+        Decimal::from_f64(step_volume * fraction)
             .filter(|quantity| quantity.is_positive())
             .ok_or_else(|| {
                 Error::numeric(format!(
-                    "a daily volume of {daily_volume} gives a panel size that is not a positive \
+                    "a step volume of {step_volume} gives a panel size that is not a positive \
                      quantity at a {fraction} share"
                 ))
             })
