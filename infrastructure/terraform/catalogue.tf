@@ -71,10 +71,17 @@ locals {
   # Declared out here rather than inside the entry because the entry's
   # `config_files` block is a parity contract: every `env_file_variable` in it
   # is one every `RunService` under `gitops/envs/<env>/` must carry, and these
-  # are carried by none of them while every tfvars leaves both variables null.
+  # are carried by none of them while every tfvars leaves their variables null.
   # The entry merges this map in, so what the module receives is still one map;
   # what a rendered manifest omits is exactly what that environment did not ask
   # for.
+  #
+  # This said "both variables" while there were two, and the capital-fabric
+  # declaration made it three on 2026-09-08. The count is deliberately not
+  # written down again: `grep -c env_file_variable` over this local answers it,
+  # and a number in a comment is a number that goes stale without ever becoming
+  # false enough for anybody to notice. What holds the contract is the
+  # acceptance suite's parity test, not this paragraph.
   optional_config_files = {
     api = merge(
       # The venue registrations the API's registry ships with (ADR 0034,
