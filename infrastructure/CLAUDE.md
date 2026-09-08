@@ -68,8 +68,9 @@ refusing a `qip-*` image in any Pod spec. Terraform's provider set is still
   service answers a different page, with no `server` header), and
   `qip-dev-openobserve` answers `308 -> /web/` anonymously. What is still
   true is the rule: an agent shows the plan and a person applies, and
-  `docs/ops/missing-infrastructure-register.md` records what each plan
-  and each observation found.
+  `docs/DELIVERY-STATUS.md` records what each plan and each observation
+  found. It absorbed the missing-infrastructure register on 2026-09-07,
+  and this line pointed at the deleted path until 2026-09-08.
 - `autonomy_ceiling` may not name a live level. `variables.tf` refuses all
   three at plan time; that validation is load-bearing and mutation-tested.
 - **`modules/execution-node/templates/startup.sh.tftpl` runs as root on the

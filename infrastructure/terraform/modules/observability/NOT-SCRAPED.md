@@ -211,7 +211,8 @@ What is not:
   used to read "Nothing has been applied. ADR 0024 records that no plan has
   been produced on any environment." That sentence has outlived its truth in
   the same way `infrastructure/CLAUDE.md`'s did — row 10 of
-  `docs/ops/missing-infrastructure-register.md` records that one being
+  the missing-infrastructure register (consolidated
+  into `docs/DELIVERY-STATUS.md` on 2026-09-07) recorded that one being
   rewritten for exactly this reason — and ADR 0024's closing paragraph is
   itself listed as stale in that register. `dev` has been applied by
   `infra.yml`'s `up`, dispatched by a person, and `module.observability` is

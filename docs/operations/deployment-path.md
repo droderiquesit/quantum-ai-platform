@@ -20,10 +20,30 @@ pipeline moving each service with `gcloud run services update` and recording
 `images.tfvars`; that mechanism is replaced, and its proof is kept in a
 different place (below).
 
-**Nothing below is applied yet.** ADR 0036 records a design three agents are
-building; the first plan, the first bootstrap and the first sync are all
-ahead. Every "proves" in this document is what the file says, until a run
-shows it.
+**Half of this is now proven and half has never run.** ADR 0036 records a
+design three agents built; a run has since shown where the path stops.
+
+*The pipeline half works.* `deploy.yml` run 115, on `8d20e7d` (the merge of
+PR #12), concluded success on 2026-09-08 after CI run 507 triggered it
+automatically: four images built from the one Dockerfile, scanned, pushed and
+attested against `qip-dev-attestor`. That is everything the workflow claims to
+do — and since ADR 0036 the job is named "record what was pushed" precisely
+because it no longer moves a service.
+
+*The reconciler half has never run.* Kargo has made no promotion commit, in
+dev or anywhere: `git log --all --format='%an' | grep qip-kargo` finds nothing,
+and `infrastructure/gitops/envs/dev/kustomization.yaml` was last written by
+`f8d0c24` — the ADR 0036 commit itself, on 2026-09-04 — so the digests the
+three dev services run are the ones a person committed by hand before this
+path existed, not ones a warehouse discovered. A green `deploy` therefore
+means *the image for this commit is in the registry and attested*, and does
+not mean the commit is serving.
+
+Every "proves" below that belongs to the pipeline has been shown by run 115.
+Every "proves" that belongs to Kargo, Argo CD or the post-sync hook is still
+what the file says. The next thing that would change this page is the first
+promotion commit by `qip-kargo-dev[bot]`; until one exists, the delivery path
+is built and unexercised past the registry.
 
 ## The path
 
@@ -98,7 +118,7 @@ Two side paths feed it and neither deploys the platform's own code:
 | The freight is one commit's images | Kargo `Warehouse` and the promotion's first step | The `Warehouse` subscribes to each catalogue binary's repository and records digests. The promotion reads every image's revision label and refuses freight whose images name different shas — a slow matrix job cannot ship the API from one commit and the fast brain from another |
 | The promotion is a commit | Kargo `Stage`, promotion step | The digests are written into `infrastructure/gitops/envs/<env>/` and committed to the default branch by `qip-kargo-<env>[bot]`, the message naming the freight, each digest, the source sha and the `deploy.yml` run. `dev` promotes on its own; `test` and `stage` on a person's approval in Kargo; `prod` never, until an ADR lifts the policy |
 | The manifest holds the catalogue's invariants | `catalogue.tf`; the parity test in `backend/crates/tests/qip-acceptance/tests/` | Internal ingress for every catalogue workload, `binaryAuthorization.useDefault`, secrets as 0400 volumes with the `_FILE` path, image by digest, the workload's own service account, the zone's subnet and tag, `deletion-policy: abandon`, `QIP_AUTONOMY_CEILING` equal to `paper_trading`. A manifest disagreeing with its catalogue entry on any of these is a red build |
-| The service exists and is acquired, not replaced | Config Connector on the first sync of an environment | `RunService` `metadata.name` is `qip-<env>-<name>`, the name Terraform created it under. Config Connector adopts a resource that exists by name; Terraform released it with `removed { lifecycle { destroy = false } }` so the apply that did so destroyed nothing. The evidence that acquisition was clean is a revision count that did not move on first sync, recorded in `docs/ops/missing-infrastructure-register.md` when it happens. A service that does not exist is *created* by Config Connector from the manifest — the one thing `deploy.yml` refused to do, and permitted here because the manifest carries everything Terraform's module carried |
+| The service exists and is acquired, not replaced | Config Connector on the first sync of an environment | `RunService` `metadata.name` is `qip-<env>-<name>`, the name Terraform created it under. Config Connector adopts a resource that exists by name; Terraform released it with `removed { lifecycle { destroy = false } }` so the apply that did so destroyed nothing. The evidence that acquisition was clean is a revision count that did not move on first sync, recorded in `docs/DELIVERY-STATUS.md` (which absorbed the missing-infrastructure register on 2026-09-07) when it happens. A service that does not exist is *created* by Config Connector from the manifest — the one thing `deploy.yml` refused to do, and permitted here because the manifest carries everything Terraform's module carried |
 | The service moved and the new revision is Ready | Argo CD `Application`, resource health | Argo CD's health check for `RunService` reads the resource's `Ready` condition; `Degraded` fails the sync. A revision Binary Authorization refused for want of an attestation shows here: the `RunService` never becomes `Ready`, and the sync fails naming the condition's message |
 | The serving revision runs the attested bytes | Argo CD post-sync hook | Reads `status.traffic`, not `spec.template`: every revision with a non-zero share is described, and its container named after the catalogue entry must carry exactly the digest the manifest names. This is `prove-serving.py`'s two questions, moved from the pipeline to the reconciler and not weakened. `a_promotion_names_who_verifies_it` reads the hook rather than the workflow |
 | Drift is put back | Argo CD `Application` for `dev`, `selfHeal: true`, `prune: true` | A service edited in the console is reconciled to the manifest on the next cycle; a resource removed from the manifest is released (`deletion-policy: abandon`), never destroyed. `test`, `stage` and `prod` sync when a person syncs them and drift shows as `OutOfSync` until then |

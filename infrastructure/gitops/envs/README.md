@@ -80,7 +80,8 @@ syncs with `Validate=true`. Three outcomes are possible on the first sync of
    `gcloud run services update`.
 3. The schema admits it and the revision count does not move. That is the
    evidence the ADR asks for; record it in
-   `docs/ops/missing-infrastructure-register.md`.
+   [`docs/DELIVERY-STATUS.md`](../../../docs/DELIVERY-STATUS.md), which
+   absorbed the missing-infrastructure register on 2026-09-07.
 
 What must not happen is a schema that prunes the unknown field and a
 reconcile that removes the mount: a process that starts with no

@@ -146,7 +146,7 @@ only through Config Connector on the control-plane cluster. That cluster does
 not exist in `dev`: run 38's `plan` found the previous one tainted and
 proposed replacing it, and under ADR 0040 decision 1 no `up` was dispatched
 on a plan that destroys a cluster
-(`docs/ops/missing-infrastructure-register.md`, "Observed, not predicted —
+(`docs/DELIVERY-STATUS.md` (which absorbed the missing-infrastructure register on 2026-09-07), "Observed, not predicted —
 run 38"). So the posture cannot be moved by an apply from here — it moves
 when the cluster is rebuilt by a person and the manifests are edited beside
 the root wiring. Nothing in this change brings that forward, and nothing in
