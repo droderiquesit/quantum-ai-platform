@@ -591,6 +591,15 @@ pub struct Platform {
     /// stage could not run: a stale stress report beside a book that has since
     /// changed is a risk number about a portfolio nobody owns.
     stress: Option<StressReport>,
+    /// How often each class of claim held, in which regime.
+    ///
+    /// The §15.1 meta-learning board. Bounded by construction — claim classes
+    /// are the anomaly kinds the detectors raise and contexts are the product
+    /// of two regime enums — so it does not grow with uptime, and it is
+    /// deliberately not replayed: a score is a summary of resolutions the
+    /// event log already holds, and a second durable copy of a derived fact is
+    /// a second source of truth for it.
+    claim_scores: qip_evolution::scoring::Scoreboard,
     volume_history: BTreeMap<String, Vec<f64>>,
     /// Quoted spread history per instrument, in basis points — the series the
     /// liquidity-deterioration detector reads. A statistic, so `f64`.
@@ -3010,6 +3019,10 @@ impl Platform {
             observations_absorbed: 0,
             price_history: BTreeMap::new(),
             stress: None,
+            // Strategies rather than models: the subject is the class of claim
+            // a detector raised, and "how often its signals were right, by
+            // regime" is exactly what that domain names.
+            claim_scores: qip_evolution::scoring::Scoreboard::strategies(),
             volume_history: BTreeMap::new(),
             spread_history: BTreeMap::new(),
             observation_history: BTreeMap::new(),
@@ -9592,6 +9605,13 @@ impl Platform {
             claims.push(claim);
         }
 
+        // Meta-learning, at the one instant the platform knows whether a claim
+        // held: which *class* of claim was right, in which regime. Until this
+        // existed `qip_evolution::scoring::Scoreboard` had no caller anywhere
+        // outside its own crate — the platform scored every thesis and never
+        // asked which kinds of thesis worked when.
+        let scored_by_regime = self.score_claims_by_regime(&claims, &outcomes);
+
         let learned = self.learn_from(&claims, &outcomes, now)?;
         // A thesis graded but charged to nobody is a stage problem, not a
         // stage failure: the pass went on without it, and the outcome says so
@@ -9628,7 +9648,77 @@ impl Platform {
         if remembered > 0 {
             summary.push_str(&format!("; {remembered} episode(s) remembered"));
         }
+        if scored_by_regime > 0 {
+            summary.push_str(&format!(
+                "; {scored_by_regime} claim(s) scored by regime over {} class/regime cell(s)",
+                self.claim_scores.len()
+            ));
+        }
         Ok(Some(summary))
+    }
+
+    /// Record which class of claim held, in which regime.
+    ///
+    /// Returns how many claims were scored. A claim whose stated direction is
+    /// zero is not scored at all: "went well" is whether the move came out on
+    /// the side the claim named, and a claim that named no side cannot be
+    /// right or wrong. Counting it as a failure would charge the board for the
+    /// platform's own silence.
+    ///
+    /// The subject is the claim's **class**, not its hypothesis id. A
+    /// hypothesis resolves once and never recurs, so a board keyed on it would
+    /// hold one observation per cell for ever — every score pinned at its
+    /// prior, every band `Unproven`, and a meta-learner that learns nothing.
+    /// The class is what recurs, and it is what §15.1 means by asking which
+    /// approach works where.
+    ///
+    /// Cardinality is bounded by construction and that is deliberate: classes
+    /// come from the anomaly kinds the detectors raise, and contexts are the
+    /// product of two regime enums, so the board cannot grow with uptime the
+    /// way one keyed on instruments or hypothesis ids would.
+    fn score_claims_by_regime(
+        &mut self,
+        claims: &[ThesisClaim],
+        outcomes: &[ThesisOutcome],
+    ) -> usize {
+        let mut scored = 0usize;
+        for claim in claims {
+            let Some(outcome) = outcomes
+                .iter()
+                .find(|outcome| outcome.hypothesis_id == claim.hypothesis_id)
+            else {
+                continue;
+            };
+            if claim.direction == 0.0 {
+                continue;
+            }
+            let regime = self.regime_label(&claim.subject);
+            // The regime as one context string, market and volatility
+            // together: a claim that works in a trending calm market and fails
+            // in a trending volatile one is exactly the conditional fact the
+            // board exists to keep, and scoring the two axes separately would
+            // average it away.
+            let context = format!("{}/{}", regime.market, regime.volatility);
+            let held = claim.direction.signum() == outcome.realised_move_bps.signum();
+            self.claim_scores
+                .observe(qip_evolution::scoring::Outcome::binary(
+                    claim.class.clone(),
+                    context,
+                    held,
+                ));
+            scored += 1;
+        }
+        scored
+    }
+
+    /// How often each class of claim held, by regime.
+    ///
+    /// Read by an operator rather than by the platform: nothing here yet sizes
+    /// or gates on a score, and doing so would be a behavioural change this
+    /// wire is not entitled to make on its own. What it ends is the platform
+    /// grading every thesis and never asking which kinds of thesis work when.
+    pub fn claim_scores(&self) -> &qip_evolution::scoring::Scoreboard {
+        &self.claim_scores
     }
 
     /// What the platform's own series say, for the metrics named.

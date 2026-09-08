@@ -476,3 +476,94 @@ fn declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next
     );
     Ok(())
 }
+
+// --- meta-learning: which class of claim worked, and where -------------------
+
+#[test]
+fn a_resolved_claim_is_scored_against_the_regime_it_resolved_in() -> Result<()> {
+    // `qip_evolution::scoring::Scoreboard` had no caller outside its own crate
+    // — the platform graded every thesis and never asked which *kinds* of
+    // thesis work in which regime, which is the whole of blueprint §15.1's
+    // first capability. The board is written at the one instant that fact
+    // becomes known: where a claim resolves.
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    let first = platform.run_cycle(start());
+
+    // Premise, twice over. A claim must have been made, and the board must be
+    // empty: asserting a non-empty board at the end proves nothing if it was
+    // never empty.
+    assert!(
+        !platform.predictions().is_empty(),
+        "no claim was written, so there is nothing to resolve:\n{}",
+        first.summarise()
+    );
+    assert!(
+        platform.claim_scores().is_empty(),
+        "the board holds a score before anything resolved"
+    );
+    let prediction = platform.predictions()[0].clone();
+    let claim = prediction
+        .claim
+        .clone()
+        .expect("a claim records what it claimed, or it cannot be graded");
+    assert!(
+        claim.direction != 0.0,
+        "a claim naming no direction cannot be right or wrong, and is \
+         deliberately not scored — this fixture must produce a directional one"
+    );
+
+    // The same swinging tape the calibration test uses: the move has to be
+    // large enough that the verdict is informative either way.
+    let horizon = prediction.proposition.resolves_at;
+    let swings: Vec<SensedRecord> = (0..20)
+        .map(|i| {
+            let (open, close) = if i % 2 == 0 {
+                (100.0, 150.0)
+            } else {
+                (150.0, 100.0)
+            };
+            let at = horizon.saturating_sub(Duration::from_mins((20 - i) * 60));
+            bar("AAA", at, open, close)
+        })
+        .collect();
+    platform.observe(swings);
+
+    let second = platform.run_cycle(horizon.saturating_add(Duration::from_mins(1)));
+    let learn = second.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        learn.detail.contains("scored by regime"),
+        "LEARN graded a claim and did not score it by regime: {}",
+        learn.detail
+    );
+
+    // Keyed on the claim's *class*, not its hypothesis id. A hypothesis
+    // resolves once and never recurs, so a board keyed on it would hold one
+    // observation per cell for ever and could never leave its prior — a
+    // meta-learner that learns nothing. The class is what recurs.
+    let scores = platform.claim_scores().scores_of(&claim.class);
+    assert_eq!(
+        scores.len(),
+        1,
+        "the resolved claim's class carries no score: subjects are {:?}",
+        platform.claim_scores().subjects()
+    );
+    let score = &scores[0];
+    // The context is the regime the claim resolved in, both axes together: a
+    // claim that works in a calm trend and fails in a volatile one is exactly
+    // the conditional fact the board exists to keep.
+    assert!(
+        score.context().contains('/'),
+        "the context {:?} does not carry both regime axes",
+        score.context()
+    );
+    // And one observation is not evidence. The band says so in words rather
+    // than leaving a reader to notice the count.
+    assert_eq!(
+        score.band(),
+        qip_evolution::scoring::ScoreBand::Unproven,
+        "a single resolution produced a score above `Unproven`: {}",
+        score.summarise()
+    );
+    Ok(())
+}
