@@ -2143,3 +2143,39 @@ fn no_shipped_source_can_obtain_a_liquidity_profile_nobody_stated() {
         violations.join("\n")
     );
 }
+
+/// The two names for one movement have to keep meeting.
+///
+/// `qip-risk` estimates a market factor and files a position's beta under
+/// [`qip_risk::market_factor::EQUITY_SHOCK`]; `qip-simulation-engine`'s
+/// standard scenario library shocks a factor by name and treats a position
+/// whose betas do not carry that name as **unmodelled**. Neither crate depends
+/// on the other, so nothing in the compiler holds the two names together, and
+/// a rename on either side would empty every stress report the platform
+/// produces while every test in both crates still passed.
+///
+/// This is the one place both are in scope. ADR 0052 originally asserted the
+/// names already matched — they did not, and the mapping is now a constant
+/// this test pins.
+#[test]
+fn the_standard_scenario_library_still_shocks_the_factor_the_risk_crate_names() {
+    let library = qip_simulation_engine::scenario::standard_library();
+    // The premise first: a library that shocked nothing would satisfy the
+    // property below for free.
+    assert!(
+        !library.is_empty(),
+        "the standard scenario library is empty; the assertion below would hold vacuously"
+    );
+    let shocked: std::collections::BTreeSet<&str> = library
+        .iter()
+        .flat_map(|scenario| scenario.shocks.iter())
+        .map(|shock| shock.factor.as_str())
+        .collect();
+    assert!(
+        shocked.contains(qip_risk::market_factor::EQUITY_SHOCK),
+        "no scenario shocks {:?}, so every beta the market factor produces is filed under a \
+         name the stress tester never looks up and every position reports unmodelled. \
+         The library shocks: {shocked:?}",
+        qip_risk::market_factor::EQUITY_SHOCK
+    );
+}

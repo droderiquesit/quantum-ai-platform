@@ -36,12 +36,26 @@ use crate::metrics;
 use qip_numerics::stats;
 use std::collections::BTreeMap;
 
-/// The name the factor carries in `factor_betas` and in a scenario's shocks.
+/// The name the factor carries in `factor_betas` and `factor_returns`.
 ///
-/// Matches the name the standard scenario library already uses for
-/// equity-style shocks, so a shock finds the beta this module produced without
-/// a translation table between them.
+/// The platform's own vocabulary for the thing this module estimates: the
+/// common movement of the instruments on its tape.
 pub const MARKET_FACTOR: &str = "market";
+
+/// The name the standard stress library gives the shock this factor answers.
+///
+/// Two names for one movement, and the second is not this crate's to choose:
+/// `qip_simulation_engine::scenario::standard_library` calls its equity-style
+/// shock `equity`, and a `FactorExposure` whose beta is filed under any other
+/// key is a position the stress tester reports as *unmodelled*. ADR 0052 said
+/// the two names already matched. They did not — the ADR is corrected, and the
+/// mapping lives here, in one constant, rather than as a string literal at the
+/// seam that consumes it.
+///
+/// An acceptance test asserts the standard library still shocks this name, so
+/// a rename there fails a gate rather than silently emptying every stress
+/// report.
+pub const EQUITY_SHOCK: &str = "equity";
 
 /// The fewest overlapping return observations a beta may be estimated from.
 ///
@@ -81,6 +95,13 @@ pub struct MarketFactor {
     returns: Vec<f64>,
     /// Beta per instrument, holding only those with enough overlap.
     betas: BTreeMap<String, f64>,
+    /// Residual variance per instrument, over the same overlap as its beta.
+    ///
+    /// Kept beside the beta rather than recomputed by a caller: the two are
+    /// the two halves of one single-factor model, and a caller that recomputed
+    /// the residual over a different window would produce a decomposition
+    /// whose parts do not sum to the whole it was measured from.
+    specific: BTreeMap<String, f64>,
 }
 
 impl MarketFactor {
@@ -140,29 +161,52 @@ impl MarketFactor {
             return Self {
                 returns: factor,
                 betas: BTreeMap::new(),
+                specific: BTreeMap::new(),
             };
         }
 
-        let betas = per_instrument
-            .iter()
-            .filter_map(|(instrument, series)| {
-                let overlap = series.len().min(factor.len());
-                if overlap < MINIMUM_OVERLAP {
-                    return None;
-                }
-                let instrument_tail = &series[series.len() - overlap..];
-                let factor_tail = &factor[factor.len() - overlap..];
-                Some((
-                    instrument.clone(),
-                    metrics::beta(instrument_tail, factor_tail),
-                ))
-            })
-            .collect();
+        let mut betas = BTreeMap::new();
+        let mut specific = BTreeMap::new();
+        for (instrument, series) in &per_instrument {
+            let overlap = series.len().min(factor.len());
+            if overlap < MINIMUM_OVERLAP {
+                continue;
+            }
+            let instrument_tail = &series[series.len() - overlap..];
+            let factor_tail = &factor[factor.len() - overlap..];
+            let beta = metrics::beta(instrument_tail, factor_tail);
+            // The residual of the single-factor model: what the instrument's
+            // variance is once the part the factor explains is removed.
+            // Floored at zero because sampling noise can make the subtraction
+            // negative by a rounding, and a negative variance is refused
+            // downstream — `FactorRisk::new` rejects it — so the floor is the
+            // difference between a model and an error return.
+            let residual = (stats::variance(instrument_tail)
+                - beta * beta * stats::variance(factor_tail))
+            .max(0.0);
+            betas.insert(instrument.clone(), beta);
+            specific.insert(instrument.clone(), residual);
+        }
 
         Self {
             returns: factor,
             betas,
+            specific,
         }
+    }
+
+    /// The variance of the factor's own return series.
+    pub fn variance(&self) -> f64 {
+        stats::variance(&self.returns)
+    }
+
+    /// One instrument's residual variance, or `None` where it carries no beta.
+    ///
+    /// Present exactly where [`Self::beta_of`] is present: an instrument the
+    /// factor could not be measured against has no residual either, because
+    /// there is nothing to take the residual of.
+    pub fn specific_variance_of(&self, instrument: &str) -> Option<f64> {
+        self.specific.get(instrument).copied()
     }
 
     /// The factor's most recent return, or `None` where it has none.

@@ -1413,3 +1413,77 @@ fn a_factor_that_never_moved_models_nothing_rather_than_reporting_zero_betas() {
          reads as immunity"
     );
 }
+
+#[test]
+fn a_residual_variance_is_reported_exactly_where_a_beta_is_and_never_otherwise() {
+    // The two halves of the single-factor model must arrive together. A caller
+    // building a `FactorRisk` needs one exposure and one specific variance per
+    // asset, and an instrument that carried a beta but no residual — or a
+    // residual but no beta — would produce a model whose rows do not line up
+    // with its assets. `FactorRisk::new` refuses a length mismatch; it cannot
+    // see a *misalignment*, which would attribute one name's risk to another.
+    let mut tape = BTreeMap::new();
+    tape.insert("LONG".to_string(), wobble(100.0, MINIMUM_OVERLAP + 40, 1.0));
+    tape.insert("ALSO".to_string(), wobble(100.0, MINIMUM_OVERLAP + 40, 2.3));
+    // Too short to estimate anything from: this is what a newly listed name
+    // looks like, and it is the reason the two maps could ever disagree.
+    tape.insert("SHORT".to_string(), wobble(100.0, 4, 1.0));
+    let factor = MarketFactor::estimate(&tape);
+
+    // Premise: something was modelled, or the agreement below is vacuous.
+    assert_eq!(
+        factor.modelled_count(),
+        2,
+        "the two long series must both carry a beta for this to prove anything"
+    );
+    for instrument in ["LONG", "ALSO", "SHORT"] {
+        assert_eq!(
+            factor.beta_of(instrument).is_some(),
+            factor.specific_variance_of(instrument).is_some(),
+            "{instrument} has a beta and a residual that disagree about whether \
+             it was modelled"
+        );
+    }
+    // And the residual is a variance: never negative, whatever the sampling
+    // noise in the subtraction did.
+    for instrument in ["LONG", "ALSO"] {
+        let residual = factor
+            .specific_variance_of(instrument)
+            .expect("modelled above");
+        assert!(
+            residual >= 0.0,
+            "{instrument} has a negative residual variance ({residual}), which \
+             `FactorRisk::new` refuses outright"
+        );
+    }
+}
+
+#[test]
+fn the_factors_variance_is_the_variance_of_the_series_it_reports() {
+    // `variance` is what a caller hands to a one-by-one factor covariance
+    // matrix. If it were computed over anything but the series `returns`
+    // exposes, the decomposition would be measured against a benchmark the
+    // betas were not estimated against, and every contribution would be off by
+    // a ratio nobody could see.
+    let mut tape = BTreeMap::new();
+    tape.insert("A".to_string(), wobble(100.0, MINIMUM_OVERLAP + 20, 1.0));
+    tape.insert("B".to_string(), wobble(100.0, MINIMUM_OVERLAP + 20, 1.7));
+    let factor = MarketFactor::estimate(&tape);
+
+    // Premise: a factor that never moved would satisfy any claim about its
+    // variance being some number, including zero.
+    assert!(
+        factor.returns().len() > MINIMUM_OVERLAP,
+        "the factor must have a series for its variance to be a claim about one"
+    );
+    assert!(
+        factor.variance() > 0.0,
+        "a factor estimated from two wobbling series has variance"
+    );
+    let expected = qip_numerics::stats::variance(factor.returns());
+    assert!(
+        (factor.variance() - expected).abs() < 1e-18,
+        "the reported variance {} is not the variance of the reported series {expected}",
+        factor.variance()
+    );
+}

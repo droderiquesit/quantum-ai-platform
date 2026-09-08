@@ -63,9 +63,27 @@ Precisely:
   reported** — the position stays `unmodelled` rather than carrying a number
   estimated from four observations.
 
-The factor is named `market` in `factor_betas` and `factor_returns`, matching
-the name `StressTester`'s shock table and the standard scenario library already
-use for equity-style shocks.
+The factor is named `market` in `factor_betas` and `factor_returns`.
+
+**Correction, 2026-09-08.** This paragraph originally read "matching the name
+`StressTester`'s shock table and the standard scenario library already use for
+equity-style shocks". That was false. `standard_library()` shocks a factor
+called `equity`, in all four historical scenarios and both hypothetical ones,
+and a `FactorExposure` whose beta is filed under `market` is a position the
+stress tester reports as **unmodelled** — the exact silence this decision was
+written to end. The error was found the moment the stress test was actually
+wired, which is the argument for wiring things.
+
+There are therefore two names for one movement, and the mapping is
+`qip_risk::market_factor::EQUITY_SHOCK`: one constant, used at the seam that
+builds exposures for the stress tester, rather than a string literal in the
+kernel. `MARKET_FACTOR` stays the name in `factor_betas` and `factor_returns`,
+because that map is the platform's own vocabulary and `market` is what the
+thing is; `equity` is what the scenario library calls the shock it answers.
+Neither crate depends on the other, so nothing in the compiler holds the two
+together: `the_standard_scenario_library_still_shocks_the_factor_the_risk_crate_names`
+in `qip-acceptance`'s `architecture.rs` does, and it fails loudly if either
+side is renamed.
 
 ## What this decision is not
 
