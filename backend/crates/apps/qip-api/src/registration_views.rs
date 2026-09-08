@@ -439,6 +439,75 @@ fn terms_reference(posture: &LicensingPosture) -> Option<String> {
     }
 }
 
+// --- the promotion signature -------------------------------------------------
+
+/// The body of a promotion signature: a rationale and nothing else.
+///
+/// Deliberately no approver field. The approver is the authenticated session's
+/// subject, and a body that could name one would turn an approval into a claim
+/// to have been approved — which is the difference this route exists to keep.
+/// An unknown key is refused rather than ignored, so a caller who believed
+/// they were naming an approver is told they were not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PromotionApprovalRequest {
+    pub rationale: String,
+}
+
+impl PromotionApprovalRequest {
+    const FIELDS: [&'static str; 1] = ["rationale"];
+
+    /// The longest rationale the record will hold. A bound rather than a
+    /// guess, for the reason `MAX_TERMS` gives below: it reaches the
+    /// hash-chained event log, and an unbounded field is an unbounded record
+    /// with no erase path.
+    const MAX_RATIONALE: usize = 512;
+
+    pub fn parse(body: &str) -> Result<Self, String> {
+        let value: serde_json::Value = serde_json::from_str(body).map_err(|_| {
+            "the body is not JSON; send {\"rationale\": \"<why this strategy should hold \
+             capital>\"}"
+                .to_string()
+        })?;
+        let Some(object) = value.as_object() else {
+            return Err("the body must be a JSON object with `rationale`".to_string());
+        };
+        if let Some(position) = object
+            .keys()
+            .position(|key| !Self::FIELDS.contains(&key.as_str()))
+        {
+            // Named by position rather than quoted, the same discipline the
+            // registration body keeps below: a refusal that echoes what a
+            // caller sent publishes whatever they sent by mistake.
+            return Err(format!(
+                "the body's key at position {} is not one this route reads; it takes \
+                 `rationale` only. In particular the approver cannot be sent: it is taken from \
+                 the authenticated session, because an approval a caller can name is not an \
+                 approval",
+                position + 1
+            ));
+        }
+        let rationale = object
+            .get("rationale")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| "the body needs a non-empty `rationale` string".to_string())?;
+        // The kernel's `Approval::new` holds a floor of its own on the
+        // rationale. This is the ceiling; the floor is deliberately not
+        // repeated here, because one authority on what a reviewable rationale
+        // is beats two that can drift apart.
+        if rationale.len() > Self::MAX_RATIONALE {
+            return Err(format!(
+                "the rationale is {} bytes and the record holds at most {}",
+                rationale.len(),
+                Self::MAX_RATIONALE
+            ));
+        }
+        Ok(Self { rationale })
+    }
+}
+
 // --- the approval -------------------------------------------------------------
 
 /// What `POST /registrations/{source}/approve` accepts: the terms the

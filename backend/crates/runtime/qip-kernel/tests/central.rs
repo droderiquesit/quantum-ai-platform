@@ -3908,3 +3908,181 @@ fn the_cost_of_a_settlement_is_weighted_by_quantity_and_not_a_mean_of_the_fills(
     );
     Ok(())
 }
+
+// --- the dual approval that lets a strategy reach a capital-holding rung ------
+
+/// Walk a strategy to `Shadow`, the rung below the first that needs signing.
+///
+/// Stops there on purpose: everything below `Pilot` is admitted on evidence
+/// alone, so this is the state in which the approval route is the only way up
+/// and the tests below are about that route rather than about the ladder.
+fn walk_to_shadow(platform: &mut Platform, id: &StrategyId) -> Result<()> {
+    register(platform.central_mut(), id, CELL)?;
+    walk_to(platform.central_mut(), id, GateStage::Shadow)
+}
+
+fn operator(name: &str, at: Timestamp) -> qip_risk_engine::autonomy::OperatorIdentity {
+    qip_risk_engine::autonomy::OperatorIdentity::verified(name, "hardware-token", at)
+}
+
+const WHY: &str = "the pilot evidence was reviewed against the shadow record";
+
+#[test]
+fn one_signature_does_not_promote_and_a_second_from_the_same_person_is_refused() -> Result<()> {
+    // The property the whole route exists for. `Pilot` is a rung that holds
+    // capital, and one person must not be able to put a strategy on it —
+    // including by signing twice from two sessions, which is the shape a
+    // single-signer bypass would actually take.
+    let mut platform = platform()?;
+    let id = StrategyId::new("dual-approval");
+    walk_to_shadow(&mut platform, &id)?;
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Shadow,
+        "premise: the strategy is one rung below the first that needs signing"
+    );
+
+    let first = platform.approve_promotion(&id, &operator("ops-dana", start()), WHY, start())?;
+    assert_eq!(first.outcome, "awaiting_countersignature");
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Shadow,
+        "one signature moved the strategy; a dual approval is not dual if the first one acts"
+    );
+
+    let again = platform
+        .approve_promotion(&id, &operator("ops-dana", start()), WHY, start())
+        .expect_err("the same operator signing twice is not two approvers");
+    assert!(
+        again
+            .message()
+            .contains("a second session is not a second person"),
+        "the refusal does not say why one person cannot be two: {}",
+        again.message()
+    );
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Shadow,
+        "signing twice promoted the strategy"
+    );
+    Ok(())
+}
+
+#[test]
+fn two_operators_carry_the_strategy_onto_the_rung_and_the_gate_still_rules() -> Result<()> {
+    // The pass half. Without it every test here would be satisfied by a route
+    // that refuses everything, which is the failure a veto-only fixture
+    // cannot see.
+    let mut platform = platform()?;
+    let id = StrategyId::new("dual-approval-pass");
+    walk_to_shadow(&mut platform, &id)?;
+    assert!(
+        !platform.central().factory().holds_capital(&id),
+        "premise: the strategy holds no capital at Shadow"
+    );
+
+    platform.approve_promotion(&id, &operator("ops-dana", start()), WHY, start())?;
+    let done = platform.approve_promotion(&id, &operator("ops-ravi", start()), WHY, start())?;
+
+    assert_eq!(done.outcome, "promoted", "detail: {:?}", done.detail);
+    assert_eq!(done.approver, "ops-dana");
+    assert_eq!(done.second_approver.as_deref(), Some("ops-ravi"));
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Pilot,
+        "two approvers signed and the strategy did not reach the rung"
+    );
+    assert!(
+        platform.central().factory().baseline(&id).is_some(),
+        "reaching the pilot rung did not write the baseline the demotion monitor needs; the \
+         interlock this route exists to close is still open"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_stale_first_signature_is_discarded_rather_than_countersigned() -> Result<()> {
+    // Two signatures far apart are two people agreeing about two different
+    // states of the world. The first is dropped and named, so the pair start
+    // again on today's evidence rather than completing yesterday's agreement.
+    let mut platform = platform()?;
+    let id = StrategyId::new("dual-approval-stale");
+    walk_to_shadow(&mut platform, &id)?;
+
+    platform.approve_promotion(&id, &operator("ops-dana", start()), WHY, start())?;
+    let much_later = start().saturating_add(Duration::from_days(2));
+    let refused = platform
+        .approve_promotion(&id, &operator("ops-ravi", much_later), WHY, much_later)
+        .expect_err("a countersignature two days later is not a review of the same decision");
+    assert!(
+        refused.message().contains("must follow within"),
+        "the refusal does not name the window: {}",
+        refused.message()
+    );
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Shadow
+    );
+
+    // And the stale signature is gone rather than lying in wait: a fresh
+    // countersignature now starts a new pair instead of completing the old
+    // one, which is what "discarded" has to mean to be worth anything.
+    let fresh =
+        platform.approve_promotion(&id, &operator("ops-ravi", much_later), WHY, much_later)?;
+    assert_eq!(
+        fresh.outcome, "awaiting_countersignature",
+        "the discarded signature was still there and this completed it"
+    );
+    assert_eq!(fresh.approver, "ops-ravi");
+    Ok(())
+}
+
+#[test]
+fn a_stale_credential_cannot_sign_a_promotion_that_puts_capital_to_work() -> Result<()> {
+    let mut platform = platform()?;
+    let id = StrategyId::new("dual-approval-credential");
+    walk_to_shadow(&mut platform, &id)?;
+
+    // Authenticated this morning, signing this afternoon. A session token is
+    // not evidence that the person named on the record is at the keyboard.
+    let long_ago = start().saturating_sub(Duration::from_hours(4));
+    let refused = platform
+        .approve_promotion(&id, &operator("ops-dana", long_ago), WHY, start())
+        .expect_err("a four-hour-old credential is not fresh enough to move capital");
+    assert!(
+        refused.message().contains("re-authenticate"),
+        "the refusal does not say what to do: {}",
+        refused.message()
+    );
+
+    // The premise that makes the above about freshness and not about the
+    // operator: the same person with a fresh credential is admitted.
+    let accepted = platform.approve_promotion(&id, &operator("ops-dana", start()), WHY, start())?;
+    assert_eq!(accepted.outcome, "awaiting_countersignature");
+    Ok(())
+}
+
+#[test]
+fn a_rung_that_needs_no_signature_refuses_one_rather_than_accepting_it() -> Result<()> {
+    // Signing for a rung the gate admits on evidence alone is refused, so an
+    // operator is never taught that their signature is what moved a strategy
+    // up a rung that takes none.
+    let mut platform = platform()?;
+    let id = StrategyId::new("dual-approval-unsigned-rung");
+    register(platform.central_mut(), &id, CELL)?;
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Candidate,
+        "premise: the strategy is at a rung whose next takes no approval"
+    );
+
+    let refused = platform
+        .approve_promotion(&id, &operator("ops-dana", start()), WHY, start())
+        .expect_err("the holdout rung takes no human approval");
+    assert!(
+        refused.message().contains("takes no human approval"),
+        "the refusal does not say why: {}",
+        refused.message()
+    );
+    Ok(())
+}

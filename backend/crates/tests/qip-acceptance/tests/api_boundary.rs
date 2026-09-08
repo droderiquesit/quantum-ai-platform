@@ -824,11 +824,29 @@ fn every_mutating_route_is_reviewed_here_and_each_raises_a_typed_intent() {
     // narrow ground that it *decides* and does not fund: no book moves, the
     // answer carries a constant `funded: false`, and funding remains
     // `Platform::fund_user`, which no route calls.
+    //
+    // The seventh is the promotion signature, and it is the one to think
+    // hardest about, because it is the only route whose successful outcome is
+    // a strategy that may hold capital. It is admitted on four grounds, all
+    // structural rather than procedural. The approver is the authenticated
+    // session's subject and the body cannot carry one — `PromotionApprovalRequest`
+    // takes a rationale and refuses every other key by name. Two *distinct*
+    // people are required: the kernel holds the first signature and
+    // `Approval::countersigned_by` refuses a second from the same subject, so
+    // one operator with two sessions is still one operator. The signature
+    // authorises an *attempt* and never an outcome — `attempt_promotion`
+    // re-derives the gate's verdict from the evidence on record and refuses
+    // independently, which is why an approval cannot talk a control into a
+    // decision it did not reach. And the two rungs it can reach are the only
+    // two the ladder marks as needing a signature, so this route cannot be
+    // used to skip a rung that is admitted on evidence alone; a signature for
+    // such a rung is refused rather than accepted and ignored.
     let expected: BTreeSet<(String, String)> = [
         ("Post", "/cycle"),
         ("Post", "/kill-switch"),
         ("Delete", "/kill-switch"),
         ("Post", "/registrations/:source/approve"),
+        ("Post", "/strategies/:strategy/promotion-approvals"),
         ("Post", "/ledger/users/:user/eligibility"),
         ("Post", "/ledger/users/:user/investment-requests"),
     ]
@@ -870,6 +888,25 @@ fn every_mutating_route_is_reviewed_here_and_each_raises_a_typed_intent() {
         routes_text.contains("platform.approve_registration(")
             && routes_text.contains("crate::registration_views::ApprovalRequest::parse"),
         "the registration approval no longer screens its body and raises the kernel's intent"
+    );
+    // The promotion signature carries the same verified identity, and the
+    // assertion pairs it with the body screen for a reason: the screen is
+    // what stops a caller naming their own approver, and the identity is what
+    // makes the name mean anything. Either half alone is not the control.
+    assert!(
+        routes_text.contains("platform.approve_promotion(")
+            && routes_text.contains("crate::registration_views::PromotionApprovalRequest::parse"),
+        "the promotion signature no longer screens its body and raises the kernel's intent"
+    );
+    // And it must take the session's issue time, not `now`. Passing `now`
+    // makes the kernel's freshness window compute an age of zero and become a
+    // control that cannot fire — the defect this repository has already had
+    // once, on the registration route, and the one it would be most costly to
+    // reintroduce on the route that moves capital.
+    assert!(
+        !routes_text.contains("\"api-bearer-token\",\n                    now,"),
+        "an operator identity is being built with `now` as its authentication time; the \
+         freshness window it feeds can then never elapse"
     );
     // The investment request likewise: screened, then handed to the kernel's
     // one decision path. What matters more is the negative — the API raises
@@ -961,6 +998,19 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
     //   reconciles against is a document a person put on the mount, never a
     //   figure a caller sent, and the kernel keeps its own bound and asset
     //   check on every holding.
+    // * `approve_promotion` — the operator signature that lets a strategy
+    //   reach a rung which holds capital, and the strictest of these to admit.
+    //   It takes the approver from the authenticated session and the body
+    //   cannot carry one. It needs two *different* people: the kernel holds
+    //   the first signature and refuses a second from the same subject, so two
+    //   sessions are not two approvers. It authorises an attempt and not an
+    //   outcome — the gate re-derives its verdict from the evidence on record
+    //   and refuses independently, so no signature can produce a promotion the
+    //   evidence does not support. And it reaches only `Pilot` and `Scaled`,
+    //   the two rungs the ladder marks as needing a signature; a signature for
+    //   any rung below is refused rather than accepted and ignored. It moves
+    //   no money: reaching a rung is permission to be sized under an envelope
+    //   the centre issues, and issuing one remains the platform's own act.
     // * `approve_registration` — an operator intent raised with an
     //   authenticated identity, like `request_change`: `POST
     //   /registrations/:source/approve` builds an `OperatorIdentity` from the
@@ -1001,6 +1051,7 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
         "issue_episodic_digest",
         "observe",
         "observe_statement",
+        "approve_promotion",
         "approve_registration",
         "decide_eligibility",
         // `decide_investment` — §40.9's `investment-api` intent, and the one

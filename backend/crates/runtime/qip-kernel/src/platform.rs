@@ -218,6 +218,15 @@ pub struct Platform {
     /// assembly, both of which journal the record before adopting it, so
     /// [`Platform::replay_registrations`] rebuilds this from the log alone.
     registrations: RegistrationRegistry,
+    /// First signatures waiting for a countersignature, by strategy.
+    ///
+    /// Held in memory on purpose and not replayed: a half-finished approval is
+    /// an intention, not a decision, and a process that restarted holding
+    /// somebody's pending signature would be resuming an act its signer may
+    /// have walked away from. Every *completed* decision is on the log; this
+    /// is the gap between two of them, and losing it costs one re-signature
+    /// and no record.
+    pending_promotions: BTreeMap<StrategyId, qip_contracts::governance::Approval>,
     /// The fabric journal: every wallet, corridor, destination and gate
     /// decision as the command and its outcome, replayable. Its working
     /// copy of the log is process-local; the platform's own event log
@@ -771,6 +780,36 @@ const INVESTMENT_ORIGIN: &str = "kernel/investment";
 /// will read. A session token from this morning is not evidence that the
 /// person named on the record is at the keyboard now.
 const REGISTRATION_CREDENTIAL_AGE: Duration = ELIGIBILITY_CREDENTIAL_AGE;
+
+/// The producer every promotion-approval record carries, so a reader
+/// selecting these passes over the registration and eligibility records that
+/// share their topic.
+const PROMOTION_APPROVAL_ORIGIN: &str = "kernel/promotion-approval";
+
+/// How recently an operator must have authenticated to sign a promotion to a
+/// capital-holding rung.
+///
+/// The same fifteen minutes as a registration approval, an eligibility
+/// decision and an autonomy change, and for the same reason: a session token
+/// from this morning is not evidence that the person named on the record is
+/// at the keyboard now. This is the act that puts capital behind a strategy,
+/// so it is held to the strictest window the platform has rather than a
+/// looser one of its own.
+const PROMOTION_CREDENTIAL_AGE: Duration = ELIGIBILITY_CREDENTIAL_AGE;
+
+/// How long a first signature waits for its countersignature before it goes
+/// stale.
+///
+/// A dual approval is two people agreeing about the *same* thing, and two
+/// signatures a fortnight apart are two people agreeing about two different
+/// states of the world — the evidence, the book and the strategy's own live
+/// record will all have moved between them. Bounding the gap is what keeps
+/// the second signature a review rather than a rubber stamp on something the
+/// first signer saw and the second cannot.
+///
+/// A stale first signature is not silently discarded: the countersignature
+/// attempt is refused, naming the age, and the pair start again.
+const PROMOTION_APPROVAL_WINDOW: Duration = Duration::from_hours(24);
 
 /// The producer every venue-registration record in the event log carries,
 /// and the one [`Platform::replay_registrations`] selects on. Distinct from
@@ -2142,6 +2181,36 @@ impl EventBody for RegistrationEntry {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// One operator's signature on a promotion to a capital-holding rung.
+///
+/// Journalled whether it is the first signature, the countersignature, or a
+/// refusal, because each is a decision about whether a strategy comes to hold
+/// capital and the log is where those live. A record with `outcome`
+/// `awaiting_countersignature` is a promotion nobody has yet performed; the
+/// promotion itself is a separate record written by the gate.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PromotionApprovalEntry {
+    pub strategy: String,
+    /// The rung the pair were signing for, as the ladder read it at the time.
+    pub to_stage: String,
+    pub approver: String,
+    pub second_approver: Option<String>,
+    pub rationale: String,
+    /// `awaiting_countersignature`, `promoted`, or `refused`.
+    pub outcome: String,
+    /// Present on a refusal: what the gate or the ladder said.
+    pub detail: Option<String>,
+    pub at: Timestamp,
+}
+
+impl EventBody for PromotionApprovalEntry {
+    /// A governance decision about capital, in the Decide group the log never
+    /// evicts — the same group the registration and eligibility records sit
+    /// in, told apart by producer. See [`PROMOTION_APPROVAL_ORIGIN`].
+    const TOPIC: Topic = Topic::ComplianceEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 impl EventBody for CycleJournalEntry {
     // The cycle's record belongs to the stage that closes it. LEARN is what
     // eventually notices that a stage keeps failing, and this is the artefact
@@ -2848,6 +2917,7 @@ impl Platform {
             user_ledger,
             products: ProductCatalogue::new(),
             registrations: RegistrationRegistry::shipped(),
+            pending_promotions: BTreeMap::new(),
             fabric,
             holdings_observed: BTreeMap::new(),
             wallet_tolerances: TolerancePolicy::new(),
@@ -4098,6 +4168,164 @@ impl Platform {
         let record = RegistrationRecord::new(source_id, operator.subject(), now, terms, secret)?;
         self.apply_registration(record.clone(), RegistrationSource::Operator, now)?;
         Ok(record)
+    }
+
+    /// Sign a promotion to a capital-holding rung, and perform it once two
+    /// people have.
+    ///
+    /// # Why this exists, and why it is the only way up
+    ///
+    /// `GateStage::requires_human_approval` is true for `Pilot` and `Scaled`
+    /// and false for everything below, because those two are the rungs where
+    /// a strategy comes to hold capital. `AuthorisedPromotion::advance`
+    /// enforces it, refusing a promotion to either without a *dual* recorded
+    /// approval. Nothing raised one: no route existed, so no strategy ever
+    /// reached `Pilot`, no pilot baseline was ever written, and the demotion
+    /// monitor — which skips any strategy without one — observed nothing in
+    /// any deployment. The ladder was built, correct, and unclimbable.
+    ///
+    /// # What a signature is, and what it is not
+    ///
+    /// The approver is taken from `operator`, which the composition root
+    /// builds from the authenticated session, and never from anything a
+    /// caller sent. A request body cannot name its own approver; that is the
+    /// difference between an approval and a claim to have been approved.
+    ///
+    /// Two signatures are two acts by two people, so the first is held and
+    /// the second completes it. `Approval::countersigned_by` refuses a second
+    /// signature from the first signer, and this method refuses it earlier and
+    /// by name, so a person who signs twice is told what is wrong rather than
+    /// reading a generic denial. One person with two sessions is still one
+    /// person; the identity is the subject, not the session.
+    ///
+    /// A first signature goes stale after [`PROMOTION_APPROVAL_WINDOW`],
+    /// because two signatures far apart are agreement about two different
+    /// states of the world rather than about one decision.
+    ///
+    /// # What it still cannot do
+    ///
+    /// Approve nothing into capital that the gate would refuse. The pair
+    /// authorise the *attempt*; `attempt_promotion` then re-derives the gate's
+    /// verdict from the evidence on record and can refuse it, and a refusal
+    /// is journalled exactly as a promotion is. Signing is permission to ask,
+    /// never an answer — the same rule the fabric declaration follows, and the
+    /// reason neither can be used to talk a control into a decision it did not
+    /// reach.
+    pub fn approve_promotion(
+        &mut self,
+        strategy: &StrategyId,
+        operator: &OperatorIdentity,
+        rationale: &str,
+        now: Timestamp,
+    ) -> Result<PromotionApprovalEntry> {
+        if !operator.is_fresh(now, PROMOTION_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to sign a \
+                 promotion that puts capital behind a strategy",
+                operator.subject(),
+                PROMOTION_CREDENTIAL_AGE
+            )));
+        }
+        let from = self.central.factory().stage_of(strategy);
+        let to = from.next().ok_or_else(|| {
+            Error::denied(format!(
+                "{} is at {}, which is terminal; there is no rung above it to approve",
+                strategy,
+                from.as_str()
+            ))
+        })?;
+        // A signature on a rung that needs no signature is refused rather than
+        // accepted and ignored. Accepting it would teach an operator that
+        // their approval is what moves a strategy up the early rungs, and the
+        // day they were told a promotion "needed" their signature for a rung
+        // that takes none would be the day the word stopped meaning anything.
+        if !to.requires_human_approval() {
+            return Err(Error::invalid(format!(
+                "promotion of {} from {} to {} takes no human approval; the gate admits it on \
+                 its evidence alone, and only {} and {} are signed for",
+                strategy,
+                from.as_str(),
+                to.as_str(),
+                qip_contracts::gate::GateStage::Pilot.as_str(),
+                qip_contracts::gate::GateStage::Scaled.as_str()
+            )));
+        }
+
+        match self.pending_promotions.get(strategy).cloned() {
+            None => {
+                let approval = qip_contracts::governance::Approval::new(
+                    strategy.as_str(),
+                    operator.subject(),
+                    now,
+                    rationale.to_string(),
+                )?;
+                let entry = PromotionApprovalEntry {
+                    strategy: strategy.as_str().to_string(),
+                    to_stage: to.as_str().to_string(),
+                    approver: approval.approver.clone(),
+                    second_approver: None,
+                    rationale: approval.rationale.clone(),
+                    outcome: "awaiting_countersignature".to_string(),
+                    detail: None,
+                    at: now,
+                };
+                self.journal_record(entry.clone(), PROMOTION_APPROVAL_ORIGIN, now)?;
+                self.pending_promotions.insert(strategy.clone(), approval);
+                Ok(entry)
+            }
+            Some(first) => {
+                if first.at.saturating_add(PROMOTION_APPROVAL_WINDOW) < now {
+                    // Dropped and named. The pair start again on today's
+                    // evidence rather than completing an agreement about a
+                    // book that has since moved.
+                    self.pending_promotions.remove(strategy);
+                    return Err(Error::denied(format!(
+                        "the first signature on {}'s promotion was given at {} and a \
+                         countersignature must follow within {:?}; it has been discarded and \
+                         both signatures must be given again",
+                        strategy,
+                        first.at.to_rfc3339(),
+                        PROMOTION_APPROVAL_WINDOW
+                    )));
+                }
+                if first.approver == operator.subject() {
+                    return Err(Error::denied(format!(
+                        "{} has already signed {}'s promotion; a dual approval needs two \
+                         people, and a second session is not a second person",
+                        operator.subject(),
+                        strategy
+                    )));
+                }
+                let approval = first.countersigned_by(operator.subject())?;
+                let outcome = self.central.factory_mut().promote(
+                    strategy,
+                    Some(approval.clone()),
+                    rationale,
+                    now,
+                );
+                // Cleared either way: the pair have had their answer, and a
+                // pending signature left behind a refusal would let a later
+                // countersignature retry the gate without a fresh review.
+                self.pending_promotions.remove(strategy);
+                let mut entry = PromotionApprovalEntry {
+                    strategy: strategy.as_str().to_string(),
+                    to_stage: to.as_str().to_string(),
+                    approver: approval.approver.clone(),
+                    second_approver: approval.second_approver.clone(),
+                    rationale: rationale.to_string(),
+                    outcome: "promoted".to_string(),
+                    detail: None,
+                    at: now,
+                };
+                if let Err(error) = &outcome {
+                    entry.outcome = "refused".to_string();
+                    entry.detail = Some(error.message().to_string());
+                }
+                self.journal_record(entry.clone(), PROMOTION_APPROVAL_ORIGIN, now)?;
+                outcome?;
+                Ok(entry)
+            }
+        }
     }
 
     /// Journal a registration and adopt it — in that order, and only after

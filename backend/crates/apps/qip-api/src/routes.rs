@@ -517,6 +517,15 @@ pub const ROUTES: &[Route] = &[
                   source's new standing",
         success: 200,
     },
+    Route {
+        method: Method::Post,
+        pattern: "/strategies/:strategy/promotion-approvals",
+        required_role: Role::Operator,
+        summary: "sign the authenticated operator's name to a promotion onto a rung that holds \
+                  capital; the first signature is held and the second performs the promotion, \
+                  which the gate may still refuse on the evidence",
+        success: 200,
+    },
     // --- the live surface ---------------------------------------------------
     //
     // In the same table as everything else, so a security review reads one
@@ -1221,6 +1230,55 @@ impl Api {
                     crate::registration_views::registrations(&platform, now),
                 );
                 Response::json(status, body)
+            }
+            (Method::Post, "/strategies/:strategy/promotion-approvals") => {
+                let Some(strategy) = path_segment(&request.path, 1) else {
+                    return Response::json(404, r#"{"error":"no such route"}"#);
+                };
+                let body = match request
+                    .body_as_str()
+                    .map_err(|error| error.message().to_string())
+                    .and_then(crate::registration_views::PromotionApprovalRequest::parse)
+                {
+                    Ok(body) => body,
+                    Err(reason) => {
+                        return Response::json(400, crate::registration_views::refusal(&reason));
+                    }
+                };
+                // The approver is the authenticated principal and never the
+                // body — the same rule the registration approval keeps, and
+                // the one that makes this an approval rather than a claim to
+                // have been approved.
+                //
+                // `issued_at`, never `now`: passing `now` here would make the
+                // kernel's freshness check compute an age of zero on every
+                // call and the fifteen-minute window a control that cannot
+                // fire. That exact defect has already been fixed once on the
+                // registration route below; it is written here so it is not
+                // introduced a second time on the route that moves capital.
+                let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
+                    principal.subject.clone(),
+                    "api-bearer-token",
+                    principal.issued_at,
+                );
+                match platform.approve_promotion(
+                    &qip_contracts::StrategyId::new(strategy),
+                    &operator,
+                    &body.rationale,
+                    now,
+                ) {
+                    Ok(entry) => match serde_json::to_string(&entry) {
+                        Ok(rendered) => Response::json(200, rendered),
+                        Err(error) => Response::json(
+                            500,
+                            crate::registration_views::refusal(&error.to_string()),
+                        ),
+                    },
+                    Err(error) => Response::json(
+                        crate::registration_views::refusal_status(&error),
+                        crate::registration_views::refusal(error.message()),
+                    ),
+                }
             }
             (Method::Post, "/registrations/:source/approve") => {
                 // The source is the path's second segment under the prefix;
