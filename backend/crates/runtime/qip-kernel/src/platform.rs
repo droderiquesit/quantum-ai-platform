@@ -9446,6 +9446,34 @@ impl Platform {
             );
         }
 
+        // The market factor, estimated from the platform's own tape (ADR
+        // 0052). Computed once for the whole attribution rather than per
+        // position: it is one series, and estimating it inside the loop would
+        // let two positions in the same decomposition be measured against
+        // benchmarks that differ by rounding.
+        //
+        // Until this existed, `factor_betas` and `factor_returns` below were
+        // built empty at every site, so the factor half of the decomposition
+        // was structurally silent — and so were `effective_bets` and the
+        // stress tester downstream of it. An instrument whose overlap with the
+        // factor is too short still carries no beta: `beta_of` answers `None`,
+        // the maps stay empty for that position, and it is *unmodelled* rather
+        // than modelled as immune.
+        let market = qip_risk::market_factor::MarketFactor::estimate(&self.price_history);
+        let factor_return = market.latest_return();
+        // Resolved before the loop, so the closure below borrows a finished
+        // map rather than the order book. A fill whose order the book no
+        // longer holds, or whose instrument has too short an overlap, is
+        // simply absent here — which is what makes it unmodelled downstream.
+        let betas_by_order: BTreeMap<String, f64> = fills
+            .iter()
+            .filter_map(|fill| {
+                let order = self.orders.order(&fill.order_id)?;
+                let beta = market.beta_of(order.object_id.as_str())?;
+                Some((fill.order_id.as_str().to_string(), beta))
+            })
+            .collect();
+
         // Attribute what the fills cost. The decomposition must close, and a
         // failure here is loud rather than absorbed: unexplained P&L is
         // exactly where whatever nobody understood is hiding.
@@ -9481,8 +9509,32 @@ impl Platform {
                 income: Decimal::ZERO,
                 financing: Decimal::ZERO,
                 realised_pnl: Decimal::ZERO,
-                factor_returns: BTreeMap::new(),
-                factor_betas: BTreeMap::new(),
+                // Both maps carry the market factor where the instrument
+                // has a beta, and neither carries it otherwise. They move
+                // together on purpose: a beta with no return to multiply, or a
+                // return with no beta, is a decomposition term nobody can
+                // evaluate.
+                factor_returns: betas_by_order
+                    .get(fill.order_id.as_str())
+                    .and(factor_return)
+                    .map(|value| {
+                        BTreeMap::from([(
+                            qip_risk::market_factor::MARKET_FACTOR.to_string(),
+                            value,
+                        )])
+                    })
+                    .unwrap_or_default(),
+                factor_betas: betas_by_order
+                    .get(fill.order_id.as_str())
+                    .copied()
+                    .filter(|_| factor_return.is_some())
+                    .map(|value| {
+                        BTreeMap::from([(
+                            qip_risk::market_factor::MARKET_FACTOR.to_string(),
+                            value,
+                        )])
+                    })
+                    .unwrap_or_default(),
                 contract_multiplier: Decimal::from_int(1),
             })
             .collect();

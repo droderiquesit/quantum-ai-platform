@@ -24,6 +24,7 @@ pub mod aggregate;
 pub mod factor;
 pub mod hedge;
 pub mod limits;
+pub mod market_factor;
 pub mod metrics;
 
 pub use aggregate::{AggregateFigures, RiskAggregates};
