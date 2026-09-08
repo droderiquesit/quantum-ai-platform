@@ -30,7 +30,7 @@ use qip_optimization_engine::families::{
     StressCorrelation, StressWindow,
 };
 use qip_optimization_engine::horizons::{
-    CapitalPools, FamilyBudget, Horizon, family_horizons, reconcile,
+    CapitalPools, FamilyBudget, Horizon, HorizonRegister, HorizonSource, family_horizons, reconcile,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1399,5 +1399,50 @@ fn the_fixture_population_really_does_decouple_in_calm_and_couple_in_stress() ->
         stressed - calm > 0.5,
         "the understatement must be large enough to change a family boundary: {stressed} vs {calm}"
     );
+    Ok(())
+}
+
+/// A source that places one strategy at two horizons is a broken source, not a
+/// disagreement, and filing it as one hands an operator an argument with no
+/// second side to arbitrate.
+#[test]
+fn one_source_that_claims_two_horizons_is_refused_rather_than_filed_as_a_disagreement() -> Result<()>
+{
+    let strategy = StrategyId::from_string("momentum-v3");
+    let liquidity = HorizonSource::new("liquidity-model")?;
+    let research = HorizonSource::new("research-enrolment")?;
+
+    let mut register = HorizonRegister::new();
+    register.claim(&strategy, liquidity.clone(), Horizon::HoursToDays)?;
+
+    // The premise: a *second* source saying something different is recorded,
+    // not refused. That is the whole point of the register, and without this
+    // assertion the refusal below could be the register refusing everything.
+    register.claim(&strategy, research, Horizon::Years)?;
+    assert_eq!(register.disputes().len(), 1);
+
+    // The same source contradicting itself is refused.
+    let error = register
+        .claim(&strategy, liquidity, Horizon::MicrosecondsToMinutes)
+        .expect_err("a self-contradicting source must be refused");
+    let message = error.to_string();
+    assert!(
+        message.contains("liquidity-model"),
+        "the refusal must name the broken source: {message}"
+    );
+    assert!(
+        message.contains("repair the source"),
+        "the refusal must say to repair the source rather than arbitrate it: {message}"
+    );
+
+    // And nothing was recorded: the register still shows the one genuine
+    // disagreement and only the two horizons that were legitimately claimed.
+    let disputes = register.disputes();
+    assert_eq!(disputes.len(), 1);
+    assert_eq!(
+        disputes[0].claims().keys().copied().collect::<Vec<_>>(),
+        vec![Horizon::HoursToDays, Horizon::Years]
+    );
+    assert_eq!(disputes[0].least_liquid(), Some(Horizon::Years));
     Ok(())
 }

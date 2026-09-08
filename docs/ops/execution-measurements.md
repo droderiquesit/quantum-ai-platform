@@ -10,7 +10,7 @@ makes without a row here, and any edit that drops the caveats in this
 paragraph.
 
 The traceability document
-([`docs/architecture/algorik-blueprint-traceability.md`](../architecture/algorik-blueprint-traceability.md))
+([`../DELIVERY-STATUS.md`](../DELIVERY-STATUS.md))
 scored the execution plane's capabilities as TESTED and none as MEASURED
 until its re-score of 2026-09-05, which cites this document. This document
 is the first set of numbers, and it is important to be exact

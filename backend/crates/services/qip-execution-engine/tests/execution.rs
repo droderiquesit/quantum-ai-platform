@@ -1158,22 +1158,75 @@ fn the_simulator_is_deterministic() -> Result<()> {
 // --- order type selection ---------------------------------------------------
 
 #[test]
-fn a_large_order_is_worked_rather_than_taken() {
+fn a_large_order_is_worked_rather_than_taken() -> Result<()> {
     // A market order in an illiquid name is how a small position becomes a
     // large loss.
-    assert!(matches!(order_type_for(0.005, 30), OrderType::Market));
+    assert!(matches!(order_type_for(0.005, 30)?, OrderType::Market));
     assert!(matches!(
-        order_type_for(0.03, 30),
+        order_type_for(0.03, 30)?,
         OrderType::TimeWeighted { .. }
     ));
     assert!(matches!(
-        order_type_for(0.10, 30),
+        order_type_for(0.10, 30)?,
         OrderType::VolumeWeighted { .. }
     ));
     assert!(matches!(
-        order_type_for(0.40, 30),
+        order_type_for(0.40, 30)?,
         OrderType::Participation { .. }
     ));
     assert!(OrderType::Market.is_unpriced());
     assert!(!OrderType::Limit { price: dec!("100") }.is_unpriced());
+    Ok(())
+}
+
+#[test]
+fn a_participation_that_could_not_be_measured_is_refused_rather_than_taken_at_the_market() {
+    // `participation` is `size / daily_volume`, so it is NaN exactly when the
+    // volume is zero or unknown — the illiquid case the worked types exist
+    // for. This returned `OrderType::Market` for it, because the non-finite
+    // guard shared an arm with `participation <= 0.01`: the one type that
+    // takes whatever price the market gives, chosen for the one input meaning
+    // "nobody could measure this book". Failing open at the seam whose purpose
+    // is failing closed.
+    //
+    // The premise first: a measurable participation in the same low band does
+    // still answer Market, so this test distinguishes the refusal from a
+    // function that refuses everything.
+    assert!(matches!(
+        order_type_for(0.005, 30).expect("a measurable participation is chooseable"),
+        OrderType::Market
+    ));
+
+    for unmeasurable in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let refused = order_type_for(unmeasurable, 30)
+            .expect_err("a non-finite participation names no order type");
+        assert!(
+            refused.message().contains("positive finite share"),
+            "refusal should name what the input failed to be, got: {}",
+            refused.message()
+        );
+    }
+}
+
+#[test]
+fn a_zero_or_negative_participation_is_refused_rather_than_clamped_to_the_market_arm() {
+    // `participation <= 0.01` swallowed zero and every negative number into
+    // the Market arm. A non-positive share of daily volume is a caller that
+    // computed something wrong, and clamping it here is that bug surviving
+    // into a fill rather than being reported to the code that made it.
+    for wrong in [0.0, -0.0, -0.005, -1.0] {
+        let refused = order_type_for(wrong, 30)
+            .expect_err("a non-positive participation names no order type");
+        assert!(
+            refused.message().contains("positive finite share"),
+            "refusal should name what the input failed to be, got: {}",
+            refused.message()
+        );
+    }
+    // The premise: the smallest positive participation is still admitted, so
+    // the boundary refuses nothing it should admit.
+    assert!(matches!(
+        order_type_for(f64::MIN_POSITIVE, 30).expect("a positive participation is chooseable"),
+        OrderType::Market
+    ));
 }

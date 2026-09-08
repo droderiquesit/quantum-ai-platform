@@ -40,6 +40,7 @@ use qip_fastbrain::config::FastBrainConfig;
 use qip_fastbrain::feed::Feed;
 use qip_fastbrain::{health, node, roster};
 use qip_kernel::{Platform, PlatformConfig};
+use qip_market_ingestion::connector::journal::StreamJournal;
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
 use qip_risk_engine::autonomy::AutonomyLevel;
@@ -132,6 +133,41 @@ fn run() -> Result<()> {
         started,
     )
     .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    // The stream's durable record, opened before the health listener is served
+    // and on the same storage the event log archives to. Until this call every
+    // restart began with an empty dedup window, so a table-shaped source — the
+    // ECB reference rates serve their whole table on every poll — republished
+    // all of it as new observations at each rollout, and the session and span
+    // figures that turn "streamed for a week" into a checkable claim reset to
+    // zero at every start-up.
+    //
+    // `StreamJournal::open` writes the ledger as it opens, so a store this
+    // process cannot write to stops it here rather than at the first poll,
+    // after the node has reported healthy. That ordering is the point: a
+    // process that reported ready and then discovered its journal had nowhere
+    // to go was streaming with no record for however long that took.
+    //
+    // A zero resume is normal and is logged, not refused: it is a first
+    // session, or a checkpoint that genuinely carried nothing. What it means
+    // for the next poll — everything the source re-serves is republished — is
+    // said out loud, because that is the one case an operator would otherwise
+    // read as the source having changed.
+    let journal_banner = feed
+        .journal_to(config.storage.key_value(StreamJournal::NAMESPACE)?)
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?
+        .map(|resumed| match resumed {
+            0 => format!(
+                "  stream journal:   on {}; nothing resumed, so this is a first session (or the \
+                 last checkpoint carried nothing) and the next poll republishes whatever the \
+                 source re-serves",
+                StreamJournal::NAMESPACE
+            ),
+            resumed => format!(
+                "  stream journal:   on {}; {resumed} fingerprint(s) resumed from the previous \
+                 session, so a redelivery of them is absorbed rather than republished",
+                StreamJournal::NAMESPACE
+            ),
+        });
     // A tape must end before the roster's authorisation does. See
     // `Feed::refuse_tape_beyond` for the run that showed why.
     if let Some(interval) = roster::shortest_review_interval(started) {
@@ -249,6 +285,15 @@ fn run() -> Result<()> {
     // disagreement between them visible instead of asserting there is none.
     for line in qip_fastbrain::feed::source_standings(platform.registrations())? {
         println!("{line}");
+    }
+    if let Some(line) = &journal_banner {
+        println!("{line}");
+    }
+    // The standing gate, named so an operator can see it is consulted rather
+    // than take the claim on trust: its check count rises once per poll and can
+    // be held against the ledger's.
+    if let Some(standing) = feed.licensing_standing() {
+        println!("  licensing:        {standing}");
     }
     println!(
         "  universe:         {}; sector and country buckets are fed from it. Note ADR 0027: under the \

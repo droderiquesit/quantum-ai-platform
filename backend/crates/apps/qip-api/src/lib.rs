@@ -39,6 +39,7 @@
 pub mod auth;
 pub mod cells;
 pub mod console;
+pub mod fabric;
 pub mod feed;
 pub mod http;
 pub mod json;

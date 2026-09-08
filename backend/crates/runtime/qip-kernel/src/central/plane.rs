@@ -22,6 +22,7 @@
 
 use super::dna::StrategyDna;
 use super::factory::StrategyFactory;
+use super::horizon::{HorizonArming, HorizonPolicy, PoolReconciler, UnarmedHorizons};
 use super::learning::CellOutcome;
 use super::realised::{RealisedCalendar, RealisedSeries};
 use super::regions::{GrantManifests, RegionMembership, RegionShares, partition};
@@ -48,6 +49,7 @@ use qip_contracts::{CapitalEnvelope, Utilisation};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
 use qip_learning_engine::attribution::{Attribution, Attributor, PositionPeriod};
+use qip_lifecycle::horizon::HorizonAssurance;
 use qip_mesh::delta::DeltaOrder;
 use qip_observability::metrics::{Metrics, labels, names};
 use qip_risk_engine::autonomy::KillSwitch;
@@ -125,6 +127,20 @@ pub struct CentralConfig {
     /// and reads as the fail-closed empty whitelist.
     #[serde(default)]
     pub arbitrage: Option<ArbitragePolicy>,
+    /// How [`Self::total_budget`] divides across the four blueprint §23.4
+    /// horizons, and which horizon each strategy sits at — or `None` for no
+    /// pool reconciliation at all.
+    ///
+    /// Stated by an operator for the same reason [`Self::arbitrage`] is: the
+    /// centre measures neither a capital split nor a strategy's holding
+    /// horizon, and inferring either would be asserting an attribute nobody
+    /// measured. `#[serde(default)]` so a configuration written before this
+    /// field existed still reads, and reads as no reconciliation — which is
+    /// what every deployment does today, and is why
+    /// [`CentralPlane::arm_horizons`] says so on the cycle rather than
+    /// silently arming nothing.
+    #[serde(default)]
+    pub horizons: Option<HorizonPolicy>,
 }
 
 impl Default for CentralConfig {
@@ -148,6 +164,7 @@ impl Default for CentralConfig {
             minimum_cells_for_crowding: 3,
             response_floor: Severity::Observation,
             arbitrage: None,
+            horizons: None,
         }
     }
 }
@@ -374,6 +391,11 @@ pub struct CellIngestion {
 pub struct Settlement {
     /// Contributor shares booked, across every fill settled.
     pub fills_attributed: usize,
+    /// Per strategy, the execution cost of this settlement's fills, as a
+    /// running quantity-weighted sum. Read through
+    /// [`Settlement::cost_bps_by_strategy`], which is where the meaning is
+    /// stated; the accumulator is public only because the struct is.
+    pub cost: BTreeMap<String, CostAccrual>,
     /// Venue fills booked to the strategy books and charged to the aggregate.
     pub fills_settled: usize,
     /// Orders registered as sent — accepted by the venue, not filled — and
@@ -416,9 +438,72 @@ pub struct AbsorbedFill {
     ///
     /// [`RiskAggregates::apply_fill`]: qip_risk::aggregate::RiskAggregates::apply_fill
     pub signed_notional: Decimal,
+    /// Who executed it, as the cell's own [`FillRecord`] named the venue.
+    ///
+    /// Carried so `Platform::charge_cell_fills` can charge the fill to the
+    /// same [`qip_risk::limits::COUNTERPARTY_AXIS`] bucket a desk fill is
+    /// charged to. It was absent, and the consequence was not that the cap
+    /// was approximate: a book that traded through cells as well as the desk
+    /// held counterparty exposure the running balance did not carry, so
+    /// `LimitKind::MaxCounterpartyExposure` read low on it and admitted
+    /// orders it existed to refuse. A limit that reads low is a defect, not
+    /// a conservative reading.
+    ///
+    /// Required rather than `#[serde(default)]`: a `Settlement` is an
+    /// in-process return value and nothing replays one, and an empty default
+    /// would file a real fill under a counterparty named by nobody — which
+    /// is the same failure wearing a name.
+    pub venue: String,
+}
+
+/// One strategy's execution cost over a settlement's fills, accumulated so a
+/// mean can be taken over the quantity that produced it.
+///
+/// Two fields rather than a running mean because the fills of one settlement
+/// differ in size by orders of magnitude, and a mean of means would weight a
+/// one-lot fill the same as the block beside it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CostAccrual {
+    /// Sum of `cost_bps * quantity` over the fills booked to the strategy.
+    pub weighted: f64,
+    /// Sum of `quantity` over those same fills, the divisor of the mean.
+    pub quantity: f64,
 }
 
 impl Settlement {
+    /// Per strategy, the quantity-weighted mean execution cost of this
+    /// settlement's fills, in basis points, signed so that paying away is
+    /// positive.
+    ///
+    /// **What this measures, precisely.** Each fill is costed against the
+    /// price the platform *sent the order at* — under `PricingPolicy::RestAtMid`
+    /// the mid the cell rested at — and not against a decision-time arrival
+    /// mid, which the wire does not carry. So it is slippage against the
+    /// platform's own asking price, not full implementation shortfall, and a
+    /// marketable order sent through the spread shows the part of its cost
+    /// that landed beyond its own limit rather than all of it. That is the
+    /// honest bound of what two prices on the wire can support.
+    ///
+    /// **Why it exists.** `KillCondition::CostOverrun` compares this against
+    /// a modelled figure plus a tolerance. Until this was measured the centre
+    /// supplied the literal `0.0`, so the comparison was `0.0 > modelled +
+    /// tolerance` — false for every non-negative modelled cost a person would
+    /// write. The condition shipped in kill-condition sets, read as
+    /// protection, and could not fire. This is the same defect
+    /// `MaxExpectedShortfall` had, and the rule it broke is the one that says
+    /// a limit that cannot fire is a defect rather than a spare part.
+    ///
+    /// A strategy with no filled quantity is absent rather than zero: zero is
+    /// a cost that was measured and found to be nil, and a strategy that
+    /// filled nothing has no cost to report.
+    pub fn cost_bps_by_strategy(&self) -> BTreeMap<String, f64> {
+        self.cost
+            .iter()
+            .filter(|(_, accrual)| accrual.quantity > 0.0)
+            .map(|(strategy, accrual)| (strategy.clone(), accrual.weighted / accrual.quantity))
+            .collect()
+    }
+
     /// The strategy-level P&L the settlement realised, by strategy id.
     pub fn by_strategy(&self) -> BTreeMap<String, Decimal> {
         self.attribution
@@ -637,6 +722,15 @@ impl CentralPlane {
         // the reason in a delta stream rather than at start-up.
         if let Some(policy) = &config.arbitrage {
             policy.validate()?;
+        }
+        // And the §23.4 posture, for the same reason and one more: a split
+        // that does not sum to the budget reaches the lifecycle gate as a
+        // refusal of every promotion to a capital-holding rung, which is
+        // indistinguishable months later from a book that is genuinely
+        // over-committed. A configuration that cannot be reconciled against is
+        // one this plane will not start with.
+        if let Some(policy) = &config.horizons {
+            policy.validate(config.total_budget)?;
         }
         let key = SigningKey::from_secret(CENTRAL_KEY_ID, signing_secret)?;
         let limits = AllocationLimits::new(
@@ -865,7 +959,14 @@ impl CentralPlane {
     /// holds for the pair at this instant, which is the grant the fills were
     /// made under.
     fn record_realised(&mut self, cell: &str, settlement: &Settlement, at: Timestamp) {
+        let cost = settlement.cost_bps_by_strategy();
         for (strategy, pnl) in settlement.by_strategy() {
+            // Taken before `strategy` is consumed into a `StrategyId`, and by
+            // the same key the P&L was: what the monitor reads as this
+            // strategy's cost and what it reads as its P&L come off one
+            // settlement under one name.
+            let accrual = settlement.cost.get(&strategy).copied().unwrap_or_default();
+            let mean = cost.get(&strategy).copied();
             let strategy = StrategyId::new(strategy);
             if self.factory.baseline(&strategy).is_none() {
                 continue;
@@ -873,10 +974,19 @@ impl CentralPlane {
             let capital = self
                 .envelope(cell, &strategy)
                 .map(CapitalEnvelope::gross_limit);
-            self.realised
+            let series = self
+                .realised
                 .entry((cell.to_string(), strategy))
-                .or_default()
-                .absorb(at, pnl, capital);
+                .or_default();
+            series.absorb(at, pnl, capital);
+            // Only where quantity actually filled. A settlement that booked a
+            // strategy's P&L without filling anything for it — an internal
+            // cross moves a lot at the mid and sends no order — has no cost
+            // to add, and adding a zero would pull the mean toward nil on
+            // exactly the days the strategy did not pay a spread.
+            if mean.is_some() {
+                series.absorb_cost(at, accrual.weighted, accrual.quantity);
+            }
         }
     }
 
@@ -1031,6 +1141,170 @@ impl CentralPlane {
             .filter_map(|strategy| self.proposals.get(strategy).cloned())
             .collect();
         self.allocator.allocate(&proposals, drawdown, now)
+    }
+
+    /// Arm the blueprint §23.4 pool gate over this plane's lifecycle ledger,
+    /// on the figures as they stand.
+    ///
+    /// From here on every promotion to a rung that holds capital is reconciled
+    /// against the four pools, and one whose bucket would push a pool past its
+    /// total is refused by [`qip_lifecycle::horizon::HorizonAssurance`] rather
+    /// than trimmed. `Ok(None)` where the desk has stated no
+    /// [`HorizonPolicy`]: with no split and no claims there is nothing to
+    /// reconcile against, and arming a gate that would refuse every promotion
+    /// for want of a claim is the `MaxExpectedShortfall` shape — a control that
+    /// reads as protection and is not.
+    ///
+    /// **Three of the four inputs are computed rather than stated.** The pools'
+    /// total is the configured risk budget; the split and the claims are the
+    /// desk's statement; the liability is the commitment book's at `now`; and
+    /// the budgets are this allocator's own sizing of the whole proposal book
+    /// at `drawdown`. That last is the one that matters: the figure the gate
+    /// reconciles is the figure the platform would actually deploy, not a
+    /// number typed beside the split. A proposal the allocator sized at nothing
+    /// carries **no** budget rather than a budget of zero, so promoting it is
+    /// refused for want of a stated claim — a claim of zero and an unknown
+    /// claim are not the same thing, and the second lets a strategy hold
+    /// capital no pool was charged for.
+    ///
+    /// The assurance is attached **before** the standings are computed, so a
+    /// register the platform's own sources are still arguing over arms the gate
+    /// (which refuses on the dispute) instead of leaving it unarmed. Failing to
+    /// describe a disagreement must not be the reason a promotion goes
+    /// unchecked.
+    ///
+    /// An error before the attachment — an unreconcilable split, an allocator
+    /// that cannot size the book — leaves whatever the previous cycle armed in
+    /// place, and leaves nothing armed if no cycle has succeeded yet. The
+    /// caller records it as a problem on the cycle rather than swallowing it.
+    ///
+    /// # The drawdown moves the charges and not the pools
+    ///
+    /// The two sides of the §23.4 comparison scale differently and that is
+    /// deliberate. The pools are [`CentralConfig::total_budget`] split four
+    /// ways, unscaled; every budget charged against them has already been
+    /// multiplied by `DrawdownSchedule::multiplier_at(drawdown)` inside
+    /// [`qip_capital::CapitalAllocator::allocate`]. An independent review
+    /// queried the asymmetry, so the argument is written down here rather than
+    /// left to be re-derived by whoever asks next:
+    ///
+    /// * The four pools state capital the desk **holds** and how liquid it is.
+    ///   The drawdown schedule is an appetite response, not a balance sheet —
+    ///   the shipped one takes the multiplier to 0.5 at a ten per cent
+    ///   drawdown, and a book that has lost a tenth does not hold half its
+    ///   capital. Scaling the pools by it would put a figure nobody measured on
+    ///   the side of the comparison that is supposed to be the measurement.
+    /// * The years pool is charged the unfunded commitment liability, which is
+    ///   not scaled and must not be: a capital call does not shrink because the
+    ///   platform chose to deploy less this cycle. A scaled reserved pool
+    ///   against an unscaled liability would breach the years bucket at every
+    ///   drawdown, refusing promotions against reserved capital the desk still
+    ///   has.
+    /// * At the schedule's deepest step the multiplier is zero, so a scaled
+    ///   split would be four zero pools, which `CapitalPools::new` refuses by
+    ///   name. The gate would fail to arm and [`UnarmedHorizons`] would refuse
+    ///   every promotion — a control firing on the claim that the desk holds
+    ///   nothing, which is false, and at the one drawdown where the allocator
+    ///   has already sized everything at zero and nothing can breach.
+    ///
+    /// So fewer promotions breach while the book is falling, because the
+    /// platform is committing less capital against unchanged pools. That is the
+    /// appetite control working at the numerator, where it fires once; §23.4 is
+    /// a liquidity-mismatch control and asks a different question. The honest
+    /// limit is that a promotion admitted during a drawdown is not revisited
+    /// when the multiplier returns to one: the next arming reports the bucket
+    /// breached and refuses the *next* promotion, which is what a
+    /// reconciliation does and a position limit does not.
+    /// `a_drawdown_shrinks_the_charges_and_leaves_the_pools_at_the_capital_the_desk_holds`
+    /// and
+    /// `a_drawdown_deep_enough_to_stop_all_deployment_still_charges_the_commitment_liability`
+    /// in `qip-kernel/tests/central.rs` pin both halves.
+    pub fn arm_horizons(
+        &mut self,
+        unfunded_commitments: Decimal,
+        drawdown: f64,
+        now: Timestamp,
+    ) -> Result<Option<HorizonArming>> {
+        let Some(policy) = self.config.horizons.clone() else {
+            return Ok(None);
+        };
+
+        // Every `?` from here on would otherwise leave the PREVIOUS cycle's
+        // assurance attached, so the gate would keep measuring promotions
+        // against pool bounds computed from a liability it can no longer read.
+        // `arm_or_refuse` attaches `UnarmedHorizons` on the way out of any
+        // failure, so the gate closes rather than going stale. See
+        // `super::horizon::UnarmedHorizons` for why this is not a detach.
+        let armed = self.arm_or_refuse(&policy, unfunded_commitments, drawdown, now);
+        if let Err(error) = &armed {
+            self.factory
+                .attach_horizons(HorizonAssurance::new(Arc::new(UnarmedHorizons::new(
+                    error.message(),
+                )) as Arc<_>));
+        }
+        armed
+    }
+
+    /// The arming itself. Every failure here is turned into a closed gate by
+    /// [`Self::arm_horizons`], which is the only caller.
+    fn arm_or_refuse(
+        &mut self,
+        policy: &HorizonPolicy,
+        unfunded_commitments: Decimal,
+        drawdown: f64,
+        now: Timestamp,
+    ) -> Result<Option<HorizonArming>> {
+        // `total_budget` unscaled, on purpose: the pools are capital the desk
+        // holds, and `drawdown` does not reach them. See the "drawdown moves
+        // the charges and not the pools" section on `arm_horizons` — this line
+        // is the denominator that section is about.
+        let mut reconciler =
+            PoolReconciler::from_policy(policy, self.config.total_budget, unfunded_commitments)?;
+
+        // Every proposal, not only the strategies already holding capital: the
+        // candidate at a promotion is by definition not yet at a capital rung,
+        // and a reconciler that knew nothing about it would refuse it for want
+        // of a budget every time.
+        //
+        // `drawdown` is a statistic and stays one across this call: it selects
+        // a step of the `DrawdownSchedule`, and the multiplier that step holds
+        // is already `Decimal`, so the only multiplication is money by money.
+        // The statistic never crosses into a currency figure here or inside
+        // `allocate` — which is why the numerator shrinks exactly rather than
+        // to whatever an `f64` product rounded to.
+        let proposals: Vec<StrategyProposal> = self.proposals.values().cloned().collect();
+        let plan = self.allocator.allocate(&proposals, drawdown, now)?;
+        let mut budgeted = Decimal::ZERO;
+        for allocation in &plan.allocations {
+            reconciler.budget(&allocation.strategy, allocation.notional)?;
+            budgeted = budgeted.checked_add(allocation.notional).ok_or_else(|| {
+                Error::numeric(
+                    "the allocator's own budgets overflow when summed; check the units of the \
+                     central plane's risk budget",
+                )
+            })?;
+        }
+
+        let armed = Arc::new(reconciler);
+        self.factory
+            .attach_horizons(HorizonAssurance::new(Arc::clone(&armed) as Arc<_>));
+
+        let (standings, unsettled) = match armed.standing() {
+            Ok(standings) => (standings, None),
+            Err(refusal) => (Vec::new(), Some(refusal.message().to_string())),
+        };
+        Ok(Some(HorizonArming {
+            strategies_budgeted: plan.allocations.len(),
+            budgeted,
+            liability: unfunded_commitments,
+            standings,
+            unsettled,
+            unbudgeted: plan
+                .refusals
+                .iter()
+                .map(|(strategy, reason)| format!("{strategy}: {reason}"))
+                .collect(),
+        }))
     }
 
     /// Partition a plan into disjoint per-cell shares of each region's grant
@@ -1422,7 +1696,7 @@ impl CentralPlane {
                 continue;
             }
             let sent = self.sent.entry(report.cell.clone()).or_default();
-            if let Err(reason) = sent.register(&order.order_id, order.quantity) {
+            if let Err(reason) = sent.register(&order.order_id, order.quantity, order.price) {
                 self.refuse_settlement(&mut settlement, "order", reason);
                 continue;
             }
@@ -1445,20 +1719,23 @@ impl CentralPlane {
                 continue;
             }
             let sent = self.sent.entry(report.cell.clone()).or_default();
-            if let Err(detail) = sent.fill(&fill.order_id, fill.quantity) {
-                // Not refused: refused is for a record the books cannot take
-                // without guessing. This is a record the platform has no order
-                // behind, and the response to that is the halt, not a line in
-                // a list of refusals nobody pages on.
-                settlement.breaks.push(ReconciliationBreak {
-                    instrument: fill.object_id.as_str().to_string(),
-                    cell_quantity: Decimal::ZERO,
-                    external_quantity: fill.quantity,
-                    detail,
-                    origin: BreakOrigin::UnsentFill,
-                });
-                continue;
-            }
+            let reference = match sent.fill(&fill.order_id, fill.quantity) {
+                Ok(reference) => reference,
+                Err(detail) => {
+                    // Not refused: refused is for a record the books cannot take
+                    // without guessing. This is a record the platform has no order
+                    // behind, and the response to that is the halt, not a line in
+                    // a list of refusals nobody pages on.
+                    settlement.breaks.push(ReconciliationBreak {
+                        instrument: fill.object_id.as_str().to_string(),
+                        cell_quantity: Decimal::ZERO,
+                        external_quantity: fill.quantity,
+                        detail,
+                        origin: BreakOrigin::UnsentFill,
+                    });
+                    continue;
+                }
+            };
             let shared: Decimal = fill.shares.iter().map(|share| share.quantity).sum();
             if fill.shares.is_empty()
                 || fill
@@ -1483,6 +1760,33 @@ impl CentralPlane {
                 continue;
             }
             let direction = order_direction(fill.side);
+            // Money is `Decimal` up to this line. Cost in basis points is a
+            // statistic the kill condition compares against a modelled figure
+            // in `f64`, and this is where the two prices cross into that
+            // arithmetic. Signed so that paying away is positive: a buy
+            // filled above the price the platform sent, or a sell filled
+            // below it, costs; the other direction is price improvement and
+            // is recorded as the negative it is rather than floored at zero,
+            // because a mean that cannot go below zero would read every
+            // improvement as break-even and bias the series toward the
+            // overrun this measurement exists to catch.
+            //
+            // A non-positive reference is skipped rather than divided by. The
+            // register only ever holds an order the settle path admitted, and
+            // that path already refuses a non-positive quantity, but the
+            // division is guarded where it happens rather than at a distance.
+            if reference.is_positive() {
+                let slippage = direction * (fill.price - reference) / reference;
+                let cost_bps = slippage.to_f64() * 10_000.0;
+                for share in &fill.shares {
+                    let entry = settlement
+                        .cost
+                        .entry(share.strategy.as_str().to_string())
+                        .or_default();
+                    entry.weighted += cost_bps * share.quantity.to_f64();
+                    entry.quantity += share.quantity.to_f64();
+                }
+            }
             for share in &fill.shares {
                 let (period, gained) = self.book(
                     &report.cell,
@@ -1505,6 +1809,11 @@ impl CentralPlane {
             settlement.absorbed.push(AbsorbedFill {
                 object_id: fill.object_id.as_str().to_string(),
                 signed_notional: direction * fill.quantity * fill.price,
+                // The venue the cell reported the fill from, taken here at the
+                // line that counts the fill settled rather than re-read from
+                // the report later: what the aggregate is charged and what the
+                // settlement says it absorbed stay one list.
+                venue: fill.venue.as_str().to_string(),
             });
         }
 
@@ -1618,6 +1927,16 @@ impl CentralPlane {
             // The wire carries no costs for a cell's order, and none are
             // invented: a commission the centre guessed would be exactly the
             // unexplained line the exact decomposition exists to refuse.
+            //
+            // This is not in tension with the execution cost
+            // `Settlement::cost_bps_by_strategy` measures, and the two must
+            // not be confused. That one is a *statistic* — how far a fill
+            // landed from the price the platform sent, which two prices on
+            // the wire do support — read by a kill condition. These are
+            // *money*, and they have to sum to the P&L exactly. A spread cost
+            // derived from the same difference would look plausible here and
+            // would be an unattributed figure in a decomposition that admits
+            // none, so it stays zero until a venue reports the money.
             commission: Decimal::ZERO,
             spread_cost: Decimal::ZERO,
             impact_cost: Decimal::ZERO,
@@ -1774,6 +2093,16 @@ const MAX_SENT_ORDERS_PER_CELL: usize = 4_096;
 struct SentOrder {
     quantity: Decimal,
     filled: Decimal,
+    /// The price the cell sent the order at, kept as the reference every
+    /// fill on it is costed against.
+    ///
+    /// Kept here rather than re-read from the report because a fill arrives
+    /// in a later interval than its order as often as not, and by then the
+    /// report that carried the send is gone. It is the price the platform
+    /// *asked for* — under `PricingPolicy::RestAtMid` the mid the cell rested
+    /// at — and not a decision-time arrival mid the wire does not carry. What
+    /// that makes measurable is stated on `Settlement::cost_bps_by_strategy`.
+    price: Decimal,
 }
 
 /// The orders one cell has reported sent, keyed by order id, bounded.
@@ -1793,7 +2122,12 @@ impl SentOrders {
     /// The same id reported sent twice is refused rather than summed: an
     /// order id is the key a fill is matched under, and two sends behind one
     /// key would make the register's quantity a number neither send said.
-    fn register(&mut self, order_id: &str, quantity: Decimal) -> std::result::Result<(), String> {
+    fn register(
+        &mut self,
+        order_id: &str,
+        quantity: Decimal,
+        price: Decimal,
+    ) -> std::result::Result<(), String> {
         if self.by_id.contains_key(order_id) {
             return Err(format!(
                 "order {order_id} was reported sent twice; the first send is kept and this one \
@@ -1805,6 +2139,7 @@ impl SentOrders {
             SentOrder {
                 quantity,
                 filled: Decimal::ZERO,
+                price,
             },
         );
         self.arrival.push_back(order_id.to_string());
@@ -1822,7 +2157,7 @@ impl SentOrders {
     /// An order whose fills now sum to its quantity leaves the register, so
     /// a fill after that is an unsent fill like any other — the venue
     /// reporting more than the platform asked for.
-    fn fill(&mut self, order_id: &str, quantity: Decimal) -> std::result::Result<(), String> {
+    fn fill(&mut self, order_id: &str, quantity: Decimal) -> std::result::Result<Decimal, String> {
         let Some(order) = self.by_id.get_mut(order_id) else {
             return Err(format!(
                 "the cell reports a fill of {quantity} on order {order_id} and the centre never \
@@ -1838,10 +2173,15 @@ impl SentOrders {
             ));
         }
         order.filled += quantity;
+        let reference = order.price;
         if order.filled >= order.quantity {
             self.by_id.remove(order_id);
         }
-        Ok(())
+        // Returned rather than left for the caller to look up, because the
+        // order is gone from the register on the fill that completes it and a
+        // second lookup would find nothing exactly on the fills that matter
+        // most — the ones that closed an order out.
+        Ok(reference)
     }
 }
 

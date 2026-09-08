@@ -311,7 +311,7 @@ jobs:
           # "reviewed" is a property of the file's history rather than of the
           # bytes in front of this step. A `project_id` carrying a quote and a
           # semicolon would reach the shells below as source text, because
-          # `${{ steps.identity.outputs.project }}` is substituted into four of
+          # `steps.identity.outputs.project` is substituted into four of
           # them before bash parses a byte. A project id and a region are
           # lowercase letters, digits and hyphens; anything else is not a
           # malformed name, it is somebody else's command. Emptiness is refused
@@ -585,7 +585,7 @@ jobs:
           # "reviewed" is a property of the file's history rather than of the
           # bytes in front of this step. A `project_id` carrying a quote and a
           # semicolon would reach the shells below as source text, because
-          # `${{ steps.identity.outputs.project }}` is substituted into four of
+          # `steps.identity.outputs.project` is substituted into four of
           # them before bash parses a byte. A project id and a region are
           # lowercase letters, digits and hyphens; anything else is not a
           # malformed name, it is somebody else's command. Emptiness is refused

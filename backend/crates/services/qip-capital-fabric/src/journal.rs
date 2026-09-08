@@ -56,8 +56,8 @@ use crate::destination::{
     Approver, DestinationKey, DestinationRegistry, DestinationStatus, SignatureRecord,
 };
 use crate::gate::{
-    Approved, KillSwitchState, SourceBalances, TransferGate, TransferHistory, TransferIntent,
-    VelocityState, Vetoed,
+    Approved, CorridorFunding, KillSwitchState, SourceBalances, TransferGate, TransferHistory,
+    TransferIntent, VelocityState, Vetoed,
 };
 use crate::location::CapitalLocation;
 use crate::wallet::{
@@ -341,16 +341,25 @@ pub enum WalletOutcome {
 /// breaker and the kill switch — is carried, because the fabric holds none of
 /// it and the log is the only place it is written down.
 ///
-/// `authority` is carried rather than validated on the way in: the replay
-/// re-runs the gate over it, so a record naming three attestations that are
-/// not independent is refused by the control rather than trusted because its
-/// chain verified.
+/// `authority` and `funding` are carried rather than validated on the way in:
+/// the replay re-runs the gate over them, so a record naming three
+/// attestations that are not independent, or a funding ruling that suspends a
+/// corridor and gives it a ceiling in the same breath, is refused by the
+/// control rather than trusted because its chain verified.
+///
+/// `funding` is the Intelligence layer's ruling as it stood when the intent
+/// was assessed, and it is written down rather than looked up on replay for
+/// the reason the whole record exists: the rungs the corridor's strategies
+/// stand on today are not the ones they stood on then, and a replay that
+/// re-derived the ruling would re-decide the transfer under a policy that did
+/// not exist at the time.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateCommand {
     pub intent: TransferIntent,
     pub corridor: CorridorId,
     pub custody: CustodyPolicy,
     pub authority: TransferAuthority,
+    pub funding: CorridorFunding,
     pub history: TransferHistory,
     pub balances: SourceBalances,
     pub velocity: VelocityState,
@@ -453,7 +462,44 @@ impl EventBody for FabricRecord {
     /// refuses the append instead; a fabric decision that could be dropped
     /// from the working set would be a decision nobody could replay.
     const TOPIC: Topic = Topic::ComplianceEvaluated;
-    const SCHEMA_VERSION: u32 = 1;
+    /// Three since ADR 0051 bound §37.4's other two enforcement points to what
+    /// they agreed to.
+    ///
+    /// Each bump names a fact an older record does not carry, and the reading
+    /// a missing fact must never be given:
+    ///
+    /// * **Version 1** has no `funding` field on a [`GateCommand`]. Assessing
+    ///   it as though the corridor had been permitted is that reading.
+    /// * **Version 2** has attestation references whose meaning has changed
+    ///   under it. A version 2 `transfer_gate` reference is a filing note and
+    ///   a version 2 `custody_policy` reference is a hand-written version
+    ///   string; neither is checked against anything, because nothing checked
+    ///   them when it was written. Replaying one under this build re-runs the
+    ///   control, and the control now asks a question the record was never
+    ///   made to answer: the reference would be compared against an
+    ///   [`crate::assessment::AssessmentId`] and a
+    ///   [`crate::custody::PolicyFingerprint`] and would not match. The record
+    ///   would be refused — but refused as a *veto the control produced*,
+    ///   which reads in the log as a movement the gate declined rather than as
+    ///   a record this build cannot judge. Those are different findings, and
+    ///   an operator acting on the first would go looking for an attestor who
+    ///   disagreed. Refusing by version says the true thing.
+    ///
+    /// Nothing is deployed and no sealed version 2 record exists, so there is
+    /// nothing to migrate; see ADR 0051.
+    ///
+    /// The refusal is [`crate::replay::replay`]'s own, by version, and
+    /// deliberately not left to serde. `AnyEvent::decode` guards only against
+    /// a version *newer* than this constant, so what refused a version 1
+    /// record before that check was the absence of `#[serde(default)]` on
+    /// `funding` and of a `Default` for [`CorridorFunding`] — an outcome that
+    /// held for a reason nobody had written down and that adding either line
+    /// would have reversed in silence. A version 2 record has no such
+    /// accident to lean on at all: every field still deserialises, and only
+    /// the explicit check refuses it. Do not remove it, and do not add either
+    /// of those two lines, without reading
+    /// `a_fabric_record_written_under_the_old_schema_is_refused_by_name`.
+    const SCHEMA_VERSION: u32 = 3;
 }
 
 /// Everything the fabric's controls have decided, rebuilt from records.
@@ -673,6 +719,7 @@ impl FabricState {
             &self.destinations,
             &command.custody,
             &command.authority,
+            &command.funding,
             &command.history,
             &command.balances,
             command.velocity,

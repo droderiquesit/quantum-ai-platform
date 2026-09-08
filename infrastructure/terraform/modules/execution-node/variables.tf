@@ -1,5 +1,21 @@
 variable "project_id" {
+  description = <<-EOT
+    The project every resource here is created in, and the first argument the
+    startup script hands `qip-fetch-secret`.
+  EOT
+
   type = string
+
+  validation {
+    # It reaches a root shell: `qip-fetch-secret "${project_id}" …` in the
+    # startup script. The double quotes there are the *shell's*, and a
+    # double-quoted word still expands `$(…)` and a backtick, so quoting is not
+    # the defence — the shape of the value is. Google's own project-id rule is
+    # 6 to 30 characters, starting with a letter and not ending in a hyphen,
+    # which contains no metacharacter at all.
+    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.project_id))
+    error_message = "A project id is 6-30 characters, lower case, starts with a letter, ends with a letter or digit, and contains only letters, digits and hyphens. It is passed to a command running as root in the node's startup script, so a value carrying a shell metacharacter is a command, not an identifier."
+  }
 }
 
 variable "environment" {
@@ -18,6 +34,13 @@ variable "node_id" {
 
   type = string
 
+  # Anchored at both ends, and that is load-bearing beyond naming. The id is
+  # interpolated four times into text that becomes root-owned configuration:
+  # `QIP_CELL_ID=` in the node.env heredoc, `cell:` in the Ops Agent's YAML,
+  # `Description=` in the systemd unit, and the resource names in `locals`.
+  # Terraform's `regex` is RE2 with the multi-line flag off, so `$` matches end
+  # of text and not end of line — which is what makes this refuse a value
+  # carrying a newline rather than merely one whose first line looks right.
   validation {
     condition     = can(regex("^[a-z][a-z0-9-]{1,26}[a-z0-9]$", var.node_id))
     error_message = "A node id is lower case, starts with a letter and contains only letters, digits and hyphens."
@@ -25,8 +48,31 @@ variable "node_id" {
 }
 
 variable "region" {
-  description = "The region the node runs in. Chosen for its distance to the venues, not for convenience."
-  type        = string
+  description = <<-EOT
+    The region the node runs in. Chosen for its distance to the venues, not for
+    convenience.
+  EOT
+
+  type = string
+
+  validation {
+    # This is interpolated twice into text that becomes root-owned
+    # configuration on the node: `QIP_CELL_REGION=${region}` inside the
+    # unquoted heredoc that writes node.env, and `region: ${region}` inside the
+    # Ops Agent's YAML label block. `templatefile` escapes nothing, so a
+    # newline here appends a line to a systemd EnvironmentFile that no reviewer
+    # read — verified against the committed template on 2026-09-06 by rendering
+    # it with region = "us-east4\nQIP_AUTONOMY_CEILING=autonomous_live", which
+    # produced exactly that key in node.env. The composition roots would still
+    # refuse the value, but a boundary that relies on the last layer because
+    # the first three were bypassed is a boundary with one layer.
+    #
+    # A GCP region is `<geography>-<direction><digit>` and nothing else, so the
+    # shape is stated rather than a character class: `us-east4`,
+    # `europe-west1`, `northamerica-northeast1`.
+    condition     = can(regex("^[a-z]+-[a-z]+[0-9]$", var.region))
+    error_message = "The region must be a Google Cloud region such as us-east4 or europe-west1 — lower-case letters, one hyphen, letters, one digit. The value is written verbatim into the node's systemd EnvironmentFile and into the Ops Agent's YAML, so anything else is an injection into a file that runs as root at boot."
+  }
 }
 
 variable "zone" {
@@ -236,6 +282,21 @@ variable "venues" {
     ])
     error_message = "A venue port must be a port."
   }
+
+  # The *keys* reach the node's init. `local.venue_ids` joins them with commas
+  # and the template writes `QIP_VENUES=${venue_ids}` into an unquoted heredoc,
+  # so a key carrying a newline writes a second environment entry into the
+  # systemd EnvironmentFile and a key carrying `$(…)` runs as root at boot.
+  # Nothing checked the keys until now: only `cidr` and `port` were, and the
+  # key is the half that leaves Terraform's own type system. A comma is refused
+  # too, because a key containing one splits into two venue ids the binary
+  # believes were configured and this map never named.
+  validation {
+    condition = alltrue([
+      for id in keys(var.venues) : can(regex("^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$", id))
+    ])
+    error_message = "A venue id is 2-32 characters of lower-case letters, digits and hyphens, starting and ending with a letter or digit. The ids are joined with commas into QIP_VENUES by an unquoted heredoc that writes the node's systemd EnvironmentFile, so a newline, a comma or a shell metacharacter in one is an injection into a file read as root."
+  }
 }
 
 variable "central_plane_ranges" {
@@ -307,6 +368,20 @@ variable "egress_bootstrap" {
     error_message = "The egress bootstrap is not an Envoy configuration. Pass `file(\"../egress/envoy.yaml\")` — the one committed bootstrap — not a path to it."
   }
 
+  # This is the one template value that is *supposed* to be many lines, so no
+  # character class can bound it and the heredoc that carries it is quoted
+  # (`<<'QIP_EGRESS_BOOTSTRAP_EOF'`) precisely so the shell expands nothing
+  # inside. What a quoted heredoc still cannot survive is its own terminator:
+  # a bootstrap containing a line reading QIP_EGRESS_BOOTSTRAP_EOF ends the
+  # `cat` early and everything after it is script, executed as root. So the
+  # constraint that is expressible is the one that matters — the payload may
+  # not name the delimiter — and it is checked as a substring rather than as a
+  # line, because a delimiter reached by any spelling is a delimiter.
+  validation {
+    condition     = !strcontains(var.egress_bootstrap, "QIP_EGRESS_BOOTSTRAP_EOF")
+    error_message = "The egress bootstrap contains the string QIP_EGRESS_BOOTSTRAP_EOF, which is the heredoc delimiter templates/startup.sh.tftpl writes it inside. A line matching the delimiter closes the heredoc, and everything after it is executed as root at boot instead of being written to envoy.yaml."
+  }
+
   # `health` is the one listener that binds 0.0.0.0, so that Cloud Run's
   # sidecar startup probe — issued from outside the container's network
   # namespace — can reach it; a loopback bind there answers nothing and the
@@ -349,6 +424,23 @@ variable "egress_endpoints" {
     error_message = "Every egress endpoint is http://127.0.0.1:<port>. `qip_transport::http` refuses https by name, and the proxy lives on this machine."
   }
 
+  # A second block rather than a conjunct, for the reason `boot_image`'s two
+  # blocks are two: the check above should keep saying what it says — the
+  # scheme and the host are wrong — and this should say what it says, which is
+  # about a value that has the right prefix and is still not an address.
+  #
+  # The prefix was the whole check, and a prefix bounds nothing after it. The
+  # `gcp` entry is interpolated into the script's closing
+  # `log "… egress on ${egress_endpoint} …"`, a double-quoted shell word that
+  # still expands `$(…)`, so `http://127.0.0.1:9101$(id > /tmp/x)` passed and
+  # ran as root at boot. Anchoring the far end is what makes the prefix a
+  # check. The port is bounded rather than free because `[0-9]*` would admit
+  # the empty string and `[0-9]+` the whole of a numeric injection.
+  validation {
+    condition     = alltrue([for endpoint in values(var.egress_endpoints) : can(regex("^http://127\\.0\\.0\\.1:[0-9]{1,5}$", endpoint))])
+    error_message = "Every egress endpoint is exactly http://127.0.0.1:<port> with nothing after the port. The value is interpolated into a shell command in the node's startup script, so a trailing command substitution is a root shell rather than an address."
+  }
+
   validation {
     condition     = contains(keys(var.egress_endpoints), "gcp")
     error_message = "The egress endpoints name no `gcp` listener, which is the one QIP_GCP_ENDPOINT is configured from."
@@ -366,6 +458,16 @@ variable "capital_envelope_secret_id" {
   EOT
 
   type = string
+
+  validation {
+    # Second argument to `qip-fetch-secret`, in the same root shell as
+    # `project_id`. Secret Manager's own name rule is letters, digits,
+    # underscore and hyphen up to 255 characters, which is already free of
+    # every shell metacharacter — so this refuses nothing a real secret id
+    # could be while refusing everything a command could be.
+    condition     = can(regex("^[A-Za-z0-9_-]{1,255}$", var.capital_envelope_secret_id))
+    error_message = "A Secret Manager secret id is 1-255 characters of letters, digits, underscore and hyphen. It is passed to a command running as root in the node's startup script."
+  }
 }
 
 variable "venue_credential_secret_id" {
@@ -379,6 +481,18 @@ variable "venue_credential_secret_id" {
 
   type    = string
   default = null
+
+  validation {
+    # Null is the default and means "granted nothing"; the template renders the
+    # empty string in that case and the `%{ if }` arm around the fetch is not
+    # taken. Any other value is the same root-shell argument
+    # `capital_envelope_secret_id` is, and is bounded the same way. Refused
+    # here rather than only where `venue_credential_bound` is true, because a
+    # value that is safe only under a condition computed elsewhere is a value
+    # nobody rechecks when the condition moves.
+    condition     = var.venue_credential_secret_id == null || can(regex("^[A-Za-z0-9_-]{1,255}$", var.venue_credential_secret_id))
+    error_message = "A Secret Manager secret id is 1-255 characters of letters, digits, underscore and hyphen, or null for a node that is granted none. It is passed to a command running as root in the node's startup script."
+  }
 }
 
 variable "venue_credential_readable" {
@@ -555,8 +669,10 @@ variable "strategy_plan_path" {
   default = ""
 
   validation {
-    # The path is interpolated into an unquoted heredoc that writes node.env
-    # (templates/startup.sh.tftpl:164 and :183). `startswith("/")` alone
+    # The path is interpolated into the unquoted heredoc that writes node.env
+    # (`grep -n 'QIP_STRATEGY_PLAN_PATH' templates/startup.sh.tftpl`; this
+    # comment gave line numbers until 2026-09-06 and they were five lines stale
+    # by then). `startswith("/")` alone
     # admitted a value containing a newline, which writes a second variable
     # nobody reviewed, and one containing $(...) or a backtick, which the shell
     # expands as root at boot. A character class, not just a prefix.

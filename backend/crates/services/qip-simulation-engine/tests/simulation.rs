@@ -16,6 +16,7 @@ use qip_core::testing::{approx_eq, is_exactly_zero};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Decimal, dec};
 use qip_financial::asset_class::{InstrumentType, Sector};
+use qip_financial::costs::{MAX_TRADE_COST_BPS, TransactionCostModel};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
@@ -242,20 +243,194 @@ fn unsorted_history_is_sorted_rather_than_silently_truncated() -> Result<()> {
 fn impact_grows_with_the_square_root_of_participation() -> Result<()> {
     let model = CostModel::default();
     let price = dec!("100");
+    let volatility = 0.02;
     let small = model
-        .cost_of(dec!("10000"), price, 1_000_000.0, 0.02)
+        .cost_of(dec!("10000"), price, 1_000_000.0, volatility)
         .unwrap();
     let large = model
-        .cost_of(dec!("40000"), price, 1_000_000.0, 0.02)
+        .cost_of(dec!("40000"), price, 1_000_000.0, volatility)
         .unwrap();
+
+    // The law itself, before any money is rounded: four times the
+    // participation is twice the impact per unit traded.
+    let per_unit = model.impact_bps(0.04, volatility)? / model.impact_bps(0.01, volatility)?;
+    assert!(
+        approx_eq(per_unit, 2.0, 1e-12),
+        "impact per unit scaled by {per_unit} rather than 2"
+    );
+
     // Four times the size at four times the participation is twice the impact
     // per unit, so four times the notional gives eight times the total impact.
-    let ratio = large.impact / small.impact;
+    // The impact is money and therefore a `Decimal`; the ratio of two charges
+    // is not money, which is why it crosses to `f64` here.
+    //
+    // The tolerance was 1e-9 while the charge was an `f64` computed in one
+    // multiplication. It is now a `Decimal` on the platform's nine-decimal
+    // grid, reached through `apply_bps`, which quantises the basis-point figure
+    // itself: on a charge of about six basis points that is worth roughly
+    // 1.6e-6 of relative precision, so an exact-to-1e-9 ratio is no longer
+    // available to compare against. The property is unchanged and the assertion
+    // above pins it exactly; only the money below is quantised.
+    let ratio = large.impact.to_f64() / small.impact.to_f64();
     assert!(
-        approx_eq(ratio, 8.0, 1e-9),
+        approx_eq(ratio, 8.0, 1e-5),
         "impact scaled by {ratio} rather than 8"
     );
     Ok(())
+}
+
+#[test]
+fn the_simulations_default_costs_are_the_platforms_own() {
+    // The two had already drifted: this crate shipped a 3.0bp half-spread
+    // against `qip-financial`'s 2.5bp, so a backtest and a pre-trade check
+    // quoted different spreads for the same order and neither was wrong on its
+    // own terms. Nothing in the tree failed when that happened, which is why
+    // this test exists rather than a comment saying they should match.
+    let model = CostModel::default();
+
+    // Premise: two all-zero models would satisfy the equality below while
+    // saying nothing at all, so establish that there are costs to disagree
+    // about first.
+    assert!(
+        !model.is_frictionless(),
+        "the default model charges nothing"
+    );
+    assert!(
+        model.half_spread_bps > 0.0 && model.impact_coefficient_bps > 0.0,
+        "the default model has no spread or no impact to compare"
+    );
+
+    assert_eq!(
+        model.pricing().expect("the default model prices"),
+        TransactionCostModel::default()
+    );
+}
+
+#[test]
+fn a_simulated_fill_is_charged_exactly_what_the_pre_trade_model_quotes() {
+    // The whole point of the rewrite. A backtest that prices an order
+    // differently from the pre-trade path makes a strategy look profitable in
+    // simulation and not in production, and the disagreement is invisible
+    // because both numbers are individually defensible.
+    let model = CostModel::default();
+    let quantity = dec!("12345.5");
+    let price = dec!("87.25");
+    let daily_volume = 500_000.0;
+    let volatility = 0.017;
+
+    let cost = model
+        .cost_of(quantity, price, daily_volume, volatility)
+        .unwrap();
+
+    // Premise: the order was actually priced, and priced at something.
+    assert!(
+        cost.charged().is_positive(),
+        "the fixture order was charged nothing, so the equality below is vacuous"
+    );
+    let participation = quantity.to_f64() / daily_volume;
+    assert!(
+        participation > 0.0 && participation <= model.maximum_participation,
+        "the fixture order is outside the priced range at {participation} participation"
+    );
+
+    let quoted = model
+        .pricing_at(volatility)
+        .expect("the default model prices at an ordinary volatility")
+        .estimate(cost.notional, participation);
+    assert_eq!(
+        cost.charged(),
+        quoted,
+        "the backtest charged {} where the pre-trade model quotes {quoted}",
+        cost.charged()
+    );
+}
+
+#[test]
+fn impact_at_the_reference_volatility_is_the_pre_trade_impact_and_scales_from_there() -> Result<()>
+{
+    let model = CostModel::default();
+    let reference = model.reference_daily_volatility;
+    // Premise: the reference is the divisor. A zero would scale every
+    // coefficient to infinity, so a test that passed against one would be
+    // testing nothing.
+    assert!(reference > 0.0, "the reference volatility is not positive");
+    let participation = 0.05;
+
+    let quoted = TransactionCostModel::default().impact_bps(participation);
+    assert!(
+        quoted > 0.0,
+        "the pre-trade model charged no impact, so the comparisons below are vacuous"
+    );
+
+    // At the volatility the coefficient is quoted at, the simulation and the
+    // pre-trade check are the same number rather than two opinions about it.
+    let at_reference = model.impact_bps(participation, reference)?;
+    assert!(
+        approx_eq(at_reference, quoted, 1e-12),
+        "the simulation charged {at_reference}bp of impact where the pre-trade model charges {quoted}bp"
+    );
+
+    // An instrument twice as volatile moves twice as far for the same
+    // participation, which is the one thing the simulation adds and the reason
+    // it measures volatility from the bars at all.
+    let doubled = model.impact_bps(participation, reference * 2.0)?;
+    assert!(
+        approx_eq(doubled, quoted * 2.0, 1e-12),
+        "doubling the volatility gave {doubled}bp rather than {}bp",
+        quoted * 2.0
+    );
+
+    // A volatility that could not be measured charges nothing rather than
+    // quietly substituting the reference, which would be a cost nobody
+    // computed presented as one that was.
+    assert!(is_exactly_zero(model.impact_bps(participation, 0.0)?));
+    assert!(is_exactly_zero(model.impact_bps(participation, f64::NAN)?));
+    Ok(())
+}
+
+#[test]
+fn an_order_whose_notional_no_money_type_can_hold_is_refused_rather_than_priced() {
+    // The cost used to be computed in `f64`, where this order has a price; the
+    // backtester then converted the total back to a `Decimal` with an
+    // `unwrap_or(Decimal::ZERO)` behind it, so the one order the money type
+    // could not represent was the one order the book was charged nothing for.
+    let model = CostModel::default();
+    let quantity = dec!("100000000000000000000");
+    let price = dec!("100000000000000000000");
+    let daily_volume = 1e21;
+
+    // Premise: the order is inside the participation limit, so the refusal
+    // below is about the arithmetic and not about the size.
+    let participation = quantity.to_f64() / daily_volume;
+    assert!(
+        participation <= model.maximum_participation,
+        "the fixture is refused for participation at {participation}, not for representability"
+    );
+
+    assert_eq!(
+        model.cost_of(quantity, price, daily_volume, 0.02),
+        Err(Unfillable::NotRepresentable)
+    );
+}
+
+#[test]
+fn a_daily_volume_that_is_not_a_number_is_refused_rather_than_divided_by() {
+    // A NaN passes every `<= 0.0` guard ever written. It used to reach the
+    // participation, the ceiling comparison — `NaN > limit` is false, so the
+    // order was accepted — and finally the charge, which was NaN by the time
+    // anything looked at it.
+    let model = CostModel::default();
+    assert_eq!(
+        model.cost_of(dec!("100"), dec!("10"), f64::NAN, 0.02),
+        Err(Unfillable::NoVolume)
+    );
+    // The premise: the same order against a real volume is priced, so the
+    // refusal above is about the volume and nothing else.
+    assert!(
+        model
+            .cost_of(dec!("100"), dec!("10"), 1_000_000.0, 0.02)
+            .is_ok()
+    );
 }
 
 #[test]
@@ -272,6 +447,108 @@ fn an_order_beyond_the_calibrated_range_is_refused_rather_than_priced() {
         }
         other => panic!("expected a participation refusal, got {other:?}"),
     }
+}
+
+#[test]
+fn a_volatility_scaled_coefficient_beyond_the_reference_ceiling_is_refused_at_the_seam() {
+    // `pricing` and `pricing_at` build a `TransactionCostModel` by struct
+    // literal, which is the one way into that type that runs no check: the wire
+    // goes through `checked`, a reference record goes through
+    // `FinancialObject::validate`, and a computed model went through neither.
+    // `pricing_at` could therefore *manufacture* a coefficient no document
+    // could have carried, because it multiplies the coefficient by a measured
+    // volatility over a stated reference and nothing bounded the product.
+    let model = CostModel::default();
+    let reference = model.reference_daily_volatility;
+
+    // Premise, in two halves. The scale really is what breaches the ceiling —
+    // the unscaled coefficient is far below it, so a refusal below is about the
+    // multiplication and not about the shipped default...
+    assert!(
+        model.impact_coefficient_bps < MAX_TRADE_COST_BPS,
+        "the default coefficient is already at the ceiling, so this test proves nothing about scaling"
+    );
+    // ...and the same model at an ordinary volatility prices, so the refusal is
+    // not this seam refusing everything.
+    assert!(
+        model.pricing_at(reference).is_ok(),
+        "the default model will not price at its own reference volatility"
+    );
+
+    // A volatility of 400% a day. At the default 40bp coefficient the ceiling
+    // is a scale of 250 — a 315% daily volatility — so this is past it: no bar
+    // series produces this and the figure is a data error, not a market.
+    let poisoned = 4.0;
+    let scaled = model.impact_coefficient_bps * (poisoned / reference);
+    assert!(
+        scaled >= MAX_TRADE_COST_BPS,
+        "the fixture volatility scales the coefficient to {scaled}bp, inside the ceiling, so the \
+         refusal below would be about something else"
+    );
+
+    let refusal = model
+        .pricing_at(poisoned)
+        .expect_err("a coefficient of over 100% of the notional was priced");
+    let message = refusal.to_string();
+    // The delimited field name, not a substring of a neighbour: every other
+    // field in this model ends in `_bps` too.
+    assert!(
+        message.contains("impact_coefficient_bps is "),
+        "the refusal does not name the field that is wrong: {message}"
+    );
+
+    // And the same refusal reaches the priced order, as `Unfillable` rather
+    // than as a panic. A backtest runs thousands of instruments; the one with a
+    // bad volatility bar must be the one that stops, not the process.
+    let order = model.cost_of(dec!("100"), dec!("50"), 1_000_000.0, poisoned);
+    match order {
+        Err(Unfillable::Unpriceable { reason }) => assert!(
+            reason.contains("impact_coefficient_bps is "),
+            "the order's refusal does not carry the model's: {reason}"
+        ),
+        other => panic!("expected an unpriceable model, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_volatility_a_crisis_could_produce_still_prices() {
+    // The admitting half, and the reason the bound above is a gate rather than
+    // a wall. A scaled coefficient is a real modelling requirement — a backtest
+    // has the volatility series a pre-trade check does not — so a bound that
+    // refused an ordinarily violent market would have been the platform
+    // declining to simulate the days that matter most.
+    let model = CostModel::default();
+    let reference = model.reference_daily_volatility;
+    // Ten times the reference: 12.6% in a day, which is a crash and not a data
+    // error. October 1987 was about 20% on the index and single names went
+    // further.
+    let crisis = reference * 10.0;
+
+    let priced = model
+        .pricing_at(crisis)
+        .expect("a ten-fold volatility was refused, so the ceiling is a wall");
+    // Premise: the scaling actually happened. An unchanged coefficient would
+    // satisfy every assertion below while proving the volatility was ignored.
+    assert!(
+        approx_eq(
+            priced.impact_coefficient_bps,
+            model.impact_coefficient_bps * 10.0,
+            1e-9
+        ),
+        "the coefficient scaled to {}bp rather than {}bp",
+        priced.impact_coefficient_bps,
+        model.impact_coefficient_bps * 10.0
+    );
+    assert!(priced.impact_coefficient_bps < MAX_TRADE_COST_BPS);
+
+    let cost = model
+        .cost_of(dec!("100"), dec!("50"), 1_000_000.0, crisis)
+        .expect("an order in a violent market was refused rather than priced");
+    assert!(
+        cost.impact.is_positive(),
+        "the crisis order was charged no impact at all, so it was not priced against the scaled \
+         coefficient"
+    );
 }
 
 #[test]

@@ -672,12 +672,30 @@ impl StepContext<'_> {
         !self.regime.applied.is_empty()
     }
 
-    fn calm_bid(&self) -> Decimal {
-        self.price - self.price.apply_bps(self.calm_half_spread_bps)
+    /// Half the calm spread, as money.
+    ///
+    /// Refused rather than panicked: an agent that cannot be quoted against
+    /// this instrument stops this instrument's flow generation and names it,
+    /// where `apply_bps` would take the whole run — and in a release build,
+    /// which is `panic = "abort"`, the process — with it.
+    fn calm_half(&self) -> Result<Decimal> {
+        self.price
+            .checked_apply_bps(self.calm_half_spread_bps)
+            .ok_or_else(|| {
+                Error::numeric(format!(
+                    "a calm half-spread of {}bp cannot be applied to {} on {} at {}; state a \
+                     finite half-spread the price can carry",
+                    self.calm_half_spread_bps, self.price, self.object_id, self.venue
+                ))
+            })
     }
 
-    fn calm_ask(&self) -> Decimal {
-        self.price + self.price.apply_bps(self.calm_half_spread_bps)
+    fn calm_bid(&self) -> Result<Decimal> {
+        Ok(self.price - self.calm_half()?)
+    }
+
+    fn calm_ask(&self) -> Result<Decimal> {
+        Ok(self.price + self.calm_half()?)
     }
 }
 
@@ -750,8 +768,8 @@ impl CounterpartyAgent {
                     return Ok(actions);
                 }
                 actions.push(FlowAction::Quote {
-                    bid: step.calm_bid(),
-                    ask: step.calm_ask(),
+                    bid: step.calm_bid()?,
+                    ask: step.calm_ask()?,
                     size: *size,
                 });
                 if participates {
@@ -858,10 +876,24 @@ impl CounterpartyAgent {
                 // Inventory over its limit, in [-1, 1]. A statistic: it only
                 // ever scales a basis-point figure.
                 let load = (state.inventory.to_f64() / max_inventory.to_f64()).clamp(-1.0, 1.0);
-                let half = step
-                    .price
-                    .apply_bps(half_spread_bps.max(step.calm_half_spread_bps));
-                let skew = step.price.apply_bps(skew_bps * load.abs());
+                // Refused rather than panicked, and named: a maker whose own
+                // quoted parameters cannot be applied to this price is a
+                // parameter to correct, and the run has thousands of other
+                // steps that are fine.
+                let quoted = half_spread_bps.max(step.calm_half_spread_bps);
+                let half = step.price.checked_apply_bps(quoted).ok_or_else(|| {
+                    Error::numeric(format!(
+                        "agent {}'s half-spread of {quoted}bp cannot be applied to {}",
+                        self.name, step.price
+                    ))
+                })?;
+                let skewed = skew_bps * load.abs();
+                let skew = step.price.checked_apply_bps(skewed).ok_or_else(|| {
+                    Error::numeric(format!(
+                        "agent {}'s inventory skew of {skewed}bp cannot be applied to {}",
+                        self.name, step.price
+                    ))
+                })?;
                 let (mut bid, mut ask) = (step.price - half, step.price + half);
                 if load > 0.0 {
                     // Long: does not want to buy more, so the bid backs off.
@@ -871,8 +903,8 @@ impl CounterpartyAgent {
                     ask += skew;
                 }
                 // Never inside the calm touch, whatever the skew did.
-                let bid = bid.min(step.calm_bid());
-                let ask = ask.max(step.calm_ask());
+                let bid = bid.min(step.calm_bid()?);
+                let ask = ask.max(step.calm_ask()?);
                 if bid.is_positive() {
                     actions.push(FlowAction::Quote {
                         bid,

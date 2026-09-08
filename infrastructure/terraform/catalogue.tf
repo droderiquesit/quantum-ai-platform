@@ -107,6 +107,30 @@ locals {
           env_file_variable = "QIP_WALLET_STATEMENT_PATH"
         }
       },
+      # The desk's capital-fabric declaration: the destinations, corridors and
+      # transfer intents §37 and §38 are about, and the only production route
+      # by which any of them reaches the chain. Unset, the API's banner says
+      # nothing is declared and /transfer-gate answers `last_assessment: null`
+      # — which was every deployment's answer before this mount existed, not
+      # because the desk had declared nothing but because no caller could
+      # declare anything.
+      #
+      # Set, it is an append-only ledger of acts, and the API refuses to start
+      # if a command already on the chain has been edited or removed: a sealed
+      # record is not rewritten, and the correction is another act. It cannot
+      # move money whatever it says — ADR 0021 permits the gate and refuses
+      # the engine, and an admitted verdict carries no way to execute.
+      #
+      # Every environment leaves this null: the desk holds no external
+      # destination, and declaring one would journal an act nobody performed.
+      var.capital_fabric_file == null ? {} : {
+        capital-fabric = {
+          content           = file("${path.module}/../../${var.capital_fabric_file}")
+          file_name         = "capital-fabric.json"
+          content_type      = "application/json"
+          env_file_variable = "QIP_CAPITAL_FABRIC_PATH"
+        }
+      },
     )
   }
 

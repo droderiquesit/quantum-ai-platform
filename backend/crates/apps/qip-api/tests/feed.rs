@@ -819,3 +819,158 @@ fn an_approval_whose_credential_slot_is_absent_names_the_slot_and_leaves_the_con
     );
     Ok(())
 }
+
+// --- the stream journal, and the gate that stays open -------------------------
+//
+// Both controls below were built, tested and mutation-verified in the crate
+// that owns them, and neither had a caller in a composition root. A control
+// nothing calls reads as protection and is not; these tests exist at the root's
+// own seam because that is the only place the wiring can be observed.
+
+/// A store that outlives a "process" the way a mounted volume does, so two
+/// `ApiFeed`s opened one after another are two sessions of one stream rather
+/// than two streams.
+fn journal_store() -> Arc<dyn qip_core::kv::KeyValueStore> {
+    Arc::new(qip_storage::kv::MemoryKeyValueStore::new())
+}
+
+#[test]
+fn a_restarted_process_resumes_the_dedup_window_instead_of_republishing_the_whole_table()
+-> Result<()> {
+    let server = RateServer::serving(RATE_TABLE);
+    let settings = ConnectorSettings {
+        source_id: CONNECTOR_SOURCE.to_string(),
+        base_url: server.url.clone(),
+    };
+
+    // The premise, and the failure this wiring closes: the ECB source serves
+    // its whole table on every poll, so a process whose dedup window begins
+    // empty republishes all of it as new observations. Two unjournalled
+    // "processes", three records each — that is what every deployed restart
+    // did until `journal_to` had a caller.
+    let mut first_run = ApiFeed::connector(&settings, 7, wall())?;
+    assert_eq!(first_run.sense(wall())?.records.len(), 3);
+    let mut second_run = ApiFeed::connector(&settings, 7, wall())?;
+    assert_eq!(
+        second_run.sense(wall())?.records.len(),
+        3,
+        "without a journal a restart must republish the table; if it does not, the assertion \
+         below proves nothing"
+    );
+
+    let store = journal_store();
+    let mut journalled = ApiFeed::connector(&settings, 7, wall())?;
+    assert_eq!(
+        journalled.journal_to(store.clone())?,
+        Some(0),
+        "a first session has no previous checkpoint, so nothing may be resumed"
+    );
+    assert_eq!(journalled.sense(wall())?.records.len(), 3);
+    drop(journalled);
+
+    // The restart. Same store, same source: the window the last session built
+    // comes back, and the table the source re-serves is absorbed.
+    let mut restarted = ApiFeed::connector(&settings, 7, wall())?;
+    let resumed = restarted
+        .journal_to(store)?
+        .expect("a connector arm keeps a journal");
+    assert_eq!(
+        resumed, 3,
+        "the previous session admitted three records, so three fingerprints must come back"
+    );
+    assert!(
+        restarted.sense(wall())?.records.is_empty(),
+        "the restarted process republished the table it had already published"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_tape_is_given_no_journal_because_it_has_no_vendor_to_redeliver_from() -> Result<()> {
+    // The other arm, so that the assertion above is about the connector and
+    // not about a method that answers the same thing for everything.
+    let (directory, path) = tape_file("journal", &["OBJ-A"], 2);
+    let mut feed = ApiFeed::tape(&path)?;
+    assert_eq!(feed.journal_to(journal_store())?, None);
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
+#[test]
+fn re_admitting_a_connector_after_an_approval_keeps_the_journal_it_was_given() -> Result<()> {
+    let server = RateServer::serving(RATE_TABLE);
+    let settings = ConnectorSettings {
+        source_id: CONNECTOR_SOURCE.to_string(),
+        base_url: server.url.clone(),
+    };
+    let mut feed = ApiFeed::connector(&settings, 7, wall())?;
+    feed.journal_to(journal_store())?;
+    // Premise: the first cycle publishes the table, so a second publication
+    // after the re-admission would be a republication and not a first one.
+    assert_eq!(feed.sense(wall())?.records.len(), 3);
+
+    // `POST /registrations/{source}/approve` reaches exactly this call, and it
+    // replaces the whole connector. A replacement that dropped the journal
+    // would leave the process streaming with no durable record from the first
+    // approval onwards, and would republish the table as it went.
+    feed.readmit(
+        &qip_data_finder::registration::RegistrationRegistry::shipped(),
+        wall(),
+    )?;
+    assert!(
+        feed.sense(wall())?.records.is_empty(),
+        "the re-opened connector republished the table, so the approval dropped the journal"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_licence_that_expires_mid_run_stops_the_next_cycle_rather_than_the_next_restart() -> Result<()>
+{
+    let server = RateServer::serving(RATE_TABLE);
+    let settings = ConnectorSettings {
+        source_id: CONNECTOR_SOURCE.to_string(),
+        base_url: server.url.clone(),
+    };
+    let expiry = wall().saturating_add(Duration::from_days(3));
+    // A licence with an end date. No entry in the shipped catalogue carries
+    // one, which is exactly why this arm needs a catalogue of its own: putting
+    // an expiry into the evaluation of a real vendor's terms to satisfy a test
+    // is the opposite of what that file is for.
+    let expiring = vec![CatalogueEntry {
+        source_id: CONNECTOR_SOURCE,
+        expected_class: LicensingClass::Public,
+        posture: LicensingPosture::declared(
+            SourceLicense::new("terms-with-an-end-date", [Usage::Derive, Usage::Trade])?
+                .expiring_at(expiry),
+        ),
+    }];
+    let mut feed = ApiFeed::connector_admitted_by(&expiring, &settings, 7, wall())?;
+
+    // Premise: the gate grants for as long as the licence runs, so the refusal
+    // below is the expiry doing its work rather than an entry that never
+    // admitted anything.
+    let granted = feed.sense(wall().saturating_add(Duration::from_days(1)))?;
+    assert_eq!(granted.records.len(), 3);
+    let served = server.served();
+    assert!(served >= 1, "the admitted source opened no socket");
+
+    // The instant the licence ends. Until the standing gate had a caller here
+    // the cycle would have gone on polling for the remaining four days of a
+    // seven-day run, stamping records with a class the terms no longer grant.
+    let refusal = feed
+        .sense(expiry)
+        .expect_err("an expired licence went on feeding the cycle");
+    assert!(
+        refusal.message().contains("expired"),
+        "the refusal does not say the licence expired: {}",
+        refusal.message()
+    );
+    assert_eq!(
+        server.served(),
+        served,
+        "a refused cycle still opened a socket, so the gate ran after the transport rather than \
+         before it"
+    );
+    Ok(())
+}

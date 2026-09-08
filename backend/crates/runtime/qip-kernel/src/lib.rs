@@ -34,6 +34,7 @@
 pub mod central;
 pub mod config;
 pub mod cycle;
+pub mod fabric_declaration;
 pub mod platform;
 pub mod valuation;
 

@@ -137,7 +137,7 @@ runs nothing until a failover. It is still not small.
 
 ## The claim this corrects
 
-`docs/architecture/current-state-audit.md` records multi-region deployment as
+`../DELIVERY-STATUS.md` records multi-region deployment as
 Partial, and says instantiating the nine cells is "credentials, an `apply`, and
 the venue address ranges that `venues = {}` currently, correctly, declines to
 guess."

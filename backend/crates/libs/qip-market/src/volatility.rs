@@ -22,9 +22,40 @@
 //! is indistinguishable, downstream, from one that was — and it is the number
 //! a structured payoff would be priced against.
 //!
+//! **Every point carries the instant it was observed, and the surface refuses
+//! a set that does not share one.** [`VolatilitySurface::as_of`] is documented
+//! as "the instant the quotes were true", and until the instant lived on the
+//! point that was a claim the type could not check: a caller assembling points
+//! from quotes taken seconds apart, at different underlying prices, asserted a
+//! synchrony the data did not have, and nothing downstream could detect it
+//! because [`Smile::vol_at`] interpolates in log-moneyness against the single
+//! `forward` and returns a skew nobody quoted. The surface refuses to
+//! extrapolate; it must also be able to refuse to be built from a smear.
+//! Bucketing quotes into one instant is a modelling decision with a tolerance
+//! attached, and it belongs in whatever reads the feed — this type refuses the
+//! smear rather than absorbing it (ADR 0050, requirement 3).
+//!
 //! The volatilities themselves are `f64`. A volatility is a statistic, not an
 //! amount of money; the crossing point between the two is marked at each site
 //! where a [`Decimal`] strike becomes an `f64` log-moneyness.
+//!
+//! # This engine has no caller, and that is a recorded decision
+//!
+//! Nothing in this platform constructs a [`VolatilitySurface`] outside this
+//! crate's own tests, because nothing ingests option quotes. ADR 0050 settles
+//! why, and it is not neglect: an option-quote source is a licensing
+//! evaluation `qip-data-finder` must complete *before* the source is used, and
+//! none has been. Do not read this module as a capability the platform has.
+//!
+//! Two ways of giving it a caller are refused there rather than merely absent.
+//! A surface fitted to the platform's own model is `LicensingClass::Synthetic`,
+//! whose `allows_production_decisions()` is `false` — the engine cannot be
+//! given a caller by manufacturing its input. And a vendor's own implied
+//! volatility embeds the vendor's forward, discount rate, dividend assumption
+//! and exercise treatment, none of which arrive with the number, so a surface
+//! built from vendor IVs cannot be reproduced from the event log. The
+//! platform ingests the quote and derives the volatility, or it has no
+//! surface.
 
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Timestamp};
@@ -32,7 +63,7 @@ use qip_numerics::interpolate::{Curve, Method};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// One observed implied volatility.
+/// One observed implied volatility, and the instant it was true.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VolPoint {
     /// Time to expiry in years, as an exact grid coordinate.
@@ -41,14 +72,29 @@ pub struct VolPoint {
     pub strike: Decimal,
     /// Implied volatility as an annualised decimal, e.g. `0.22` for 22%.
     pub implied_vol: f64,
+    /// The instant the quote this volatility was derived from was true.
+    ///
+    /// Required rather than optional, and carried on the point rather than
+    /// only on the surface, because a surface is a statement about *one*
+    /// instant and the assembler is the only party that knows whether its
+    /// points were. A field that could be omitted would be omitted by exactly
+    /// the caller whose quotes were smeared.
+    pub observed_at: Timestamp,
 }
 
 impl VolPoint {
-    pub fn new(expiry_years: Decimal, strike: Decimal, implied_vol: f64) -> Self {
+    /// Record one observed implied volatility at the instant its quote held.
+    pub fn new(
+        expiry_years: Decimal,
+        strike: Decimal,
+        implied_vol: f64,
+        observed_at: Timestamp,
+    ) -> Self {
         Self {
             expiry_years,
             strike,
             implied_vol,
+            observed_at,
         }
     }
 }
@@ -167,6 +213,13 @@ impl VolatilitySurface {
     /// * a non-positive forward, expiry or strike;
     /// * a non-positive or non-finite implied volatility — a zero vol prices
     ///   every option at intrinsic and a negative one has no meaning;
+    /// * a point observed at any instant other than `as_of`, naming both. The
+    ///   surface carries one `as_of` and one `forward` for every point, so a
+    ///   set gathered across instants is a claim of synchrony the data does not
+    ///   support, and it is the one defect nothing downstream can detect: the
+    ///   smeared surface interpolates cleanly and returns a skew nobody quoted.
+    ///   Bucket the quotes to a single instant, with a stated tolerance, before
+    ///   building the surface (ADR 0050, requirement 3);
     /// * a repeated strike-expiry pair, naming the pair. Two implied
     ///   volatilities for one grid node is a feed defect; picking one is a
     ///   choice the caller must make with the knowledge of why they differ.
@@ -217,6 +270,18 @@ impl VolatilitySurface {
                     vol = point.implied_vol,
                     strike = point.strike,
                     expiry = point.expiry_years
+                )));
+            }
+            if point.observed_at != as_of {
+                return Err(Error::invalid(format!(
+                    "the point at strike {strike}, expiry {expiry} was observed at {observed}, \
+                     but the surface is as of {as_of}; one surface is one instant, and quotes \
+                     gathered across instants are read against a single forward and produce a \
+                     skew nobody quoted — bucket the chain to one instant with a stated \
+                     tolerance before building the surface",
+                    strike = point.strike,
+                    expiry = point.expiry_years,
+                    observed = point.observed_at
                 )));
             }
             let smile = grid.entry(point.expiry_years).or_default();

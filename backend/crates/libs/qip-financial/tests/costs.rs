@@ -748,3 +748,79 @@ fn a_cost_model_whose_spread_is_not_a_number_is_refused_before_it_reaches_the_mo
         "a 450% annual borrow is a rate a lending desk writes down"
     );
 }
+
+#[test]
+fn a_cost_model_a_struct_literal_poisoned_refuses_to_price_instead_of_aborting_or_charging_zero() {
+    // `checked` and `FinancialObject::validate` keep an unpriceable rate off a
+    // record. Neither sees a model assembled field by field, and the fields are
+    // public — `qip-simulation-engine`'s `CostModel::pricing_at` builds one that
+    // way — so `checked_estimate` is the last seam before the money path.
+    //
+    // Three ways the arithmetic gives out, and the premise is asserted first so
+    // that this test cannot pass on rates that were priceable all along.
+    for bps in [f64::NAN, f64::INFINITY, 1e35] {
+        assert!(
+            qip_core::Decimal::from_f64(bps / 10_000.0).is_none(),
+            "{bps}bp has no Decimal factor, which is what makes it unusable"
+        );
+    }
+    let notional = qip_core::dec!("1000000");
+    for (field, poisoned) in [
+        (
+            "half_spread_bps",
+            TransactionCostModel {
+                half_spread_bps: f64::NAN,
+                ..TransactionCostModel::default()
+            },
+        ),
+        (
+            "commission_bps + tax_bps",
+            TransactionCostModel {
+                commission_bps: f64::INFINITY,
+                ..TransactionCostModel::default()
+            },
+        ),
+        (
+            "impact_coefficient_bps at this participation",
+            TransactionCostModel {
+                impact_coefficient_bps: 1e35,
+                ..TransactionCostModel::default()
+            },
+        ),
+    ] {
+        // The refusal, and not a panic: `Decimal::apply_bps` panics on exactly
+        // these rates since `f1b8840`, which is fail-closed but under
+        // `panic = "abort"` costs the process rather than the order. That the
+        // call returns at all is half of what is asserted here.
+        let refusal = poisoned
+            .checked_estimate(notional, 0.1)
+            .expect_err("a rate the arithmetic cannot apply prices no trade");
+        assert_eq!(refusal.code(), "numeric", "got {refusal}");
+        assert!(
+            refusal.message().contains(field),
+            "the refusal must name the term to correct, got {refusal}"
+        );
+        // An error here is a refusal, so it names what to do instead. Without
+        // this the message could shrink to the fact of the failure, which
+        // sends an operator looking for a bug in the arithmetic rather than
+        // for the field they have to correct.
+        assert!(
+            refusal.message().contains("reference record"),
+            "the refusal must say where the remedy is, got {refusal}"
+        );
+    }
+
+    // The admitting half, which is what makes this a validation rather than a
+    // wall: an ordinary listed model still prices, and it prices the same
+    // figure the panicking form quotes, so the checked path is not a
+    // second-class approximation of it.
+    let sound = TransactionCostModel::default();
+    let priced = sound
+        .checked_estimate(notional, 0.1)
+        .expect("an ordinary listed cost model prices a million-dollar trade");
+    assert!(
+        priced.is_positive(),
+        "a stated cost model prices a million-dollar trade above zero, got {priced}"
+    );
+    assert_eq!(priced, sound.estimate(notional, 0.1));
+}

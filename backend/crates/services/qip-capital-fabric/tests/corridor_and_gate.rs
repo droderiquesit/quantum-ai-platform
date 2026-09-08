@@ -16,25 +16,28 @@
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
 
+use qip_capital_fabric::assessment::AssessmentId;
 use qip_capital_fabric::corridor::{
     Corridor, CorridorCaps, CorridorId, CorridorStage, PermittedHours,
 };
 use qip_capital_fabric::custody::{
-    Attestation, CorridorKind, CustodyClass, CustodyPolicy, EnforcementPoint, EnforcementPoints,
-    Identity, RefusalReason, TransferAuthority,
+    Attestation, ClassConstraints, CorridorKind, CustodyClass, CustodyPolicy, EnforcementPoint,
+    EnforcementPoints, Identity, PolicyRule, RefusalReason, TransferAuthority,
 };
 use qip_capital_fabric::destination::{
     ACTIVATION_DELAY, Approver, Asset, DestinationKey, DestinationRegistry, DestinationStatus,
     SignatureRecord,
 };
 use qip_capital_fabric::gate::{
-    AnomalyFlag, CarriedTransfer, GateCheck, KillSwitchState, SourceBalances, StatedPurpose,
-    TransferGate, TransferHistory, TransferIntent, VelocityBreaker, VelocityState, Vetoed,
+    AnomalyFlag, CarriedTransfer, CorridorFunding, FundingStanding, GateCheck, KillSwitchState,
+    SourceBalances, StatedPurpose, TransferGate, TransferHistory, TransferIntent, VelocityBreaker,
+    VelocityState, Vetoed,
 };
 use qip_capital_fabric::location::{CapitalLocation, Region};
 use qip_contracts::venue::VenueId;
 use qip_core::error::Result;
 use qip_core::{Currency, Decimal, Duration, Timestamp, dec};
+use std::collections::BTreeMap;
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -153,34 +156,81 @@ fn attesting_identity(point: EnforcementPoint) -> &'static str {
     }
 }
 
-fn attestation(point: EnforcementPoint, identity: &str) -> Result<Attestation> {
-    Attestation::new(
-        point,
-        Identity::new(identity)?,
-        format!("{}-record-1", point.as_str()),
-        signed_at(),
-    )
+/// What each point references in the satisfied fixture.
+///
+/// Two of the three are values the gate checks rather than filing notes, and
+/// they are derived from the assessment the fixture is about — the transfer
+/// gate's from the movement's [`AssessmentId`], the custody policy's from the
+/// [`CustodyPolicy::fingerprint`] of the table in force. Derived rather than
+/// written out, because a hard-coded digest would have to be edited by hand
+/// every time a fixture amount changed, and the edit that is easiest to make
+/// is the edit that turns a control into a constant.
+///
+/// The venue allowlist's is still a filing note: this fixture's class is fiat
+/// at an institution of record, whose §37.4 row does not set
+/// `venue_allowlist_mirrored`, so nothing reads it here. `custody_mirror.rs`
+/// is where that reference is the control.
+fn satisfied_reference(
+    point: EnforcementPoint,
+    corridor: &Corridor,
+    intent: &TransferIntent,
+    custody: &CustodyPolicy,
+    now: Timestamp,
+) -> String {
+    match point {
+        EnforcementPoint::TransferGate => AssessmentId::of(
+            corridor.id(),
+            intent.source(),
+            intent.destination(),
+            intent.amount(),
+            now,
+        )
+        .to_string(),
+        EnforcementPoint::CustodyPolicy => custody.fingerprint().to_string(),
+        EnforcementPoint::VenueAllowlist => format!("{}-record-1", point.as_str()),
+    }
 }
 
-/// §37.4's closing rule satisfied: all three points attested, under three
-/// distinct identities, none of which is the one that trades.
-fn authority() -> Result<TransferAuthority> {
-    authority_with(|point| Some(attesting_identity(point)))
+fn attestation(point: EnforcementPoint, identity: &str, reference: String) -> Result<Attestation> {
+    Attestation::new(point, Identity::new(identity)?, reference, signed_at())
 }
 
 /// A [`TransferAuthority`] whose attestations are whatever `identity` says:
 /// `None` leaves the point silent, and a repeated name collapses two points
-/// onto one identity.
+/// onto one identity. Every reference is the satisfied one for the assessment
+/// described by `corridor`, `intent`, `custody` and `now`.
 fn authority_with(
+    corridor: &Corridor,
+    intent: &TransferIntent,
+    custody: &CustodyPolicy,
+    now: Timestamp,
     identity: impl Fn(EnforcementPoint) -> Option<&'static str>,
 ) -> Result<TransferAuthority> {
     let mut points = EnforcementPoints::new();
     for point in EnforcementPoint::ALL {
         if let Some(name) = identity(point) {
-            points.attest(attestation(point, name)?)?;
+            points.attest(attestation(
+                point,
+                name,
+                satisfied_reference(point, corridor, intent, custody, now),
+            )?)?;
         }
     }
     Ok(TransferAuthority::new(points, Identity::new(TRADING)?))
+}
+
+/// The Intelligence layer's ruling as the satisfied fixture carries it: every
+/// strategy the corridor funds has reached the rung that holds capital at full
+/// size, so the corridor may carry up to a ceiling above every amount any test
+/// here proposes. Deliberately not the binding constraint in the fixture — a
+/// ruling that refused first would make every other check's test pass for the
+/// wrong reason. A test about the ruling overrides this one field.
+fn funding() -> Result<CorridorFunding> {
+    CorridorFunding::new(
+        FundingStanding::Permitted,
+        dec!("50000"),
+        "every strategy this corridor funds has reached scaled; the weakest, alpha-1, is at scaled",
+    )
 }
 
 /// Run the gate with every input satisfied except whatever the caller
@@ -190,7 +240,19 @@ struct Inputs {
     corridor: Corridor,
     registry: DestinationRegistry,
     custody: CustodyPolicy,
-    authority: TransferAuthority,
+    /// `None` means "whatever the satisfied authority is for these inputs",
+    /// derived inside [`Inputs::assess`] rather than fixed at construction.
+    ///
+    /// It has to be derived, and that is the point of the field being an
+    /// `Option`. Two of §37.4's three references are now bound to the
+    /// assessment being made — the transfer gate's to the movement's
+    /// `AssessmentId`, the custody policy's to the table's fingerprint — so an
+    /// authority frozen at `satisfied()` would stop matching the moment a test
+    /// overrode the amount or the clock, and every cap and interval test would
+    /// then veto on check 1 for a reason it was not written about. A test that
+    /// is *about* the authority sets `Some`.
+    authority: Option<TransferAuthority>,
+    funding: CorridorFunding,
     history: TransferHistory,
     balances: SourceBalances,
     velocity: VelocityState,
@@ -205,7 +267,8 @@ impl Inputs {
             corridor: active_corridor()?,
             registry: usable_registry()?,
             custody: CustodyPolicy::blueprint(),
-            authority: authority()?,
+            funding: funding()?,
+            authority: None,
             history: TransferHistory::empty(),
             balances: balances()?,
             velocity: VelocityState::CLEAR,
@@ -214,13 +277,31 @@ impl Inputs {
         })
     }
 
+    /// The authority these inputs are assessed under: the caller's if it set
+    /// one, otherwise the satisfied one for these exact inputs.
+    fn authority(&self) -> TransferAuthority {
+        match &self.authority {
+            Some(authority) => authority.clone(),
+            None => authority_with(
+                &self.corridor,
+                &self.intent,
+                &self.custody,
+                self.now,
+                |point| Some(attesting_identity(point)),
+            )
+            .expect("the satisfied fixture's three attestations are constructible"),
+        }
+    }
+
     fn assess(&self) -> std::result::Result<qip_capital_fabric::gate::Approved, Vetoed> {
+        let authority = self.authority();
         TransferGate::assess(
             &self.intent,
             &self.corridor,
             &self.registry,
             &self.custody,
-            &self.authority,
+            &authority,
+            &self.funding,
             &self.history,
             &self.balances,
             self.velocity,
@@ -423,14 +504,20 @@ fn an_intent_whose_enforcement_points_have_not_all_attested_vetoes_on_corridor_a
 
     for missing in EnforcementPoint::ALL {
         let mut inputs = Inputs::satisfied()?;
-        inputs.authority =
-            authority_with(|point| (point != missing).then(|| attesting_identity(point)))?;
+        inputs.authority = Some(authority_with(
+            &inputs.corridor,
+            &inputs.intent,
+            &inputs.custody,
+            inputs.now,
+            |point| (point != missing).then(|| attesting_identity(point)),
+        )?);
         // Premise for this iteration: exactly the other two attested.
-        assert!(inputs.authority.points().attestation(missing).is_none());
+        let authority = inputs.authority();
+        assert!(authority.points().attestation(missing).is_none());
         assert_eq!(
             EnforcementPoint::ALL
                 .iter()
-                .filter(|point| inputs.authority.points().attestation(**point).is_some())
+                .filter(|point| authority.points().attestation(**point).is_some())
                 .count(),
             2
         );
@@ -488,21 +575,26 @@ fn an_intent_whose_enforcement_points_share_an_identity_vetoes_on_corridor_autho
     ];
     for (first, second) in pairs {
         let mut inputs = Inputs::satisfied()?;
-        inputs.authority = authority_with(|point| {
-            Some(if point == first || point == second {
-                "shared-svc"
-            } else {
-                attesting_identity(point)
-            })
-        })?;
+        inputs.authority = Some(authority_with(
+            &inputs.corridor,
+            &inputs.intent,
+            &inputs.custody,
+            inputs.now,
+            |point| {
+                Some(if point == first || point == second {
+                    "shared-svc"
+                } else {
+                    attesting_identity(point)
+                })
+            },
+        )?);
         // Premise: all three attested, so this is a refusal of the collapse
         // and not of a silent point.
+        let authority = inputs.authority();
         assert!(
-            EnforcementPoint::ALL.iter().all(|point| inputs
-                .authority
-                .points()
-                .attestation(*point)
-                .is_some())
+            EnforcementPoint::ALL
+                .iter()
+                .all(|point| authority.points().attestation(*point).is_some())
         );
 
         let veto = inputs.veto();
@@ -544,18 +636,24 @@ fn an_intent_attested_by_the_trading_identity_vetoes_on_corridor_authority() -> 
 
     for attestor in EnforcementPoint::ALL {
         let mut inputs = Inputs::satisfied()?;
-        inputs.authority = authority_with(|point| {
-            Some(if point == attestor {
-                TRADING
-            } else {
-                attesting_identity(point)
-            })
-        })?;
+        inputs.authority = Some(authority_with(
+            &inputs.corridor,
+            &inputs.intent,
+            &inputs.custody,
+            inputs.now,
+            |point| {
+                Some(if point == attestor {
+                    TRADING
+                } else {
+                    attesting_identity(point)
+                })
+            },
+        )?);
         // Premise: the three identities are still pairwise distinct, so the
         // pairwise check cannot be what fires and the refusal below is about
         // trading authority specifically.
         assert!(
-            inputs.authority.points().all_agree().is_ok(),
+            inputs.authority().points().all_agree().is_ok(),
             "premise: the three attesting identities are pairwise distinct"
         );
 
@@ -611,6 +709,204 @@ fn an_admitted_assessment_records_the_three_identities_it_was_admitted_on() -> R
         attested.iter().all(|(_, identity)| *identity != TRADING),
         "the approval names the trading identity among its attestors: {attested:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn a_corridor_the_intelligence_layer_suspended_is_vetoed_on_check_one_with_every_other_input_satisfied()
+-> Result<()> {
+    // The failure prevented, and it is the one this input exists for: the
+    // fabric held corridors as records — signed, allowlisted, capped,
+    // attested — that nothing measured against a policy. A corridor whose
+    // strategies have all been retired satisfies every one of those records
+    // exactly as well as one funding a scaled book, so before the ruling
+    // reached the gate a retired book's corridor was admitted at full size.
+    let mut inputs = Inputs::satisfied()?;
+    inputs.funding = CorridorFunding::new(
+        FundingStanding::Suspended,
+        Decimal::ZERO,
+        "alpha-1 is at retired and holds no capital, so this corridor has nothing to fund",
+    )?;
+    let veto = inputs.veto();
+    assert_eq!(veto.check, GateCheck::CorridorAuthority);
+    assert!(
+        veto.alert,
+        "§37.3 pairs a check 1 veto with an alert, and a corridor that should never have \
+         generated an intent is exactly that case"
+    );
+    // The reason must carry the deriving layer's own words, not a summary:
+    // an operator reading "suspended" alone would go looking for a corridor
+    // fault, which is the wrong problem. The rung is what they need.
+    assert!(
+        veto.reason.contains("alpha-1 is at retired"),
+        "the veto does not name the rung that decided it: {}",
+        veto.reason
+    );
+    Ok(())
+}
+
+#[test]
+fn an_amount_above_the_narrowed_ceiling_is_vetoed_on_caps_though_every_signed_cap_admits_it()
+-> Result<()> {
+    // The failure prevented: a pilot-rung strategy is "live with capital,
+    // deliberately limited", and a corridor that keeps its full signed
+    // ceiling while the strategy behind it is limited has undone the limit.
+    // The signed caps cannot express this — they were signed before the rung
+    // moved and are wider on purpose.
+    let mut inputs = Inputs::satisfied()?;
+    inputs.funding = CorridorFunding::new(
+        FundingStanding::Narrowed,
+        dec!("100"),
+        "alpha-1 is at pilot, which is live with capital and deliberately limited",
+    )?;
+    // Premise: the amount is inside every cap the desk signed, so the veto
+    // below can only be the derived ceiling. Without this the test would pass
+    // on a fixture the per-transfer cap already refused.
+    assert!(inputs.intent.amount() < caps()?.max_per_transfer());
+    assert!(inputs.intent.amount() < caps()?.max_per_hour());
+    let veto = inputs.veto();
+    assert_eq!(veto.check, GateCheck::Caps);
+    assert!(
+        veto.reason.contains("narrowed ceiling of 100"),
+        "the veto does not name the ceiling that refused it: {}",
+        veto.reason
+    );
+    assert!(
+        veto.reason.contains("alpha-1 is at pilot"),
+        "the veto does not name the rung that set the ceiling: {}",
+        veto.reason
+    );
+    Ok(())
+}
+
+#[test]
+fn a_ruling_that_suspends_a_corridor_and_gives_it_a_ceiling_is_refused_by_the_gate_as_well_as_by_its_constructor()
+-> Result<()> {
+    // The failure prevented is the one `CustodyPolicy::conforms` and
+    // `TransferAuthority::agreement` already document: a `CorridorFunding`
+    // travels inside a `GateCommand` and arrives deserialised off the event
+    // log, where the constructor never runs. A ruling that says "suspended"
+    // and carries a ceiling of 400 is two claims about the same fact, and
+    // whichever check was asked first would decide — check 1 would refuse it
+    // and check 2 would admit 400 through a corridor carrying nothing.
+    let refused = CorridorFunding::new(
+        FundingStanding::Suspended,
+        dec!("400"),
+        "alpha-1 is at retired and holds no capital",
+    );
+    assert!(
+        refused.is_err(),
+        "the constructor admitted a suspended corridor with a ceiling"
+    );
+    // Off the log, past the constructor, exactly as a replay would build it.
+    let malformed: CorridorFunding = serde_json::from_str(
+        r#"{"standing":"suspended","permitted":"400","reason":"alpha-1 is at retired and holds no capital"}"#,
+    )
+    .map_err(|err| qip_core::error::Error::invalid(err.to_string()))?;
+    assert_eq!(
+        malformed.permitted(),
+        dec!("400"),
+        "premise: serde built the contradiction the constructor refuses"
+    );
+    let mut inputs = Inputs::satisfied()?;
+    inputs.funding = malformed;
+    let veto = inputs.veto();
+    assert_eq!(veto.check, GateCheck::CorridorAuthority);
+    assert!(
+        veto.reason.contains("contradicts itself"),
+        "the veto is not the well-formedness refusal: {}",
+        veto.reason
+    );
+    Ok(())
+}
+
+#[test]
+fn a_ruling_that_narrows_a_corridor_to_zero_is_refused_as_a_suspension_rather_than_enforced_as_a_cap()
+-> Result<()> {
+    // The failure prevented, and it was reachable: `well_formed` refused a
+    // negative ceiling with the argument that a corridor which may carry
+    // nothing is suspended rather than capped — and then admitted the one
+    // value a person actually writes. `Narrowed` at zero passed every branch,
+    // passed check 1 because the standing is not `Suspended`, and refused
+    // every transfer ever proposed at check 2 with "exceeds the narrowed
+    // ceiling of 0". That veto sends an operator to promote a strategy; the
+    // cause is a zero in a declaration. It is refused at both seams — the
+    // constructor here, and `CorridorSubject::new` in `qip-lifecycle` where a
+    // person writes the figure.
+    for standing in [FundingStanding::Permitted, FundingStanding::Narrowed] {
+        let refused = CorridorFunding::new(
+            standing,
+            Decimal::ZERO,
+            "alpha-1 is at pilot, which is live with capital and deliberately limited",
+        );
+        let error = refused.expect_err("a ceiling of zero under a live standing must be refused");
+        assert!(
+            error.message().contains("carries a ceiling of 0"),
+            "the refusal must name the ceiling it refused: {error}"
+        );
+        assert!(
+            error.message().contains("Suspend it"),
+            "the refusal must name what to write instead: {error}"
+        );
+    }
+
+    // Off the log, past the constructor, exactly as a replay would build it —
+    // which is the path that matters, because a `CorridorFunding` reaches this
+    // gate deserialised inside a `GateCommand` and no constructor runs there.
+    let malformed: CorridorFunding = serde_json::from_str(
+        r#"{"standing":"narrowed","permitted":"0","reason":"alpha-1 is at pilot"}"#,
+    )
+    .map_err(|err| qip_core::error::Error::invalid(err.to_string()))?;
+    assert_eq!(
+        malformed.permitted(),
+        Decimal::ZERO,
+        "premise: serde built the ruling the constructor refuses"
+    );
+    let mut inputs = Inputs::satisfied()?;
+    inputs.funding = malformed;
+    let veto = inputs.veto();
+    // Check 1, not check 2. The distinction is the finding: at check 2 the
+    // veto reads as a cap that a promotion would lift, and at check 1 it reads
+    // as a ruling nobody can act on until it is corrected.
+    assert_eq!(veto.check, GateCheck::CorridorAuthority);
+    assert!(
+        veto.alert,
+        "a ruling the gate cannot act on is a check 1 veto, and §37.3 pairs those with an alert"
+    );
+    assert!(
+        veto.reason.contains("contradicts itself"),
+        "the veto is not the well-formedness refusal: {}",
+        veto.reason
+    );
+
+    // The premise that keeps this from passing against a gate that refuses
+    // every ruling: the same standing with the smallest positive ceiling above
+    // the fixture's amount is admitted.
+    let mut admitted = Inputs::satisfied()?;
+    admitted.funding = CorridorFunding::new(
+        FundingStanding::Narrowed,
+        admitted.intent.amount(),
+        "alpha-1 is at pilot, which is live with capital and deliberately limited",
+    )?;
+    match admitted.assess() {
+        Ok(approved) => assert_eq!(approved.funding().standing(), FundingStanding::Narrowed),
+        Err(veto) => panic!("a narrowed corridor with a real ceiling was vetoed: {veto}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn an_admitted_assessment_records_the_ruling_it_was_admitted_under() -> Result<()> {
+    // The same reason the agreement is kept: an approval read six months
+    // later must say which standing the corridor was on at the time, not
+    // which one it is on now. A rung moves; the record does not.
+    let inputs = Inputs::satisfied()?;
+    let approved = match inputs.assess() {
+        Ok(approved) => approved,
+        Err(veto) => panic!("the satisfied fixture was vetoed: {veto}"),
+    };
+    assert_eq!(approved.funding(), &funding()?);
+    assert_eq!(approved.funding().standing(), FundingStanding::Permitted);
     Ok(())
 }
 
@@ -1314,4 +1610,388 @@ fn permitted_hours_refuse_an_empty_inverted_or_overlong_window() {
     );
     assert!(PermittedHours::new(17, 9).is_err(), "an inverted window");
     assert!(PermittedHours::new(0, 25).is_err(), "a 25th hour");
+}
+
+// --- inputs that arrive deserialised, past their own constructors -----------
+//
+// Every argument the gate takes is supplied by the caller, and on a replay the
+// caller is `crate::replay` handing back a `GateCommand` decoded from the
+// event log. `serde` builds each of those types from its fields and calls no
+// constructor, so a rule held only by `CustodyPolicy::from_constraints`,
+// `TransferHistory::new`, `SourceBalances::new` or `TransferIntent::new` is a
+// rule the replay never re-derives — and the replay is the thing that has to
+// catch a record written by something other than the control. Worse than
+// merely uncaught: the replay *re-executes* the command and compares
+// outcomes, so a gate that did not re-ask would confirm the forged admission
+// and the chain would verify.
+//
+// Each test below therefore builds the tampered value the only way it can be
+// built — through serde — asserts as its premise that the old checks admit
+// it, and asserts the gate now vetoes on the named check.
+
+/// The blueprint table as rows, for a test that wants to break one.
+fn blueprint_rows() -> BTreeMap<CustodyClass, ClassConstraints> {
+    let blueprint = CustodyPolicy::blueprint();
+    CustodyClass::ALL
+        .into_iter()
+        .filter_map(|class| blueprint.constraints(class).map(|row| (class, row.clone())))
+        .collect()
+}
+
+/// Round-trip `value` through JSON into `T`, which is the path every gate
+/// input takes on a replay: serialised into the log, deserialised out of it,
+/// no constructor in between.
+fn off_the_log<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T> {
+    Ok(serde_json::from_value(value)?)
+}
+
+/// A custody table as a JSON object, so a test can hand the gate one that
+/// `CustodyPolicy::from_constraints` refuses to build.
+fn policy_json(rows: &BTreeMap<CustodyClass, ClassConstraints>) -> Result<serde_json::Value> {
+    let mut object = serde_json::Map::new();
+    object.insert("classes".to_string(), serde_json::to_value(rows)?);
+    Ok(serde_json::Value::Object(object))
+}
+
+#[test]
+fn a_custody_table_off_the_log_that_makes_collateral_transferable_is_vetoed_rather_than_believed()
+-> Result<()> {
+    // The sharpest instance, because here the pre-existing check answers
+    // *yes*: `permits` reads the row it is given, and the row says collateral
+    // may leave through an institution approval flow. §37.4 says collateral is
+    // inventory and never a transfer source at all, `from_constraints` refuses
+    // to record a table saying otherwise, and before `conforms` was re-run by
+    // the gate that refusal lived only in a constructor no replayed record
+    // calls. A forged gate record carrying this table would have been admitted
+    // by the control and then confirmed by the replay.
+    let mut rows = blueprint_rows();
+    let collateral = rows
+        .get_mut(&CustodyClass::CollateralAndMargin)
+        .expect("the blueprint table has a collateral row");
+    collateral.may_be_transfer_source = true;
+    collateral
+        .permitted_corridors
+        .insert(CorridorKind::InstitutionApprovalFlow);
+    // Premise: no constructor in this crate will build this table, so serde is
+    // the only way it can reach the gate — which is exactly the replay path.
+    assert!(
+        CustodyPolicy::from_constraints(rows.clone()).is_err(),
+        "premise: from_constraints refuses a transferable collateral row"
+    );
+    let tampered: CustodyPolicy = off_the_log(policy_json(&rows)?)?;
+    // Premise: the per-question check admits it. Without this the test could
+    // pass on `permits` refusing, and would then prove nothing about
+    // `conforms`.
+    assert!(
+        tampered
+            .permits(
+                CustodyClass::CollateralAndMargin,
+                CorridorKind::InstitutionApprovalFlow
+            )
+            .is_ok(),
+        "premise: permits answers yes on the tampered table"
+    );
+
+    let mut inputs = Inputs::satisfied()?;
+    let mut corridor = Corridor::propose(
+        CorridorId::new("treasury-to-xyz")?,
+        treasury(),
+        CustodyClass::CollateralAndMargin,
+        CorridorKind::InstitutionApprovalFlow,
+        destination()?,
+        caps()?,
+        "release posted collateral to the bank",
+        alice()?,
+        proposed_at(),
+    )?;
+    corridor.review(
+        bob()?,
+        proposed_at().saturating_add(Duration::from_hours(1)),
+    )?;
+    corridor.record_signature(signature(signed_at(), "vault/corridor/collateral")?)?;
+    corridor.begin_delay(signed_at())?;
+    corridor.activate(signed_at().saturating_add(ACTIVATION_DELAY))?;
+    assert_eq!(corridor.stage(), CorridorStage::Active);
+    inputs.corridor = corridor;
+    inputs.custody = tampered;
+
+    let veto = inputs.veto();
+    assert_eq!(veto.check, GateCheck::CorridorAuthority);
+    assert!(veto.alert);
+    // The delimited token, and the rule by name. `contains` on a bare word
+    // would match the neighbouring reasons; the parenthesised form cannot.
+    assert!(
+        veto.reason.contains("(policy_contradicts_blueprint)"),
+        "{}",
+        veto.reason
+    );
+    assert!(
+        veto.reason
+            .contains("collateral and margin are inventory and never a transfer source"),
+        "{}",
+        veto.reason
+    );
+    // And it is the table that was refused, not the question: `class_never_transfers`
+    // is what the *untampered* table would have said, and it cannot fire here.
+    assert!(
+        !veto.reason.contains("(class_never_transfers)"),
+        "the veto must come from the table's own rules, not from the row it no longer has: {}",
+        veto.reason
+    );
+    assert_eq!(
+        CustodyPolicy::blueprint()
+            .conforms()
+            .map_err(|refusal| refusal.reason),
+        Ok(()),
+        "premise: the blueprint table conforms, so conforms() is not refusing everything"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_custody_table_off_the_log_marking_self_custody_single_party_vetoes_even_an_unrelated_fiat_transfer()
+-> Result<()> {
+    // §37.4's self-custody rule is "no single component can sign". A table
+    // that denies it is not a table with one bad row to be routed around: it
+    // is a table this platform will not answer questions from, including
+    // questions about fiat whose own row is untouched. The failure prevented
+    // is a policy edited to single-party in one row and relied on in another,
+    // which reads as a custody boundary and is a record of one.
+    let mut inputs = Inputs::satisfied()?;
+    // Premise: with the blueprint table these exact inputs are admitted, so
+    // the veto below is caused by the table and by nothing else.
+    assert!(
+        inputs.assess().is_ok(),
+        "premise: the satisfied fixture is admitted before the table is broken"
+    );
+
+    let mut rows = blueprint_rows();
+    rows.get_mut(&CustodyClass::CryptoSelfCustody)
+        .expect("the blueprint table has a self-custody row")
+        .requires_multi_party_release = false;
+    let tampered: CustodyPolicy = off_the_log(policy_json(&rows)?)?;
+    // Premise: the fiat row still answers yes, so nothing about this
+    // corridor's own question has changed.
+    assert!(
+        tampered
+            .permits(
+                CustodyClass::FiatAtInstitutionOfRecord,
+                CorridorKind::InstitutionApprovalFlow
+            )
+            .is_ok(),
+        "premise: the fiat row is untouched and still permits the corridor"
+    );
+    inputs.custody = tampered;
+
+    let veto = inputs.veto();
+    assert_eq!(veto.check, GateCheck::CorridorAuthority);
+    assert!(veto.alert);
+    assert!(
+        veto.reason.contains("no single component can sign"),
+        "{}",
+        veto.reason
+    );
+    // The rule is named as a token an operator can grep and a metric can
+    // label, not only as prose.
+    assert_eq!(
+        PolicyRule::SelfCustodyIsMultiParty.as_str(),
+        "self_custody_is_multi_party"
+    );
+    match CustodyPolicy::from_constraints(rows) {
+        Err(_) => {}
+        Ok(_) => panic!("from_constraints must refuse the same table the gate refuses"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_carried_history_off_the_log_in_the_wrong_order_vetoes_instead_of_clearing_the_interval()
+-> Result<()> {
+    // `TransferHistory::new` sorts, so oldest-first is an invariant nothing
+    // states once the value is deserialised — and `last_carried_at` takes the
+    // last element. Reversed, the history names a transfer two hours old as
+    // the latest one, and the fifteen-minute minimum interval is cleared by a
+    // corridor that moved capital ten minutes ago.
+    let recent = CarriedTransfer {
+        at: now().saturating_sub(Duration::from_mins(10)),
+        amount: dec!("900"),
+    };
+    let older = CarriedTransfer {
+        at: now().saturating_sub(Duration::from_hours(2)),
+        amount: dec!("900"),
+    };
+    let mut inputs = Inputs::satisfied()?;
+    inputs.history = TransferHistory::new(vec![recent, older])?;
+    // Premise: in the right order this history vetoes on check 3, so the
+    // interval check is live and the tampering below has something to defeat.
+    let ordered_veto = inputs.veto();
+    assert_eq!(ordered_veto.check, GateCheck::MinimumInterval);
+
+    let mut json = serde_json::to_value(&inputs.history)?;
+    let carried = json
+        .get_mut("carried")
+        .and_then(serde_json::Value::as_array_mut)
+        .expect("a history serialises with a carried array");
+    assert_eq!(carried.len(), 2, "premise: both transfers were serialised");
+    carried.reverse();
+    let tampered: TransferHistory = off_the_log(json)?;
+    // Premise: the tampering does exactly one thing — it moves the latest
+    // transfer out of last place, which is what the interval check reads.
+    assert_eq!(
+        tampered.last_carried_at(),
+        Some(older.at),
+        "premise: the reversed history names the older transfer as the last one"
+    );
+    assert_eq!(tampered.carried_total(), dec!("1800"));
+    inputs.history = tampered;
+
+    let veto = inputs.veto();
+    assert_eq!(
+        veto.check,
+        GateCheck::Caps,
+        "a history that is not oldest-first is refused before the caps it would distort \
+         are measured, not silently re-sorted"
+    );
+    assert!(
+        veto.reason.contains("a history is oldest first"),
+        "{}",
+        veto.reason
+    );
+    Ok(())
+}
+
+#[test]
+fn a_carried_history_off_the_log_recording_a_refund_vetoes_instead_of_freeing_the_cumulative_cap()
+-> Result<()> {
+    // A negative carried amount subtracts from `carried_total`, and
+    // `carried_total` is what the cumulative cap is measured against. An
+    // exhausted corridor would come back to life.
+    let mut inputs = Inputs::satisfied()?;
+    // Three days back, so the rolling hour and the rolling day are empty and
+    // the cumulative cap is the only one this history can reach.
+    let spent = CarriedTransfer {
+        at: now().saturating_sub(Duration::from_days(3)),
+        amount: dec!("49800"),
+    };
+    inputs.history = TransferHistory::new(vec![spent])?;
+    // Premise: the corridor is exhausted — 49,800 carried against a 50,000
+    // cumulative cap leaves no room for the 500 the intent asks for.
+    let exhausted = inputs.veto();
+    assert_eq!(exhausted.check, GateCheck::Caps);
+    assert!(
+        exhausted.reason.contains("cumulative cap"),
+        "{}",
+        exhausted.reason
+    );
+
+    let mut json = serde_json::to_value(&inputs.history)?;
+    let entry = json
+        .get_mut("carried")
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|carried| carried.first_mut())
+        .expect("a history serialises with a carried array");
+    entry
+        .as_object_mut()
+        .expect("a carried transfer serialises as an object")
+        .insert("amount".to_string(), serde_json::to_value(dec!("-49800"))?);
+    let tampered: TransferHistory = off_the_log(json)?;
+    // Premise: flipped, the cumulative cap has room again, so nothing but the
+    // well-formedness rule can be what refuses.
+    assert_eq!(tampered.carried_total(), dec!("-49800"));
+    assert!(
+        tampered.carried_total() + dec!("500") < dec!("50000"),
+        "premise: the tampered history leaves the cumulative cap unreached"
+    );
+    inputs.history = tampered;
+
+    let veto = inputs.veto();
+    assert_eq!(veto.check, GateCheck::Caps);
+    assert!(
+        veto.reason
+            .contains("history records what left, and nothing else"),
+        "{}",
+        veto.reason
+    );
+    Ok(())
+}
+
+#[test]
+fn source_balances_off_the_log_with_a_negative_claim_veto_instead_of_funding_the_transfer()
+-> Result<()> {
+    // A claim on a balance is subtracted by `free`, so a negative one is
+    // added. `SourceBalances::new` refuses it and a replayed record never
+    // calls `new`: the sufficiency check — the one thing standing between an
+    // intent and a source that cannot fund it — would admit a transfer of
+    // money that is not there.
+    let mut inputs = Inputs::satisfied()?;
+    inputs.balances = SourceBalances::new(dec!("100"), dec!("0"), dec!("0"), dec!("0"))?;
+    // Premise: with an honest balance of 100 the 500 the intent asks for is
+    // refused by check 5.
+    let poor = inputs.veto();
+    assert_eq!(poor.check, GateCheck::SourceBalance);
+
+    let mut json = serde_json::to_value(inputs.balances)?;
+    json.as_object_mut()
+        .expect("balances serialise as an object")
+        .insert(
+            "reserved".to_string(),
+            serde_json::to_value(dec!("-10000"))?,
+        );
+    let tampered: SourceBalances = off_the_log(json)?;
+    // Premise: the negative claim has made the source look funded, so an
+    // admission here would be the gate believing arithmetic it was handed.
+    assert!(
+        tampered.free() > inputs.intent.amount(),
+        "premise: the tampered balances free {} against an intent of {}",
+        tampered.free(),
+        inputs.intent.amount()
+    );
+    inputs.balances = tampered;
+
+    let veto = inputs.veto();
+    assert_eq!(veto.check, GateCheck::SourceBalance);
+    assert!(
+        veto.reason
+            .contains("a claim on a balance cannot be negative"),
+        "{}",
+        veto.reason
+    );
+    assert!(
+        veto.reason.contains("reserved is -10000"),
+        "{}",
+        veto.reason
+    );
+    Ok(())
+}
+
+#[test]
+fn an_intent_off_the_log_asking_for_nothing_vetoes_instead_of_passing_every_cap_vacuously()
+-> Result<()> {
+    // Every cap is an upper bound, so an amount of zero is under all four of
+    // them and inside any balance. `TransferIntent::new` refuses a
+    // non-positive amount; a record decoded off the log does not go through
+    // it, and the assessment would be admitted — an approval on the record
+    // for a transfer nobody asked for, against a corridor's signature.
+    let mut inputs = Inputs::satisfied()?;
+    let mut json = serde_json::to_value(&inputs.intent)?;
+    json.as_object_mut()
+        .expect("an intent serialises as an object")
+        .insert("amount".to_string(), serde_json::to_value(dec!("0"))?);
+    let tampered: TransferIntent = off_the_log(json)?;
+    // Premise: the amount really is zero and really is under the per-transfer
+    // cap, so no other check can be what refuses.
+    assert_eq!(tampered.amount(), dec!("0"));
+    assert!(tampered.amount() < caps()?.max_per_transfer());
+    assert!(tampered.amount() < inputs.balances.free());
+    inputs.intent = tampered;
+
+    let veto = inputs.veto();
+    assert_eq!(veto.check, GateCheck::Caps);
+    assert!(
+        veto.reason
+            .contains("a transfer of nothing is not a transfer"),
+        "{}",
+        veto.reason
+    );
+    Ok(())
 }

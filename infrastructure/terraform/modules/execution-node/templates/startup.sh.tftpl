@@ -12,6 +12,21 @@
 #      and the Ops Agent's scrape of the health port;
 #   4. installs and starts the units — the proxy first, then the node.
 #
+# Every `$${...}` below is a template substitution — written with a doubled
+# dollar here because otherwise this very sentence is one — and `templatefile`
+# escapes
+# nothing. A newline in one of them adds an entry to the systemd
+# EnvironmentFile this writes, a directive to a unit file, or a line to a
+# script that runs as root on the node; a `$(...)` in one that lands inside a
+# double-quoted shell word is a command. Nothing in this file can defend
+# against that — a heredoc cannot quote its way out of its own terminator and
+# a shell cannot un-expand a substitution it was handed — so the defence is at
+# plan time, in `../../variables.tf`, where every one of these values carries a
+# validation that bounds its character set. Two are bounded structurally
+# instead: `isolated_cpus` is derived from the `machine_type` allowlist and
+# `shadow_mode` is a bool. If you add a substitution here, add its validation
+# there in the same change; `variables.tf` is the whole of the guard.
+#
 # Every failure below exits non-zero without starting the unit. A machine that
 # came up without isolated cores or without huge pages is a machine that will
 # trade with a tail latency nobody predicted, and the correct behaviour for it

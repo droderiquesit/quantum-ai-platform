@@ -702,6 +702,17 @@ fn the_api_owns_no_field_typed_as_money_and_every_store_it_holds_is_named_here()
     //   number (the field scan above holds that). Records in transit from a
     //   file into `Platform::observe_statement`; the wallet the platform
     //   assembles from them is the platform's, not the API's.
+    // * `FabricFeed` — the capital-fabric declaration file the root opened
+    //   (`QIP_CAPITAL_FABRIC_PATH`): its path, the mtime and length last
+    //   read, how many of its commands have been journalled, and the parsed
+    //   declaration as an *opaque* `qip_kernel` type whose commands are
+    //   private. That privacy is load-bearing: this layer is forbidden an
+    //   edge to `qip-capital-fabric` by the graph test above, and a public
+    //   field would have handed it the command vocabulary through a type it
+    //   is allowed to name, leaving the dependency check green over the very
+    //   thing it protects. Acts in transit from a file into
+    //   `Platform::decide_fabric`; the registry, the corridors and the gate
+    //   assessments they produce are the platform's, not the API's.
     //
     // A new store is a reviewed change: name it here with its reason.
     let known_stores: BTreeSet<&str> = [
@@ -714,6 +725,7 @@ fn the_api_owns_no_field_typed_as_money_and_every_store_it_holds_is_named_here()
         "Option<HealthReading>",
         "crate::feed::ApiFeed",
         "StatementFeed",
+        "FabricFeed",
     ]
     .into_iter()
     .collect();
@@ -781,7 +793,13 @@ fn route_table() -> Vec<(String, String)> {
 }
 
 #[test]
-fn every_mutating_route_is_one_of_five_and_each_raises_a_typed_intent() {
+// Named without a count on purpose. This test was
+// `every_mutating_route_is_one_of_five_...` and the set below has been four,
+// then five, then six; a number in a test's own name goes stale silently while
+// the assertion beside it stays exact, which is the failure mode
+// `.claude/rules/domains/observability.md` documents about figures written into
+// prose. The set is the enumeration; the name says what the set is for.
+fn every_mutating_route_is_reviewed_here_and_each_raises_a_typed_intent() {
     let routes = route_table();
     assert!(
         routes.len() > 20,
@@ -798,13 +816,39 @@ fn every_mutating_route_is_one_of_five_and_each_raises_a_typed_intent() {
     // asserted by name below beside the other three. The fifth is the
     // investor-eligibility decision, admitted on the same terms and for the
     // same reason: `Platform::decide_eligibility`, an operator identity taken
-    // from the session rather than the body, journalled before it stands.
+    // from the session rather than the body, journalled before it stands. The
+    // sixth is the investment request: the blueprint's §40.9 gives
+    // `investment-api` one intent and forbids it an order, and this is that
+    // intent — `Platform::decide_investment`, the same operator identity from
+    // the session, journalled on both outcomes. It is admitted here on the
+    // narrow ground that it *decides* and does not fund: no book moves, the
+    // answer carries a constant `funded: false`, and funding remains
+    // `Platform::fund_user`, which no route calls.
+    //
+    // The seventh is the promotion signature, and it is the one to think
+    // hardest about, because it is the only route whose successful outcome is
+    // a strategy that may hold capital. It is admitted on four grounds, all
+    // structural rather than procedural. The approver is the authenticated
+    // session's subject and the body cannot carry one — `PromotionApprovalRequest`
+    // takes a rationale and refuses every other key by name. Two *distinct*
+    // people are required: the kernel holds the first signature and
+    // `Approval::countersigned_by` refuses a second from the same subject, so
+    // one operator with two sessions is still one operator. The signature
+    // authorises an *attempt* and never an outcome — `attempt_promotion`
+    // re-derives the gate's verdict from the evidence on record and refuses
+    // independently, which is why an approval cannot talk a control into a
+    // decision it did not reach. And the two rungs it can reach are the only
+    // two the ladder marks as needing a signature, so this route cannot be
+    // used to skip a rung that is admitted on evidence alone; a signature for
+    // such a rung is refused rather than accepted and ignored.
     let expected: BTreeSet<(String, String)> = [
         ("Post", "/cycle"),
         ("Post", "/kill-switch"),
         ("Delete", "/kill-switch"),
         ("Post", "/registrations/:source/approve"),
+        ("Post", "/strategies/:strategy/promotion-approvals"),
         ("Post", "/ledger/users/:user/eligibility"),
+        ("Post", "/ledger/users/:user/investment-requests"),
     ]
     .into_iter()
     .map(|(method, pattern)| (method.to_string(), pattern.to_string()))
@@ -845,10 +889,53 @@ fn every_mutating_route_is_one_of_five_and_each_raises_a_typed_intent() {
             && routes_text.contains("crate::registration_views::ApprovalRequest::parse"),
         "the registration approval no longer screens its body and raises the kernel's intent"
     );
+    // The promotion signature carries the same verified identity, and the
+    // assertion pairs it with the body screen for a reason: the screen is
+    // what stops a caller naming their own approver, and the identity is what
+    // makes the name mean anything. Either half alone is not the control.
+    assert!(
+        routes_text.contains("platform.approve_promotion(")
+            && routes_text.contains("crate::registration_views::PromotionApprovalRequest::parse"),
+        "the promotion signature no longer screens its body and raises the kernel's intent"
+    );
+    // And it must take the session's issue time, not `now`. Passing `now`
+    // makes the kernel's freshness window compute an age of zero and become a
+    // control that cannot fire — the defect this repository has already had
+    // once, on the registration route, and the one it would be most costly to
+    // reintroduce on the route that moves capital.
+    assert!(
+        !routes_text.contains("\"api-bearer-token\",\n                    now,"),
+        "an operator identity is being built with `now` as its authentication time; the \
+         freshness window it feeds can then never elapse"
+    );
+    // The investment request likewise: screened, then handed to the kernel's
+    // one decision path. What matters more is the negative — the API raises
+    // the *request* and never the funding — so `fund_user`, the mutator that
+    // would move a user's capital, is asserted absent from every shipped
+    // source of the crate rather than merely left off the allowlist below.
+    assert!(
+        routes_text.contains("platform.decide_investment(")
+            && routes_text.contains("crate::ledger_views::InvestmentRequestBody::parse"),
+        "the investment request no longer screens its body and raises the kernel's intent"
+    );
+    for (path, source) in shipped_sources("qip-api") {
+        let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            !compact.contains("platform.fund_user("),
+            "{} funds a user from the API; §40.9's investment surface raises a request and \
+             nothing else",
+            path.display()
+        );
+    }
 }
 
 #[test]
-fn the_api_calls_no_platform_mutator_beyond_the_ten_it_is_allowed() {
+// Named without a count, for the reason the mutating-route test above gives.
+// This read `..._beyond_the_ten_it_is_allowed` while the list below held
+// eleven, so the name was already false before this change added a twelfth:
+// exactly the silent rot a number in a name invites. The list is the
+// enumeration.
+fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
     // Enumerate every `&mut self` method the platform exposes, from the
     // kernel's source rather than from memory, so a mutator added to the
     // kernel tomorrow is refused here the day it is called from a route.
@@ -911,6 +998,19 @@ fn the_api_calls_no_platform_mutator_beyond_the_ten_it_is_allowed() {
     //   reconciles against is a document a person put on the mount, never a
     //   figure a caller sent, and the kernel keeps its own bound and asset
     //   check on every holding.
+    // * `approve_promotion` — the operator signature that lets a strategy
+    //   reach a rung which holds capital, and the strictest of these to admit.
+    //   It takes the approver from the authenticated session and the body
+    //   cannot carry one. It needs two *different* people: the kernel holds
+    //   the first signature and refuses a second from the same subject, so two
+    //   sessions are not two approvers. It authorises an attempt and not an
+    //   outcome — the gate re-derives its verdict from the evidence on record
+    //   and refuses independently, so no signature can produce a promotion the
+    //   evidence does not support. And it reaches only `Pilot` and `Scaled`,
+    //   the two rungs the ladder marks as needing a signature; a signature for
+    //   any rung below is refused rather than accepted and ignored. It moves
+    //   no money: reaching a rung is permission to be sized under an envelope
+    //   the centre issues, and issuing one remains the platform's own act.
     // * `approve_registration` — an operator intent raised with an
     //   authenticated identity, like `request_change`: `POST
     //   /registrations/:source/approve` builds an `OperatorIdentity` from the
@@ -951,8 +1051,17 @@ fn the_api_calls_no_platform_mutator_beyond_the_ten_it_is_allowed() {
         "issue_episodic_digest",
         "observe",
         "observe_statement",
+        "approve_promotion",
         "approve_registration",
         "decide_eligibility",
+        // `decide_investment` — §40.9's `investment-api` intent, and the one
+        // the blueprint gives it. It is `&mut` for the journal append: the
+        // decision is the ledger's answer about what the mandate *would*
+        // admit, and no book, reservation or position moves on either
+        // outcome. The mutator that would move capital is `fund_user`, which
+        // is deliberately absent from this list and asserted absent from
+        // every source of the crate above.
+        "decide_investment",
     ]
     .into_iter()
     .collect();
@@ -1002,6 +1111,108 @@ fn the_api_calls_no_platform_mutator_beyond_the_ten_it_is_allowed() {
     assert!(
         offenders.is_empty(),
         "the API mutates the platform directly rather than raising an intent:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every function the API hands `&mut Platform` to is reviewed here.
+///
+/// The scan above reads `platform.<mutator>(`, and that is the whole of what
+/// it reads. A function elsewhere that *takes* `&mut Platform` and calls a
+/// mutator on it is a second door into the same state, opened from the API
+/// and invisible to that scan — a caller could reach `submit_order` through
+/// one and the allowlist above would stay green. Two such doors already
+/// exist, both deliberate, and this test is what stops a third from arriving
+/// unremarked.
+///
+/// Written after the capital-fabric declaration added the second one. The
+/// first, `Statement::observe_into`, had gone unenumerated since the wallet
+/// statement landed: not a defect in it, but a hole in the check, and a hole
+/// in a check is the same shape of defect as a limit that cannot fire.
+#[test]
+fn every_function_the_api_hands_a_mutable_platform_to_is_named_here() {
+    // What may take `&mut Platform` from this layer, and why:
+    //
+    // * `observe_into` — `Statement::observe_into`, which walks the holdings
+    //   of the custodian statement the root read and hands each to
+    //   `Platform::observe_statement`, itself on the allowlist above. The
+    //   file is a mount, never a request body.
+    // * `apply_pending` — `FabricFeed::apply_pending`, which walks the
+    //   commands of the capital-fabric declaration the root read and hands
+    //   each, through the kernel's own `Declaration::apply_counting`, to
+    //   `Platform::decide_fabric`. Same class as the statement: a file a
+    //   person put on the mount, no request body, and every command becomes a
+    //   record whether the control admits it or refuses it. `decide_fabric`
+    //   moves nothing — ADR 0021 permits the gate and refuses the engine, an
+    //   admitted verdict carries no way to execute, and nothing in this
+    //   process consumes one.
+    // * `drain_into` — `MeshBackbone::drain_into`, which hands each decoded
+    //   cell delta to `Platform::ingest_cell_report`, itself on the allowlist
+    //   above. The centre judges the report; the cell does not write state.
+    // * `harden_central` — start-up assembly, once, before anything is
+    //   served: it installs the operator key on the empty plane and refuses
+    //   the combination that must not run. Assembly, not a route.
+    // * `pending_policy` — the shipping seam, which asks the platform for the
+    //   slots as it builds each cell's payload; `&mut` is for the journal
+    //   append, and the mutators it reaches (`issue_cycle_whitelist`,
+    //   `issue_episodic_digest`) are reviewed above.
+    // * `load_wallet_statement`, `load_fabric_declaration` — the root's own
+    //   two loaders, which exist to call the first and second entries here.
+    //
+    // A new entry is a reviewed change: name it with its reason, and say
+    // which platform mutator it reaches.
+    let reviewed: BTreeSet<&str> = [
+        "observe_into",
+        "apply_pending",
+        "drain_into",
+        "harden_central",
+        "pending_policy",
+        "load_wallet_statement",
+        "load_fabric_declaration",
+    ]
+    .into_iter()
+    .collect();
+
+    let mut seen = BTreeSet::new();
+    let mut offenders = Vec::new();
+    for path in files_with_extension("backend/crates/apps/qip-api/src", "rs") {
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+        let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+        for (index, _) in compact.match_indices("(&mutplatform") {
+            // The callee is the identifier immediately left of the `(`, which
+            // for a method call is the method and for a free function is its
+            // last path segment. Either is the name a reviewer looks up.
+            let name: String = compact[..index]
+                .chars()
+                .rev()
+                .take_while(|c| is_identifier_char(*c))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            if name.is_empty() {
+                continue;
+            }
+            seen.insert(name.clone());
+            if !reviewed.contains(name.as_str()) {
+                offenders.push(format!("{} hands &mut Platform to {name}", path.display()));
+            }
+        }
+    }
+
+    // Premise: the scan found the doors that are known to exist. A scan that
+    // matched nothing would pass this test for ever while every door stood
+    // open, which is the failure mode the test is about.
+    for expected in ["observe_into", "apply_pending", "drain_into"] {
+        assert!(
+            seen.contains(expected),
+            "{expected} was not seen; the `&mut Platform` scan is blind, and it found {seen:?}"
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "the API hands a mutable platform to a function this test has not reviewed:\n{}",
         offenders.join("\n")
     );
 }

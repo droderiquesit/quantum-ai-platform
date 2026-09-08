@@ -384,7 +384,7 @@ being true on 2026-09-05.** Rewritten by the architecture sweep the same day.
 The old heading and its opening sentence are quoted above rather than silently
 replaced, so that a reader who has seen this record before can tell it was
 superseded rather than misremembered. Every claim below is read off the `infra.yml` run logs as reported
-to [the missing-infrastructure register](../ops/missing-infrastructure-register.md),
+to the missing-infrastructure register (`docs/ops/missing-infrastructure-register.md`, consolidated into `docs/DELIVERY-STATUS.md` on 2026-09-07),
 sections "Applied by ADR 0040's record" and "Runs 36 and 37"; nothing in
 `algorik-dev` was observed from here.
 

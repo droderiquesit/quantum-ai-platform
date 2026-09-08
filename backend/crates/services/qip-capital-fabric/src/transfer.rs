@@ -133,13 +133,13 @@ impl ShortfallAsymmetry {
     }
 
     /// What being short by `gap` for `over` costs.
-    pub fn shortfall_penalty(&self, gap: Decimal, over: Duration) -> Decimal {
-        Self::charge(gap, self.shortfall_bps_annual, over)
+    pub fn shortfall_penalty(&self, gap: Decimal, over: Duration) -> Result<Decimal> {
+        Self::charge(gap, self.shortfall_bps_annual, over, "shortfall")
     }
 
     /// What being long by `gap` for `over` costs.
-    pub fn surplus_penalty(&self, gap: Decimal, over: Duration) -> Decimal {
-        Self::charge(gap, self.surplus_bps_annual, over)
+    pub fn surplus_penalty(&self, gap: Decimal, over: Duration) -> Result<Decimal> {
+        Self::charge(gap, self.surplus_bps_annual, over, "surplus")
     }
 
     /// The penalty on a signed gap, where negative is short.
@@ -147,7 +147,7 @@ impl ShortfallAsymmetry {
     /// The single entry point where both branches are visible together, so the
     /// asymmetry is a property of one function rather than of two call sites
     /// that happen to be configured differently.
-    pub fn penalty(&self, signed_gap: Decimal, over: Duration) -> Decimal {
+    pub fn penalty(&self, signed_gap: Decimal, over: Duration) -> Result<Decimal> {
         if signed_gap.is_negative() {
             self.shortfall_penalty(signed_gap.abs(), over)
         } else {
@@ -155,12 +155,39 @@ impl ShortfallAsymmetry {
         }
     }
 
-    fn charge(gap: Decimal, bps_annual: f64, over: Duration) -> Decimal {
+    /// The charge, or a refusal naming which side could not be priced.
+    ///
+    /// A penalty of zero is the answer that says "not having the capital there
+    /// costs nothing", which is exactly the finding that stops a transfer being
+    /// planned. So a rate this cannot apply is a refusal and never a figure.
+    /// [`Self::new`] proves both rates finite, and a period is finite, so what
+    /// reaches here is a rate large enough that its product with the gap is not
+    /// representable — a configuration error, not a market state.
+    ///
+    /// **Returned rather than journalled, deliberately.** The fabric's journal
+    /// records the commands [`crate::journal::FabricJournal`] executes and
+    /// [`crate::replay`] re-executes them to check the recorded outcome against
+    /// what the control computes today. Pricing is executed by no fabric
+    /// command: it is a pure function of a [`crate::plan::PrePositionRequest`]
+    /// and this model, reading no clock and no state, so the same inputs
+    /// reproduce this refusal exactly and a journal record of it would be a
+    /// second claim about a fact replay could not verify — the "valid hash,
+    /// disagreeing outcome" case that module exists to refuse. The refusal
+    /// travels instead to [`crate::plan::PrePositioningPlanner::plan`], whose
+    /// caller holds the request that produced it.
+    fn charge(gap: Decimal, bps_annual: f64, over: Duration, side: &str) -> Result<Decimal> {
         let days = over.as_days_f64().max(0.0);
         if days <= 0.0 || !gap.is_positive() {
-            return Decimal::ZERO;
+            return Ok(Decimal::ZERO);
         }
-        gap.apply_bps(bps_annual * days / DAYS_PER_YEAR)
+        let bps = bps_annual * days / DAYS_PER_YEAR;
+        gap.checked_apply_bps(bps).ok_or_else(|| {
+            Error::numeric(format!(
+                "a {side} of {gap} over {days:.2} day(s) at {bps_annual}bp annual is not a \
+                 representable penalty; state a rate this book's gaps can be charged at through \
+                 ShortfallAsymmetry::new, rather than sizing a buffer against an unpriced tail"
+            ))
+        })
     }
 }
 
@@ -455,9 +482,26 @@ impl TransferCostModel {
             .differential_bps_annual(from.currency, to.currency)
             * exposed_days
             / DAYS_PER_YEAR;
-        let funding_differential = amount.apply_bps(differential_bps);
-        let in_flight_opportunity =
-            amount.apply_bps(self.opportunity_bps_annual * flight_days / DAYS_PER_YEAR);
+        // Both refuse rather than answer zero. A zero funding differential and
+        // a zero in-flight opportunity cost are what make a transfer look like
+        // it costs only its wire fee, which is the direction that moves capital.
+        let funding_differential = amount.checked_apply_bps(differential_bps).ok_or_else(|| {
+            Error::numeric(format!(
+                "a funding differential of {differential_bps}bp cannot be charged on {amount} \
+                 moving {} into {}; correct the rate for one of those currencies through \
+                 FundingCurve::with_rate before pricing the transfer",
+                from.currency, to.currency
+            ))
+        })?;
+        let opportunity_bps = self.opportunity_bps_annual * flight_days / DAYS_PER_YEAR;
+        let in_flight_opportunity = amount.checked_apply_bps(opportunity_bps).ok_or_else(|| {
+            Error::numeric(format!(
+                "an opportunity cost of {}bp annual over {flight_days:.2} day(s) in flight cannot \
+                 be charged on {amount}; state an opportunity rate this size of transfer can be \
+                 priced at, rather than sending capital that earns nothing for free",
+                self.opportunity_bps_annual
+            ))
+        })?;
 
         let total = fx_conversion + self.wire_fee + funding_differential + in_flight_opportunity;
         let uncertain = fx_conversion + funding_differential.abs() + in_flight_opportunity;

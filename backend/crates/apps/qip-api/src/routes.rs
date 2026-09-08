@@ -413,6 +413,31 @@ pub const ROUTES: &[Route] = &[
                   registry adopts it and answered with that user's updated ledger row",
         success: 200,
     },
+    // The typed-intent surface the blueprint's §40.9 gives `investment-api`:
+    // it raises an investment request and it never raises an order. Until it
+    // existed the ledger's own mandate gate — `UserLedger::admit`, which
+    // decides against eligibility, entitlement, the mandate's currency, its
+    // investable capital net of what is already at work, and the share it
+    // tolerates losing at one strategy — was written, tested and reachable
+    // from nothing a deployed process ran. A limit no running process can
+    // consult reads as protection and is not.
+    //
+    // It moves no capital, and the body says so in a `funded` field that is
+    // always false. An admitted request is a statement that the mandate would
+    // admit this much at this strategy now; `Platform::fund_user` is what
+    // funds, and it re-runs the gates because the books may have moved. The
+    // two are deliberately not chained here: a request that funded itself
+    // would be an order raised by an application API, which K3 refuses.
+    Route {
+        method: Method::Post,
+        pattern: "/ledger/users/:user/investment-requests",
+        required_role: Role::Operator,
+        summary: "raise one user's investment request against their mandate and answer the \
+                  ledger's verdict — admitted on a stated basis, or refused naming the limit \
+                  that refused it — journalled under the authenticated operator; it funds \
+                  nothing and places no order",
+        success: 200,
+    },
     Route {
         method: Method::Get,
         pattern: "/wallet",
@@ -490,6 +515,15 @@ pub const ROUTES: &[Route] = &[
                   terms cited in the body and put the credential in Secret Manager under the \
                   variable the body names; journalled before it stands, answered with the \
                   source's new standing",
+        success: 200,
+    },
+    Route {
+        method: Method::Post,
+        pattern: "/strategies/:strategy/promotion-approvals",
+        required_role: Role::Operator,
+        summary: "sign the authenticated operator's name to a promotion onto a rung that holds \
+                  capital; the first signature is held and the second performs the promotion, \
+                  which the gate may still refuse on the evidence",
         success: 200,
     },
     // --- the live surface ---------------------------------------------------
@@ -1087,6 +1121,80 @@ impl Api {
                     ),
                 }
             }
+            (Method::Post, "/ledger/users/:user/investment-requests") => {
+                // The user is the path's third segment under the prefix; the
+                // route matched, so it is present.
+                let Some(user) = path_segment(&request.path, 2) else {
+                    return Response::json(404, r#"{"error":"no such route"}"#);
+                };
+                let raised = match request
+                    .body_as_str()
+                    .map_err(|error| error.message().to_string())
+                    .and_then(|body| {
+                        crate::ledger_views::InvestmentRequestBody::parse(body, user, now)
+                    }) {
+                    Ok(raised) => raised,
+                    Err(reason) => {
+                        return Response::json(400, crate::registration_views::refusal(&reason));
+                    }
+                };
+                // The user is resolved against the mandate registry rather
+                // than taken from the path, exactly as the eligibility route
+                // does it. The ledger would refuse an unenrolled user with
+                // `NoMandate` and answer 200 with a verdict, which reads as a
+                // decision about a person the platform has never heard of; a
+                // 404 says what actually happened.
+                if !platform
+                    .user_ledger()
+                    .mandates()
+                    .keys()
+                    .any(|held| held.as_str() == user)
+                {
+                    return Response::json(
+                        404,
+                        crate::registration_views::refusal(&format!(
+                            "no mandate is registered for `{user}`, and an investment request is \
+                             evaluated against a mandate; enrol one first"
+                        )),
+                    );
+                }
+                let investment = match raised.request() {
+                    Ok(request) => request,
+                    Err(reason) => {
+                        return Response::json(400, crate::registration_views::refusal(&reason));
+                    }
+                };
+                // The operator is the authenticated principal, dated at the
+                // instant the credential was issued rather than at `now`, for
+                // the reason the eligibility route gives: an identity stamped
+                // `now` is fresh by construction and the kernel's freshness
+                // rule would be a control that cannot fire.
+                let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
+                    principal.subject.clone(),
+                    "api-bearer-token",
+                    principal.issued_at,
+                );
+                match platform.decide_investment(investment, &operator, raised.reason(), now) {
+                    Ok(decision) => {
+                        // Serialised rather than named: the application layer
+                        // holds no edge to the capital crate, so the view is
+                        // read out of the decision's own JSON.
+                        let rendered = serde_json::to_value(&decision)
+                            .map_err(|error| error.to_string())
+                            .and_then(|decision| {
+                                crate::ledger_views::decided_investment(
+                                    &platform, &decision, user, now,
+                                )
+                            });
+                        let (status, body) = crate::ledger_views::render_fallible(rendered);
+                        Response::json(status, body)
+                    }
+                    Err(error) => Response::json(
+                        crate::registration_views::refusal_status(&error),
+                        crate::registration_views::refusal(error.message()),
+                    ),
+                }
+            }
             (Method::Get, "/wallet") => {
                 let (status, body) = crate::ledger_views::render_fallible(
                     crate::ledger_views::wallet(&platform, now),
@@ -1122,6 +1230,55 @@ impl Api {
                     crate::registration_views::registrations(&platform, now),
                 );
                 Response::json(status, body)
+            }
+            (Method::Post, "/strategies/:strategy/promotion-approvals") => {
+                let Some(strategy) = path_segment(&request.path, 1) else {
+                    return Response::json(404, r#"{"error":"no such route"}"#);
+                };
+                let body = match request
+                    .body_as_str()
+                    .map_err(|error| error.message().to_string())
+                    .and_then(crate::registration_views::PromotionApprovalRequest::parse)
+                {
+                    Ok(body) => body,
+                    Err(reason) => {
+                        return Response::json(400, crate::registration_views::refusal(&reason));
+                    }
+                };
+                // The approver is the authenticated principal and never the
+                // body — the same rule the registration approval keeps, and
+                // the one that makes this an approval rather than a claim to
+                // have been approved.
+                //
+                // `issued_at`, never `now`: passing `now` here would make the
+                // kernel's freshness check compute an age of zero on every
+                // call and the fifteen-minute window a control that cannot
+                // fire. That exact defect has already been fixed once on the
+                // registration route below; it is written here so it is not
+                // introduced a second time on the route that moves capital.
+                let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
+                    principal.subject.clone(),
+                    "api-bearer-token",
+                    principal.issued_at,
+                );
+                match platform.approve_promotion(
+                    &qip_contracts::StrategyId::new(strategy),
+                    &operator,
+                    &body.rationale,
+                    now,
+                ) {
+                    Ok(entry) => match serde_json::to_string(&entry) {
+                        Ok(rendered) => Response::json(200, rendered),
+                        Err(error) => Response::json(
+                            500,
+                            crate::registration_views::refusal(&error.to_string()),
+                        ),
+                    },
+                    Err(error) => Response::json(
+                        crate::registration_views::refusal_status(&error),
+                        crate::registration_views::refusal(error.message()),
+                    ),
+                }
             }
             (Method::Post, "/registrations/:source/approve") => {
                 // The source is the path's second segment under the prefix;

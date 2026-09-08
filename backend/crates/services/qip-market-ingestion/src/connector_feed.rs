@@ -20,6 +20,7 @@
 
 use crate::adapter::{DataAdapter, SensedRecord, SourceDescriptor};
 use crate::connector::checkpoint::Checkpoint;
+use crate::connector::journal::{StreamJournal, StreamLedger};
 use crate::connector::runtime::{ConnectorRuntime, RuntimeConfig};
 use crate::connector::transport::{HttpSourceTransport, SourceTransport};
 use crate::connector::{SourceConnector, manifest::SourceManifest};
@@ -27,9 +28,11 @@ use crate::connectors::{
     AlpacaBarsConnector, CoinbaseTickerConnector, FrankfurterRatesConnector, KalshiMarketsConnector,
 };
 use qip_core::error::{Error, Result};
+use qip_core::kv::KeyValueStore;
 use qip_core::{ObjectId, Timestamp};
 use qip_events::Topic;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// The sources this build can open by name.
 ///
@@ -123,6 +126,11 @@ pub struct ConnectorFeed {
     transport: Box<dyn SourceTransport + Send>,
     runtime: ConnectorRuntime,
     descriptor: SourceDescriptor,
+    /// The durable record of the stream, when a caller has given this feed a
+    /// store to keep one on. `None` is a feed whose figures die with the
+    /// process — the correct shape for a contract test driving an emulator,
+    /// and the wrong one for anything measuring a source *sustained*.
+    journal: Option<StreamJournal>,
 }
 
 impl ConnectorFeed {
@@ -216,7 +224,73 @@ impl ConnectorFeed {
             transport,
             runtime,
             descriptor,
+            journal: None,
         })
+    }
+
+    /// Keep this stream's record on `store`, and resume where the last process
+    /// left off.
+    ///
+    /// # The gap this closes
+    ///
+    /// Every piece of the restart story existed before this method and none of
+    /// them met: [`StreamJournal`] recorded sessions, both time axes and the
+    /// dedup ratio durably, [`Self::checkpoint`] could take a resume position
+    /// and [`Self::resume`] could apply one — and the only caller that ever put
+    /// the four calls in the right order was a test. The two composition roots
+    /// that construct a `ConnectorFeed` called none of them, so every restart
+    /// began with an empty dedup window and republished the source's whole
+    /// table as new observations, and the figures an operator would need to
+    /// claim a source had streamed for a week reset to zero at each start-up.
+    /// A control correct in every part and assembled by nobody is not a
+    /// control; it is the shape of one.
+    ///
+    /// So the ordering lives here, one seam below the root, where it cannot be
+    /// got wrong by a root that forgets a step.
+    ///
+    /// # Why this must precede the first poll
+    ///
+    /// [`crate::connector::DedupWindow::restore`] refuses a window that has
+    /// already observed something, so calling this after a poll returns that
+    /// refusal rather than a partial restore. Refusing is the point: a feed
+    /// that quietly restored half a window would suppress some redeliveries and
+    /// republish others, and no downstream figure would show which.
+    ///
+    /// Returns the number of fingerprints taken from the previous session's
+    /// checkpoint. Zero is not a failure — it is a first session, or a
+    /// checkpoint that genuinely carried nothing — but it does mean the next
+    /// poll will republish whatever the source re-serves, which is worth a log
+    /// line at a root.
+    pub fn journal_to(&mut self, store: Arc<dyn KeyValueStore>) -> Result<usize> {
+        if self.journal.is_some() {
+            return Err(Error::invalid(format!(
+                "the `{}` feed already keeps a journal. Attaching a second would split one \
+                 stream's record across two ledgers, and the session count each reported would \
+                 be a fraction of the truth; open one journal per feed, at start-up",
+                self.descriptor.name
+            )));
+        }
+        let (journal, resumed) = StreamJournal::open(store, &self.descriptor.name)?;
+        let taken = match resumed {
+            Some(checkpoint) => self.runtime.resume(self.connector.as_mut(), &checkpoint)?,
+            None => 0,
+        };
+        self.journal = Some(journal);
+        Ok(taken)
+    }
+
+    /// What this stream has done across every process that carried it, when a
+    /// journal is kept.
+    ///
+    /// `None` rather than an empty ledger for a feed with no store: a ledger of
+    /// zeroes and a stream that has genuinely done nothing read identically,
+    /// and the completion plan's seven-day bar is exactly the claim that
+    /// confusion would corrupt.
+    pub const fn ledger(&self) -> Option<&StreamLedger> {
+        match &self.journal {
+            Some(journal) => Some(journal.ledger()),
+            None => None,
+        }
     }
 
     /// Release what [`Self::open`] acquired, at an instant the caller owns.
@@ -227,17 +301,40 @@ impl ConnectorFeed {
     /// directly — but `runtime` and `connector` are private and there was no
     /// accessor, so it named a call no root could make, and a node that
     /// stopped cleanly released the connector's session not at all.
+    /// Nothing is committed here, deliberately. [`DataAdapter::poll`] commits
+    /// the position on every poll, so the store already holds the window as of
+    /// the last record; a second commit at shutdown would write the identical
+    /// checkpoint and no test could tell whether it had run. A line no test can
+    /// distinguish is a line that will one day be wrong without failing.
     pub fn shutdown(&mut self, at: Timestamp) -> Result<()> {
         self.runtime.shutdown(self.connector.as_mut(), at)
     }
 
-    /// The cursor a restart would resume from.
+    /// The cursor a restart would resume from, and the dedup window it would
+    /// resume with.
     ///
     /// Exposed for the same reason: [`ConnectorRuntime::checkpoint`] is public
     /// and was unreachable through this bridge, so a restarted node had no
     /// cursor to resume from and would re-poll the manifest's whole window.
     pub fn checkpoint(&self, at: Timestamp) -> Checkpoint {
         self.runtime.checkpoint(at)
+    }
+
+    /// Restore the position and the dedup window the last process left.
+    ///
+    /// Returns the fingerprints taken. Call it before the first
+    /// [`DataAdapter::poll`]: [`crate::connector::DedupWindow::restore`]
+    /// refuses a window that has already observed something, so a resume after
+    /// a poll is an error rather than a partial restore, and the error names
+    /// what to do instead.
+    ///
+    /// This is the half of the restart story `checkpoint` could not tell on its
+    /// own. Taking a checkpoint was reachable through this bridge and applying
+    /// one was not, so a composition root could write a resume position it had
+    /// no way to use — the same shape as a limit that cannot fire, one seam
+    /// earlier.
+    pub fn resume(&mut self, checkpoint: &Checkpoint) -> Result<usize> {
+        self.runtime.resume(self.connector.as_mut(), checkpoint)
     }
 }
 
@@ -250,6 +347,28 @@ impl DataAdapter for ConnectorFeed {
         let report = self
             .runtime
             .poll(self.connector.as_mut(), self.transport.as_mut(), until)?;
+        // Recorded before the records are released, and the error propagates
+        // rather than being swallowed. A stream whose durable record cannot be
+        // written is a stream nobody can afterwards say anything true about,
+        // and the platform's own rule is that the louder of two disagreeing
+        // claims is the wrong one. Nothing here retries: the checkpoint stays
+        // where it was, so the next process re-fetches what this poll withheld.
+        // Then the position, so a process killed between two polls resumes with
+        // the window this poll built rather than with an empty one. Committing
+        // per poll and not at shutdown is the whole point: the failures being
+        // survived here are the ones that do not run a shutdown.
+        //
+        // The failure ordering is deliberate. A poll recorded whose checkpoint
+        // did not commit reads as duplicates on the next run, which
+        // `StreamLedger::duplicate_ratio` shows; a checkpoint committed for a
+        // poll that was never recorded would be invisible.
+        if let Some(journal) = self.journal.as_mut() {
+            journal.record(&report, until)?;
+        }
+        let checkpoint = self.runtime.checkpoint(until);
+        if let Some(journal) = self.journal.as_mut() {
+            journal.commit(&checkpoint)?;
+        }
         Ok(report
             .admitted
             .into_iter()

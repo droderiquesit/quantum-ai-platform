@@ -51,6 +51,7 @@ pub mod dna;
 pub mod episodic;
 pub mod factory;
 pub mod foundry;
+pub mod horizon;
 pub mod insights;
 pub mod learning;
 pub mod models;
@@ -63,6 +64,7 @@ pub mod whitelist;
 pub use dna::{DnaPayload, StrategyDna};
 pub use episodic::{EpisodicIssue, EpisodicOutcome};
 pub use factory::{StrategyCandidate, StrategyFactory, StrategyReview};
+pub use horizon::{HorizonArming, HorizonClaim, HorizonPolicy, PoolReconciler};
 pub use learning::{
     CellOutcome, DispositionInstruction, DispositionOutcome, DispositionRefused,
     DispositionedPosition, LearningReport, LearningVerdict, PositionDiscrepancy,

@@ -112,15 +112,31 @@ impl FeeSchedule {
     }
 
     /// What a notional would be charged. Negative is a rebate paid to you.
+    ///
+    /// Refuses rather than prices when the rate cannot be applied. Only
+    /// [`Self::tiered`] checks its rates are finite; [`Self::flat`] takes what
+    /// it is given and a schedule can also arrive by deserialisation, so a
+    /// `NaN` or an astronomical rate reaches here. Both used to come back as a
+    /// fee of exactly zero — the one wrong answer that makes a venue look free
+    /// and wins it the order.
     pub fn fee(
         &self,
         notional: Decimal,
         liquidity: Liquidity,
         trailing_volume: Decimal,
-    ) -> Decimal {
+    ) -> Result<Decimal> {
+        let rate_bps_f64 = self.rate_bps_f64(liquidity, trailing_volume);
         notional
             .abs()
-            .apply_bps(self.rate_bps_f64(liquidity, trailing_volume))
+            .checked_apply_bps(rate_bps_f64)
+            .ok_or_else(|| {
+                Error::numeric(format!(
+                    "a {} rate of {rate_bps_f64}bp cannot be charged on a notional of {notional}; \
+                     rebuild the schedule through FeeSchedule::tiered, which refuses a non-finite \
+                     rate, or route a size whose fee is representable",
+                    liquidity.as_str()
+                ))
+            })
     }
 }
 

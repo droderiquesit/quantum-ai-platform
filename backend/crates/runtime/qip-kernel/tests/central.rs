@@ -36,6 +36,7 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Currency, Decimal, ObjectId, dec};
 use qip_financial::asset_class::{InstrumentType, Sector};
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
+use qip_financial::extensions::{Extension, PrivateAssetDetails};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance as DataProvenance};
 use qip_financial::universe::Universe;
@@ -45,6 +46,7 @@ use qip_kernel::central::{
     ReconciliationBreak, RetirementDisposition, StrategyCandidate, StrategyDna, WhitelistIssue,
     WhitelistOutcome, WhitelistedMarket, WhitelistedVenue, capital_subject,
 };
+use qip_kernel::central::{HorizonArming, HorizonClaim, HorizonPolicy};
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::Stage;
 use qip_kernel::platform::Platform;
@@ -57,6 +59,7 @@ use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
 use qip_observability::metrics::{labels, names};
+use qip_optimization_engine::horizons::Horizon;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use qip_simulation_engine::validation::PurgedSplit;
 use qip_strategy::catalogue::FeatureCatalogue;
@@ -2906,6 +2909,1180 @@ fn the_learn_stage_measures_no_family_structure_on_a_corpus_the_centre_never_gra
     assert_eq!(
         entry.family_structure, None,
         "and no family structure was measured on capital nobody granted"
+    );
+    Ok(())
+}
+
+// --- blueprint §23.4: the horizon gate the LEARN stage arms ------------------
+
+/// The desk's §23.4 statement, with the whole risk budget in one bucket and a
+/// single unit in the one every fixture below claims against.
+///
+/// `deployable` is the pool `Horizon::HoursToDays` is allocated against, and
+/// every claim here names that horizon, so a test can make a pool tight or
+/// roomy by moving one number without disturbing the sum — which
+/// `CapitalPools::new` refuses to let drift.
+fn horizon_policy(strategies: &[&StrategyId], deployable: Decimal) -> Result<HorizonPolicy> {
+    let inventory = Decimal::from_int(10_000_000)
+        .checked_sub(deployable)
+        .ok_or_else(|| qip_core::Error::numeric("the split fits inside the budget"))?;
+    Ok(HorizonPolicy {
+        available_inventory: inventory,
+        deployable_capital: deployable,
+        capital_not_reserved_for_calls: Decimal::ZERO,
+        reserved_capital: Decimal::ZERO,
+        claims: strategies
+            .iter()
+            .map(|strategy| HorizonClaim {
+                strategy: (*strategy).clone(),
+                source: "research-enrolment".to_string(),
+                horizon: Horizon::HoursToDays,
+            })
+            .collect(),
+        despite: None,
+    })
+}
+
+/// A platform whose central plane carries `policy`, with room at the cell for
+/// more than the two grants the default per-cell limit leaves.
+fn platform_with_horizons(policy: HorizonPolicy) -> Result<Platform> {
+    let mut config = PlatformConfig::default();
+    config.central.per_cell = Decimal::from_int(9_000_000);
+    config.central.horizons = Some(policy);
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    Platform::new(config, context, Telemetry::silent(), universe(), limits())
+}
+
+/// The arming the LEARN stage journalled on the last cycle.
+fn journalled_arming(platform: &Platform) -> Result<Option<HorizonArming>> {
+    Ok(platform
+        .replay_journal(
+            &qip_events::EventFilter::new().topic(qip_events::Topic::LearningCompleted),
+        )?
+        .last()
+        .ok_or_else(|| qip_core::Error::not_found("the cycle journalled an entry"))?
+        .decode::<qip_kernel::platform::CycleJournalEntry>()?
+        .body
+        .horizon_arming)
+}
+
+/// Blueprint §23.4 through the cycle: LEARN arms the pool gate on the
+/// allocator's own budgets, and a promotion whose bucket is already over its
+/// pool is refused rather than trimmed.
+///
+/// The arithmetic, the seam and the gate were each complete and tested before
+/// this, and reachable by nobody — the shape
+/// `.claude/rules/domains/risk-and-execution.md` names as a defect rather than
+/// a spare part. What is proven here is the call path and nothing else: a real
+/// cycle's LEARN stage, the plane's own allocator sizing the proposal book, and
+/// the refusal arriving out of `StrategyFactory::promote`.
+#[test]
+fn a_promotion_whose_bucket_is_over_its_pool_is_refused_once_the_learn_stage_has_armed_the_gate()
+-> Result<()> {
+    let incumbent = StrategyId::new("horizon-incumbent");
+    let candidate = StrategyId::new("horizon-candidate");
+    // One currency unit of deployable capital, so any budget at all breaches.
+    let mut platform =
+        platform_with_horizons(horizon_policy(&[&incumbent, &candidate], dec!("1"))?)?;
+
+    // The incumbent reaches a capital-holding rung *before* the gate is armed,
+    // which is the position a desk is really in: the pool was divided after
+    // strategies were already drawing on it.
+    register(platform.central_mut(), &incumbent, CELL)?;
+    walk_to(platform.central_mut(), &incumbent, GateStage::Pilot)?;
+    register(platform.central_mut(), &candidate, CELL)?;
+    walk_to(platform.central_mut(), &candidate, GateStage::Shadow)?;
+
+    let report = platform.run_cycle(start());
+    let learn = report
+        .stage(Stage::Learn)
+        .ok_or_else(|| qip_core::Error::not_found("the LEARN stage ran"))?;
+    assert!(
+        learn
+            .detail
+            .contains("the §23.4 horizon gate is armed on 2"),
+        "the stage says what it armed the gate with: {}",
+        learn.detail
+    );
+
+    // The premise, and the half that makes the refusal below mean anything: the
+    // allocator really did size both strategies, and the figures the gate holds
+    // are its sizes rather than a number typed beside the split.
+    let arming = journalled_arming(&platform)?
+        .ok_or_else(|| qip_core::Error::not_found("the cycle journalled its arming"))?;
+    assert_eq!(
+        arming.strategies_budgeted, 2,
+        "both proposals were sized by the allocator: {arming:?}"
+    );
+    assert!(
+        arming.budgeted > dec!("1"),
+        "the budgets the allocator produced exceed the deployable pool, or this \
+         test measures nothing: {}",
+        arming.budgeted
+    );
+    let deployable = arming
+        .standings
+        .iter()
+        .find(|standing| standing.bucket.as_str() == "hours_to_days")
+        .ok_or_else(|| qip_core::Error::not_found("the contested bucket is reported"))?;
+    assert_eq!(deployable.pool, dec!("1"));
+    assert_eq!(
+        deployable.committed, arming.budgeted,
+        "both budgets are charged to the one pool both strategies claimed"
+    );
+
+    // And the refusal, out of the ordinary promotion path.
+    let approval = dual_approval(
+        candidate.as_str(),
+        start(),
+        "every gate check passed with the evidence attached",
+    )?;
+    let error = platform
+        .central_mut()
+        .factory_mut()
+        .promote(&candidate, Some(approval), "the gate passed", start())
+        .expect_err("an over-committed pool must refuse the promotion");
+    assert_eq!(error.code(), "denied", "{error:?}");
+    let message = error.to_string();
+    assert!(
+        message.contains("horizon-candidate"),
+        "the refusal names the promotion it is about: {message}"
+    );
+    assert!(
+        message.contains("hours_to_days is over its pool of 1 by"),
+        "the refusal names the bucket, its pool and the overdraft: {message}"
+    );
+    assert!(
+        message.contains("will not trim them for you"),
+        "and says it declined to trim rather than choosing which strategy goes \
+         unfunded: {message}"
+    );
+    assert_eq!(
+        platform.central().factory().stage_of(&candidate),
+        GateStage::Shadow,
+        "the refusal left the candidate where it was"
+    );
+    Ok(())
+}
+
+/// The other half, without which the test above proves only that something
+/// refuses: a gate that refused every promotion would satisfy every assertion
+/// in it.
+#[test]
+fn the_gate_the_learn_stage_arms_admits_a_promotion_the_pools_have_room_for() -> Result<()> {
+    let incumbent = StrategyId::new("horizon-incumbent");
+    let candidate = StrategyId::new("horizon-candidate");
+    // The whole budget deployable: every claim below is at that horizon, and
+    // the allocator cannot size more than the budget it was given.
+    let mut platform = platform_with_horizons(horizon_policy(
+        &[&incumbent, &candidate],
+        Decimal::from_int(10_000_000),
+    )?)?;
+    register(platform.central_mut(), &incumbent, CELL)?;
+    walk_to(platform.central_mut(), &incumbent, GateStage::Pilot)?;
+    register(platform.central_mut(), &candidate, CELL)?;
+    walk_to(platform.central_mut(), &candidate, GateStage::Shadow)?;
+
+    platform.run_cycle(start());
+    let arming = journalled_arming(&platform)?
+        .ok_or_else(|| qip_core::Error::not_found("the cycle journalled its arming"))?;
+    // Premise: the gate really is armed and really is holding figures, so the
+    // admission below is a gate passing rather than a gate absent.
+    assert_eq!(arming.strategies_budgeted, 2);
+    assert!(!arming.is_breached(), "{arming:?}");
+
+    let approval = dual_approval(
+        candidate.as_str(),
+        start(),
+        "every gate check passed with the evidence attached",
+    )?;
+    platform.central_mut().factory_mut().promote(
+        &candidate,
+        Some(approval),
+        "the gate passed",
+        start(),
+    )?;
+    assert_eq!(
+        platform.central().factory().stage_of(&candidate),
+        GateStage::Pilot
+    );
+
+    // And the verdict is on the record, because a promotion taken over an
+    // unresolved horizon disagreement is otherwise indistinguishable afterwards
+    // from one taken on agreement.
+    let verdict = platform
+        .central()
+        .factory()
+        .ledger()
+        .history(&candidate)
+        .last()
+        .and_then(|entry| entry.horizon.clone())
+        .ok_or_else(|| {
+            qip_core::Error::not_found("the ledger entry carries the horizon verdict")
+        })?;
+    assert_eq!(verdict.horizon.as_str(), "hours_to_days");
+    assert!(verdict.treatment.contains("deployable capital"));
+    assert!(!verdict.decided_over_disagreement());
+    Ok(())
+}
+
+/// The unfunded commitment liability the platform's own commitment book holds
+/// reaches the gate, and the reserved pool has to meet it as well as the
+/// positions booked at the years horizon.
+///
+/// A commitment nobody allocated against is exactly the one that surprises a
+/// desk when it is called. The liability is measured at the cycle's instant
+/// rather than restated in the policy beside the split: two claims about one
+/// number disagree, and the one in configuration would be the one nobody
+/// re-derived.
+#[test]
+fn the_commitment_books_unfunded_total_reaches_the_gate_the_learn_stage_arms() -> Result<()> {
+    let candidate = StrategyId::new("horizon-candidate");
+    let mut policy = horizon_policy(&[&candidate], Decimal::from_int(9_000_000))?;
+    // A million of reserved capital against nine hundred thousand of unfunded
+    // commitments, so the years pool has room for the liability and not for
+    // much else.
+    policy.available_inventory = Decimal::ZERO;
+    policy.capital_not_reserved_for_calls = Decimal::ZERO;
+    policy.reserved_capital = Decimal::from_int(1_000_000);
+    let mut config = PlatformConfig::default();
+    config.central.per_cell = Decimal::from_int(9_000_000);
+    config.central.horizons = Some(policy);
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut universe = universe();
+    universe.insert(private_fund(
+        "PEF",
+        dec!("1000000"),
+        dec!("100000"),
+        dec!("0"),
+        dec!("400000"),
+    )?)?;
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe, limits())?;
+
+    register(platform.central_mut(), &candidate, CELL)?;
+    walk_to(platform.central_mut(), &candidate, GateStage::Shadow)?;
+    platform.run_cycle(start());
+
+    let arming = journalled_arming(&platform)?
+        .ok_or_else(|| qip_core::Error::not_found("the cycle journalled its arming"))?;
+    assert_eq!(
+        arming.liability,
+        dec!("900000"),
+        "the liability is the commitment book's own unfunded total, not a \
+         figure the policy restated: {arming:?}"
+    );
+    let years = arming
+        .standings
+        .iter()
+        .find(|standing| standing.bucket.as_str() == "years")
+        .ok_or_else(|| qip_core::Error::not_found("the years bucket is reported"))?;
+    assert_eq!(
+        years.committed,
+        dec!("900000"),
+        "the reserved pool is charged the liability although no strategy \
+         budgeted for it"
+    );
+    // Premise: nothing is budgeted at the years horizon at all, so the charge
+    // above is the liability and nothing else.
+    assert!(!years.is_breached(), "the reserved pool still covers it");
+    assert_eq!(years.headroom()?, dec!("100000"));
+    Ok(())
+}
+
+/// A private fund, so the platform's commitment book has an unfunded total to
+/// charge the reserved pool with.
+fn private_fund(
+    symbol: &str,
+    committed: Decimal,
+    called: Decimal,
+    distributed: Decimal,
+    residual: Decimal,
+) -> Result<FinancialObject> {
+    FinancialObject::builder(
+        ObjectId::from_string(format!("obj-{symbol}")),
+        symbol,
+        InstrumentType::PrivateEquityFund,
+        LiquidityProfile::illiquid(90.0, 250.0),
+    )
+    .venue("OTC")
+    .price(dec!("100"))
+    .extension(Extension::PrivateAsset(PrivateAssetDetails {
+        vintage_year: 2024,
+        committed_capital: committed,
+        called_capital: called,
+        distributed_capital: distributed,
+        residual_value: residual,
+        stage: "buyout".to_string(),
+        lockup_years: 7.0,
+        capital_call_notice_days: 10,
+    }))
+    .provenance(DataProvenance::synthetic("administrator", start()))
+    .build(start())
+}
+
+/// A desk that has stated no §23.4 split arms no gate, and its promotions are
+/// exactly what they were before this existed.
+///
+/// The `MaxExpectedShortfall` shape, avoided from the other side. A plane that
+/// armed an empty reconciler would refuse every promotion to a capital-holding
+/// rung for want of a claim — a control that reads as protection, fires always,
+/// and measured nothing.
+#[test]
+fn a_desk_that_has_stated_no_horizon_split_arms_no_gate_and_promotes_as_it_did_before() -> Result<()>
+{
+    let candidate = StrategyId::new("horizon-candidate");
+    let mut platform = platform()?;
+    // Premise: no policy is stated, which is every deployment as this is
+    // written.
+    assert_eq!(platform.central().config().horizons, None);
+    register(platform.central_mut(), &candidate, CELL)?;
+    walk_to(platform.central_mut(), &candidate, GateStage::Shadow)?;
+
+    let report = platform.run_cycle(start());
+    let learn = report
+        .stage(Stage::Learn)
+        .ok_or_else(|| qip_core::Error::not_found("the LEARN stage ran"))?;
+    assert!(
+        !learn.detail.contains("horizon gate"),
+        "the stage arms nothing and says nothing about it: {}",
+        learn.detail
+    );
+    assert_eq!(journalled_arming(&platform)?, None);
+
+    let approval = dual_approval(
+        candidate.as_str(),
+        start(),
+        "every gate check passed with the evidence attached",
+    )?;
+    platform.central_mut().factory_mut().promote(
+        &candidate,
+        Some(approval),
+        "the gate passed",
+        start(),
+    )?;
+    assert_eq!(
+        platform.central().factory().stage_of(&candidate),
+        GateStage::Pilot
+    );
+    assert!(
+        platform
+            .central()
+            .factory()
+            .ledger()
+            .history(&candidate)
+            .last()
+            .is_some_and(|entry| entry.horizon.is_none()),
+        "no assurance was attached, so the entry records no horizon verdict"
+    );
+    Ok(())
+}
+
+/// A split that does not sum to the risk budget stops the plane at start-up.
+///
+/// Refused here rather than at the first promotion, because a split that does
+/// not sum reaches the lifecycle gate as a refusal of every promotion to a
+/// capital-holding rung — indistinguishable, months later, from a book that is
+/// genuinely over-committed.
+#[test]
+fn a_horizon_split_that_does_not_sum_to_the_risk_budget_stops_the_plane_rather_than_the_promotion()
+-> Result<()> {
+    let candidate = StrategyId::new("horizon-candidate");
+    let mut config = CentralConfig::default();
+    let mut policy = horizon_policy(&[&candidate], dec!("1"))?;
+    // One unit short of the budget the desk configured.
+    policy.available_inventory = policy
+        .available_inventory
+        .checked_sub(dec!("1"))
+        .ok_or_else(|| qip_core::Error::numeric("the inventory pool carries a unit to remove"))?;
+    config.horizons = Some(policy);
+    let error = CentralPlane::new(&[7u8; 32], config).expect_err("the plane refuses to start");
+    assert_eq!(error.code(), "invalid", "{error:?}");
+    assert!(
+        error.message().contains("sum exactly"),
+        "the refusal says the pools must sum to the total: {error:?}"
+    );
+
+    // And a policy naming no strategy is refused for the opposite reason: it
+    // would refuse every promotion for want of a claim, which reads as a
+    // control working and is a control with no subject.
+    let empty = CentralConfig {
+        horizons: Some(horizon_policy(&[], dec!("1"))?),
+        ..CentralConfig::default()
+    };
+    let error = CentralPlane::new(&[7u8; 32], empty).expect_err("the plane refuses to start");
+    assert!(error.message().contains("names no strategy"), "{error:?}");
+    Ok(())
+}
+
+/// A cycle whose arming fails closes the gate rather than leaving the last
+/// successful arming in force.
+///
+/// The defect this pins was found by an independent security review of
+/// `27da0c5`, while the gate still had no production producer.
+/// `CentralPlane::arm_horizons` attached its assurance only on the success
+/// path, so a cycle that could no longer measure the pools went on reconciling
+/// promotions against bounds computed from an older liability — the gate
+/// stayed green by being out of date. Refusing a promotion is recoverable; the
+/// next successful arming lets it through. Admitting one against a liability
+/// nobody measured this cycle is not.
+///
+/// Note what is deliberately NOT asserted: that the assurance is detached.
+/// `LifecycleLedger` holds it as an `Option` and `None` is the *ungated*
+/// state — the legitimate one for a plane with no stated policy — so a detach
+/// would admit every promotion instead of refusing it.
+#[test]
+fn an_arming_that_fails_refuses_promotions_rather_than_reusing_the_last_successful_one()
+-> Result<()> {
+    let incumbent = StrategyId::new("horizon-incumbent");
+    let candidate = StrategyId::new("horizon-candidate");
+    let mut platform =
+        platform_with_horizons(horizon_policy(&[&incumbent, &candidate], dec!("1000000"))?)?;
+    register(platform.central_mut(), &incumbent, CELL)?;
+    walk_to(platform.central_mut(), &incumbent, GateStage::Pilot)?;
+    register(platform.central_mut(), &candidate, CELL)?;
+    walk_to(platform.central_mut(), &candidate, GateStage::Shadow)?;
+
+    // The premise, and the half without which the refusal below proves nothing:
+    // one good cycle arms the gate, and a promotion IS admitted through it. If
+    // this ever fails, the assertion after it is passing because the gate was
+    // never armed rather than because a failed arming closed it.
+    let report = platform.run_cycle(start());
+    let learn = report
+        .stage(Stage::Learn)
+        .ok_or_else(|| qip_core::Error::not_found("the LEARN stage ran"))?;
+    assert!(
+        learn
+            .detail
+            .contains("the §23.4 horizon gate is armed on 2"),
+        "the premise: a good cycle armed the gate: {}",
+        learn.detail
+    );
+
+    // Now an arming that fails, at the seam a failing `unfunded_total` reaches:
+    // a negative liability, which `CapitalPools::new` refuses by name.
+    let failed = platform
+        .central_mut()
+        .arm_horizons(dec!("-1"), 0.0, start())
+        .expect_err("a negative liability must refuse the arming");
+    assert!(
+        failed.to_string().contains("unfunded_commitments"),
+        "the arming failed for the reason this test intends, not another: {failed}"
+    );
+
+    // The gate is now closed, not stale. A promotion the FIRST arming would
+    // have admitted — the pool is a million against two small budgets — is
+    // refused, and the refusal names the arming failure rather than a bucket.
+    let approval = dual_approval(
+        candidate.as_str(),
+        start(),
+        "every gate check passed with the evidence attached",
+    )?;
+    let error = platform
+        .central_mut()
+        .factory_mut()
+        .promote(&candidate, Some(approval), "the gate passed", start())
+        .expect_err("a failed arming must close the gate, not leave the old one in force");
+    assert_eq!(error.code(), "denied", "{error:?}");
+    let message = error.to_string();
+    assert!(
+        message.contains("could not be armed this cycle"),
+        "the refusal says the gate is unarmed rather than naming a pool it did not \
+         measure: {message}"
+    );
+    assert!(
+        message.contains("unfunded_commitments"),
+        "and carries the arming failure through, so an operator reads why: {message}"
+    );
+    assert!(
+        message.contains("clears itself as soon as one cycle arms"),
+        "and says the refusal is recoverable rather than a judgement about the \
+         strategy: {message}"
+    );
+    assert_eq!(
+        platform.central().factory().stage_of(&candidate),
+        GateStage::Shadow,
+        "the refusal left the candidate where it was"
+    );
+    Ok(())
+}
+
+/// The drawdown response shrinks what is charged to the §23.4 pools and leaves
+/// the pools themselves at the capital the desk holds.
+///
+/// The asymmetry is the design, not an oversight, and this test exists because
+/// an independent review could not tell the two apart from the code: nothing
+/// exercised a non-unit drawdown multiplier through `arm_horizons`, so both
+/// readings passed the suite. The pools are a statement of capital held and how
+/// liquid it is; the multiplier is an appetite schedule (0.25 at a fifteen per
+/// cent drawdown in the shipped one), and a book that has lost fifteen per cent
+/// does not hold a quarter of its capital. Scaling the denominator too would
+/// put a figure nobody measured on the measuring side of the comparison.
+///
+/// Both halves are asserted because either alone proves nothing: that the
+/// charges moved, and that the pools did not.
+#[test]
+fn a_drawdown_shrinks_the_charges_and_leaves_the_pools_at_the_capital_the_desk_holds() -> Result<()>
+{
+    let first = StrategyId::new("horizon-first");
+    let second = StrategyId::new("horizon-second");
+    // Room in the deployable pool for both budgets, so nothing here turns on a
+    // breach; what is measured is the two sides of the comparison.
+    let mut platform =
+        platform_with_horizons(horizon_policy(&[&first, &second], dec!("4000000"))?)?;
+    register(platform.central_mut(), &first, CELL)?;
+    register(platform.central_mut(), &second, CELL)?;
+
+    // Premise: the schedule really does respond at the drawdown this test uses.
+    // Without this the assertions below would pass on a flat schedule, which is
+    // the shape of a test that guards nothing.
+    let schedule = qip_capital::allocation::DrawdownSchedule::default();
+    assert_eq!(
+        schedule.multiplier_at(0.0),
+        Decimal::ONE,
+        "premise: an undrawn book allocates in full"
+    );
+    let drawn_multiplier = schedule.multiplier_at(0.15);
+    assert!(
+        drawn_multiplier.is_positive() && drawn_multiplier < Decimal::ONE,
+        "premise: a fifteen per cent drawdown allocates less than in full and \
+         more than nothing, so both sides of the comparison are non-trivial: \
+         {drawn_multiplier}"
+    );
+
+    let full = platform
+        .central_mut()
+        .arm_horizons(Decimal::ZERO, 0.0, start())?
+        .ok_or_else(|| qip_core::Error::not_found("the undrawn arming produced a standing"))?;
+    let drawn = platform
+        .central_mut()
+        .arm_horizons(Decimal::ZERO, 0.15, start())?
+        .ok_or_else(|| qip_core::Error::not_found("the drawn arming produced a standing"))?;
+
+    // Premise: the same book was sized both times, and it was sized at all.
+    assert_eq!(full.strategies_budgeted, 2, "{}", full.describe());
+    assert_eq!(drawn.strategies_budgeted, 2, "{}", drawn.describe());
+    assert!(
+        full.budgeted.is_positive(),
+        "premise: the undrawn arming charged something: {}",
+        full.describe()
+    );
+
+    // The numerator moved.
+    assert!(
+        drawn.budgeted < full.budgeted,
+        "the drawdown shrank what is charged: {} against {}",
+        drawn.budgeted,
+        full.budgeted
+    );
+
+    // And the denominator did not. Compared bucket by bucket rather than on the
+    // total, because a scaling that moved capital between pools while holding
+    // the sum would read identically on a total.
+    let pools_of = |arming: &HorizonArming| -> BTreeMap<String, Decimal> {
+        arming
+            .standings
+            .iter()
+            .map(|standing| (standing.bucket.to_string(), standing.pool))
+            .collect()
+    };
+    let undrawn_pools = pools_of(&full);
+    assert_eq!(
+        undrawn_pools.get("hours_to_days"),
+        Some(&dec!("4000000")),
+        "premise: the standings name the desk's stated split: {undrawn_pools:?}"
+    );
+    assert_eq!(
+        pools_of(&drawn),
+        undrawn_pools,
+        "every pool is the capital the desk holds, whatever the drawdown \
+         response is doing to the charges against it"
+    );
+
+    // The committed side of the same standings moved, which is what makes the
+    // equality above a statement about the pools and not about an empty book.
+    let committed_of = |arming: &HorizonArming| -> Option<Decimal> {
+        arming
+            .standings
+            .iter()
+            .find(|standing| standing.bucket.to_string() == "hours_to_days")
+            .map(|standing| standing.committed)
+    };
+    let undrawn_committed = committed_of(&full)
+        .ok_or_else(|| qip_core::Error::not_found("the undrawn standing names the bucket"))?;
+    let drawn_committed = committed_of(&drawn)
+        .ok_or_else(|| qip_core::Error::not_found("the drawn standing names the bucket"))?;
+    assert!(
+        drawn_committed < undrawn_committed,
+        "the charge against the bucket fell with the book: {drawn_committed} \
+         against {undrawn_committed}"
+    );
+    Ok(())
+}
+
+/// A drawdown deep enough to stop all deployment still charges the unfunded
+/// commitment liability against the reserved pool, and the years bucket can
+/// still breach.
+///
+/// This is the case that decides which reading of §23.4 is right. At the
+/// schedule's deepest step the multiplier is zero, so the allocator budgets
+/// nothing and no charge a drawdown could scale exists. If the pools scaled
+/// with it they would all be zero, `CapitalPools::new` would refuse the split
+/// by name, the arming would fail and `UnarmedHorizons` would refuse every
+/// promotion to a capital-holding rung — a control firing on the claim that the
+/// desk holds nothing, at the one drawdown where nothing could breach anyway. A
+/// capital call does not shrink because the platform chose to deploy less, so
+/// the liability is charged in full against reserved capital the desk still
+/// has, and the gate keeps the only judgement it can still usefully make.
+#[test]
+fn a_drawdown_deep_enough_to_stop_all_deployment_still_charges_the_commitment_liability()
+-> Result<()> {
+    let first = StrategyId::new("horizon-first");
+    let second = StrategyId::new("horizon-second");
+    // A reserved pool of a million, taken out of the inventory bucket so the
+    // four still sum exactly to the risk budget.
+    let mut policy = horizon_policy(&[&first, &second], dec!("1000000"))?;
+    policy.available_inventory = policy
+        .available_inventory
+        .checked_sub(dec!("1000000"))
+        .ok_or_else(|| qip_core::Error::numeric("the inventory pool carries the reserve"))?;
+    policy.reserved_capital = dec!("1000000");
+    let mut platform = platform_with_horizons(policy)?;
+    register(platform.central_mut(), &first, CELL)?;
+    register(platform.central_mut(), &second, CELL)?;
+
+    // Premise: this drawdown really does stop deployment altogether.
+    let schedule = qip_capital::allocation::DrawdownSchedule::default();
+    assert_eq!(
+        schedule.multiplier_at(0.25),
+        Decimal::ZERO,
+        "premise: a twenty-five per cent drawdown deploys nothing"
+    );
+
+    // Twice the reserved pool, so the breach is unambiguous.
+    let arming = platform
+        .central_mut()
+        .arm_horizons(dec!("2000000"), 0.25, start())?
+        .ok_or_else(|| {
+            qip_core::Error::not_found(
+                "the gate arms in a deep drawdown rather than refusing to measure",
+            )
+        })?;
+    assert_eq!(
+        arming.strategies_budgeted,
+        0,
+        "premise: the allocator sized nothing, so no charge here is a scaled \
+         budget: {}",
+        arming.describe()
+    );
+    assert_eq!(
+        arming.budgeted,
+        Decimal::ZERO,
+        "premise: and nothing was charged from the plan: {}",
+        arming.describe()
+    );
+
+    let years = arming
+        .standings
+        .iter()
+        .find(|standing| standing.bucket.to_string() == "years")
+        .ok_or_else(|| qip_core::Error::not_found("the standings name the years bucket"))?;
+    assert_eq!(
+        years.pool,
+        dec!("1000000"),
+        "the reserved pool is the capital the desk holds, undisturbed by a \
+         deployment schedule: {}",
+        arming.describe()
+    );
+    assert_eq!(
+        years.committed,
+        dec!("2000000"),
+        "and the liability is charged in full against it: {}",
+        arming.describe()
+    );
+    assert!(
+        arming.is_breached(),
+        "so the gate still finds the book short at the years horizon, which is \
+         the only judgement left to make once deployment has stopped: {}",
+        arming.describe()
+    );
+    Ok(())
+}
+
+// --- execution cost: the measurement that lets CostOverrun fire ---------------
+
+/// One order the cell sent at `sent`, filled by the venue at `filled`.
+///
+/// The two prices are separate parameters because that difference is the
+/// whole subject: [`strategy_order_and_fill`] above passes one price for
+/// both, which is a fill at exactly the price the platform asked for and so
+/// a cost of zero — the case that cannot distinguish a working measurement
+/// from the constant it replaced.
+fn order_filled_away(
+    id: &StrategyId,
+    order_id: &str,
+    side: qip_contracts::message::BookSide,
+    quantity: Decimal,
+    sent: Decimal,
+    filled: Decimal,
+    at: Timestamp,
+) -> (qip_mesh::delta::DeltaOrder, qip_contracts::wire::FillRecord) {
+    let (mut order, mut fill) = strategy_order_and_fill(id, order_id, side, quantity, sent, at);
+    order.price = sent;
+    fill.price = filled;
+    (order, fill)
+}
+
+#[test]
+fn a_fill_away_from_the_price_the_platform_sent_is_measured_as_execution_cost() -> Result<()> {
+    let mut platform = platform()?;
+    let id = StrategyId::new("cost-measured");
+    register(platform.central_mut(), &id, CELL)?;
+
+    // Bought: sent at 50, filled at 50.10. Paying 0.10 on 50 is 20 basis
+    // points, and the sign is positive because the platform paid away.
+    let (order, fill) = order_filled_away(
+        &id,
+        "ord-cost-1",
+        qip_contracts::message::BookSide::Ask,
+        dec!("100"),
+        dec!("50"),
+        dec!("50.10"),
+        start(),
+    );
+    let ingestion = platform.ingest_cell_report(
+        CellReport::new(CELL, start())
+            .with_orders(vec![order])
+            .with_fills(vec![fill]),
+        start(),
+    )?;
+    assert!(
+        ingestion.settlement.refused.is_empty(),
+        "premise: the fill settled: {:?}",
+        ingestion.settlement.refused
+    );
+    assert!(
+        ingestion.settlement.breaks.is_empty(),
+        "premise: the fill matched an order the centre saw sent: {:?}",
+        ingestion.settlement.breaks
+    );
+
+    let cost = ingestion.settlement.cost_bps_by_strategy();
+    let measured = cost
+        .get(id.as_str())
+        .copied()
+        .ok_or_else(|| qip_core::Error::not_found("the strategy's measured cost"))?;
+    assert!(
+        (measured - 20.0).abs() < 1e-9,
+        "a buy of 100 sent at 50 and filled at 50.10 costs 20bp; the centre measured {measured}"
+    );
+    Ok(())
+}
+
+#[test]
+fn price_improvement_is_measured_as_a_negative_cost_rather_than_floored_at_zero() -> Result<()> {
+    let mut platform = platform()?;
+    let id = StrategyId::new("cost-improved");
+    register(platform.central_mut(), &id, CELL)?;
+
+    // The same trade filled *better* than it was sent: bought at 49.90 having
+    // asked for 50. Floored at zero this would read as break-even, and a
+    // series of improvements would then bias the mean upward toward the
+    // overrun the kill condition watches for.
+    let (order, fill) = order_filled_away(
+        &id,
+        "ord-cost-2",
+        qip_contracts::message::BookSide::Ask,
+        dec!("100"),
+        dec!("50"),
+        dec!("49.90"),
+        start(),
+    );
+    let ingestion = platform.ingest_cell_report(
+        CellReport::new(CELL, start())
+            .with_orders(vec![order])
+            .with_fills(vec![fill]),
+        start(),
+    )?;
+    let measured = ingestion
+        .settlement
+        .cost_bps_by_strategy()
+        .get(id.as_str())
+        .copied()
+        .ok_or_else(|| qip_core::Error::not_found("the strategy's measured cost"))?;
+    assert!(
+        (measured + 20.0).abs() < 1e-9,
+        "a buy filled 0.10 below the price sent is 20bp of improvement, so -20; measured \
+         {measured}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_sale_filled_below_the_price_sent_costs_rather_than_earns() -> Result<()> {
+    let mut platform = platform()?;
+    let id = StrategyId::new("cost-sold");
+    register(platform.central_mut(), &id, CELL)?;
+
+    // The sign convention is the half of this measurement a wrong guess
+    // would invert silently: selling *below* what you asked is paying away
+    // exactly as buying above it is. Without this case a cost function that
+    // ignored the side would pass the buy tests above and read every sale
+    // backwards, turning a venue that fills sales badly into a strategy that
+    // looks cheap to trade.
+    let (order, fill) = order_filled_away(
+        &id,
+        "ord-cost-3",
+        qip_contracts::message::BookSide::Bid,
+        dec!("100"),
+        dec!("50"),
+        dec!("49.90"),
+        start(),
+    );
+    let ingestion = platform.ingest_cell_report(
+        CellReport::new(CELL, start())
+            .with_orders(vec![order])
+            .with_fills(vec![fill]),
+        start(),
+    )?;
+    let measured = ingestion
+        .settlement
+        .cost_bps_by_strategy()
+        .get(id.as_str())
+        .copied()
+        .ok_or_else(|| qip_core::Error::not_found("the strategy's measured cost"))?;
+    assert!(
+        (measured - 20.0).abs() < 1e-9,
+        "a sale of 100 asked at 50 and filled at 49.90 costs 20bp; measured {measured}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_cost_overrun_kill_condition_fires_on_a_measured_overrun_and_holds_within_tolerance()
+-> Result<()> {
+    // The test this whole measurement exists for. `KillCondition::CostOverrun`
+    // compares the realised cost against a modelled figure plus a tolerance,
+    // and the centre used to hand it the literal `0.0` — so the comparison was
+    // `0.0 > modelled + tolerance`, false for every non-negative modelled cost
+    // anyone would write. The condition shipped inside kill-condition sets,
+    // read as protection, and could not fire. What follows drives a real fill
+    // through `ingest_cell_report` and reads the cost back off
+    // `live_outcomes`, which is the path `stage_learn` reads.
+    let mut platform = platform()?;
+    let id = StrategyId::new("cost-overrun");
+    register(platform.central_mut(), &id, CELL)?;
+    walk_to(platform.central_mut(), &id, GateStage::Pilot)?;
+    issue(platform.central_mut(), &id, CELL, start())?;
+
+    // Bought 100 sent at 50, filled at 50.25: 50 basis points paid away.
+    let (order, fill) = order_filled_away(
+        &id,
+        "ord-overrun-1",
+        qip_contracts::message::BookSide::Ask,
+        dec!("100"),
+        dec!("50"),
+        dec!("50.25"),
+        start(),
+    );
+    let ingestion = platform.ingest_cell_report(
+        CellReport::new(CELL, start())
+            .with_orders(vec![order])
+            .with_fills(vec![fill]),
+        start(),
+    )?;
+    assert!(
+        ingestion.settlement.refused.is_empty() && ingestion.settlement.breaks.is_empty(),
+        "premise: the fill settled cleanly: {:?} {:?}",
+        ingestion.settlement.refused,
+        ingestion.settlement.breaks
+    );
+
+    // The day must be closed before the series will report it: a day still
+    // being traded is not a return yet, and the same rule governs the cost.
+    let next_day = start().saturating_add(Duration::from_days(1));
+    let outcomes = platform.central().live_outcomes(next_day);
+    let outcome = outcomes
+        .iter()
+        .find(|outcome| outcome.strategy == id)
+        .ok_or_else(|| qip_core::Error::not_found("the strategy's live outcome"))?;
+    assert!(
+        (outcome.realised_cost_bps - 50.0).abs() < 1e-9,
+        "the measured cost did not reach the outcome the LEARN stage reads: {}",
+        outcome.realised_cost_bps
+    );
+
+    let observation = qip_lifecycle::demotion::LiveObservation {
+        strategy: id.clone(),
+        at: next_day,
+        returns: Vec::new(),
+        realised_loss: Decimal::ZERO,
+        peak_to_trough_drawdown: 0.0,
+        consecutive_losing_days: 0,
+        realised_cost_bps: outcome.realised_cost_bps,
+        envelope: None,
+    };
+
+    // Veto: modelled 10bp with 5bp of tolerance is breached by 50bp.
+    let breached = qip_lifecycle::evidence::KillCondition::CostOverrun {
+        modelled_bps: 10.0,
+        tolerance_bps: 5.0,
+    }
+    .breach(&observation)
+    .ok_or_else(|| qip_core::Error::not_found("the breach the overrun should have raised"))?;
+    assert!(
+        breached.contains("50.00") && breached.contains("10.00"),
+        "the breach does not name the measured cost and the modelled one: {breached}"
+    );
+
+    // Pass: the same measured cost inside a tolerance a desk actually set.
+    // Without this half the test would pass against a condition that fired on
+    // everything, which is the failure mode a veto-only fixture cannot see.
+    assert!(
+        qip_lifecycle::evidence::KillCondition::CostOverrun {
+            modelled_bps: 45.0,
+            tolerance_bps: 10.0,
+        }
+        .breach(&observation)
+        .is_none(),
+        "50bp measured against a modelled 45bp with 10bp of tolerance is within the band and \
+         must not demote"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_cost_of_a_settlement_is_weighted_by_quantity_and_not_a_mean_of_the_fills() -> Result<()> {
+    // Two fills of very different size, costing very differently. A plain
+    // mean of the two costs is 55bp; weighted by the quantity that actually
+    // paid it, it is 14bp. Every other test in this group uses one fill, and
+    // against one fill the two arithmetics agree — so without this case a
+    // mean-of-fills would pass the lot while overstating the cost of any
+    // strategy that does one small bad trade among many good ones, which is
+    // the shape that would demote a working strategy.
+    let mut platform = platform()?;
+    let id = StrategyId::new("cost-weighted");
+    register(platform.central_mut(), &id, CELL)?;
+
+    // 1000 bought at 50, filled at 50.02 → 4bp.
+    let (big_order, big_fill) = order_filled_away(
+        &id,
+        "ord-weight-1",
+        qip_contracts::message::BookSide::Ask,
+        dec!("1000"),
+        dec!("50"),
+        dec!("50.02"),
+        start(),
+    );
+    // 100 bought at 50, filled at 50.53 → 106bp.
+    let (small_order, small_fill) = order_filled_away(
+        &id,
+        "ord-weight-2",
+        qip_contracts::message::BookSide::Ask,
+        dec!("100"),
+        dec!("50"),
+        dec!("50.53"),
+        start(),
+    );
+    let ingestion = platform.ingest_cell_report(
+        CellReport::new(CELL, start())
+            .with_orders(vec![big_order, small_order])
+            .with_fills(vec![big_fill, small_fill]),
+        start(),
+    )?;
+    assert_eq!(
+        ingestion.settlement.fills_settled, 2,
+        "premise: both fills settled, so the mean has two terms to disagree about"
+    );
+
+    let measured = ingestion
+        .settlement
+        .cost_bps_by_strategy()
+        .get(id.as_str())
+        .copied()
+        .ok_or_else(|| qip_core::Error::not_found("the strategy's measured cost"))?;
+    let weighted = (4.0 * 1000.0 + 106.0 * 100.0) / 1100.0;
+    assert!(
+        (measured - weighted).abs() < 1e-9,
+        "the cost should be the quantity-weighted {weighted:.4}bp, not the mean of the fills \
+         (55bp); measured {measured}"
+    );
+    Ok(())
+}
+
+// --- the dual approval that lets a strategy reach a capital-holding rung ------
+
+/// Walk a strategy to `Shadow`, the rung below the first that needs signing.
+///
+/// Stops there on purpose: everything below `Pilot` is admitted on evidence
+/// alone, so this is the state in which the approval route is the only way up
+/// and the tests below are about that route rather than about the ladder.
+fn walk_to_shadow(platform: &mut Platform, id: &StrategyId) -> Result<()> {
+    register(platform.central_mut(), id, CELL)?;
+    walk_to(platform.central_mut(), id, GateStage::Shadow)
+}
+
+fn operator(name: &str, at: Timestamp) -> qip_risk_engine::autonomy::OperatorIdentity {
+    qip_risk_engine::autonomy::OperatorIdentity::verified(name, "hardware-token", at)
+}
+
+const WHY: &str = "the pilot evidence was reviewed against the shadow record";
+
+#[test]
+fn one_signature_does_not_promote_and_a_second_from_the_same_person_is_refused() -> Result<()> {
+    // The property the whole route exists for. `Pilot` is a rung that holds
+    // capital, and one person must not be able to put a strategy on it —
+    // including by signing twice from two sessions, which is the shape a
+    // single-signer bypass would actually take.
+    let mut platform = platform()?;
+    let id = StrategyId::new("dual-approval");
+    walk_to_shadow(&mut platform, &id)?;
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Shadow,
+        "premise: the strategy is one rung below the first that needs signing"
+    );
+
+    let first = platform.approve_promotion(&id, &operator("ops-dana", start()), WHY, start())?;
+    assert_eq!(first.outcome, "awaiting_countersignature");
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Shadow,
+        "one signature moved the strategy; a dual approval is not dual if the first one acts"
+    );
+
+    let again = platform
+        .approve_promotion(&id, &operator("ops-dana", start()), WHY, start())
+        .expect_err("the same operator signing twice is not two approvers");
+    assert!(
+        again
+            .message()
+            .contains("a second session is not a second person"),
+        "the refusal does not say why one person cannot be two: {}",
+        again.message()
+    );
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Shadow,
+        "signing twice promoted the strategy"
+    );
+    Ok(())
+}
+
+#[test]
+fn two_operators_carry_the_strategy_onto_the_rung_and_the_gate_still_rules() -> Result<()> {
+    // The pass half. Without it every test here would be satisfied by a route
+    // that refuses everything, which is the failure a veto-only fixture
+    // cannot see.
+    let mut platform = platform()?;
+    let id = StrategyId::new("dual-approval-pass");
+    walk_to_shadow(&mut platform, &id)?;
+    assert!(
+        !platform.central().factory().holds_capital(&id),
+        "premise: the strategy holds no capital at Shadow"
+    );
+
+    platform.approve_promotion(&id, &operator("ops-dana", start()), WHY, start())?;
+    let done = platform.approve_promotion(&id, &operator("ops-ravi", start()), WHY, start())?;
+
+    assert_eq!(done.outcome, "promoted", "detail: {:?}", done.detail);
+    assert_eq!(done.approver, "ops-dana");
+    assert_eq!(done.second_approver.as_deref(), Some("ops-ravi"));
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Pilot,
+        "two approvers signed and the strategy did not reach the rung"
+    );
+    assert!(
+        platform.central().factory().baseline(&id).is_some(),
+        "reaching the pilot rung did not write the baseline the demotion monitor needs; the \
+         interlock this route exists to close is still open"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_stale_first_signature_is_discarded_rather_than_countersigned() -> Result<()> {
+    // Two signatures far apart are two people agreeing about two different
+    // states of the world. The first is dropped and named, so the pair start
+    // again on today's evidence rather than completing yesterday's agreement.
+    let mut platform = platform()?;
+    let id = StrategyId::new("dual-approval-stale");
+    walk_to_shadow(&mut platform, &id)?;
+
+    platform.approve_promotion(&id, &operator("ops-dana", start()), WHY, start())?;
+    let much_later = start().saturating_add(Duration::from_days(2));
+    let refused = platform
+        .approve_promotion(&id, &operator("ops-ravi", much_later), WHY, much_later)
+        .expect_err("a countersignature two days later is not a review of the same decision");
+    assert!(
+        refused.message().contains("must follow within"),
+        "the refusal does not name the window: {}",
+        refused.message()
+    );
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Shadow
+    );
+
+    // And the stale signature is gone rather than lying in wait: a fresh
+    // countersignature now starts a new pair instead of completing the old
+    // one, which is what "discarded" has to mean to be worth anything.
+    let fresh =
+        platform.approve_promotion(&id, &operator("ops-ravi", much_later), WHY, much_later)?;
+    assert_eq!(
+        fresh.outcome, "awaiting_countersignature",
+        "the discarded signature was still there and this completed it"
+    );
+    assert_eq!(fresh.approver, "ops-ravi");
+    Ok(())
+}
+
+#[test]
+fn a_stale_credential_cannot_sign_a_promotion_that_puts_capital_to_work() -> Result<()> {
+    let mut platform = platform()?;
+    let id = StrategyId::new("dual-approval-credential");
+    walk_to_shadow(&mut platform, &id)?;
+
+    // Authenticated this morning, signing this afternoon. A session token is
+    // not evidence that the person named on the record is at the keyboard.
+    let long_ago = start().saturating_sub(Duration::from_hours(4));
+    let refused = platform
+        .approve_promotion(&id, &operator("ops-dana", long_ago), WHY, start())
+        .expect_err("a four-hour-old credential is not fresh enough to move capital");
+    assert!(
+        refused.message().contains("re-authenticate"),
+        "the refusal does not say what to do: {}",
+        refused.message()
+    );
+
+    // The premise that makes the above about freshness and not about the
+    // operator: the same person with a fresh credential is admitted.
+    let accepted = platform.approve_promotion(&id, &operator("ops-dana", start()), WHY, start())?;
+    assert_eq!(accepted.outcome, "awaiting_countersignature");
+    Ok(())
+}
+
+#[test]
+fn a_rung_that_needs_no_signature_refuses_one_rather_than_accepting_it() -> Result<()> {
+    // Signing for a rung the gate admits on evidence alone is refused, so an
+    // operator is never taught that their signature is what moved a strategy
+    // up a rung that takes none.
+    let mut platform = platform()?;
+    let id = StrategyId::new("dual-approval-unsigned-rung");
+    register(platform.central_mut(), &id, CELL)?;
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Candidate,
+        "premise: the strategy is at a rung whose next takes no approval"
+    );
+
+    let refused = platform
+        .approve_promotion(&id, &operator("ops-dana", start()), WHY, start())
+        .expect_err("the holdout rung takes no human approval");
+    assert!(
+        refused.message().contains("takes no human approval"),
+        "the refusal does not say why: {}",
+        refused.message()
     );
     Ok(())
 }

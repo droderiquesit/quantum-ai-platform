@@ -13,10 +13,9 @@ not prove:
 * [The ECB reference rates through the loop, live (2026-09-06)](live-source-frankfurter-2026-09-06.md)
 * [Execution measurements](execution-measurements.md)
 
-The two registers of what is switched off or missing, kept as a pair so that
-they cannot disagree about one switch:
-
-* [Missing infrastructure](missing-infrastructure-register.md) — what the
-  architecture of record requires and the tree does not yet provide
-* [Off gates](off-gates-register.md) — every control that exists and is
-  closed in every environment
+Both registers of what is switched off or missing were consolidated into
+[`../DELIVERY-STATUS.md`](../DELIVERY-STATUS.md) on 2026-09-07 and deleted.
+They were "kept as a pair so that they cannot disagree about one switch",
+which is the argument for one document rather than two: what the architecture
+of record requires and the tree does not provide is now the §41–§46 rows of
+the delivery status, and the switches held closed are a section of it.

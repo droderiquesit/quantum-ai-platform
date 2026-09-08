@@ -170,8 +170,14 @@ pub enum FillStatus {
     ///   relative to that mid, so a fill without one would escape every cost
     ///   the injected conditions impose and be reported as a flawless
     ///   execution because there was nothing left to measure it against.
+    /// * The cost model refused its own parameters at this instrument's
+    ///   volatility, or the price adjustment they imply is not representable as
+    ///   money. [`crate::costs::CostModel::pricing_at`] holds a computed model
+    ///   to the ceiling a loaded one is held to, so a coefficient a volatility
+    ///   series manufactured is refused here exactly as a document stating it
+    ///   would have been refused on load.
     ///
-    /// Either way the residual is exact and still the caller's.
+    /// Any of the three: the residual is exact and still the caller's.
     Unpriceable,
 }
 

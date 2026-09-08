@@ -28,6 +28,7 @@ use qip_core::{Clock, SystemClock};
 use qip_data_finder::registration::RegistrationRecord;
 use qip_kernel::central::ArbitragePolicy;
 use qip_kernel::{Platform, PlatformConfig};
+use qip_market_ingestion::connector::journal::StreamJournal;
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
 use qip_risk_engine::autonomy::AutonomyLevel;
@@ -153,8 +154,40 @@ fn run() -> Result<()> {
     let registrations = config
         .registration_registry()
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
-    let feed = qip_api::feed::ApiFeed::open(&feed_settings, &registrations, config.seed, now)
-        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let mut feed =
+        qip_api::feed::ApiFeed::open(&feed_settings, &registrations, config.seed, now)
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    // The stream's durable record, opened on the same storage the event log
+    // archives to and before anything is served. Until this call every restart
+    // began with an empty dedup window, so a table-shaped source — the ECB
+    // reference rates serve their whole table on every poll — republished all
+    // of it as new observations at each rollout, and the session and span
+    // figures that turn "streamed for a week" into a checkable claim reset to
+    // zero at every start-up.
+    //
+    // `StreamJournal::open` writes the ledger as it opens, so a store this
+    // process cannot write to stops it here rather than at the first
+    // `POST /cycle`, after the process has reported ready. A zero resume is a
+    // first session, not a failure, and is said out loud because the next poll
+    // then republishes whatever the source re-serves.
+    let journal_banner = match feed.as_mut() {
+        Some(feed) => feed
+            .journal_to(storage.key_value(StreamJournal::NAMESPACE)?)
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?
+            .map(|resumed| match resumed {
+                0 => format!(
+                    "on {}; nothing resumed, so this is a first session (or the last checkpoint \
+                     carried nothing) and the next poll republishes whatever the source re-serves",
+                    StreamJournal::NAMESPACE
+                ),
+                resumed => format!(
+                    "on {}; {resumed} fingerprint(s) resumed from the previous session, so a \
+                     redelivery of them is absorbed rather than republished",
+                    StreamJournal::NAMESPACE
+                ),
+            }),
+        None => None,
+    };
     // The clock the platform reasons on. A tape owns its own, and the
     // platform must be assembled on it: opportunities expire at tape time,
     // and a router asked for a latency budget measured from the wall clock
@@ -218,6 +251,12 @@ fn run() -> Result<()> {
         },
         qip_api::feed::ApiFeed::describe,
     );
+    // The standing gate, named so an operator can see it is consulted rather
+    // than take the claim on trust: its check count rises once per admitted
+    // cycle and can be held against the stream ledger's poll count.
+    let licensing_banner = feed
+        .as_ref()
+        .and_then(qip_api::feed::ApiFeed::licensing_standing);
     let feed = feed.map(|feed| Arc::new(Mutex::new(feed)));
 
     // The durable trial book, on the same storage the event log archives to.
@@ -241,6 +280,18 @@ fn run() -> Result<()> {
     // wrapped around the router below so each admitted `POST /cycle`
     // re-reads a file that has changed.
     let (statement_feed, statement_banner) = load_wallet_statement(&mut platform, now)?;
+
+    // The capital-fabric declaration, applied before anything is served, on
+    // the same wall clock and for the same reason: a destination proposal is
+    // an act a person dated. Until this existed, `decide_fabric`'s only
+    // production caller passed `Wallet` commands, so §38.4's registry,
+    // §37.1's corridor lifecycle and §37.3's seven-check gate were built and
+    // reached by nothing, and `GET /transfer-gate` answered
+    // `last_assessment: null` permanently rather than transiently. Applied
+    // here rather than in a route so the first cycle sees the corridors the
+    // desk declared, and wrapped around the router below so a corridor
+    // appended while the process serves does not need a restart.
+    let (fabric_feed, fabric_banner) = load_fabric_declaration(&mut platform, now)?;
 
     // The mesh backbone, where the deployment names cells to serve. Absent
     // configuration means the routes are absent: no listener binds, and the
@@ -391,6 +442,20 @@ fn run() -> Result<()> {
         )),
         None => Arc::new(router),
     };
+    // Nested outside the statement wrapper, so an admitted cycle applies any
+    // appended fabric command before the statement is re-read and before the
+    // cycle runs. The order matters only in that both happen first; neither
+    // reads what the other writes.
+    let handler: Arc<dyn qip_api::http::Handler> = match fabric_feed {
+        Some(feed) => Arc::new(qip_api::fabric::FabricRefresh::new(
+            handler,
+            Arc::new(Mutex::new(feed)),
+            platform.clone(),
+            authenticator.clone(),
+            clock.clone(),
+        )),
+        None => handler,
+    };
 
     let server = Server::bind(&address, handler, ServerLimits::default())?;
     let bound = server.local_address()?;
@@ -440,6 +505,12 @@ fn run() -> Result<()> {
     );
     println!("  capital trust:    {}", provenance.describe());
     println!("  feed:             {feed_banner}");
+    if let Some(line) = &journal_banner {
+        println!("  stream journal:   {line}");
+    }
+    if let Some(line) = &licensing_banner {
+        println!("  licensing:        {line}");
+    }
     if let Some(feed) = &feed {
         let Ok(feed) = feed.lock() else {
             return Err(Error::invalid(
@@ -456,6 +527,7 @@ fn run() -> Result<()> {
     }
     println!("  arbitrage desk:   {arbitrage_banner}");
     println!("  wallet statement: {statement_banner}");
+    println!("  capital fabric:   {fabric_banner}");
     match &mesh {
         Some(mesh) => {
             // The addresses come from the bound sockets rather than from the
@@ -762,6 +834,41 @@ fn load_wallet_statement(
         .observe_into(platform)
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
     let banner = feed.describe();
+    Ok((Some(feed), banner))
+}
+
+/// The capital-fabric declaration the deployment names, applied into
+/// `platform`, and the banner line that says what was read.
+///
+/// `QIP_CAPITAL_FABRIC_PATH` unset is not a refusal: it is the operator
+/// saying no destination, corridor or transfer intent has been declared to
+/// this process, and the platform's answer is the honest one — nothing is
+/// journalled, the registry stays empty, and `/transfer-gate` answers
+/// `last_assessment: null`. Set and unreadable, or readable and not a
+/// declaration, or carrying a command the log refuses, is a refusal to start
+/// naming the position: a process that fell back to no declaration because
+/// the file the operator pointed at was wrong would serve with the fabric
+/// silently unreached, which is the state every deployment was in before this
+/// existed.
+///
+/// A command the *control* refuses is not a refusal to start. `decide_fabric`
+/// answers a refused command with an `Outcome::Refused` inside an `Ok`
+/// record, because the refusal is a decision and belongs on the chain — a
+/// corridor proposed against a destination that was never verified is
+/// evidence the desk should see, not a reason the API cannot serve.
+fn load_fabric_declaration(
+    platform: &mut Platform,
+    now: qip_core::Timestamp,
+) -> Result<(Option<qip_api::fabric::FabricFeed>, String)> {
+    let Some(mut feed) = qip_api::fabric::FabricFeed::from_env(&|name| std::env::var(name).ok())
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?
+    else {
+        return Ok((None, qip_api::fabric::absent_banner()));
+    };
+    let applied = feed
+        .apply_pending(platform, now)
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let banner = format!("{} ({applied} applied)", feed.describe());
     Ok((Some(feed), banner))
 }
 

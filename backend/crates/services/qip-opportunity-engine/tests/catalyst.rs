@@ -16,6 +16,7 @@ use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::testing::approx_eq;
 use qip_core::{Context, Duration, Timestamp};
 use qip_financial::intelligence::{EntityMention, NewsItem, NewsSource, Sentiment};
+use qip_financial::manifest::SourceManifest;
 use qip_financial::quality::{DataQuality, Provenance};
 use qip_opportunity_engine::catalyst::{
     CatalystDetector, ImpactAssessment, ImpactHistory, ImpactScope, KnownEvents, MarketEvent,
@@ -428,7 +429,7 @@ fn a_news_item_stamped_before_publication_is_clamped_to_publication() {
     let item = NewsItem {
         item_id: "wire-1".to_string(),
         headline: "Northwind cuts guidance".to_string(),
-        body: String::new(),
+        manifest: SourceManifest::generated("test", "wire-1", published, "Northwind cuts guidance"),
         source: NewsSource::Newswire,
         published_at: published,
         entities: vec![EntityMention {

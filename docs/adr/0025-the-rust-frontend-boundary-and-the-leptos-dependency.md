@@ -201,7 +201,7 @@ landing.
    2026-09-04: `algorik-portal-rgxpsss2lq-uk.a.run.app` answered 200 with the
    title "Algorik — paper trading", `algorik-landing-rgxpsss2lq-uk.a.run.app`
    answered 200, recorded in
-   [the missing-infrastructure register](../ops/missing-infrastructure-register.md)
+   the missing-infrastructure register (`docs/ops/missing-infrastructure-register.md`, consolidated into `docs/DELIVERY-STATUS.md` on 2026-09-07)
    under "Observed on 2026-09-04, from outside the project". The Rust side has
    no deployment at all: `qip-web` is a library linked into `qip-api`, whose
    service answers Google Frontend's 404 on internal ingress. The asymmetry is

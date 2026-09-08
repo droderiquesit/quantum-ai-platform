@@ -6,6 +6,7 @@ use qip_financial::intelligence::{
     EntityMention, FiscalPeriod, FundamentalUpdate, MacroObservation, NewsItem, NewsSource,
     Sentiment,
 };
+use qip_financial::manifest::SourceManifest;
 use qip_financial::quality::{DataQuality, Provenance};
 use qip_market::bar::{Bar, Interval};
 use qip_world_model::causal::{CausalEdge, CausalGraph, Mechanism, SupportingClaim};
@@ -1227,7 +1228,12 @@ fn absorbing_news_resolves_entities_and_indexes_the_document() {
     let item = NewsItem {
         item_id: "news-1".into(),
         headline: "Northwind Semiconductor Corporation cut full year revenue guidance".into(),
-        body: "The company reduced its outlook, citing weak demand for its components.".into(),
+        manifest: SourceManifest::generated(
+            "test",
+            "news-1",
+            now(),
+            "The company reduced its outlook, citing weak demand for its components.",
+        ),
         source: NewsSource::CompanyAnnouncement,
         published_at: now(),
         entities: vec![EntityMention {
@@ -1395,7 +1401,12 @@ fn the_diff_reports_what_changed_between_two_instants() {
     let item = NewsItem {
         item_id: "news-2".into(),
         headline: "Northwind Semiconductor Corporation warns on production".into(),
-        body: "A disruption is expected to affect output for several weeks.".into(),
+        manifest: SourceManifest::generated(
+            "test",
+            "news-2",
+            before,
+            "A disruption is expected to affect output for several weeks.",
+        ),
         source: NewsSource::RegulatoryFiling,
         published_at: before.saturating_add(Duration::from_hours(1)),
         entities: vec![EntityMention {
@@ -1435,7 +1446,7 @@ fn retrieval_from_the_world_model_respects_the_point_in_time_cutoff() {
         let item = NewsItem {
             item_id: id.into(),
             headline: format!("Northwind Semiconductor guidance update {id}"),
-            body: "Guidance was revised.".into(),
+            manifest: SourceManifest::generated("test", id, when, "Guidance was revised."),
             source: NewsSource::Newswire,
             published_at: when,
             entities: vec![EntityMention {
@@ -1816,7 +1827,12 @@ fn sentiment_from_a_news_item_the_vendor_filled_in_is_recorded_as_imputed() {
     let item = |id: &str, published_at: Timestamp, quality: DataQuality| NewsItem {
         item_id: id.into(),
         headline: "Northwind Semiconductor Corporation cut full year revenue guidance".into(),
-        body: "The company reduced its outlook.".into(),
+        manifest: SourceManifest::generated(
+            "test",
+            id,
+            published_at,
+            "The company reduced its outlook.",
+        ),
         source: NewsSource::CompanyAnnouncement,
         published_at,
         entities: vec![EntityMention {

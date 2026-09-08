@@ -927,7 +927,7 @@ fn a_tiered_fee_schedule_charges_the_tier_the_volume_earns() -> Result<()> {
     assert!((schedule.rate_bps_f64(Liquidity::Taker, Decimal::ZERO) - 10.0).abs() < f64::EPSILON);
     assert!((schedule.rate_bps_f64(Liquidity::Taker, d("5000000")) - 4.0).abs() < f64::EPSILON);
     assert!(
-        schedule.fee(d("100000"), Liquidity::Maker, d("5000000")) < Decimal::ZERO,
+        schedule.fee(d("100000"), Liquidity::Maker, d("5000000"))? < Decimal::ZERO,
         "the top tier pays a rebate"
     );
 
@@ -1050,4 +1050,141 @@ fn health_tracker_construction_refuses_an_incoherent_policy() {
     };
     assert!(HealthTracker::new(policy).is_err());
     assert!(HealthTracker::new(HealthPolicy::default()).is_ok());
+}
+
+// --- rates that cannot be applied to money ----------------------------------
+
+#[test]
+fn a_venue_whose_fee_rate_cannot_be_applied_is_refused_by_name_while_a_sound_one_still_prices()
+-> Result<()> {
+    // `FeeSchedule::flat` takes the rate it is handed, and a profile can also
+    // arrive by deserialisation, so a rate that is not a number reaches the
+    // fee. It used to come back as a fee of exactly zero, which does not merely
+    // mis-rank the venue — a zero fee is what makes a venue the cheapest one,
+    // so the poisoned venue wins the order. Since `f1b8840` the unchecked form
+    // panics instead, and the release profile aborts on panic, so an edge cell
+    // would take the whole process down on one bad schedule.
+    let sound = candidate(
+        "SOUND-VENUE",
+        0.0,
+        2.0,
+        &[("99.90", "100000")],
+        &[("100.00", "100000")],
+    );
+    let poisoned = candidate(
+        "UNPRICEABLE-VENUE",
+        f64::NAN,
+        f64::NAN,
+        &[("99.90", "100000")],
+        &[("100.00", "100000")],
+    );
+
+    // The admitting half, asserted first so the refusal below is known to be
+    // about the rate and not about the fixture.
+    let priced = Router::default().route(
+        &buy("100", Urgency::Normal),
+        std::slice::from_ref(&sound),
+        &HealthTracker::default(),
+        at(),
+    )?;
+    assert_eq!(priced.slices.len(), 1, "a stated rate still routes");
+    assert!(
+        priced.slices[0].fee > Decimal::ZERO,
+        "and is charged for its taker fee rather than priced at nothing"
+    );
+
+    let refusal = Router::default()
+        .route(
+            &buy("100", Urgency::Normal),
+            &[sound, poisoned],
+            &HealthTracker::default(),
+            at(),
+        )
+        .expect_err("a fee rate that is not a number cannot price a venue");
+    assert!(
+        matches!(refusal, qip_core::error::Error::Numeric(_)),
+        "an inapplicable rate is a numeric refusal, not a missing venue: {refusal:?}"
+    );
+    let message = refusal.message();
+    assert!(
+        message.contains("UNPRICEABLE-VENUE"),
+        "the refusal must name the venue that could not be priced: {message}"
+    );
+    assert!(
+        !message.contains("SOUND-VENUE"),
+        "and must not implicate the venue that priced fine: {message}"
+    );
+    assert!(
+        message.contains("FeeSchedule::tiered"),
+        "and must say what to do instead of routing at no fee: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_health_surcharge_that_cannot_be_applied_is_refused_while_a_stated_one_still_prices()
+-> Result<()> {
+    // `HealthPolicy::validate` proves the requote cost finite and non-negative,
+    // which a rate large enough to make its product with a notional
+    // unrepresentable satisfies. The surcharge is the term that takes an order
+    // away from an unreliable venue, so a surcharge silently priced at zero
+    // routes to precisely the venue the tracker was trying to charge for.
+    let candidates = [
+        candidate(
+            "AAA",
+            0.0,
+            2.0,
+            &[("99.90", "100000")],
+            &[("100.00", "100000")],
+        ),
+        candidate(
+            "BBB",
+            0.0,
+            2.0,
+            &[("99.90", "100000")],
+            &[("100.00", "100000")],
+        ),
+    ];
+    let unpriceable = HealthPolicy {
+        requote_cost_bps_f64: 1e300,
+        ..HealthPolicy::default()
+    };
+    let mut health = HealthTracker::new(unpriceable)?;
+    for _ in 0..20 {
+        health.record_sent(&venue("AAA"));
+    }
+    health.record_reject(&venue("AAA"), at());
+    assert!(
+        health
+            .assess(&venue("AAA"), Duration::from_millis(5), at())
+            .cost_bps_f64
+            > 0.0,
+        "the premise: the tracker actually charges AAA for its reject"
+    );
+
+    let refusal = Router::default()
+        .route(&buy("100", Urgency::Normal), &candidates, &health, at())
+        .expect_err("a surcharge that cannot be applied cannot price the venue");
+    let message = refusal.message();
+    assert!(
+        message.contains("AAA") && message.contains("health surcharge"),
+        "the refusal must name the venue and the term that failed: {message}"
+    );
+
+    // The admitting half: the same reject under the shipped policy prices, so
+    // this is a refusal about the rate and not a wall in front of every
+    // degraded venue.
+    let mut sane = HealthTracker::default();
+    for _ in 0..20 {
+        sane.record_sent(&venue("AAA"));
+    }
+    sane.record_reject(&venue("AAA"), at());
+    let decision =
+        Router::default().route(&buy("100", Urgency::Normal), &candidates, &sane, at())?;
+    assert_eq!(
+        decision.slices[0].venue,
+        venue("BBB"),
+        "a chargeable surcharge still moves the order off the rejecting venue"
+    );
+    Ok(())
 }

@@ -16,6 +16,19 @@ approves, signs or moves anything, and there is no route that could: ADR 0021
 permits the deterministic half of the blueprint's treasury and refuses the
 path by which capital leaves the platform.
 
+Beside the four reads are two `POST` routes at the `operator` role, both under
+`/ledger/users/{user}`: `/eligibility`, which records an operator's decision
+that a user may or may not have capital put to work, and
+`/investment-requests`, which raises one request against a mandate and answers
+the ledger's verdict. Both raise a typed intent into the kernel under the
+authenticated operator's own identity, both are journalled before they are
+answered, and neither moves capital: an eligibility record is a *precondition*
+of a funding and an admitted investment request is a *statement* that the
+mandate would admit one. The paragraph above said "four routes, read-only" and
+listed no `POST` at all while the eligibility route had been live for some
+time; that is corrected here rather than left, because a page built from this
+file would not know the surface it is describing.
+
 Every body is read off the kernel at request time. The wallet, the corridors,
 the destinations and the gate assessment come from the kernel's fabric
 journal, whose every decision is also a record in the platform's event log;
@@ -134,6 +147,73 @@ Field by field:
 | `users[].entitlements[]` | list | One evaluation per product in `products`. Empty when `products` is empty. |
 | `entitlements[].can_view` / `can_invest` / `can_withdraw` | `{granted: bool, reason: string}` | `reason` is the basis of a grant or the input that refused. `can_withdraw.granted` is **always `false`**; the platform's type has no granted arm. |
 | `users[].entitlements_note` | string or `null` | Set when `entitlements` is empty, saying why (no product registered). |
+
+## `POST /api/v1/ledger/users/{user}/investment-requests`
+
+**Role: `operator`.** Raise one investment request against `{user}`'s mandate.
+This is the blueprint's `investment-api` intent and the only one it has: it
+raises a request and it never raises an order.
+
+**It funds nothing.** The body's `funded` key is a constant `false` and is
+there to be rendered. An admitted request means the mandate *would* admit this
+much at this strategy at the instant it was decided; capital moves through the
+capital engine's allocation, which re-runs the eligibility and product gates
+on its own because the books may have moved since.
+
+Request body — exactly these five keys, all JSON strings. Any other key is
+`400`, named by position and never quoted back:
+
+```json
+{
+  "strategy": "momentum-eu",
+  "family": "momentum",
+  "currency": "USD",
+  "amount": "25000.00",
+  "reason": "the desk raised this on the client's written instruction of 2026-09-07"
+}
+```
+
+- `amount` is a **string**, like every money figure here. A JSON number is
+  refused rather than converted: `25000.10` is not a double, and an amount a
+  parser rounded is not the amount anyone asked for.
+- `family` must be the family the central factory has registered the strategy
+  under. A request naming a different one is refused rather than re-labelled —
+  otherwise a mandate permitting only one family could be satisfied by naming
+  that family over a strategy in another. A strategy the factory does not know
+  is refused too.
+- The user is the path's, resolved against the mandate registry; a user with no
+  mandate is `404`. The instant of the request is the server's clock, not the
+  caller's.
+
+Answer, `200`:
+
+```json
+{
+  "posture": "PAPER TRADING",
+  "served_at": "2025-10-09T08:53:20.000Z",
+  "decided_at": "2025-10-09T08:53:20.000Z",
+  "request": { "user_id": "alice", "strategy": "momentum-eu", "family": "momentum", "currency": "USD", "amount": "25000.00", "requested_at": "2025-10-09T08:53:20.000Z" },
+  "admitted": false,
+  "funded": false,
+  "refused_limit": "InvestableCapital",
+  "detail": "25000.00 USD exceeds the 10000 investable for alice: ...",
+  "user": { "user_id": "alice", "mandate": { "...": "..." }, "eligibility": { "...": "..." }, "balances": [], "entitlements": [], "entitlements_note": null }
+}
+```
+
+| Key | Type | Meaning |
+|---|---|---|
+| `request` | object | The request as the *ledger* recorded it, echoed from the decision rather than from what was posted. |
+| `admitted` | bool | The mandate's verdict. A refusal is a `200` carrying `admitted: false`, not an error: the platform decided, and the decision is the answer. |
+| `funded` | `false` | Constant. Names the property a page must render: nothing moved. |
+| `refused_limit` | string or `null` | The ledger's own name for the gate that refused: `NoMandate`, `Eligibility`, `Entitlement`, `Currency`, `Amount`, `InvestableCapital`, `RiskTolerance`. `null` when admitted. Group on this; do not parse `detail`. |
+| `detail` | string | The basis of an admission or the sentence of a refusal, naming what would have to change. |
+| `user` | object | The same row `GET /ledger/users` renders for this user, so the figures the verdict was reached against are readable beside it. |
+
+Every outcome — admitted or refused — is journalled to the platform's event
+log under the producer `kernel/investment`, with the operator who raised it and
+the stated reason. A refusal that left no trace would be indistinguishable from
+a request nobody made.
 
 ## `GET /api/v1/wallet`
 

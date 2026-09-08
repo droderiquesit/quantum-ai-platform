@@ -23,7 +23,7 @@ runtime     qip-kernel  ─── the only place that knows how it fits together
               │
 agents      qip-investment-agents
               │
-services    ingestion → normalisation → entity-resolution → world-model
+services    ingestion → entity-resolution → world-model
             → opportunity-engine → reasoning-engine → simulation-engine
             → optimization-engine → portfolio-engine → risk-engine
             → execution-engine → learning-engine
@@ -43,7 +43,7 @@ clock or an unseeded random number, which is what makes a replay reproduce.
 
 | Stage | Crate | What it produces |
 |---|---|---|
-| SENSE | `qip-market-ingestion`, `qip-normalization` | observations with provenance |
+| SENSE | `qip-market-ingestion` | observations with provenance |
 | UNDERSTAND | `qip-entity-resolution`, `qip-world-model` | a bitemporal model of the world |
 | DISCOVER | `qip-opportunity-engine` | ranked opportunities |
 | REASON | `qip-investment-agents`, `qip-reasoning-engine` | reviewed hypotheses |
@@ -118,43 +118,26 @@ simulating the circuit costs more than solving the problem it encodes.
 
 ## Reading order, and where the rest lives
 
-This document is the shape of the system. Seven companions carry the detail:
+This document is the shape of the system. Two companions carry the rest:
 
-1. `docs/adr/` — twenty-three numbered decisions. The reasoning is the point, and
-   several of them are settled: reopening one takes a new ADR, not an argument.
-2. **`docs/architecture/algorik-blueprint-traceability.md` — the live
-   scorecard.** ADR 0022 makes the Algorik Master Blueprint v10.1-4 and its
-   companion diagram the architecture of record, so this is the document that
-   says how far the tree is from where it is meant to be. Score new work here.
-3. `docs/architecture/canonical-platform.md` — **superseded.** The earlier
-   diagram as 104 addressable component ids.
-4. `docs/architecture/diagram-reconciliation.md` — **superseded.** Each of
-   those ids scored against the tree, with implementation path, runtime
-   evidence, named test and gap.
+1. `docs/adr/` — fifty-one numbered decisions. The reasoning is the point, and
+   several are settled: reopening one takes a new ADR, not an argument. Count
+   them with `ls docs/adr/ | grep -c '^0[0-9][0-9][0-9]-'` rather than trusting
+   this sentence, which read "twenty-three" until 2026-09-07.
+2. **`../DELIVERY-STATUS.md` — the single status document.** ADR 0022 makes
+   the Algorik Master Blueprint v10.1-4 and its companion diagram the
+   architecture of record, so that file says how far the tree is from where it
+   is meant to be: all 181 numbered blueprint sections, one verdict each, every
+   claim carrying a runnable command. **Score new work there, and nowhere
+   else.**
 
-   Items 3 and 4 score the "World's Smartest Multi-Regional AI + Quant Trading
-   Platform" diagram, which is no longer the reference. They are retained for
-   history rather than deleted: they are the only written record of several
-   defects this platform has already fixed — controls that could not fire,
-   crates no binary composed — and the reasoning survives the picture that
-   prompted it. Do not merge them into item 2, and do not read a status in
-   them as current: a component aligned against the old diagram can be missing
-   against the blueprint, and collapsing that loses the finding.
-5. `docs/architecture/integration-truth-pass.md` — the seven end-to-end flows
-   traced through actual code, each link marked measured, tested, configured,
-   implemented-but-unverified, planned or missing, and each break named at its
-   seam. Where the scorecard says whether a component exists, this says whether
-   the things connect.
-6. `docs/architecture/blueprint-diagram-reconciliation.md` — the two
-   authoritative references compared. ADR 0022 makes both the blueprint and its
-   companion diagram the architecture of record, and two authoritative
-   documents will disagree; this records where, with both locations, rather
-   than picking one.
-7. `docs/plan/completion-plan.md` — the living plan: how far the tree is from
-   alignment-done and from blueprint-done, the four gates (none passed), the
-   sequenced backlog in slices, and every decision still waiting on an owner.
-   It aggregates items 2, 5 and 6 and says where they disagree; it replaces
-   none of them.
+This list held seven entries until 2026-09-07. Five of them were separate
+status documents — a component scorecard, a superseded diagram manifest, a
+superseded reconciliation, a flow-by-flow truth pass, and a living plan that
+"aggregates items 2, 5 and 6 and says where they disagree". That last clause is
+the whole problem in one sentence: a document whose stated job was reconciling
+three other documents that were themselves disagreeing. All five were deleted
+and replaced by item 2.
 
 The rules an agent must follow when changing this architecture are in
 `.claude/rules/architecture/`; the per-area constraints are in

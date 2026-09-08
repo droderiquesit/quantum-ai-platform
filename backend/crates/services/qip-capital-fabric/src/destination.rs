@@ -47,14 +47,39 @@ pub const ACTIVATION_DELAY: Duration = Duration::from_days(1);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Asset(String);
 
+/// The character [`DestinationKey`]'s rendering uses to separate the asset
+/// from the address, and which an asset name may therefore not contain.
+pub const KEY_SEPARATOR: char = '@';
+
 impl Asset {
     /// Name an asset. Refuses an empty name: an empty asset would key a
     /// destination that matches nothing a transfer could name and still read
     /// as an allowlist entry.
+    ///
+    /// Also refuses `@`, which is [`DestinationKey`]'s separator, because
+    /// without that rule the rendering is not injective and the ambiguity is
+    /// *constructible*: `Asset("USDC")` with address `a@b` and `Asset("USDC@a")`
+    /// with address `b` both render `USDC@a@b`, so a venue-allowlist
+    /// attestation filed against one satisfied a corridor running to the other
+    /// — two different destinations, one string, and the string is the whole
+    /// control in [`crate::custody::CustodyPolicy::mirrors_the_venue_allowlist`].
+    /// Refusing the character here is the structural half of that fix and the
+    /// parse in [`DestinationKey::from_str`] is the half that holds on the
+    /// replay path, where serde builds an `Asset` from its field and calls no
+    /// constructor at all. Refused rather than sanitised: an asset name with an
+    /// `@` in it is a caller who means something this registry cannot key, and
+    /// a silently rewritten name is an allowlist entry nobody verified.
     pub fn new(name: impl Into<String>) -> Result<Self> {
         let name = name.into();
         if name.trim().is_empty() {
             return Err(Error::invalid("an asset needs a name"));
+        }
+        if name.contains(KEY_SEPARATOR) {
+            return Err(Error::invalid(format!(
+                "an asset name may not contain '{KEY_SEPARATOR}', which separates the asset from \
+                 the address in a destination key; [{name}] would render a key a second \
+                 asset-and-address pair also renders, and the two would share one allowlist entry"
+            )));
         }
         Ok(Self(name))
     }
@@ -99,8 +124,45 @@ impl DestinationKey {
 }
 
 impl fmt::Display for DestinationKey {
+    /// `asset@address`. Injective, because [`Asset::new`] refuses
+    /// [`KEY_SEPARATOR`] and so the first `@` is always the separator; an
+    /// address may hold further ones and still parse back to the same key.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}@{}", self.asset, self.address)
+        write!(f, "{}{KEY_SEPARATOR}{}", self.asset, self.address)
+    }
+}
+
+impl std::str::FromStr for DestinationKey {
+    type Err = Error;
+
+    /// Read back a key from its [`Display`] rendering, refusing anything that
+    /// is not one.
+    ///
+    /// This exists so a caller holding a *reference to* a destination — an
+    /// attestation filed by a venue's allowlist team, say — can compare the
+    /// structured key rather than the concatenation. Comparing renderings
+    /// looks equivalent and is not: it makes the comparison only as
+    /// trustworthy as the rendering's injectivity, which is a property of
+    /// another module's `Display` impl and of a constructor serde bypasses on
+    /// every replay. Parsing puts the check in the caller's own code path, so
+    /// a key that arrived off the event log with an `@` in its asset — which
+    /// no constructor would build, and which serde will — cannot be matched by
+    /// a reference naming a different asset and address.
+    ///
+    /// Splits on the *first* `@` and refuses if there is none, so
+    /// `USDC@a@b` is asset `USDC` and address `a@b` and nothing else. The
+    /// component constructors are then re-run, so an empty asset or address
+    /// is refused here exactly as it is refused anywhere.
+    ///
+    /// [`Display`]: fmt::Display
+    fn from_str(rendered: &str) -> Result<Self> {
+        let Some((asset, address)) = rendered.split_once(KEY_SEPARATOR) else {
+            return Err(Error::invalid(format!(
+                "[{rendered}] is not a destination key; a key is written \
+                 asset{KEY_SEPARATOR}address"
+            )));
+        };
+        Self::new(Asset::new(asset)?, address)
     }
 }
 

@@ -27,6 +27,15 @@
 //! account-gated source however the deployment was configured, and it was the
 //! wrong answer for the right reason.
 //!
+//! The licensing half does not stop at start-up. A connector arm holds a
+//! [`qip_data_finder::admission::StandingAdmission`] and re-asks the whole gate
+//! at the instant of every [`Feed::poll`], before the socket: a node asked to
+//! stream for a week outlives the instant its licence was evaluated at, and one
+//! that expired on day three used to keep granting for the remaining four. The
+//! arm also keeps a durable stream record when the composition root gives it a
+//! store through [`Feed::journal_to`], so a restart resumes the dedup window
+//! the last process left instead of republishing the source's whole table.
+//!
 //! Both gates are table reads. **Nothing here consults a language model, and
 //! nothing may** — ADR 0008 puts no model on the fast path at all, and a
 //! licence and a registration are facts somebody wrote down and reviewed, not
@@ -35,8 +44,9 @@
 
 use crate::config::{ConnectorFeedSettings, LiveFeedSettings};
 use qip_core::error::{Error, Result};
+use qip_core::kv::KeyValueStore;
 use qip_core::{Clock, Duration, ManualClock, ObjectId, Timestamp};
-use qip_data_finder::admission::{self, CatalogueEntry};
+use qip_data_finder::admission::{self, CatalogueEntry, StandingAdmission};
 use qip_data_finder::registration::RegistrationRegistry;
 use qip_financial::quality::LicensingClass;
 use qip_market::bar::Interval;
@@ -95,7 +105,17 @@ pub enum Feed {
     /// before construction, and the only constructors that reach this arm are
     /// [`Self::connector`] and [`Self::connector_admitted_by`], each of which
     /// runs them.
-    Connector(Box<ConnectorFeed>),
+    ///
+    /// The gate is *kept* rather than discarded once it has answered. A node
+    /// asked to stream for a week outlives the instant its licence was
+    /// evaluated at, and a licence that expires on day three of a seven-day
+    /// run used to keep granting for the remaining four because nothing asked
+    /// again. [`Self::poll`] re-asks the whole of it at the instant of every
+    /// poll, which is what makes this a control rather than the shape of one.
+    Connector {
+        feed: Box<ConnectorFeed>,
+        admission: Box<StandingAdmission>,
+    },
 }
 
 impl Feed {
@@ -201,8 +221,9 @@ impl Feed {
         at: Timestamp,
     ) -> Result<Self> {
         let class = qip_market_ingestion::connector_feed::shipped_class(&settings.source_id)?;
-        admission::admit_registered(registrations, &settings.source_id, class, at)?;
-        Self::admitted_connector(settings, at)
+        let (admission, _) =
+            StandingAdmission::open(registrations.clone(), &settings.source_id, class, at)?;
+        Self::admitted_connector(settings, admission, at)
     }
 
     /// The same opening against a caller-supplied licensing catalogue.
@@ -219,8 +240,14 @@ impl Feed {
         at: Timestamp,
     ) -> Result<Self> {
         let class = qip_market_ingestion::connector_feed::shipped_class(&settings.source_id)?;
-        admission::admit_from_registered(entries, registrations, &settings.source_id, class, at)?;
-        Self::admitted_connector(settings, at)
+        let (admission, _) = StandingAdmission::over(
+            entries.to_vec(),
+            registrations.clone(),
+            &settings.source_id,
+            class,
+            at,
+        )?;
+        Self::admitted_connector(settings, admission, at)
     }
 
     /// Construct the connector arm, once something has admitted it.
@@ -228,13 +255,42 @@ impl Feed {
     /// Private, and the two callers above are the whole set: a public
     /// constructor here would be a door into the arm that skips both gates,
     /// which is the thing the ordering exists to prevent.
-    fn admitted_connector(settings: &ConnectorFeedSettings, at: Timestamp) -> Result<Self> {
-        Ok(Self::Connector(Box::new(ConnectorFeed::open(
-            &settings.source_id,
-            &settings.base_url,
-            settings.seed,
-            at,
-        )?)))
+    fn admitted_connector(
+        settings: &ConnectorFeedSettings,
+        admission: StandingAdmission,
+        at: Timestamp,
+    ) -> Result<Self> {
+        Ok(Self::Connector {
+            feed: Box::new(ConnectorFeed::open(
+                &settings.source_id,
+                &settings.base_url,
+                settings.seed,
+                at,
+            )?),
+            admission: Box::new(admission),
+        })
+    }
+
+    /// Keep this source's stream record on `store`, resuming the last
+    /// process's position, and say how many fingerprints came back.
+    ///
+    /// `None` for every arm but a connector: a tape, a replay and the
+    /// synthetic exchange carry their own records and have no vendor to
+    /// redeliver from, so there is nothing for a dedup window to absorb.
+    ///
+    /// The failure this closes at the root: without it every restart began
+    /// with an empty dedup window, so the whole of a table-shaped source —
+    /// the ECB reference rates are one table per poll — was republished as
+    /// new observations at every rollout, and the session and span figures an
+    /// operator would need to claim a source had streamed for a week reset to
+    /// zero at each start-up. Call it before the first
+    /// [`Self::poll`]: the dedup window refuses a restore once it has observed
+    /// anything, so a later call is a refusal rather than a partial restore.
+    pub fn journal_to(&mut self, store: Arc<dyn KeyValueStore>) -> Result<Option<usize>> {
+        match self {
+            Self::Connector { feed, .. } => feed.journal_to(store).map(Some),
+            Self::Synthetic(_) | Self::Replay(_) | Self::Tape(_) | Self::Live(_) => Ok(None),
+        }
     }
 
     /// Choose a source from the configuration.
@@ -292,7 +348,7 @@ impl Feed {
             Self::Replay(adapter) => adapter.as_mut(),
             Self::Tape(adapter) => adapter.as_mut(),
             Self::Live(adapter) => adapter.as_mut(),
-            Self::Connector(adapter) => adapter.as_mut(),
+            Self::Connector { feed, .. } => feed.as_mut(),
         }
     }
 
@@ -302,7 +358,7 @@ impl Feed {
             Self::Replay(adapter) => adapter.descriptor(),
             Self::Tape(adapter) => adapter.descriptor(),
             Self::Live(adapter) => adapter.descriptor(),
-            Self::Connector(adapter) => adapter.descriptor(),
+            Self::Connector { feed, .. } => feed.descriptor(),
         }
     }
 
@@ -316,7 +372,7 @@ impl Feed {
     pub fn owned_clock(&self) -> Option<Arc<ManualClock>> {
         match self {
             Self::Tape(adapter) => Some(adapter.clock()),
-            Self::Synthetic(_) | Self::Replay(_) | Self::Live(_) | Self::Connector(_) => None,
+            Self::Synthetic(_) | Self::Replay(_) | Self::Live(_) | Self::Connector { .. } => None,
         }
     }
 
@@ -328,7 +384,7 @@ impl Feed {
     pub fn cycle_instant(&mut self, wall: &dyn Clock) -> Option<Timestamp> {
         match self {
             Self::Tape(adapter) => adapter.advance(),
-            Self::Synthetic(_) | Self::Replay(_) | Self::Live(_) | Self::Connector(_) => {
+            Self::Synthetic(_) | Self::Replay(_) | Self::Live(_) | Self::Connector { .. } => {
                 Some(wall.now())
             }
         }
@@ -395,6 +451,19 @@ impl Feed {
         ))
     }
 
+    /// The standing licensing gate's own account of itself, for the banner.
+    ///
+    /// `None` for a source no licence gates. Printed rather than kept private
+    /// because the number that distinguishes a gate consulted on every poll
+    /// from one consulted at start-up is its check count, and an operator who
+    /// cannot read it can only believe the claim.
+    pub fn licensing_standing(&self) -> Option<String> {
+        match self {
+            Self::Connector { admission, .. } => Some(admission.describe()),
+            Self::Synthetic(_) | Self::Replay(_) | Self::Tape(_) | Self::Live(_) => None,
+        }
+    }
+
     /// Whether records from this source may drive a real capital decision.
     pub fn is_production_grade(&self) -> bool {
         self.descriptor().is_production_grade()
@@ -415,12 +484,22 @@ impl Feed {
             Self::Replay(adapter) => adapter.remaining() == 0,
             Self::Tape(adapter) => adapter.remaining() == 0,
             // A vendor stops answering; it does not run out.
-            Self::Live(_) | Self::Connector(_) => false,
+            Self::Live(_) | Self::Connector { .. } => false,
         }
     }
 
     /// Pull everything available up to `until`, validating as it goes.
+    ///
+    /// A connector's licensing gate is re-asked at `until` **before** the
+    /// socket, and a refusal returns here rather than producing an empty
+    /// batch: an empty batch and a source this platform is no longer licensed
+    /// to read are indistinguishable downstream, and the second one must stop
+    /// the node rather than quietly starve it. The rule is evaluation *then*
+    /// use, and it is a rule about every use rather than about the first.
     pub fn poll(&mut self, until: Timestamp) -> Result<Batch> {
+        if let Self::Connector { admission, .. } = self {
+            admission.check(until)?;
+        }
         let source = self.descriptor().name;
         let mut batch = Batch::default();
         for record in self.adapter_mut().poll(until)? {

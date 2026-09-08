@@ -1180,7 +1180,7 @@ impl MarketSimulator {
         } else {
             FillStatus::Complete
         };
-        report.commission = self.commission_on(report.notional);
+        report.commission = self.commission_on(report.notional)?;
         Ok(report)
     }
 
@@ -1363,7 +1363,20 @@ impl MarketSimulator {
             return Ok(book);
         }
 
-        let half_spread = displaced.apply_bps(spec.half_spread_bps * regime.spread_multiplier);
+        // Refused rather than panicked. `spread_multiplier` compounds across
+        // every condition in force, so a schedule with several stress arms on
+        // one instrument can present a basis-point figure this price cannot
+        // carry. The refusal names the instrument and the venue because a
+        // backtest that stops must say which of its instruments stopped it;
+        // aborting the process says only that something did.
+        let widened = spec.half_spread_bps * regime.spread_multiplier;
+        let half_spread = displaced.checked_apply_bps(widened).ok_or_else(|| {
+            Error::numeric(format!(
+                "a half-spread of {widened}bp cannot be applied to {displaced} on {object_id} at \
+                 {venue}; narrow the condition's spread multiplier or the instrument's calm \
+                 half-spread"
+            ))
+        })?;
         // A crossed market is built symmetrically about the true mid: the bid
         // rises by half the cross and the ask falls by half, so the touch
         // inverts around the price rather than being dragged off it. Note what
@@ -1374,7 +1387,14 @@ impl MarketSimulator {
         // is reliably worse than an orderly market, only two quotes that
         // cannot both be true.
         let cross_half = if regime.crossed_by_bps > 0.0 {
-            displaced.apply_bps(regime.crossed_by_bps / 2.0) + half_spread
+            let half_cross = regime.crossed_by_bps / 2.0;
+            displaced.checked_apply_bps(half_cross).ok_or_else(|| {
+                Error::numeric(format!(
+                    "a cross of {}bp cannot be applied to {displaced} on {object_id} at \
+                         {venue}; state a cross the price can carry",
+                    regime.crossed_by_bps
+                ))
+            })? + half_spread
         } else {
             Decimal::ZERO
         };
@@ -1399,7 +1419,18 @@ impl MarketSimulator {
 
         let mut entered = at.saturating_sub(Duration::from_nanos((spec.levels as i64) * 4));
         for index in 0..spec.levels {
-            let step = displaced.apply_bps(spec.level_spacing_bps * index as f64);
+            // The spacing grows with the level index, so the deepest level is
+            // the one that fails first — and it fails on the book's shape, not
+            // on anything a caller sent, which is why the message names the
+            // depth as well as the spacing.
+            let offset = spec.level_spacing_bps * index as f64;
+            let step = displaced.checked_apply_bps(offset).ok_or_else(|| {
+                Error::numeric(format!(
+                    "level {index} of {object_id}'s book at {venue} sits {offset}bp from \
+                     {displaced}, which is not representable; reduce level_spacing_bps or the \
+                     number of levels"
+                ))
+            })?;
             for (side, price) in [(Side::Buy, best_bid - step), (Side::Sell, best_ask + step)] {
                 if !price.is_positive() {
                     continue;
@@ -1570,10 +1601,19 @@ impl MarketSimulator {
             * 10_000.0;
         let volatility = spec.step_volatility * regime.volatility_multiplier;
         let participation = (outcome.filled.to_f64() / spec.daily_volume).max(0.0);
-        let impact_bps = if volatility > 0.0 && participation > 0.0 {
-            self.costs.impact_coefficient * volatility * participation.sqrt() * 10_000.0
-        } else {
-            0.0
+        // Through the cost model rather than inline. This line used to spell
+        // the square-root law out for itself — the fourth place on the platform
+        // that did — and a formula written four times is four numbers that will
+        // eventually disagree about the same fill.
+        // A model that cannot state an impact at this instrument's volatility
+        // prices no fill: the slice is reported `FillStatus::Unpriceable` and
+        // the residual stays the caller's. The refusal's words are deliberately
+        // not carried up — this function's whole contract is that an absence
+        // means "no defensible price", and the status is the channel a caller
+        // reads. What must not happen is the other thing available here, which
+        // is filling at an impact of zero.
+        let Ok(impact_bps) = self.costs.impact_bps(participation, volatility) else {
+            return None;
         };
         let total_bps = (walk_bps.max(0.0) + impact_bps) * regime.slippage_multiplier;
         if !total_bps.is_finite() {
@@ -1582,7 +1622,11 @@ impl MarketSimulator {
             // whatever the arithmetic degenerated into.
             return None;
         }
-        let adjustment = reference.apply_bps(total_bps);
+        // Same absence, same reason: an adjustment the money type cannot hold
+        // is not a fill at the unadjusted reference, which is what any
+        // fallback here would quietly be — the fill the conditions were
+        // supposed to have made worse, reported as a clean one.
+        let adjustment = reference.checked_apply_bps(total_bps)?;
         Some(match side {
             Side::Buy => reference + adjustment,
             Side::Sell => (reference - adjustment).max(Decimal::from_raw(1)),
@@ -1652,18 +1696,17 @@ impl MarketSimulator {
     }
 
     /// Commission on a filled notional, from the platform's own cost model.
-    fn commission_on(&self, notional: Decimal) -> Decimal {
-        if !notional.is_positive() {
-            return Decimal::ZERO;
-        }
-        let charged =
-            (notional.to_f64() * self.costs.commission_rate).max(self.costs.minimum_commission);
-        // A fee too large to represent saturates rather than falling back to
-        // zero. Zero was the wrong direction for an unrepresentable number: a
-        // notional big enough to overflow the fee is a notional whose fee is
-        // enormous, and reporting it as free is the one reading that is
-        // certainly wrong.
-        Decimal::from_f64(charged).unwrap_or(Decimal::MAX)
+    ///
+    /// The fee is now computed in [`Decimal`] throughout, by
+    /// [`CostModel::commission_on`], so the old round trip through `f64` and
+    /// its saturating fallback are both gone: there is no longer a step at
+    /// which an unrepresentable fee has to be guessed at in either direction.
+    /// A fee that cannot be represented is refused rather than charged as
+    /// something: the report is the record of what the fill cost, and a report
+    /// whose commission line was invented is a report of a fill that did not
+    /// happen at that price.
+    fn commission_on(&self, notional: Decimal) -> Result<Decimal> {
+        self.costs.commission_on(notional)
     }
 }
 

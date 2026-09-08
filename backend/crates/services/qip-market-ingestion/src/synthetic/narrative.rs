@@ -17,7 +17,14 @@ use qip_financial::intelligence::{
     AlternativeDataPoint, EntityMention, FiscalPeriod, FundamentalUpdate, MacroObservation,
     NewsItem, NewsSource, Sentiment,
 };
+use qip_financial::manifest::SourceManifest;
 use qip_financial::quality::{DataQuality, Provenance};
+
+/// The generator every record in this module names as its origin.
+///
+/// One spelling, used by both the provenance and the manifest, so a record and
+/// the manifest beside it cannot come to name two different producers.
+const GENERATOR: &str = "synthetic-news";
 
 /// A company the synthetic world knows about.
 #[derive(Clone, Debug)]
@@ -88,12 +95,17 @@ pub fn routine_story<R: Rng>(company: &SyntheticCompany, at: Timestamp, rng: &mu
         ),
     ];
     let (headline, body) = TEMPLATES[rng.below(TEMPLATES.len() as u64) as usize];
+    let item_id = format!("routine-{}-{}", company.ticker, at.as_nanos());
     NewsItem {
-        item_id: format!("routine-{}-{}", company.ticker, at.as_nanos()),
+        // The generated prose is hashed and dropped here for the same reason a
+        // vendor's is: `NewsItem` is an event body, and a synthetic story
+        // written into the hash-chained log is exactly as permanent as a real
+        // one. See `SourceManifest::generated`.
+        manifest: SourceManifest::generated(GENERATOR, &item_id, at, body),
+        item_id,
         headline: headline
             .replace("{name}", &company.legal_name)
             .replace("{sector}", &company.sector),
-        body: body.to_string(),
         source: NewsSource::Newswire,
         published_at: at,
         entities: mentions_for(company, rng),
@@ -103,7 +115,7 @@ pub fn routine_story<R: Rng>(company: &SyntheticCompany, at: Timestamp, rng: &mu
             novelty: rng.uniform(0.0, 0.2),
         },
         topics: vec!["corporate".into()],
-        provenance: Provenance::synthetic("synthetic-news", at),
+        provenance: Provenance::synthetic(GENERATOR, at),
         quality: DataQuality::clean(),
     }
 }
@@ -124,19 +136,21 @@ pub fn earnings_story<R: Rng>(
     };
     let direction = if beat { "above" } else { "below" };
 
+    let item_id = format!("earnings-{}-{}", company.ticker, at.as_nanos());
+    let body = format!(
+        "{} reported quarterly revenue {descriptor} {direction} analyst estimates, a surprise of \
+         {:.1}%. Management attributed the result to demand conditions in {} and did not revise \
+         full-year guidance.",
+        company.legal_name,
+        surprise * 100.0,
+        company.sector
+    );
     NewsItem {
-        item_id: format!("earnings-{}-{}", company.ticker, at.as_nanos()),
+        manifest: SourceManifest::generated(GENERATOR, &item_id, at, &body),
+        item_id,
         headline: format!(
             "{} reports quarterly results {descriptor} {direction} consensus",
             company.legal_name
-        ),
-        body: format!(
-            "{} reported quarterly revenue {descriptor} {direction} analyst estimates, a surprise \
-             of {:.1}%. Management attributed the result to demand conditions in {} and did not \
-             revise full-year guidance.",
-            company.legal_name,
-            surprise * 100.0,
-            company.sector
         ),
         source: NewsSource::CompanyAnnouncement,
         published_at: at,
@@ -147,7 +161,7 @@ pub fn earnings_story<R: Rng>(
             novelty: magnitude.clamp(0.0, 1.0).max(0.4),
         },
         topics: vec!["earnings".into(), "guidance".into()],
-        provenance: Provenance::synthetic("synthetic-news", at),
+        provenance: Provenance::synthetic(GENERATOR, at),
         quality: DataQuality::clean(),
     }
 }
@@ -172,23 +186,25 @@ pub fn supply_chain_story<R: Rng>(
         });
     }
 
+    let item_id = format!("supply-{}-{}", company.ticker, at.as_nanos());
+    let body = format!(
+        "{} disclosed a disruption expected to affect output for several weeks. The company \
+         indicated that downstream customers, including {}, have been notified. Analysts expect a \
+         {:.0}% impact to quarterly volumes.",
+        company.legal_name,
+        company
+            .customers
+            .first()
+            .map(String::as_str)
+            .unwrap_or("major buyers"),
+        severity * 100.0
+    );
     NewsItem {
-        item_id: format!("supply-{}-{}", company.ticker, at.as_nanos()),
+        manifest: SourceManifest::generated(GENERATOR, &item_id, at, &body),
+        item_id,
         headline: format!(
             "{} warns of production disruption at key facility",
             company.legal_name
-        ),
-        body: format!(
-            "{} disclosed a disruption expected to affect output for several weeks. The company \
-             indicated that downstream customers, including {}, have been notified. Analysts \
-             expect a {:.0}% impact to quarterly volumes.",
-            company.legal_name,
-            company
-                .customers
-                .first()
-                .map(String::as_str)
-                .unwrap_or("major buyers"),
-            severity * 100.0
         ),
         source: NewsSource::RegulatoryFiling,
         published_at: at,
@@ -199,7 +215,7 @@ pub fn supply_chain_story<R: Rng>(
             novelty: 0.85,
         },
         topics: vec!["supply_chain".into(), "operations".into()],
-        provenance: Provenance::synthetic("synthetic-news", at),
+        provenance: Provenance::synthetic(GENERATOR, at),
         quality: DataQuality::clean(),
     }
 }
@@ -207,15 +223,17 @@ pub fn supply_chain_story<R: Rng>(
 /// A central bank or statistical release.
 pub fn macro_story(series_id: &str, region: &str, surprise: f64, at: Timestamp) -> NewsItem {
     let hotter = surprise > 0.0;
+    let item_id = format!("macro-{series_id}-{}", at.as_nanos());
+    let body = format!(
+        "The latest {series_id} print for {region} surprised consensus by {surprise:.2}. Rate \
+         expectations repriced following the release."
+    );
     NewsItem {
-        item_id: format!("macro-{series_id}-{}", at.as_nanos()),
+        manifest: SourceManifest::generated(GENERATOR, &item_id, at, &body),
+        item_id,
         headline: format!(
             "{region} {series_id} comes in {} than expected",
             if hotter { "hotter" } else { "softer" }
-        ),
-        body: format!(
-            "The latest {series_id} print for {region} surprised consensus by {surprise:.2}. \
-             Rate expectations repriced following the release."
         ),
         source: NewsSource::OfficialStatistics,
         published_at: at,

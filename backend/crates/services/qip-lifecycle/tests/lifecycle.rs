@@ -22,6 +22,7 @@ use qip_core::kv::KeyValueStore;
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::{Decimal, Duration, ModelId, ObjectId, Timestamp, dec};
 use qip_lifecycle::band::{BandMethod, HoldoutBand};
+use qip_lifecycle::corridor::{CorridorRoute, CorridorStanding, CorridorSubject};
 use qip_lifecycle::demotion::{
     DemotionMonitor, DemotionPolicy, DemotionTrigger, LiveObservation, PilotBaseline,
     RetirementThreshold,
@@ -33,6 +34,10 @@ use qip_lifecycle::evidence::{
 use qip_lifecycle::gates::{
     Admission, Gate, HoldoutGate, PaperGate, PilotGate, ScaledGate, ShadowGate,
 };
+use qip_lifecycle::horizon::{
+    HorizonAssurance, HorizonBucket, HorizonDisagreement, HorizonFunding, HorizonReconciler,
+    HorizonStanding,
+};
 use qip_lifecycle::ledger::{AuthorisedPromotion, LifecycleLedger, attempt_promotion};
 use qip_lifecycle::scoring::{annualised_sharpe, periodic_sharpe};
 use qip_lifecycle::trials::{
@@ -42,7 +47,7 @@ use qip_observability::metrics::{Metrics, labels, names};
 use qip_simulation_engine::validation::{
     DeflatedSharpe, PurgedSplit, assess_overfitting, deflated_sharpe, sharpe_standard_error,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 fn start() -> Timestamp {
@@ -2499,5 +2504,535 @@ fn a_retirement_threshold_of_zero_or_less_is_refused_naming_what_to_do() -> Resu
     }
     let admitted = RetirementThreshold::after_decaying_for(Duration::from_days(1))?;
     assert_eq!(admitted.sustained_for(), Duration::from_days(1));
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Which capital pool funds a rung, and what the corridor that feeds it may
+// carry. Both capabilities were scored MISSING on 2026-09-06 — multi-horizon
+// reconciliation had a complete, refusing, tested unit in
+// `qip-optimization-engine` with no caller anywhere, and corridor policy had
+// no subject at all. These tests drive both through
+// `attempt_promotion`/`retire`, which is the path `qip-kernel`'s
+// `central::factory` takes, rather than through the types directly: a
+// capability reachable only from a test is what the scorecard counts as
+// absent.
+// ---------------------------------------------------------------------------
+
+/// Walk to shadow and stop, so the *next* promotion is the one to pilot — the
+/// first rung that holds capital and therefore the first the horizon gate sees.
+fn walk_to_shadow(ledger: &mut LifecycleLedger) -> Result<()> {
+    let evidence = full_evidence(start(), start().saturating_add(Duration::from_days(120)))?;
+    for target in [GateStage::Holdout, GateStage::Paper, GateStage::Shadow] {
+        attempt_promotion(
+            ledger,
+            &strategy(),
+            &evidence,
+            None,
+            format!("promoting to {}", target.as_str()),
+            start(),
+        )?;
+    }
+    Ok(())
+}
+
+/// A reconciler that hands the gate exactly the figures it was built with, and
+/// records what it was asked about.
+///
+/// A double rather than `qip_optimization_engine`'s real §23.4 arithmetic, and
+/// that is the point of the port rather than a shortcut around it. This crate
+/// vetoes promotions to rungs that hold capital, and the optimisation engine
+/// transitively reaches `qip-quantum`; a veto whose input is an optimiser's
+/// answer is the failure
+/// `nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver`
+/// refuses, and it caught this crate taking that edge. What these tests prove
+/// is what the gate refuses *given* figures. That the real arithmetic produces
+/// those figures is proven where it is called, in `qip-kernel`'s
+/// `horizon_seam` suite.
+#[derive(Debug)]
+struct StatedFunding {
+    funding: HorizonFunding,
+    /// Every `(candidate, alongside)` pair the gate asked about, in order.
+    asked: Mutex<Vec<(StrategyId, BTreeSet<StrategyId>)>>,
+}
+
+impl StatedFunding {
+    fn new(funding: HorizonFunding) -> Arc<Self> {
+        Arc::new(Self {
+            funding,
+            asked: Mutex::new(Vec::new()),
+        })
+    }
+}
+
+impl HorizonReconciler for StatedFunding {
+    fn fund(
+        &self,
+        candidate: &StrategyId,
+        alongside: &BTreeSet<StrategyId>,
+    ) -> Result<HorizonFunding> {
+        if let Ok(mut asked) = self.asked.lock() {
+            asked.push((candidate.clone(), alongside.clone()));
+        }
+        Ok(self.funding.clone())
+    }
+}
+
+/// The names the §23.4 buckets carry across the seam. String literals rather
+/// than an enum for the reason `HorizonBucket` is one: this crate never orders
+/// buckets and a copy of the table here would be free to drift.
+const DEPLOYABLE: &str = "hours_to_days";
+const RESERVED: &str = "years";
+
+fn standing(name: &str, pool: Decimal, committed: Decimal) -> Result<HorizonStanding> {
+    Ok(HorizonStanding {
+        bucket: HorizonBucket::new(name)?,
+        treatment: format!("against the {name} pool"),
+        pool,
+        committed,
+    })
+}
+
+/// Every bucket inside its pool, so a refusal in these tests can only have come
+/// from something other than a breach.
+fn roomy_standings() -> Result<Vec<HorizonStanding>> {
+    Ok(vec![
+        standing(DEPLOYABLE, dec!("1000000"), dec!("500000"))?,
+        standing(RESERVED, dec!("1000000"), dec!("0"))?,
+    ])
+}
+
+/// Two sources placing the test strategy at different buckets.
+fn contested() -> Result<Vec<HorizonDisagreement>> {
+    let mut claims: BTreeMap<HorizonBucket, BTreeSet<String>> = BTreeMap::new();
+    claims.insert(
+        HorizonBucket::new(DEPLOYABLE)?,
+        ["research-enrolment".to_string()].into_iter().collect(),
+    );
+    claims.insert(
+        HorizonBucket::new(RESERVED)?,
+        ["liquidity-model".to_string()].into_iter().collect(),
+    );
+    Ok(vec![HorizonDisagreement {
+        strategy: strategy(),
+        claims,
+    }])
+}
+
+/// The evidence and approval the pilot rung demands, so that a refusal in
+/// these tests can only have come from the horizon gate.
+fn pilot_approval() -> Result<Approval> {
+    dual_approval(
+        "momentum-v3",
+        start(),
+        "every gate check passed with evidence attached",
+    )
+}
+
+fn promote_to_pilot(ledger: &mut LifecycleLedger) -> Result<qip_contracts::gate::Promotion> {
+    let evidence = full_evidence(start(), start().saturating_add(Duration::from_days(120)))?;
+    attempt_promotion(
+        ledger,
+        &strategy(),
+        &evidence,
+        Some(pilot_approval()?),
+        "promoting to pilot",
+        start(),
+    )
+}
+
+#[test]
+fn a_strategy_two_sources_place_at_different_horizons_cannot_take_a_rung_that_holds_capital()
+-> Result<()> {
+    // The failure: before `HorizonRegister`, a strategy's horizon was one
+    // `BTreeMap` entry, so a liquidity model and a researcher's enrolment note
+    // disagreeing was resolved by whichever wrote last, silently, and the
+    // position was funded out of whichever pool that writer named.
+    // Nothing is over its pool and a bucket did settle, so the only thing left
+    // to refuse on is the argument itself.
+    let funding = HorizonFunding {
+        bucket: Some(HorizonBucket::new(RESERVED)?),
+        standings: roomy_standings()?,
+        disagreements: contested()?,
+        despite: None,
+    };
+    let mut ledger = ledger()?.with_horizons(HorizonAssurance::new(StatedFunding::new(funding)));
+    walk_to_shadow(&mut ledger)?;
+    // The premise: the strategy really is one rung below capital, so the
+    // refusal below is about the horizon and not about a rung it never reached.
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Shadow);
+
+    let error = promote_to_pilot(&mut ledger).expect_err("a disputed horizon must refuse");
+    let message = error.to_string();
+    assert!(
+        message.contains("horizon is disputed"),
+        "the refusal must name the disagreement rather than some other gate: {message}"
+    );
+    assert!(
+        message.contains("hours_to_days") && message.contains("years"),
+        "the refusal must show both sides of the argument: {message}"
+    );
+    assert!(
+        message.contains("research-enrolment") && message.contains("liquidity-model"),
+        "the refusal must name who disagreed, or nobody can go and repair one: {message}"
+    );
+    // And the strategy did not move.
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Shadow);
+    Ok(())
+}
+
+#[test]
+fn a_promotion_taken_over_a_horizon_disagreement_records_the_claims_it_overruled() -> Result<()> {
+    // A decision taken despite an unresolved disagreement has to say so in the
+    // record it leaves. Otherwise a post-mortem cannot tell it apart from one
+    // taken on agreement, and will draw the wrong lesson from whichever of the
+    // two went wrong.
+    let reason = "funded from reserved capital until the liquidity model is repaired";
+    // The least liquid claim wins where a desk decides anyway, so the bucket
+    // the seam settled at is `years` and not the deployable pool.
+    let funding = HorizonFunding {
+        bucket: Some(HorizonBucket::new(RESERVED)?),
+        standings: roomy_standings()?,
+        disagreements: contested()?,
+        despite: Some(reason.to_string()),
+    };
+    let mut ledger = ledger()?.with_horizons(HorizonAssurance::new(StatedFunding::new(funding)));
+    walk_to_shadow(&mut ledger)?;
+    promote_to_pilot(&mut ledger)?;
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Pilot);
+
+    let entry = ledger
+        .history(&strategy())
+        .last()
+        .expect("the promotion was recorded");
+    let verdict = entry
+        .horizon
+        .as_ref()
+        .expect("a rung that holds capital records which pool funded it");
+    // Premise first: there really was something to decide over.
+    assert!(
+        verdict.decided_over_disagreement(),
+        "the verdict must carry the disagreement it was taken over"
+    );
+    assert_eq!(verdict.despite.as_deref(), Some(reason));
+    // The least liquid claim wins, because funding an illiquid position out of
+    // a more liquid pool is the failure §23.4 exists to prevent.
+    assert_eq!(verdict.horizon, HorizonBucket::new(RESERVED)?);
+    assert_eq!(verdict.disputes.len(), 1);
+    let claims = &verdict.disputes[0].claims;
+    assert_eq!(
+        claims.keys().cloned().collect::<Vec<_>>(),
+        vec![
+            HorizonBucket::new(DEPLOYABLE)?,
+            HorizonBucket::new(RESERVED)?
+        ],
+        "both sides of the argument are kept, not just the one that won"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_promotion_that_would_push_a_horizon_past_its_pool_is_refused_rather_than_trimmed() -> Result<()>
+{
+    // Trimming would be the platform quietly choosing which strategy goes
+    // unfunded, at the moment the desk most needs to make that choice itself.
+    // 250,000 charged to a deployable pool of 100,000. Nothing is disputed and
+    // the candidate's bucket did settle, so the breach is the only thing left
+    // that can refuse.
+    let breached = standing(DEPLOYABLE, dec!("100000"), dec!("250000"))?;
+    // The premise, asserted rather than assumed: this standing really is over
+    // its pool. A fixture where committed happened not to exceed pool would
+    // make the assertions below pass against a gate that never fired.
+    assert!(
+        breached.is_breached(),
+        "the fixture must actually be over its pool, or this test proves nothing"
+    );
+    let funding = HorizonFunding {
+        bucket: Some(HorizonBucket::new(DEPLOYABLE)?),
+        standings: vec![breached, standing(RESERVED, dec!("1000000"), dec!("0"))?],
+        disagreements: Vec::new(),
+        despite: None,
+    };
+
+    let mut ledger = ledger()?.with_horizons(HorizonAssurance::new(StatedFunding::new(funding)));
+    walk_to_shadow(&mut ledger)?;
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Shadow);
+
+    let error = promote_to_pilot(&mut ledger).expect_err("an over-committed pool must refuse");
+    let message = error.to_string();
+    assert!(
+        message.contains("momentum-v3") && message.contains("hours_to_days"),
+        "the refusal must name the candidate and the pool it overdrew: {message}"
+    );
+    assert!(
+        message.contains("over its pool of 100000 by 150000"),
+        "the refusal must state the pool it exceeded and by how much: {message}"
+    );
+    assert!(
+        message.contains("will not trim them for you"),
+        "the refusal must say it declined to trim rather than trimming: {message}"
+    );
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Shadow);
+    Ok(())
+}
+
+#[test]
+fn a_breach_at_a_bucket_the_candidate_does_not_sit_at_still_refuses_the_promotion() -> Result<()> {
+    // The failure this prevents: a gate that checked only the candidate's own
+    // bucket. The four pools are one balance sheet — the years pool carries the
+    // unfunded commitment liability whether or not anybody budgeted there — so
+    // a promotion admitted while another bucket is over its pool admits a book
+    // that does not add up, and the next promotion inherits the breach.
+    let candidates_bucket = standing(DEPLOYABLE, dec!("1000000"), dec!("250000"))?;
+    // Premise first, both halves: the candidate's own bucket has room, and the
+    // other one does not. Without the first, this would be indistinguishable
+    // from the test above.
+    assert!(
+        !candidates_bucket.is_breached(),
+        "the candidate's own bucket must have room, or this proves nothing new"
+    );
+    let elsewhere = standing(RESERVED, dec!("1000000"), dec!("1400000"))?;
+    assert!(elsewhere.is_breached(), "the other bucket must be over");
+
+    let funding = HorizonFunding {
+        bucket: Some(HorizonBucket::new(DEPLOYABLE)?),
+        standings: vec![candidates_bucket, elsewhere],
+        disagreements: Vec::new(),
+        despite: None,
+    };
+    let mut ledger = ledger()?.with_horizons(HorizonAssurance::new(StatedFunding::new(funding)));
+    walk_to_shadow(&mut ledger)?;
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Shadow);
+
+    let error =
+        promote_to_pilot(&mut ledger).expect_err("a breach anywhere on the book must refuse");
+    let message = error.to_string();
+    assert_eq!(error.code(), "denied", "{error:?}");
+    assert!(
+        message.contains("years is over its pool of 1000000 by 400000"),
+        "the refusal must name the bucket that is over, which is not the candidate's: {message}"
+    );
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Shadow);
+    Ok(())
+}
+
+#[test]
+fn the_horizon_gate_measures_the_candidate_alongside_every_strategy_already_holding_capital()
+-> Result<()> {
+    // The failure this prevents: reconciling a promotion against the candidate
+    // alone. A pool is only ever breached by the sum, so a gate that asked
+    // about one strategy at a time would admit every promotion individually
+    // and overdraw the book collectively — a limit that cannot fire.
+    let funding = HorizonFunding {
+        bucket: Some(HorizonBucket::new(DEPLOYABLE)?),
+        standings: roomy_standings()?,
+        disagreements: Vec::new(),
+        despite: None,
+    };
+    let reconciler = StatedFunding::new(funding);
+    let shared: Arc<dyn HorizonReconciler> = reconciler.clone();
+    let mut ledger = ledger()?.with_horizons(HorizonAssurance::new(Arc::clone(&shared)));
+    walk_to_shadow(&mut ledger)?;
+    promote_to_pilot(&mut ledger)?;
+    // The premise: the walked strategy really is holding capital now, so it is
+    // something the next measurement has to be told about.
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Pilot);
+    assert_eq!(
+        ledger.holding_capital(),
+        vec![&strategy()],
+        "the ledger must report the promoted strategy as a capital holder"
+    );
+
+    let newcomer = StrategyId::new("carry-v1");
+    let assurance = HorizonAssurance::new(shared);
+    assurance.admit(&ledger, &newcomer)?;
+
+    let asked = reconciler
+        .asked
+        .lock()
+        .expect("the recorder is not poisoned");
+    let (candidate, alongside) = asked.last().expect("the gate asked the reconciler");
+    assert_eq!(candidate, &newcomer);
+    assert!(
+        alongside.contains(&strategy()),
+        "the strategy already holding capital must be measured alongside the candidate, or the \
+         pool is charged for one position at a time: {alongside:?}"
+    );
+    assert!(
+        !alongside.contains(&newcomer),
+        "the candidate must not also appear alongside itself, or its budget is charged twice"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_horizon_bucket_with_no_name_is_refused_rather_than_reported_as_an_empty_pool() -> Result<()> {
+    // A refusal reading "the  pool is over its pool of 100000" names no pool,
+    // and an operator cannot go and repair a bucket that has no name. Refused
+    // at construction rather than rendered as nothing.
+    for blank in ["", "   ", "\t\n"] {
+        let error = HorizonBucket::new(blank).expect_err("a nameless bucket is refused");
+        assert_eq!(error.code(), "invalid", "{error:?}");
+        assert!(
+            error.message().contains("§23.4"),
+            "the refusal must say which table the name comes from: {error:?}"
+        );
+    }
+    // And a real name is admitted — a gate that refused everything would pass
+    // the loop above and be useless.
+    assert_eq!(HorizonBucket::new(DEPLOYABLE)?.as_str(), DEPLOYABLE);
+    Ok(())
+}
+
+fn treasury_corridor() -> Result<CorridorSubject> {
+    CorridorSubject::new(
+        CorridorRoute::new("reserve", "venue-alpha", "USD")?,
+        dec!("1000000"),
+        dec!("100000"),
+        [strategy()],
+    )
+}
+
+#[test]
+fn a_corridors_cap_tracks_the_weakest_rung_the_strategies_it_funds_stand_on() -> Result<()> {
+    // Blueprint §2: the Intelligence layer *sets* corridor policy. The
+    // scorecard read "corridor policy has no subject", and it did not: nothing
+    // anywhere derived a corridor's cap from where the strategies it funds
+    // stand, so a corridor kept its full ceiling while the strategy behind it
+    // was retired.
+    let route = CorridorRoute::new("reserve", "venue-alpha", "USD")?;
+    let mut ledger = ledger()?;
+    walk_to_shadow(&mut ledger)?;
+    promote_to_pilot(&mut ledger)?;
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Pilot);
+
+    ledger.declare_corridors(vec![treasury_corridor()?], start())?;
+
+    // At pilot — "live with capital, deliberately limited" — the corridor is
+    // held to the pilot ceiling, or the route would undo the limit.
+    let ruling = ledger
+        .corridor_policy()
+        .and_then(|policy| policy.ruling_for(&route))
+        .expect("the declared corridor has a ruling")
+        .clone();
+    assert_eq!(ruling.standing, CorridorStanding::Narrowed);
+    assert_eq!(ruling.permitted, dec!("100000"));
+    assert_eq!(ruling.decided_by, strategy());
+    assert_eq!(ruling.decided_at_stage, GateStage::Pilot);
+
+    // Scaled: the full ceiling, and only now.
+    let scaled_at = start().saturating_add(Duration::from_days(120));
+    let evidence = full_evidence(start(), scaled_at)?;
+    attempt_promotion(
+        &mut ledger,
+        &strategy(),
+        &evidence,
+        Some(dual_approval(
+            "momentum-v3",
+            scaled_at,
+            "pilot met its bound",
+        )?),
+        "promoting to scaled",
+        scaled_at,
+    )?;
+    let ruling = ledger
+        .corridor_policy()
+        .and_then(|policy| policy.ruling_for(&route))
+        .expect("the ruling is re-emitted on every recorded move")
+        .clone();
+    assert_eq!(ruling.standing, CorridorStanding::Permitted);
+    assert_eq!(ruling.permitted, dec!("1000000"));
+
+    // Retired: the corridor carries nothing, and says which strategy and which
+    // rung decided that. This is the control working, not a corridor fault.
+    ledger.retire(
+        &strategy(),
+        "risk-monitor",
+        "the venue delisted the universe",
+        scaled_at,
+    )?;
+    let policy = ledger.corridor_policy().expect("a policy is still emitted");
+    let ruling = policy.ruling_for(&route).expect("the ruling survives");
+    assert_eq!(ruling.standing, CorridorStanding::Suspended);
+    assert_eq!(ruling.permitted, Decimal::ZERO);
+    assert_eq!(ruling.decided_by, strategy());
+    assert_eq!(ruling.decided_at_stage, GateStage::Retired);
+    assert_eq!(policy.suspended().len(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_corridor_declared_with_a_ceiling_of_zero_is_refused_rather_than_published_as_a_narrowing()
+-> Result<()> {
+    // The failure prevented, and it has already been reachable once: the
+    // constructor refused only *negative* ceilings, so a pilot ceiling of zero
+    // was admitted. A strategy at pilot then derived `Narrowed` with a
+    // permitted of zero; `CorridorFunding::well_formed` in the fabric found
+    // nothing wrong with it, the transfer gate's check 1 admitted the corridor
+    // because it was not suspended, and check 2 refused every transfer ever
+    // proposed with "exceeds the narrowed ceiling of 0". The operator is told
+    // to promote a strategy and the cause is a zero somebody typed. A corridor
+    // that may carry nothing is suspended by its rungs, and that is a standing
+    // rather than a cap.
+    for (label, ceiling, pilot) in [
+        ("pilot ceiling", dec!("1000000"), Decimal::ZERO),
+        ("ceiling", Decimal::ZERO, Decimal::ZERO),
+    ] {
+        let error = CorridorSubject::new(
+            CorridorRoute::new("reserve", "venue-alpha", "USD")?,
+            ceiling,
+            pilot,
+            [strategy()],
+        )
+        .expect_err("a ceiling of zero must be refused");
+        assert_eq!(error.code(), "invalid", "{error:?}");
+        assert!(
+            error.message().contains(label),
+            "the refusal must name which of the two ceilings is zero: {error}"
+        );
+        // Matched as a delimited phrase rather than on "positive", which is a
+        // substring of the message's own "a cap is a positive amount" whatever
+        // the check refused.
+        assert!(
+            error.message().contains("may carry nothing is suspended"),
+            "the refusal must say what to write instead: {error}"
+        );
+    }
+
+    // The premise, and the half that keeps this from passing against a
+    // constructor that refuses everything: the same route with two positive
+    // ceilings is admitted, and the smallest positive pilot ceiling is still a
+    // corridor rather than a suspension.
+    assert_eq!(treasury_corridor()?.pilot_ceiling(), dec!("100000"));
+    let minimal = CorridorSubject::new(
+        CorridorRoute::new("reserve", "venue-alpha", "USD")?,
+        dec!("1000000"),
+        dec!("0.01"),
+        [strategy()],
+    )?;
+    assert_eq!(minimal.pilot_ceiling(), dec!("0.01"));
+    Ok(())
+}
+
+#[test]
+fn a_corridor_that_funds_no_strategy_is_refused_rather_than_permitted_by_default() -> Result<()> {
+    // The subject is the whole capability. A corridor funding nobody has no
+    // lifecycle standing to be judged on, and admitting it would permit the
+    // full ceiling on evidence about nobody.
+    let error = CorridorSubject::new(
+        CorridorRoute::new("reserve", "venue-alpha", "USD")?,
+        dec!("1000000"),
+        dec!("100000"),
+        [],
+    )
+    .expect_err("a corridor with no subject must refuse");
+    assert!(
+        error.to_string().contains("funds no strategy"),
+        "the refusal must name the missing subject: {error}"
+    );
+
+    // And the premise: the identical corridor with a subject is admitted, so
+    // the refusal above is about the empty set and not about the route.
+    treasury_corridor()?;
     Ok(())
 }

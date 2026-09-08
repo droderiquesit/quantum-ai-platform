@@ -20,9 +20,10 @@ export RUSTFLAGS ?= -D warnings
 export CARGO_TERM_COLOR ?= always
 
 TERRAFORM_DIR := infrastructure/terraform
+ENVIRONMENTS_DIR := infrastructure/environments
 
 .PHONY: check all fmt fmt-check lint test test-release build release \
-        deps secrets audit sbom tf-fmt tf-validate infra e2e acceptance \
+        deps secrets audit sbom tf-fmt tf-tfvars tf-validate infra e2e acceptance \
         count doc clean help
 
 # ---------------------------------------------------------------------------
@@ -113,10 +114,31 @@ sbom:
 # network at all.
 # ---------------------------------------------------------------------------
 
-infra: tf-fmt tf-validate
+infra: tf-fmt tf-tfvars tf-validate
 
 tf-fmt:
 	terraform -chdir=$(TERRAFORM_DIR) fmt -check -recursive
+
+# The per-environment inputs, which neither target around this one reads.
+#
+# `tf-fmt` recurses under `infrastructure/terraform` and `infrastructure/
+# environments` is its sibling; `terraform validate` never opens a `.tfvars`
+# at all, because it checks the configuration rather than the values handed to
+# it. So a `terraform.tfvars` that was not parseable HCL passed `make all` and
+# the first thing to notice would have been an operator's apply.
+#
+# `ci.yml`'s infrastructure job has run exactly this since a100d9a. It is here
+# so the local gate and CI agree: `make all` green while CI is red is worse
+# than no local gate, because it teaches people the local gate is the one that
+# counts.
+#
+# Exit 3 is valid HCL in non-canonical layout and prints only a file name;
+# exit 2 is a parse error and prints terraform's own diagnostic. Neither is a
+# value check — a project id carrying `$(…)` is perfectly valid HCL. What
+# refuses that is the validation on each variable and the charset guard each
+# workflow runs over what its own `sed` pulled out.
+tf-tfvars:
+	terraform fmt -check -recursive $(ENVIRONMENTS_DIR)
 
 tf-validate:
 	terraform -chdir=$(TERRAFORM_DIR) init -backend=false

@@ -101,7 +101,7 @@ jobs:
             exit 1
           }
           # The character set of what was read, before any of it is pasted into
-          # a gcloud argument or a registry path. `${{ steps.identity.outputs.region }}`
+          # a gcloud argument or a registry path. `steps.identity.outputs.region`
           # is substituted into the next step's script as source text, so a
           # region carrying a quote and a semicolon is a command rather than a
           # malformed region — and this job holds the key version that signs

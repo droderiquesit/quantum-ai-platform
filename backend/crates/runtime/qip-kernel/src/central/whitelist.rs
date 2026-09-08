@@ -58,6 +58,51 @@
 //! paragraph that ruled it out is corrected below rather than deleted,
 //! because the reason it stopped being true is the useful part.
 //!
+//! **Do not quote a count from this file; run the command.** The slots that
+//! reach a shipped payload are the ones assigned at the shipping seam, and
+//! the only way to enumerate them is to look:
+//! `grep -n 'Slot::produced\|= episodic' backend/crates/apps/qip-api/src/mesh.rs`,
+//! whose assignments name `capital_grants`, `risk_envelope`,
+//! `cycle_whitelist` and `episodic_digest` — four of twelve on 2026-09-07.
+//! Three plan documents said three of twelve on that date; all were written
+//! before `ece7602` added the episodic producer and none re-counted
+//! afterwards, which is exactly the failure a command avoids and a figure
+//! does not.
+//!
+//! The four are also asserted rather than only counted:
+//! `a_shipped_payload_produces_exactly_the_four_slots_the_register_names` in
+//! `qip-api/tests/mesh.rs` reads a payload `pending_policy` really built and
+//! refuses a fifth. It is meant to be edited by whoever produces the fifth,
+//! in the same change that strikes that slot's paragraph from below — the
+//! failure it exists to catch is a slot quietly filled from a default while
+//! this register still explains why it cannot be.
+//!
+//! # The audit, re-run rather than inherited
+//!
+//! Every refusal below was re-verified against the tree on 2026-09-07, after
+//! the platform gained six production facts it did not have when the audit
+//! was first written: a `SourceManifest` on each ingested news item,
+//! corporate actions applied at `stage_sense`, a `SolverRoutingJournal` and a
+//! `HorizonArming` sealed into the cycle journal, investment requests
+//! journalled under `kernel/investment`, and a durable `StreamJournal` per
+//! source. **None of the six fills a slot**, and that is worth recording so
+//! the next reader does not re-derive it: a content hash of a news document,
+//! a corporate action, a solver's routing rationale, an arming decision, an
+//! investor's subscription and a connector's resume point are facts about
+//! this platform's own plumbing, and no slot of §41.5 names any of them. A
+//! new fact is not a source for a slot merely by being new; it is a source
+//! when it is *the* fact the slot's type names, keyed the way the slot is
+//! keyed.
+//!
+//! One structural check reinforces every refusal below and is cheaper than
+//! reading the producers: six of the eight — every one but the compiled plan
+//! and the feasibility constraints — have no non-test reader anywhere under
+//! `backend/crates/edge` or `backend/crates/apps/qip-edge-node`. Confirm with
+//! `grep -rn '<slot>' backend/crates/edge backend/crates/apps/qip-edge-node
+//! --include=*.rs | grep -v /tests/`. Producing one of those six would ship a
+//! signed value no cell reads, except through
+//! `PolicyItem::capability`, where being read *relaxes* the cell.
+//!
 //! Three of the nine — belief priors, the episodic digest and the causal
 //! digest — are the three `PolicyItem::capability` maps to a §6.2
 //! capability, which means producing one *relaxes* the cell rather than
@@ -74,13 +119,28 @@
 //!   by hypothesis id, which names nothing a cell can read, and it would
 //!   double every cell's sizing multiplier. What would have to exist: a
 //!   belief the centre holds *per subject a cell trades*, retained past the
-//!   cycle that formed it.
+//!   cycle that formed it. Re-verified 2026-09-07: `BeliefState` still holds
+//!   exactly `last_updated` and `hypotheses_formed`, and the investment
+//!   records under `kernel/investment` are subscription and redemption
+//!   requests against the fund, not convictions about a subject.
 //! * **The causal digest.** `WorldModel::claim_causal` is called only from
 //!   `qip_world_model::world::seed_demo_world` and from this crate's own
 //!   tests, so the graph a deployment holds is empty and its
 //!   `last_updated()` is `None`. A producer would be honest and would never
 //!   fire. What would have to exist: a production path absorbing causal
 //!   claims — filings, research notes — into the graph.
+//!
+//!   Re-verified 2026-09-07 and the refusal is *stronger* than this said,
+//!   which is worth stating because the old wording could be read as leaving
+//!   a demo deployment with a populated graph. `seed_demo_world` itself has
+//!   no production caller either: `grep -rn 'seed_demo_world'
+//!   backend/crates --include=*.rs` finds its definition, this file, one
+//!   `#[cfg(test)]` use in `platform.rs` and two in the world model's own
+//!   `tests/`. So the graph is empty in *every* process, demo included, and
+//!   a producer here would ship an empty `active_edges` stamped with an
+//!   instant — which is not "no claims", it is "we assert there are none",
+//!   and the cell reads the second as a fresh `CausalGraph` and stops
+//!   narrowing.
 //!
 //! The episodic third was true when it was written and is not now. The LEARN
 //! stage moves each resolved thesis's episode into `Platform::episodes`
@@ -91,19 +151,86 @@
 //! that stops absorbing goes stale at the cell inside ten minutes and the
 //! pause returns. An empty memory still produces nothing at all.
 //!
-//! Of the other six: a model manifest names each model by content digest and
-//! `ModelCard` carries no digest of any artifact, because weights are never
-//! materialised here; the compiled plan's digest must match bytes an edge
-//! node reads from a file the centre is never handed; inventory targets are
-//! exact quantities and the centre holds realised books, not targets, and
-//! holds no marks to price them with; the feasibility constraints are per
-//! venue while the only tick this platform states is per instrument, and a
-//! catalogue that omits a tick is indistinguishable from one that states the
-//! builder's default, so signing it would be signing a default as a venue's
-//! grid — and `qip_edge::feasibility::effective` takes the slot's value in
-//! *preference* to the cell's own per-instrument grid, so the wrong number
-//! there does not sit beside the right one, it replaces it; there is no
-//! adversary monitor at all. The regime is the closest —
+//! Of the other six, re-verified 2026-09-07 against the workspace rather than
+//! against this paragraph's previous wording — **one clause of which was
+//! false, and is corrected rather than deleted below, because the way it was
+//! wrong is the useful part**:
+//!
+//! A model manifest names each model by content digest and `ModelCard`
+//! carries no digest of any artifact, because weights are never materialised
+//! here. The stronger fact, and the one to check first, is that the process
+//! which ships payloads holds no model state at all: `grep -n
+//! 'ModelRegistry\|TrainedTeacher' backend/crates/runtime/qip-kernel/src/platform.rs`
+//! is empty, and `register_fit` — this crate's own registration seam — is
+//! reached only from `qip-deepbrain` (`grep -rn 'register_fit'
+//! backend/crates/apps`), a different binary with no path to `pending_policy`.
+//!
+//! The compiled plan's digest must match bytes an edge node reads from a file
+//! the centre is never handed, and `StrategyCandidate` retains `compiled` and
+//! `program` and not the `StrategySpec`, so the centre cannot reconstruct the
+//! bytes it would be digesting.
+//!
+//! **The half of this that was missing has since arrived, at the other end.**
+//! `584c96b` gave the node `qip-edge-node/src/strategies.rs`, which reads the
+//! plan from a configured path and refuses it unless `StrategyPlan::digest_of`
+//! over the file's exact bytes equals what the verified payload names
+//! (`read_plan`). The slot therefore now has a real consumer and still has no
+//! producer, and the gap has moved rather than closed: what the digest names
+//! is a sha256 of one file's bytes on one machine's disk, and the centre holds
+//! neither those bytes nor that path. Deriving a digest from the candidates
+//! the factory holds would produce a hash of a different serialisation, which
+//! no node's file will ever match, so every node would refuse every plan and
+//! report the refusal as tampering. That is worse than the unproduced slot,
+//! which merely deploys nothing and says so.
+//!
+//! **Inventory targets: the reason previously given here was wrong.** This
+//! said the centre "holds realised books, not targets, and holds no marks to
+//! price them with", and it holds both — `ProposalLeg` carries
+//! `reference_price` (the mark the sizing was computed at) and `target_weight`
+//! beside `current_weight`, on every leg of every proposal the DECIDE stage
+//! constructs. The refusal survives on a different and narrower argument. The
+//! target is the *centre's own book*, sized per cycle against the centre's
+//! equity, and slot 10 names a cell's per-instrument inventory target on a
+//! fast clock; shipping one as the other would tell seven cells each to hold
+//! the whole central book, which is precisely the reading ADR 0008 exists to
+//! prevent. The exact per-instrument quantity the type wants is also not what
+//! a leg holds: `quantity` is units *to trade*, a delta, and deriving a target
+//! inventory from it would go through the `f64` weight to produce a number the
+//! platform never computes and never acts on. And `InventoryTargets` has no
+//! band field at all despite its own doc naming mirror bands, so a producer
+//! would be filling two thirds of a type whose third is undefined.
+//!
+//! The feasibility constraints are per venue while the only grid this platform
+//! states is per instrument — and note which installer the centre actually
+//! calls: `with_instrument_feasibility`, keyed on `object_id`, never
+//! `with_venue_feasibility`, which no composition root calls (`grep -rn
+//! 'with_venue_feasibility' backend/crates` finds only the execution engine's
+//! own tests). `qip_edge::feasibility::effective` looks the slot's fields up
+//! by `venue` and takes them in *preference* to the cell's own per-instrument
+//! grid, so a per-instrument tick filed under a venue key does not sit beside
+//! the right number, it replaces it. A catalogue that omits a tick is also
+//! indistinguishable from one that states `qip_financial`'s builder default,
+//! so signing it would be signing a default as a venue's grid.
+//!
+//! Re-verified 2026-09-07, and note what the centre *does* hold, because it
+//! is the thing that most looks like a source and is not: `Platform::assemble`
+//! builds `instrument_grids` from `instrument_grid_of(object)` over the
+//! universe and installs each through `with_instrument_feasibility`, keyed on
+//! `object_id`. Those are real grids, derived from real records, and they are
+//! per instrument. `qip_edge::feasibility::effective` reads
+//! `constraints.tick.get(venue)` and takes it *in preference* to
+//! `model.granularity_for(object_id).tick_size()`, refusing only a
+//! non-positive value; a tick that is right for one instrument, filed under a
+//! venue, would silently become the tick for every instrument at that venue.
+//! The slot needs a fact keyed by venue and the centre has facts keyed by
+//! instrument, and re-keying them is the fabrication, not the arithmetic.
+//!
+//! There is no adversary monitor at all: `grep -rni 'adversar' backend/crates
+//! --include=*.rs` in the non-test tree finds `qip-agents`' agent role, which
+//! is a governance independence rule, `qip-cost-router`'s adversarial panel
+//! tier, which is a reasoning shape, `qip-events`' topic name and one
+//! sentence of `qip-confidential`'s threat model — four uses of the word and
+//! not one measurement of a venue. The regime is the closest —
 //! the tape statistics are real and drive routing every cycle — but
 //! `Platform::market_regime` is per subject and answers `Crisis` from this
 //! process's own drawdown, so shipping it per cell would sign a house state

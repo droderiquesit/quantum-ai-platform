@@ -7,7 +7,7 @@
 //! payoff valuation.
 
 use qip_core::testing::approx_eq;
-use qip_core::{Decimal, Timestamp, dec};
+use qip_core::{Decimal, Duration, Timestamp, dec};
 use qip_market::volatility::{VolPoint, VolatilitySurface, implied_correlation};
 
 fn now() -> Timestamp {
@@ -19,6 +19,7 @@ fn point(expiry: &str, strike: &str, vol: f64) -> VolPoint {
         Decimal::parse(expiry).unwrap(),
         Decimal::parse(strike).unwrap(),
         vol,
+        now(),
     )
 }
 
@@ -157,6 +158,61 @@ fn a_surface_with_no_points_and_a_non_positive_forward_are_both_refused() {
         err.message().contains("forward must be positive"),
         "got: {}",
         err.message()
+    );
+}
+
+/// ADR 0050's requirement 3, and the entry it lists under "what would make
+/// this wrong": *a `VolatilitySurface` constructed from points with more than
+/// one true instant*.
+///
+/// The failure this prevents is invisible everywhere else. A chain assembled
+/// from quotes taken a minute apart, at different underlying prices, is read
+/// against the surface's single `forward`, interpolates perfectly and returns
+/// a skew nobody quoted — so no downstream check can tell it from a
+/// synchronous surface. Until the instant lived on the point, `as_of` was a
+/// figure the type asserted about itself and nothing could verify.
+///
+/// The premise is asserted first: the same three points sharing one instant do
+/// build a surface, so the refusal below is about the instant and not about
+/// the points.
+#[test]
+fn a_surface_assembled_from_quotes_taken_at_two_instants_is_refused_naming_both() {
+    let synchronous = vec![
+        point("0.25", "90", 0.26),
+        point("0.25", "100", 0.22),
+        point("0.25", "110", 0.20),
+    ];
+    assert!(
+        VolatilitySurface::new("obj-spx", now(), dec!("100"), synchronous.clone()).is_ok(),
+        "premise: three points sharing one instant must build a surface, or the refusal \
+         below would prove nothing about the instant"
+    );
+
+    let a_minute_later = now().saturating_add(Duration::from_secs(60));
+    assert_ne!(
+        a_minute_later,
+        now(),
+        "premise: the smeared point must actually be at a different instant"
+    );
+    let mut smeared = synchronous;
+    smeared[2].observed_at = a_minute_later;
+
+    let err = VolatilitySurface::new("obj-spx", now(), dec!("100"), smeared)
+        .expect_err("a surface spanning two instants must be refused, not interpolated");
+    let message = err.message();
+    // Matched as the whole clause rather than as "110": a bare strike is a
+    // substring of the timestamps the same message prints.
+    assert!(
+        message.contains("strike 110, expiry 0.25"),
+        "the refusal must name the point that broke the synchrony; got: {message}"
+    );
+    assert!(
+        message.contains(&format!("observed at {a_minute_later}")),
+        "the refusal must name the instant the point was observed at; got: {message}"
+    );
+    assert!(
+        message.contains(&format!("as of {}", now())),
+        "the refusal must name the instant the surface claims; got: {message}"
     );
 }
 
@@ -548,9 +604,9 @@ fn an_index_quoted_below_its_components_implies_a_correlation_under_one() {
             now(),
             dec!("100"),
             vec![
-                VolPoint::new(dec!("1.0"), dec!("90"), vol),
-                VolPoint::new(dec!("1.0"), dec!("100"), vol),
-                VolPoint::new(dec!("1.0"), dec!("110"), vol),
+                VolPoint::new(dec!("1.0"), dec!("90"), vol, now()),
+                VolPoint::new(dec!("1.0"), dec!("100"), vol, now()),
+                VolPoint::new(dec!("1.0"), dec!("110"), vol, now()),
             ],
         )
         .unwrap()
@@ -582,8 +638,8 @@ fn perfectly_correlated_components_imply_a_correlation_of_one() {
             now(),
             dec!("100"),
             vec![
-                VolPoint::new(dec!("1.0"), dec!("100"), vol),
-                VolPoint::new(dec!("1.0"), dec!("110"), vol),
+                VolPoint::new(dec!("1.0"), dec!("100"), vol, now()),
+                VolPoint::new(dec!("1.0"), dec!("110"), vol, now()),
             ],
         )
         .unwrap()
@@ -610,8 +666,8 @@ fn weights_that_do_not_sum_to_one_are_refused_rather_than_renormalised() {
             now(),
             dec!("100"),
             vec![
-                VolPoint::new(dec!("1.0"), dec!("100"), vol),
-                VolPoint::new(dec!("1.0"), dec!("110"), vol),
+                VolPoint::new(dec!("1.0"), dec!("100"), vol, now()),
+                VolPoint::new(dec!("1.0"), dec!("110"), vol, now()),
             ],
         )
         .unwrap()
@@ -641,8 +697,8 @@ fn a_single_component_is_refused_because_a_one_name_index_has_no_correlation() {
             now(),
             dec!("100"),
             vec![
-                VolPoint::new(dec!("1.0"), dec!("100"), vol),
-                VolPoint::new(dec!("1.0"), dec!("110"), vol),
+                VolPoint::new(dec!("1.0"), dec!("100"), vol, now()),
+                VolPoint::new(dec!("1.0"), dec!("110"), vol, now()),
             ],
         )
         .unwrap()
@@ -670,8 +726,8 @@ fn an_index_quoted_far_above_its_components_is_refused_rather_than_clamped_to_on
             now(),
             dec!("100"),
             vec![
-                VolPoint::new(dec!("1.0"), dec!("100"), vol),
-                VolPoint::new(dec!("1.0"), dec!("110"), vol),
+                VolPoint::new(dec!("1.0"), dec!("100"), vol, now()),
+                VolPoint::new(dec!("1.0"), dec!("110"), vol, now()),
             ],
         )
         .unwrap()

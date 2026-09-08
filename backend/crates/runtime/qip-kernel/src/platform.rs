@@ -36,7 +36,7 @@
 
 use crate::central::{
     AbsorbedFill, CellIngestion, CellOutcome, CellReport, CentralPlane, DispositionOutcome,
-    EpisodicIssue, FamilyStructureJournal, LearningReport, WhitelistIssue,
+    EpisodicIssue, FamilyStructureJournal, HorizonArming, LearningReport, WhitelistIssue,
 };
 use crate::config::PlatformConfig;
 use crate::cycle::{CycleReport, Stage, StageOutcome};
@@ -51,11 +51,14 @@ use qip_ai::memory::{
 use qip_ai::retrieval::SearchIndex;
 use qip_capital::ledger::{
     AttributedFill, Capability, DecidedBy, EligibilityDecision, EligibilityRecord,
-    EligibilityRegistry, Entitlement, PermittedFamilies, ProductCatalogue, ProductEligibility,
-    Role, UserId, UserLedger, UserShare,
+    EligibilityRegistry, Entitlement, InvestmentDecision, InvestmentOutcome, InvestmentRequest,
+    PermittedFamilies, ProductCatalogue, ProductEligibility, RefusedLimit, Role, UserId,
+    UserLedger, UserShare,
 };
 use qip_capital::reservation::ReservationLedger;
 use qip_capital::{AllocationLimits, CapitalAllocator, DrawdownSchedule};
+use qip_capital_fabric::corridor::{Corridor, CorridorId};
+use qip_capital_fabric::gate::{CorridorFunding, FundingStanding};
 use qip_capital_fabric::journal::{
     FabricCommand, FabricJournal, FabricRecord, FabricState, PRODUCER as FABRIC_PRODUCER,
     WalletCommand,
@@ -115,9 +118,12 @@ use qip_learning_engine::evaluation::{
 };
 use qip_learning_engine::feedback::{CalibrationReport, FeedbackEngine, FeedbackReport};
 use qip_learning_engine::self_model::{ComponentKey, SelfModel};
+use qip_lifecycle::corridor::{
+    CorridorRoute, CorridorStanding as LifecycleCorridorStanding, CorridorSubject,
+};
 use qip_lifecycle::trials::TrialBook;
 use qip_market::bar::Bar;
-use qip_market::corporate_action::CorporateActionKind;
+use qip_market::corporate_action::{CorporateAction, CorporateActionKind};
 use qip_market::snapshot::MarketSnapshot;
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_market_ingestion::connector::manifest::SecretRef;
@@ -162,7 +168,7 @@ use qip_world_model::features::{Feature, FeatureValue};
 use qip_world_model::graph::{Node, NodeKind};
 use qip_world_model::liquidity::{DepthObservation, LiquidityTopology};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// The assembled platform.
@@ -212,6 +218,15 @@ pub struct Platform {
     /// assembly, both of which journal the record before adopting it, so
     /// [`Platform::replay_registrations`] rebuilds this from the log alone.
     registrations: RegistrationRegistry,
+    /// First signatures waiting for a countersignature, by strategy.
+    ///
+    /// Held in memory on purpose and not replayed: a half-finished approval is
+    /// an intention, not a decision, and a process that restarted holding
+    /// somebody's pending signature would be resuming an act its signer may
+    /// have walked away from. Every *completed* decision is on the log; this
+    /// is the gap between two of them, and losing it costs one re-signature
+    /// and no record.
+    pending_promotions: BTreeMap<StrategyId, qip_contracts::governance::Approval>,
     /// The fabric journal: every wallet, corridor, destination and gate
     /// decision as the command and its outcome, replayable. Its working
     /// copy of the log is process-local; the platform's own event log
@@ -329,6 +344,17 @@ pub struct Platform {
     /// What the LEARN stage measured of family structure this cycle, for the
     /// journal. Cleared as each cycle's LEARN begins.
     cycle_family_structure: Option<FamilyStructureJournal>,
+    /// What the LEARN stage armed the §23.4 pool gate with this cycle, for the
+    /// journal. Cleared as each cycle's LEARN begins, so a cycle whose arming
+    /// failed reports nothing rather than the last cycle's pools — a stale
+    /// standing read as this cycle's is a claim about capital nobody measured
+    /// now.
+    cycle_horizon_arming: Option<HorizonArming>,
+    /// The solver comparison the DECIDE stage's construction produced, held
+    /// only until the cycle's journal entry is sealed, which takes it. Never
+    /// read twice: a cycle that reaches no construction journals nothing
+    /// rather than the last cycle's comparison.
+    cycle_solver_routing: Option<SolverRoutingJournal>,
     /// The durable, hash-chained mirror of the cycle journal.
     journal: DurableLogTransport,
     /// Everything the platform decided, and what came of it — refusals
@@ -600,7 +626,39 @@ pub struct Platform {
     pending_theses: Vec<qip_portfolio_engine::construction::ApprovedThesis>,
     /// Proposals produced since assembly, including those aged out above.
     proposals_made: u64,
+    /// Corporate actions absorbed whose ex-date the tape has not yet reached,
+    /// keyed by the action's own idempotency key.
+    ///
+    /// An action is held rather than applied on announcement because the
+    /// announcement is knowable weeks before the ex-date, and adjusting a
+    /// series that has not yet split *creates* the step it exists to remove:
+    /// the prior closes would be halved while the current close was not. The
+    /// tape crossing the ex-date is the only evidence this platform has that
+    /// the split happened, so that is what releases the adjustment. Bounded by
+    /// [`PENDING_CORPORATE_ACTIONS`]; an action beyond the bound is refused and
+    /// reported rather than dropped, because a silently forgotten split is the
+    /// corruption itself.
+    corporate_actions_pending: BTreeMap<String, CorporateAction>,
+    /// Keys of actions already applied to the series and the book.
+    ///
+    /// Without this a replayed announcement — the same action arriving from two
+    /// feeds, or a re-sensed batch — halves the history and doubles the
+    /// position twice. `CorporateAction::idempotency_key` is the same key the
+    /// event log dedups on, so the two agree by construction rather than by a
+    /// second rule that could drift.
+    corporate_actions_applied: BTreeSet<String>,
 }
+
+/// How many announced-but-not-yet-due corporate actions the platform holds.
+///
+/// Bounded like every other working set here. A corporate-action feed for a
+/// broad universe announces further ahead than any other record kind — a
+/// dividend calendar runs a quarter out — so this is generous relative to the
+/// number of instruments a cell trades, and an overflow means the feed is
+/// wrong rather than that the bound is tight. That is why the overflow is a
+/// refusal on the record and not a quiet eviction: evicting the oldest pending
+/// action drops exactly the one whose ex-date is nearest.
+const PENDING_CORPORATE_ACTIONS: usize = 4_096;
 
 /// How many recent proposals the platform keeps in memory.
 ///
@@ -709,6 +767,12 @@ const ELIGIBILITY_CREDENTIAL_AGE: Duration = Duration::from_mins(15);
 /// the other's records rather than refusing them as undecodable.
 const ELIGIBILITY_ORIGIN: &str = "kernel/eligibility";
 
+/// The producer every investment-request record carries. Its own, on the
+/// topic it shares with the eligibility, product, registration and fabric
+/// records, so a reader selecting one kind passes over the rest rather than
+/// failing to decode them.
+const INVESTMENT_ORIGIN: &str = "kernel/investment";
+
 /// How recently an operator must have authenticated to approve a venue
 /// registration — the same fifteen minutes an eligibility decision and an
 /// autonomy change are held to, because approving a registration is the same
@@ -716,6 +780,36 @@ const ELIGIBILITY_ORIGIN: &str = "kernel/eligibility";
 /// will read. A session token from this morning is not evidence that the
 /// person named on the record is at the keyboard now.
 const REGISTRATION_CREDENTIAL_AGE: Duration = ELIGIBILITY_CREDENTIAL_AGE;
+
+/// The producer every promotion-approval record carries, so a reader
+/// selecting these passes over the registration and eligibility records that
+/// share their topic.
+const PROMOTION_APPROVAL_ORIGIN: &str = "kernel/promotion-approval";
+
+/// How recently an operator must have authenticated to sign a promotion to a
+/// capital-holding rung.
+///
+/// The same fifteen minutes as a registration approval, an eligibility
+/// decision and an autonomy change, and for the same reason: a session token
+/// from this morning is not evidence that the person named on the record is
+/// at the keyboard now. This is the act that puts capital behind a strategy,
+/// so it is held to the strictest window the platform has rather than a
+/// looser one of its own.
+const PROMOTION_CREDENTIAL_AGE: Duration = ELIGIBILITY_CREDENTIAL_AGE;
+
+/// How long a first signature waits for its countersignature before it goes
+/// stale.
+///
+/// A dual approval is two people agreeing about the *same* thing, and two
+/// signatures a fortnight apart are two people agreeing about two different
+/// states of the world — the evidence, the book and the strategy's own live
+/// record will all have moved between them. Bounding the gap is what keeps
+/// the second signature a review rather than a rubber stamp on something the
+/// first signer saw and the second cannot.
+///
+/// A stale first signature is not silently discarded: the countersignature
+/// attempt is refused, naming the age, and the pair start again.
+const PROMOTION_APPROVAL_WINDOW: Duration = Duration::from_hours(24);
 
 /// The producer every venue-registration record in the event log carries,
 /// and the one [`Platform::replay_registrations`] selects on. Distinct from
@@ -803,8 +897,8 @@ struct LadderReference {
     rung: Rung,
     /// Quoted spread in basis points of mid, the record's own figure. Not a
     /// [`Decimal`] because a rate is not money; it becomes money exactly once,
-    /// at [`Decimal::apply_bps`] in `Platform::liquidity_ladder`, where a
-    /// holding's mark is multiplied by it. That is the crossing point.
+    /// at [`exit_cost_of`], where a holding's mark is multiplied by it. That
+    /// is the crossing point.
     spread_bps: f64,
     /// Days to exit a position of average size, the record's own figure, never
     /// money and never derived here.
@@ -886,6 +980,45 @@ fn ladder_reference_of(
             days_to_liquidate: object.liquidity.days_to_liquidate,
         },
     ))
+}
+
+/// The cost of leaving a whole holding, or a refusal naming the record.
+///
+/// The one crossing from a rate to money on the liquidity path: a spread in
+/// basis points of mid becomes the `Decimal` cost of a full exit.
+///
+/// [`Decimal::checked_apply_bps`] rather than [`Decimal::apply_bps`], and the
+/// difference is not stylistic. `apply_bps` panics on a rate it cannot apply,
+/// which is the right default — it used to answer `Decimal::ZERO`, so a `NaN`
+/// spread priced an exit as free and the ladder read the holding as
+/// instantly liquid. But the release profile is `panic = "abort"`. A panic
+/// raised here is not an error the cycle reports; it is the process ending
+/// mid-cycle, with whatever the journal had not yet flushed. A refusal the
+/// caller can hold is strictly better, and there is a caller ready to hold it:
+/// [`Platform::liquidity_ladder`] returns `Result`, and `Platform::risk_state`
+/// turns its refusal into `RiskState::with_unevaluated(LIQUIDITY_FIGURE, …)`,
+/// which `PreTradeChecker::check` turns into a refusal at the venue path. The
+/// book stops trading and says why, rather than the process stopping and
+/// saying nothing.
+///
+/// **On today's assembly path this refusal cannot fire, and that is stated
+/// rather than left to be discovered.** [`ladder_reference_of`] admits only a
+/// finite spread in `[0, 10_000)` bps, so the rate is at most `1.0` and the
+/// product is at most `value`, which was already representable. What is
+/// guarded is the next caller: this function is the single place a spread
+/// becomes money on this path, so a reference assembled some other way — a
+/// wider bound, a record read from somewhere new — is refused here instead of
+/// aborting the process. It is a guard on the crossing, not a spare limit.
+fn exit_cost_of(instrument: &str, value: Decimal, spread_bps: f64) -> Result<Decimal> {
+    value.checked_apply_bps(spread_bps).ok_or_else(|| {
+        Error::numeric(format!(
+            "the cost of exiting {instrument} cannot be priced: a mark of {value} at \
+             {spread_bps}bps is not a representable amount of money; correct the reference \
+             record's typical spread, or the mark the book carries for the holding — pricing \
+             the exit at zero would report the holding as free to leave and the book as more \
+             liquid than it is"
+        ))
+    })
 }
 
 /// Where a private-asset record's life begins, for the valuation and
@@ -1015,6 +1148,34 @@ fn instrument_grid_of(
             error.message()
         ))
     })
+}
+
+/// Gross over equity as a gauge may carry it, or `None` for a book that has
+/// no leverage to state.
+///
+/// The same quotient `qip_risk::limits::RiskState::ratio` computes for
+/// `LimitKind::MaxLeverage`, and deliberately the same order of operations:
+/// each side crosses from `Decimal` to `f64` first and the division happens
+/// after. **This is the `Decimal` → `f64` crossing point for the leverage
+/// series.** Money is `Decimal` everywhere it is arithmetic; a gauge is a
+/// statistic and the exposition is `f64`, so the boundary is here and nothing
+/// downstream crosses back. Dividing as `Decimal` and crossing afterwards
+/// would round differently from the control and leave a chart and a limit
+/// disagreeing in the last place about one book.
+///
+/// `None` on a non-positive equity, where `ratio` answers `f64::INFINITY` so
+/// that every ratio limit breaches. That sentinel is right for a control and
+/// wrong for a series: `MetricsRegistry::to_prometheus` formats a gauge with
+/// `Display`, which renders infinity as `inf` where the text format spells it
+/// `+Inf`, and `to_otlp_metrics` hands it to `serde_json`, which encodes a
+/// non-finite double as `null`. Either way one unpublishable number costs the
+/// whole payload — including the halt and breach series an operator needs at
+/// exactly the moment a book runs out of equity. A wiped-out book is charted
+/// by those, not by this.
+fn publishable_leverage(gross: Decimal, equity: Decimal) -> Option<f64> {
+    equity
+        .is_positive()
+        .then(|| gross.to_f64() / equity.to_f64())
 }
 
 /// Bars the twin estimates liquidity over when pricing a declined path — the
@@ -1465,6 +1626,28 @@ pub struct CycleJournalEntry {
     /// older journal replays.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub family_structure: Option<FamilyStructureJournal>,
+    /// What LEARN armed the blueprint §23.4 pool gate with this cycle: the
+    /// budgets the allocator sized, the unfunded commitment liability the
+    /// commitment book held, and each bucket's pool against what is charged to
+    /// it. Absent on a cycle where the desk has stated no
+    /// [`crate::central::HorizonPolicy`], which is every deployment today.
+    /// Defaulted so an older journal replays.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub horizon_arming: Option<HorizonArming>,
+    /// Which solver sized this cycle's proposal and what the classical
+    /// baseline scored (ADR 0006).
+    ///
+    /// Absent exactly when the cycle reached no construction — REASON approved
+    /// no thesis, so `construct_from` refused before any solver ran. Present,
+    /// and correctly so, on a cycle whose DECIDE stage reports "no thesis
+    /// cleared the action bar": construction runs and the action bar rejects
+    /// what it produced, so a solve did happen and the comparison over that
+    /// (degenerate) problem is a fact this cycle established. The distinction
+    /// is measured rather than assumed — see
+    /// `qip-kernel/tests/solver_routing.rs`. Defaulted so a journal written
+    /// before the field existed replays.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub solver_routing: Option<SolverRoutingJournal>,
 }
 
 /// What the LEARN stage's counterfactual pass left in the journal.
@@ -1476,6 +1659,97 @@ pub struct CounterfactualJournal {
     pub regrets: usize,
     /// Declined paths due for pricing and left for a later cycle by the cap.
     pub deferred: usize,
+}
+
+/// Which solver sized the cycle's proposal, and what the classical baseline
+/// it was measured against actually scored.
+///
+/// The failure this closes. ADR 0006 requires a classical baseline every time
+/// a quantum path runs, and
+/// [`qip_optimization_engine::router::ComputeRouter::solve`] computes one on
+/// every construction — it is not optional there, and the quantum arm is only
+/// taken when it beats the baseline by the policy's margin. But
+/// `ConstructionOutcome::routing`, the record of that comparison, was read by
+/// exactly one test in `qip-portfolio-engine` and by nothing else in the
+/// workspace: the kernel took `outcome.proposal` and dropped the decision. So
+/// the platform ran the control on every cycle and kept no evidence that it
+/// had, which is the shape ADR 0006 exists to prevent — "we used a quantum
+/// computer" is not a result, and neither is "we computed a baseline" when
+/// nothing can say what the baseline scored. This is the evidence, and it
+/// sits on [`CycleJournalEntry`] rather than in a log line, so it reaches the
+/// event log with the cycle and the claim is reproducible from the log alone
+/// — [`Platform::journal_entries`] replays it.
+///
+/// Every figure here is `f64` and stays one. Objectives are statistics — the
+/// portfolio problem's own objective function, evaluated at weights — and no
+/// money crosses into them; the proposal's money is `Decimal` on
+/// [`qip_portfolio_engine::proposal::ProposalLeg`] and is not restated here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SolverRoutingJournal {
+    /// The solver whose answer sized the proposal.
+    pub chosen: String,
+    /// Every solver that ran, in the order the router ran them. A list rather
+    /// than a set: which solvers were *tried* and not chosen is the half of
+    /// the record that says whether the choice was contested, and a cycle
+    /// that ran one solver is a different fact from a cycle that ran three
+    /// and picked the first.
+    pub ran: Vec<String>,
+    /// The chosen answer's objective.
+    pub objective: f64,
+    /// The classical baseline's objective. Always present, because the router
+    /// always solves it — a journal entry with no baseline would mean the
+    /// router returned without one, which is unreachable, and asserting it
+    /// here is how that stays true.
+    pub classical_objective: f64,
+    /// The chosen answer's improvement over the baseline, as a fraction.
+    /// Zero when the classical answer *is* the chosen one, which is the
+    /// common case and the honest reading of it.
+    pub improvement_over_classical: f64,
+    /// The measured advantage, present only when a quantum solver won. `None`
+    /// on every classical cycle — not zero, because a quantum path that never
+    /// ran has no advantage to report and a zero would read as one measured
+    /// and found to be nothing.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub measured_quantum_advantage: Option<f64>,
+    /// Whether a quantum path was attempted at all, and why or why not, in
+    /// the router's own words.
+    pub quantum_note: String,
+}
+
+impl SolverRoutingJournal {
+    fn of(decision: &qip_optimization_engine::RoutingDecision) -> Self {
+        Self {
+            chosen: decision.chosen.as_str().to_string(),
+            ran: decision
+                .runs
+                .iter()
+                .map(|run| run.solver.as_str().to_string())
+                .collect(),
+            objective: decision.objective,
+            classical_objective: decision.classical_objective,
+            improvement_over_classical: decision.improvement_over_classical(),
+            measured_quantum_advantage: decision.measured_quantum_advantage(),
+            quantum_note: decision.quantum_note.clone(),
+        }
+    }
+
+    /// The line an operator reads when asking what sized a cycle.
+    pub fn describe(&self) -> String {
+        let advantage = match self.measured_quantum_advantage {
+            Some(measured) => format!("measured quantum advantage {measured:.6}"),
+            None => "no quantum answer was used, so no advantage is claimed".to_string(),
+        };
+        format!(
+            "sized by {} against a classical baseline of {:.6} (chosen objective {:.6}, \
+             improvement {:.6}); ran {}; {advantage}; {}",
+            self.chosen,
+            self.classical_objective,
+            self.objective,
+            self.improvement_over_classical,
+            self.ran.join(", "),
+            self.quantum_note
+        )
+    }
 }
 
 /// What the LEARN stage's strategy review left in the journal: how many
@@ -1752,6 +2026,83 @@ impl EventBody for EligibilityEntry {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// The stable token for the limit that refused an investment request.
+///
+/// One place, used by both the journalled record and the metric label, so the
+/// two cannot come to name the same refusal differently — which is the
+/// disagreement `.claude/rules` principle 6 is about: two independent claims
+/// about one fact, and the louder one wrong. The match is exhaustive over
+/// [`RefusedLimit`] on purpose: an eighth limit does not compile until it has
+/// been given a name here, so a new gate cannot arrive unlabelled and be
+/// counted as one of the others.
+///
+/// `Eligibility` collapses its inner [`qip_capital::ledger::Ineligible`] to
+/// one token deliberately. The inner reason is on the journalled record's
+/// `reason`, where it is access-controlled; as a metric label it would be a
+/// second, finer statement about one person's compliance standing in every
+/// scrape.
+fn limit_name(limit: RefusedLimit) -> &'static str {
+    match limit {
+        RefusedLimit::NoMandate => "no_mandate",
+        RefusedLimit::Eligibility(_) => "eligibility",
+        RefusedLimit::Entitlement => "entitlement",
+        RefusedLimit::Currency => "currency",
+        RefusedLimit::Amount => "amount",
+        RefusedLimit::InvestableCapital => "investable_capital",
+        RefusedLimit::RiskTolerance => "risk_tolerance",
+    }
+}
+
+/// How an investment request was answered, as the event log keeps it.
+///
+/// Deliberately not [`InvestmentOutcome`] itself. That type does not
+/// deserialise — "a stored decision is never an input that decides", as its
+/// own module says — and an [`EventBody`] must, so this is the record *of* a
+/// decision rather than a decision that could be read back and acted on. The
+/// limit is carried as [`limit_name`]'s token rather than as the enum, so a
+/// replayed record names a refusal without offering a value any gate would
+/// accept.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvestmentJudgement {
+    Admitted { basis: String },
+    Refused { limit: String, reason: String },
+}
+
+/// One investment request and the mandate's answer, as the event log keeps
+/// it: who asked, for how much at which strategy, which family the *factory*
+/// holds that strategy under, what the ledger said, who raised it and why.
+///
+/// Journalled on both outcomes. Nothing replays these into state — an
+/// investment request funds nothing — so this record exists for the question
+/// an operator asks afterwards and cannot ask of anything else: who was
+/// turned away, by which limit, and on whose authority the request was
+/// raised.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InvestmentEntry {
+    pub user: UserId,
+    pub strategy: StrategyId,
+    /// The registered family, not the one the request claimed. The claim is
+    /// refused when the two differ, so the record only ever carries the
+    /// factory's.
+    pub family: String,
+    pub currency: Currency,
+    pub amount: Decimal,
+    pub requested_at: Timestamp,
+    pub decided_at: Timestamp,
+    pub outcome: InvestmentJudgement,
+    pub by: DecidedBy,
+    pub reason: String,
+}
+
+impl EventBody for InvestmentEntry {
+    /// A determination about whose capital may go where, in the Decide group
+    /// the log never evicts — beside the eligibility and product records it
+    /// is read with, told apart by producer ([`INVESTMENT_ORIGIN`]).
+    const TOPIC: Topic = Topic::ComplianceEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 /// One product offering as the event log keeps it: which family compliance
 /// cleared, where, who took the determination and why.
 ///
@@ -1826,6 +2177,36 @@ impl EventBody for RegistrationEntry {
     /// Decide group the log never evicts. Shared with the eligibility and
     /// fabric records, which are told apart by producer — see
     /// [`REGISTRATION_ORIGIN`].
+    const TOPIC: Topic = Topic::ComplianceEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// One operator's signature on a promotion to a capital-holding rung.
+///
+/// Journalled whether it is the first signature, the countersignature, or a
+/// refusal, because each is a decision about whether a strategy comes to hold
+/// capital and the log is where those live. A record with `outcome`
+/// `awaiting_countersignature` is a promotion nobody has yet performed; the
+/// promotion itself is a separate record written by the gate.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PromotionApprovalEntry {
+    pub strategy: String,
+    /// The rung the pair were signing for, as the ladder read it at the time.
+    pub to_stage: String,
+    pub approver: String,
+    pub second_approver: Option<String>,
+    pub rationale: String,
+    /// `awaiting_countersignature`, `promoted`, or `refused`.
+    pub outcome: String,
+    /// Present on a refusal: what the gate or the ladder said.
+    pub detail: Option<String>,
+    pub at: Timestamp,
+}
+
+impl EventBody for PromotionApprovalEntry {
+    /// A governance decision about capital, in the Decide group the log never
+    /// evicts — the same group the registration and eligibility records sit
+    /// in, told apart by producer. See [`PROMOTION_APPROVAL_ORIGIN`].
     const TOPIC: Topic = Topic::ComplianceEvaluated;
     const SCHEMA_VERSION: u32 = 1;
 }
@@ -2480,6 +2861,8 @@ impl Platform {
             cycle_counterfactuals: None,
             cycle_strategy_review: None,
             cycle_family_structure: None,
+            cycle_horizon_arming: None,
+            cycle_solver_routing: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
             outcomes: OutcomeCapture::new(),
             counterfactuals,
@@ -2534,6 +2917,7 @@ impl Platform {
             user_ledger,
             products: ProductCatalogue::new(),
             registrations: RegistrationRegistry::shipped(),
+            pending_promotions: BTreeMap::new(),
             fabric,
             holdings_observed: BTreeMap::new(),
             wallet_tolerances: TolerancePolicy::new(),
@@ -2565,6 +2949,8 @@ impl Platform {
             proposals: Vec::new(),
             equity_history: Vec::new(),
             proposals_made: 0,
+            corporate_actions_pending: BTreeMap::new(),
+            corporate_actions_applied: BTreeSet::new(),
         };
         platform.describe_metrics();
         // Written once, at assembly, because the universe does not change
@@ -3618,6 +4004,137 @@ impl Platform {
         EligibilityRegistry::replay(records)
     }
 
+    // --- investment requests ----------------------------------------------------
+
+    /// Decide a user's investment request against their mandate, and journal
+    /// the answer.
+    ///
+    /// The blueprint's §40.9 `investment-api` raises exactly one thing — an
+    /// investment request — and never an order, and this is the runtime path
+    /// that raises it. Until it existed [`UserLedger::admit`] was written,
+    /// tested and reached by nothing outside its own crate's tests: a mandate
+    /// gate no deployed process could run is the `MaxExpectedShortfall` shape
+    /// `.claude/rules/domains/risk-and-execution.md` names, a control that
+    /// reads as protection and is not.
+    ///
+    /// **Nothing here moves capital.** An admitted request is a statement that
+    /// the mandate would admit this much at this strategy *now*;
+    /// [`Platform::fund_user`] is what funds, and it re-runs the eligibility
+    /// and product gates on its own because the books may have moved in
+    /// between. The two are deliberately not chained: a request that funded
+    /// itself would be an order raised by an API, which K3 refuses.
+    ///
+    /// The family is not taken from the caller's word. [`InvestmentRequest`]
+    /// carries a family because nothing at that seam maps a strategy to one,
+    /// but the kernel does — [`Platform::strategy_family`] — so a request
+    /// naming a family the factory did not register for the strategy is
+    /// refused rather than re-labelled. Without that check a mandate
+    /// permitting only one family could be satisfied by naming that family
+    /// over a strategy belonging to another, and the ledger's own family gate
+    /// would pass on the caller's claim. A strategy the factory does not know
+    /// is refused too, rather than evaluated against an offering nobody
+    /// cleared.
+    ///
+    /// Both outcomes are journalled. A refusal that leaves no trace is
+    /// indistinguishable from a request never made, which is the same
+    /// argument [`LedgerEntry::FundingRefused`] carries, and the question an
+    /// operator asks afterwards — "who was turned away, and by which limit" —
+    /// has no other record.
+    pub fn decide_investment(
+        &mut self,
+        request: InvestmentRequest,
+        operator: &OperatorIdentity,
+        reason: impl Into<String>,
+        now: Timestamp,
+    ) -> Result<InvestmentDecision> {
+        let reason = reason.into();
+        if reason.trim().len() < 10 {
+            return Err(Error::denied(
+                "an investment request needs a stated reason; whose capital was asked to be put \
+                 to work, and why, is what the audit trail is for",
+            ));
+        }
+        if !operator.is_fresh(now, ELIGIBILITY_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to raise an \
+                 investment request",
+                operator.subject(),
+                ELIGIBILITY_CREDENTIAL_AGE
+            )));
+        }
+        let Some(family) = self.strategy_family(&request.strategy) else {
+            return Err(Error::invalid(format!(
+                "the factory has registered no family for {}, so there is no product offering to \
+                 evaluate a request against; register the strategy before asking for capital at \
+                 it",
+                request.strategy
+            )));
+        };
+        if family != request.family {
+            return Err(Error::invalid(format!(
+                "the request names the family {} and {} is registered under {family}; a request \
+                 is evaluated against the family the factory holds, and correcting the claim \
+                 here would let a mandate that permits only {} be satisfied by a strategy in \
+                 another family",
+                request.family, request.strategy, request.family
+            )));
+        }
+        let product = self.products.offering(&family);
+        // `Role::Investor` rather than `Role::Viewer`, for the reason
+        // [`Platform::product_refusal`] gives: asking for capital is an
+        // investment act, and evaluating it as a viewer refuses on the role
+        // before the mandate is reached and reports a gate that is not the
+        // one that matters.
+        let decision = self
+            .user_ledger
+            .admit(&request, Role::Investor, &product, now);
+        let outcome = match decision.outcome() {
+            InvestmentOutcome::Admitted { basis } => InvestmentJudgement::Admitted {
+                basis: basis.clone(),
+            },
+            InvestmentOutcome::Refused { limit, reason } => InvestmentJudgement::Refused {
+                limit: limit_name(*limit).to_string(),
+                reason: reason.clone(),
+            },
+        };
+        let mut by = DecidedBy::operator(operator.subject(), operator.method())?;
+        if let Some(approver) = operator.second_approver() {
+            by = by.with_second_approver(approver);
+        }
+        self.journal_record(
+            InvestmentEntry {
+                user: request.user.clone(),
+                strategy: request.strategy.clone(),
+                family,
+                currency: request.currency,
+                amount: request.amount,
+                requested_at: request.requested_at,
+                decided_at: decision.decided_at(),
+                outcome,
+                by,
+                reason,
+            },
+            INVESTMENT_ORIGIN,
+            now,
+        )?;
+        // Counted after the record is on the log, so a decision the log
+        // refused charts nothing. The label is the limit's own name through
+        // [`limit_name`], whose match is exhaustive over `RefusedLimit`: an
+        // eighth limit cannot be added without this series being given a
+        // value for it.
+        self.telemetry.metrics.count(
+            names::CENTRAL_INVESTMENT_REQUESTS,
+            labels([(
+                "outcome",
+                match decision.refused_by() {
+                    None => "admitted",
+                    Some(limit) => limit_name(limit),
+                },
+            )]),
+        );
+        Ok(decision)
+    }
+
     // --- venue registrations --------------------------------------------------
 
     /// Record that an authenticated operator registered with a venue.
@@ -3651,6 +4168,164 @@ impl Platform {
         let record = RegistrationRecord::new(source_id, operator.subject(), now, terms, secret)?;
         self.apply_registration(record.clone(), RegistrationSource::Operator, now)?;
         Ok(record)
+    }
+
+    /// Sign a promotion to a capital-holding rung, and perform it once two
+    /// people have.
+    ///
+    /// # Why this exists, and why it is the only way up
+    ///
+    /// `GateStage::requires_human_approval` is true for `Pilot` and `Scaled`
+    /// and false for everything below, because those two are the rungs where
+    /// a strategy comes to hold capital. `AuthorisedPromotion::advance`
+    /// enforces it, refusing a promotion to either without a *dual* recorded
+    /// approval. Nothing raised one: no route existed, so no strategy ever
+    /// reached `Pilot`, no pilot baseline was ever written, and the demotion
+    /// monitor — which skips any strategy without one — observed nothing in
+    /// any deployment. The ladder was built, correct, and unclimbable.
+    ///
+    /// # What a signature is, and what it is not
+    ///
+    /// The approver is taken from `operator`, which the composition root
+    /// builds from the authenticated session, and never from anything a
+    /// caller sent. A request body cannot name its own approver; that is the
+    /// difference between an approval and a claim to have been approved.
+    ///
+    /// Two signatures are two acts by two people, so the first is held and
+    /// the second completes it. `Approval::countersigned_by` refuses a second
+    /// signature from the first signer, and this method refuses it earlier and
+    /// by name, so a person who signs twice is told what is wrong rather than
+    /// reading a generic denial. One person with two sessions is still one
+    /// person; the identity is the subject, not the session.
+    ///
+    /// A first signature goes stale after [`PROMOTION_APPROVAL_WINDOW`],
+    /// because two signatures far apart are agreement about two different
+    /// states of the world rather than about one decision.
+    ///
+    /// # What it still cannot do
+    ///
+    /// Approve nothing into capital that the gate would refuse. The pair
+    /// authorise the *attempt*; `attempt_promotion` then re-derives the gate's
+    /// verdict from the evidence on record and can refuse it, and a refusal
+    /// is journalled exactly as a promotion is. Signing is permission to ask,
+    /// never an answer — the same rule the fabric declaration follows, and the
+    /// reason neither can be used to talk a control into a decision it did not
+    /// reach.
+    pub fn approve_promotion(
+        &mut self,
+        strategy: &StrategyId,
+        operator: &OperatorIdentity,
+        rationale: &str,
+        now: Timestamp,
+    ) -> Result<PromotionApprovalEntry> {
+        if !operator.is_fresh(now, PROMOTION_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to sign a \
+                 promotion that puts capital behind a strategy",
+                operator.subject(),
+                PROMOTION_CREDENTIAL_AGE
+            )));
+        }
+        let from = self.central.factory().stage_of(strategy);
+        let to = from.next().ok_or_else(|| {
+            Error::denied(format!(
+                "{} is at {}, which is terminal; there is no rung above it to approve",
+                strategy,
+                from.as_str()
+            ))
+        })?;
+        // A signature on a rung that needs no signature is refused rather than
+        // accepted and ignored. Accepting it would teach an operator that
+        // their approval is what moves a strategy up the early rungs, and the
+        // day they were told a promotion "needed" their signature for a rung
+        // that takes none would be the day the word stopped meaning anything.
+        if !to.requires_human_approval() {
+            return Err(Error::invalid(format!(
+                "promotion of {} from {} to {} takes no human approval; the gate admits it on \
+                 its evidence alone, and only {} and {} are signed for",
+                strategy,
+                from.as_str(),
+                to.as_str(),
+                qip_contracts::gate::GateStage::Pilot.as_str(),
+                qip_contracts::gate::GateStage::Scaled.as_str()
+            )));
+        }
+
+        match self.pending_promotions.get(strategy).cloned() {
+            None => {
+                let approval = qip_contracts::governance::Approval::new(
+                    strategy.as_str(),
+                    operator.subject(),
+                    now,
+                    rationale.to_string(),
+                )?;
+                let entry = PromotionApprovalEntry {
+                    strategy: strategy.as_str().to_string(),
+                    to_stage: to.as_str().to_string(),
+                    approver: approval.approver.clone(),
+                    second_approver: None,
+                    rationale: approval.rationale.clone(),
+                    outcome: "awaiting_countersignature".to_string(),
+                    detail: None,
+                    at: now,
+                };
+                self.journal_record(entry.clone(), PROMOTION_APPROVAL_ORIGIN, now)?;
+                self.pending_promotions.insert(strategy.clone(), approval);
+                Ok(entry)
+            }
+            Some(first) => {
+                if first.at.saturating_add(PROMOTION_APPROVAL_WINDOW) < now {
+                    // Dropped and named. The pair start again on today's
+                    // evidence rather than completing an agreement about a
+                    // book that has since moved.
+                    self.pending_promotions.remove(strategy);
+                    return Err(Error::denied(format!(
+                        "the first signature on {}'s promotion was given at {} and a \
+                         countersignature must follow within {:?}; it has been discarded and \
+                         both signatures must be given again",
+                        strategy,
+                        first.at.to_rfc3339(),
+                        PROMOTION_APPROVAL_WINDOW
+                    )));
+                }
+                if first.approver == operator.subject() {
+                    return Err(Error::denied(format!(
+                        "{} has already signed {}'s promotion; a dual approval needs two \
+                         people, and a second session is not a second person",
+                        operator.subject(),
+                        strategy
+                    )));
+                }
+                let approval = first.countersigned_by(operator.subject())?;
+                let outcome = self.central.factory_mut().promote(
+                    strategy,
+                    Some(approval.clone()),
+                    rationale,
+                    now,
+                );
+                // Cleared either way: the pair have had their answer, and a
+                // pending signature left behind a refusal would let a later
+                // countersignature retry the gate without a fresh review.
+                self.pending_promotions.remove(strategy);
+                let mut entry = PromotionApprovalEntry {
+                    strategy: strategy.as_str().to_string(),
+                    to_stage: to.as_str().to_string(),
+                    approver: approval.approver.clone(),
+                    second_approver: approval.second_approver.clone(),
+                    rationale: rationale.to_string(),
+                    outcome: "promoted".to_string(),
+                    detail: None,
+                    at: now,
+                };
+                if let Err(error) = &outcome {
+                    entry.outcome = "refused".to_string();
+                    entry.detail = Some(error.message().to_string());
+                }
+                self.journal_record(entry.clone(), PROMOTION_APPROVAL_ORIGIN, now)?;
+                outcome?;
+                Ok(entry)
+            }
+        }
     }
 
     /// Journal a registration and adopt it — in that order, and only after
@@ -3801,12 +4476,101 @@ impl Platform {
     /// gate assess an intent — each a record, none a movement: the gate's
     /// admitted verdict carries no way to execute (ADR 0021), and nothing
     /// in this process consumes one.
+    ///
+    /// # Where the `Destination`, `Corridor` and `Gate` commands come from
+    ///
+    /// Stated here because this is where a reader arrives asking whether the
+    /// gate is reached. Two callers, and the difference between them is the
+    /// point. `stage_learn`, through `reconcile_wallet`, passes only
+    /// `FabricCommand::Wallet` — the cycle's own reconciliation. Everything
+    /// else arrives from the capital-fabric declaration a deployment mounts,
+    /// parsed by [`crate::fabric_declaration`] and applied by the composition
+    /// root at start-up and on an admitted cycle whose file has grown.
+    ///
+    /// This paragraph read "no deployed process issues a `Gate` command, and
+    /// why" until that producer existed, and the reasoning it gave for the
+    /// absence is kept below, because it is still the reasoning that decides
+    /// what the producer may be. What changed is not the argument; it is that
+    /// somebody wrote the operator route the argument called for.
+    ///
+    /// **ADR 0021 does not refuse that producer.** Reading it as though it
+    /// does would file a buildable route as permanently impossible, so the
+    /// text is worth quoting: its decision table permits "Typed transfer
+    /// intents (§37.3) | Permitted — an intent is a record, not a movement"
+    /// and "A deterministic transfer gate | Permitted, and desirable: a gate
+    /// that refuses is the safe half". What it refuses is "MPC signing
+    /// corridors, withdrawal APIs, live venue submission" — the engine behind
+    /// an approved intent, never the caller in front of the gate.
+    ///
+    /// The producer is absent for a different reason, and naming it is what
+    /// stops the wrong one being built. Every input the gate weighs is a fact
+    /// somebody declared rather than one this cycle measures: the corridor
+    /// and its destination are proposed records, the custody agreements and
+    /// the three enforcement attestations are operator statements, and the
+    /// ruling comes from [`Platform::corridor_funding`], which refuses until a
+    /// policy has been declared. A cycle stage that manufactured those in
+    /// order to have something to assess would be a control weighing inputs it
+    /// invented — and with no corridor proposed the gate would veto at check 1
+    /// on every pass, which reads as a working control and is a constant.
+    ///
+    /// The honest producer is therefore an operator route, of the shape
+    /// `qip-api`'s `statement` module already has for
+    /// [`Platform::observe_statement`]: a person states the facts, the kernel
+    /// derives the ruling, the gate assesses, the record lands in the log.
+    /// That is what [`crate::fabric_declaration`] and `qip-api`'s `fabric`
+    /// module now are — a mounted file of declared acts, applied in order,
+    /// append-only, with the ruling still re-derived and compared here rather
+    /// than taken from the caller. No cycle stage manufactures an input to
+    /// this gate, and none may: the check above is what keeps a caller from
+    /// stating a ruling of its own, and it applies to the declaration exactly
+    /// as it applied to a test.
+    ///
+    /// With nothing mounted the behaviour is the old one and it is honest:
+    /// no corridor is proposed, no assessment is made, and
+    /// `GET /transfer-gate` answers `last_assessment: null` because none has
+    /// been made rather than because none could be.
     pub fn decide_fabric(
         &mut self,
         command: FabricCommand,
         now: Timestamp,
     ) -> Result<FabricRecord> {
         let at = command.at();
+        // A gate command *states* the Intelligence layer's ruling on the
+        // corridor, and this is the seam where that statement is checked
+        // against the layer that makes it. Without this, the caller — an
+        // operator, a composition root, anything holding a `Platform` — would
+        // be free to hand the gate a ruling of its own invention, and the
+        // control would be measuring a corridor against a number the layer
+        // that sets corridor policy never derived.
+        //
+        // The ruling is re-derived and compared rather than substituted. A
+        // platform that silently replaced the caller's figures would leave a
+        // caller believing a stale policy, and would be correcting an input
+        // instead of refusing it; the refusal names both figures and the
+        // method that produces the right one.
+        //
+        // A command naming a corridor no record has proposed is deliberately
+        // left alone: the journal refuses it as a *record*, with the control's
+        // own words, and pre-empting that with an error here would delete the
+        // only evidence the attempt was made.
+        if let FabricCommand::Gate(gate) = &command
+            && self.fabric.state().corridor(&gate.corridor).is_some()
+        {
+            let derived = self.corridor_funding(&gate.corridor)?;
+            if gate.funding != derived {
+                return Err(Error::denied(format!(
+                    "the gate command for corridor {} states the corridor is {} at {} and the \
+                     layer that sets corridor policy derives {} at {}; take the ruling from \
+                     Platform::corridor_funding rather than stating one, because a corridor \
+                     assessed against a ruling nobody derived is a control measuring itself",
+                    gate.corridor,
+                    gate.funding.standing(),
+                    gate.funding.permitted(),
+                    derived.standing(),
+                    derived.permitted()
+                )));
+            }
+        }
         let record = self.fabric.decide(command)?;
         let correlation_id = self
             .context
@@ -3943,6 +4707,94 @@ impl Platform {
         Ok(())
     }
 
+    /// Declare the corridors the Intelligence layer sets policy for, and emit
+    /// that policy against the rungs the lifecycle ledger holds now.
+    ///
+    /// This is where the two services meet, and the kernel is where they are
+    /// allowed to: `qip-capital-fabric` holds corridors as records and
+    /// `qip-lifecycle` holds the rungs, neither depends on the other, and a
+    /// dependency either way would put a capital-vetoing crate downstream of
+    /// something it has no business reaching.
+    ///
+    /// Both ceilings on a [`CorridorSubject`] are the desk's own figures. The
+    /// platform selects between two numbers a person wrote down; it computes
+    /// neither, because a cap this process invented would be a number with no
+    /// owner and the veto it produced would be unarguable for the wrong
+    /// reason.
+    pub fn declare_corridors(
+        &mut self,
+        subjects: Vec<CorridorSubject>,
+        now: Timestamp,
+    ) -> Result<()> {
+        self.central.factory_mut().declare_corridors(subjects, now)
+    }
+
+    /// The route the corridor policy names a fabric corridor by.
+    ///
+    /// Derived from the corridor's own record rather than held beside it, so
+    /// there is one statement of where a corridor runs and not two. The
+    /// consequence is deliberate and is the reason
+    /// [`Platform::corridor_funding`] refuses rather than defaults: a desk
+    /// that declares its lifecycle subject under any other spelling gets no
+    /// ruling for the corridor at all, which stops the transfer, where a
+    /// tolerant match would quietly assess it against the policy for a
+    /// different route.
+    fn corridor_route(corridor: &Corridor) -> Result<CorridorRoute> {
+        CorridorRoute::new(
+            corridor.source().to_string(),
+            corridor.destination().address.clone(),
+            corridor.destination().asset.to_string(),
+        )
+    }
+
+    /// What the Intelligence layer permits this corridor to carry, as the
+    /// lifecycle ledger's rungs stand right now.
+    ///
+    /// The figure a caller must put in a [`qip_capital_fabric::journal::GateCommand`],
+    /// and the one [`Platform::decide_fabric`] checks it against.
+    ///
+    /// Refuses, rather than answering "permitted", when no policy has been
+    /// declared or when the declared policy has no ruling for this corridor's
+    /// route. A corridor nobody set a policy for is not a corridor the policy
+    /// permits: the scorecard row this whole capability answers read "corridor
+    /// policy has no subject", and defaulting an unruled corridor to open
+    /// would recreate exactly that — a control whose quiet answer is always
+    /// yes.
+    pub fn corridor_funding(&self, corridor: &CorridorId) -> Result<CorridorFunding> {
+        let Some(record) = self.fabric.state().corridor(corridor) else {
+            return Err(Error::invalid(format!(
+                "corridor {corridor} has never been proposed, so there is no route to look a \
+                 ruling up by; propose it through Platform::decide_fabric first"
+            )));
+        };
+        let route = Self::corridor_route(record)?;
+        let Some(policy) = self.central.factory().ledger().corridor_policy() else {
+            return Err(Error::denied(format!(
+                "no corridor policy has been declared, so nothing rules on {route}; declare the \
+                 corridors and their ceilings through Platform::declare_corridors — a corridor \
+                 assessed without a policy would be assessed against nothing at all"
+            )));
+        };
+        let Some(ruling) = policy.ruling_for(&route) else {
+            return Err(Error::denied(format!(
+                "the corridor policy rules on {} route(s) and none of them is {route}; declare \
+                 this corridor's subject — the strategies it funds and the two ceilings — \
+                 because a corridor the policy does not name is one the platform cannot say \
+                 anything about, and silence is not permission",
+                policy.rulings().len()
+            )));
+        };
+        // The three arms map one-to-one and are matched exhaustively rather
+        // than defaulted: a fourth standing added to the lifecycle would stop
+        // this compiling, which is where it should stop.
+        let standing = match ruling.standing {
+            LifecycleCorridorStanding::Permitted => FundingStanding::Permitted,
+            LifecycleCorridorStanding::Narrowed => FundingStanding::Narrowed,
+            LifecycleCorridorStanding::Suspended => FundingStanding::Suspended,
+        };
+        CorridorFunding::new(standing, ruling.permitted, ruling.reason.clone())
+    }
+
     /// The fabric's state as the records built it — the wallet as last
     /// assembled, the reconciliation outcomes, every corridor and
     /// destination, every gate assessment. Read-only; the way in is
@@ -3982,13 +4834,31 @@ impl Platform {
     /// therefore compares cell-and-desk gross against desk-only equity,
     /// which errs toward refusing and is stated here rather than hidden.
     ///
+    /// Each fill is additionally charged to the
+    /// [`qip_risk::limits::COUNTERPARTY_AXIS`] bucket named by the venue the
+    /// cell reported it from — the same running balance
+    /// `LimitKind::MaxCounterpartyExposure` reads and the same one
+    /// [`Self::aggregate_fill`] charges a desk fill to. Until `AbsorbedFill`
+    /// carried a venue this could not be done, and the consequence was a cap
+    /// that **read low** on any book that also trades through cells: the
+    /// exposure existed, the balance did not carry it, and the next desk
+    /// order was admitted against a number smaller than the book. A limit
+    /// that reads low is a control that admits an order it exists to refuse.
+    /// The cell's venue is used, never the desk's broker, because charging a
+    /// cell's fill to the desk's broker would put exposure against a
+    /// counterparty that never saw the trade.
+    ///
     /// A refusal is recorded as a capture problem rather than returned, for
     /// the reason [`Self::aggregate_fill`] gives: the fill has happened and
     /// the strategy books hold it, and an error here would tell the caller
     /// the report failed when it did not.
     fn charge_cell_fills(&mut self, cell: &str, fills: &[AbsorbedFill]) {
         for fill in fills {
-            let axes = self.exposure_axes_for(&fill.object_id);
+            let mut axes = self.exposure_axes_for(&fill.object_id);
+            axes.insert(
+                qip_risk::limits::COUNTERPARTY_AXIS.to_string(),
+                fill.venue.clone(),
+            );
             if let Err(error) =
                 self.aggregates
                     .apply_fill(cell, &fill.object_id, &axes, fill.signed_notional)
@@ -4633,6 +5503,16 @@ impl Platform {
                         action.ex_date.to_rfc3339()
                     ));
                     self.push_market_event(event);
+                    // The event above makes the announcement *readable*. It
+                    // does not make the position survive the split, which is
+                    // what blueprint §16.1 calls "a prerequisite for equities,
+                    // not an enhancement" — this arm published the event and
+                    // priced nothing until now, so an equity book held through
+                    // a two-for-one split reported half the shares at twice
+                    // the price for as long as the process ran. Queued here,
+                    // released at SENSE by `apply_due_corporate_actions` once
+                    // the tape has crossed the ex-date.
+                    self.queue_corporate_action(*action);
                     absorbed += 1;
                 }
                 SensedRecord::AlternativeData(point) => {
@@ -5072,6 +5952,11 @@ impl Platform {
     /// "a bad moment during a busy one". A per-fill series would weight the
     /// cycles that traded most, which is the opposite of what a tail statistic
     /// wants.
+    /// **The `Decimal` → `f64` crossing for the equity series happens here.**
+    /// Equity is money and is `Decimal` wherever it is arithmetic; the tail
+    /// statistics fitted on this series are `f64`, and this is the single
+    /// point where one becomes the other. Nothing downstream crosses back:
+    /// `RiskState::with_tail_risk` takes the returns, not the book.
     fn record_equity(&mut self) {
         self.equity_history.push(self.capital.equity().to_f64());
         if self.equity_history.len() > EQUITY_HISTORY {
@@ -5082,16 +5967,23 @@ impl Platform {
 
     /// The book's period returns, from the equity series.
     ///
-    /// Simple returns between consecutive samples. A step from a non-positive
-    /// equity is skipped rather than divided by: a book that reached zero has
-    /// no meaningful return, and dividing by it would produce an infinity that
-    /// poisons every statistic downstream of it.
+    /// The rule — a step from a non-positive equity is skipped, never divided
+    /// by and never replaced with zero — lives in
+    /// [`qip_numerics::stats::returns_over_signed_equity`] and no longer here.
+    /// The kernel held a private copy of it and so did
+    /// `qip_simulation_engine::backtest`, and while the two disagreed the same
+    /// curve produced two volatilities, two Sharpe ratios and two drawdowns
+    /// depending on which half of the platform read it. This crate's copy is
+    /// the one that had to move: `libs` is the only layer both a service and
+    /// the runtime may depend on, because a service may not depend on the
+    /// runtime.
+    ///
+    /// What is fitted on this series is not a report. `RiskState::with_tail_risk`
+    /// takes it and produces the volatility, the value at risk and the
+    /// expected shortfall that `LimitKind` reads, so a fabricated flat step
+    /// here is a limit reading less risk than the book carries.
     fn equity_returns(&self) -> Vec<f64> {
-        self.equity_history
-            .windows(2)
-            .filter(|w| w[0] > 0.0)
-            .map(|w| (w[1] - w[0]) / w[0])
-            .collect()
+        qip_numerics::stats::returns_over_signed_equity(&self.equity_history)
     }
 
     /// Charge the rungs this cycle actually used.
@@ -5208,6 +6100,29 @@ impl Platform {
             counterfactuals: self.cycle_counterfactuals.clone(),
             strategy_review: self.cycle_strategy_review.clone(),
             family_structure: self.cycle_family_structure,
+            horizon_arming: self.cycle_horizon_arming.clone(),
+            // Taken, not cloned. A cycle that reaches no construction — a
+            // platform that has observed nothing, so REASON approves no thesis
+            // — must journal no comparison rather than inherit the last
+            // cycle's, and attributing a baseline computed on one cycle's
+            // problem to a cycle that had no problem is an audit trail worse
+            // than an empty one, because it looks complete.
+            //
+            // Its four siblings above are cleared at the top of LEARN and this
+            // one cannot be: it is set in DECIDE, which runs before LEARN, so
+            // clearing it there would erase the comparison on its way to this
+            // line. Taking it here is the alternative, and the honest statement
+            // of what that buys is narrower than "structural", which is what
+            // this comment claimed until 2026-09-07. The guarantee is: the
+            // field is empty after every journalling, so the next cycle can
+            // only journal what its own DECIDE put there. It rests on
+            // `journal_cycle` being the sole reader and on `run_cycle` reaching
+            // it — which it does on every path past its one early return, the
+            // `now < reasoned_through` refusal at the top, and that path runs
+            // no stage and so sets nothing to leak. An early return added
+            // between DECIDE and here would break it silently, and there is no
+            // type that would notice.
+            solver_routing: self.cycle_solver_routing.take(),
         };
 
         let facts = EventFacts::derived(
@@ -5257,7 +6172,226 @@ impl Platform {
     /// as coverage rather than as a count of observations; they are absorbed
     /// and named in the `from N absorbed` clause here rather than being
     /// silently invisible.
+    /// Hold an absorbed corporate action until the tape reaches its ex-date.
+    ///
+    /// Not applied on arrival. The announcement is knowable — often a quarter —
+    /// before the ex-date, and adjusting a series that has not yet split
+    /// *creates* the discontinuity the adjustment exists to remove: every prior
+    /// close halved while the current close still is not. Held here, released
+    /// by [`Self::apply_due_corporate_actions`].
+    ///
+    /// Three things are refused rather than guessed. An action with no
+    /// idempotency key cannot be deduplicated, so applying it risks halving the
+    /// history twice; an action already applied is dropped silently, which is
+    /// the whole purpose of the key; and an overflow of the bound is reported
+    /// rather than evicting the oldest pending action, because the oldest
+    /// pending action is the one whose ex-date is nearest and evicting it drops
+    /// exactly the adjustment about to be needed.
+    fn queue_corporate_action(&mut self, action: CorporateAction) {
+        let Some(key) = action.idempotency_key() else {
+            self.capture_problems.push(format!(
+                "a corporate action on {} ex {} carries no idempotency key and was not queued for \
+                 adjustment; without one it cannot be applied exactly once, and twice is a \
+                 corrupted position",
+                action.object_id,
+                action.ex_date.to_rfc3339()
+            ));
+            return;
+        };
+        if self.corporate_actions_applied.contains(&key) {
+            return;
+        }
+        if !self.corporate_actions_pending.contains_key(&key)
+            && self.corporate_actions_pending.len() >= PENDING_CORPORATE_ACTIONS
+        {
+            self.capture_problems.push(format!(
+                "a corporate action on {} ex {} was not queued: {PENDING_CORPORATE_ACTIONS} \
+                 actions are already awaiting their ex-date; narrow the corporate-action feed to \
+                 the traded universe — an action dropped here is a position that silently stops \
+                 matching the tape",
+                action.object_id,
+                action.ex_date.to_rfc3339()
+            ));
+            return;
+        }
+        self.corporate_actions_pending.insert(key, action);
+    }
+
+    /// Apply every held corporate action whose ex-date the tape has reached,
+    /// returning how many were applied.
+    ///
+    /// Due-ness is decided by the instrument's own bar series and not by a
+    /// clock: an action is due once the platform has observed a close at or
+    /// after the ex-date, which is the only evidence this process has that the
+    /// instrument actually traded ex. Reading `now` here would apply the
+    /// adjustment on a day the tape had not reached, and would make a replay
+    /// diverge from the live run it replays.
+    ///
+    /// An action that cannot be applied is removed from the queue and reported.
+    /// It is deliberately *not* marked applied: a corrected record re-announced
+    /// under the same key is queued again and retried, whereas marking it would
+    /// make the correction unreachable forever. Leaving it pending instead
+    /// would re-report the same corrupt record on every cycle for the life of
+    /// the process.
+    fn apply_due_corporate_actions(&mut self) -> usize {
+        let due: Vec<String> = self
+            .corporate_actions_pending
+            .iter()
+            .filter(|(_, action)| {
+                self.bar_history
+                    .get(action.object_id.as_str())
+                    .is_some_and(|bars| bars.iter().any(|bar| bar.close_time() >= action.ex_date))
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        let mut applied = 0;
+        for key in due {
+            let Some(action) = self.corporate_actions_pending.remove(&key) else {
+                continue;
+            };
+            match self.apply_corporate_action(&action) {
+                Ok(()) => {
+                    self.corporate_actions_applied.insert(key);
+                    applied += 1;
+                }
+                Err(error) => self.capture_problems.push(format!(
+                    "the corporate action on {} ex {} was not applied and the series and book \
+                     still read as though it had not happened: {}",
+                    action.object_id,
+                    action.ex_date.to_rfc3339(),
+                    error.message()
+                )),
+            }
+        }
+        applied
+    }
+
+    /// Adjust one instrument's retained history and its open lot for one
+    /// action.
+    ///
+    /// **The history.** Every price field of every bar strictly before the
+    /// ex-date is multiplied by
+    /// [`CorporateAction::price_adjustment_factor`], taken against the last
+    /// close strictly before the ex-date — the reference rule
+    /// [`qip_market::corporate_action::adjust_prices`] states, applied to the
+    /// whole bar rather than to a close series, because the detectors read
+    /// highs, lows and volumes too and a bar whose close moved while its high
+    /// did not is a bar with a close above its high. That batch helper is not
+    /// called: it compounds a set of actions in reverse chronological order,
+    /// and the kernel applies exactly one action at the moment it falls due,
+    /// so compounding across actions happens by successive calls to this and
+    /// handing it a one-element slice would be the same arithmetic wearing a
+    /// loop.
+    ///
+    /// **The book.** The lot's quantity is multiplied by
+    /// [`CorporateAction::quantity_adjustment_factor`] and its average price
+    /// divided by the same figure, so quantity times cost is unchanged to the
+    /// unit. Deliberately *not* the price-adjustment factor: for a split and a
+    /// stock dividend the two agree exactly, but a cash dividend carries a
+    /// price factor below one and a quantity factor of one, and the book is
+    /// held at cost — a dividend pays cash and does not write down what the
+    /// shares cost. Using the series factor here would reduce cost basis by the
+    /// dividend yield on every ex-date, which is the silent drift §16.1 names.
+    ///
+    /// Because cost is preserved exactly, [`RiskAggregates`]' at-cost gross and
+    /// net do not move and need no second adjustment that could disagree with
+    /// this one.
+    fn apply_corporate_action(&mut self, action: &CorporateAction) -> Result<()> {
+        let object = action.object_id.as_str();
+        let bars = self.bar_history.get_mut(object).ok_or_else(|| {
+            Error::invalid(format!(
+                "the corporate action on {object} came due with no bar series to adjust; feed the \
+                 instrument's bars before its actions"
+            ))
+        })?;
+        // The last close strictly before the ex-date. With none the action
+        // predates every bar held and adjusts nothing here, so it is applied to
+        // the book alone rather than priced against a reference nobody
+        // observed.
+        let reference = bars
+            .iter()
+            .rev()
+            .find(|bar| bar.close_time() < action.ex_date)
+            .map(|bar| bar.close);
+        if let Some(reference) = reference {
+            let factor = action.price_adjustment_factor(reference)?;
+            if factor != Decimal::ONE {
+                for bar in bars.iter_mut() {
+                    if bar.close_time() >= action.ex_date {
+                        continue;
+                    }
+                    for price in [&mut bar.open, &mut bar.high, &mut bar.low, &mut bar.close] {
+                        *price = price.checked_mul(factor).ok_or_else(|| {
+                            Error::numeric(format!(
+                                "adjusting {object} by {factor} overflows a price it holds; \
+                                 correct the action or the series"
+                            ))
+                        })?;
+                    }
+                    if let Some(vwap) = bar.vwap.as_mut() {
+                        *vwap = vwap.checked_mul(factor).ok_or_else(|| {
+                            Error::numeric(format!(
+                                "adjusting {object}'s volume-weighted price by {factor} overflows; \
+                                 correct the action or the series"
+                            ))
+                        })?;
+                    }
+                }
+                // Money to statistic, at the one place it happens for this
+                // path: the bars carry `Decimal` closes and the detector series
+                // is `f64`. Rebuilt from the adjusted bars rather than scaled
+                // in parallel, so the two cannot disagree about what the tape
+                // was — which is the second-source-of-truth failure this
+                // platform keeps finding.
+                let closes: Vec<f64> = bars.iter().map(|bar| bar.close.to_f64()).collect();
+                self.price_history.insert(object.to_string(), closes);
+            }
+        }
+
+        let quantity_factor = action.quantity_adjustment_factor();
+        if quantity_factor == Decimal::ONE {
+            return Ok(());
+        }
+        if !quantity_factor.is_positive() {
+            return Err(Error::invalid(format!(
+                "the corporate action on {object} adjusts share counts by {quantity_factor}; \
+                 supply a strictly positive factor — a non-positive one would flip or void a \
+                 holding the platform still owns"
+            )));
+        }
+        let Some(lot) = self.capital.positions.get_mut(object) else {
+            return Ok(());
+        };
+        let quantity = lot.quantity.checked_mul(quantity_factor).ok_or_else(|| {
+            Error::numeric(format!(
+                "the corporate action on {object} multiplies a holding of {} by \
+                 {quantity_factor} and the product is not representable; correct the action",
+                lot.quantity
+            ))
+        })?;
+        let average_price = lot
+            .average_price
+            .checked_div(quantity_factor)
+            .ok_or_else(|| {
+                Error::numeric(format!(
+                    "the corporate action on {object} divides a cost basis of {} by \
+                 {quantity_factor} and the quotient is not representable; correct the action",
+                    lot.average_price
+                ))
+            })?;
+        lot.quantity = quantity;
+        lot.average_price = average_price;
+        Ok(())
+    }
+
     fn stage_sense(&mut self, _now: Timestamp) -> StageOutcome {
+        // Before anything is counted: an action whose ex-date the tape has
+        // crossed is applied to the history this stage is about to report and
+        // to the lot the risk stages read. Here rather than in `observe`
+        // because a batch may carry the action and the bar that makes it due in
+        // any order, and an adjustment applied mid-batch would see half a tape.
+        let adjusted = self.apply_due_corporate_actions();
+        let pending_actions = self.corporate_actions_pending.len();
         let instruments = self.price_history.len();
         let prices: usize = self.price_history.values().map(Vec::len).sum();
         let depth = self.liquidity.observation_count();
@@ -5273,12 +6407,32 @@ impl Platform {
         } else {
             format!("; {sources} registered source(s)")
         };
+        // Said out loud rather than left as a silent rewrite. An applied split
+        // changes every figure derived from the retained history — volatility,
+        // drawdown, every return — and an operator who sees one move has to be
+        // able to see why from the same line. A pending count beside it is the
+        // schedule: an action that never leaves this queue is an instrument
+        // whose bars stopped arriving, which reads as a healthy feed otherwise.
+        let corporate = match (adjusted, pending_actions) {
+            (0, 0) => String::new(),
+            (0, pending) => format!("; {pending} corporate action(s) awaiting an ex-date"),
+            (applied, 0) => {
+                format!("; {applied} corporate action(s) applied to the history and the book")
+            }
+            (applied, pending) => format!(
+                "; {applied} corporate action(s) applied to the history and the book, {pending} \
+                 awaiting an ex-date"
+            ),
+        };
         let absorbed = self.observations_absorbed;
         if absorbed == 0 {
             return StageOutcome::ran(
                 Stage::Sense,
                 0,
-                format!("no observations have been fed in; the platform is running blind{sourced}"),
+                format!(
+                    "no observations have been fed in; the platform is running \
+                     blind{sourced}{corporate}"
+                ),
             );
         }
         let mut surfaces: Vec<String> = Vec::new();
@@ -5306,7 +6460,10 @@ impl Platform {
         StageOutcome::ran(
             Stage::Sense,
             held,
-            format!("{held} observation(s) held from {absorbed} absorbed: {breakdown}{sourced}"),
+            format!(
+                "{held} observation(s) held from {absorbed} absorbed: \
+                 {breakdown}{sourced}{corporate}"
+            ),
         )
     }
 
@@ -5393,6 +6550,13 @@ impl Platform {
         // bounded on a long-running process. Retention is far outside the
         // catalyst detector's own explanation window, so it never decides
         // what the detector sees.
+        //
+        // This is the *older-than* half of retention only, and it cannot be
+        // the whole of it: `Timestamp::since` saturates at zero, so
+        // `now.since(known_at)` is zero for every event stamped in the future
+        // and zero is inside every window. The not-yet-knowable half is aged
+        // out below, after the audit has named it — see there for why the two
+        // halves are not one line.
         self.market_events
             .retain(|event| now.since(event.known_at()) <= MARKET_EVENT_RETENTION);
 
@@ -5425,8 +6589,7 @@ impl Platform {
         // zero events, coverage claimed, and the catalyst detector licensed to
         // call the next large move *unexplained* — an opportunity manufactured
         // out of a feed's clock skew. Nothing could see it happen, because the
-        // dropping is silent and `Timestamp::since` saturates, so the retention
-        // line above can never age a future-stamped event out either.
+        // dropping is silent.
         //
         // So the claim is checked rather than asserted, by the detector
         // `qip_compliance::pit` exists for — the module that covers "inputs
@@ -5461,6 +6624,47 @@ impl Platform {
             .audit(knowability.iter().map(|(id, fact)| (id.as_str(), fact)));
         let unknowable = audit.findings().len();
         let knowable = audit.inspected().saturating_sub(unknowable);
+
+        // The not-yet-knowable half of retention, applied here and not at the
+        // retention line above, for two reasons that are both about evidence.
+        //
+        // *Why it is needed.* `market_events` holds **knowable** events for
+        // the catalyst path — that is what `Self::push_market_event` is for —
+        // and `KnownEvents::known_by` withholds an event stamped after `now`
+        // from every scan regardless. So holding one buys the current cycle
+        // nothing, while `Timestamp::since` saturating means the line above
+        // sees it as zero seconds old and keeps it for the life of the
+        // process. One vendor record stamped in 2099 therefore sat in the
+        // working set forever, naming itself a leak on every cycle: a
+        // permanent DISCOVER problem an operator can neither clear nor act
+        // on, which is how a real finding gets tuned out.
+        //
+        // *Why it is dropped rather than refused at the door.*
+        // `Platform::observe` reads no clock, deliberately — "a replay
+        // absorbs exactly what the live run absorbed" — so the door has no
+        // honest instant to refuse against, and refusing against a clock
+        // would make a replay discard records the live run kept. The cycle
+        // instant is the first honest `now` on this path, so this is the
+        // first place the question can be asked at all.
+        //
+        // *Why nothing legitimate is lost.* `MarketEvent::new` clamps a
+        // known-time forward to the occurrence, so the type cannot express
+        // "knowable now, true later": a scheduled release modelled as its own
+        // future happening is unknowable until it happens, and that type's
+        // own doc says such a thing must be modelled as its announcement
+        // instead — which the corporate-action arm of `observe` already does,
+        // stamping the announcement and leaving the ex-date in the
+        // description. What is dropped is therefore a record the platform
+        // could not act on today and must not act on later either, because
+        // its content was absorbed today; charting it as tomorrow's catalyst
+        // would be the point-in-time inversion with the sign reversed.
+        //
+        // It is dropped *after* the audit rather than before, so the event is
+        // named on the cycle it leaves. Dropping it at the retention line
+        // would discard the event id, which is the only part of this an
+        // operator can take back to the publisher.
+        self.market_events.retain(|event| event.known_at() <= now);
+
         if knowable > 0 {
             detection = detection.with_events(self.market_events.clone());
         }
@@ -5493,10 +6697,17 @@ impl Platform {
         // input because a feed fixed for one event and left broken for three
         // reads clean afterwards, and the event id is the only part of this an
         // operator can take back to the publisher.
+        //
+        // "and dropped" is load-bearing in the message: the record is gone
+        // from the working set, so the fix is at the publisher and a corrected
+        // record has to be re-absorbed. A message that said only "withheld"
+        // would read as though the platform were holding it until it ripened,
+        // which is exactly what it did before and exactly what made the
+        // problem permanent.
         if let Err(leak) = audit.require_clean() {
             outcome = outcome.with_problem(format!(
-                "the catalyst path holds event(s) this platform could not yet know, so they were \
-                 withheld from the detectors{}: {}",
+                "the catalyst path held event(s) this platform could not yet know, so they were \
+                 withheld from the detectors and dropped{}: {}",
                 if knowable == 0 {
                     " and no catalyst coverage was claimed for this pass"
                 } else {
@@ -6627,6 +7838,48 @@ impl Platform {
         })
     }
 
+    /// Arm the blueprint §23.4 pool gate over the lifecycle ledger, on this
+    /// platform's own figures.
+    ///
+    /// The LEARN stage calls this every cycle. It is the production caller the
+    /// §23.4 reconciliation did not have: the arithmetic, the seam and the gate
+    /// were each complete, tested and reachable by nobody, which
+    /// `.claude/rules/domains/risk-and-execution.md` calls a defect rather than
+    /// a spare part.
+    ///
+    /// Two of the gate's inputs are measured here and nowhere else:
+    ///
+    /// * the **unfunded commitment liability**, from the commitment book at
+    ///   `now`. It is the reason the years pool can be short while every
+    ///   strategy budgeted at it fits — a commitment nobody allocated against
+    ///   is exactly the one that surprises a desk when it is called — and
+    ///   restating it in configuration beside the split would be a second claim
+    ///   on a number the book already holds;
+    /// * the **drawdown**, from realised equity against its peak, which is what
+    ///   the allocator shrinks the budgets by. The gate then reconciles the
+    ///   sizes the platform would actually deploy today rather than the ones it
+    ///   would have deployed before the book fell — **the charges, and only the
+    ///   charges**. The pools are not scaled by the drawdown response;
+    ///   [`CentralPlane::arm_horizons`] argues why, and the argument is not
+    ///   restated here so that it cannot drift into two versions. This bullet
+    ///   ended at "before the book fell" until an independent review read it as
+    ///   a claim about both sides of the comparison. It was only ever true of
+    ///   the numerator, and a doc silent about the denominator of a control is
+    ///   read as a doc describing the whole of it.
+    ///
+    /// `Ok(None)` where the desk has stated no `CentralConfig::horizons`. See
+    /// [`CentralPlane::arm_horizons`] for why that is a refusal to arm rather
+    /// than an empty arming.
+    ///
+    /// Public as well as called from the stage, so an operator surface can
+    /// re-arm after changing a proposal without waiting a cycle, and so a
+    /// reviewer can drive it in isolation.
+    pub fn arm_horizon_gate(&mut self, now: Timestamp) -> Result<Option<HorizonArming>> {
+        let liability = self.commitments.unfunded_total(now)?;
+        let drawdown = self.capital.drawdown();
+        self.central.arm_horizons(liability, drawdown, now)
+    }
+
     /// Free capital after every unfunded private commitment has been taken
     /// off it, refused whenever that leaves nothing to deploy.
     ///
@@ -6822,6 +8075,17 @@ impl Platform {
             now,
             ProposalId::from_string(format!("prop-{}", self.cycle)),
         )?;
+
+        // Recorded here rather than in `stage_decide`, because here is where
+        // the fact becomes known: the router has just solved the classical
+        // baseline and whatever else the policy allowed, and this is the only
+        // moment the comparison exists. Recorded *before* the reservation
+        // below, so a proposal whose capital cannot be held still leaves the
+        // evidence that a baseline was computed for it — the solve happened
+        // whether or not the hold did, and a record that vanished on the
+        // refusal path would make ADR 0006's control look like it had not run
+        // on exactly the cycles an operator most wants to read.
+        self.cycle_solver_routing = Some(SolverRoutingJournal::of(&outcome.routing));
 
         // Hold what the proposal was sized for, keyed by its id, until the
         // act stage commits or releases it. A proposal whose capital cannot
@@ -7270,6 +8534,44 @@ impl Platform {
         self.telemetry
             .metrics
             .count(names::RISK_EVALUATIONS, labels([]));
+
+        // The book, marked, and its leverage. Both were computed on every
+        // cycle and published nowhere: `qip_portfolio_value` and
+        // `qip_portfolio_leverage` were declared in
+        // `qip_observability::metrics::names` with no recording site at all,
+        // kept alive only as fixtures for the exposition encoders. A name in
+        // that module reads as a series the platform publishes, and the two
+        // most basic questions an operator asks of a trading platform — how
+        // big is the book, and how levered — had no answer on any chart.
+        //
+        // Recorded here rather than at a fill because this is the seam where
+        // the fact becomes *ruled on*: `risk_state` is the object the monitor
+        // has just observed, so the gauge an operator reads and the figure
+        // `LimitKind::MaxLeverage` evaluated are one state rather than two
+        // readings that will eventually disagree. Unconditional, like the
+        // breach gauge below it: a book that stopped trading still has a size,
+        // and a gauge written only on the interesting cycles never falls back.
+        //
+        // **The `Decimal` → `f64` crossing happens here**, at the recording
+        // site, and nothing downstream crosses back. Equity and gross are
+        // money and are `Decimal` everywhere they are arithmetic; Prometheus
+        // exposition is `f64`, so this is the boundary. Leverage crosses
+        // *first* and divides *after*, in that order, because that is exactly
+        // what `qip_risk::limits::RiskState::ratio` does for the leverage
+        // limit — dividing as `Decimal` and crossing after would round
+        // differently from the control and leave a gauge and a limit
+        // disagreeing in the last place about one book.
+        self.telemetry.metrics.gauge(
+            names::PORTFOLIO_VALUE,
+            labels([]),
+            risk_state.equity.to_f64(),
+        );
+        if let Some(leverage) = publishable_leverage(risk_state.gross_exposure, risk_state.equity) {
+            self.telemetry
+                .metrics
+                .gauge(names::PORTFOLIO_LEVERAGE, labels([]), leverage);
+        }
+
         // The gauge the `qip_limit_breaches` alert policy queries, read off the
         // observation the monitor just recorded rather than recounted from the
         // action it returned. `MonitorAction` carries breaches as sentences and
@@ -7705,6 +9007,7 @@ impl Platform {
         self.cycle_calibration = None;
         self.cycle_counterfactuals = None;
         self.cycle_family_structure = None;
+        self.cycle_horizon_arming = None;
         // The wallet, against the book ACT left. A refusal by the control is
         // a record the journal keeps; an error here is the journal or the
         // log refusing the record, which is a problem on the cycle's record
@@ -7793,6 +9096,37 @@ impl Platform {
             Err(error) => {
                 outcome = outcome.with_problem(format!(
                     "the realised corpus could not be clustered into families: {}",
+                    error.message()
+                ));
+            }
+        }
+        // Re-arm the blueprint §23.4 pool gate on the figures this cycle
+        // leaves: the allocator's own sizing of the proposal book at the
+        // book's drawdown, and the commitment book's unfunded total at `now`.
+        // Here rather than at the promotion because the gate is a property of
+        // the ledger and a promotion is not a cycle stage — and here rather
+        // than once at start-up because pools reconciled against a liability
+        // measured months ago are pools nobody measured.
+        match self.arm_horizon_gate(now) {
+            Ok(Some(arming)) => {
+                let detail = format!("{}; {}", outcome.detail, arming.describe());
+                outcome = StageOutcome { detail, ..outcome };
+                if arming.is_breached() {
+                    // Reported as a problem as well as journalled: a bucket
+                    // already over its pool is not a refusal anybody has seen
+                    // yet, because nothing has tried to promote into it.
+                    outcome = outcome.with_problem(format!(
+                        "a §23.4 capital pool is over-committed before any promotion: {}",
+                        arming.describe()
+                    ));
+                }
+                self.cycle_horizon_arming = Some(arming);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                outcome = outcome.with_problem(format!(
+                    "the §23.4 horizon gate could not be armed this cycle, so every promotion \
+                     to a capital-holding rung is refused until one arms: {}",
                     error.message()
                 ));
             }
@@ -8353,10 +9687,13 @@ impl Platform {
                     instrument.clone(),
                     reference.rung,
                     value,
-                    // The one crossing from a rate to money: a spread in basis
-                    // points of mid becomes the `Decimal` cost of leaving the
-                    // whole holding.
-                    value.apply_bps(reference.spread_bps),
+                    // The one crossing from a rate to money, and the only one
+                    // on this path. `exit_cost_of` refuses rather than
+                    // panicking, because a panic under `panic = "abort"` ends
+                    // the cycle's process where a refusal ends only the
+                    // liquidity read — and the caller of this function already
+                    // has somewhere to put that refusal.
+                    exit_cost_of(instrument, value, reference.spread_bps)?,
                 )
                 // The record's own exit time, carried onto the entry so the
                 // limits read what the catalogue says rather than the boundary
@@ -8717,13 +10054,16 @@ impl Platform {
     /// executed it. That is the running balance
     /// `LimitKind::MaxCounterpartyExposure` reads, and it is the same axis the
     /// pre-trade projection adds the order under, so the cap's before and
-    /// after are one number rather than two. It carries **the desk's own
-    /// executions only**: a cell's fills arrive through
-    /// [`Self::charge_cell_fills`] and `AbsorbedFill` names no venue, so a
-    /// book that also trades through cells is under-charged here and a
-    /// counterparty cap will read low on it. Stated rather than papered over,
-    /// because the alternative — charging a cell's fill to the desk's broker —
-    /// would put exposure against a counterparty that never saw the trade.
+    /// after are one number rather than two. This path carries the desk's own
+    /// executions; a cell's fills reach the same axis through
+    /// [`Self::charge_cell_fills`], each under the venue its own
+    /// `AbsorbedFill` names. `AbsorbedFill` named no venue until it did, and
+    /// while it did not, a book that also traded through cells was
+    /// under-charged here and a counterparty cap read low on it. The two
+    /// paths deliberately name different counterparties — the desk's broker
+    /// and the cell's venue — because charging a cell's fill to the desk's
+    /// broker would put exposure against a counterparty that never saw the
+    /// trade.
     fn aggregate_fill(&mut self, object_id: &str, moved: Decimal) {
         let mut axes = self.exposure_axes_for(object_id);
         axes.insert(
@@ -13677,5 +15017,719 @@ mod backwards_cycle_tests {
         // The boundary: nothing here reached a venue.
         assert!(!platform.orders.has_live_fills());
         assert!(!platform.is_live_capable());
+    }
+}
+
+#[cfg(test)]
+mod publishable_leverage_tests {
+    //! A book with no equity has a leverage the limits act on and no leverage
+    //! a scrape can carry, and those are two different facts.
+    //!
+    //! `RiskState::ratio` answers `f64::INFINITY` on a non-positive equity so
+    //! that every ratio limit breaches — the fail-closed reading, and the
+    //! right one for a control. Put on a gauge it is neither: the Prometheus
+    //! text encoder formats a gauge with `Display`, which writes `inf` where
+    //! the format spells it `+Inf`, and the OTLP encoder hands it to
+    //! `serde_json`, which writes a non-finite double as `null`. One
+    //! unpublishable number costs every other series in the same payload.
+    //!
+    //! Unit tests because `Platform::new` refuses a non-positive risk budget —
+    //! "a risk budget must be positive" — so the arm cannot be reached by
+    //! building a platform, only by a book that loses everything it had. The
+    //! rule is therefore asserted where it lives.
+
+    use super::*;
+    use qip_core::dec;
+
+    #[test]
+    fn a_solvent_books_leverage_is_gross_over_equity() {
+        // The premise the equality rests on: this fixture is not one where
+        // every plausible arithmetic agrees. Gross is not equity, so a gauge
+        // fed from the wrong side would read wrong, and the quotient is
+        // neither 0 nor 1, so a constant would not reproduce it.
+        let gross = dec!("1500000");
+        let equity = dec!("1000000");
+        assert_ne!(gross, equity);
+
+        let leverage = publishable_leverage(gross, equity).expect("a positive equity has leverage");
+        assert!(
+            (leverage - 1.5).abs() < f64::EPSILON,
+            "leverage is {leverage}"
+        );
+    }
+
+    #[test]
+    fn a_leverage_that_does_not_divide_evenly_is_crossed_before_it_is_divided() {
+        // `LimitKind::MaxLeverage` reads `state.ratio(state.gross_exposure)`,
+        // which crosses each side to `f64` and divides after. This gauge must
+        // be the *identical* `f64`, not a close one, or a chart and a control
+        // disagree in the last place about one book and nobody ever finds out
+        // which was right.
+        //
+        // Ten over seven, because a fixture that divides evenly cannot tell
+        // the two orders of operation apart: 1.5 is exact in both, and a
+        // version of this test written on 1_500_000 over 1_000_000 passed a
+        // mutation that replaced the whole body with a `Decimal` division. The
+        // premise below is that assertion — the two orders really do give
+        // different bits here — and it is checked rather than asserted in a
+        // comment, because it is the only thing making the equality mean
+        // anything. `Decimal` carries nine fractional digits, so it rounds
+        // 1.428571428571… to 1.428571429 while `f64` keeps going.
+        let gross = dec!("1000000");
+        let equity = dec!("700000");
+        let crossed_first = gross.to_f64() / equity.to_f64();
+        let divided_first = gross
+            .checked_div(equity)
+            .expect("seven hundred thousand is not zero")
+            .to_f64();
+        assert_ne!(
+            crossed_first.to_bits(),
+            divided_first.to_bits(),
+            "this fixture divides evenly enough that both orders agree, so the assertion below \
+             would hold whichever the implementation used"
+        );
+
+        let leverage = publishable_leverage(gross, equity).expect("a positive equity has leverage");
+        // Compared bit for bit rather than with a tolerance, which is what
+        // makes this an assertion instead of a hope: a tolerance would admit
+        // exactly the last-place disagreement being ruled out. It is also why
+        // `clippy::float_cmp` has nothing to object to.
+        assert_eq!(
+            leverage.to_bits(),
+            crossed_first.to_bits(),
+            "the gauge's leverage is not the identical f64 the limit computes"
+        );
+    }
+
+    #[test]
+    fn a_book_with_no_equity_left_states_no_leverage_at_all() {
+        // Premise: this is the input the control turns into infinity. Stated
+        // here so the `None` below is read as a decision about that value and
+        // not as an arbitrary special case.
+        for equity in [Decimal::ZERO, dec!("-1")] {
+            let gross = dec!("1500000");
+            assert!(!equity.is_positive());
+            assert_eq!(
+                publishable_leverage(gross, equity),
+                None,
+                "a leverage was published for a book with {equity} of equity; it would be \
+                 non-finite, and neither encoder can carry that"
+            );
+        }
+    }
+
+    #[test]
+    fn a_flat_book_still_states_its_leverage() {
+        // The half that keeps the refusal above from being an outage. A guard
+        // that answered `None` whenever gross was zero would silently drop the
+        // series on every idle book — the common case — and an operator would
+        // read the gap as a platform that had stopped rather than one holding
+        // nothing.
+        assert_eq!(
+            publishable_leverage(Decimal::ZERO, dec!("1000000")),
+            Some(0.0),
+            "a solvent book holding nothing published no leverage"
+        );
+    }
+}
+
+#[cfg(test)]
+mod equity_returns_tests {
+    //! The book's own return series obeys the shared rule, not a local one.
+    //!
+    //! The arithmetic itself is pinned in
+    //! `qip-numerics/tests/equity_returns.rs`, beside the function. What is
+    //! asserted here is the thing that file cannot see: that
+    //! `Platform::equity_returns` — the series
+    //! `RiskState::with_tail_risk` fits volatility, value at risk and expected
+    //! shortfall on, all three read by limits that stop trading — is that
+    //! function's answer and not a second copy of the rule. The kernel held
+    //! such a copy, and `qip_simulation_engine::backtest` held a third; while
+    //! they disagreed the same curve produced two sets of statistics. A
+    //! reintroduced copy would pass every test in the lib and fail this one.
+
+    use super::*;
+    use qip_financial::universe::Universe;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    fn platform_with_history(history: Vec<f64>) -> Platform {
+        let config = PlatformConfig::default();
+        let (context, _clock) =
+            qip_core::Context::deterministic(Timestamp::from_secs(1_760_000_000), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles");
+        // Written directly because reaching these marks through cycles would
+        // need a book that lost everything it had, and `Platform::new`
+        // refuses to open one at zero — which is exactly why the degenerate
+        // arm has never been exercised by an ordinary run.
+        platform.equity_history = history;
+        platform
+    }
+
+    #[test]
+    fn the_books_return_series_is_the_shared_rules_answer_for_the_same_marks() {
+        // A curve with an ordinary step, the ruin itself, a step out of a dead
+        // book, a real loss out of a live one, and two steps from a negative
+        // base. Every arm at once, because a curve with only ordinary steps is
+        // answered identically by every implementation in the workspace and
+        // would prove nothing about which one is wired in.
+        let marks = vec![100.0, 120.0, 0.0, 50.0, -100.0, -50.0, 200.0];
+        // Premise: the neighbouring rule really does answer differently for
+        // this curve, so the equality below distinguishes the two.
+        assert_ne!(
+            qip_numerics::stats::simple_returns(&marks),
+            qip_numerics::stats::returns_over_signed_equity(&marks),
+            "the fixture no longer separates the price rule from the equity rule"
+        );
+
+        let platform = platform_with_history(marks.clone());
+        assert_eq!(
+            platform.equity_returns(),
+            qip_numerics::stats::returns_over_signed_equity(&marks),
+            "the platform's return series is not the shared rule's answer, so a second copy of \
+             it has come back"
+        );
+    }
+
+    #[test]
+    fn a_step_out_of_a_wiped_out_book_never_reaches_the_books_statistics() {
+        // Stated as a property of the platform rather than as an equality, so
+        // that it still fails if both this and the shared rule were changed
+        // together to fabricate the flat step. That is the failure the whole
+        // arrangement exists to prevent: a tail statistic fitted on invented
+        // calm reports less risk than the book carries, and the limits read
+        // it.
+        let platform = platform_with_history(vec![100.0, 0.0, 50.0]);
+        let returns = platform.equity_returns();
+        // The ruin itself is a real -100% and must survive; only the step out
+        // of the dead book is dropped.
+        assert_eq!(returns.len(), 1, "{returns:?}");
+        assert!((returns[0] + 1.0).abs() < 1e-12, "{returns:?}");
+        assert!(
+            !returns.contains(&0.0),
+            "a step out of a zero book reached the book's statistics as a flat one: {returns:?}"
+        );
+    }
+
+    #[test]
+    fn a_fresh_books_single_mark_yields_no_returns() {
+        // The boundary every deployment's opening cycle lands on: one mark
+        // after the first cycle, and nothing may panic or fabricate a return
+        // there.
+        assert!(
+            platform_with_history(Vec::new())
+                .equity_returns()
+                .is_empty()
+        );
+        assert!(
+            platform_with_history(vec![1_000_000.0])
+                .equity_returns()
+                .is_empty()
+        );
+    }
+}
+
+#[cfg(test)]
+mod exit_cost_tests {
+    //! The liquidity read refuses an unpriceable exit; it does not abort, and
+    //! it does not price it as free.
+    //!
+    //! Two failures are being kept apart here. `Decimal::apply_bps` once
+    //! answered `Decimal::ZERO` when it could not apply a rate, which priced a
+    //! full exit at nothing and reported the holding as instantly liquid —
+    //! `qip-financial`'s `ladder::prove_quotes_can_coexist` names that hazard.
+    //! `f1b8840` replaced the zero with a panic, which is the right direction
+    //! and the wrong mechanism for this call site: the release profile is
+    //! `panic = "abort"`, so a panic inside a cycle ends the process rather
+    //! than the read, taking the unflushed journal with it. `exit_cost_of`
+    //! answers with a refusal instead, and `Platform::risk_state` already
+    //! files a refused ladder under `LIQUIDITY_FIGURE` as unevaluated, which
+    //! stops the book trading and says why.
+
+    use super::*;
+    use qip_core::dec;
+
+    /// A rate no `Decimal` product can hold. Chosen rather than a `NaN`
+    /// because a `NaN` is refused by `ladder_reference_of` at assembly and an
+    /// overflowing product is not — this is the arm that has no earlier
+    /// guard.
+    const UNPRICEABLE_BPS: f64 = 1e30;
+
+    #[test]
+    fn a_holding_whose_exit_cannot_be_priced_is_refused_rather_than_aborting_the_process() {
+        // Premise, and the whole reason this function exists: `apply_bps` on
+        // the identical inputs does not answer — it panics, and under
+        // `panic = "abort"` that is the process, not the read. Asserted rather
+        // than asserted about, so this test fails if the panic is ever
+        // softened back into a silent zero and the refusal below stops being
+        // the safer of two behaviours.
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let aborted = std::panic::catch_unwind(|| Decimal::MAX.apply_bps(UNPRICEABLE_BPS)).is_err();
+        std::panic::set_hook(hook);
+        assert!(
+            aborted,
+            "`apply_bps` answered for an unpriceable rate, so this fixture no longer reaches \
+             the arm the refusal replaces"
+        );
+
+        let refused = exit_cost_of("obj-AAA", Decimal::MAX, UNPRICEABLE_BPS)
+            .expect_err("an unpriceable exit was given a price");
+        // The message must tell an operator which record to correct and what
+        // the alternative answer would have cost them. Matched on the record
+        // field by name, not on a word that appears in every liquidity error.
+        assert!(
+            refused.message().contains("obj-AAA"),
+            "the refusal does not name the holding: {}",
+            refused.message()
+        );
+        assert!(
+            refused.message().contains("typical spread"),
+            "the refusal does not name the record field to correct: {}",
+            refused.message()
+        );
+    }
+
+    #[test]
+    fn an_ordinary_spread_still_prices_the_exit_and_prices_it_exactly() {
+        // The half that keeps the refusal from being an outage. A guard that
+        // refused everything would take every book's liquidity read down with
+        // it, and `risk_state` would file `LIQUIDITY_FIGURE` unevaluated on
+        // every cycle — which stops the book trading just as thoroughly as a
+        // real breach, for no reason.
+        //
+        // The expected figure is written out rather than recomputed from the
+        // implementation's own call, so this pins the arithmetic and not the
+        // expression: twenty-five basis points of a million is two and a half
+        // thousand.
+        assert_eq!(
+            exit_cost_of("obj-AAA", dec!("1000000"), 25.0).expect("25bps of a million is money"),
+            dec!("2500")
+        );
+    }
+
+    #[test]
+    fn a_holding_that_costs_nothing_to_leave_is_priced_at_zero_rather_than_refused() {
+        // The boundary `ladder_reference_of` admits at its lower end. A zero
+        // here is a measured cost — the record says the exit is free — and it
+        // must be distinguishable from the zero the old `apply_bps` returned
+        // when it could not price the exit at all. That is why the failure
+        // arm above is an `Err` and this one is an `Ok(ZERO)`: the type keeps
+        // the two apart where a value could not.
+        assert_eq!(
+            exit_cost_of("obj-AAA", dec!("1000000"), 0.0),
+            Ok(Decimal::ZERO)
+        );
+    }
+}
+
+#[cfg(test)]
+mod corporate_action_tests {
+    //! The corporate-actions engine of blueprint §16.1, and its caller.
+    //!
+    //! §16.1 calls this one "a prerequisite for equities, not an enhancement":
+    //! "without it an equity position quietly becomes wrong after the first
+    //! split, cost basis drifts, reconciliation halts, and every downstream
+    //! number is contaminated." Until this module existed the kernel absorbed a
+    //! corporate action as a knowable [`MarketEvent`] and priced nothing from
+    //! it — `qip_market::corporate_action`'s factors and
+    //! `qip_portfolio::position::Position::apply_adjustment` had no caller
+    //! outside a test in the whole workspace — so a book held through a
+    //! two-for-one split reported half the shares at twice the price for as
+    //! long as the process ran, and the retained price history carried a step
+    //! that reads as a fifty-percent crash to every detector that scans it.
+    //!
+    //! The tests drive [`Platform::run_cycle`], not the private helpers, so
+    //! what they prove is that the SENSE stage reaches the adjustment.
+
+    use super::*;
+    use qip_core::dec;
+    use qip_financial::quality::DataQuality;
+    use qip_market::bar::Interval;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    /// The ex-date every fixture here uses: three days after [`start`].
+    fn ex_date() -> Timestamp {
+        start().saturating_add(Duration::from_days(3))
+    }
+
+    fn platform() -> Platform {
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            qip_financial::universe::Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    /// A daily bar closing at `close` on the day `day` days after [`start`].
+    ///
+    /// The open, high and low are pinned to the close plus small offsets so a
+    /// test can tell whether the adjustment touched the whole bar or only the
+    /// close: an adjustment that halves the close and leaves the high is a bar
+    /// whose close sits above its high, which every downstream range,
+    /// true-range and gap statistic reads as a valid measurement.
+    fn bar(close: &str, day: i64) -> SensedRecord {
+        let close = Decimal::parse(close).expect("the fixture's close parses");
+        SensedRecord::Bar(Box::new(Bar {
+            object_id: ObjectId::from_string("obj-AAA"),
+            venue: "XNYS".to_string(),
+            interval: Interval::Day,
+            // `close_time` is the open time plus the interval, so a bar opened
+            // one interval before the instant we want closes at it.
+            open_time: start()
+                .saturating_add(Duration::from_days(day))
+                .saturating_sub(Interval::Day.duration()),
+            open: close,
+            high: close + dec!("2"),
+            low: close - dec!("2"),
+            close,
+            volume: Decimal::from_int(1_000),
+            trade_count: 100,
+            vwap: Some(close),
+            quality: DataQuality::default(),
+        }))
+    }
+
+    fn action(kind: CorporateActionKind) -> SensedRecord {
+        SensedRecord::CorporateAction(Box::new(CorporateAction {
+            object_id: ObjectId::from_string("obj-AAA"),
+            ex_date: ex_date(),
+            record_date: None,
+            payment_date: None,
+            kind,
+            announced_at: start(),
+        }))
+    }
+
+    fn split() -> SensedRecord {
+        action(CorporateActionKind::Split {
+            ratio: Decimal::from_int(2),
+        })
+    }
+
+    /// The three bars strictly before the ex-date. Closes chosen so that after
+    /// a two-for-one split they read 50, 51, 52 — continuous with the 52 the
+    /// post-split bar closes at, which is the property the adjustment exists to
+    /// restore and which a wrong factor cannot produce by accident.
+    fn bars_before_the_ex_date() -> Vec<SensedRecord> {
+        vec![bar("100", 0), bar("102", 1), bar("104", 2)]
+    }
+
+    /// The first bar the instrument trades ex, at half the prior close.
+    fn bar_on_the_ex_date() -> SensedRecord {
+        bar("52", 3)
+    }
+
+    /// Open a hundred shares at 100 in the book the risk stages read.
+    ///
+    /// Written straight into the lot rather than through a fill, because a
+    /// fill would also move cash and realised P&L and this test is about what
+    /// the split does to a holding, not about what booking one costs.
+    fn hold_a_hundred_shares(platform: &mut Platform) {
+        platform.capital.positions.insert(
+            "obj-AAA".to_string(),
+            PositionLot {
+                quantity: Decimal::from_int(100),
+                average_price: Decimal::from_int(100),
+            },
+        );
+    }
+
+    fn closes(platform: &Platform) -> Vec<f64> {
+        platform
+            .price_history
+            .get("obj-AAA")
+            .expect("the series exists")
+            .clone()
+    }
+
+    fn lot(platform: &Platform) -> PositionLot {
+        *platform
+            .capital
+            .positions
+            .get("obj-AAA")
+            .expect("the holding survives")
+    }
+
+    #[test]
+    fn a_split_the_tape_has_crossed_makes_the_history_continuous_and_leaves_the_holding_worth_the_same()
+     {
+        let mut platform = platform();
+        hold_a_hundred_shares(&mut platform);
+        let mut records = bars_before_the_ex_date();
+        records.push(split());
+        records.push(bar_on_the_ex_date());
+        platform.observe(records);
+
+        // The premise, asserted rather than assumed: before the cycle the
+        // series still contains the step. A test that only checked the
+        // adjusted values would pass against a platform that never held the
+        // unadjusted ones.
+        assert_eq!(
+            closes(&platform),
+            vec![100.0, 102.0, 104.0, 52.0],
+            "the premise: the unadjusted series contains the split as a fifty-percent fall"
+        );
+        assert_eq!(
+            platform.corporate_actions_pending.len(),
+            1,
+            "the premise: the action was absorbed and is waiting to be applied"
+        );
+
+        platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+
+        assert_eq!(
+            closes(&platform),
+            vec![50.0, 51.0, 52.0, 52.0],
+            "the retained history still contains the split; every volatility, drawdown and \
+             return computed from it reads a fifty-percent crash that never happened"
+        );
+        // The whole bar, not just the close. A bar whose close was halved and
+        // whose high was not is a bar with a close above its high.
+        let bars = platform
+            .bar_history
+            .get("obj-AAA")
+            .expect("the bar series exists");
+        assert_eq!(
+            bars[0].high,
+            dec!("51"),
+            "the close was adjusted and the high was not, so the bar now reports a close of 50 \
+             inside a range topping out at 102"
+        );
+        assert_eq!(
+            bars[0].low,
+            dec!("49"),
+            "the low was not adjusted with the close"
+        );
+        assert_eq!(
+            bars[0].vwap,
+            Some(dec!("50")),
+            "the volume-weighted price was not adjusted with the close"
+        );
+        assert_eq!(
+            bars[3].close,
+            dec!("52"),
+            "a bar on or after the ex-date was adjusted; it already trades ex and adjusting it \
+             puts the step back in from the other side"
+        );
+
+        let lot = lot(&platform);
+        assert_eq!(
+            lot.quantity,
+            Decimal::from_int(200),
+            "the holding did not survive the split: the book still reports the pre-split share \
+             count against a post-split tape"
+        );
+        assert_eq!(
+            lot.average_price,
+            Decimal::from_int(50),
+            "the cost basis did not survive the split; §16.1's 'cost basis drifts' is exactly this"
+        );
+        assert_eq!(
+            lot.quantity * lot.average_price,
+            Decimal::from_int(10_000),
+            "the split changed what the holding cost, which no split does — the at-cost notional \
+             the risk aggregates read moved on a day nothing traded"
+        );
+        assert!(
+            platform.corporate_actions_pending.is_empty(),
+            "the applied action is still queued and will be applied again next cycle"
+        );
+    }
+
+    #[test]
+    fn a_split_announced_before_its_ex_date_adjusts_nothing_until_the_tape_reaches_it() {
+        let mut platform = platform();
+        hold_a_hundred_shares(&mut platform);
+        let mut records = bars_before_the_ex_date();
+        records.push(split());
+        platform.observe(records);
+
+        let report = platform.run_cycle(start().saturating_add(Duration::from_days(2)));
+
+        // The announcement is knowable now; the ex-date is a schedule.
+        // Adjusting here would halve three closes while the current close was
+        // still unsplit — inventing the discontinuity the adjustment exists to
+        // remove, in the opposite direction.
+        assert_eq!(
+            closes(&platform),
+            vec![100.0, 102.0, 104.0],
+            "the history was adjusted for a split the tape has not reached; the platform has \
+             halved prices at which the instrument is still trading"
+        );
+        assert_eq!(
+            lot(&platform).quantity,
+            Decimal::from_int(100),
+            "the holding was doubled before the split happened"
+        );
+        assert_eq!(
+            platform.corporate_actions_pending.len(),
+            1,
+            "the action was neither applied nor held; a dropped split is a position that \
+             silently stops matching the tape"
+        );
+        let sense = report
+            .stages
+            .iter()
+            .find(|stage| stage.stage == Stage::Sense)
+            .expect("the sense stage ran");
+        assert!(
+            sense
+                .detail
+                .contains("1 corporate action(s) awaiting an ex-date"),
+            "the operator is not told a scheduled adjustment is outstanding: {}",
+            sense.detail
+        );
+
+        // The tape reaches the ex-date on the next batch, and the same queued
+        // action is released.
+        platform.observe(vec![bar_on_the_ex_date()]);
+        platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+        assert_eq!(
+            closes(&platform),
+            vec![50.0, 51.0, 52.0, 52.0],
+            "the action was held past the ex-date the tape crossed, so the step stayed in"
+        );
+        assert_eq!(lot(&platform).quantity, Decimal::from_int(200));
+    }
+
+    #[test]
+    fn the_same_split_absorbed_twice_adjusts_the_history_and_the_holding_exactly_once() {
+        let mut platform = platform();
+        hold_a_hundred_shares(&mut platform);
+        let mut records = bars_before_the_ex_date();
+        records.push(split());
+        records.push(bar_on_the_ex_date());
+        // The same record again, as two feeds carrying one action produce, or
+        // a re-sensed batch after a restart. Applied twice it is a four-for-one
+        // split nobody declared.
+        records.push(split());
+        platform.observe(records);
+        assert_eq!(
+            platform.corporate_actions_pending.len(),
+            1,
+            "the premise: the duplicate collapsed onto one idempotency key"
+        );
+
+        platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+        // And a third arrival after the adjustment has already been made,
+        // which the pending queue alone cannot catch.
+        platform.observe(vec![split()]);
+        platform.run_cycle(start().saturating_add(Duration::from_days(4)));
+
+        assert_eq!(
+            closes(&platform),
+            vec![50.0, 51.0, 52.0, 52.0],
+            "a replayed announcement adjusted the history a second time; the series now reads a \
+             four-for-one split that was never declared"
+        );
+        assert_eq!(
+            lot(&platform).quantity,
+            Decimal::from_int(200),
+            "a replayed announcement doubled the holding twice"
+        );
+    }
+
+    #[test]
+    fn a_cash_dividend_adjusts_the_price_series_and_leaves_the_cost_basis_alone() {
+        let mut platform = platform();
+        hold_a_hundred_shares(&mut platform);
+        let mut records = bars_before_the_ex_date();
+        records.push(action(CorporateActionKind::CashDividend {
+            amount: dec!("5.2"),
+        }));
+        records.push(bar_on_the_ex_date());
+        platform.observe(records);
+
+        platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+
+        // A dividend of 5.20 against a reference close of 104 is a factor of
+        // 0.95, so the series is scaled and the step at the ex-date is removed.
+        assert_eq!(
+            closes(&platform),
+            vec![95.0, 96.9, 98.8, 52.0],
+            "the price series was not adjusted for the dividend, so the ex-date drop reads as a \
+             fall the instrument did not have"
+        );
+        // The book is held at cost. A cash dividend pays cash; it does not
+        // change what the shares cost. Applying the price-series factor here —
+        // the obvious shortcut, since it is the factor already in hand — would
+        // write cost basis down by the dividend yield on every ex-date, which
+        // is precisely the silent drift §16.1 names.
+        let lot = lot(&platform);
+        assert_eq!(
+            lot.quantity,
+            Decimal::from_int(100),
+            "a cash dividend changed the share count"
+        );
+        assert_eq!(
+            lot.average_price,
+            Decimal::from_int(100),
+            "a cash dividend wrote down the cost basis by its yield; the book is held at cost and \
+             the dividend paid cash, so nothing about what the shares cost has changed"
+        );
+    }
+
+    #[test]
+    fn a_split_whose_ratio_cannot_be_priced_leaves_the_book_alone_and_is_reported() {
+        let mut platform = platform();
+        hold_a_hundred_shares(&mut platform);
+        let mut records = bars_before_the_ex_date();
+        // A zero ratio is a corrupt record. The engine refuses it rather than
+        // answering `Decimal::ONE`, and the kernel must not turn that refusal
+        // into a holding multiplied by nothing.
+        records.push(action(CorporateActionKind::Split {
+            ratio: Decimal::ZERO,
+        }));
+        records.push(bar_on_the_ex_date());
+        platform.observe(records);
+
+        let report = platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+
+        assert_eq!(
+            closes(&platform),
+            vec![100.0, 102.0, 104.0, 52.0],
+            "an unpriceable action was applied anyway"
+        );
+        assert_eq!(
+            lot(&platform).quantity,
+            Decimal::from_int(100),
+            "an unpriceable split reached the holding; a factor of zero voids a position the \
+             platform still owns"
+        );
+        let learned = report
+            .stages
+            .iter()
+            .find(|stage| stage.stage == Stage::Learn)
+            .expect("the learn stage ran");
+        // Matched on the instrument the record names and on the word the
+        // engine's own refusal uses for the field, not on a substring every
+        // learn-stage problem carries.
+        assert!(
+            learned
+                .problems
+                .iter()
+                .any(|problem| problem.contains("obj-AAA") && problem.contains("split ratio of 0")),
+            "the refused action is not reported against the instrument it corrupts, so the \
+             series and the book silently disagree with the tape: {:?}",
+            learned.problems
+        );
     }
 }

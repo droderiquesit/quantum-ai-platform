@@ -925,3 +925,115 @@ fn the_perpetual_expiry_survives_the_json_round_trip_a_nanosecond_sentinel_would
     assert_eq!(&restored, granted);
     Ok(())
 }
+
+// --- the gate as a standing obligation ---------------------------------------
+//
+// Every test above asks the gate once, which is what a composition root does at
+// start-up and what was sufficient while the longest thing this platform ran
+// was a cycle. The completion plan's fifth ingestion capability is a source
+// streamed for *seven days*, and a gate consulted once at the start of seven
+// days is a gate that cannot fire for six and a half of them.
+
+/// A catalogue with one entry, whose licence expires at `expiry`.
+///
+/// The source is a real one — `admit_from_registered` refuses a catalogue
+/// entry naming a source no connector in this build carries, and that check is
+/// deliberate — but the posture is this test's, because no entry in the shipped
+/// catalogue expires and putting an expiry into the evaluation of a real
+/// vendor's terms to make a test pass is the opposite of what that file is for.
+fn expiring_catalogue(
+    expiry: qip_core::Timestamp,
+) -> Result<Vec<qip_data_finder::admission::CatalogueEntry>> {
+    Ok(vec![qip_data_finder::admission::CatalogueEntry {
+        source_id: "frankfurter-ecb-reference-rates",
+        expected_class: qip_financial::quality::LicensingClass::Public,
+        posture: LicensingPosture::declared(
+            SourceLicense::new("terms-with-an-end-date", [Usage::Derive, Usage::Trade])?
+                .expiring_at(expiry),
+        ),
+    }])
+}
+
+#[test]
+fn a_licence_that_lapses_part_way_through_a_run_stops_granting_on_the_next_poll_rather_than_at_the_next_restart()
+-> Result<()> {
+    let opened = now();
+    let expiry = opened.saturating_add(qip_core::Duration::from_days(3));
+    let (mut admission, decision) = qip_data_finder::admission::StandingAdmission::over(
+        expiring_catalogue(expiry)?,
+        qip_data_finder::registration::RegistrationRegistry::shipped(),
+        "frankfurter-ecb-reference-rates",
+        qip_financial::quality::LicensingClass::Public,
+        opened,
+    )?;
+    assert_eq!(decision.licence, "terms-with-an-end-date");
+    assert_eq!(admission.checks(), 1, "opening the gate is a consultation");
+
+    // Premise, and the reason this test is not vacuous: the gate says yes for
+    // as long as the licence runs, so the refusal below is the expiry doing its
+    // work and not an entry that never admitted anything. Two full days of
+    // hourly polls, each one asking the whole gate again.
+    for hour in 1..=48 {
+        let at = opened.saturating_add(qip_core::Duration::from_hours(hour));
+        let decision = admission.check(at)?;
+        assert_eq!(
+            decision.decided_at, at,
+            "the verdict must be about the instant asked"
+        );
+    }
+    assert_eq!(
+        admission.checks(),
+        49,
+        "the gate must have been consulted once per poll, not once per process"
+    );
+
+    // The instant the licence ends. `legality_for` is inclusive of the expiry.
+    let error = admission
+        .check(expiry)
+        .expect_err("an expired licence kept granting");
+    assert!(
+        error.message().contains("expired"),
+        "the refusal must say the licence expired: {}",
+        error.message()
+    );
+    assert_eq!(
+        admission.checks(),
+        49,
+        "a refusal is not a moment at which this source was licensed, so it must not be counted \
+         as one"
+    );
+    assert!(
+        admission.describe().contains("49 check(s)"),
+        "an operator must be able to read how often the gate ran: {}",
+        admission.describe()
+    );
+    Ok(())
+}
+
+#[test]
+fn the_licensing_gate_refuses_to_be_asked_about_an_instant_it_has_already_passed() -> Result<()> {
+    let opened = now();
+    let expiry = opened.saturating_add(qip_core::Duration::from_days(3));
+    let (mut admission, _) = qip_data_finder::admission::StandingAdmission::over(
+        expiring_catalogue(expiry)?,
+        qip_data_finder::registration::RegistrationRegistry::shipped(),
+        "frankfurter-ecb-reference-rates",
+        qip_financial::quality::LicensingClass::Public,
+        opened,
+    )?;
+    let later = expiry.saturating_add(qip_core::Duration::from_days(1));
+    // Premise: the gate has moved past the expiry and is refusing, which is the
+    // state a caller would be tempted to escape by asking about an earlier
+    // instant.
+    assert!(admission.check(later).is_err());
+
+    let error = admission
+        .check(opened)
+        .expect_err("the gate answered about an instant it had already passed");
+    assert!(
+        error.message().contains("which is earlier"),
+        "the refusal must name the direction of the problem: {}",
+        error.message()
+    );
+    Ok(())
+}

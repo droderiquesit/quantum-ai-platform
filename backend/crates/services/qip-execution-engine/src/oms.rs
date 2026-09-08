@@ -683,8 +683,34 @@ impl OrderManager {
 /// A market order in an illiquid name is how a small position becomes a large
 /// loss, so anything above a few percent of daily volume is worked rather than
 /// taken.
-pub fn order_type_for(participation: f64, window_minutes: u32) -> OrderType {
-    if !participation.is_finite() || participation <= 0.01 {
+///
+/// # Why a non-finite participation is refused rather than answered
+///
+/// This returned [`OrderType::Market`] — the one type that accepts whatever
+/// price the market gives — for a participation that was `NaN` or infinite,
+/// because the guard `!participation.is_finite()` sat in the same arm as
+/// `participation <= 0.01`. A participation is `size / daily_volume`, so it
+/// is `NaN` exactly when the volume is zero or could not be measured: the
+/// illiquid case this function exists to work rather than take. Answering the
+/// unmeasurable case with the most aggressive type is failing open at the one
+/// seam whose whole purpose is failing closed.
+///
+/// A non-positive participation is refused on the same reasoning rather than
+/// clamped to the market arm: an order that is zero or a negative share of
+/// daily volume is a caller that computed something wrong, and a value
+/// silently corrected here is that bug surviving into a fill.
+///
+/// `participation` is a ratio and not money, so it is `f64` by the statistics
+/// rule rather than by an exception to the `Decimal` one.
+pub fn order_type_for(participation: f64, window_minutes: u32) -> Result<OrderType> {
+    if !participation.is_finite() || participation <= 0.0 {
+        return Err(Error::invalid(format!(
+            "participation {participation} is not a positive finite share of daily volume, so no \
+             order type can be chosen for it; measure the volume, or refuse the order rather than \
+             taking the market's price for a size nobody sized"
+        )));
+    }
+    Ok(if participation <= 0.01 {
         OrderType::Market
     } else if participation <= 0.05 {
         OrderType::TimeWeighted {
@@ -699,5 +725,5 @@ pub fn order_type_for(participation: f64, window_minutes: u32) -> OrderType {
         // rather than taking it, and a fixed participation rate is the only
         // sensible way to work it.
         OrderType::Participation { rate: 0.10 }
-    }
+    })
 }

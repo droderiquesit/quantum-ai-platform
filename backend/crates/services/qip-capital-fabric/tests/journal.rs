@@ -14,17 +14,18 @@
 // assertion is the deliverable, and `?` keeps the fixtures readable.
 #![allow(clippy::panic_in_result_fn)]
 
+use qip_capital_fabric::assessment::AssessmentId;
 use qip_capital_fabric::corridor::{CorridorCaps, CorridorId, CorridorStage, PermittedHours};
 use qip_capital_fabric::custody::{
-    Attestation, CorridorKind, CustodyClass, CustodyPolicy, EnforcementPoint, EnforcementPoints,
-    Identity, TransferAuthority,
+    Attestation, ClassConstraints, CorridorKind, CustodyClass, CustodyPolicy, EnforcementPoint,
+    EnforcementPoints, Identity, TransferAuthority,
 };
 use qip_capital_fabric::destination::{
     ACTIVATION_DELAY, Approver, Asset, DestinationKey, DestinationStatus, SignatureRecord,
 };
 use qip_capital_fabric::gate::{
-    GateCheck, KillSwitchState, SourceBalances, StatedPurpose, TransferHistory, TransferIntent,
-    VelocityState,
+    CorridorFunding, FundingStanding, GateCheck, KillSwitchState, SourceBalances, StatedPurpose,
+    TransferHistory, TransferIntent, VelocityState,
 };
 use qip_capital_fabric::journal::{
     CorridorAction, CorridorStep, DestinationAction, FabricCommand, FabricJournal, FabricOutcome,
@@ -42,6 +43,7 @@ use qip_events::envelope::canonical_json;
 use qip_events::log::{GENESIS_HASH, LogRecord};
 use qip_events::{Envelope, EventBody, EventLog, Topic};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -116,17 +118,37 @@ fn step(id: &CorridorId, step: CorridorStep) -> FabricCommand {
 /// none of them the identity that trades. The gate's check 1 refuses an
 /// assessment whose authority fails either half, so every journalled gate
 /// command needs one that holds or the mixed sequence would be all vetoes.
-fn authority() -> Result<TransferAuthority> {
+///
+/// Two of the three references are values the gate checks rather than filing
+/// notes (ADR 0051), so the authority is a function of the assessment: the
+/// transfer gate's reference is the `AssessmentId` of this corridor, this
+/// intent and this instant, and the custody policy's is the fingerprint of
+/// the table the command carries. A fixed authority would veto every gate
+/// command in the mixed sequence on check 1, and the sequence exists to
+/// exercise the later checks.
+fn authority(corridor: &CorridorId, at: Timestamp) -> Result<TransferAuthority> {
     let mut points = EnforcementPoints::new();
-    for (point, identity) in [
-        (EnforcementPoint::TransferGate, "gate-svc"),
-        (EnforcementPoint::CustodyPolicy, "custody-policy-svc"),
-        (EnforcementPoint::VenueAllowlist, "venue-ops-oob"),
+    for (point, identity, reference) in [
+        (
+            EnforcementPoint::TransferGate,
+            "gate-svc",
+            AssessmentId::of(corridor, &treasury(), &destination()?, dec!("500"), at).to_string(),
+        ),
+        (
+            EnforcementPoint::CustodyPolicy,
+            "custody-policy-svc",
+            CustodyPolicy::blueprint().fingerprint().to_string(),
+        ),
+        (
+            EnforcementPoint::VenueAllowlist,
+            "venue-ops-oob",
+            format!("{}-record-1", EnforcementPoint::VenueAllowlist.as_str()),
+        ),
     ] {
         points.attest(Attestation::new(
             point,
             Identity::new(identity)?,
-            format!("{}-record-1", point.as_str()),
+            reference,
             signed_at(),
         )?)?;
     }
@@ -134,6 +156,19 @@ fn authority() -> Result<TransferAuthority> {
         points,
         Identity::new("trading-svc")?,
     ))
+}
+
+/// The Intelligence layer's ruling as every journalled gate command carries
+/// it: permitted, at a ceiling above the fixture's amount. The gate's check 1
+/// refuses a suspended corridor and check 2 a narrowed one, so a journalled
+/// command needs a ruling that admits the amount or the mixed sequence would
+/// be all vetoes.
+fn funding() -> Result<CorridorFunding> {
+    CorridorFunding::new(
+        FundingStanding::Permitted,
+        dec!("900"),
+        "every strategy this corridor funds has reached scaled; the weakest, alpha-1, is at scaled",
+    )
 }
 
 fn gate(
@@ -148,9 +183,10 @@ fn gate(
             dec!("500"),
             StatedPurpose::new(dec!("1000"), dec!("500"))?,
         )?,
-        corridor,
+        corridor: corridor.clone(),
         custody: CustodyPolicy::blueprint(),
-        authority: authority()?,
+        authority: authority(&corridor, at)?,
+        funding: funding()?,
         history: TransferHistory::empty(),
         balances: SourceBalances::new(dec!("10000"), dec!("1000"), dec!("1000"), dec!("1000"))?,
         velocity: VelocityState::CLEAR,
@@ -836,11 +872,19 @@ fn a_fabric_record_that_cannot_be_decoded_is_refused_rather_than_passed_over() -
     let mut log = EventLog::in_memory();
     let mut event = foreign_event(proposed_at(), PRODUCER)?;
     event.topic = FabricRecord::TOPIC;
+    // Stamped with the fabric's current schema version as well as its topic,
+    // so the only thing wrong with this record is its payload. `Note` declares
+    // version 1, and leaving that would have the replay refuse this record as
+    // one from another schema version — a true refusal, and not the one this
+    // test is about.
+    event.schema_version = FabricRecord::SCHEMA_VERSION;
     log.append(&event)?;
-    // Premise: the record is on the fabric topic under the fabric producer.
+    // Premise: the record is on the fabric topic under the fabric producer, at
+    // a version this build reads.
     let record = &log.records()[0];
     assert_eq!(record.event.topic, FabricRecord::TOPIC);
     assert_eq!(record.event.lineage.producer, PRODUCER);
+    assert_eq!(record.event.schema_version, FabricRecord::SCHEMA_VERSION);
     assert_eq!(log.verify_chain(), Ok(()));
 
     let err = replay(log.records()).expect_err("an undecodable fabric record must refuse");
@@ -852,6 +896,158 @@ fn a_fabric_record_that_cannot_be_decoded_is_refused_rather_than_passed_over() -
     assert!(
         FabricJournal::resume(log, 7, correlation()).is_err(),
         "a journal must not resume a log it cannot replay"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_fabric_record_written_under_the_old_schema_is_refused_by_name() -> Result<()> {
+    // The failure this prevents: a version 1 fabric record — written before a
+    // `GateCommand` carried the Intelligence layer's funding ruling — read as
+    // though the corridor had been ruled on. `FabricRecord::SCHEMA_VERSION`
+    // went 1 → 2 for exactly that reason, and 2 → 3 when ADR 0051 bound the
+    // transfer-gate and custody-policy attestations to what they agreed to.
+    // `AnyEvent::decode` guards only against a version *newer* than the
+    // build's, so nothing in the version machinery refused an older record.
+    // What refused a version 1 record was serde: the two assertions below hold
+    // the two halves apart, because the second is the one that is refusing
+    // today and the first is the one that says why. A version 2 record has no
+    // serde half at all —
+    // `a_version_two_record_is_refused_by_version_rather_than_re_judged`
+    // covers it.
+    let journal = journal_of(11, mixed_sequence()?)?;
+    let mut records = journal.records().to_vec();
+    // Premise: the log replays clean before this test alters one record, so
+    // the refusal below is caused by the alteration and not by the fixture.
+    assert_eq!(replay(&records)?.applied, 18);
+
+    let index = records
+        .iter()
+        .position(|record| record.event.payload["command"]["subject"] == "gate")
+        .expect("the mixed sequence journals gate assessments");
+    let record = &mut records[index];
+    // Premise: as written this is a version 3 record and it carries the field
+    // version 1 did not have.
+    assert_eq!(record.event.schema_version, 3);
+    assert!(
+        record.event.payload["command"]["funding"].is_object(),
+        "premise: a gate record of this build's version carries the funding ruling"
+    );
+
+    // A record as a version 1 writer would have produced it: no `funding`, the
+    // version it was written under, and a payload hash over its own bytes —
+    // not a tampered version 2 record, which the chain would catch for a
+    // different reason and prove nothing about the schema.
+    record.event.schema_version = 1;
+    record.event.payload["command"]
+        .as_object_mut()
+        .expect("a gate command serialises as an object")
+        .remove("funding");
+    record.event.payload_hash = sha256_hex(canonical_json(&record.event.payload).as_bytes());
+    rechain(&mut records, index)?;
+
+    // Half one: what refuses this today, if the explicit check were absent.
+    // `GateCommand::funding` has no `#[serde(default)]` and `CorridorFunding`
+    // derives no `Default`, so serde cannot build the command with the field
+    // missing. Adding either would turn this `Err` into an `Ok` — and, without
+    // the schema check below, would silently re-admit every version 1 record
+    // as an assessment made against a funding ruling that never existed. If
+    // this assertion ever fails, the schema check below is the only thing
+    // still refusing, and it is refusing for the stated reason.
+    assert!(
+        records[index].event.decode::<FabricRecord>().is_err(),
+        "serde must not build a gate command with no funding ruling"
+    );
+
+    // Half two: the refusal is the replay's own and names the version.
+    let err = replay(&records).expect_err("a record from another schema version must refuse");
+    let message = err.message();
+    assert!(
+        message.contains(&format!("position {} ", index + 1)),
+        "the refusal must name the record's position: {message}"
+    );
+    assert!(
+        message.contains("schema version 1") && message.contains("reads version 3"),
+        "the refusal must name the version written and the version read, so the reason is in \
+         the error rather than in a serde message about a missing field: {message}"
+    );
+    assert!(
+        !message.contains("cannot be decoded"),
+        "the version must be refused before the payload is decoded, or the reason an operator \
+         sees is 'missing field funding' — which reads as a corruption rather than as a record \
+         from a schema this build does not read: {message}"
+    );
+    Ok(())
+}
+
+/// The failure this prevents: a version 2 record re-judged under this build's
+/// controls and refused *as a veto*, so the log reads as a movement the gate
+/// declined rather than as a record this build cannot judge.
+///
+/// Version 2 is a different case from version 1 and the difference is the
+/// point of this test. A version 1 record is refused by serde whatever else
+/// happens — `GateCommand::funding` has no `#[serde(default)]` — so the
+/// explicit check merely improves the message. A version 2 record decodes
+/// perfectly: every field is present and every type still matches. What
+/// changed with ADR 0051 is the *meaning* of two attestation references, which
+/// version 2 filled with filing notes because nothing read them. Re-running
+/// check 1 over one produces `gate_attestation_names_another_assessment` — a
+/// finding about an attestor who agreed to the wrong thing, which is not what
+/// happened. The explicit version check is the only thing standing between
+/// those two readings, and the first assertion below is what proves it is
+/// carrying the weight alone.
+#[test]
+fn a_version_two_record_is_refused_by_version_rather_than_re_judged() -> Result<()> {
+    let journal = journal_of(11, mixed_sequence()?)?;
+    let mut records = journal.records().to_vec();
+    // Premise: the log replays clean before this test alters one record.
+    assert_eq!(replay(&records)?.applied, 18);
+
+    let index = records
+        .iter()
+        .position(|record| record.event.payload["command"]["subject"] == "gate")
+        .expect("the mixed sequence journals gate assessments");
+    // Premise: as written this is a version 3 record.
+    assert_eq!(records[index].event.schema_version, 3);
+
+    // A record as a version 2 writer left it. Only the version is restated;
+    // the payload is untouched, because a version 2 gate command and a version
+    // 3 one have the same fields and that is exactly why serde cannot tell
+    // them apart.
+    records[index].event.schema_version = 2;
+    rechain(&mut records, index)?;
+
+    // Half one: nothing but the explicit check refuses this. The record
+    // decodes, so a build without the version check would run the control over
+    // it and file whatever verdict came out.
+    assert!(
+        records[index].event.decode::<FabricRecord>().is_ok(),
+        "premise: a version 2 record still decodes, so the version check is the only refusal \
+         between it and being re-judged"
+    );
+
+    let err = replay(&records).expect_err("a version 2 record must be refused");
+    let message = err.message();
+    assert!(
+        message.contains(&format!("position {} ", index + 1)),
+        "the refusal must name the record's position: {message}"
+    );
+    assert!(
+        message.contains("schema version 2") && message.contains("reads version 3"),
+        "the refusal must name the version written and the version read: {message}"
+    );
+    assert!(
+        !message.contains("cannot be decoded"),
+        "the version must be refused before the payload is decoded, or the reason an operator \
+         sees describes a corruption that is not there: {message}"
+    );
+    // And it must not read as a verdict about the movement. A refusal naming a
+    // gate check would send an operator to ask an attestor why it disagreed,
+    // when the answer is that this build does not read the record at all.
+    assert!(
+        !message.contains(GateCheck::CorridorAuthority.as_str()),
+        "the refusal must be about the record's schema and not about a check the control \
+         re-ran over it: {message}"
     );
     Ok(())
 }
@@ -884,5 +1080,117 @@ fn the_journal_adopts_a_decision_only_after_the_log_has_it() -> Result<()> {
     );
     assert_eq!(journal.state(), &before);
     assert_eq!(journal.records().len(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_gate_command_whose_custody_table_contradicts_the_blueprint_is_journalled_as_a_veto_and_replays_as_one()
+-> Result<()> {
+    // §37.4's table reaches the gate inside the `GateCommand`, which means it
+    // reaches the gate deserialised on every replay — and `serde` calls no
+    // constructor, so `CustodyPolicy::from_constraints`'s refusal of a
+    // contradictory table was, until the gate re-ran `conforms`, a rule no
+    // replay ever applied. That is worse than an unchecked input: the replay
+    // recomputes each outcome and compares, so a record admitting a transfer
+    // against a table saying collateral may move would have been *confirmed*
+    // by a chain that verifies. The custody policy has to be enforced by the
+    // control the replay re-runs, or it is only a policy record.
+    let mut commands = mixed_sequence()?;
+    // Premise: as written the sequence admits exactly one assessment. Without
+    // this the tampering below could be applied to a log that admits nothing.
+    let clean = journal_of(23, commands.clone())?;
+    assert_mixed(&decoded(clean.records())?);
+
+    // The table only serde can build: collateral marked transferable, with a
+    // corridor listed, which `from_constraints` refuses outright.
+    let blueprint = CustodyPolicy::blueprint();
+    let mut rows: BTreeMap<CustodyClass, ClassConstraints> = CustodyClass::ALL
+        .into_iter()
+        .filter_map(|class| blueprint.constraints(class).map(|row| (class, row.clone())))
+        .collect();
+    let collateral = rows
+        .get_mut(&CustodyClass::CollateralAndMargin)
+        .expect("the blueprint table has a collateral row");
+    collateral.may_be_transfer_source = true;
+    collateral
+        .permitted_corridors
+        .insert(CorridorKind::InstitutionApprovalFlow);
+    assert!(
+        CustodyPolicy::from_constraints(rows.clone()).is_err(),
+        "premise: no constructor in this crate builds this table"
+    );
+    let mut object = serde_json::Map::new();
+    object.insert("classes".to_string(), serde_json::to_value(&rows)?);
+    let tampered: CustodyPolicy = serde_json::from_value(serde_json::Value::Object(object))?;
+    // Premise: the fiat row the fixture's corridor uses is untouched, so the
+    // veto below is the table being refused as a whole and not this corridor's
+    // own question being answered differently.
+    assert!(
+        tampered
+            .permits(
+                CustodyClass::FiatAtInstitutionOfRecord,
+                CorridorKind::InstitutionApprovalFlow
+            )
+            .is_ok(),
+        "premise: the fiat row still permits the fixture's corridor"
+    );
+
+    let mut swapped = 0usize;
+    for command in &mut commands {
+        if let FabricCommand::Gate(gate) = command {
+            gate.custody = tampered.clone();
+            swapped += 1;
+        }
+    }
+    assert_eq!(
+        swapped, 4,
+        "the fixture holds four gate commands: one admitted, two vetoed, one against a \
+         corridor the log never proposed"
+    );
+
+    let journal = journal_of(23, commands)?;
+    let bodies = decoded(journal.records())?;
+    assert!(
+        !bodies.iter().any(|record| matches!(
+            record.outcome,
+            FabricOutcome::Gate(Outcome::Applied(GateVerdict::Admitted(_)))
+        )),
+        "an assessment was admitted against a table §37.4 forbids"
+    );
+    assert_eq!(
+        bodies
+            .iter()
+            .filter(|record| vetoed_by(record) == Some(GateCheck::CorridorAuthority))
+            .count(),
+        3,
+        "every assessment against a proposed corridor must refuse on check 1"
+    );
+    let vetoed = bodies
+        .iter()
+        .find_map(|record| match &record.outcome {
+            FabricOutcome::Gate(Outcome::Applied(GateVerdict::Vetoed(vetoed)))
+                if vetoed.reason.contains("(policy_contradicts_blueprint)") =>
+            {
+                Some(vetoed.clone())
+            }
+            _ => None,
+        })
+        .expect("a table-contradiction veto is in the tampered fixture");
+    assert!(vetoed.alert, "check 1 pairs its veto with an alert");
+
+    // The log keeps the table exactly as it was asked about — the record is
+    // what was submitted, not what the control wished had been — and the
+    // replay reaches the same verdict from the log alone.
+    let commanded = bodies.iter().find_map(|record| match &record.command {
+        FabricCommand::Gate(gate) => Some(gate.custody.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        commanded.as_ref(),
+        Some(&tampered),
+        "the record must carry the table that was assessed, unrepaired"
+    );
+    let replayed = replay(journal.records())?;
+    assert_eq!(replayed.state, *journal.state());
     Ok(())
 }

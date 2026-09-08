@@ -214,7 +214,7 @@ service that exists with internal ingress, distinguished from the credential-les
 returns. The portal and the landing answered 200, and OpenObserve answered a
 `308` to `/web/` and `200` there. The evidence and
 its limits are in
-[the missing-infrastructure register](../ops/missing-infrastructure-register.md),
+the missing-infrastructure register (`docs/ops/missing-infrastructure-register.md`, consolidated into `docs/DELIVERY-STATUS.md` on 2026-09-07),
 "Observed on 2026-09-04, from outside the project", which is careful to say
 what it did *not* see: no digest, no serving revision, no attestation, no
 secret version, no execution node, no scrape.

@@ -15,7 +15,25 @@
 //!
 //! Both are refused by [`Checkpoint::resume_into`] rather than being fixed up,
 //! because the only honest repair is to re-read from a position a human chose.
+//!
+//! # A cursor alone does not survive a restart
+//!
+//! A checkpoint that carried only a cursor was enough for a source that reads
+//! forward from one, and not for the sources this platform actually has.
+//! `FrankfurterRatesConnector::decode` takes no cursor at all: it re-decodes
+//! the whole rate table every poll, and the dedup window is the only reason
+//! the same three reference rates are not republished each hour. That window
+//! lived in memory, so the second process of a week-long stream republished
+//! everything the first had already absorbed — a duplicate an operator would
+//! read as a new observation and a backtest would count twice.
+//!
+//! So the checkpoint carries a **bounded tail of the dedup window** as well:
+//! [`Checkpoint::CARRIED_FINGERPRINTS`] of them, no more, refused if more
+//! arrive. That bound is the whole difficulty. Carrying the entire window would
+//! make a checkpoint grow with a deployment's memory sizing, and carrying none
+//! is where this started.
 
+use super::dedup::EventFingerprint;
 use super::manifest::{SchemaVersion, SourceManifest};
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
@@ -133,9 +151,36 @@ pub struct Checkpoint {
     /// re-delivery of the boundary event from a new one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_fingerprint: Option<String>,
+    /// A bounded tail of the dedup window, oldest first, so a restart
+    /// recognises the redeliveries the next poll is about to make.
+    ///
+    /// Empty is legitimate and means exactly one thing: nothing has been
+    /// admitted yet under this checkpoint. It is *not* how a checkpoint written
+    /// before this field existed reads differently — such a checkpoint also
+    /// deserialises to empty, and the first poll after it republishes its
+    /// window's worth. That is the pre-existing behaviour and it stops
+    /// happening once one checkpoint has been written by this code.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_fingerprints: Vec<String>,
 }
 
 impl Checkpoint {
+    /// Fingerprints a checkpoint carries forward, at most.
+    ///
+    /// Two hundred and fifty-six. Sized against the widest page any shipped
+    /// connector decodes rather than against the dedup capacity: Frankfurter
+    /// serves 29 currencies on its health path and 3 on its poll, Coinbase one
+    /// print, Alpaca one bar per symbol. A carry of 256 therefore spans many
+    /// polls of every source this build has, while a checkpoint stays under
+    /// 20 kB whatever `RuntimeConfig::dedup_capacity` a deployment chooses —
+    /// and the shipped capacity is 8,192, which would be half a megabyte
+    /// written to a durable store on every poll.
+    ///
+    /// The consequence is stated rather than hidden: a redelivery older than
+    /// the newest 256 events is admitted again after a restart. That is the
+    /// same trade the window itself makes on eviction, at a tighter bound.
+    pub const CARRIED_FINGERPRINTS: usize = 256;
+
     pub fn new(manifest: &SourceManifest, cursor: Cursor, taken_at: Timestamp) -> Self {
         Self {
             source_id: manifest.source_id.clone(),
@@ -143,7 +188,51 @@ impl Checkpoint {
             cursor,
             taken_at,
             last_fingerprint: None,
+            recent_fingerprints: Vec::new(),
         }
+    }
+
+    /// The same checkpoint carrying a dedup window's tail.
+    ///
+    /// `carried` is truncated to [`Self::CARRIED_FINGERPRINTS`] here rather
+    /// than being refused, because this is the writing side and the caller
+    /// handing over a window larger than the bound is the ordinary case. The
+    /// *reading* side refuses, because there the surplus came off a durable
+    /// store and means something is wrong with the file.
+    pub fn carrying(mut self, carried: &[EventFingerprint]) -> Self {
+        let skip = carried.len().saturating_sub(Self::CARRIED_FINGERPRINTS);
+        self.recent_fingerprints = carried
+            .iter()
+            .skip(skip)
+            .map(|fingerprint| fingerprint.as_str().to_string())
+            .collect();
+        self.last_fingerprint = carried
+            .last()
+            .map(|fingerprint| fingerprint.as_str().to_string());
+        self
+    }
+
+    /// The carried fingerprints, validated, or a refusal naming the file.
+    ///
+    /// Refuses a carry past the bound. An unbounded list read off a durable
+    /// store is an unbounded working set on restore, and the process would die
+    /// of memory at start-up — during a restart, which is when a deployment can
+    /// least afford a second one.
+    pub fn carried(&self) -> Result<Vec<EventFingerprint>> {
+        if self.recent_fingerprints.len() > Self::CARRIED_FINGERPRINTS {
+            return Err(Error::invalid(format!(
+                "the checkpoint for `{}` carries {} fingerprints and at most {} may be carried. \
+                 A carry past the bound was not written by this platform; re-read from a position \
+                 a human chose rather than restoring an unbounded window at start-up",
+                self.source_id,
+                self.recent_fingerprints.len(),
+                Self::CARRIED_FINGERPRINTS
+            )));
+        }
+        self.recent_fingerprints
+            .iter()
+            .map(|text| EventFingerprint::from_hex(text))
+            .collect()
     }
 
     pub fn to_json(&self) -> Result<String> {

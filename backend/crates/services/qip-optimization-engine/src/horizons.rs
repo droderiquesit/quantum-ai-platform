@@ -756,6 +756,322 @@ pub fn reconcile(pools: &CapitalPools, budgets: &[FamilyBudget]) -> Result<Horiz
     })
 }
 
+/// Who says a strategy sits at a horizon.
+///
+/// Attributed rather than anonymous, because the entire value of
+/// [`HorizonRegister`] is that when two claims about one strategy disagree an
+/// operator can see *which* two and go and repair the one that is wrong. An
+/// unattributed disagreement is a number nobody can chase, and a number nobody
+/// can chase is resolved by whoever wrote last.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct HorizonSource(String);
+
+impl HorizonSource {
+    /// Refuses a blank name. A source that cannot say who it is turns a
+    /// disagreement into an anonymous one, which is the state this type exists
+    /// to make unrepresentable.
+    pub fn new(name: impl Into<String>) -> Result<Self> {
+        let name = name.into();
+        if name.trim().is_empty() {
+            return Err(Error::invalid(
+                "a horizon claim needs a named source; name the component or the operator making \
+                 the claim, because a disagreement between two anonymous claims cannot be \
+                 arbitrated",
+            ));
+        }
+        Ok(Self(name))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for HorizonSource {
+    type Error = Error;
+
+    fn try_from(name: String) -> Result<Self> {
+        Self::new(name)
+    }
+}
+
+impl std::fmt::Display for HorizonSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Two or more sources placing one strategy at different horizons.
+///
+/// This is the recorded fact CLAUDE.md's sixth principle asks for: two
+/// independent claims about the same fact will disagree, and the louder one
+/// will be wrong. Before this type there was no louder one — [`family_horizons`]
+/// took a `BTreeMap<StrategyId, Horizon>`, which is one claim per strategy, so
+/// whichever writer reached the map last simply won and nothing anywhere said
+/// that anything had been overruled.
+///
+/// Keyed horizon-to-sources rather than source-to-horizon so the record reads
+/// as the sides of the argument, and so the least liquid claim is a `max` over
+/// the keys.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HorizonDispute {
+    strategy: StrategyId,
+    claims: BTreeMap<Horizon, BTreeSet<HorizonSource>>,
+}
+
+impl HorizonDispute {
+    pub fn strategy(&self) -> &StrategyId {
+        &self.strategy
+    }
+
+    pub fn claims(&self) -> &BTreeMap<Horizon, BTreeSet<HorizonSource>> {
+        &self.claims
+    }
+
+    /// The least liquid horizon anyone claimed.
+    ///
+    /// [`Horizon`] is ordered most liquid first, so this is a `max`. It is the
+    /// only defensible reading when a decision has to be taken anyway: funding
+    /// a position against a *more* liquid pool than it deserves is precisely
+    /// the failure §23.4 exists to prevent, and the error in the other
+    /// direction only leaves inventory idle.
+    pub fn least_liquid(&self) -> Option<Horizon> {
+        self.claims.keys().copied().max()
+    }
+
+    /// The argument as a line an operator can read.
+    pub fn narrate(&self) -> String {
+        let sides = self
+            .claims
+            .iter()
+            .map(|(horizon, sources)| {
+                let names = sources
+                    .iter()
+                    .map(HorizonSource::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{horizon} ({names})")
+            })
+            .collect::<Vec<_>>()
+            .join(" against ");
+        format!("{} is claimed at {sides}", self.strategy)
+    }
+}
+
+/// Every attributed claim about which horizon a strategy sits at.
+///
+/// Deliberately not `Serialize`: it is an input assembled from live sources,
+/// and the record worth keeping is [`SettledHorizons`]'s disputes rather than
+/// the register that produced them.
+#[derive(Clone, Debug, Default)]
+pub struct HorizonRegister {
+    claims: BTreeMap<StrategyId, BTreeMap<Horizon, BTreeSet<HorizonSource>>>,
+}
+
+impl HorizonRegister {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record one source's claim.
+    ///
+    /// Refuses a source that contradicts *itself*. One component placing a
+    /// strategy at two horizons is a defect in that component, not a
+    /// disagreement between two views of the world, and filing it as a dispute
+    /// would hand an operator an argument to arbitrate that has no second side.
+    pub fn claim(
+        &mut self,
+        strategy: &StrategyId,
+        source: HorizonSource,
+        horizon: Horizon,
+    ) -> Result<()> {
+        let by_horizon = self.claims.entry(strategy.clone()).or_default();
+        for (existing, sources) in by_horizon.iter() {
+            if *existing != horizon && sources.contains(&source) {
+                return Err(Error::invalid(format!(
+                    "{source} places {strategy} at both the {existing} and the {horizon} horizon; \
+                     repair the source rather than filing its self-contradiction as a \
+                     disagreement for somebody to arbitrate"
+                )));
+            }
+        }
+        by_horizon.entry(horizon).or_default().insert(source);
+        Ok(())
+    }
+
+    /// Whether any source has spoken about this strategy.
+    pub fn knows(&self, strategy: &StrategyId) -> bool {
+        self.claims.contains_key(strategy)
+    }
+
+    /// Every strategy whose sources do not agree, in strategy order.
+    pub fn disputes(&self) -> Vec<HorizonDispute> {
+        self.claims
+            .iter()
+            .filter(|(_, claims)| claims.len() > 1)
+            .map(|(strategy, claims)| HorizonDispute {
+                strategy: strategy.clone(),
+                claims: claims.clone(),
+            })
+            .collect()
+    }
+
+    /// The settled horizons, refusing while anything is disputed.
+    ///
+    /// The refusal is the point. A silent resolution here would be the platform
+    /// choosing which capital pool funds a position at the moment two of its
+    /// own components have just told it they do not know.
+    pub fn settle(&self) -> Result<SettledHorizons> {
+        let disputes = self.disputes();
+        if !disputes.is_empty() {
+            let detail = disputes
+                .iter()
+                .map(HorizonDispute::narrate)
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(Error::denied(format!(
+                "{} strateg{} horizon is disputed: {detail}. Repair the disagreeing source, or \
+                 settle it deliberately with a recorded decision — this stage will not pick a \
+                 horizon for you",
+                disputes.len(),
+                if disputes.len() == 1 { "y's" } else { "ies'" }
+            )));
+        }
+        Ok(SettledHorizons {
+            of_strategy: self.agreed(),
+            disputes: Vec::new(),
+            despite: None,
+        })
+    }
+
+    /// Settle a disputed register anyway, on a recorded decision.
+    ///
+    /// The disputes travel into the result, so anything built on top of it
+    /// carries the statement that it was decided over an unresolved
+    /// disagreement rather than on agreement. Refuses when nothing is disputed:
+    /// a caller declaring a decision-despite over a register everyone agrees on
+    /// has recorded something that did not happen, and a record that says a
+    /// controversy existed where none did is as misleading as one that hides
+    /// the reverse.
+    pub fn settle_despite(&self, decision: impl Into<String>) -> Result<SettledHorizons> {
+        let decision = decision.into();
+        if decision.trim().is_empty() {
+            return Err(Error::invalid(
+                "settling a disputed horizon needs a stated reason; write down why the \
+                 disagreement is being decided over rather than repaired",
+            ));
+        }
+        let disputes = self.disputes();
+        if disputes.is_empty() {
+            return Err(Error::invalid(
+                "no strategy's horizon is disputed, so there is nothing to settle despite; call \
+                 `settle` — recording a decision over a disagreement that did not happen \
+                 misleads a reviewer exactly as much as hiding one that did",
+            ));
+        }
+        let mut of_strategy = self.agreed();
+        for dispute in &disputes {
+            let horizon = dispute.least_liquid().ok_or_else(|| {
+                Error::invalid(format!(
+                    "{} is recorded as disputed with no claim behind it; the register was built \
+                     by something other than `claim`",
+                    dispute.strategy()
+                ))
+            })?;
+            of_strategy.insert(dispute.strategy().clone(), horizon);
+        }
+        Ok(SettledHorizons {
+            of_strategy,
+            disputes,
+            despite: Some(decision),
+        })
+    }
+
+    /// The horizons every source already agrees on.
+    fn agreed(&self) -> BTreeMap<StrategyId, Horizon> {
+        let mut out = BTreeMap::new();
+        for (strategy, claims) in &self.claims {
+            if let Some(horizon) = claims.keys().next()
+                && claims.len() == 1
+            {
+                out.insert(strategy.clone(), *horizon);
+            }
+        }
+        out
+    }
+}
+
+/// One horizon per strategy, with whatever had to be decided over to get it.
+///
+/// The disagreement is carried rather than discarded, so a plan reconciled on
+/// top of this cannot be read as though the platform's sources agreed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SettledHorizons {
+    of_strategy: BTreeMap<StrategyId, Horizon>,
+    disputes: Vec<HorizonDispute>,
+    despite: Option<String>,
+}
+
+impl SettledHorizons {
+    pub fn of_strategy(&self) -> &BTreeMap<StrategyId, Horizon> {
+        &self.of_strategy
+    }
+
+    pub fn horizon_of(&self, strategy: &StrategyId) -> Option<Horizon> {
+        self.of_strategy.get(strategy).copied()
+    }
+
+    pub fn disputes(&self) -> &[HorizonDispute] {
+        &self.disputes
+    }
+
+    pub fn is_disputed(&self) -> bool {
+        !self.disputes.is_empty()
+    }
+
+    /// The decision this settlement was taken under, when it was taken over an
+    /// unresolved disagreement. `None` when the sources agreed.
+    pub fn despite(&self) -> Option<&str> {
+        self.despite.as_deref()
+    }
+
+    /// The settlement as lines a reviewer can read, disagreements first.
+    pub fn narrate(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if let Some(decision) = self.despite() {
+            lines.push(format!(
+                "settled over {} unresolved horizon disagreement(s) on the decision: {decision}",
+                self.disputes.len()
+            ));
+        }
+        for dispute in &self.disputes {
+            let settled = self
+                .horizon_of(dispute.strategy())
+                .map_or_else(|| "unsettled".to_string(), |h| h.to_string());
+            lines.push(format!(
+                "{}; taken at {settled} as the least liquid claim",
+                dispute.narrate()
+            ));
+        }
+        lines
+    }
+}
+
+/// The horizon of each family in an assignment, from a settlement rather than
+/// from a bare map.
+///
+/// The bare [`family_horizons`] cannot tell a horizon everyone agreed on from
+/// one that overruled a source, because a `BTreeMap` has room for one claim.
+/// This is the entry point a caller reaches through when it wants the
+/// disagreement to survive into the record.
+pub fn family_horizons_settled(
+    assignment: &FamilyAssignment,
+    settled: &SettledHorizons,
+) -> Result<BTreeMap<FamilyId, Horizon>> {
+    family_horizons(assignment, settled.of_strategy())
+}
+
 /// The horizon of each family in an assignment — the blueprint's
 /// "horizon × family" seam.
 ///

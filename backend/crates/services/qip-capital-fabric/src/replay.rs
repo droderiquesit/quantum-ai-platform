@@ -4,8 +4,32 @@
 //! [`FabricState`] they build. It refuses — for the whole replay, naming the
 //! position — any record that is out of sequence, that does not chain to its
 //! predecessor, whose content no longer hashes to what the chain recorded,
-//! that cannot be decoded, or whose recorded outcome disagrees with what the
-//! control produces when the command is run again. It never skips: a replay
+//! that was written under a schema version other than this build's, that
+//! cannot be decoded, or whose recorded outcome disagrees with what the
+//! control produces when the command is run again.
+//!
+//! The schema check is stated here rather than left to serde. `AnyEvent::decode`
+//! refuses only a *newer* version, so a version 1 fabric record — written
+//! before a gate record carried the Intelligence layer's funding ruling — was
+//! refused only because `GateCommand::funding` has no `#[serde(default)]` and
+//! `CorridorFunding` derives no `Default`. That is a real refusal resting on
+//! an accident: either of those two lines arriving later would silently
+//! re-admit version 1 records and assess them as though the corridor had been
+//! ruled on. An explicit check names the reason in the error instead, and
+//! `a_fabric_record_written_under_the_old_schema_is_refused_by_name` pins both
+//! halves.
+//!
+//! Version 2 has no such accident to lean on and is the reason the check must
+//! stay. Every field of a version 2 record still deserialises under this
+//! build; what changed with ADR 0051 is the *meaning* of two attestation
+//! references, which version 2 filled with filing notes because nothing read
+//! them. Re-running the control over one produces a veto — the references do
+//! not match the assessment identity and the policy fingerprint — and a veto
+//! in the log reads as a movement the gate declined, not as a record this
+//! build cannot judge. Refusing by version is the difference between those
+//! two findings.
+//!
+//! It never skips: a replay
 //! that stepped over a bad record and carried on would produce a state that
 //! looks rebuilt from the log and is not, which is worse than no state at
 //! all because it reads as evidence.
@@ -116,6 +140,22 @@ pub fn replay(records: &[LogRecord]) -> Result<Replayed> {
         if !is_fabric {
             passed_over += 1;
             continue;
+        }
+        if record.event.schema_version != FabricRecord::SCHEMA_VERSION {
+            return Err(Error::invalid(format!(
+                "record at position {position} (sequence {}) is a fabric record written under \
+                 schema version {}, and this build reads version {}; a record from another \
+                 version is refused by name rather than re-interpreted, because what it lacks is \
+                 what a control ruled on — a version 1 gate record carries no funding ruling, and \
+                 a version 2 gate record's transfer-gate and custody-policy attestations name \
+                 nothing checkable, because nothing checked them when it was written. Re-running \
+                 the control over either would produce a verdict about a question the record was \
+                 never made to answer, and a veto is not the same finding as a record this build \
+                 cannot judge",
+                record.sequence,
+                record.event.schema_version,
+                FabricRecord::SCHEMA_VERSION,
+            )));
         }
         let envelope = record.event.decode::<FabricRecord>().map_err(|err| {
             Error::invalid(format!(

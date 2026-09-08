@@ -21,6 +21,7 @@ use qip_financial::intelligence::{
     EntityMention, FiscalPeriod, FundamentalUpdate, NewsItem, NewsSource, ReferenceDataUpdate,
     Sentiment,
 };
+use qip_financial::manifest::SourceManifest;
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
@@ -195,7 +196,12 @@ fn a_news_item_lands_in_the_evidence_index_rather_than_vanishing() -> Result<()>
     let item = NewsItem {
         item_id: "news-1".to_string(),
         headline: "Acme Corporation guides revenue sharply higher".to_string(),
-        body: "Acme Corporation raised full-year revenue guidance.".to_string(),
+        manifest: SourceManifest::of(
+            "test-newswire",
+            "http://vendor.test/docs#news-1",
+            start(),
+            b"Acme Corporation raised full-year revenue guidance.",
+        )?,
         source: NewsSource::CompanyAnnouncement,
         published_at,
         entities: vec![EntityMention {

@@ -231,10 +231,14 @@ fn a_configured_adapter_fetches_over_a_real_socket_and_decodes_news_a_filing_and
         item.headline,
         "Northwind Semiconductor warns on fourth-quarter volumes"
     );
-    assert!(
-        item.body.contains("northern fabrication site"),
-        "the body arrives whole: {}",
-        item.body
+    assert_eq!(
+        item.manifest.sha256(),
+        qip_core::sha256_hex(
+            b"Northwind Semiconductor warns on fourth-quarter volumes\nThe company said output at \
+              its northern fabrication site would be reduced."
+        ),
+        "the manifest hashes the document as served — headline, newline, body — and this is the \
+         only place the article text still exists"
     );
     assert_eq!(
         item.entities[0].entity_id.as_deref(),
@@ -618,9 +622,22 @@ fn every_decoded_record_carries_the_licensing_class_its_document_stated() {
         !item.provenance.licensing.allows_raw_display(),
         "restricted text may drive features and may not be shown, and the record says so"
     );
+    // This read `!item.body.is_empty()`, "the text is still here for the
+    // derived use". The derived use had no reader — nothing outside this crate
+    // consumed the body — while `NewsItem` is an event body, so the one thing
+    // the retained text reliably did was put a vendor's non-displayable prose
+    // into a hash-chained log that is sealed against deletion. The label is
+    // still applied; what is no longer kept is the article.
+    assert_eq!(
+        item.manifest.source(),
+        "vendor-documents",
+        "the manifest names the feed that served the restricted document, so a licence question \
+         can be taken back to it"
+    );
     assert!(
-        !item.body.is_empty(),
-        "this adapter labels rather than redacting: the text is still here for the derived use"
+        item.manifest.bytes() > 0 && item.manifest.sha256().len() == 64,
+        "a restricted document is referenced rather than copied: {:?}",
+        item.manifest
     );
     assert_eq!(
         fundamentals_of(&records)[0].provenance.licensing,
@@ -629,6 +646,71 @@ fn every_decoded_record_carries_the_licensing_class_its_document_stated() {
     assert_eq!(
         macro_of(&records).provenance.licensing,
         LicensingClass::Public
+    );
+}
+
+/// The article text reaches no record, and the manifest is what stands in for
+/// it.
+///
+/// `NewsItem` is an `EventBody`, so anything on it is written into the
+/// hash-chained event log — permanent by construction and sealed against edit.
+/// Until the manifest existed the decoder copied the vendor's article straight
+/// onto the record, which put somebody else's `Restricted`, non-displayable
+/// prose into that log with no way to take it out. Blueprint §7.2 and §56.4
+/// rules 34 and 36 say the opposite: keep the facts, the entity links and a
+/// manifest with a content hash, and discard the copy.
+///
+/// Asserted against the serialised record rather than against the absence of a
+/// field, because a field is what a reader checks and bytes are what the log
+/// stores: a `body` re-added under any other name would still be caught.
+#[test]
+fn the_article_text_reaches_no_record_the_log_seals_and_a_hashed_reference_stands_in_for_it() {
+    const ARTICLE: &str =
+        "The company said output at its northern fabrication site would be reduced.";
+    assert!(
+        FULL_PAYLOAD.contains(ARTICLE),
+        "the premise of this test is that the vendor served an article; the fixture has none"
+    );
+
+    let (server, mut adapter) = adapter_serving(FULL_PAYLOAD);
+    let records = adapter.poll(poll_instant()).expect("the fetch succeeds");
+    let item = news_of(&records);
+
+    let sealed = serde_json::to_string(item).expect("a news item serialises");
+    assert!(
+        sealed.contains("Northwind Semiconductor warns on fourth-quarter volumes"),
+        "the premise of the next assertion: this is the serialised record, and the headline is \
+         deliberately still on it: {sealed}"
+    );
+    assert!(
+        !sealed.contains("northern fabrication site"),
+        "the article was copied into the record the event log seals: {sealed}"
+    );
+
+    assert_eq!(
+        item.manifest.sha256(),
+        qip_core::sha256_hex(
+            format!("Northwind Semiconductor warns on fourth-quarter volumes\n{ARTICLE}")
+                .as_bytes()
+        ),
+        "the reference must hash the document that was served, or a vendor could edit it in \
+         place and nothing here could contradict the record"
+    );
+    assert_eq!(
+        item.manifest.bytes(),
+        ("Northwind Semiconductor warns on fourth-quarter volumes\n".len() + ARTICLE.len()) as u64
+    );
+    assert_eq!(
+        item.manifest.locator(),
+        format!("{}/v1/narrative#wire-2026-08-24-4471", server.url()),
+        "the locator has to name both the endpoint that served the document and the vendor's own \
+         id for it; neither alone gets the original back"
+    );
+    assert_eq!(
+        item.manifest.retrieved_at(),
+        poll_instant(),
+        "when the bytes were read, not when the story was published: a re-fetch disagrees as of \
+         this instant"
     );
 }
 

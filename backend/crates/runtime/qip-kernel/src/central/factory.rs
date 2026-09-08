@@ -25,10 +25,12 @@ use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
+use qip_lifecycle::corridor::CorridorSubject;
 use qip_lifecycle::demotion::{
     DemotionMonitor, DemotionPolicy, DemotionTrigger, LiveObservation, PilotBaseline,
 };
 use qip_lifecycle::evidence::{KillCondition, StrategyEvidence};
+use qip_lifecycle::horizon::HorizonAssurance;
 use qip_lifecycle::ledger::{LifecycleLedger, attempt_promotion};
 use qip_lifecycle::trials::{StrategyFamily, TrialBook};
 use qip_observability::metrics::Metrics;
@@ -260,6 +262,17 @@ impl StrategyFactory {
         self.ledger.attach_trial_book(book);
     }
 
+    /// Hold every promotion to a capital-holding rung to the §23.4 pools the
+    /// assurance reconciles against.
+    ///
+    /// Swapped in whole on each arming rather than mutated in place: the
+    /// assurance carries the pools, the claims and the budgets as one
+    /// consistent set, and a half-refreshed one would reconcile this cycle's
+    /// budgets against last cycle's pools.
+    pub fn attach_horizons(&mut self, assurance: HorizonAssurance) {
+        self.ledger.attach_horizons(assurance);
+    }
+
     /// Use a non-default demotion policy.
     pub fn with_demotion_policy(mut self, policy: DemotionPolicy) -> Self {
         self.monitor = DemotionMonitor::new(policy);
@@ -329,6 +342,24 @@ impl StrategyFactory {
 
     pub fn ledger(&self) -> &LifecycleLedger {
         &self.ledger
+    }
+
+    /// Declare the corridors whose policy this factory's ledger sets, and
+    /// emit that policy once against the rungs as they stand now.
+    ///
+    /// Narrower than handing out `&mut LifecycleLedger` on purpose. The
+    /// ledger is where a strategy's rung moves, and every path that moves one
+    /// runs through this factory's own gates — [`Self::promote`] and
+    /// [`Self::review`] — so a mutable borrow reaching out of here would
+    /// be a second way to promote, past the evidence the gates demand. What a
+    /// composition root needs is the subjects, and this is that and nothing
+    /// else.
+    pub fn declare_corridors(
+        &mut self,
+        subjects: Vec<CorridorSubject>,
+        now: Timestamp,
+    ) -> Result<()> {
+        self.ledger.declare_corridors(subjects, now).map(|_| ())
     }
 
     pub fn monitor(&self) -> DemotionMonitor {

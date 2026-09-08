@@ -33,5 +33,17 @@ qip-contracts.workspace = true
 qip-orderbook.workspace = true
 qip-sequencing.workspace = true
 
+[dev-dependencies]
+# `StreamJournal` persists through `qip_core::kv::KeyValueStore` — the port,
+# declared in a library this crate already depends on — so nothing here reaches
+# for a filesystem and a deployment chooses the adapter. The tests need *an*
+# adapter, and `MemoryKeyValueStore` is the one the workspace already ships;
+# a store hand-rolled inside the test file would be a second implementation of
+# the port whose disagreements with the real one nothing would catch.
+# A dev-dependency and not a dependency: this is a service and `qip-storage` is
+# a library, so the edge is legal in either position, but the crate needs the
+# port and not the adapter, and the manifest should say which.
+qip-storage.workspace = true
+
 [lints]
 workspace = true

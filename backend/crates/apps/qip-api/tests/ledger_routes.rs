@@ -1545,3 +1545,271 @@ fn an_eligibility_decision_for_a_user_holding_no_mandate_is_refused_by_name() ->
     })??;
     Ok(())
 }
+
+// --- POST /ledger/users/{user}/investment-requests -----------------------------
+
+/// The strategy `register_family` deploys, spelled as the compiler holds it.
+const REGISTERED_STRATEGY: &str = "AAA";
+const FAMILY: &str = "ledger-route-tests";
+
+/// A rig with alice enrolled, verified, the strategy registered under
+/// [`FAMILY`] and that family cleared for sale where she is — everything an
+/// investment request needs before the only thing left to answer it is the
+/// mandate's own arithmetic.
+fn rig_ready_for_requests(capital: Decimal) -> Result<Rig> {
+    let rig =
+        rig_with(PlatformConfig::default().with_user_mandates(vec![enrolment("alice", capital)?]))?;
+    register_family(&rig, FAMILY)?;
+    rig.with_platform(|platform| -> Result<()> {
+        let operator = OperatorIdentity::verified("ops-carol", "oidc", start());
+        platform.decide_eligibility(
+            &UserId::new("alice")?,
+            EligibilityDecision::Granted {
+                eligibility: Eligibility::new(EligibilityTerms {
+                    verified_at: start(),
+                    can_invest: true,
+                    jurisdiction: Jurisdiction::new("GB")?,
+                    expires_at: start().saturating_add(Duration::from_days(365)),
+                })?,
+            },
+            &operator,
+            "identity verified against the passport on file",
+            start(),
+        )?;
+        platform.offer_product(
+            qip_capital::ledger::ProductEligibility::new(FAMILY)
+                .eligible_in(Jurisdiction::new("GB")?),
+            &operator,
+            "cleared for retail distribution in GB by the compliance committee",
+            start(),
+        )
+    })??;
+    Ok(rig)
+}
+
+/// A request body in the shape `ROUTES-LEDGER.md` writes out.
+fn request_body(family: &str, amount: &str) -> String {
+    serde_json::json!({
+        "strategy": REGISTERED_STRATEGY,
+        "family": family,
+        "currency": "USD",
+        "amount": amount,
+        "reason": "the client asked for this in writing on the dated instruction",
+    })
+    .to_string()
+}
+
+impl Rig {
+    /// `POST /ledger/users/{user}/investment-requests` with `body`, as `token`.
+    fn raise(&self, user: &str, token: &str, body: &str) -> Response {
+        let mut headers = BTreeMap::new();
+        headers.insert("authorization".to_string(), format!("Bearer {token}"));
+        self.api.handle(&Request {
+            method: Method::Post,
+            path: format!("/api/v1/ledger/users/{user}/investment-requests"),
+            query: BTreeMap::new(),
+            headers,
+            body: body.as_bytes().to_vec(),
+            peer: "127.0.0.1:1".to_string(),
+        })
+    }
+}
+
+#[test]
+fn an_operator_raises_an_investment_request_and_the_route_answers_the_limit_that_refused_it()
+-> Result<()> {
+    // The failure this closes: §40.9 gives `investment-api` one intent — an
+    // investment request — and this API raised none at all, while the mandate
+    // gate that would decide one (`UserLedger::admit`: eligibility,
+    // entitlement, currency, investable capital net of what is at work, and
+    // the share tolerated at one strategy) sat in the tree reachable from
+    // nothing a deployed process ran.
+    //
+    // Premise first, because a route that refused everything would pass a
+    // refusal assertion on its own: the same user and strategy admit a
+    // request inside the mandate.
+    let rig = rig_ready_for_requests(dec!("1000"))?;
+    let admitted = rig.raise("alice", OPERATOR_TOKEN, &request_body(FAMILY, "400"));
+    assert_eq!(admitted.status, 200);
+    let (text, body) = body_of(admitted);
+    assert_eq!(body["admitted"], serde_json::json!(true), "{text}");
+    assert_eq!(body["posture"], serde_json::json!(POSTURE), "{text}");
+    assert!(body["refused_limit"].is_null(), "{text}");
+    assert_eq!(
+        body["request"]["amount"],
+        serde_json::json!("400"),
+        "the answer echoes the ledger's own record of the request: {text}"
+    );
+    assert_eq!(body["request"]["user_id"], serde_json::json!("alice"));
+    // The property that separates this from an order path, asserted rather
+    // than assumed: an admitted request moved nothing.
+    assert_eq!(
+        body["funded"],
+        serde_json::json!(false),
+        "an admitted request claimed to have funded: {text}"
+    );
+    assert_eq!(
+        rig.row("alice")["balances"],
+        serde_json::json!([]),
+        "an admitted request opened a book"
+    );
+
+    // The refusal, and the limit named as a value a page can group on rather
+    // than a sentence it would have to parse.
+    let refused = rig.raise("alice", OPERATOR_TOKEN, &request_body(FAMILY, "5000"));
+    assert_eq!(
+        refused.status, 200,
+        "a refusal is a decision the platform took, not an error"
+    );
+    let (text, body) = body_of(refused);
+    assert_eq!(body["admitted"], serde_json::json!(false), "{text}");
+    assert_eq!(
+        body["refused_limit"],
+        serde_json::json!("InvestableCapital"),
+        "{text}"
+    );
+    assert!(
+        body["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("investable")),
+        "the refusal does not say what would have to change: {text}"
+    );
+    // The row the verdict was reached against travels with it, so the
+    // figures behind the refusal are readable beside it.
+    assert_eq!(
+        body["user"]["user_id"],
+        serde_json::json!("alice"),
+        "{text}"
+    );
+    assert_eq!(
+        body["user"]["mandate"]["investable"],
+        serde_json::json!("1000"),
+        "{text}"
+    );
+    assert_eq!(rig.row("alice")["balances"], serde_json::json!([]));
+    Ok(())
+}
+
+#[test]
+fn a_viewer_cannot_raise_an_investment_request_and_a_user_with_no_mandate_is_not_a_decision()
+-> Result<()> {
+    // Two refusals that must not be confused with a verdict. The first is the
+    // route table's: raising a request writes an operator's name to the event
+    // log beside a claim about a client's capital, so it is not read-role
+    // work. The second is the difference between "the mandate refused this"
+    // and "there is no mandate": the ledger would answer the second with a
+    // 200 carrying `NoMandate`, which reads as a decision about a person the
+    // platform has never heard of.
+    let rig = rig_ready_for_requests(dec!("1000"))?;
+    // Premise: the route table declares the authority, and the operator can
+    // in fact raise one.
+    let route = ROUTES
+        .iter()
+        .find(|route| route.pattern == "/ledger/users/:user/investment-requests")
+        .expect("the route is in the table");
+    assert_eq!(route.method, Method::Post);
+    assert_eq!(route.required_role, Role::Operator);
+    assert_eq!(
+        rig.raise("alice", OPERATOR_TOKEN, &request_body(FAMILY, "100"))
+            .status,
+        200
+    );
+
+    for token in [VIEWER_TOKEN, ANALYST_TOKEN] {
+        assert_eq!(
+            rig.raise("alice", token, &request_body(FAMILY, "100"))
+                .status,
+            403,
+            "a credential below the operator role raised a request"
+        );
+    }
+
+    let unknown = rig.raise("nobody", OPERATOR_TOKEN, &request_body(FAMILY, "100"));
+    assert_eq!(unknown.status, 404);
+    let (text, body) = body_of(unknown);
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("no mandate is registered")),
+        "{text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_investment_request_amount_sent_as_a_number_or_carrying_a_funding_field_is_refused()
+-> Result<()> {
+    // Two bodies a caller sends when they have misunderstood what this route
+    // is. A JSON number is money through a float, which is the failure
+    // `Decimal` exists to prevent and which every other figure on this
+    // surface avoids by being a string. A `fund` key is a caller who believes
+    // this route places something; ignoring it would let them keep believing
+    // it until they wondered why nothing traded.
+    //
+    // Premise: the same request with the amount as a string is decided, so
+    // what follows is the screening and not a route that refuses everything.
+    let rig = rig_ready_for_requests(dec!("1000"))?;
+    assert_eq!(
+        rig.raise("alice", OPERATOR_TOKEN, &request_body(FAMILY, "100"))
+            .status,
+        200
+    );
+
+    let numeric = serde_json::json!({
+        "strategy": REGISTERED_STRATEGY,
+        "family": FAMILY,
+        "currency": "USD",
+        "amount": 100.10,
+        "reason": "the client asked for this in writing on the dated instruction",
+    })
+    .to_string();
+    let response = rig.raise("alice", OPERATOR_TOKEN, &numeric);
+    assert_eq!(response.status, 400);
+    let (text, body) = body_of(response);
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("never a number")),
+        "{text}"
+    );
+
+    let funding = serde_json::json!({
+        "strategy": REGISTERED_STRATEGY,
+        "family": FAMILY,
+        "currency": "USD",
+        "amount": "100",
+        "fund": true,
+        "reason": "the client asked for this in writing on the dated instruction",
+    })
+    .to_string();
+    let response = rig.raise("alice", OPERATOR_TOKEN, &funding);
+    assert_eq!(response.status, 400);
+    let (text, body) = body_of(response);
+    let error = body["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("funds nothing"),
+        "the refusal does not say the route funds nothing: {text}"
+    );
+    assert!(
+        !error.contains("true"),
+        "the refusal quoted what the caller sent back at them: {text}"
+    );
+
+    // A family the factory did not register the strategy under is refused by
+    // the kernel rather than re-labelled, and the refusal reaches the caller
+    // as theirs to fix.
+    let response = rig.raise(
+        "alice",
+        OPERATOR_TOKEN,
+        &request_body("another-family", "100"),
+    );
+    assert_eq!(response.status, 400);
+    let (text, body) = body_of(response);
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|error| error.contains(&format!("registered under {FAMILY}"))),
+        "{text}"
+    );
+    Ok(())
+}

@@ -2598,16 +2598,20 @@ fn every_metric_name_the_platform_declares_is_one_something_records() {
         names.len()
     );
 
-    // The three names with no recording site and a reason, stated here rather
-    // than left for a reader to rediscover. The exposition encoders have to be
+    // The names with no recording site and a reason, stated here rather than
+    // left for a reader to rediscover. The exposition encoders have to be
     // proven against *some* series, and a fabricated name in that module would
     // be worse than one whose only caller is a test: it would read as a series
     // the platform publishes and be neither published nor explained.
-    const FIXTURES_ONLY: [&str; 3] = [
-        "EXECUTION_LATENCY_MS",
-        "PORTFOLIO_VALUE",
-        "PORTFOLIO_LEVERAGE",
-    ];
+    //
+    // It was three. `PORTFOLIO_VALUE` and `PORTFOLIO_LEVERAGE` left the list
+    // when `Platform::stage_act` began recording them from the same
+    // `RiskState` the monitor ruled on, and the list did not shrink because
+    // anybody remembered: the second assertion below failed and named them.
+    // That is the whole reason this half exists — an allow-list nothing checks
+    // rots into the same defect as the dead constants above, a published
+    // series carrying a comment that says it is only a fixture.
+    const FIXTURES_ONLY: [&str; 1] = ["EXECUTION_LATENCY_MS"];
 
     let sources: Vec<std::path::PathBuf> = files_with_extension("backend/crates", "rs")
         .into_iter()

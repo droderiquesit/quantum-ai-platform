@@ -373,12 +373,12 @@ impl Backtester {
         }
 
         let returns = equity_returns(&equity_curve);
-        let total_commission = fills
-            .iter()
-            .map(|f: &SimulatedFill| f.cost.commission)
-            .sum();
-        let total_spread = fills.iter().map(|f: &SimulatedFill| f.cost.spread).sum();
-        let total_impact = fills.iter().map(|f: &SimulatedFill| f.cost.impact).sum();
+        // The costs are money and are summed as money; the crossing into `f64`
+        // happens once, here, because what the totals feed is a cost drag and a
+        // Sharpe ratio rather than another debit.
+        let total_commission = sum_of(&fills, |cost| cost.commission);
+        let total_spread = sum_of(&fills, |cost| cost.spread);
+        let total_impact = sum_of(&fills, |cost| cost.impact);
 
         missing_prices.sort();
         missing_prices.dedup();
@@ -493,8 +493,12 @@ impl Backtester {
                 .cost_of(quantity, fill_price, volume, volatility)
             {
                 Ok(cost) => {
-                    let costs = Decimal::from_f64(cost.total()).unwrap_or(Decimal::ZERO);
-                    portfolio.apply_fill(object, quantity, fill_price, costs, at, None);
+                    // `cost.charged()` rather than a round trip through `f64`.
+                    // The conversion that used to sit here fell back to
+                    // `Decimal::ZERO` when the total was not representable, so
+                    // the one order whose cost the money type could not hold
+                    // was the one order booked as free.
+                    portfolio.apply_fill(object, quantity, fill_price, cost.charged(), at, None);
                     fills.push(SimulatedFill {
                         at,
                         object_id: object_key.clone(),
@@ -544,18 +548,130 @@ impl Backtester {
     }
 }
 
+/// Sum one component of every fill's cost.
+///
+/// **The crossing point from money into statistics.** Each fill's charge is a
+/// [`Decimal`] and was debited to the book as one; these totals feed a cost
+/// drag and a summary line, so they cross to `f64` here, once, where it can be
+/// seen.
+fn sum_of(fills: &[SimulatedFill], component: impl Fn(&TradeCost) -> Decimal) -> f64 {
+    fills
+        .iter()
+        .map(|fill| component(&fill.cost).to_f64())
+        .sum()
+}
+
 /// Period returns from an equity curve.
+///
+/// Simple returns between consecutive samples. **A step from a non-positive
+/// equity is skipped rather than divided by**: a book that reached zero has no
+/// meaningful return, and dividing by it produces an infinity that poisons
+/// every statistic downstream of it.
+///
+/// That sentence is `qip-kernel`'s `Platform::equity_returns`, and it is here
+/// because this function used to disagree with it. It divided by any previous
+/// equity whose magnitude reached `1e-12`, so a book at -100 recovering to -50
+/// — an improvement of fifty — was recorded as a return of -50%, sign and all,
+/// and the two halves of the platform computed different volatilities, Sharpe
+/// ratios and drawdowns from the same curve. `platform.rs` warns in as many
+/// words that a second copy of this rule already caused a limit to silently
+/// never evaluate; this was the second copy.
+///
+/// The rule belongs in one place and this is not it — see the report on
+/// `qip_numerics::stats`, whose `simple_returns` is a third copy with a third
+/// answer for the same input.
 fn equity_returns(curve: &[(Timestamp, Decimal)]) -> Vec<f64> {
     curve
         .windows(2)
+        .filter(|pair| pair[0].1.is_positive())
         .map(|pair| {
             let previous = pair[0].1.to_f64();
-            let current = pair[1].1.to_f64();
-            if previous.abs() < 1e-12 {
-                0.0
-            } else {
-                current / previous - 1.0
-            }
+            (pair[1].1.to_f64() - previous) / previous
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qip_core::testing::approx_eq;
+
+    fn curve(equities: &[i64]) -> Vec<(Timestamp, Decimal)> {
+        equities
+            .iter()
+            .enumerate()
+            .map(|(step, equity)| {
+                (
+                    Timestamp::from_secs(1_700_000_000 + step as i64 * 86_400),
+                    Decimal::from_int(*equity),
+                )
+            })
+            .collect()
+    }
+
+    /// The guard is a guard and not a wall.
+    ///
+    /// Three things at once, because each on its own passes for the wrong
+    /// reason. A curve with only ordinary steps proves nothing about the
+    /// degenerate ones; a curve with only degenerate ones passes just as well
+    /// against a function that returns an empty vector for everything.
+    #[test]
+    fn a_step_from_a_non_positive_equity_is_skipped_rather_than_sign_flipped() {
+        // 100 -> 120 ordinary; 120 -> 0 the ruin itself, which is a real -100%
+        // and must survive; 0 -> 50 out of a dead book; 50 -> -100 a real -300%
+        // out of a live one; -100 -> -50 an improvement of fifty; -50 -> 200 an
+        // improvement of two hundred and fifty.
+        let curve = curve(&[100, 120, 0, 50, -100, -50, 200]);
+
+        // Premise, asserted rather than assumed: the fixture really does
+        // contain the degenerate steps, and really does contain ordinary ones
+        // either side of them.
+        assert_eq!(
+            curve.len(),
+            7,
+            "six steps, or the counts below mean nothing"
+        );
+        assert!(
+            curve.iter().any(|(_, equity)| equity.is_zero()),
+            "no zero equity in the fixture, so the zero arm is untested"
+        );
+        assert!(
+            curve.iter().any(|(_, equity)| equity.is_negative()),
+            "no negative equity in the fixture, so the sign-flip arm is untested"
+        );
+
+        let returns = equity_returns(&curve);
+
+        // Three of the six steps start from a positive equity and are kept;
+        // the other three are skipped, not zeroed. Emitting a zero would be a
+        // fabricated observation — a period in which the book is asserted not
+        // to have moved — and `RiskMetrics` would count it in the denominator
+        // of every statistic it computes.
+        assert_eq!(
+            returns.len(),
+            3,
+            "expected the three steps out of a positive equity, got {returns:?}"
+        );
+        for (got, want) in returns.iter().zip([0.2, -1.0, -3.0]) {
+            assert!(
+                approx_eq(*got, want, 1e-12),
+                "returns were {returns:?}, wanted [0.2, -1.0, -3.0]"
+            );
+        }
+
+        // The specific defect: -100 -> -50 is a book recovering, and dividing
+        // by the negative previous equity reported it as a 50% loss. Nothing
+        // in the output may be that number.
+        assert!(
+            !returns.iter().any(|r| approx_eq(*r, -0.5, 1e-12)),
+            "a sign-flipped return survived: {returns:?}"
+        );
+        // And nothing may be an infinity, which is what dividing by the zero
+        // step would have produced had the old `1e-12` magnitude test been a
+        // hair looser.
+        assert!(
+            returns.iter().all(|r| r.is_finite()),
+            "a non-finite return reached the statistics: {returns:?}"
+        );
+    }
 }

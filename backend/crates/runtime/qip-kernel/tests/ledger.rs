@@ -17,13 +17,26 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_capital::ledger::{
-    DecidedBy, Eligibility, EligibilityDecision, EligibilityTerms, Jurisdiction, Mandate,
-    MandateId, MandateTerms, PermittedFamilies, ProductEligibility, UserId, UserShare,
+    DecidedBy, Eligibility, EligibilityDecision, EligibilityTerms, InvestmentRequest, Jurisdiction,
+    Mandate, MandateId, MandateTerms, PermittedFamilies, ProductEligibility, RefusedLimit, UserId,
+    UserShare,
 };
-use qip_capital_fabric::corridor::{CorridorCaps, CorridorId, PermittedHours};
-use qip_capital_fabric::custody::{CorridorKind, CustodyClass};
+use qip_capital_fabric::assessment::AssessmentId;
+use qip_capital_fabric::corridor::{CorridorCaps, CorridorId, CorridorStage, PermittedHours};
+use qip_capital_fabric::custody::{
+    Attestation, EnforcementPoint, EnforcementPoints, Identity, TransferAuthority,
+};
+use qip_capital_fabric::custody::{CorridorKind, CustodyClass, CustodyPolicy};
+use qip_capital_fabric::destination::{ACTIVATION_DELAY, SignatureRecord};
 use qip_capital_fabric::destination::{Approver, Asset as DestinationAsset, DestinationKey};
-use qip_capital_fabric::journal::{CorridorAction, DestinationAction, FabricCommand, Outcome};
+use qip_capital_fabric::gate::{
+    CorridorFunding, FundingStanding, GateCheck, KillSwitchState, SourceBalances, StatedPurpose,
+    TransferHistory, TransferIntent, VelocityState,
+};
+use qip_capital_fabric::journal::{
+    CorridorAction, CorridorStep, DestinationAction, FabricCommand, FabricOutcome, GateCommand,
+    GateVerdict, Outcome,
+};
 use qip_capital_fabric::{CapitalLocation, Region};
 use qip_contracts::intent::Contributor;
 use qip_contracts::message::BookSide;
@@ -43,8 +56,10 @@ use qip_kernel::central::{CellReport, StrategyCandidate};
 use qip_kernel::config::{PlatformConfig, UserEligibility, UserMandate};
 use qip_kernel::cycle::Stage;
 use qip_kernel::platform::{
-    BookingBasis, EligibilityEntry, EligibilitySource, LedgerEntry, Platform,
+    BookingBasis, EligibilityEntry, EligibilitySource, InvestmentEntry, InvestmentJudgement,
+    LedgerEntry, Platform,
 };
+use qip_lifecycle::corridor::{CorridorRoute, CorridorSubject};
 use qip_lifecycle::trials::StrategyFamily;
 use qip_market_ingestion::connector::manifest::SecretRef;
 use qip_mesh::delta::DeltaOrder;
@@ -626,6 +641,325 @@ fn the_fabric_journal_replays_from_the_platforms_event_log_to_the_live_state_aft
         })
         .count();
     assert_eq!(refused_records, 1);
+    Ok(())
+}
+
+// --- corridor policy --------------------------------------------------------------
+
+/// The corridor every test below assesses against: proposed, reviewed,
+/// signed, delayed and active on the platform's own clock, through the same
+/// seam an operator uses. Returns the id and the instant the gate is asked.
+fn active_corridor(platform: &mut Platform) -> Result<(CorridorId, Timestamp)> {
+    let desk_venue = VenueId::new("simulated-venue");
+    let destination = DestinationKey::new(DestinationAsset::new("USD")?, "treasury-account")?;
+    let alice = Approver::new("treasury-desk")?;
+    let bob = Approver::new("treasury-reviewer")?;
+    let carol = Approver::new("treasury-signer")?;
+    for action in [
+        DestinationAction::Propose {
+            key: destination.clone(),
+            by: alice.clone(),
+            at: start(),
+        },
+        DestinationAction::Verify {
+            key: destination.clone(),
+            by: bob.clone(),
+            at: start(),
+        },
+        DestinationAction::RecordSignature {
+            key: destination.clone(),
+            signature: SignatureRecord::new(carol.clone(), start(), "vault/dest/1")?,
+        },
+    ] {
+        let record = platform.decide_fabric(FabricCommand::Destination(action), start())?;
+        assert!(!record.outcome.is_refused(), "{record:?}");
+    }
+    let id = CorridorId::new("treasury-sweep")?;
+    let proposal = FabricCommand::Corridor(CorridorAction::Propose {
+        id: id.clone(),
+        source: CapitalLocation::new(Region::new("home"), Currency::USD, desk_venue),
+        source_class: CustodyClass::FiatAtInstitutionOfRecord,
+        kind: CorridorKind::InstitutionApprovalFlow,
+        destination,
+        caps: CorridorCaps::new(
+            dec!("1000"),
+            dec!("1000"),
+            dec!("5000"),
+            dec!("10000"),
+            Duration::from_hours(1),
+            PermittedHours::ALL_DAY,
+        )?,
+        purpose: "sweep realised cash to the treasury account".to_string(),
+        by: alice,
+        at: start(),
+    });
+    let record = platform.decide_fabric(proposal, start())?;
+    assert!(!record.outcome.is_refused(), "{record:?}");
+    let activation = start().saturating_add(ACTIVATION_DELAY);
+    for step in [
+        CorridorStep::Review {
+            by: bob,
+            at: start(),
+        },
+        CorridorStep::RecordSignature {
+            signature: SignatureRecord::new(carol, start(), "vault/corridor/1")?,
+        },
+        CorridorStep::BeginDelay { now: start() },
+        CorridorStep::Activate { now: activation },
+    ] {
+        let record = platform.decide_fabric(
+            FabricCommand::Corridor(CorridorAction::Step {
+                id: id.clone(),
+                step,
+            }),
+            start(),
+        )?;
+        assert!(!record.outcome.is_refused(), "{record:?}");
+    }
+    let now = activation.saturating_add(Duration::from_hours(1));
+    Ok((id, now))
+}
+
+/// §37.4's closing rule satisfied — three points, three identities, none of
+/// them the one that trades — so a gate command's check 1 turns on the
+/// corridor rather than on the attestations.
+///
+/// Since ADR 0051 two of the three references are values check 1 compares
+/// rather than filing notes, so the authority is a function of the assessment:
+/// the transfer gate's is the `AssessmentId` of this corridor, this movement
+/// and this instant, and the custody policy's is the fingerprint of the table
+/// the command carries. A fixed reference would refuse every gate command in
+/// this suite on check 1, which is exactly the "turns on the corridor" the
+/// fixture is here to arrange.
+fn transfer_authority(corridor: &CorridorId, now: Timestamp) -> Result<TransferAuthority> {
+    let mut points = EnforcementPoints::new();
+    for (point, identity, reference) in [
+        (
+            EnforcementPoint::TransferGate,
+            "gate-svc",
+            AssessmentId::of(
+                corridor,
+                &transfer_source(),
+                &transfer_destination()?,
+                dec!("500"),
+                now,
+            )
+            .to_string(),
+        ),
+        (
+            EnforcementPoint::CustodyPolicy,
+            "custody-policy-svc",
+            CustodyPolicy::blueprint().fingerprint().to_string(),
+        ),
+        (
+            EnforcementPoint::VenueAllowlist,
+            "venue-ops-oob",
+            format!("{}-record-1", EnforcementPoint::VenueAllowlist.as_str()),
+        ),
+    ] {
+        points.attest(Attestation::new(
+            point,
+            Identity::new(identity)?,
+            reference,
+            start(),
+        )?)?;
+    }
+    Ok(TransferAuthority::new(
+        points,
+        Identity::new("trading-svc")?,
+    ))
+}
+
+/// Where the fixture's transfers leave from.
+fn transfer_source() -> CapitalLocation {
+    CapitalLocation::new(
+        Region::new("home"),
+        Currency::USD,
+        VenueId::new("simulated-venue"),
+    )
+}
+
+/// Where they run to.
+fn transfer_destination() -> Result<DestinationKey> {
+    DestinationKey::new(DestinationAsset::new("USD")?, "treasury-account")
+}
+
+fn gate_command(
+    corridor: CorridorId,
+    funding: CorridorFunding,
+    now: Timestamp,
+) -> Result<FabricCommand> {
+    Ok(FabricCommand::Gate(GateCommand {
+        intent: TransferIntent::new(
+            transfer_source(),
+            transfer_destination()?,
+            dec!("500"),
+            StatedPurpose::new(dec!("1000"), dec!("500"))?,
+        )?,
+        authority: transfer_authority(&corridor, now)?,
+        corridor,
+        custody: CustodyPolicy::blueprint(),
+        funding,
+        history: TransferHistory::empty(),
+        balances: SourceBalances::new(dec!("10000"), dec!("1000"), dec!("1000"), dec!("1000"))?,
+        velocity: VelocityState::CLEAR,
+        kill_switch: KillSwitchState::Armed,
+        now,
+    }))
+}
+
+/// The corridor's subject: the strategy it funds and the two ceilings the
+/// desk stated. Nothing promotes `alpha-1` in this suite, so the lifecycle
+/// ledger has it at the rung an unpromoted strategy stands on — one that
+/// holds no capital.
+fn subject(funds: &str) -> Result<CorridorSubject> {
+    CorridorSubject::new(
+        CorridorRoute::new("home/USD/simulated-venue", "treasury-account", "USD")?,
+        dec!("900"),
+        dec!("100"),
+        [StrategyId::new(funds)],
+    )
+}
+
+#[test]
+fn a_corridor_no_policy_rules_on_is_refused_a_ruling_rather_than_being_treated_as_permitted()
+-> Result<()> {
+    // The failure this closes: the fabric held the corridor lifecycle, the
+    // allowlist, the caps and the seven-veto gate, and nothing set the policy
+    // those records were measured against — the scorecard row read "corridor
+    // policy has no subject". The dangerous repair is a default: an unruled
+    // corridor treated as permitted is a control whose quiet answer is always
+    // yes, which reads exactly like a control that is working.
+    let mut platform = platform(PlatformConfig::default())?;
+    let (corridor, _now) = active_corridor(&mut platform)?;
+    // Premise: the corridor really is there and really is active, so the
+    // refusal below is about the policy and not about the corridor.
+    assert!(platform.fabric_state().corridor(&corridor).is_some());
+    let refusal = platform
+        .corridor_funding(&corridor)
+        .expect_err("an undeclared corridor was given a ruling");
+    assert!(
+        refusal
+            .message()
+            .contains("no corridor policy has been declared"),
+        "{}",
+        refusal.message()
+    );
+
+    // Declared, but for a different route: still no ruling for this one, and
+    // still no default.
+    platform.declare_corridors(
+        vec![CorridorSubject::new(
+            CorridorRoute::new("home/USD/other-venue", "treasury-account", "USD")?,
+            dec!("900"),
+            dec!("100"),
+            [StrategyId::new("alpha-1")],
+        )?],
+        start(),
+    )?;
+    let refusal = platform
+        .corridor_funding(&corridor)
+        .expect_err("a corridor the policy does not name was given a ruling");
+    assert!(
+        refusal
+            .message()
+            .contains("none of them is home/USD/simulated-venue -> treasury-account in USD"),
+        "{}",
+        refusal.message()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_corridor_funding_a_strategy_that_holds_no_capital_is_suspended_and_the_gate_vetoes_it()
+-> Result<()> {
+    // The wiring this proves, end to end: the rung a strategy stands on in
+    // `qip-lifecycle` reaches `qip-capital-fabric`'s seven-veto gate. Before
+    // it did, the derived standing existed only in the lifecycle crate's own
+    // tests, and a corridor funding a retired book was assessed exactly like
+    // one funding a scaled book — signed, allowlisted, capped, attested, and
+    // admitted at full size.
+    let mut platform = platform(PlatformConfig::default())?;
+    let (corridor, now) = active_corridor(&mut platform)?;
+    platform.declare_corridors(vec![subject("alpha-1")?], start())?;
+
+    // Premise: nothing has promoted alpha-1, so it holds no capital, and the
+    // corridor is active — the veto below is therefore the policy's and not
+    // the lifecycle table's.
+    assert!(
+        !platform
+            .central()
+            .factory()
+            .holds_capital(&StrategyId::new("alpha-1"))
+    );
+    assert_eq!(
+        platform
+            .fabric_state()
+            .corridor(&corridor)
+            .map(|record| record.stage()),
+        Some(CorridorStage::Active)
+    );
+
+    let funding = platform.corridor_funding(&corridor)?;
+    assert_eq!(funding.standing(), FundingStanding::Suspended);
+    assert_eq!(funding.permitted(), Decimal::ZERO);
+    assert!(
+        funding.reason().contains("alpha-1"),
+        "the ruling does not name the strategy that decided it: {}",
+        funding.reason()
+    );
+
+    let record = platform.decide_fabric(gate_command(corridor.clone(), funding, now)?, now)?;
+    let FabricOutcome::Gate(Outcome::Applied(GateVerdict::Vetoed(vetoed))) = record.outcome else {
+        panic!("the gate admitted a suspended corridor: {record:?}");
+    };
+    assert_eq!(vetoed.check, GateCheck::CorridorAuthority);
+    assert!(
+        vetoed.reason.contains("alpha-1"),
+        "the veto does not name the rung that refused it: {}",
+        vetoed.reason
+    );
+    Ok(())
+}
+
+#[test]
+fn a_gate_command_stating_a_ruling_the_policy_did_not_derive_is_refused_before_the_gate_sees_it()
+-> Result<()> {
+    // The failure this closes: every input to the gate is a value the caller
+    // supplies, which is what makes the gate replayable — and it is also what
+    // would let a caller hand it a ruling of its own invention. A corridor
+    // measured against a ceiling nobody derived is a control measuring
+    // itself, and it would look identical in the log to one that was
+    // governed.
+    let mut platform = platform(PlatformConfig::default())?;
+    let (corridor, now) = active_corridor(&mut platform)?;
+    platform.declare_corridors(vec![subject("alpha-1")?], start())?;
+    // Premise: the derived ruling suspends this corridor, and the log holds
+    // no gate assessment yet.
+    assert_eq!(
+        platform.corridor_funding(&corridor)?.standing(),
+        FundingStanding::Suspended
+    );
+    let before = platform.fabric_records();
+    assert!(platform.fabric_state().assessments().is_empty());
+
+    let invented = CorridorFunding::new(
+        FundingStanding::Permitted,
+        dec!("900"),
+        "every strategy this corridor funds has reached scaled",
+    )?;
+    let refusal = platform
+        .decide_fabric(gate_command(corridor, invented, now)?, now)
+        .expect_err("the platform assessed a corridor against an invented ruling");
+    assert!(
+        refusal.message().contains("Platform::corridor_funding"),
+        "{}",
+        refusal.message()
+    );
+    // And nothing was journalled: a command the platform refuses to put to
+    // the gate must not leave a record saying the gate saw it.
+    assert_eq!(platform.fabric_records(), before);
+    assert!(platform.fabric_state().assessments().is_empty());
     Ok(())
 }
 
@@ -1396,6 +1730,307 @@ fn a_venue_registration_is_counted_under_the_source_that_brought_it() -> Result<
             .snapshot()
             .counter_total(REGISTRATION_SERIES),
         1
+    );
+    Ok(())
+}
+
+// --- investment requests ----------------------------------------------------
+
+/// The producer every investment-request record carries, written out here
+/// rather than imported from the kernel: a test that selected records with the
+/// same constant the writer stamps them with would still pass if the producer
+/// moved, and the producer is what tells these records from the eligibility
+/// and product ones on the topic they share.
+const INVESTMENT_PRODUCER: &str = "kernel/investment";
+
+const INVESTMENT_SERIES: &str = "qip_central_investment_requests_total";
+
+/// The investment-request records the platform's own event log holds.
+fn investment_entries(platform: &Platform) -> Result<Vec<InvestmentEntry>> {
+    platform
+        .event_log()
+        .records()
+        .iter()
+        .filter(|record| {
+            record.event.topic == Topic::ComplianceEvaluated
+                && record.event.lineage.producer == INVESTMENT_PRODUCER
+        })
+        .map(|record| {
+            Ok(
+                qip_streaming::envelope::StreamEnvelope::from_frame(&record.event)?
+                    .decode::<InvestmentEntry>()?
+                    .body,
+            )
+        })
+        .collect()
+}
+
+/// A request for `amount` at `alpha`, in the family this suite registers it
+/// under and the currency every mandate here is denominated in.
+fn request(user: &str, family: &str, amount: Decimal) -> Result<InvestmentRequest> {
+    Ok(InvestmentRequest {
+        user: UserId::new(user)?,
+        strategy: StrategyId::new("alpha"),
+        family: family.to_string(),
+        currency: Currency::USD,
+        amount,
+        requested_at: start(),
+    })
+}
+
+/// A platform with alice enrolled at `capital` under the `carry` family,
+/// verified for a year, with `alpha` registered under `carry` and `carry`
+/// cleared for sale in GB — everything an investment request needs before the
+/// only thing left to refuse it is the mandate's own arithmetic.
+fn ready_for_requests(capital: Decimal) -> Result<Platform> {
+    let mut platform = platform(
+        PlatformConfig::default()
+            .with_user_mandates(vec![enrolment_only("alice", capital, "carry")?])
+            .with_user_eligibilities(vec![cleared_for_a_year("alice")?]),
+    )?;
+    register_family(&mut platform, "alpha", "carry")?;
+    platform.offer_product(
+        ProductEligibility::new("carry").eligible_in(Jurisdiction::new("GB")?),
+        &compliance_officer(),
+        "cleared for retail distribution in GB by the compliance committee",
+        start(),
+    )?;
+    Ok(platform)
+}
+
+#[test]
+fn a_request_past_what_the_mandate_leaves_investable_is_refused_by_name_and_both_outcomes_are_journalled()
+-> Result<()> {
+    // The failure this closes: `UserLedger::admit` — the gate that decides
+    // whether a user's mandate would admit this much at this strategy — was
+    // written, tested in its own crate and reached by no runtime path at all.
+    // A limit no deployed process can consult reads as protection and is not;
+    // this is the same shape as `MaxExpectedShortfall`, which shipped in every
+    // default limit set and could never fire.
+    //
+    // Premise first, because a test that only asserts a refusal passes
+    // against a gate that refuses everything: the same user, the same
+    // strategy and the same mandate admit a request inside the mandate.
+    let mut platform = ready_for_requests(dec!("1000"))?;
+    let alice = UserId::new("alice")?;
+    let alpha = StrategyId::new("alpha");
+    assert!(
+        investment_entries(&platform)?.is_empty(),
+        "the premise: no request has been decided yet"
+    );
+
+    let admitted = platform.decide_investment(
+        request("alice", "carry", dec!("400"))?,
+        &compliance_officer(),
+        "the client asked for four hundred at alpha in writing",
+        start(),
+    )?;
+    assert!(
+        admitted.is_admitted(),
+        "400 of a 1000 mandate is inside it: {:?}",
+        admitted.outcome()
+    );
+    assert_eq!(admitted.refused_by(), None);
+
+    // The refusal, and which limit made it. The limit is asserted as a value
+    // rather than by searching the sentence: a `contains` on prose passes on
+    // any refusal whose wording happens to overlap.
+    let refused = platform.decide_investment(
+        request("alice", "carry", dec!("5000"))?,
+        &compliance_officer(),
+        "the client asked for five thousand at alpha in writing",
+        start(),
+    )?;
+    assert!(!refused.is_admitted());
+    assert_eq!(
+        refused.refused_by(),
+        Some(RefusedLimit::InvestableCapital),
+        "1000 of capital does not admit 5000: {:?}",
+        refused.outcome()
+    );
+
+    // Neither outcome moved capital. This is the property that separates a
+    // request surface from an order path: an admitted request is a statement
+    // about what the mandate would admit, and funding is `fund_user`.
+    assert_eq!(
+        settled(&platform, &alice, &alpha),
+        None,
+        "an admitted request opened a book"
+    );
+
+    // Both are on the log, in the order they were decided, and the record
+    // carries the limit's own token rather than only a sentence. A refusal
+    // that leaves no trace is indistinguishable from a request never made.
+    let entries = investment_entries(&platform)?;
+    assert_eq!(
+        entries.len(),
+        2,
+        "both outcomes are journalled: {entries:?}"
+    );
+    assert!(matches!(
+        entries[0].outcome,
+        InvestmentJudgement::Admitted { .. }
+    ));
+    match &entries[1].outcome {
+        InvestmentJudgement::Refused { limit, .. } => {
+            assert_eq!(limit, "investable_capital")
+        }
+        other => panic!("the second outcome is not a refusal: {other:?}"),
+    }
+    assert_eq!(entries[1].user, alice);
+    assert_eq!(entries[1].amount, dec!("5000"));
+    assert_eq!(
+        entries[1].family, "carry",
+        "the record carries the registered family"
+    );
+
+    // And the series an operator charts moved for each outcome under its own
+    // label, so "is this surface refusing everybody, and on which limit" is a
+    // question that can be answered without replaying the log.
+    assert_eq!(
+        counter(&platform, INVESTMENT_SERIES, ("outcome", "admitted")),
+        Some(1)
+    );
+    assert_eq!(
+        counter(
+            &platform,
+            INVESTMENT_SERIES,
+            ("outcome", "investable_capital")
+        ),
+        Some(1)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_request_naming_a_family_the_factory_did_not_register_the_strategy_under_is_refused_rather_than_re_labelled()
+-> Result<()> {
+    // The failure this closes: `InvestmentRequest` carries the family as the
+    // caller's claim, because nothing at that seam maps a strategy to one, and
+    // the ledger's mandate gate then checks the *claim* against the product.
+    // A mandate permitting only `carry` would therefore be satisfied by
+    // writing "carry" over a strategy the factory holds under another family.
+    // The kernel knows the registered family, so the claim is refused rather
+    // than corrected — correcting it would decide, on the caller's behalf,
+    // which family their capital went into.
+    let mut platform = ready_for_requests(dec!("1000"))?;
+
+    // Premise: the truthful request is admitted, so what follows is the
+    // family check and not some other gate refusing everything.
+    assert!(
+        platform
+            .decide_investment(
+                request("alice", "carry", dec!("100"))?,
+                &compliance_officer(),
+                "the truthful request, to establish the premise",
+                start(),
+            )?
+            .is_admitted()
+    );
+
+    let mislabelled = platform
+        .decide_investment(
+            request("alice", "momentum", dec!("100"))?,
+            &compliance_officer(),
+            "the same request with another family written over it",
+            start(),
+        )
+        .expect_err("a mislabelled family is refused");
+    assert!(
+        mislabelled.message().contains("registered under carry"),
+        "the refusal names the family the factory holds: {}",
+        mislabelled.message()
+    );
+
+    // A strategy the factory has never seen is refused too, rather than
+    // evaluated against an offering nobody cleared.
+    let unknown = InvestmentRequest {
+        strategy: StrategyId::new("unregistered"),
+        ..request("alice", "carry", dec!("100"))?
+    };
+    let refused = platform
+        .decide_investment(
+            unknown,
+            &compliance_officer(),
+            "a strategy no factory candidate names",
+            start(),
+        )
+        .expect_err("an unregistered strategy is refused");
+    assert!(
+        refused.message().contains("registered no family"),
+        "{}",
+        refused.message()
+    );
+
+    // Neither refusal is journalled as a decision: nothing was decided. Only
+    // the premise's admitted request is on the log.
+    let entries = investment_entries(&platform)?;
+    assert_eq!(
+        entries.len(),
+        1,
+        "a request the kernel would not evaluate is not a decision: {entries:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_operator_credential_older_than_the_kernel_accepts_raises_no_investment_request() -> Result<()>
+{
+    // The same fifteen minutes an autonomy change and an eligibility decision
+    // are held to. Raising a request writes a person's name to the event log
+    // beside a claim about their client's capital, and a session token from
+    // this morning is not evidence that anyone is at the keyboard now.
+    // Premise: the identical request from a fresh credential is decided.
+    let mut platform = ready_for_requests(dec!("1000"))?;
+    assert!(
+        platform
+            .decide_investment(
+                request("alice", "carry", dec!("100"))?,
+                &compliance_officer(),
+                "the fresh credential, to establish the premise",
+                start(),
+            )?
+            .is_admitted()
+    );
+
+    let stale = OperatorIdentity::verified(
+        "ops-erin",
+        "hardware-token",
+        start().saturating_sub(Duration::from_mins(16)),
+    );
+    let refused = platform
+        .decide_investment(
+            request("alice", "carry", dec!("100"))?,
+            &stale,
+            "a credential sixteen minutes old",
+            start(),
+        )
+        .expect_err("a stale credential decides nothing");
+    assert!(
+        refused.message().contains("re-authenticate"),
+        "{}",
+        refused.message()
+    );
+
+    // And a blank reason is refused for the same purpose: the audit trail.
+    let unreasoned = platform
+        .decide_investment(
+            request("alice", "carry", dec!("100"))?,
+            &compliance_officer(),
+            "  ",
+            start(),
+        )
+        .expect_err("an unreasoned request decides nothing");
+    assert!(
+        unreasoned.message().contains("stated reason"),
+        "{}",
+        unreasoned.message()
+    );
+
+    assert_eq!(
+        investment_entries(&platform)?.len(),
+        1,
+        "only the premise's request reached the log"
     );
     Ok(())
 }

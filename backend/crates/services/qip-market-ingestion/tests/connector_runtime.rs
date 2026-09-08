@@ -584,6 +584,92 @@ fn the_dedup_window_evicts_rather_than_growing_without_bound() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn a_restored_window_holds_its_carry_as_the_last_sessions_and_lets_go_of_it_as_it_is_evicted()
+-> Result<()> {
+    // What this pins, and why it is worth a test rather than an argument: the
+    // carry and this session's traffic are two different facts about the same
+    // window, and a restore that counted the carry as traffic would make the
+    // first poll after a restart report a batch it never fetched. The carry is
+    // visible here through the window's contents and the counters it does not
+    // move, which is the whole of what the platform relies on: there was
+    // briefly a `carried()` accessor and an `Origin` stored per entry to make
+    // it exact, and both were deleted because nothing outside this file ever
+    // called it.
+    let mut window = DedupWindow::new(4)?;
+    let body = serde_json::json!({});
+    let mark = |n: u32| EventFingerprint::of("s", "1.0", &n.to_string(), now(), &body);
+
+    let taken = window.restore(vec![mark(0), mark(1)])?;
+    assert_eq!(taken, 2, "premise: the carry was installed");
+    assert!(
+        window.contains(&mark(0)) && window.contains(&mark(1)),
+        "premise: the carry is in the window, so what follows is about a window that holds one"
+    );
+    assert_eq!(
+        window.admitted(),
+        0,
+        "the last session's fingerprints are not events this process took in; counting them \
+         would make the first poll after a restart report a batch it never fetched"
+    );
+    assert_eq!(window.duplicates(), 0);
+
+    // A redelivery of a carried fingerprint is this session's duplicate — that
+    // is the whole point of carrying it — and recognising it consumes nothing.
+    assert_eq!(window.observe(&mark(0)), Novelty::Duplicate);
+    assert_eq!(window.duplicates(), 1);
+    assert!(
+        window.contains(&mark(0)),
+        "recognising a redelivery consumed the carried fingerprint it matched"
+    );
+    assert_eq!(window.admitted(), 0);
+
+    // Four fresh records against a window of four: the carry is the oldest
+    // thing in it, so it is what leaves, and the count follows what left.
+    for n in 2..6 {
+        assert_eq!(window.observe(&mark(n)), Novelty::New);
+    }
+    assert_eq!(window.len(), 4, "the window grew past its capacity");
+    assert_eq!(window.admitted(), 4);
+    assert_eq!(window.evicted(), 2);
+    assert!(
+        !window.contains(&mark(0)) && !window.contains(&mark(1)),
+        "the carry was the oldest thing in the window and this session's four records filled it, \
+         so the restart protection must have aged out; a carry that survived would mean eviction \
+         had stopped being oldest-first and a redelivery of mark(2) would be published as new"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_carry_longer_than_the_window_is_counted_as_evicted_rather_than_growing_it() -> Result<()> {
+    // `evicted` is the one counter a restore deliberately leaves alone, and
+    // this is why: a carry the window cannot hold is capacity pressure a
+    // deployment needs to see at the one moment it is visible — start-up.
+    // Zeroing it with `admitted` and `duplicates`, which describe this
+    // session's traffic and nothing else, would hide a sizing mistake.
+    let mut window = DedupWindow::new(2)?;
+    let body = serde_json::json!({});
+    let mark = |n: u32| EventFingerprint::of("s", "1.0", &n.to_string(), now(), &body);
+
+    let taken = window.restore((0..5).map(mark).collect::<Vec<_>>())?;
+    assert_eq!(taken, 5, "every carried fingerprint was new to the window");
+    assert_eq!(window.len(), 2, "the carry grew the window past its bound");
+    assert_eq!(
+        window.evicted(),
+        3,
+        "the surplus of a carry the window cannot hold is dropped, and a restore that reported \
+         nothing would leave a deployment sizing its carry by guesswork"
+    );
+    assert!(
+        window.contains(&mark(3)) && window.contains(&mark(4)),
+        "the surplus dropped must be the oldest of the carry, so the newest two survive; keeping \
+         the oldest would hand a restart the fingerprints the next poll is least likely to see"
+    );
+    assert_eq!(window.admitted(), 0);
+    Ok(())
+}
+
 // --- event time versus ingest time ------------------------------------------
 
 #[test]

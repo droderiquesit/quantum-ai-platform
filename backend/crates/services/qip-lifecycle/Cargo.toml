@@ -17,6 +17,15 @@ qip-ai.workspace = true
 # implements — deflated Sharpe, purged k-fold, overfitting assessment — rather
 # than trusting numbers a researcher submitted alongside the strategy.
 qip-simulation-engine.workspace = true
+# Deliberately NOT a dependency: qip-optimization-engine. A rung that holds
+# capital has to name which of the four §23.4 pools funds it, and the pool
+# arithmetic exists once, in that crate. This crate reaches it through
+# `horizon::HorizonReconciler`, whose adapter qip-kernel composes, because the
+# optimisation engine transitively reaches qip-quantum and this crate vetoes
+# capital-holding promotions. That edge was taken once and
+# `nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver`
+# caught it; the port keeps the single implementation without the solver
+# behind it.
 # The ledger records every rung a strategy moves across. A demotion for decayed
 # performance is a capital-affecting action, and one that reached the ledger
 # and no series was invisible to every operator; the registry is an in-memory
@@ -27,6 +36,13 @@ qip-observability.workspace = true
 # The trial book's tests stand in a store, and the store port speaks
 # `serde_json::Value`; the crate itself never names it.
 serde_json.workspace = true
+# Deliberately not here either, though the solver-boundary test in
+# qip-acceptance skips `dev` and `build` dependencies and would have permitted
+# it: the horizon gate's tests stand in a reconciler of their own, because what
+# they prove is what the gate refuses given figures, and the figures the real
+# §23.4 arithmetic produces are proven where that arithmetic is called — in
+# qip-kernel's `horizon_seam` suite. A dev edge here would leave the crate one
+# copied line away from being a shipped edge again.
 
 [lints]
 workspace = true
