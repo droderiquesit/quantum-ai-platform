@@ -203,6 +203,44 @@ pub struct RoundSummary {
     pub trials: usize,
     /// What the champion/challenger contest concluded, where one ran.
     pub challenge: Option<ChallengeSummary>,
+    /// Candidates whose edge was re-measured against reacting counterparties
+    /// (ADR 0053). Measured on the ones that produced evidence, not on every
+    /// candidate generated: two extra simulator runs each is a cost worth
+    /// paying on a shortlist and not on a search.
+    pub crowding_measured: usize,
+    /// Of those, how many saw their edge change sign under company.
+    ///
+    /// **Reported, never acted on.** The panel is uncalibrated and the runs
+    /// say so; refusing a candidate on this number would be a promotion
+    /// decision made on parameters nobody measured. ADR 0053 names what would
+    /// have to change first.
+    pub crowding_inverted: usize,
+    /// Of those, how many faced a panel that placed no order at all. A
+    /// comparison the counterparties sat out is not evidence of robustness,
+    /// and reading the cost without this number is how it would be mistaken
+    /// for some.
+    pub crowding_uncontested: usize,
+    /// Of those, how many left the strategy's fills at exactly the price they
+    /// had — the panel traded and the book did not move.
+    ///
+    /// Counted separately from `crowding_uncontested` because the two look
+    /// alike in the cost and are different facts: one is a panel that did not
+    /// show up, the other a panel whose takers did not outlast the displayed
+    /// depth at the touch. **Neither is evidence that the edge survives
+    /// company**, and a zero cost read without them says exactly that.
+    ///
+    /// This is not hypothetical. On the committed synthetic tape the panel
+    /// places thousands of orders per round and every comparison comes back
+    /// with a cost of zero to the last digit, because the book's displayed
+    /// size at the touch is far larger than the panel's clips. ADR 0053 names
+    /// that as one of the two things that would make the decision wrong, and
+    /// the honest response is to count it rather than enlarge the panel until
+    /// the number moves — which would be tuning an uncalibrated model until it
+    /// said something.
+    pub crowding_unmoved: usize,
+    /// One line per measurement, up to [`MAX_REFUSALS_REPORTED`], each opening
+    /// with the calibration statement its run carried.
+    pub crowding: Vec<String>,
 }
 
 impl RoundSummary {
@@ -223,6 +261,27 @@ impl RoundSummary {
             self.promoted,
             self.gate_refused,
             self.trials
+        ) + &self.crowding_clause()
+    }
+
+    /// What the crowding measurement found, appended to the round line.
+    ///
+    /// Empty where nothing was measured, so a round that registered nothing
+    /// does not carry a sentence about zero comparisons. The uncontested count
+    /// is named beside the inversions on purpose: a panel that placed no order
+    /// produces a difference of zero, which reads as a robust strategy and is
+    /// a panel that sat the round out.
+    fn crowding_clause(&self) -> String {
+        if self.crowding_measured == 0 {
+            return String::new();
+        }
+        format!(
+            ", {} crowding comparison(s) with {} inverting, {} uncontested and {} leaving the \
+             book unmoved (reported, not gated: ADR 0053)",
+            self.crowding_measured,
+            self.crowding_inverted,
+            self.crowding_uncontested,
+            self.crowding_unmoved
         )
     }
 }
@@ -497,6 +556,35 @@ impl EvolutionEngine {
                     ) {
                         Ok(()) => {
                             summary.registered += 1;
+                            // Ask whether the edge just registered survives
+                            // company (ADR 0053). A refusal to measure is a
+                            // reported problem and not a failed round: the
+                            // candidate's evidence stands either way, because
+                            // this measurement is not allowed to judge it.
+                            match self.measure_crowding(&object, candidate.spec(), &bars) {
+                                Ok(outcome) => {
+                                    summary.crowding_measured += 1;
+                                    if outcome.inverted() {
+                                        summary.crowding_inverted += 1;
+                                    }
+                                    if !outcome.panel_participated() {
+                                        summary.crowding_uncontested += 1;
+                                    }
+                                    if !outcome.moved_the_book() {
+                                        summary.crowding_unmoved += 1;
+                                    }
+                                    if summary.crowding.len() < MAX_REFUSALS_REPORTED {
+                                        summary.crowding.push(outcome.summarise());
+                                    }
+                                }
+                                Err(error) => {
+                                    if summary.crowding.len() < MAX_REFUSALS_REPORTED {
+                                        summary
+                                            .crowding
+                                            .push(format!("not measured: {}", error.message()));
+                                    }
+                                }
+                            }
                             // Put the evidence the search just produced in
                             // front of the gate that exists to judge it.
                             //
@@ -732,6 +820,58 @@ impl EvolutionEngine {
         Ok(summary)
     }
 
+    /// Re-measure a registered candidate's edge against reacting counterparties.
+    ///
+    /// ADR 0053, blueprint §15.3. The tape a candidate was scored on is a
+    /// recording, and a recording has no counterparties that respond — so a
+    /// candidate whose apparent edge consists entirely of being the only
+    /// participant on its side scored exactly like one whose edge would
+    /// survive company, and nothing in this loop could tell them apart.
+    ///
+    /// Run only on candidates that produced evidence. It costs two extra
+    /// simulator passes over the tape, which is worth paying on a shortlist and
+    /// not on every candidate the grammar generates.
+    ///
+    /// **The result never refuses anything.** The counterparty panel is
+    /// uncalibrated — `FlowCalibration` has one arm and every run says so —
+    /// and gating a promotion on it would be a decision made on parameters
+    /// nobody measured. That is the mirror of `MaxExpectedShortfall`: the
+    /// defect there was a control that could never fire, and a control firing
+    /// confidently on invented inputs is worse, because it fails closed and
+    /// silently.
+    fn measure_crowding(
+        &self,
+        subject: &ObjectId,
+        spec: &qip_strategy::ir::StrategySpec,
+        bars: &[Bar],
+    ) -> Result<qip_simulation_engine::crowding::CrowdingOutcome> {
+        let object = self.universe.get(subject).ok_or_else(|| {
+            Error::not_found(format!(
+                "{} is not in the universe, so its book shape cannot be derived from an \
+                     observed liquidity profile; a shape guessed here is a fill price guessed",
+                subject.as_str()
+            ))
+        })?;
+        let shape =
+            qip_simulation_engine::crowding::book_shape(subject.as_str(), &object.liquidity, bars)?;
+        // The same capital the evaluation sized against, so the crowded run is
+        // the same strategy at the same size and not a second experiment.
+        let capital = tradeable_capital(bars, self.config.max_weight)?;
+        qip_simulation_engine::crowding::measure_crowding(
+            bars.to_vec(),
+            shape,
+            CROWDING_VENUE,
+            self.seed,
+            capital,
+            || {
+                let mut compiler =
+                    qip_strategy::compile::StrategyCompiler::new(bar_catalogue(subject)?);
+                let compiled = compiler.compile(spec)?;
+                CompiledHarness::new(compiled, compiler.into_program(), self.config.max_weight)
+            },
+        )
+    }
+
     /// Score one candidate on the subject's own history.
     ///
     /// Returns the gate's evidence and the same holdout tail as a cost-charged
@@ -956,6 +1096,12 @@ fn period_charges(result: &qip_simulation_engine::backtest::BacktestResult) -> V
 /// Refuses rather than defaults when the data has no volume at all. A run
 /// against an instrument nothing traded cannot produce evidence, and quietly
 /// choosing a capital figure would produce a backtest that looks like one.
+/// The venue the crowding replay trades on.
+///
+/// The same simulated venue the foundry mints its candidates against, so the
+/// re-measurement is not quietly a different market.
+const CROWDING_VENUE: &str = "XSIM";
+
 fn tradeable_capital(bars: &[Bar], max_weight: f64) -> Result<Decimal> {
     /// Half the impact model's own ceiling, leaving room on a thin bar.
     const PARTICIPATION: f64 = 0.10;
@@ -1204,6 +1350,79 @@ mod tests {
         assert!(
             fed.registered >= 1,
             "no candidate registered against the populated universe: {fed:?}. Registration              requires `evaluate` to return evidence, and `evaluate` refuses a run with no              fills -- so this also asserts the backtests actually traded"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn every_registered_candidate_has_its_edge_re_measured_against_company() -> Result<()> {
+        // The gap ADR 0053 closes. A tape has no counterparties that respond,
+        // so a candidate whose apparent edge consists entirely of being the
+        // only participant on its side scored exactly like one whose edge
+        // would survive company — and `with_agents`, which is what tells them
+        // apart, had no caller outside a test in its own crate.
+        let (_platform, _engine, summaries) = run_rounds(1)?;
+        let first = summaries
+            .first()
+            .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
+        // Premise: something registered. A round that registered nothing has
+        // nothing to re-measure and would satisfy the equality below at zero.
+        assert!(
+            first.registered >= 1,
+            "no candidate was registered, so the crowding wire is untested: {first:?}"
+        );
+        assert_eq!(
+            first.crowding_measured, first.registered,
+            "{} candidate(s) registered and {} were re-measured; a candidate that \
+             reached the ladder without the comparison is the gap this closes: {:?}",
+            first.registered, first.crowding_measured, first.crowding
+        );
+        // The comparison has to be an experiment. A panel that places nothing
+        // makes both runs the same run, the difference zero, and a reader
+        // takes that for a strategy that survives company.
+        assert_eq!(
+            first.crowding_uncontested, 0,
+            "the panel sat out {} of {} comparison(s), so those differences are \
+             between two identical runs: {:?}",
+            first.crowding_uncontested, first.crowding_measured, first.crowding
+        );
+        // **What this tape actually shows, asserted rather than assumed.** The
+        // panel places thousands of orders and every comparison comes back
+        // with a cost of zero to the last digit: the book's displayed size at
+        // the touch is far larger than the panel's clips, so the strategy
+        // arrives to the same quote either way. That is a real physical
+        // outcome and it is *not* evidence the edge survives company — it is
+        // ADR 0053's "the panel being so small it changes nothing", observed.
+        //
+        // The count is what keeps the two apart, and this assertion is
+        // deliberately the strict one: if a change ever makes the panel bite
+        // on this tape, this test fails and somebody has to decide whether
+        // that is a better measurement or a panel quietly enlarged until it
+        // said something. A silently improving number is the outcome worth
+        // preventing here.
+        assert_eq!(
+            first.crowding_unmoved, first.crowding_measured,
+            "the panel moved the book on this tape, where it has always left it \
+             unmoved. If that is deliberate, say so; if it is a panel enlarged \
+             until the number spoke, ADR 0053 forbids it: {:?}",
+            first.crowding
+        );
+        // And every line says what it rests on, first thing.
+        for line in &first.crowding {
+            assert!(
+                line.starts_with(qip_simulation_engine::agents::NOT_CALIBRATED_STATEMENT),
+                "a crowding line does not open with the calibration statement: {line}"
+            );
+        }
+        // The measurement decides nothing. `promoted` and `gate_refused`
+        // account for every candidate that reached the gate, and an inversion
+        // subtracts from neither — ADR 0053's load-bearing half, asserted
+        // rather than left to the comment that says it.
+        assert_eq!(
+            first.promoted + first.gate_refused,
+            first.registered,
+            "a registered candidate reached neither promotion nor a gate refusal, so \
+             something other than the gate judged it: {first:?}"
         );
         Ok(())
     }
