@@ -3607,3 +3607,304 @@ fn a_drawdown_deep_enough_to_stop_all_deployment_still_charges_the_commitment_li
     );
     Ok(())
 }
+
+// --- execution cost: the measurement that lets CostOverrun fire ---------------
+
+/// One order the cell sent at `sent`, filled by the venue at `filled`.
+///
+/// The two prices are separate parameters because that difference is the
+/// whole subject: [`strategy_order_and_fill`] above passes one price for
+/// both, which is a fill at exactly the price the platform asked for and so
+/// a cost of zero — the case that cannot distinguish a working measurement
+/// from the constant it replaced.
+fn order_filled_away(
+    id: &StrategyId,
+    order_id: &str,
+    side: qip_contracts::message::BookSide,
+    quantity: Decimal,
+    sent: Decimal,
+    filled: Decimal,
+    at: Timestamp,
+) -> (qip_mesh::delta::DeltaOrder, qip_contracts::wire::FillRecord) {
+    let (mut order, mut fill) = strategy_order_and_fill(id, order_id, side, quantity, sent, at);
+    order.price = sent;
+    fill.price = filled;
+    (order, fill)
+}
+
+#[test]
+fn a_fill_away_from_the_price_the_platform_sent_is_measured_as_execution_cost() -> Result<()> {
+    let mut platform = platform()?;
+    let id = StrategyId::new("cost-measured");
+    register(platform.central_mut(), &id, CELL)?;
+
+    // Bought: sent at 50, filled at 50.10. Paying 0.10 on 50 is 20 basis
+    // points, and the sign is positive because the platform paid away.
+    let (order, fill) = order_filled_away(
+        &id,
+        "ord-cost-1",
+        qip_contracts::message::BookSide::Ask,
+        dec!("100"),
+        dec!("50"),
+        dec!("50.10"),
+        start(),
+    );
+    let ingestion = platform.ingest_cell_report(
+        CellReport::new(CELL, start())
+            .with_orders(vec![order])
+            .with_fills(vec![fill]),
+        start(),
+    )?;
+    assert!(
+        ingestion.settlement.refused.is_empty(),
+        "premise: the fill settled: {:?}",
+        ingestion.settlement.refused
+    );
+    assert!(
+        ingestion.settlement.breaks.is_empty(),
+        "premise: the fill matched an order the centre saw sent: {:?}",
+        ingestion.settlement.breaks
+    );
+
+    let cost = ingestion.settlement.cost_bps_by_strategy();
+    let measured = cost
+        .get(id.as_str())
+        .copied()
+        .ok_or_else(|| qip_core::Error::not_found("the strategy's measured cost"))?;
+    assert!(
+        (measured - 20.0).abs() < 1e-9,
+        "a buy of 100 sent at 50 and filled at 50.10 costs 20bp; the centre measured {measured}"
+    );
+    Ok(())
+}
+
+#[test]
+fn price_improvement_is_measured_as_a_negative_cost_rather_than_floored_at_zero() -> Result<()> {
+    let mut platform = platform()?;
+    let id = StrategyId::new("cost-improved");
+    register(platform.central_mut(), &id, CELL)?;
+
+    // The same trade filled *better* than it was sent: bought at 49.90 having
+    // asked for 50. Floored at zero this would read as break-even, and a
+    // series of improvements would then bias the mean upward toward the
+    // overrun the kill condition watches for.
+    let (order, fill) = order_filled_away(
+        &id,
+        "ord-cost-2",
+        qip_contracts::message::BookSide::Ask,
+        dec!("100"),
+        dec!("50"),
+        dec!("49.90"),
+        start(),
+    );
+    let ingestion = platform.ingest_cell_report(
+        CellReport::new(CELL, start())
+            .with_orders(vec![order])
+            .with_fills(vec![fill]),
+        start(),
+    )?;
+    let measured = ingestion
+        .settlement
+        .cost_bps_by_strategy()
+        .get(id.as_str())
+        .copied()
+        .ok_or_else(|| qip_core::Error::not_found("the strategy's measured cost"))?;
+    assert!(
+        (measured + 20.0).abs() < 1e-9,
+        "a buy filled 0.10 below the price sent is 20bp of improvement, so -20; measured \
+         {measured}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_sale_filled_below_the_price_sent_costs_rather_than_earns() -> Result<()> {
+    let mut platform = platform()?;
+    let id = StrategyId::new("cost-sold");
+    register(platform.central_mut(), &id, CELL)?;
+
+    // The sign convention is the half of this measurement a wrong guess
+    // would invert silently: selling *below* what you asked is paying away
+    // exactly as buying above it is. Without this case a cost function that
+    // ignored the side would pass the buy tests above and read every sale
+    // backwards, turning a venue that fills sales badly into a strategy that
+    // looks cheap to trade.
+    let (order, fill) = order_filled_away(
+        &id,
+        "ord-cost-3",
+        qip_contracts::message::BookSide::Bid,
+        dec!("100"),
+        dec!("50"),
+        dec!("49.90"),
+        start(),
+    );
+    let ingestion = platform.ingest_cell_report(
+        CellReport::new(CELL, start())
+            .with_orders(vec![order])
+            .with_fills(vec![fill]),
+        start(),
+    )?;
+    let measured = ingestion
+        .settlement
+        .cost_bps_by_strategy()
+        .get(id.as_str())
+        .copied()
+        .ok_or_else(|| qip_core::Error::not_found("the strategy's measured cost"))?;
+    assert!(
+        (measured - 20.0).abs() < 1e-9,
+        "a sale of 100 asked at 50 and filled at 49.90 costs 20bp; measured {measured}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_cost_overrun_kill_condition_fires_on_a_measured_overrun_and_holds_within_tolerance()
+-> Result<()> {
+    // The test this whole measurement exists for. `KillCondition::CostOverrun`
+    // compares the realised cost against a modelled figure plus a tolerance,
+    // and the centre used to hand it the literal `0.0` — so the comparison was
+    // `0.0 > modelled + tolerance`, false for every non-negative modelled cost
+    // anyone would write. The condition shipped inside kill-condition sets,
+    // read as protection, and could not fire. What follows drives a real fill
+    // through `ingest_cell_report` and reads the cost back off
+    // `live_outcomes`, which is the path `stage_learn` reads.
+    let mut platform = platform()?;
+    let id = StrategyId::new("cost-overrun");
+    register(platform.central_mut(), &id, CELL)?;
+    walk_to(platform.central_mut(), &id, GateStage::Pilot)?;
+    issue(platform.central_mut(), &id, CELL, start())?;
+
+    // Bought 100 sent at 50, filled at 50.25: 50 basis points paid away.
+    let (order, fill) = order_filled_away(
+        &id,
+        "ord-overrun-1",
+        qip_contracts::message::BookSide::Ask,
+        dec!("100"),
+        dec!("50"),
+        dec!("50.25"),
+        start(),
+    );
+    let ingestion = platform.ingest_cell_report(
+        CellReport::new(CELL, start())
+            .with_orders(vec![order])
+            .with_fills(vec![fill]),
+        start(),
+    )?;
+    assert!(
+        ingestion.settlement.refused.is_empty() && ingestion.settlement.breaks.is_empty(),
+        "premise: the fill settled cleanly: {:?} {:?}",
+        ingestion.settlement.refused,
+        ingestion.settlement.breaks
+    );
+
+    // The day must be closed before the series will report it: a day still
+    // being traded is not a return yet, and the same rule governs the cost.
+    let next_day = start().saturating_add(Duration::from_days(1));
+    let outcomes = platform.central().live_outcomes(next_day);
+    let outcome = outcomes
+        .iter()
+        .find(|outcome| outcome.strategy == id)
+        .ok_or_else(|| qip_core::Error::not_found("the strategy's live outcome"))?;
+    assert!(
+        (outcome.realised_cost_bps - 50.0).abs() < 1e-9,
+        "the measured cost did not reach the outcome the LEARN stage reads: {}",
+        outcome.realised_cost_bps
+    );
+
+    let observation = qip_lifecycle::demotion::LiveObservation {
+        strategy: id.clone(),
+        at: next_day,
+        returns: Vec::new(),
+        realised_loss: Decimal::ZERO,
+        peak_to_trough_drawdown: 0.0,
+        consecutive_losing_days: 0,
+        realised_cost_bps: outcome.realised_cost_bps,
+        envelope: None,
+    };
+
+    // Veto: modelled 10bp with 5bp of tolerance is breached by 50bp.
+    let breached = qip_lifecycle::evidence::KillCondition::CostOverrun {
+        modelled_bps: 10.0,
+        tolerance_bps: 5.0,
+    }
+    .breach(&observation)
+    .ok_or_else(|| qip_core::Error::not_found("the breach the overrun should have raised"))?;
+    assert!(
+        breached.contains("50.00") && breached.contains("10.00"),
+        "the breach does not name the measured cost and the modelled one: {breached}"
+    );
+
+    // Pass: the same measured cost inside a tolerance a desk actually set.
+    // Without this half the test would pass against a condition that fired on
+    // everything, which is the failure mode a veto-only fixture cannot see.
+    assert!(
+        qip_lifecycle::evidence::KillCondition::CostOverrun {
+            modelled_bps: 45.0,
+            tolerance_bps: 10.0,
+        }
+        .breach(&observation)
+        .is_none(),
+        "50bp measured against a modelled 45bp with 10bp of tolerance is within the band and \
+         must not demote"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_cost_of_a_settlement_is_weighted_by_quantity_and_not_a_mean_of_the_fills() -> Result<()> {
+    // Two fills of very different size, costing very differently. A plain
+    // mean of the two costs is 55bp; weighted by the quantity that actually
+    // paid it, it is 14bp. Every other test in this group uses one fill, and
+    // against one fill the two arithmetics agree — so without this case a
+    // mean-of-fills would pass the lot while overstating the cost of any
+    // strategy that does one small bad trade among many good ones, which is
+    // the shape that would demote a working strategy.
+    let mut platform = platform()?;
+    let id = StrategyId::new("cost-weighted");
+    register(platform.central_mut(), &id, CELL)?;
+
+    // 1000 bought at 50, filled at 50.02 → 4bp.
+    let (big_order, big_fill) = order_filled_away(
+        &id,
+        "ord-weight-1",
+        qip_contracts::message::BookSide::Ask,
+        dec!("1000"),
+        dec!("50"),
+        dec!("50.02"),
+        start(),
+    );
+    // 100 bought at 50, filled at 50.53 → 106bp.
+    let (small_order, small_fill) = order_filled_away(
+        &id,
+        "ord-weight-2",
+        qip_contracts::message::BookSide::Ask,
+        dec!("100"),
+        dec!("50"),
+        dec!("50.53"),
+        start(),
+    );
+    let ingestion = platform.ingest_cell_report(
+        CellReport::new(CELL, start())
+            .with_orders(vec![big_order, small_order])
+            .with_fills(vec![big_fill, small_fill]),
+        start(),
+    )?;
+    assert_eq!(
+        ingestion.settlement.fills_settled, 2,
+        "premise: both fills settled, so the mean has two terms to disagree about"
+    );
+
+    let measured = ingestion
+        .settlement
+        .cost_bps_by_strategy()
+        .get(id.as_str())
+        .copied()
+        .ok_or_else(|| qip_core::Error::not_found("the strategy's measured cost"))?;
+    let weighted = (4.0 * 1000.0 + 106.0 * 100.0) / 1100.0;
+    assert!(
+        (measured - weighted).abs() < 1e-9,
+        "the cost should be the quantity-weighted {weighted:.4}bp, not the mean of the fills \
+         (55bp); measured {measured}"
+    );
+    Ok(())
+}

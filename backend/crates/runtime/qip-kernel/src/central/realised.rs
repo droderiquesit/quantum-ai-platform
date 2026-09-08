@@ -72,6 +72,18 @@ pub struct RealisedSession {
     /// is stated for the day, because a return over a denominator nobody
     /// granted would be a number invented to fill a series.
     pub capital: Option<Decimal>,
+    /// Execution cost accrued on the day: the quantity-weighted sum of each
+    /// fill's cost in basis points, and the quantity that weighted it.
+    ///
+    /// Two figures rather than a mean so that days of very different size
+    /// combine correctly when [`RealisedSeries::outcome`] takes the mean over
+    /// a window: a mean of daily means would weight a day that filled one lot
+    /// the same as the day beside it that filled a thousand.
+    pub cost_weighted: f64,
+    /// The quantity behind `cost_weighted`. Zero on a day that filled
+    /// nothing, which is what keeps such a day out of the mean rather than
+    /// pulling it toward zero.
+    pub cost_quantity: f64,
     /// Whether a settlement contributed to this session.
     ///
     /// False on a day that carries only a retained grant. [`RealisedSeries::outcome`]
@@ -117,6 +129,27 @@ impl RealisedSeries {
         self.evict();
     }
 
+    /// Add a settlement's execution cost to the day of `at`.
+    ///
+    /// Separate from [`RealisedSeries::absorb`] rather than a parameter on it
+    /// because the two answer different questions and a settlement can have
+    /// one without the other: an internal cross books P&L and fills nothing
+    /// at a venue, so it has a return and no cost. Folding them into one call
+    /// would have forced a zero cost onto exactly those days.
+    ///
+    /// Does not set `settled`. A day is settled because something was
+    /// attributed on it, which `absorb` records; cost is a property of that
+    /// settlement and never the thing that makes a day count as one.
+    pub fn absorb_cost(&mut self, at: Timestamp, weighted: f64, quantity: f64) {
+        if quantity <= 0.0 {
+            return;
+        }
+        let session = self.session(at);
+        session.cost_weighted += weighted;
+        session.cost_quantity += quantity;
+        self.evict();
+    }
+
     /// Record that the centre held a live grant of `grant` for the pair on the
     /// day of `at`, whether or not anything settled.
     ///
@@ -142,6 +175,8 @@ impl RealisedSeries {
             day,
             pnl: Decimal::ZERO,
             capital: None,
+            cost_weighted: 0.0,
+            cost_quantity: 0.0,
             settled: false,
             grant: None,
         })
@@ -219,12 +254,29 @@ impl RealisedSeries {
     /// drift triggers read — and neither change belongs in the record that
     /// merely stopped throwing the day away.
     ///
-    /// The realised cost is reported as zero and that is a stated limit, not
-    /// a measurement: the wire carries no cost for a cell's fill and the
-    /// centre invents none (`CentralPlane::settle` says the same), so the
-    /// realised-cost kill condition cannot fire from this series. The other
-    /// three can — loss, drawdown and losing days are all read off what was
-    /// attributed — and the decay and drift triggers read the returns.
+    /// The realised cost is measured, over the same closed sessions: the
+    /// quantity-weighted mean of what each fill cost against the price the
+    /// platform sent its order at, which `CentralPlane::settle` accrues and
+    /// `Settlement::cost_bps_by_strategy` defines. All four kill conditions
+    /// can therefore fire from this series, and the decay and drift triggers
+    /// read the returns.
+    ///
+    /// This paragraph said the opposite — "reported as zero and that is a
+    /// stated limit, not a measurement: the wire carries no cost for a cell's
+    /// fill and the centre invents none" — and the first half of that was
+    /// true while the conclusion was not. The wire carries no cost *field*,
+    /// and it carries both prices a cost is the difference of: the order as
+    /// sent and the fill against it, joined on an order id the centre already
+    /// kept a register of in order to find unsent fills. So `CostOverrun`
+    /// compared `0.0 > modelled + tolerance` and was false for every
+    /// non-negative modelled cost anyone would write — a kill condition that
+    /// shipped, read as protection, and could not fire.
+    ///
+    /// A window in which nothing filled reports zero, and that zero *is* the
+    /// old stated limit rather than a measurement: no fill, no cost, and
+    /// `CostOverrun` cannot fire on it. The difference from before is that
+    /// this is now a fact about the window instead of a fact about the
+    /// platform.
     pub fn outcome(
         &self,
         strategy: &StrategyId,
@@ -295,6 +347,22 @@ impl RealisedSeries {
             })
             .unwrap_or(0.0);
 
+        // Quantity-weighted across the window, not a mean of the days' means:
+        // a day that filled one lot must not count for as much as the day
+        // beside it that filled a thousand. Days that filled nothing carry
+        // zero quantity and so drop out, rather than pulling the mean toward
+        // nil on the days the strategy paid no spread.
+        let cost_quantity: f64 = closed.iter().map(|session| session.cost_quantity).sum();
+        let realised_cost_bps = if cost_quantity > 0.0 {
+            closed
+                .iter()
+                .map(|session| session.cost_weighted)
+                .sum::<f64>()
+                / cost_quantity
+        } else {
+            0.0
+        };
+
         Some(CellOutcome {
             strategy: strategy.clone(),
             cell: cell.to_string(),
@@ -303,7 +371,7 @@ impl RealisedSeries {
             realised_loss,
             peak_to_trough_drawdown,
             consecutive_losing_days,
-            realised_cost_bps: 0.0,
+            realised_cost_bps,
         })
     }
 }

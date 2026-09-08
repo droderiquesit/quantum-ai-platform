@@ -391,6 +391,11 @@ pub struct CellIngestion {
 pub struct Settlement {
     /// Contributor shares booked, across every fill settled.
     pub fills_attributed: usize,
+    /// Per strategy, the execution cost of this settlement's fills, as a
+    /// running quantity-weighted sum. Read through
+    /// [`Settlement::cost_bps_by_strategy`], which is where the meaning is
+    /// stated; the accumulator is public only because the struct is.
+    pub cost: BTreeMap<String, CostAccrual>,
     /// Venue fills booked to the strategy books and charged to the aggregate.
     pub fills_settled: usize,
     /// Orders registered as sent — accepted by the venue, not filled — and
@@ -451,7 +456,54 @@ pub struct AbsorbedFill {
     pub venue: String,
 }
 
+/// One strategy's execution cost over a settlement's fills, accumulated so a
+/// mean can be taken over the quantity that produced it.
+///
+/// Two fields rather than a running mean because the fills of one settlement
+/// differ in size by orders of magnitude, and a mean of means would weight a
+/// one-lot fill the same as the block beside it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CostAccrual {
+    /// Sum of `cost_bps * quantity` over the fills booked to the strategy.
+    pub weighted: f64,
+    /// Sum of `quantity` over those same fills, the divisor of the mean.
+    pub quantity: f64,
+}
+
 impl Settlement {
+    /// Per strategy, the quantity-weighted mean execution cost of this
+    /// settlement's fills, in basis points, signed so that paying away is
+    /// positive.
+    ///
+    /// **What this measures, precisely.** Each fill is costed against the
+    /// price the platform *sent the order at* — under `PricingPolicy::RestAtMid`
+    /// the mid the cell rested at — and not against a decision-time arrival
+    /// mid, which the wire does not carry. So it is slippage against the
+    /// platform's own asking price, not full implementation shortfall, and a
+    /// marketable order sent through the spread shows the part of its cost
+    /// that landed beyond its own limit rather than all of it. That is the
+    /// honest bound of what two prices on the wire can support.
+    ///
+    /// **Why it exists.** `KillCondition::CostOverrun` compares this against
+    /// a modelled figure plus a tolerance. Until this was measured the centre
+    /// supplied the literal `0.0`, so the comparison was `0.0 > modelled +
+    /// tolerance` — false for every non-negative modelled cost a person would
+    /// write. The condition shipped in kill-condition sets, read as
+    /// protection, and could not fire. This is the same defect
+    /// `MaxExpectedShortfall` had, and the rule it broke is the one that says
+    /// a limit that cannot fire is a defect rather than a spare part.
+    ///
+    /// A strategy with no filled quantity is absent rather than zero: zero is
+    /// a cost that was measured and found to be nil, and a strategy that
+    /// filled nothing has no cost to report.
+    pub fn cost_bps_by_strategy(&self) -> BTreeMap<String, f64> {
+        self.cost
+            .iter()
+            .filter(|(_, accrual)| accrual.quantity > 0.0)
+            .map(|(strategy, accrual)| (strategy.clone(), accrual.weighted / accrual.quantity))
+            .collect()
+    }
+
     /// The strategy-level P&L the settlement realised, by strategy id.
     pub fn by_strategy(&self) -> BTreeMap<String, Decimal> {
         self.attribution
@@ -907,7 +959,14 @@ impl CentralPlane {
     /// holds for the pair at this instant, which is the grant the fills were
     /// made under.
     fn record_realised(&mut self, cell: &str, settlement: &Settlement, at: Timestamp) {
+        let cost = settlement.cost_bps_by_strategy();
         for (strategy, pnl) in settlement.by_strategy() {
+            // Taken before `strategy` is consumed into a `StrategyId`, and by
+            // the same key the P&L was: what the monitor reads as this
+            // strategy's cost and what it reads as its P&L come off one
+            // settlement under one name.
+            let accrual = settlement.cost.get(&strategy).copied().unwrap_or_default();
+            let mean = cost.get(&strategy).copied();
             let strategy = StrategyId::new(strategy);
             if self.factory.baseline(&strategy).is_none() {
                 continue;
@@ -915,10 +974,19 @@ impl CentralPlane {
             let capital = self
                 .envelope(cell, &strategy)
                 .map(CapitalEnvelope::gross_limit);
-            self.realised
+            let series = self
+                .realised
                 .entry((cell.to_string(), strategy))
-                .or_default()
-                .absorb(at, pnl, capital);
+                .or_default();
+            series.absorb(at, pnl, capital);
+            // Only where quantity actually filled. A settlement that booked a
+            // strategy's P&L without filling anything for it — an internal
+            // cross moves a lot at the mid and sends no order — has no cost
+            // to add, and adding a zero would pull the mean toward nil on
+            // exactly the days the strategy did not pay a spread.
+            if mean.is_some() {
+                series.absorb_cost(at, accrual.weighted, accrual.quantity);
+            }
         }
     }
 
@@ -1628,7 +1696,7 @@ impl CentralPlane {
                 continue;
             }
             let sent = self.sent.entry(report.cell.clone()).or_default();
-            if let Err(reason) = sent.register(&order.order_id, order.quantity) {
+            if let Err(reason) = sent.register(&order.order_id, order.quantity, order.price) {
                 self.refuse_settlement(&mut settlement, "order", reason);
                 continue;
             }
@@ -1651,20 +1719,23 @@ impl CentralPlane {
                 continue;
             }
             let sent = self.sent.entry(report.cell.clone()).or_default();
-            if let Err(detail) = sent.fill(&fill.order_id, fill.quantity) {
-                // Not refused: refused is for a record the books cannot take
-                // without guessing. This is a record the platform has no order
-                // behind, and the response to that is the halt, not a line in
-                // a list of refusals nobody pages on.
-                settlement.breaks.push(ReconciliationBreak {
-                    instrument: fill.object_id.as_str().to_string(),
-                    cell_quantity: Decimal::ZERO,
-                    external_quantity: fill.quantity,
-                    detail,
-                    origin: BreakOrigin::UnsentFill,
-                });
-                continue;
-            }
+            let reference = match sent.fill(&fill.order_id, fill.quantity) {
+                Ok(reference) => reference,
+                Err(detail) => {
+                    // Not refused: refused is for a record the books cannot take
+                    // without guessing. This is a record the platform has no order
+                    // behind, and the response to that is the halt, not a line in
+                    // a list of refusals nobody pages on.
+                    settlement.breaks.push(ReconciliationBreak {
+                        instrument: fill.object_id.as_str().to_string(),
+                        cell_quantity: Decimal::ZERO,
+                        external_quantity: fill.quantity,
+                        detail,
+                        origin: BreakOrigin::UnsentFill,
+                    });
+                    continue;
+                }
+            };
             let shared: Decimal = fill.shares.iter().map(|share| share.quantity).sum();
             if fill.shares.is_empty()
                 || fill
@@ -1689,6 +1760,33 @@ impl CentralPlane {
                 continue;
             }
             let direction = order_direction(fill.side);
+            // Money is `Decimal` up to this line. Cost in basis points is a
+            // statistic the kill condition compares against a modelled figure
+            // in `f64`, and this is where the two prices cross into that
+            // arithmetic. Signed so that paying away is positive: a buy
+            // filled above the price the platform sent, or a sell filled
+            // below it, costs; the other direction is price improvement and
+            // is recorded as the negative it is rather than floored at zero,
+            // because a mean that cannot go below zero would read every
+            // improvement as break-even and bias the series toward the
+            // overrun this measurement exists to catch.
+            //
+            // A non-positive reference is skipped rather than divided by. The
+            // register only ever holds an order the settle path admitted, and
+            // that path already refuses a non-positive quantity, but the
+            // division is guarded where it happens rather than at a distance.
+            if reference.is_positive() {
+                let slippage = direction * (fill.price - reference) / reference;
+                let cost_bps = slippage.to_f64() * 10_000.0;
+                for share in &fill.shares {
+                    let entry = settlement
+                        .cost
+                        .entry(share.strategy.as_str().to_string())
+                        .or_default();
+                    entry.weighted += cost_bps * share.quantity.to_f64();
+                    entry.quantity += share.quantity.to_f64();
+                }
+            }
             for share in &fill.shares {
                 let (period, gained) = self.book(
                     &report.cell,
@@ -1829,6 +1927,16 @@ impl CentralPlane {
             // The wire carries no costs for a cell's order, and none are
             // invented: a commission the centre guessed would be exactly the
             // unexplained line the exact decomposition exists to refuse.
+            //
+            // This is not in tension with the execution cost
+            // `Settlement::cost_bps_by_strategy` measures, and the two must
+            // not be confused. That one is a *statistic* — how far a fill
+            // landed from the price the platform sent, which two prices on
+            // the wire do support — read by a kill condition. These are
+            // *money*, and they have to sum to the P&L exactly. A spread cost
+            // derived from the same difference would look plausible here and
+            // would be an unattributed figure in a decomposition that admits
+            // none, so it stays zero until a venue reports the money.
             commission: Decimal::ZERO,
             spread_cost: Decimal::ZERO,
             impact_cost: Decimal::ZERO,
@@ -1985,6 +2093,16 @@ const MAX_SENT_ORDERS_PER_CELL: usize = 4_096;
 struct SentOrder {
     quantity: Decimal,
     filled: Decimal,
+    /// The price the cell sent the order at, kept as the reference every
+    /// fill on it is costed against.
+    ///
+    /// Kept here rather than re-read from the report because a fill arrives
+    /// in a later interval than its order as often as not, and by then the
+    /// report that carried the send is gone. It is the price the platform
+    /// *asked for* — under `PricingPolicy::RestAtMid` the mid the cell rested
+    /// at — and not a decision-time arrival mid the wire does not carry. What
+    /// that makes measurable is stated on `Settlement::cost_bps_by_strategy`.
+    price: Decimal,
 }
 
 /// The orders one cell has reported sent, keyed by order id, bounded.
@@ -2004,7 +2122,12 @@ impl SentOrders {
     /// The same id reported sent twice is refused rather than summed: an
     /// order id is the key a fill is matched under, and two sends behind one
     /// key would make the register's quantity a number neither send said.
-    fn register(&mut self, order_id: &str, quantity: Decimal) -> std::result::Result<(), String> {
+    fn register(
+        &mut self,
+        order_id: &str,
+        quantity: Decimal,
+        price: Decimal,
+    ) -> std::result::Result<(), String> {
         if self.by_id.contains_key(order_id) {
             return Err(format!(
                 "order {order_id} was reported sent twice; the first send is kept and this one \
@@ -2016,6 +2139,7 @@ impl SentOrders {
             SentOrder {
                 quantity,
                 filled: Decimal::ZERO,
+                price,
             },
         );
         self.arrival.push_back(order_id.to_string());
@@ -2033,7 +2157,7 @@ impl SentOrders {
     /// An order whose fills now sum to its quantity leaves the register, so
     /// a fill after that is an unsent fill like any other — the venue
     /// reporting more than the platform asked for.
-    fn fill(&mut self, order_id: &str, quantity: Decimal) -> std::result::Result<(), String> {
+    fn fill(&mut self, order_id: &str, quantity: Decimal) -> std::result::Result<Decimal, String> {
         let Some(order) = self.by_id.get_mut(order_id) else {
             return Err(format!(
                 "the cell reports a fill of {quantity} on order {order_id} and the centre never \
@@ -2049,10 +2173,15 @@ impl SentOrders {
             ));
         }
         order.filled += quantity;
+        let reference = order.price;
         if order.filled >= order.quantity {
             self.by_id.remove(order_id);
         }
-        Ok(())
+        // Returned rather than left for the caller to look up, because the
+        // order is gone from the register on the fill that completes it and a
+        // second lookup would find nothing exactly on the fills that matter
+        // most — the ones that closed an order out.
+        Ok(reference)
     }
 }
 
