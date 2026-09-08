@@ -145,6 +145,14 @@ pub struct RoundSummary {
     pub admitted: usize,
     pub registered: usize,
     pub discarded: usize,
+    /// Candidates the holdout gate admitted, so they left `Candidate` for the
+    /// first rung of the ladder.
+    pub promoted: usize,
+    /// Candidates the holdout gate refused. Not a failure of the round: the
+    /// gate doing its work is the point, and a search whose every candidate
+    /// is refused is a search that found nothing worth funding — which is a
+    /// result, and one nothing recorded before this counted it.
+    pub gate_refused: usize,
     /// The search's cumulative trial count after this round — the number
     /// every holdout is deflated by.
     pub trials: usize,
@@ -156,7 +164,7 @@ impl RoundSummary {
     pub fn describe(&self) -> String {
         format!(
             "evolution: {} proposed {} on {}, {} admitted, {} registered, {} discarded, \
-             {} trial(s) on the ledger",
+             {} promoted, {} refused at the gate, {} trial(s) on the ledger",
             self.proposed,
             if self.proposed == 1 {
                 "candidate"
@@ -167,6 +175,8 @@ impl RoundSummary {
             self.admitted,
             self.registered,
             self.discarded,
+            self.promoted,
+            self.gate_refused,
             self.trials
         )
     }
@@ -442,6 +452,57 @@ impl EvolutionEngine {
                     ) {
                         Ok(()) => {
                             summary.registered += 1;
+                            // Put the evidence the search just produced in
+                            // front of the gate that exists to judge it.
+                            //
+                            // Nothing did this before, and the consequence was
+                            // the whole ladder standing still: `promote` had
+                            // no caller outside tests, so every candidate this
+                            // loop registered stayed a `Candidate` for ever,
+                            // no baseline was ever written, and §20.3's
+                            // retirement machinery — which skips any strategy
+                            // without a pilot baseline — observed nothing in
+                            // any deployment. A pipeline that searches,
+                            // scores and registers, and then never asks the
+                            // question it gathered the evidence for, reads as
+                            // a working lifecycle and is a dead end.
+                            //
+                            // One rung only, and deliberately. The gate for
+                            // each stage reads that stage's own evidence, and
+                            // the foundry attaches holdout evidence alone; the
+                            // rungs above want paper and shadow records the
+                            // strategy has not had the chance to make yet.
+                            // Walking further would be asking gates to rule on
+                            // evidence nobody gathered, and their refusals
+                            // would say exactly that, at length, every round.
+                            //
+                            // No approval is passed because none is required:
+                            // `GateStage::requires_human_approval` is true for
+                            // `Pilot` and `Scaled` only, which are the rungs
+                            // where capital is at stake, and neither is
+                            // reachable from here.
+                            match platform.central_mut().factory_mut().promote(
+                                &id,
+                                None,
+                                "the holdout gate read the search's own evidence",
+                                now,
+                            ) {
+                                Ok(_) => summary.promoted += 1,
+                                // A refused gate is an outcome, not an error,
+                                // and it must not leave this loop: `?` here
+                                // would abandon the rest of the round because
+                                // one candidate was judged and found wanting,
+                                // which is the gate working. Only `Guard` is
+                                // the gate speaking — every other class is a
+                                // fault in the caller (an unregistered
+                                // strategy, a ledger that cannot take the
+                                // record) and is returned rather than counted
+                                // as a verdict nobody reached.
+                                Err(qip_core::Error::Guard(_)) => {
+                                    summary.gate_refused += 1;
+                                }
+                                Err(error) => return Err(error),
+                            }
                             admitted.push(candidate);
                         }
                         Err(_) => {
@@ -1562,6 +1623,81 @@ mod tests {
                     .factory()
                     .holds_capital(candidate.strategy()),
                 "{} entered the ladder holding capital",
+                candidate.strategy()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn every_candidate_the_round_registers_is_put_in_front_of_the_holdout_gate() -> Result<()> {
+        // The defect this pins: the loop searched, scored and registered
+        // candidates carrying real holdout evidence, and then never asked the
+        // gate about any of them. `promote` had no caller outside tests, so
+        // every candidate stayed a `Candidate`, no baseline was written, and
+        // the retirement machinery that skips a strategy without a baseline
+        // had nothing to observe in any deployment.
+        //
+        // The assertion is the accounting rather than a pass count, and that
+        // is deliberate: whether this seed's candidates clear the holdout gate
+        // depends on the grammar and the synthetic tape, and a test demanding
+        // a pass would break for a reason that is not a defect. What must
+        // never happen again is a registered candidate nobody asked about.
+        let mut platform = platform()?;
+        let mut engine = engine(1);
+
+        let mut now = start();
+        let minutes = (engine.config.minimum_bars as i64 + 30) * 2;
+        for _ in 0..minutes {
+            now = now.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, now)?;
+        }
+        let summary = engine
+            .maybe_turn(&mut platform, 1, now)?
+            .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
+
+        // Premise: something was registered. Without this the accounting below
+        // is 0 == 0 + 0 and would hold over a loop that does nothing at all.
+        assert!(
+            summary.registered >= 1,
+            "nothing was registered, so this test cannot show anything was judged: {summary:?}"
+        );
+        assert_eq!(
+            summary.promoted + summary.gate_refused,
+            summary.registered,
+            "{} candidate(s) were registered and {} were put in front of the gate; the \
+             difference is evidence gathered and never judged: {summary:?}",
+            summary.registered,
+            summary.promoted + summary.gate_refused
+        );
+
+        // Whatever the gate decided, the ladder agrees with the count: a
+        // promotion that was counted and did not move the strategy would be a
+        // number in a summary rather than a fact about the ledger.
+        let moved = platform
+            .central()
+            .factory()
+            .candidates()
+            .filter(|candidate| {
+                platform.central().factory().stage_of(candidate.strategy())
+                    != qip_contracts::gate::GateStage::Candidate
+            })
+            .count();
+        assert_eq!(
+            moved, summary.promoted,
+            "the summary counted {} promotion(s) and {moved} strategy(ies) left Candidate",
+            summary.promoted
+        );
+
+        // And none of them reached a rung that holds capital: the two rungs
+        // that do require a dual human approval, and this loop passes none.
+        for candidate in platform.central().factory().candidates() {
+            assert!(
+                !platform
+                    .central()
+                    .factory()
+                    .holds_capital(candidate.strategy()),
+                "{} reached a capital-holding rung from an automated search",
                 candidate.strategy()
             );
         }
