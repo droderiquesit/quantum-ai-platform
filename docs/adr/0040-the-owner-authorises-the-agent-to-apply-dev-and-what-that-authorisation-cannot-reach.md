@@ -150,7 +150,7 @@ should not, and the record widens by exactly this much:
 
 The dispatch of `infra.yml` `dev` `up` after the plan is read, and its
 re-dispatch after each fix under decision 6; every run's URL and terminal
-status are recorded in `docs/ops/missing-infrastructure-register.md`
+status are recorded in `docs/DELIVERY-STATUS.md` (which absorbed the missing-infrastructure register on 2026-09-07)
 beside the observation of what the apply produced. Runs 34 and 35 on
 `e1711fb` are the first two entries: both failed on the cluster, and the
 fix is the commit that carries this amendment.
