@@ -52,6 +52,7 @@ use qip_market_ingestion::adapter::{DataAdapter, SensedRecord};
 use qip_simulation_engine::backtest::{BacktestConfig, Backtester};
 use qip_simulation_engine::clock::{ExecutionAssumptions, SimulationClock};
 use qip_simulation_engine::harness::{CompiledHarness, WARM_UP_BARS, bar_catalogue};
+use qip_simulation_engine::validation::PurgedSplit;
 use qip_strategy::compile::StrategyCompiler;
 use std::collections::BTreeMap;
 
@@ -97,7 +98,7 @@ impl Default for EvolutionConfig {
         Self {
             every_cycles: 4,
             candidates: 8,
-            minimum_bars: WARM_UP_BARS * 6,
+            minimum_bars: minimum_bars_for_the_holdout_gate(0.25),
             holdout_fraction: 0.25,
             max_weight: 0.5,
             history_cap: 2048,
@@ -137,6 +138,47 @@ impl EvolutionConfig {
     }
 }
 
+/// The most refusal reasons one round's summary carries.
+///
+/// A bound rather than none: the reasons reach an operator's cycle line, and
+/// a round that refused a hundred candidates would otherwise write a hundred
+/// paragraphs to it.
+const MAX_REFUSALS_REPORTED: usize = 4;
+
+/// The least history a search may run on, derived from the gate that will
+/// judge what it finds.
+///
+/// The holdout gate refuses a Sharpe computed on fewer than
+/// `HoldoutPolicy::minimum_observations` held-out observations — a year of
+/// daily bars, below which the standard error is too wide to say anything.
+/// Only `holdout_fraction` of a run's bars are held out, so the run needs the
+/// whole of that divided by the fraction before it can possibly clear the
+/// check.
+///
+/// # Why this is derived and not chosen
+///
+/// It was `WARM_UP_BARS * 6` — about 188 bars, which holds out 47 against a
+/// minimum of 250. Every round before roughly a thousand bars therefore
+/// registered candidates the gate *structurally could not admit*, and that
+/// was not merely wasted work: every candidate is charged to the family's
+/// cumulative trial count, and the count deflates the Sharpe every later
+/// candidate is judged against. A search that cannot pass still raises the
+/// bar for the searches that could, so the early futile rounds were making
+/// the later real ones harder, permanently and silently. That is the
+/// multiple-comparisons problem the trial book exists to police, arriving
+/// through the one door nobody was watching.
+///
+/// Derived from `HoldoutPolicy` rather than written down again, so a change
+/// to the gate's minimum moves this with it. Two constants that must agree
+/// and are maintained apart are two constants that will eventually disagree.
+fn minimum_bars_for_the_holdout_gate(holdout_fraction: f64) -> usize {
+    let needed = qip_lifecycle::gates::HoldoutPolicy::default().minimum_observations;
+    let from_gate = (needed as f64 / holdout_fraction).ceil() as usize;
+    // The harness still needs its warm-up before the first bar a strategy can
+    // act on, so the floor is whichever is larger.
+    from_gate.max(WARM_UP_BARS * 6)
+}
+
 /// What one round did, for the operator's cycle line.
 #[derive(Clone, Debug, Default)]
 pub struct RoundSummary {
@@ -148,6 +190,9 @@ pub struct RoundSummary {
     /// Candidates the holdout gate admitted, so they left `Candidate` for the
     /// first rung of the ladder.
     pub promoted: usize,
+    /// Why the gate refused, one entry per refusal up to
+    /// [`MAX_REFUSALS_REPORTED`].
+    pub gate_refusals: Vec<String>,
     /// Candidates the holdout gate refused. Not a failure of the round: the
     /// gate doing its work is the point, and a search whose every candidate
     /// is refused is a search that found nothing worth funding — which is a
@@ -498,8 +543,23 @@ impl EvolutionEngine {
                                 // strategy, a ledger that cannot take the
                                 // record) and is returned rather than counted
                                 // as a verdict nobody reached.
-                                Err(qip_core::Error::Guard(_)) => {
+                                Err(qip_core::Error::Guard(why)) => {
                                     summary.gate_refused += 1;
+                                    // The reason travels with the count. A
+                                    // round that says two candidates were
+                                    // refused and not why is a round an
+                                    // operator cannot act on, and the
+                                    // difference between "the gate is doing
+                                    // its job" and "the evidence is malformed
+                                    // and every candidate is refused for a
+                                    // reason nobody looked at" is exactly
+                                    // what these strings carry. Bounded,
+                                    // because a round's refusals reach a
+                                    // summary line and an unbounded field is
+                                    // an unbounded record.
+                                    if summary.gate_refusals.len() < MAX_REFUSALS_REPORTED {
+                                        summary.gate_refusals.push(why);
+                                    }
                                 }
                                 Err(error) => return Err(error),
                             }
@@ -746,36 +806,43 @@ impl EvolutionEngine {
         let split = returns.len() - holdout_len;
         let (pre, tail) = returns.split_at(split);
 
-        // Three contiguous test windows over the pre-holdout region, with a
-        // one-bar purge each side of every window and a one-bar embargo after
-        // it. Generated candidates carry no fitted parameters — the grammar
-        // writes fixed rules — so these folds measure stability across
-        // windows rather than fit quality, and the numbers below describe
-        // exactly the splits as built so the gate can rebuild and compare.
+        // The folds come from `PurgedSplit`, the same splitter the holdout
+        // gate rebuilds them with, and the counts reported below are the
+        // splitter's own.
+        //
+        // They were hand-rolled here until 2026-09-08, and the arithmetic
+        // disagreed: this counted a fold's leading purge *and* its trailing
+        // label horizon as purged, where the splitter counts the horizon once,
+        // so a three-fold split over the same data reported four purged where
+        // the splitter found two. The gate compares the two and refused every
+        // candidate on `purging_and_embargo_applied` — correctly, because a
+        // run whose folds cannot be rebuilt from its own description is a run
+        // nobody can check. The defect was never in the gate; it was two
+        // implementations of one split, which is what the gate exists to
+        // catch. There is now one, and this arm cannot drift from it again
+        // because it no longer has arithmetic of its own to drift with.
         const FOLDS: usize = 3;
         const LABEL_HORIZON: usize = 1;
         const EMBARGO: usize = 1;
-        let fold_len = pre.len() / FOLDS;
-        let mut in_sample = Vec::with_capacity(FOLDS);
-        let mut out_of_sample = Vec::with_capacity(FOLDS);
+        let splits = PurgedSplit::new(FOLDS, LABEL_HORIZON, EMBARGO)
+            .and_then(|split| split.split(pre.len()))
+            .map_err(|error| {
+                Error::invalid(format!(
+                    "the pre-holdout region of {} observation(s) cannot be split into {FOLDS} \
+                     purged folds: {}",
+                    pre.len(),
+                    error.message()
+                ))
+            })?;
+        let mut in_sample = Vec::with_capacity(splits.len());
+        let mut out_of_sample = Vec::with_capacity(splits.len());
         let mut purged = 0usize;
         let mut embargoed = 0usize;
-        for fold in 0..FOLDS {
-            let a = fold * fold_len;
-            let b = if fold == FOLDS - 1 {
-                pre.len()
-            } else {
-                a + fold_len
-            };
-            out_of_sample.push(pre[a..b].to_vec());
-            let purge_before = a.saturating_sub(LABEL_HORIZON);
-            let embargo_after = (b + LABEL_HORIZON + EMBARGO).min(pre.len());
-            purged += (a - purge_before) + (embargo_after - b).min(LABEL_HORIZON);
-            embargoed += (embargo_after - b).saturating_sub(LABEL_HORIZON);
-            let mut train = Vec::with_capacity(pre.len().saturating_sub(b - a));
-            train.extend_from_slice(&pre[..purge_before]);
-            train.extend_from_slice(&pre[embargo_after..]);
-            in_sample.push(train);
+        for split in &splits {
+            in_sample.push(split.train.iter().map(|&i| pre[i]).collect::<Vec<f64>>());
+            out_of_sample.push(split.test.iter().map(|&i| pre[i]).collect::<Vec<f64>>());
+            purged += split.purged;
+            embargoed += split.embargoed;
         }
 
         let trace = harness.trace();
@@ -1253,20 +1320,39 @@ mod tests {
         }
 
         let untradeable = "OBJ000000000000000UST10Y";
-        let bars = engine
+        // Real bars from the illiquid bond, with every traded volume set to
+        // zero: an instrument nothing traded on, which is the case under test.
+        //
+        // The bond's own volumes were used until 2026-09-08, on the strength
+        // of its being thin enough that `tradeable_capital` refused it. That
+        // held only for the short window the engine then searched on. Once a
+        // search waited for the history its gate requires, the same bond
+        // accumulated enough traded notional to be backtestable and the
+        // premise failed — the test had been resting on how little data the
+        // engine happened to collect rather than on anything about the
+        // instrument. Zeroing the volumes makes the premise structural, and
+        // true at any window length.
+        let bars: Vec<Bar> = engine
             .history
             .get(untradeable)
             .cloned()
-            .ok_or_else(|| Error::not_found("the bond's own history"))?;
+            .ok_or_else(|| Error::not_found("the bond's own history"))?
+            .into_iter()
+            .map(|mut bar| {
+                bar.volume = Decimal::ZERO;
+                bar
+            })
+            .collect();
         // The premise, in two parts: it has enough history to be eligible, and
         // it genuinely cannot be traded.
         assert!(
             bars.len() >= engine.config.minimum_bars,
-            "the premise failed: the bond has too little history to be eligible anyway"
+            "the premise failed: too little history to be eligible anyway"
         );
         assert!(
             tradeable_capital(&bars, engine.config.max_weight).is_err(),
-            "the premise failed: the bond is thick enough to backtest, so this proves nothing"
+            "the premise failed: a series with no traded volume was accepted as backtestable, \
+             so this proves nothing"
         );
 
         engine.history.clear();
@@ -1699,6 +1785,86 @@ mod tests {
                     .holds_capital(candidate.strategy()),
                 "{} reached a capital-holding rung from an automated search",
                 candidate.strategy()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_search_never_runs_on_less_history_than_its_gate_will_accept() {
+        // The defect: the engine searched from about 188 bars, which holds out
+        // 47 against the holdout gate's minimum of 250, so every round before
+        // roughly a thousand bars registered candidates the gate could not
+        // admit whatever they contained. That was not merely wasted work —
+        // each one is charged to the family's cumulative trial count, and the
+        // count deflates the Sharpe every later candidate is judged against.
+        // The futile rounds were raising the bar for the rounds that could
+        // have succeeded.
+        let policy = qip_lifecycle::gates::HoldoutPolicy::default();
+        let fraction = EvolutionConfig::default().holdout_fraction;
+        let minimum = EvolutionConfig::default().minimum_bars;
+        let held_out = (minimum as f64 * fraction).floor() as usize;
+        assert!(
+            held_out >= policy.minimum_observations,
+            "a search may start at {minimum} bars, which holds out {held_out} against the \
+             gate's minimum of {}; every candidate from such a round is refused on sample \
+             adequacy alone and still charged as a trial",
+            policy.minimum_observations
+        );
+        // Derived, not written down twice: raising the gate's minimum must
+        // raise this with it, so the premise is that the helper tracks the
+        // policy rather than that some constant happens to be large enough.
+        assert!(
+            minimum_bars_for_the_holdout_gate(fraction) >= minimum_bars_for_the_holdout_gate(0.5),
+            "a smaller holdout fraction needs more bars, not fewer; the derivation is inverted"
+        );
+    }
+
+    #[test]
+    fn the_folds_a_round_reports_are_the_ones_the_gate_rebuilds() -> Result<()> {
+        // The evaluation used to build its folds by hand and count the purge
+        // itself, and its arithmetic disagreed with `PurgedSplit` — it charged
+        // a fold's trailing label horizon as purged on top of the leading
+        // purge, reporting four where the splitter found two. The gate
+        // rebuilds the folds from the run's own description and compares, so
+        // every candidate was refused on `purging_and_embargo_applied`
+        // regardless of merit. The gate was right; there were two
+        // implementations of one split.
+        //
+        // This asserts the outcome an operator would see: whatever the gate
+        // decides about a candidate's *performance*, it no longer decides
+        // against it because the folds cannot be rebuilt.
+        let mut platform = platform()?;
+        let mut engine = engine(1);
+        let mut now = start();
+        let minutes = (engine.config.minimum_bars as i64 + 60) * 2;
+        for _ in 0..minutes {
+            now = now.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, now)?;
+        }
+        let summary = engine
+            .maybe_turn(&mut platform, 1, now)?
+            .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
+        assert!(
+            summary.registered >= 1,
+            "nothing was registered, so no candidate reached the gate: {summary:?}"
+        );
+        // Premise: the gate did speak. Without a refusal to read, a test that
+        // looks for a phrase in the refusals passes over an empty list.
+        assert!(
+            !summary.gate_refusals.is_empty() || summary.promoted > 0,
+            "the gate neither admitted nor refused anything: {summary:?}"
+        );
+        for refusal in &summary.gate_refusals {
+            assert!(
+                !refusal.contains("purging_and_embargo_applied"),
+                "a candidate was refused because its folds could not be rebuilt from its own \
+                 description: {refusal}"
+            );
+            assert!(
+                !refusal.contains("holdout_sample_adequate"),
+                "a candidate was refused for too small a sample, which means the search ran \
+                 before it had the history its gate requires: {refusal}"
             );
         }
         Ok(())
