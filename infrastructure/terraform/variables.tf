@@ -525,6 +525,42 @@ variable "capital_fabric_file" {
   }
 }
 
+variable "source_candidates_file" {
+  description = <<-EOT
+    A committed JSON list of candidate data sources the deep brain mounts and
+    reads as `QIP_SOURCE_CANDIDATES_PATH`, or null where this environment has
+    no source for the node to assess.
+
+    Same convention as the universe, the registrations, the statement and the
+    fabric declaration above: a path in this repository, read with `file()`.
+
+    **Setting this is the second step, not the first.** Every entry names the
+    egress route its source is reached through, and under ADR 0054 a source is
+    probed only where a reviewed route already exists — an Envoy cluster and a
+    listener in `egress/envoy.yaml`, because the proxy is a reverse proxy and
+    a process cannot name a destination in a request that has no field for one.
+    Mounting a catalogue whose routes this environment's proxy does not serve
+    gives the node a list it can load and cannot reach.
+
+    Null renders no variable, and the deep brain's banner then says no source
+    was assessed. That is not a degraded state and is not refused at start-up,
+    unlike the universe: no control reads the source catalogue, so an absent
+    one starves nothing, whereas an absent universe feeds no exposure bucket
+    and leaves two limits unable to fire.
+
+    Setting it cannot widen what the platform may reach. The routes are the
+    boundary; this file selects among them and adds none.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.source_candidates_file == null ? true : can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.source_candidates_file))
+    error_message = "The source candidates file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read."
+  }
+}
+
 variable "notification_channels" {
   description = "Where alerts are sent. An alert with nowhere to go is not an alert."
   type        = list(string)

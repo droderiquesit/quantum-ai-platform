@@ -75,6 +75,15 @@ execution_nodes = {}
 # `last_assessment: null` — see dev/terraform.tfvars for the whole argument,
 # including why a committed statement is a same-day act and why a fabric
 # declaration is appended to rather than edited.
+#
+# `source_candidates_file` — the deep brain's, not the API's — stays unset for
+# a different reason. Every entry names the egress route its source is reached
+# through, and under ADR 0054 a source is probed only where a reviewed route
+# already exists; the committed catalogue names `api.frankfurter.dev` on
+# 127.0.0.1:9105, which the bootstrap does serve. It is unset because nothing
+# has been observed making that call from a deployed process, and mounting it
+# would put a claim in the banner no run has earned. Unset, the node assesses
+# nothing and says so — which starves no control, unlike an absent universe.
 
 enable_bigquery      = false
 enable_cloud_storage = false

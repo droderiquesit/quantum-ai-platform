@@ -231,6 +231,20 @@ fn run() -> Result<()> {
         .open_trial_book(config.storage.key_value("trial-book")?, "trial-book")
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
+    // Candidate data sources, assessed against the reviewed egress routes the
+    // deployment mounts (ADR 0054). Absent configuration means this process
+    // assesses nothing, which is the honest state for a deployment that has
+    // not been given a catalogue — unlike the universe above, an empty source
+    // catalogue starves no control, and refusing to start over it would stop a
+    // node that has every other input it needs.
+    //
+    // Until this call `DataFinder::assess` was reached from no application at
+    // all: the whole licensing evaluation, the dark-tier hard line, the robots
+    // check and the schema fingerprint ran only in tests, so no deployed
+    // process had ever refused a source or admitted one.
+    let assessed = assess_candidates(&mut platform, started);
+    println!("  sources:          {assessed}");
+
     // The OpenObserve drain (ADR 0028): absent configuration means this
     // process's telemetry stays where it already is, on /metrics on the health
     // port bound above. Set means a thread starts that POSTs this node's
@@ -507,6 +521,88 @@ fn load_universe(
         &catalogue.manifest,
     )?;
     Ok(catalogue)
+}
+
+/// Where the committed candidate-source catalogue is mounted.
+///
+/// `data/datasets/source-candidates.json` in the repository. Unlike
+/// `QIP_UNIVERSE_PATH`, an unset value is not a refusal: an empty source
+/// catalogue starves no control, whereas an empty universe feeds no exposure
+/// bucket and hides two limits that can then never fire.
+const SOURCE_CANDIDATES_VARIABLE: &str = "QIP_SOURCE_CANDIDATES_PATH";
+
+/// How this platform identifies itself to a publisher it probes.
+///
+/// A publisher's only means of asking this platform to stop is to block a user
+/// agent, so the name is stated here, in the composition root, rather than
+/// defaulted inside the probe — a default would be a name nobody chose
+/// appearing in somebody else's access log.
+const SOURCE_PROBE_USER_AGENT: &str = "qip-deepbrain-source-probe/1.0";
+
+/// Assess the committed candidate sources, one reviewed route at a time.
+///
+/// ADR 0054: a source is probed only where a reviewed egress route already
+/// exists, so each entry carries its own route and gets its own probe. One
+/// candidate per call rather than the whole list per call, because a probe is
+/// bound to a single route and a batch would have to pick one of them.
+///
+/// **Every outcome is a string, and none is an error that stops the node.** A
+/// source that cannot be assessed is a source that stays out of the catalogue,
+/// which is the safe direction; refusing to start over an unreachable vendor
+/// would let a publisher's outage stop a research node that needs nothing from
+/// them. What must not happen — and does not — is silence: the count of
+/// registered, refused and unreachable is printed in the banner, so an operator
+/// reading a node that assessed nothing can see whether it had nothing to
+/// assess or could reach none of it.
+fn assess_candidates(platform: &mut Platform, now: qip_core::Timestamp) -> String {
+    let Some(path) = std::env::var(SOURCE_CANDIDATES_VARIABLE)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return format!("{SOURCE_CANDIDATES_VARIABLE} unset; no source assessed");
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => return format!("{path} cannot be read: {error}"),
+    };
+    let loaded = match qip_data_finder::catalogue::load(&text, now) {
+        Ok(loaded) => loaded,
+        // A malformed catalogue is loud and does not degrade to zero
+        // candidates: the two states look identical in a count, and one of
+        // them is a deployment nobody has noticed is broken.
+        Err(error) => return format!("catalogue refused: {}", error.message()),
+    };
+
+    let (mut registered, mut refused, mut unreachable) = (0usize, 0usize, 0usize);
+    for entry in &loaded.entries {
+        let mut probe = match qip_data_finder::probe::NetworkProbe::through(
+            &entry.egress_route,
+            SOURCE_PROBE_USER_AGENT,
+        ) {
+            Ok(probe) => probe,
+            Err(_) => {
+                unreachable += 1;
+                continue;
+            }
+        };
+        match platform.assess_sources(vec![entry.candidate.clone()], &mut probe, now) {
+            Ok(assessment) => {
+                registered += assessment.catalogued.len();
+                refused += assessment
+                    .decisions
+                    .iter()
+                    .filter(|decision| !decision.is_registered())
+                    .count();
+            }
+            Err(_) => unreachable += 1,
+        }
+    }
+    format!(
+        "{} candidate(s) from catalogue {}: {registered} registered, {refused} refused, \
+         {unreachable} unreachable",
+        loaded.len(),
+        loaded.digest
+    )
 }
 
 fn banner(

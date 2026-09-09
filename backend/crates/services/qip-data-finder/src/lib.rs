@@ -61,6 +61,7 @@
 //! for the services they cannot reach.
 
 pub mod admission;
+pub mod catalogue;
 pub mod coverage;
 pub mod decision;
 pub mod endpoint;

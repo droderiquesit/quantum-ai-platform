@@ -323,6 +323,28 @@ vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7ec
 #   What it cannot do, whatever it says: move money. ADR 0021 permits the
 #   deterministic gate and refuses the engine behind it, an admitted verdict
 #   carries no way to execute, and no code in this workspace consumes one.
+#
+# source_candidates_file = "data/datasets/source-candidates.json"
+#   would mount the candidate data sources the deep brain assesses — the one
+#   production caller `DataFinder::assess` has, and with it the licensing
+#   evaluation, the dark-tier hard line, the robots check and the schema
+#   fingerprint that ran only in tests before it.
+#
+#   It is the *second* step and not the first. Every entry names the egress
+#   route its source is reached through, and under ADR 0054 a source is probed
+#   only where a reviewed route already exists — an Envoy cluster and a
+#   listener in egress/envoy.yaml, because the proxy is a reverse proxy and a
+#   process cannot name a destination in a request that has no field for one.
+#   The committed catalogue names `api.frankfurter.dev` on 127.0.0.1:9105,
+#   which this environment's bootstrap does serve; it stays unset because
+#   nothing has yet been observed making that call from a deployed process,
+#   and mounting it would put a claim in the banner that no run has earned.
+#
+#   Unset, the deep brain assesses nothing and its banner says so. That is not
+#   a degraded state: no control reads the source catalogue, so an absent one
+#   starves nothing — unlike an absent universe, which feeds no exposure
+#   bucket and leaves two limits unable to fire, and is refused at start-up
+#   for exactly that reason.
 
 # --- Customer identity ------------------------------------------------------
 # Identity Platform for customer sign-in, activated once real hostnames

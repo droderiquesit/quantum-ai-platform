@@ -1,0 +1,65 @@
+[
+  {
+    "candidate": {
+      "identity": {
+        "id": "frankfurter-reference-rates",
+        "name": "Frankfurter daily reference rates",
+        "publisher": "Frankfurter"
+      },
+      "endpoint": {
+        "scheme": "https",
+        "host": "api.frankfurter.dev",
+        "port": null,
+        "path": "/v1/latest",
+        "mechanism": {
+          "mechanism": "rest",
+          "auth": {
+            "auth": "none"
+          },
+          "incremental_parameter": null,
+          "page_size": 1
+        }
+      },
+      "declared_coverage": {
+        "asset_classes": [
+          "foreign_exchange"
+        ],
+        "regions": [
+          "europe"
+        ],
+        "instruments": [
+          "EUR/GBP",
+          "EUR/USD"
+        ],
+        "update_frequency": "daily",
+        "history_starts": "2015-09-12T00:00:00.000Z"
+      },
+      "declared_licensing": {
+        "posture": "declared",
+        "license": {
+          "identifier": "frankfurter-public-api",
+          "permits": [
+            "Derive",
+            "Trade"
+          ],
+          "attribution_required": false,
+          "expires_at": null,
+          "effective_from": null
+        }
+      },
+      "cost": {
+        "monthly_fee": "0",
+        "per_request": "0",
+        "included_requests": 18446744073709551615,
+        "currency": "EUR"
+      },
+      "region": "europe",
+      "produces": [
+        "market_quote"
+      ],
+      "discovered_from": "the one source in this repository proven end to end; it already has a reviewed egress route",
+      "discovered_at": "2025-09-09T00:00:00.000Z"
+    },
+    "egress_route": "http://127.0.0.1:9105"
+  }
+]

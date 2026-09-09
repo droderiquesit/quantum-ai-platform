@@ -108,32 +108,46 @@ impl SourceCandidate {
         discovered_from: impl Into<String>,
         discovered_at: Timestamp,
     ) -> Result<Self> {
-        let discovered_from = discovered_from.into();
-        if discovered_from.trim().is_empty() {
-            return Err(Error::invalid(format!(
-                "candidate `{}` must record where it was discovered; a source that appeared \
-                 from nowhere cannot be re-derived when its decision is questioned",
-                identity.id()
-            )));
-        }
-        let produces: BTreeSet<Topic> = produces.into_iter().collect();
-        if produces.is_empty() {
-            return Err(Error::invalid(format!(
-                "candidate `{}` must declare what it produces, or no adapter can publish it",
-                identity.id()
-            )));
-        }
-        Ok(Self {
+        let candidate = Self {
             identity,
             endpoint,
             declared_coverage,
             declared_licensing,
             cost,
             region,
-            produces,
-            discovered_from,
+            produces: produces.into_iter().collect(),
+            discovered_from: discovered_from.into(),
             discovered_at,
-        })
+        };
+        candidate.validate()?;
+        Ok(candidate)
+    }
+
+    /// The invariants a candidate must satisfy however it was built.
+    ///
+    /// Called by [`Self::new`], and **callable by a deserialiser**, which is
+    /// why it exists as a method rather than as inline checks in the
+    /// constructor. Every field here is private and `Deserialize` is derived,
+    /// so serde writes them directly and walks straight past a constructor's
+    /// guards: a candidate loaded from a committed catalogue would otherwise
+    /// be admitted on terms a programmatically built one is refused on. One
+    /// place holds both paths, so a check added later cannot apply to only
+    /// one of them.
+    pub fn validate(&self) -> Result<()> {
+        if self.discovered_from.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "candidate `{}` must record where it was discovered; a source that appeared \
+                 from nowhere cannot be re-derived when its decision is questioned",
+                self.identity.id()
+            )));
+        }
+        if self.produces.is_empty() {
+            return Err(Error::invalid(format!(
+                "candidate `{}` must declare what it produces, or no adapter can publish it",
+                self.identity.id()
+            )));
+        }
+        Ok(())
     }
 
     pub fn identity(&self) -> &SourceIdentity {

@@ -139,6 +139,30 @@ locals {
         }
       },
     )
+    # The candidate data sources the deep brain assesses, each beside the
+    # reviewed egress route it is reached through (ADR 0054).
+    #
+    # The route is why this is a per-environment choice rather than a constant.
+    # A candidate is probed only where an Envoy cluster and a listener already
+    # exist for its host — the proxy is a reverse proxy and a process cannot
+    # name a destination — so mounting a catalogue whose routes this
+    # environment's proxy does not serve gives the node a list it can load and
+    # not reach. Setting this is therefore the *second* step: the first is a
+    # cluster in `egress/envoy.yaml`.
+    #
+    # Unset, the node assesses nothing and its banner says so. That is not a
+    # degraded state: no control reads the source catalogue, so an absent one
+    # starves nothing — unlike an absent universe, which feeds no exposure
+    # bucket and hides two limits that can then never fire, and is refused at
+    # start-up for exactly that reason.
+    deepbrain = var.source_candidates_file == null ? {} : {
+      source-candidates = {
+        content           = file("${path.module}/../../${var.source_candidates_file}")
+        file_name         = "source-candidates.json"
+        content_type      = "application/json"
+        env_file_variable = "QIP_SOURCE_CANDIDATES_PATH"
+      }
+    }
   }
 
   cloud_run_catalogue = {
@@ -404,13 +428,26 @@ locals {
         QIP_AUTONOMY_CEILING         = var.autonomy_ceiling
         QIP_CYCLE_INTERVAL_SECONDS   = var.cycle_interval_seconds
       }
+      # The universe every root reads, and the candidate sources this
+      # environment named, if any. A comprehension rather than a bare `merge`
+      # for the reason the API's block gives: three acceptance walks read the
+      # universe's mount out of the lines under `config_files = {`, and a
+      # `merge(` on that line makes each of them read nothing and stop
+      # checking rather than fail. That is exactly what happened when this was
+      # first written as a merge — the walk reported the deep brain mounting
+      # no config_files at all.
       config_files = {
-        universe = {
-          content           = local.universe_catalogue
-          file_name         = "universe.json"
-          content_type      = "application/json"
-          env_file_variable = "QIP_UNIVERSE_PATH"
-        }
+        for name, document in merge(
+          {
+            universe = {
+              content           = local.universe_catalogue
+              file_name         = "universe.json"
+              content_type      = "application/json"
+              env_file_variable = "QIP_UNIVERSE_PATH"
+            }
+          },
+          local.optional_config_files.deepbrain,
+        ) : name => document
       }
       secret_mounts = {
         capital-envelope-key = {

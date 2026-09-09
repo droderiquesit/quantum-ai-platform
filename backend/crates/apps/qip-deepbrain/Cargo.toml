@@ -28,6 +28,12 @@ qip-investment-agents.workspace = true
 qip-risk.workspace = true
 qip-risk-engine.workspace = true
 qip-kernel.workspace = true
+# The source-candidate catalogue and the probe that reaches a reviewed egress
+# route (ADR 0054). This root is the only place a candidate list is read from
+# disk and the only place a probe is built, for the same reason it is the only
+# place the universe is read: a service that reached for either could not be
+# deployed twice with different sources.
+qip-data-finder.workspace = true
 # The evolution loop: the grammar and trial ledger, the harness that scores a
 # generated candidate on observed bars, and the evidence types the factory's
 # gate reads. All workspace-internal; the app is the composition root where
