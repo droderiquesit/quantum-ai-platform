@@ -24,6 +24,7 @@ use crate::robots::RobotsPolicy;
 use crate::schema::SourceSchema;
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
+use qip_transport::http::{ClientLimits, HttpClient, HttpRequest, HttpResponse, Method};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -283,107 +284,217 @@ impl SourceProbe for InMemoryProbe {
     }
 }
 
-/// The probe a deployment would use, and cannot yet.
+/// The probe a deployment uses, reaching one source through one egress route.
 ///
-/// This build links no HTTP transport and holds no credentials, so every
-/// method reports [`Error::Unavailable`] naming what is missing. It exists as
-/// a type rather than as a gap in the documentation so that wiring a
-/// deployment to the network fails at the first probe, in the process that
-/// was misconfigured, rather than producing a plausible empty result.
-#[derive(Debug, Default)]
+/// # How it reaches anything (ADR 0054)
+///
+/// **Not by naming a host.** [`qip_transport::http`] emits an origin-form
+/// request line and a `host:` header carrying whatever authority its base URL
+/// had; it never emits `CONNECT` and never an absolute-form URI. The egress
+/// proxy in front of it is a *reverse* proxy whose listeners each bind a
+/// loopback port meaning exactly one upstream, so the destination is a property
+/// of the socket rather than a value this process supplies. A probe cannot
+/// reach a host by asking for it, because the request has no field in which a
+/// host can be asked for.
+///
+/// So this type is constructed with the **base URL of the egress route** for
+/// one source, exactly as `qip_storage::gcp` and the Frankfurter connector are.
+/// It is not a crawler and cannot become one: pointing it at a host with no
+/// reviewed route produces a connection refused on loopback, not a fetch.
+///
+/// # What it still refuses
+///
+/// Every method needs a user agent, because a publisher's only way to say no is
+/// to block one, and an anonymous crawler is one that cannot be told no. That
+/// refusal is a construction-time check rather than a per-call one, so a
+/// misconfigured deployment fails at assembly rather than at the first source.
+///
+/// It carries no credential. The `Registered` and `Licensed` access modes
+/// `tier.rs` models therefore stay unreachable, and that is deliberate: a
+/// credential in a discovery path is a credential in a process whose whole job
+/// is to touch things nobody has vetted.
+#[derive(Debug)]
 pub struct NetworkProbe {
-    user_agent: Option<String>,
-    egress_policy: Option<String>,
-    tls_trust_roots: Option<String>,
-    credentials: BTreeMap<String, String>,
+    /// The loopback base URL of this source's reviewed egress route, without a
+    /// trailing slash.
+    base_url: String,
+    user_agent: String,
+    client: HttpClient,
 }
 
 impl NetworkProbe {
-    /// The transport requirement, which no amount of configuration satisfies
-    /// in this phase.
-    pub const TRANSPORT_REQUIREMENT: &'static str = "an HTTP/1.1 client with TLS 1.2+ and certificate verification (no transport is linked \
-         into this build; see docs/adr/0009-tiered-dependency-policy.md)";
-
-    pub fn unconfigured() -> Self {
-        Self::default()
-    }
-
-    /// Name the crawler. A publisher's only means of asking us to stop is to
-    /// block a user agent, so an anonymous crawler is one that cannot be told
-    /// no.
-    pub fn identified_as(mut self, user_agent: impl Into<String>) -> Self {
-        self.user_agent = Some(user_agent.into());
-        self
-    }
-
-    /// Declare which egress the probe may leave through.
-    pub fn through_egress(mut self, policy: impl Into<String>) -> Self {
-        self.egress_policy = Some(policy.into());
-        self
-    }
-
-    pub fn trusting(mut self, trust_roots: impl Into<String>) -> Self {
-        self.tls_trust_roots = Some(trust_roots.into());
-        self
-    }
-
-    pub fn with_credential(
-        mut self,
-        host: impl Into<String>,
-        reference: impl Into<String>,
-    ) -> Self {
-        self.credentials.insert(host.into(), reference.into());
-        self
-    }
-
-    /// Everything production must supply before this probe can work.
+    /// Build a probe against one reviewed egress route.
     ///
-    /// The transport requirement is always present: it is a build-time fact,
-    /// not a configuration value, and a list that could empty itself would
-    /// suggest this probe becomes usable once the environment is right.
-    pub fn missing_configuration(&self) -> Vec<String> {
-        let mut missing = vec![Self::TRANSPORT_REQUIREMENT.to_string()];
-        if self.egress_policy.is_none() {
-            missing.push(
-                "an outbound egress policy naming which hosts and ports the crawler may reach"
-                    .to_string(),
-            );
+    /// Refuses an `https` base URL by name rather than downgrading it. The
+    /// client has no TLS stack; the proxy originates TLS upstream. A caller
+    /// handing an `https` URL has confused the route with the destination, and
+    /// the two are the whole distinction this type rests on.
+    pub fn through(base_url: impl Into<String>, user_agent: impl Into<String>) -> Result<Self> {
+        let base_url = base_url.into().trim_end_matches('/').to_string();
+        let user_agent = user_agent.into();
+        if user_agent.trim().is_empty() {
+            return Err(Error::invalid(
+                "a source probe needs a user agent: a publisher's only means of asking this \
+                 platform to stop is to block one, so an anonymous probe is one that cannot be \
+                 told no",
+            ));
         }
-        if self.user_agent.is_none() {
-            missing.push(
-                "a user-agent identity, so a publisher can identify and block this crawler"
-                    .to_string(),
-            );
+        if base_url.starts_with("https://") {
+            return Err(Error::invalid(format!(
+                "the probe base URL `{base_url}` is https, and this client has no TLS stack. It \
+                 addresses the loopback egress route for one source; the proxy behind that route \
+                 originates TLS upstream. See ADR 0054"
+            )));
         }
-        if self.tls_trust_roots.is_none() {
-            missing.push("a TLS trust root bundle".to_string());
+        if !base_url.starts_with("http://") {
+            return Err(Error::invalid(format!(
+                "the probe base URL `{base_url}` names no scheme this client speaks; it must be \
+                 the `http://` address of a reviewed egress route"
+            )));
         }
-        if self.credentials.is_empty() {
-            missing.push(
-                "per-host credentials for the sources that require authentication".to_string(),
-            );
-        }
-        missing
+        Ok(Self {
+            base_url,
+            user_agent,
+            client: HttpClient::new(ClientLimits::default()),
+        })
     }
 
-    fn unavailable(&self, attempted: &str) -> Error {
-        Error::unavailable(format!(
-            "the network probe cannot {attempted}. It requires: {}",
-            self.missing_configuration().join("; ")
-        ))
+    /// The route this probe is bound to.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Send one request through the route, carrying the user agent.
+    fn fetch(&self, method: Method, path: &str) -> std::result::Result<HttpResponse, String> {
+        let url = format!("{}{}", self.base_url, path);
+        let request = HttpRequest::new(method, &url)
+            .map_err(|error| error.to_string())?
+            .with_header("user-agent", &self.user_agent)
+            // Named so a publisher reading its own logs can tell a discovery
+            // probe from an ingestion poll without correlating timestamps.
+            .with_header("accept", "*/*");
+        self.client
+            .send(&request)
+            .map_err(|error| error.to_string())
     }
 }
 
 impl SourceProbe for NetworkProbe {
+    /// Ask the route's host for its robots.txt.
+    ///
+    /// `host` is not used to choose a destination — it cannot be; see the type
+    /// documentation — and a mismatch between it and the route is a
+    /// configuration error the catalogue is responsible for refusing. It is
+    /// carried into the refusal text so that error names the source rather than
+    /// a port number.
     fn robots(&mut self, host: &str, _at: Timestamp) -> Result<RobotsFetch> {
-        Err(self.unavailable(&format!("fetch https://{host}/robots.txt")))
+        let started = std::time::Instant::now();
+        match self.fetch(Method::Get, "/robots.txt") {
+            Ok(response) if response.is_success() => match response.body_as_str() {
+                Ok(body) => Ok(RobotsFetch::Served {
+                    body: body.to_string(),
+                    latency: elapsed(started),
+                }),
+                // A robots.txt that is not UTF-8 is not a robots.txt. Treated
+                // as unreachable rather than as absent: absent means the host
+                // answered and has no policy, and this host answered with
+                // something nobody can read, which is a different fact.
+                Err(error) => Ok(RobotsFetch::Unreachable {
+                    reason: format!("{host} served an undecodable robots.txt: {error}"),
+                }),
+            },
+            Ok(response) => Ok(RobotsFetch::Absent {
+                status: response.status,
+                latency: elapsed(started),
+            }),
+            Err(reason) => Ok(RobotsFetch::Unreachable {
+                reason: format!("{host} via {}: {reason}", self.base_url),
+            }),
+        }
     }
 
     fn head(&mut self, endpoint: &SourceEndpoint, _at: Timestamp) -> Result<HeadResponse> {
-        Err(self.unavailable(&format!("HEAD {}", endpoint.url())))
+        let started = std::time::Instant::now();
+        let response = self
+            .fetch(Method::Head, endpoint.path())
+            .map_err(|reason| {
+                Error::unavailable(format!(
+                    "HEAD {} through {} failed: {reason}",
+                    endpoint.url(),
+                    self.base_url
+                ))
+            })?;
+        Ok(HeadResponse {
+            status: response.status,
+            content_type: response.header("content-type").map(str::to_string),
+            content_length: response
+                .header("content-length")
+                .and_then(|value| value.parse().ok()),
+            // Deliberately not parsed. `Last-Modified` is an RFC 7231 date and
+            // this crate has no date parser; inventing one to fill a field
+            // whose `None` already means "the source said nothing about when
+            // its content changed" would trade a known gap for a guess. The
+            // freshness finding comes from the payload's own timestamp.
+            last_modified: None,
+            latency: elapsed(started),
+        })
     }
 
     fn sample(&mut self, endpoint: &SourceEndpoint, _at: Timestamp) -> Result<PayloadSample> {
-        Err(self.unavailable(&format!("sample {}", endpoint.url())))
+        let started = std::time::Instant::now();
+        let response = self.fetch(Method::Get, endpoint.path()).map_err(|reason| {
+            Error::unavailable(format!(
+                "sampling {} through {} failed: {reason}",
+                endpoint.url(),
+                self.base_url
+            ))
+        })?;
+        if !response.is_success() {
+            return Err(Error::unavailable(format!(
+                "sampling {} through {} answered HTTP {}: a non-2xx body is not a payload, and \
+                 fingerprinting an error page as a schema is how a source is admitted on the \
+                 shape of its own 404",
+                endpoint.url(),
+                self.base_url,
+                response.status
+            )));
+        }
+        let body = response
+            .body_as_str()
+            .map_err(|error| {
+                Error::invalid(format!(
+                    "the payload from {} is not valid UTF-8: {error}",
+                    endpoint.url()
+                ))
+            })?
+            .to_string();
+        Ok(PayloadSample {
+            media_type: response
+                .header("content-type")
+                // The bare type, without the charset parameter: the schema
+                // fingerprint keys on `application/json`, and
+                // `application/json; charset=utf-8` is the same media type
+                // wearing a parameter.
+                .and_then(|value| value.split(';').next())
+                .unwrap_or("application/octet-stream")
+                .trim()
+                .to_string(),
+            body,
+            // As with `last_modified`: the payload's own instant needs a parser
+            // that knows this source's shape, which is the adapter's job and
+            // not the probe's. `None` is a freshness finding, and `assess`
+            // treats it as one.
+            payload_at: None,
+            latency: elapsed(started),
+        })
     }
+}
+
+/// Wall-clock elapsed since `started`, as the platform's own `Duration`.
+///
+/// A measurement rather than a clock reading: the probe is handed the
+/// simulation instant for everything it *records*, and latency is the one thing
+/// only the wall clock can answer.
+fn elapsed(started: std::time::Instant) -> Duration {
+    Duration::from_nanos(started.elapsed().as_nanos().min(i64::MAX as u128) as i64)
 }

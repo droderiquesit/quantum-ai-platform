@@ -16,6 +16,12 @@ qip-financial.workspace = true
 qip-events.workspace = true
 qip-mesh.workspace = true
 qip-market-ingestion.workspace = true
+# The HTTP client the source probe reaches an egress route through (ADR 0054).
+# An in-workspace library, not a third-party crate, so ADR 0002 and ADR 0009's
+# prohibition is not engaged; a service depending on a lib is the legal
+# direction. What it buys is a probe that can reach exactly the routes somebody
+# reviewed, and nothing else.
+qip-transport.workspace = true
 
 [lints]
 workspace = true

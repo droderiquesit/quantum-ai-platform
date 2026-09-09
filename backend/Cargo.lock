@@ -272,6 +272,7 @@ dependencies = [
  "qip-financial",
  "qip-market-ingestion",
  "qip-mesh",
+ "qip-transport",
  "serde",
  "serde_json",
 ]
