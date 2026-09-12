@@ -427,14 +427,10 @@ fn run() -> Result<()> {
         source_candidates,
     ));
     // Every learning round's window is assembled through a fetch campaign
-    // (§22.4), and the manifest a closed campaign leaves behind is written
-    // here — the same storage the event log archives to — as well as to the
-    // log, so a demand for what a fit used is answered from either.
-    evolution = evolution.with_campaign_store(
-        config
-            .storage
-            .key_value(qip_deepbrain::campaign::STORE_NAMESPACE)?,
-    );
+    // (§22.4), and the manifest a closed campaign leaves behind goes to the
+    // platform's event log under its own permanently retained topic — the
+    // log the archive below seals — and nowhere else. A second copy in the
+    // node's key-value store was two claims about one fact.
 
     let summary = node::run(
         &mut platform,

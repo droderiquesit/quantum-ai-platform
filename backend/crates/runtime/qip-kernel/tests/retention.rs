@@ -123,3 +123,75 @@ fn daily_bars_the_platform_observes_are_retained_and_minute_bars_are_not() -> Re
     );
     Ok(())
 }
+
+/// The 513th instrument's daily bars are refused by the fallback series —
+/// the bound is on instruments, and a new one is not admitted by evicting
+/// another's insurance — and the refusal reaches the cycle report *once*,
+/// as the fact that this instrument is uninsured, not once per bar per
+/// cycle for the life of the process.
+///
+/// Mutated by dropping the `self.fallback_refused.insert(key.clone())`
+/// condition in `Platform::observe` — confirmed the second cycle then
+/// carries the refusal again and this fails, then restored.
+#[test]
+fn an_instrument_past_the_fallback_bound_is_reported_once_and_not_per_bar_per_cycle() -> Result<()>
+{
+    let mut platform = platform()?;
+    let bound = qip_data_finder::retention::FALLBACK_INSTRUMENTS;
+    // Fill the series to its bound, one daily bar each.
+    let absorbed = platform.observe(
+        (0..bound)
+            .map(|index| bar(&format!("obj-{index:04}"), Interval::Day, 0))
+            .collect(),
+    );
+    assert_eq!(
+        absorbed, bound,
+        "premise: the series was filled to its bound"
+    );
+    assert_eq!(platform.fallback_series().instruments(), bound);
+
+    // One more instrument, two bars of it, then two cycles.
+    let absorbed = platform.observe(vec![
+        bar("obj-uninsured", Interval::Day, 0),
+        bar("obj-uninsured", Interval::Day, 1),
+    ]);
+    assert_eq!(
+        absorbed, 2,
+        "premise: the bars were absorbed into the working series"
+    );
+    assert!(
+        platform.fallback_bars("obj-uninsured").is_empty(),
+        "premise: the instrument past the bound is not insured"
+    );
+    let fallback_problems = |report: &qip_kernel::CycleReport| -> Vec<String> {
+        report
+            .problems()
+            .into_iter()
+            .filter(|(_, problem)| problem.contains("fallback series"))
+            .map(|(_, problem)| problem.to_string())
+            .collect()
+    };
+    let first = platform.run_cycle(start().saturating_add(Duration::from_days(2)));
+    let problems = fallback_problems(&first);
+    assert_eq!(
+        problems.len(),
+        1,
+        "two bars of one uninsured instrument are one fact, not two: {problems:?}"
+    );
+    assert!(
+        problems[0].contains("obj-uninsured"),
+        "the problem does not name the instrument: {}",
+        problems[0]
+    );
+
+    // The next cycle brings another bar of it; the fact is already on the
+    // record and is not repeated.
+    platform.observe(vec![bar("obj-uninsured", Interval::Day, 2)]);
+    let second = platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    assert!(
+        fallback_problems(&second).is_empty(),
+        "the refusal was reported again for the same instrument: {:?}",
+        fallback_problems(&second)
+    );
+    Ok(())
+}

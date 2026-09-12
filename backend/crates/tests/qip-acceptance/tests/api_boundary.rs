@@ -952,7 +952,11 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
     for path in files_with_extension("backend/crates/runtime/qip-kernel/src", "rs") {
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
-        if !text.contains("impl Platform {") {
+        // Either spelling of the block: a sibling module may name the type
+        // through the crate root, and a scan that matched only the bare
+        // name would be the same hole this test closed once already, one
+        // spelling over.
+        if !text.contains("impl Platform {") && !text.contains("impl crate::Platform {") {
             continue;
         }
         impl_files += 1;

@@ -74,6 +74,13 @@ pub enum Topic {
     AlternativeDataReceived,
     ReferenceDataUpdated,
     DataQualityFailed,
+    /// The kernel referenced what a connector poll or a research campaign
+    /// fetched — the reference ledger's own record, so a restart rebuilds
+    /// the ledger from the log (ADR 0057). A Sense-group fact about a fetch,
+    /// evictable like the observations it describes; the revision a
+    /// reference may reveal is the permanent record, under
+    /// [`Topic::SourceRevisionDetected`].
+    DataReferenceRecorded,
 
     // --- UNDERSTAND ---
     EntityUpdated,
@@ -139,6 +146,22 @@ pub enum Topic {
     ModelEvaluated,
     LearningCompleted,
     LessonRecorded,
+    /// A source was found to have revised an extent this platform had
+    /// already used (ADR 0057). Its own topic rather than
+    /// `DataQualityFailed`, which is not retained permanently and which the
+    /// ingestion suites already fill with another body: a revision is what
+    /// flags a backtest, and a flag the log may have evicted is a replay
+    /// that re-derives nothing.
+    SourceRevisionDetected,
+    /// A research campaign closed and its manifest is on the record — what
+    /// a fit used, retained for as long as the log is. Its own topic rather
+    /// than `LearningCompleted`, whose every frame the kernel decodes as a
+    /// cycle entry.
+    ResearchCampaignClosed,
+    /// A closed campaign was found, after the fact, to have used an extent
+    /// the source has since revised — §22.3's "the backtest that used the
+    /// original is flagged", as a record naming the campaign.
+    ResearchCampaignFlagged,
 
     // --- SYSTEM ---
     ServiceStarted,
@@ -153,7 +176,7 @@ pub enum Topic {
 impl Topic {
     /// Every topic, in declaration order. Used by the registry, the
     /// documentation-drift test and the observability bootstrap.
-    pub const ALL: [Self; 66] = [
+    pub const ALL: [Self; 70] = [
         Self::MarketTick,
         Self::MarketQuote,
         Self::MarketTrade,
@@ -166,6 +189,7 @@ impl Topic {
         Self::AlternativeDataReceived,
         Self::ReferenceDataUpdated,
         Self::DataQualityFailed,
+        Self::DataReferenceRecorded,
         Self::EntityUpdated,
         Self::EntityResolved,
         Self::RelationshipUpdated,
@@ -213,6 +237,9 @@ impl Topic {
         Self::ModelEvaluated,
         Self::LearningCompleted,
         Self::LessonRecorded,
+        Self::SourceRevisionDetected,
+        Self::ResearchCampaignClosed,
+        Self::ResearchCampaignFlagged,
         Self::ServiceStarted,
         Self::ServiceStopped,
         Self::KillSwitchEngaged,
@@ -238,6 +265,7 @@ impl Topic {
             Self::AlternativeDataReceived => "altdata.received",
             Self::ReferenceDataUpdated => "reference.updated",
             Self::DataQualityFailed => "data.quality_failed",
+            Self::DataReferenceRecorded => "data.reference_recorded",
             Self::EntityUpdated => "entity.updated",
             Self::EntityResolved => "entity.resolved",
             Self::RelationshipUpdated => "relationship.updated",
@@ -285,6 +313,9 @@ impl Topic {
             Self::ModelEvaluated => "model.evaluated",
             Self::LearningCompleted => "learning.completed",
             Self::LessonRecorded => "lesson.recorded",
+            Self::SourceRevisionDetected => "learning.source_revised",
+            Self::ResearchCampaignClosed => "learning.campaign_closed",
+            Self::ResearchCampaignFlagged => "learning.campaign_flagged",
             Self::ServiceStarted => "system.service_started",
             Self::ServiceStopped => "system.service_stopped",
             Self::KillSwitchEngaged => "system.kill_switch_engaged",
@@ -313,7 +344,8 @@ impl Topic {
             | Self::NewsReceived
             | Self::AlternativeDataReceived
             | Self::ReferenceDataUpdated
-            | Self::DataQualityFailed => TopicGroup::Sense,
+            | Self::DataQualityFailed
+            | Self::DataReferenceRecorded => TopicGroup::Sense,
 
             Self::EntityUpdated
             | Self::EntityResolved
@@ -367,7 +399,10 @@ impl Topic {
             | Self::HypothesisScored
             | Self::ModelEvaluated
             | Self::LearningCompleted
-            | Self::LessonRecorded => TopicGroup::Learn,
+            | Self::LessonRecorded
+            | Self::SourceRevisionDetected
+            | Self::ResearchCampaignClosed
+            | Self::ResearchCampaignFlagged => TopicGroup::Learn,
 
             Self::ServiceStarted
             | Self::ServiceStopped

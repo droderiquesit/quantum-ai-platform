@@ -57,9 +57,7 @@ use qip_strategy::compile::StrategyCompiler;
 use std::collections::BTreeMap;
 
 use crate::campaign::{self, CampaignConfig};
-use qip_core::kv::KeyValueStore;
 use qip_data_finder::campaign::{ConcentrationVerdict, assess_concentration};
-use std::sync::Arc;
 
 /// How the evolution loop is tuned. Every knob is a policy with a reason,
 /// not a magic number discovered in a constructor.
@@ -275,10 +273,6 @@ pub struct EvolutionEngine {
     /// where a candidate list comes from, and [`Self::with_discovery`] is
     /// the one door that attaches one.
     discovery: Option<crate::discovery::DiscoveryDesk>,
-    /// Where a closed campaign's manifest is written, when the node has a
-    /// store — `None` journals it to the platform's event log only, which
-    /// every campaign does regardless.
-    campaign_store: Option<Arc<dyn KeyValueStore>>,
     /// The bounds every learning round's campaign runs under (§22.4).
     campaign_config: CampaignConfig,
 }
@@ -321,7 +315,6 @@ impl EvolutionEngine {
             learning: LearningDesk::new(config_learning, seed),
             stats: EvolutionStats::default(),
             discovery: None,
-            campaign_store: None,
             campaign_config: CampaignConfig::standard()?,
         })
     }
@@ -329,14 +322,6 @@ impl EvolutionEngine {
     /// Attach a discovery desk (§7.4-§7.6.2). Replaces one attached before.
     pub fn with_discovery(mut self, desk: crate::discovery::DiscoveryDesk) -> Self {
         self.discovery = Some(desk);
-        self
-    }
-
-    /// Write every closed campaign's manifest to `store`, under the campaign
-    /// id, beside the event-log record every campaign gets anyway (§22.4:
-    /// "the manifest proves what was used at the time").
-    pub fn with_campaign_store(mut self, store: Arc<dyn KeyValueStore>) -> Self {
-        self.campaign_store = Some(store);
         self
     }
 
@@ -437,7 +422,6 @@ impl EvolutionEngine {
             self.learning.minimum_bars(),
             cycle,
             now,
-            self.campaign_store.as_deref(),
             &self.campaign_config,
         )?
         else {
@@ -1760,7 +1744,7 @@ mod tests {
         assert_eq!(
             platform
                 .event_log()
-                .by_topic(qip_events::Topic::LearningCompleted)
+                .by_topic(qip_events::Topic::ResearchCampaignClosed)
                 .len(),
             1,
             "one campaign closed, one manifest journaled"

@@ -200,7 +200,7 @@ fn a_source_that_revises_an_extent_after_use_is_flagged_in_the_ledger_the_log_an
     );
     let logged_before = platform
         .event_log()
-        .by_topic(Topic::DataQualityFailed)
+        .by_topic(Topic::SourceRevisionDetected)
         .len();
 
     // The table re-served an hour later, byte for byte.
@@ -210,10 +210,10 @@ fn a_source_that_revises_an_extent_after_use_is_flagged_in_the_ledger_the_log_an
     assert_eq!(
         platform
             .event_log()
-            .by_topic(Topic::DataQualityFailed)
+            .by_topic(Topic::SourceRevisionDetected)
             .len(),
         logged_before,
-        "an unchanged re-fetch is not a data-quality event"
+        "an unchanged re-fetch is not a revision"
     );
     assert!(
         platform
@@ -280,11 +280,11 @@ fn a_source_that_revises_an_extent_after_use_is_flagged_in_the_ledger_the_log_an
 
     // 2. The hash-chained log holds the revision with both hashes, decodable
     //    as the typed record, and the chain still verifies.
-    let records = platform.event_log().by_topic(Topic::DataQualityFailed);
+    let records = platform.event_log().by_topic(Topic::SourceRevisionDetected);
     assert_eq!(
         records.len(),
         logged_before + 1,
-        "exactly one data-quality record was written for one revision"
+        "exactly one revision record was written for one revision"
     );
     let logged = StreamEnvelope::from_frame(records[records.len() - 1])?
         .decode::<SourceRevisionDetected>()?
@@ -325,5 +325,133 @@ fn a_source_that_revises_an_extent_after_use_is_flagged_in_the_ledger_the_log_an
         latest.saturating_add(Duration::from_hours(1)),
     )?;
     assert_eq!(again.outcome, LedgerOutcome::Unchanged);
+    Ok(())
+}
+
+/// The ledger outlives the process. Every reference is on the log before
+/// the in-memory ledger takes it, and a platform assembled over the same
+/// file-backed log rebuilds the ledger from those records: the extent it
+/// referenced, the hash it holds for it, the revision it caught and the
+/// sources backing each subject are all what they were. Without this a
+/// restarted node began with a ledger that had seen nothing, so a source
+/// revising an extent the previous process had used was a `First`, not a
+/// revision — the control that cannot fire, arriving on every restart.
+///
+/// Mutated by replacing `Self::resume_references(&event_log)?` in
+/// `Platform::new` with `ReferenceLedger::bounded()` — confirmed the
+/// restarted platform then holds an empty ledger and this fails on its
+/// length, then restored. Also mutated by removing the `holds_idempotent`
+/// check from `journal_once` — confirmed the unchanged re-fetch then writes
+/// a second reference record and the count assertion fails, then restored.
+#[test]
+fn a_restarted_platform_rebuilds_its_reference_ledger_from_the_log() -> Result<()> {
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-references-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let path = directory.join("events.jsonl");
+    let period = DataPeriod::instant(table_date());
+    let later = start().saturating_add(Duration::from_hours(1));
+    let latest = later.saturating_add(Duration::from_hours(1));
+
+    let (revised_hash, references_on_log) = {
+        let config = PlatformConfig::default().with_event_log_file(&path);
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )?;
+        platform.admit_source(admitted_frankfurter()?);
+        platform.reference_fetch(&frankfurter_digest(TABLE, start())?, start())?;
+        // The same table an hour on: the same fact, and not a second record.
+        assert_eq!(
+            platform
+                .reference_fetch(&frankfurter_digest(TABLE, later)?, later)?
+                .outcome,
+            LedgerOutcome::Unchanged
+        );
+        let revised =
+            platform.reference_fetch(&frankfurter_digest(REVISED_TABLE, latest)?, latest)?;
+        assert!(
+            revised.outcome.is_revised(),
+            "premise: the extent was revised"
+        );
+        let references_on_log = platform
+            .event_log()
+            .by_topic(Topic::DataReferenceRecorded)
+            .len();
+        assert_eq!(
+            references_on_log, 2,
+            "two hashes were referenced, so two reference records: the unchanged re-fetch is \
+             the same fact and must not be written twice"
+        );
+        (
+            revised.reference.content_hash().to_string(),
+            references_on_log,
+        )
+    };
+
+    // A second process over the same log, assembled an hour after the
+    // first stopped — as a restart is in life. Not at `start()`: the id
+    // stream is seeded from the configured seed and stamped with the
+    // assembly instant, so a second process assembling at the very instant
+    // the first did would mint the first's ids again and the log would
+    // refuse them as duplicates, which is a fact about the generator and not
+    // about the ledger this test is for.
+    let again = latest.saturating_add(Duration::from_hours(1));
+    let config = PlatformConfig::default().with_event_log_file(&path);
+    let (context, _clock) = Context::deterministic(again, config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        Universe::new(),
+        LimitSet::conservative_default(),
+    )?;
+    assert_eq!(
+        platform
+            .event_log()
+            .by_topic(Topic::DataReferenceRecorded)
+            .len(),
+        references_on_log,
+        "premise: the second process read the first's log back"
+    );
+    assert_eq!(
+        platform.reference_ledger().len(),
+        1,
+        "the restarted platform must hold the extent the first process referenced"
+    );
+    let held = platform
+        .reference_ledger()
+        .get(SOURCE, LOCATOR, period)
+        .ok_or_else(|| qip_core::error::Error::not_found("the restored reference"))?;
+    assert_eq!(
+        held.content_hash(),
+        revised_hash,
+        "the ledger must hold what the source now serves, as it did before the restart"
+    );
+    assert!(
+        platform
+            .revision_covering(SOURCE, &dollar_series(), &period)
+            .is_some(),
+        "the revision the first process caught must still flag after the restart"
+    );
+    assert!(platform.sources_backing(&dollar_series()).contains(SOURCE));
+    // And the restored ledger keeps detecting: the rewritten table again is
+    // unchanged, not a first reference, and a third rewrite is a revision.
+    platform.admit_source(admitted_frankfurter()?);
+    assert_eq!(
+        platform
+            .reference_fetch(&frankfurter_digest(REVISED_TABLE, again)?, again)?
+            .outcome,
+        LedgerOutcome::Unchanged,
+        "a restarted ledger that read the log knows the hash it holds"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
     Ok(())
 }

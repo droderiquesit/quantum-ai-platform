@@ -354,25 +354,28 @@ impl CampaignManifest {
         });
     }
 
-    /// Flag every entry a ledger-detected revision contradicts: same
-    /// source, a symbol in common, overlapping periods. The ledger sees
-    /// across campaigns where [`Self::flag_revision`] sees within one, and a
-    /// campaign that read a window the ledger already knew to be revised
-    /// must say so on its own manifest rather than leave the reader to join
-    /// two records.
+    /// Flag every entry a ledger-detected revision contradicts — see
+    /// [`RevisionRecord::contradicts`] for what that is: an entry that read
+    /// the withdrawn bytes, and not one that read the bytes the source now
+    /// serves. The ledger sees across campaigns where [`Self::flag_revision`]
+    /// sees within one, and a campaign that read a window the ledger already
+    /// knew to be revised must say so on its own manifest rather than leave
+    /// the reader to join two records.
+    ///
+    /// An entry the campaign itself has already flagged keeps its own flag:
+    /// the in-campaign check compared two fetches this campaign made, which
+    /// is the more specific finding, and a ledger revision overwriting it
+    /// would replace "this run saw the source change" with "someone did".
     fn flag_revised(&mut self, revision: &RevisionRecord) {
         let check = RevisionCheck::Revised {
             was: revision.was().to_string(),
             now: revision.now().to_string(),
         };
-        for entry in self.entries.iter_mut().filter(|entry| {
-            entry.reference.source_id() == revision.source_id()
-                && entry
-                    .reference
-                    .symbols()
-                    .iter()
-                    .any(|symbol| revision.covers(symbol, &entry.reference.range()))
-        }) {
+        for entry in self
+            .entries
+            .iter_mut()
+            .filter(|entry| entry.flagged.is_none() && revision.contradicts(&entry.reference))
+        {
             entry.flagged = Some(check.clone());
         }
     }

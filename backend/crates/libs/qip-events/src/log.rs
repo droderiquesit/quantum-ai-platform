@@ -60,7 +60,7 @@ use qip_core::error::{Error, Result};
 use qip_core::hash::sha256_hex;
 use qip_core::{CorrelationId, EventId, Timestamp};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
@@ -91,6 +91,13 @@ pub struct EventLog {
     by_correlation: BTreeMap<String, Vec<usize>>,
     by_topic: BTreeMap<Topic, Vec<usize>>,
     by_event_id: BTreeMap<String, usize>,
+    /// The dedup key of every retained record that carries an explicit
+    /// idempotency key, so a writer can ask whether the fact it is about to
+    /// append is already on the record. Only explicit keys are indexed: a
+    /// record without one dedups on its payload hash, which the event id
+    /// index already makes unique, and indexing a million hashes to answer a
+    /// question nobody asks of them would be memory spent on nothing.
+    by_idempotency: BTreeSet<String>,
     path: Option<PathBuf>,
     /// Cap on retained records. Always set: an unbounded default is how this
     /// grew without limit in every production construction.
@@ -159,6 +166,7 @@ impl EventLog {
             by_correlation: BTreeMap::new(),
             by_topic: BTreeMap::new(),
             by_event_id: BTreeMap::new(),
+            by_idempotency: BTreeSet::new(),
             path: None,
             capacity: DEFAULT_CAPACITY,
             durability: Durability::Synchronous,
@@ -375,7 +383,23 @@ impl EventLog {
             .push(position);
         self.by_event_id
             .insert(record.event.event_id.as_str().to_string(), position);
+        if record.event.idempotency_key.is_some() {
+            self.by_idempotency.insert(record.event.dedup_key());
+        }
         self.records.push(record);
+    }
+
+    /// Whether a retained record already carries `dedup_key` — the
+    /// `AnyEvent::dedup_key` of a body with an explicit idempotency key.
+    ///
+    /// The idempotency key was, until 2026-09-12, a fact the envelope carried
+    /// and nothing consulted at the log: two journal calls for one fact wrote
+    /// two records, each with the key that said they were one. A writer that
+    /// asks here first writes one. Only records still retained are known; a
+    /// key whose record the log evicted reads as absent, which is the honest
+    /// answer for a log that no longer holds it.
+    pub fn holds_idempotent(&self, dedup_key: &str) -> bool {
+        self.by_idempotency.contains(dedup_key)
     }
 
     /// Make room for one more record, or refuse.
@@ -427,7 +451,11 @@ impl EventLog {
         self.by_correlation.clear();
         self.by_topic.clear();
         self.by_event_id.clear();
+        self.by_idempotency.clear();
         for (position, record) in self.records.iter().enumerate() {
+            if record.event.idempotency_key.is_some() {
+                self.by_idempotency.insert(record.event.dedup_key());
+            }
             self.by_correlation
                 .entry(record.event.lineage.correlation_id.as_str().to_string())
                 .or_default()

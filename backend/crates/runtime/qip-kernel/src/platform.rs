@@ -299,6 +299,13 @@ pub struct Platform {
     /// [`Platform::observe`] for daily bars only; every other interval is
     /// the transient class and is not retained here.
     pub(crate) fallback: qip_data_finder::retention::FallbackSeries,
+    /// Instruments the fallback series has refused past its bound, so the
+    /// refusal is a capture problem once per instrument rather than once
+    /// per daily bar per cycle: the 513th instrument's every bar would
+    /// otherwise write the same line into every cycle report for the life
+    /// of the process. Bounded by the instruments observed, which
+    /// `bar_history` already holds one series per.
+    fallback_refused: BTreeSet<String>,
     /// What datasets *do* exist. Fed from the finder's own registrations, so
     /// the two answers cannot drift apart.
     catalog: Catalog,
@@ -2917,8 +2924,9 @@ impl Platform {
             insights: crate::central::insights::CellInsights::new(config.seed),
             data_finder,
             admitted_sources: BTreeMap::new(),
-            references: qip_data_finder::ledger::ReferenceLedger::bounded(),
+            references: Self::resume_references(&event_log)?,
             fallback: qip_data_finder::retention::FallbackSeries::bounded(),
+            fallback_refused: BTreeSet::new(),
             catalog: Catalog::new(),
             chain: None,
             confirmations: Confirmations::exactly(config.chain_confirmations),
@@ -5432,7 +5440,7 @@ impl Platform {
                         bar.volume.to_f64(),
                     );
                     push_bounded_bars(
-                        self.bar_history.entry(key).or_default(),
+                        self.bar_history.entry(key.clone()).or_default(),
                         bar.as_ref().clone(),
                     );
                     // §22.1's fallback series: a daily bar is insurance
@@ -5441,9 +5449,13 @@ impl Platform {
                     // the transient class and is not. A refusal — the
                     // instrument bound reached — is a capture problem the
                     // cycle report carries rather than a silent gap in the
-                    // insurance.
+                    // insurance, and it is carried once per instrument: the
+                    // fact is that this instrument is uninsured, not that
+                    // each of its bars was, and a report that repeated it
+                    // per bar per cycle buried every other problem under it.
                     if bar.interval == Interval::Day
                         && let Err(error) = self.fallback.retain(bar.as_ref().clone())
+                        && self.fallback_refused.insert(key.clone())
                     {
                         self.capture_problems
                             .push(format!("fallback series: {}", error.message()));

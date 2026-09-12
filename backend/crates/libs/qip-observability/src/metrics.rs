@@ -619,6 +619,13 @@ pub mod names {
     /// entry (`flagged`) or not (`clean`). Recorded in
     /// `Platform::journal_campaign`.
     pub const RESEARCH_CAMPAIGNS_CLOSED: &str = "qip_research_campaigns_closed_total";
+    /// Campaigns already closed on the log that a later revision was found
+    /// to contradict — §22.3's "the backtest that used the original is
+    /// flagged" — by the door the revising source came through
+    /// (`qip_data_finder::reference::SourceOrigin`). Recorded beside the
+    /// `ResearchCampaignFlagged` record in `Platform::record_reference`,
+    /// once per campaign per revision.
+    pub const RESEARCH_CAMPAIGNS_FLAGGED: &str = "qip_research_campaigns_flagged_total";
 
     // Discovery and reasoning. The funnel from "something looked odd" to "a
     // hypothesis the platform will act on", recorded where each fact becomes

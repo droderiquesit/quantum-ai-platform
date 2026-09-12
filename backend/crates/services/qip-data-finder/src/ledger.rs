@@ -149,6 +149,29 @@ impl RevisionRecord {
         self.symbols.contains(symbol) && self.period.overlaps(period)
     }
 
+    /// Whether `reference` — some fetch, by anyone, of this source — used
+    /// the bytes the source has since withdrawn, and is therefore the thing
+    /// §22.3 says must be flagged.
+    ///
+    /// Two ways to have: the fetch was made no later than the instant the
+    /// contradicted reference was (`used_at`), so it can only have seen the
+    /// old bytes or older; or it hashes to exactly the hash that was
+    /// withdrawn, whenever it was made. A fetch made after the revision, of
+    /// the bytes the source now serves, used the current bytes and is not
+    /// contradicted by them — and until 2026-09-12 `CampaignManifest::
+    /// flag_revised` flagged exactly that campaign, the one that read the
+    /// corrected extent, while the campaign that had read the original was
+    /// closed on the log and flagged by nothing. This predicate is the one
+    /// place the rule lives; the manifest and the kernel both ask it.
+    pub fn contradicts(&self, reference: &DataReference) -> bool {
+        reference.source_id() == self.source_id
+            && reference
+                .symbols()
+                .iter()
+                .any(|symbol| self.covers(symbol, &reference.range()))
+            && (reference.retrieved_at() <= self.used_at || reference.content_hash() == self.was)
+    }
+
     /// One line for a log or a cycle summary.
     pub fn describe(&self) -> String {
         format!(
@@ -274,6 +297,36 @@ impl ReferenceLedger {
         self.evicted
     }
 
+    /// What recording `reference` would find, without recording it.
+    ///
+    /// Split from [`Self::record`] so a caller with a log can write the
+    /// finding down *before* the ledger changes: a revision journaled after
+    /// the in-memory ledger had already moved on was, for the instant between
+    /// the two, a fact the process knew and the record did not, and a crash
+    /// in that instant would have left a ledger that flagged nothing on the
+    /// next start. Deterministic over the same ledger and reference, so
+    /// `record` reaches the same outcome an instant later.
+    pub fn assess(&self, reference: &DataReference, now: Timestamp) -> LedgerOutcome {
+        let key = ExtentKey::of(reference);
+        let Some(previous) = self.entries.get(&key) else {
+            return LedgerOutcome::First;
+        };
+        match previous.verify_against(reference) {
+            RevisionCheck::Unchanged => LedgerOutcome::Unchanged,
+            RevisionCheck::Revised { was, now: latest } => LedgerOutcome::Revised(RevisionRecord {
+                source_id: key.source_id,
+                origin: previous.origin(),
+                locator: key.locator,
+                period: key.period,
+                symbols: previous.symbols().clone(),
+                was,
+                now: latest,
+                used_at: previous.retrieved_at(),
+                detected_at: now,
+            }),
+        }
+    }
+
     /// Record `reference`, comparing it against the last reference to the
     /// same extent if there was one, and keep the newer of the two.
     ///
@@ -283,31 +336,27 @@ impl ReferenceLedger {
     /// can act on it; the reference is still kept, because the ledger's job
     /// is to know what the source *now* serves as well as what it served.
     pub fn record(&mut self, reference: DataReference, now: Timestamp) -> LedgerOutcome {
+        let outcome = self.assess(&reference, now);
+        if let LedgerOutcome::Revised(revision) = &outcome {
+            self.restore_revision(revision.clone());
+        }
+        self.restore_reference(reference);
+        outcome
+    }
+
+    /// Put `reference` in the ledger as the latest reference to its extent,
+    /// detecting nothing.
+    ///
+    /// The replay half of [`Self::record`]: a kernel rebuilding this ledger
+    /// from its event log restores each recorded reference through here and
+    /// each recorded revision through [`Self::restore_revision`], rather than
+    /// re-running `record` and re-detecting — and re-counting — revisions the
+    /// log already holds. Bounded exactly as `record` is.
+    pub fn restore_reference(&mut self, reference: DataReference) {
         let key = ExtentKey::of(&reference);
-        if let Some(previous) = self.entries.get(&key) {
-            let outcome = match previous.verify_against(&reference) {
-                RevisionCheck::Unchanged => LedgerOutcome::Unchanged,
-                RevisionCheck::Revised { was, now: latest } => {
-                    let revision = RevisionRecord {
-                        source_id: key.source_id.clone(),
-                        origin: previous.origin(),
-                        locator: key.locator.clone(),
-                        period: key.period,
-                        symbols: previous.symbols().clone(),
-                        was,
-                        now: latest,
-                        used_at: previous.retrieved_at(),
-                        detected_at: now,
-                    };
-                    if self.revisions.len() >= self.revision_bound {
-                        self.revisions.pop_front();
-                    }
-                    self.revisions.push_back(revision.clone());
-                    LedgerOutcome::Revised(revision)
-                }
-            };
-            self.entries.insert(key, reference);
-            return outcome;
+        if let Some(held) = self.entries.get_mut(&key) {
+            *held = reference;
+            return;
         }
         while self.entries.len() >= self.bound {
             match self.order.pop_front() {
@@ -324,7 +373,14 @@ impl ReferenceLedger {
         }
         self.order.push_back(key.clone());
         self.entries.insert(key, reference);
-        LedgerOutcome::First
+    }
+
+    /// Put a revision the log already holds back in the bounded queue.
+    pub fn restore_revision(&mut self, revision: RevisionRecord) {
+        if self.revisions.len() >= self.revision_bound {
+            self.revisions.pop_front();
+        }
+        self.revisions.push_back(revision);
     }
 
     /// The latest reference to an extent, if the ledger still holds one.

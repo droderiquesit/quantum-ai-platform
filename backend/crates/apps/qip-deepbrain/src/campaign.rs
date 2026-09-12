@@ -46,9 +46,11 @@
 //!   carries, and the memory the sketch saves is what a many-subject campaign
 //!   would draw on.
 //! * **manifest** — the closed campaign's manifest is journaled to the
-//!   hash-chained log as a `ResearchCampaignClosed` record and, where the
-//!   node has a store, written under the `campaigns` namespace by campaign
-//!   id, so a regulatory demand for what a fit used is answered from either.
+//!   hash-chained log as a `ResearchCampaignClosed` record, under its own
+//!   permanently retained topic, so a regulatory demand for what a fit used
+//!   is answered from the log. Only from the log: a second copy in the
+//!   node's key-value store was two claims about one fact, and the log is
+//!   the record.
 //! * **cache expires and is deleted** — `FetchCampaign::close` drops it.
 //!
 //! Two of §22.4's mitigations sit at the edges of the arrow. A subject whose
@@ -61,7 +63,6 @@
 //! universe back from promotion past validation.
 
 use qip_core::error::{Error, Result};
-use qip_core::kv::{KeyValueStore, KeyValueStoreExt};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp};
 use qip_data_finder::admission::AdmittedSource;
 use qip_data_finder::campaign::{
@@ -96,9 +97,6 @@ pub const SKETCH_DELTA: f64 = 0.01;
 /// be told it has them by a sketch that may be twenty over.
 pub const BAR_COUNT_TOLERANCE: f64 = 0.05;
 
-/// The key-value namespace closed manifests are written under.
-pub const STORE_NAMESPACE: &str = "campaigns";
-
 /// The bounds a campaign runs under. Built rather than defaulted because
 /// both halves are refusable values.
 #[derive(Clone, Debug)]
@@ -131,14 +129,13 @@ pub struct CampaignSummary {
     /// What the platform's ledger said of the window's reference: `first`,
     /// `unchanged` or `revised`.
     pub ledger: &'static str,
-    /// Manifest entries a revision flagged.
+    /// Manifest entries a revision flagged, read off the manifest.
     pub flagged: usize,
+    /// Whether the window came from the fallback series, read off the
+    /// manifest.
     pub fallback_used: bool,
     pub concentration: ConcentrationVerdict,
     pub statistic: SketchedStatistic,
-    /// The store key the manifest was written under, when the node has a
-    /// store.
-    pub persisted_as: Option<String>,
 }
 
 impl CampaignSummary {
@@ -162,10 +159,7 @@ impl CampaignSummary {
             },
             self.concentration.describe(),
             self.statistic.describe(),
-            match &self.persisted_as {
-                Some(key) => format!("; manifest persisted as {key}"),
-                None => "; manifest journaled only (no store)".to_string(),
-            }
+            "; manifest journaled"
         )
     }
 }
@@ -223,7 +217,6 @@ pub fn assemble(
     minimum_bars: usize,
     cycle: u64,
     now: Timestamp,
-    store: Option<&dyn KeyValueStore>,
     config: &CampaignConfig,
 ) -> Result<Option<AssembledWindow>> {
     // Resolve the door before reading a byte.
@@ -286,7 +279,12 @@ pub fn assemble(
     let recorded = platform.record_reference(reference.clone(), now)?;
 
     // The campaign: fetch into the TTL cache, flag what the ledger knows,
-    // sketch, and read the window back out of the cache.
+    // sketch, and read the window back out of the cache. The ledger's
+    // revision flags this campaign's entry only if this campaign read the
+    // withdrawn bytes (`RevisionRecord::contradicts`); a campaign that
+    // fetched the corrected extent is not the backtest that used the
+    // original, and the kernel has already named the closed campaign that
+    // was, on the log, when it recorded the reference above.
     let id = format!("learn-{}-{cycle}", subject.as_str());
     let mut campaign = FetchCampaign::open(&id, config.cache, now)?;
     campaign.fetch(reference, &bytes, now)?;
@@ -333,26 +331,18 @@ pub fn assemble(
     let concentration = assess_concentration(backing.iter().map(String::as_str));
 
     // Close: the cache is dropped, the manifest is kept where an audit can
-    // find it.
+    // find it — on the log, and nowhere else.
     let manifest = campaign.close();
-    let flagged = manifest.flagged().count();
     let closed = ResearchCampaignClosed {
         campaign_id: id.clone(),
         subject: subject.as_str().to_string(),
         opened_at: now,
         closed_at: now,
         manifest,
-        flagged,
         concentration: concentration.clone(),
-        fallback_used,
     };
-    let persisted_as = match store {
-        Some(store) => {
-            store.put_as(&id, &closed)?;
-            Some(id.clone())
-        }
-        None => None,
-    };
+    let flagged = closed.flagged();
+    let fallback_used = closed.fallback_used();
     platform.journal_campaign(closed, now)?;
 
     Ok(Some(AssembledWindow {
@@ -369,7 +359,6 @@ pub fn assemble(
             fallback_used,
             concentration,
             statistic,
-            persisted_as,
         },
     }))
 }
@@ -381,7 +370,6 @@ pub fn assemble(
 mod tests {
     use super::*;
     use qip_core::Context;
-    use qip_data_finder::ledger::LedgerOutcome;
     use qip_events::Topic;
     use qip_financial::quality::DataQuality;
     use qip_financial::universe::Universe;
@@ -390,7 +378,6 @@ mod tests {
     use qip_observability::Telemetry;
     use qip_observability::metrics::{labels, names};
     use qip_risk::limits::LimitSet;
-    use qip_storage::MemoryKeyValueStore;
     use qip_streaming::envelope::StreamEnvelope;
 
     const MINIMUM: usize = 256;
@@ -427,11 +414,20 @@ mod tests {
     }
 
     fn bars(count: usize, interval: Interval, close_offset: i64) -> Vec<Bar> {
+        bars_of(&subject(), count, interval, close_offset)
+    }
+
+    fn bars_of(
+        subject: &ObjectId,
+        count: usize,
+        interval: Interval,
+        close_offset: i64,
+    ) -> Vec<Bar> {
         (0..count)
             .map(|index| {
                 let close = 100 + index as i64 + close_offset;
                 Bar {
-                    object_id: subject(),
+                    object_id: subject.clone(),
                     venue: "XSIM".to_string(),
                     interval,
                     open_time: start().saturating_add(Duration::from_millis(
@@ -457,22 +453,41 @@ mod tests {
         )
     }
 
+    /// The closed-campaign records on the log, decoded, in log order.
+    fn closed_campaigns(platform: &Platform) -> Result<Vec<ResearchCampaignClosed>> {
+        platform
+            .event_log()
+            .by_topic(Topic::ResearchCampaignClosed)
+            .into_iter()
+            .map(|frame| {
+                Ok(StreamEnvelope::from_frame(frame)?
+                    .decode::<ResearchCampaignClosed>()?
+                    .body)
+            })
+            .collect()
+    }
+
     /// The whole arrow, once: the window is referenced through the generated
     /// door, recorded first on the ledger, fetched into and read back from
-    /// the cache, sketched with its bound attached, and the manifest is both
-    /// journaled and persisted. And the concentration verdict is about the
-    /// backing: a second source on the ledger turns it.
+    /// the cache, sketched with its bound attached, and the manifest is
+    /// journaled under its own topic — and only journaled: the log is the
+    /// record, and the cycle journal still reads. And the concentration
+    /// verdict is about the backing: a second source on the ledger turns it.
     ///
     /// Mutated by deleting the `campaign.fetch(reference, &bytes, now)?`
     /// line — confirmed the cache read-back then fails with `not_found` and
     /// this test with it, then restored.
     #[test]
-    fn a_window_is_assembled_through_a_campaign_whose_manifest_is_journaled_and_persisted()
-    -> Result<()> {
+    fn a_window_is_assembled_through_a_campaign_whose_manifest_is_journaled() -> Result<()> {
         let mut platform = platform()?;
-        let store = MemoryKeyValueStore::new();
         let stream = bars(300, Interval::Minute, 0);
         let config = CampaignConfig::standard()?;
+        // Premise for the journal assertion below: a cycle has run, so the
+        // cycle journal holds an entry a foreign body would break the read
+        // of — which is what a campaign closing under `LearningCompleted`
+        // did until 2026-09-12.
+        let _ = platform.run_cycle(start());
+        assert_eq!(platform.journal_entries()?.len(), 1);
 
         let window = assemble(
             &mut platform,
@@ -482,7 +497,6 @@ mod tests {
             MINIMUM,
             1,
             start(),
-            Some(&store),
             &config,
         )?
         .ok_or_else(|| Error::not_found("a window from 300 bars against a minimum of 256"))?;
@@ -506,24 +520,22 @@ mod tests {
             !summary.concentration.is_sufficient(),
             "one stream was read as sufficient backing"
         );
-        assert_eq!(summary.persisted_as.as_deref(), Some(summary.id.as_str()));
 
-        // The ledger holds the reference, the store holds the manifest, the
-        // log holds the closed record, and the series moved.
+        // The ledger holds the reference, the log holds the closed record
+        // under its own topic, the cycle journal still decodes, and the
+        // series moved.
         assert_eq!(platform.reference_ledger().len(), 1);
-        let persisted: Option<ResearchCampaignClosed> = store.get_as(&summary.id)?;
-        let persisted = persisted.ok_or_else(|| Error::not_found("the persisted manifest"))?;
-        assert_eq!(persisted.manifest.entries().len(), 1);
-        assert_eq!(persisted.manifest.statistics().len(), 1);
-        assert_eq!(persisted.flagged, 0);
-        let records = platform.event_log().by_topic(Topic::LearningCompleted);
-        assert_eq!(records.len(), 1, "one campaign closed, one record");
-        let journaled = StreamEnvelope::from_frame(records[0])?
-            .decode::<ResearchCampaignClosed>()?
-            .body;
+        let closed = closed_campaigns(&platform)?;
+        assert_eq!(closed.len(), 1, "one campaign closed, one record");
+        assert_eq!(closed[0].campaign_id, summary.id);
+        assert_eq!(closed[0].manifest.entries().len(), 1);
+        assert_eq!(closed[0].manifest.statistics().len(), 1);
+        assert_eq!(closed[0].flagged(), 0);
+        assert!(!closed[0].fallback_used());
         assert_eq!(
-            journaled, persisted,
-            "the log and the store must hold the same manifest"
+            platform.journal_entries()?.len(),
+            1,
+            "a closed campaign on the log must not break the cycle journal's read"
         );
         assert_eq!(campaigns_closed(&platform, "clean"), 1);
         assert_eq!(campaigns_closed(&platform, "flagged"), 0);
@@ -554,7 +566,6 @@ mod tests {
             MINIMUM,
             2,
             start(),
-            Some(&store),
             &config,
         )?
         .ok_or_else(|| Error::not_found("a second window"))?;
@@ -567,72 +578,104 @@ mod tests {
         Ok(())
     }
 
-    /// A window the ledger already knows to be revised — a reference to the
-    /// same extent with different bytes recorded earlier — is flagged on the
-    /// campaign's manifest, the closed record says so, and the kernel's
-    /// consequence has fired. The fit still proceeds: flagged, not silently
-    /// invalidated.
+    /// §22.3's actual requirement, in two halves. A campaign that fitted on
+    /// an extent the source later revises is the backtest that used the
+    /// original: the kernel finds it on the log, closed, and names it in a
+    /// `ResearchCampaignFlagged` record. The campaign that fetched the
+    /// corrected bytes — the one open when the revision was detected — is
+    /// *not* flagged, because it did not use the original; until 2026-09-12
+    /// it was the only one that was. The fit still proceeds either way:
+    /// flagged, not silently invalidated.
     ///
-    /// Mutated by deleting the `campaign.flag_revised(revision)` call —
-    /// confirmed the manifest then carries no flag while the ledger still
-    /// reads `revised`, and this test fails, then restored.
+    /// Three mutations, each confirmed to fail this test and restored
+    /// byte-for-byte. `RevisionRecord::contradicts` with its time-and-hash
+    /// clause dropped (source, subject and period alone): the second round's
+    /// own manifest entry is then flagged and this fails on "the campaign
+    /// that read the corrected bytes". `ResearchCampaignClosed::
+    /// used_revised_extent` replaced with `true`: the unrelated subject's
+    /// closed campaign is then named too and this fails on the record count.
+    /// The same replaced with `false`: the first round is then flagged by
+    /// nothing and this fails on the missing record.
     #[test]
-    fn a_window_the_ledger_knows_to_be_revised_is_flagged_on_the_campaign_manifest() -> Result<()> {
+    fn the_campaign_that_used_the_original_is_flagged_and_the_one_that_used_the_revision_is_not()
+    -> Result<()> {
         let mut platform = platform()?;
-        let stream = bars(300, Interval::Minute, 0);
         let source = descriptor(LicensingClass::Synthetic);
-        // What the platform used last round: the same extent, other bytes.
-        let earlier = start().saturating_sub(Duration::from_hours(1));
-        let previous = DataReference::of_generated(
-            &source,
-            locator_for(&source.name, &subject(), Interval::Minute),
-            [subject().as_str().to_string()],
-            period_of(&stream)?,
-            SourceSchema::from_fields([]),
-            &serde_json::to_vec(&bars(300, Interval::Minute, 7))?,
-            earlier,
-        )?;
-        assert_eq!(
-            platform.record_reference(previous, earlier)?.outcome,
-            LedgerOutcome::First,
-            "premise: the earlier reference is the first to its extent"
-        );
+        let config = CampaignConfig::standard()?;
+        let original = bars(300, Interval::Minute, 0);
 
-        let window = assemble(
+        // Round one fits on the original bytes and closes on the log.
+        let earlier = start().saturating_sub(Duration::from_hours(1));
+        let first = assemble(
             &mut platform,
             &source,
             &subject(),
-            &stream,
+            &original,
             MINIMUM,
-            3,
-            start(),
-            None,
-            &CampaignConfig::standard()?,
+            1,
+            earlier,
+            &config,
         )?
-        .ok_or_else(|| Error::not_found("a window"))?;
-        assert_eq!(window.summary.ledger, "revised");
-        assert_eq!(
-            window.summary.flagged, 1,
-            "the window's manifest entry must be flagged by the revision"
-        );
-        assert_eq!(window.bars.len(), 300, "the fit still gets its window");
-        let records = platform.event_log().by_topic(Topic::LearningCompleted);
-        let journaled = StreamEnvelope::from_frame(records[records.len() - 1])?
-            .decode::<ResearchCampaignClosed>()?
-            .body;
-        assert_eq!(journaled.flagged, 1);
-        let flagged_entry = journaled
-            .manifest
-            .flagged()
-            .next()
-            .ok_or_else(|| Error::not_found("the flagged manifest entry"))?;
+        .ok_or_else(|| Error::not_found("the first window"))?;
+        assert_eq!(first.summary.ledger, "first", "premise");
+        assert_eq!(first.summary.flagged, 0, "premise: nothing to flag yet");
         assert!(
-            flagged_entry
-                .flagged()
-                .is_some_and(qip_data_finder::reference::RevisionCheck::is_revised),
-            "the flagged entry does not carry the revision"
+            platform
+                .event_log()
+                .by_topic(Topic::ResearchCampaignFlagged)
+                .is_empty(),
+            "premise: nothing is flagged before any revision"
         );
-        assert_eq!(campaigns_closed(&platform, "flagged"), 1);
+        // An unrelated campaign closes on the log too — another subject on
+        // the same stream — so the join below has something to *not* name.
+        let other = ObjectId::from_string("OBJ0000000000000000000BBB");
+        let unrelated = assemble(
+            &mut platform,
+            &source,
+            &other,
+            &bars_of(&other, 300, Interval::Minute, 0),
+            MINIMUM,
+            1,
+            earlier,
+            &config,
+        )?
+        .ok_or_else(|| Error::not_found("the unrelated window"))?;
+        assert_ne!(
+            unrelated.summary.id, first.summary.id,
+            "premise: two campaigns"
+        );
+
+        // The source rewrites the same extent — same locator, same period,
+        // other closes — and round two fits on the corrected bytes.
+        let revised = bars(300, Interval::Minute, 7);
+        assert_eq!(
+            period_of(&revised)?,
+            period_of(&original)?,
+            "premise: one extent"
+        );
+        let second = assemble(
+            &mut platform,
+            &source,
+            &subject(),
+            &revised,
+            MINIMUM,
+            2,
+            start(),
+            &config,
+        )?
+        .ok_or_else(|| Error::not_found("the second window"))?;
+        assert_eq!(second.summary.ledger, "revised");
+        assert_eq!(second.bars.len(), 300, "the fit still gets its window");
+        assert_eq!(
+            second.summary.flagged, 0,
+            "the campaign that read the corrected bytes is not the backtest that used the \
+             original, and must not be flagged"
+        );
+        assert_eq!(campaigns_closed(&platform, "flagged"), 0);
+        assert_eq!(campaigns_closed(&platform, "clean"), 3);
+
+        // The kernel's consequence: the revision on the log under its own
+        // topic, the series moved, and the *first* campaign named.
         assert_eq!(
             platform.telemetry().metrics.snapshot().counter(
                 names::DATA_REVISIONS_DETECTED,
@@ -644,7 +687,62 @@ mod tests {
         assert_eq!(
             platform
                 .event_log()
-                .by_topic(Topic::DataQualityFailed)
+                .by_topic(Topic::SourceRevisionDetected)
+                .len(),
+            1
+        );
+        let flagged = platform
+            .event_log()
+            .by_topic(Topic::ResearchCampaignFlagged);
+        assert_eq!(
+            flagged.len(),
+            1,
+            "exactly one closed campaign used the original; the unrelated subject's must not \
+             be named"
+        );
+        let record = StreamEnvelope::from_frame(flagged[0])?
+            .decode::<qip_kernel::references::ResearchCampaignFlagged>()?
+            .body;
+        assert_eq!(
+            record.campaign_id, first.summary.id,
+            "the campaign named is the one that fitted on the original"
+        );
+        assert_eq!(record.subject, subject().as_str());
+        let detected = platform
+            .reference_ledger()
+            .revisions()
+            .next()
+            .ok_or_else(|| Error::not_found("the ledger's revision"))?;
+        assert_eq!(
+            record.revision.now(),
+            detected.now(),
+            "the flag carries the revision the ledger detected"
+        );
+        assert_eq!(
+            platform.telemetry().metrics.snapshot().counter(
+                names::RESEARCH_CAMPAIGNS_FLAGGED,
+                &labels([("origin", "generated")])
+            ),
+            1
+        );
+        // And the record is idempotent: the same revision re-recorded names
+        // the campaign once.
+        let again = assemble(
+            &mut platform,
+            &source,
+            &subject(),
+            &revised,
+            MINIMUM,
+            3,
+            start().saturating_add(Duration::from_hours(1)),
+            &config,
+        )?
+        .ok_or_else(|| Error::not_found("the third window"))?;
+        assert_eq!(again.summary.ledger, "unchanged");
+        assert_eq!(
+            platform
+                .event_log()
+                .by_topic(Topic::ResearchCampaignFlagged)
                 .len(),
             1
         );
@@ -683,7 +781,6 @@ mod tests {
             MINIMUM,
             1,
             start(),
-            None,
             &loose,
         )
         .expect_err("a fit was assembled on a count the sketch cannot vouch for");
@@ -695,7 +792,7 @@ mod tests {
         assert!(
             platform
                 .event_log()
-                .by_topic(Topic::LearningCompleted)
+                .by_topic(Topic::ResearchCampaignClosed)
                 .is_empty(),
             "a campaign that did not close must not journal a manifest"
         );
@@ -721,7 +818,6 @@ mod tests {
             MINIMUM,
             1,
             start(),
-            None,
             &CampaignConfig::standard()?,
         )
         .expect_err("a licensed stream nobody admitted was researched over");
@@ -760,7 +856,6 @@ mod tests {
                 MINIMUM,
                 1,
                 start(),
-                None,
                 &config,
             )?
             .is_none()
@@ -785,18 +880,17 @@ mod tests {
             MINIMUM,
             2,
             start(),
-            None,
             &config,
         )?
         .ok_or_else(|| Error::not_found("a window from the fallback series"))?;
         assert!(window.summary.fallback_used);
         assert_eq!(window.bars.len(), 300);
         assert_eq!(window.bars[0].interval, Interval::Day);
-        let records = platform.event_log().by_topic(Topic::LearningCompleted);
-        let journaled = StreamEnvelope::from_frame(records[records.len() - 1])?
-            .decode::<ResearchCampaignClosed>()?
-            .body;
-        assert!(journaled.fallback_used);
+        let closed = closed_campaigns(&platform)?;
+        let journaled = closed
+            .last()
+            .ok_or_else(|| Error::not_found("the closed record"))?;
+        assert!(journaled.fallback_used());
         assert!(
             journaled.manifest.fallbacks().contains(subject().as_str()),
             "the manifest must record that the insurance was drawn on"
