@@ -939,29 +939,57 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
     // Enumerate every `&mut self` method the platform exposes, from the
     // kernel's source rather than from memory, so a mutator added to the
     // kernel tomorrow is refused here the day it is called from a route.
-    let platform = repository_root().join("backend/crates/runtime/qip-kernel/src/platform.rs");
-    let text = std::fs::read_to_string(&platform).expect("platform.rs is readable");
-    let shipped = match text.find("#[cfg(test)]") {
-        Some(cut) => &text[..cut],
-        None => text.as_str(),
-    };
+    //
+    // From every kernel source file holding an `impl Platform` block, not
+    // from `platform.rs` alone. This read one file until 2026-09-12, when
+    // `references.rs` (ADR 0057) became the first sibling module to add
+    // `&mut self` methods to `Platform` — and a mutator defined there was
+    // invisible here: the API called `platform.reference_fetch(` and this
+    // test stayed green without ever having reviewed it. A hole in a check
+    // is the same shape of defect as a limit that cannot fire.
     let mut mutators = BTreeSet::new();
-    for (index, _) in shipped.match_indices("pub fn ") {
-        let rest = &shipped[index + "pub fn ".len()..];
-        let name: String = rest
-            .chars()
-            .take_while(|c| is_identifier_char(*c))
-            .collect();
-        let Some(close) = rest.find(')') else {
+    let mut impl_files = 0usize;
+    for path in files_with_extension("backend/crates/runtime/qip-kernel/src", "rs") {
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+        if !text.contains("impl Platform {") {
             continue;
+        }
+        impl_files += 1;
+        let shipped = match text.find("#[cfg(test)]") {
+            Some(cut) => &text[..cut],
+            None => text.as_str(),
         };
-        if rest[..close].contains("&mut self") {
-            mutators.insert(name);
+        for (index, _) in shipped.match_indices("pub fn ") {
+            let rest = &shipped[index + "pub fn ".len()..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| is_identifier_char(*c))
+                .collect();
+            let Some(close) = rest.find(')') else {
+                continue;
+            };
+            if rest[..close].contains("&mut self") {
+                mutators.insert(name);
+            }
         }
     }
-    // Premise: the enumeration found the mutators that would breach the
-    // boundary if a route called them.
-    for expected in ["submit_order", "run_cycle", "autonomy_mut", "observe"] {
+    // Premise: the walk found both files that hold `impl Platform` blocks
+    // today, and the enumeration found the mutators that would breach the
+    // boundary if a route called them — including the one the sibling
+    // module defines.
+    assert!(
+        impl_files >= 2,
+        "only {impl_files} kernel file(s) hold an `impl Platform` block; platform.rs and \
+         references.rs both do, so the walk is not seeing the tree"
+    );
+    for expected in [
+        "submit_order",
+        "run_cycle",
+        "autonomy_mut",
+        "observe",
+        "reference_fetch",
+    ] {
         assert!(
             mutators.contains(expected),
             "Platform::{expected} was not enumerated; found {mutators:?}"
@@ -1062,6 +1090,23 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
         // is deliberately absent from this list and asserted absent from
         // every source of the crate above.
         "decide_investment",
+        // `reference_fetch` — the same class as `observe`, and called just
+        // before it at the top of `POST /cycle`: the digest of the connector
+        // poll the composition root's feed just made, referenced on the
+        // platform's ledger before its records are observed (ADR 0057). The
+        // request carries no body the route reads; the digest is the
+        // runtime's own hash of the vendor's bytes, and the platform refuses
+        // one for a source it holds no admission for. `&mut` is for the
+        // ledger and, on a revision, the journal append and the metric.
+        "reference_fetch",
+        // `admit_source` — reached at assembly from `Api::with_feed` and
+        // from the approval route's `readmit_connector`, both of which copy
+        // the *feed's* licensing decision into the platform's reference
+        // ledger. Nothing a caller sends becomes an admission: a
+        // `LicensingDecision` can only be minted by the licensing gate
+        // (`GatePassed`), and the route re-runs that gate through
+        // `ApiFeed::readmit` rather than constructing one.
+        "admit_source",
     ]
     .into_iter()
     .collect();
@@ -1158,6 +1203,15 @@ fn every_function_the_api_hands_a_mutable_platform_to_is_named_here() {
     //   `issue_episodic_digest`) are reviewed above.
     // * `load_wallet_statement`, `load_fabric_declaration` — the root's own
     //   two loaders, which exist to call the first and second entries here.
+    // * `readmit_connector` — the approval route's re-admission of the
+    //   connector this process senses, after `Platform::approve_registration`
+    //   has already adopted the operator's record. It reaches
+    //   `Platform::admit_source`, which copies the feed's freshly re-run
+    //   licensing decision into the platform's reference ledger (ADR 0057)
+    //   so the next poll's digest is referenced against the admission that
+    //   actually admitted it. Nothing about an order, capital or autonomy;
+    //   the decision it copies was minted by the licensing gate, which this
+    //   route cannot construct one of (`GatePassed`).
     //
     // A new entry is a reviewed change: name it with its reason, and say
     // which platform mutator it reaches.
@@ -1169,6 +1223,7 @@ fn every_function_the_api_hands_a_mutable_platform_to_is_named_here() {
         "pending_policy",
         "load_wallet_statement",
         "load_fabric_declaration",
+        "readmit_connector",
     ]
     .into_iter()
     .collect();
