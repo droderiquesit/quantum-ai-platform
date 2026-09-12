@@ -70,6 +70,7 @@
 pub mod backoff;
 pub mod checkpoint;
 pub mod dedup;
+pub mod digest;
 pub mod emulator;
 pub mod envelope;
 pub mod harness;
@@ -85,6 +86,7 @@ pub mod validate;
 pub use backoff::{BackoffLadder, FailureKind, RetryDecision};
 pub use checkpoint::{Checkpoint, Cursor, CursorPosition};
 pub use dedup::{DedupWindow, EventFingerprint, Novelty};
+pub use digest::FetchDigest;
 pub use emulator::{RecordedExchange, SourceEmulator};
 pub use envelope::{MarketEventEnvelope, RawEvent};
 pub use harness::{ContractCheck, ContractHarness, ContractReport};

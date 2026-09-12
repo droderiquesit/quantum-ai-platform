@@ -1084,3 +1084,123 @@ fn a_health_check_does_not_spend_a_rate_limit_token() -> Result<()> {
     );
     Ok(())
 }
+
+// --- the fetch digest -------------------------------------------------------
+
+/// A delivered poll carries a digest over exactly the bytes the source
+/// served — not the mapped records — with the locator it fetched from, the
+/// period the decoded events describe and their keys; and a redelivery of
+/// the same table hashes the same even when the dedup window admits nothing
+/// from it, because the source served the same bytes.
+///
+/// Mutated by hashing `response.body_excerpt()` instead of the full body in
+/// `ConnectorRuntime::ingest` — confirmed the hash assertion then fails,
+/// then restored.
+#[test]
+fn a_delivered_poll_carries_a_digest_of_exactly_the_bytes_the_source_served() -> Result<()> {
+    let manifest = manifest();
+    let (mut runtime, _sleeper) = runtime_with(manifest.clone())?;
+    let served = body(&[
+        ("EURUSD", "2026-08-24T14:00:00Z", "1.0812"),
+        ("EURGBP", "2026-08-24T14:30:00Z", "0.8590"),
+    ]);
+    let mut transport = emulator_serving(&served);
+    let mut connector = TestConnector::new(manifest);
+    runtime.connect(&mut connector, &mut transport, now())?;
+
+    let report = runtime.poll(&mut connector, &mut transport, now())?;
+    assert_eq!(
+        report.admitted.len(),
+        2,
+        "premise: both events are admitted, so the digest below describes a real delivery"
+    );
+    let digest = report
+        .digest
+        .expect("a delivered poll with decoded events carries a digest");
+    assert_eq!(digest.source_id(), "test-source");
+    assert_eq!(digest.locator(), "/v1/events");
+    assert_eq!(
+        digest.sha256(),
+        qip_core::sha256_hex(served.as_bytes()),
+        "the digest must hash the bytes the source served, byte for byte"
+    );
+    assert_eq!(digest.bytes(), served.len() as u64);
+    assert_eq!(digest.retrieved_at(), now());
+    assert_eq!(
+        digest.period(),
+        (at("2026-08-24T14:00:00Z"), at("2026-08-24T14:30:00Z")),
+        "the period is what the events describe, not when they were read"
+    );
+    assert_eq!(
+        digest.symbols().iter().cloned().collect::<Vec<_>>(),
+        vec!["EURGBP".to_string(), "EURUSD".to_string()],
+        "the symbols are the source's own keys, in a stable order"
+    );
+    assert_eq!(digest.topic(), None, "the runtime does not know the topic");
+
+    // The source re-serves the same table. Nothing new is admitted — the
+    // window has seen both fingerprints — and the digest is identical,
+    // because a reference ledger asks whether the *source* changed, not
+    // whether this process had seen it before.
+    let again = runtime.poll(
+        &mut connector,
+        &mut transport,
+        now().saturating_add(Duration::from_secs(1)),
+    )?;
+    assert_eq!(
+        again.admitted.len(),
+        0,
+        "premise: the redelivery was absorbed by the dedup window"
+    );
+    assert_eq!(again.duplicates, 2);
+    assert_eq!(
+        again
+            .digest
+            .as_ref()
+            .map(|digest| digest.sha256().to_string()),
+        Some(digest.sha256().to_string()),
+        "a redelivery of the same bytes must digest the same"
+    );
+    Ok(())
+}
+
+/// A poll whose body decodes to no events delivers exactly as it did before
+/// digests existed — outcome, admitted count, checkpoint — and simply
+/// carries no digest. The digest is an observation of the poll, never a gate
+/// on it.
+///
+/// Mutated by replacing the `.ok()` on `FetchDigest::of` in
+/// `ConnectorRuntime::ingest` with a branch that sets
+/// `report.outcome = PollOutcome::Refused` when the digest cannot be formed —
+/// confirmed this test then fails on the outcome, then restored.
+#[test]
+fn a_poll_that_decodes_no_events_still_delivers_and_carries_no_digest() -> Result<()> {
+    let manifest = manifest();
+    let (mut runtime, _sleeper) = runtime_with(manifest.clone())?;
+    let mut transport = emulator_serving(&body(&[]));
+    let mut connector = TestConnector::new(manifest);
+    runtime.connect(&mut connector, &mut transport, now())?;
+    let before = runtime.checkpoint(now());
+
+    let report = runtime.poll(&mut connector, &mut transport, now())?;
+    assert!(
+        report.outcome.delivered(),
+        "an empty table is a delivery, not a fault: {:?}",
+        report.outcome
+    );
+    assert_eq!(report.admitted.len(), 0);
+    assert_eq!(
+        report.quarantined, 0,
+        "nothing was quarantined for lacking a digest"
+    );
+    assert!(
+        report.digest.is_none(),
+        "a body with no events describes no extent, so there is nothing to digest"
+    );
+    let after = runtime.checkpoint(now());
+    assert_eq!(
+        after.cursor.position, before.cursor.position,
+        "an empty delivery moves the cursor exactly as far as it did before digests existed"
+    );
+    Ok(())
+}

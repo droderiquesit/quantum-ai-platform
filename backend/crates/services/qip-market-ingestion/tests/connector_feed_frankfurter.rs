@@ -90,6 +90,29 @@ fn the_connector_feed_opens_frankfurter_by_name_and_polls_real_rates() -> Result
         3,
         "the manifest asks for three currencies (GBP, JPY, USD)"
     );
+    // The bridge holds the digest of exactly what the server served, stamps
+    // it with the topic the descriptor promised, and hands it up once: this
+    // is the seam a composition root takes it from for the kernel's reference
+    // ledger, and a digest taken twice would record one fetch as two.
+    let digest = feed
+        .take_digest()
+        .expect("a delivered poll leaves a digest for the composition root to take");
+    assert_eq!(
+        digest.sha256(),
+        qip_core::sha256_hex(RATE_TABLE.as_bytes()),
+        "the digest must hash the bytes the server served, byte for byte"
+    );
+    assert_eq!(digest.topic(), Some(qip_events::Topic::MacroUpdated));
+    assert_eq!(
+        digest.locator(),
+        "/v1/latest?base=EUR&symbols=USD,GBP,JPY",
+        "the locator is the manifest's path and fixed query as the transport sent them"
+    );
+    assert_eq!(digest.symbols().len(), 3);
+    assert!(
+        feed.take_digest().is_none(),
+        "the digest is handed up once; a second take would double-count the fetch"
+    );
     for record in &records {
         assert!(
             record.validate().is_empty(),

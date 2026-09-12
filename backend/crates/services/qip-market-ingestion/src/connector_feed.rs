@@ -20,6 +20,7 @@
 
 use crate::adapter::{DataAdapter, SensedRecord, SourceDescriptor};
 use crate::connector::checkpoint::Checkpoint;
+use crate::connector::digest::FetchDigest;
 use crate::connector::journal::{StreamJournal, StreamLedger};
 use crate::connector::runtime::{ConnectorRuntime, RuntimeConfig};
 use crate::connector::transport::{HttpSourceTransport, SourceTransport};
@@ -131,6 +132,12 @@ pub struct ConnectorFeed {
     /// process — the correct shape for a contract test driving an emulator,
     /// and the wrong one for anything measuring a source *sustained*.
     journal: Option<StreamJournal>,
+    /// The digest of the most recent delivered poll, held until the
+    /// composition root takes it with [`Self::take_digest`]. Held rather than
+    /// returned because [`DataAdapter::poll`] returns records and nothing
+    /// else, and widening that contract for one arm would put a field on
+    /// every adapter that has no bytes to digest.
+    last_digest: Option<FetchDigest>,
 }
 
 impl ConnectorFeed {
@@ -225,7 +232,24 @@ impl ConnectorFeed {
             runtime,
             descriptor,
             journal: None,
+            last_digest: None,
         })
+    }
+
+    /// The manifest this feed was opened from — the declared category, the
+    /// schema contract and the licensing class a composition root needs to
+    /// build the source's admission for the kernel's reference ledger.
+    pub const fn manifest(&self) -> &SourceManifest {
+        self.runtime.manifest()
+    }
+
+    /// The digest of the most recent delivered poll, once.
+    ///
+    /// `None` when the last poll was deferred, refused, or decoded to nothing,
+    /// and after this has already been taken — a digest handed to the kernel
+    /// twice would record one fetch as two.
+    pub fn take_digest(&mut self) -> Option<FetchDigest> {
+        self.last_digest.take()
     }
 
     /// Keep this stream's record on `store`, and resume where the last process
@@ -344,9 +368,22 @@ impl DataAdapter for ConnectorFeed {
     }
 
     fn poll(&mut self, until: Timestamp) -> Result<Vec<SensedRecord>> {
-        let report = self
-            .runtime
-            .poll(self.connector.as_mut(), self.transport.as_mut(), until)?;
+        let mut report =
+            self.runtime
+                .poll(self.connector.as_mut(), self.transport.as_mut(), until)?;
+        // Taken before the journal writes, and replaced rather than kept: a
+        // digest is a fact about *this* poll, and one left over from a poll
+        // whose successor delivered nothing would be handed up as if it were
+        // fresh. The topic is the bridge's to add — the runtime does not
+        // know it — and it is the one the descriptor already promises.
+        self.last_digest =
+            report
+                .digest
+                .take()
+                .map(|digest| match self.descriptor.topics.first() {
+                    Some(topic) => digest.with_topic(*topic),
+                    None => digest,
+                });
         // Recorded before the records are released, and the error propagates
         // rather than being swallowed. A stream whose durable record cannot be
         // written is a stream nobody can afterwards say anything true about,

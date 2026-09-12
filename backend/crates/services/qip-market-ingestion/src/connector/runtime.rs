@@ -146,6 +146,12 @@ pub struct PollReport {
     /// What the backoff spent inside this poll.
     pub waited: Duration,
     pub liveness: Liveness,
+    /// The content hash of exactly what the source served, when the poll
+    /// delivered and the body decoded to at least one event. `None` for a
+    /// deferred or refused poll, and for a delivered body that decoded to
+    /// nothing — there is then no extent for a digest to describe, and the
+    /// poll is otherwise unaffected. See [`super::digest`].
+    pub digest: Option<super::digest::FetchDigest>,
 }
 
 impl PollReport {
@@ -159,6 +165,7 @@ impl PollReport {
             attempts: 0,
             waited: Duration::ZERO,
             liveness,
+            digest: None,
         }
     }
 }
@@ -546,6 +553,26 @@ impl ConnectorRuntime {
             );
             return report;
         }
+
+        // The digest of exactly what arrived, taken here and nowhere else:
+        // this is the only seam holding the raw body, the locator it was
+        // fetched from and the decoded events' own instants at once, and it
+        // is taken over *every* decoded event — withheld and duplicate ones
+        // included — because the source served them all and a re-fetch of
+        // the same table must hash the same whether or not the dedup window
+        // has seen it. A body that decoded to nothing yields no digest, and
+        // that is recorded as absence rather than treated as a fault: the
+        // poll's outcome, its checkpoint and its admitted records are exactly
+        // what they would be without this line, which is what keeps the
+        // digest an observation of the poll and not a gate on it.
+        report.digest = super::digest::FetchDigest::of(
+            &self.manifest,
+            target,
+            response.body.as_bytes(),
+            &events,
+            at,
+        )
+        .ok();
 
         // The heartbeat is fed from every event the source produced, including
         // the ones withheld and the ones already seen: the source *did* serve
