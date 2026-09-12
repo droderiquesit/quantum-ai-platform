@@ -352,14 +352,33 @@ impl std::fmt::Display for Method {
 /// operator needs to see to find the mistake. A URL with no userinfo is
 /// returned unchanged. Pure text, no parse: it must work on exactly the
 /// addresses the parser refuses.
+///
+/// **A `"://"` is not required to find the authority.** Until 2026-09-12
+/// this function returned `raw` verbatim whenever `"://"` was absent, on the
+/// premise that every credential-bearing string this process handles has a
+/// scheme. That premise was wrong: an operator who sets
+/// `QIP_LANGUAGE_MODEL_BASE_URL=svc:TOKEN@127.0.0.1:9106` (the `http://`
+/// dropped by mistake) produces exactly the shape this function existed to
+/// catch, and both call sites in [`require_loopback_egress`] and both
+/// invocations inside [`Url::parse`]'s own `invalid` closure fed it straight
+/// back to the caller — the fix that was supposed to keep `TOKEN` out of the
+/// log printed it twice. So: treat everything up to the first `/`, `?` or
+/// `#` as the candidate authority whether or not a scheme was found, and
+/// redact it the same way either way. A string with no such delimiter is
+/// entirely a candidate authority (matching `require_loopback_egress`'s
+/// `"svc:TOKEN@127.0.0.1:9106"` scenario, which has none of the three).
 pub fn redact_userinfo(raw: &str) -> String {
-    let Some((scheme, rest)) = raw.split_once("://") else {
-        return raw.to_string();
+    let (scheme, rest) = match raw.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest),
+        None => (None, raw),
     };
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let (authority, remainder) = rest.split_at(end);
     match authority.rsplit_once('@') {
-        Some((_, host)) => format!("{scheme}://…@{host}{remainder}"),
+        Some((_, host)) => match scheme {
+            Some(scheme) => format!("{scheme}://…@{host}{remainder}"),
+            None => format!("…@{host}{remainder}"),
+        },
         None => raw.to_string(),
     }
 }

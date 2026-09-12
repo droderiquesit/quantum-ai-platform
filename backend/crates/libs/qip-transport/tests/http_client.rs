@@ -167,7 +167,43 @@ fn an_egress_address_is_loopback_with_a_port_and_a_refusal_never_echoes_a_creden
         "http://127.0.0.1:9106/v1?to=a@b",
         "an `@` past the authority is not userinfo and must be kept"
     );
-    assert_eq!(redact_userinfo("no scheme@here"), "no scheme@here");
+    // Corrected 2026-09-12: this used to assert the scheme-less string was
+    // passed through unchanged, on the premise that every credential-bearing
+    // string this process handles has a `://`. It does not — see the
+    // dedicated regression below — so a scheme-less string carrying an `@`
+    // is exactly the case that must redact, not the case that is exempt.
+    assert_eq!(redact_userinfo("no scheme@here"), "…@here");
+}
+
+/// The scenario the prior round's fix did not cover: an operator drops the
+/// `http://` and sets a base URL as `svc:TOKEN@127.0.0.1:9106`.
+/// `redact_userinfo` used to require `"://"` before it would redact anything,
+/// so this string — which has none — came back unchanged from both call
+/// sites that are supposed to keep a credential out of an error message:
+/// `require_loopback_egress`'s own `shown`, and `Url::parse`'s `invalid`
+/// closure, which it calls a second time on the same raw string once the
+/// parse fails for having no scheme. The result was `TOKEN` printed twice,
+/// in the clear, in the fatal start-up error every one of the six egress
+/// call sites wraps this in.
+///
+/// Mutated by reverting `redact_userinfo` to require a scheme (restoring the
+/// `let Some((scheme, rest)) = raw.split_once("://") else { return
+/// raw.to_string(); }` early return) — confirmed both assertions below then
+/// fail, `TOKEN` appearing in the `Display` and the `Debug` of the refusal;
+/// restored, confirmed both pass again.
+#[test]
+fn a_scheme_less_credential_bearing_egress_address_is_still_redacted() {
+    use qip_transport::http::require_loopback_egress;
+
+    let error = require_loopback_egress("svc:TOKEN@127.0.0.1:9106")
+        .expect_err("a scheme-less address was admitted as an egress address");
+    for rendered in [error.to_string(), format!("{error:?}")] {
+        assert!(
+            !rendered.contains("TOKEN") && !rendered.contains("svc"),
+            "the refusal of a scheme-less credential-bearing address echoed the credential: \
+             {rendered}"
+        );
+    }
 }
 
 #[test]
