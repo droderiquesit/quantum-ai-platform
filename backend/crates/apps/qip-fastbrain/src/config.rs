@@ -624,8 +624,10 @@ mod tests {
     /// with the deep brain's reading of the same pair: `https` is refused
     /// by name, and so is a plaintext `http://` address off the instance —
     /// which until 2026-09-12 this parser admitted, leaving the loopback
-    /// requirement to `variables.tf` alone. Both spellings of loopback are
-    /// admitted, so the refusal is of the host and not of everything.
+    /// requirement to `variables.tf` alone. The literal loopback address is
+    /// admitted, so the refusal is of the host and not of everything;
+    /// `localhost` is not, because a name the resolver answers is not a
+    /// verified address and Terraform admits only the literal.
     ///
     /// Mutated by making `require_loopback_egress` return `Ok(())` for any
     /// `http://` address — confirmed the off-instance case then parses and
@@ -634,7 +636,7 @@ mod tests {
     fn the_connector_pair_is_held_to_the_loopback_egress_proxy() {
         const SOURCE: &str = "QIP_CONNECTOR_SOURCE";
         const BASE_URL: &str = "QIP_CONNECTOR_BASE_URL";
-        for admitted in ["http://127.0.0.1:9105", "http://localhost:9105"] {
+        for admitted in ["http://127.0.0.1:9105", "http://127.0.0.1:9105/"] {
             let config = FastBrainConfig::parse(&vars(&[
                 (SOURCE, "frankfurter-ecb-reference-rates"),
                 (BASE_URL, admitted),
@@ -649,6 +651,11 @@ mod tests {
             ("https://api.frankfurter.dev", "never at the vendor"),
             ("http://10.0.0.5:9105", "loopback"),
             ("http://qip-egress.qip.svc.cluster.local:9105", "loopback"),
+            ("http://localhost:9105", "loopback"),
+            (
+                "http://127.0.0.1:9105@qip-egress.qip.svc.cluster.local/",
+                "userinfo",
+            ),
         ] {
             let error = FastBrainConfig::parse(&vars(&[
                 (SOURCE, "frankfurter-ecb-reference-rates"),

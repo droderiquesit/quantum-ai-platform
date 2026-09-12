@@ -548,11 +548,12 @@ fn connector_feed(vars: &BTreeMap<String, String>) -> Result<Option<ConnectorFee
              neither"
         ))),
         (Some(sources), Some(base_url)) => {
-            // Loopback or nothing, and not only `https` refused: this is the
-            // one brain with an egress path (ADR 0024), and until 2026-09-12
-            // the loopback requirement lived in `variables.tf` alone, so a
-            // plaintext address off the instance set by any path but the
-            // reviewed tfvars opened a socket to whatever host it named.
+            // Loopback or nothing, and not only `https` refused: this brain
+            // has an egress sidecar (ADR 0024 — the API has one too; the
+            // fast brain has none), and until 2026-09-12 the loopback
+            // requirement lived in `variables.tf` alone, so a plaintext
+            // address off the instance set by any path but the reviewed
+            // tfvars opened a socket to whatever host it named.
             qip_market_ingestion::connector_feed::require_loopback_egress(&base_url).map_err(
                 |refusal| {
                     Error::invalid(format!(
@@ -1022,15 +1023,18 @@ mod tests {
                 .is_none(),
             "an unconfigured node polls no vendor"
         );
-        // `localhost` is the other spelling of the loopback proxy and is
-        // admitted, so the refusal below is of the host and not of every
-        // address that is not the literal `127.0.0.1`.
+        // `localhost` was admitted as the other spelling of loopback until
+        // 2026-09-12. It is a name the resolver answers, not a verified
+        // address, and Terraform admits only the literal; the process now
+        // agrees with it. A path on the literal is still fine, so the
+        // refusal below is of the host and not of every address that is not
+        // exactly `http://127.0.0.1:9105`.
         assert!(
             DeepBrainConfig::parse(&vars(&[
                 (CONNECTOR_SOURCE_VARIABLE, "coinbase-spot-ticker"),
-                (CONNECTOR_BASE_URL_VARIABLE, "http://localhost:9105/"),
+                (CONNECTOR_BASE_URL_VARIABLE, "http://127.0.0.1:9105/"),
             ]))
-            .expect("the loopback proxy by name is a valid address")
+            .expect("the loopback proxy with a trailing path is a valid address")
             .connector_feed
             .is_some()
         );
@@ -1038,13 +1042,31 @@ mod tests {
         for (pairs, expected) in [
             // A plaintext address off the instance: not `https`, and until
             // 2026-09-12 admitted here, with the loopback requirement held
-            // by `variables.tf` alone — on the one brain with an egress path.
+            // by `variables.tf` alone — on a brain with an egress sidecar
+            // (the API has one too, ADR 0024).
             (
                 vec![
                     (CONNECTOR_SOURCE_VARIABLE, "coinbase-spot-ticker"),
                     (CONNECTOR_BASE_URL_VARIABLE, "http://10.0.0.5:9105"),
                 ],
                 "loopback",
+            ),
+            (
+                vec![
+                    (CONNECTOR_SOURCE_VARIABLE, "coinbase-spot-ticker"),
+                    (CONNECTOR_BASE_URL_VARIABLE, "http://localhost:9105/"),
+                ],
+                "loopback",
+            ),
+            (
+                vec![
+                    (CONNECTOR_SOURCE_VARIABLE, "coinbase-spot-ticker"),
+                    (
+                        CONNECTOR_BASE_URL_VARIABLE,
+                        "http://127.0.0.1:9105@10.0.0.5/",
+                    ),
+                ],
+                "userinfo",
             ),
             (
                 vec![(CONNECTOR_SOURCE_VARIABLE, "coinbase-spot-ticker")],

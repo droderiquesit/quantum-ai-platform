@@ -141,16 +141,22 @@ impl FeedSettings {
                 )));
             }
             (Some(source_id), Some(base_url)) => {
-                // The transport has no TLS stack, so `https` is refused at
-                // construction anyway; saying so here names the deployment
-                // mistake instead of surfacing it as a connection error.
-                if base_url.starts_with("https://") {
-                    return Err(Error::invalid(format!(
-                        "{CONNECTOR_BASE_URL_VARIABLE} is {base_url}. `qip_transport::http` speaks \
-                         plaintext HTTP/1.1 and has no TLS stack: point this at the egress proxy, \
-                         which terminates TLS to the vendor, never at the vendor itself"
-                    )));
-                }
+                // Loopback or nothing, through the helper every root uses,
+                // so the refusal names the variable and the transport's own
+                // parser decides what the address is. Until 2026-09-12 this
+                // parser refused only `https` and left the loopback rule to
+                // `ConnectorFeed::open`, whose refusal names no variable —
+                // and this process has an egress sidecar of its own (ADR
+                // 0024), so an address off the instance here is a real
+                // route in the clear, not a route that does not exist.
+                qip_market_ingestion::connector_feed::require_loopback_egress(&base_url).map_err(
+                    |refusal| {
+                        Error::invalid(format!(
+                            "{CONNECTOR_BASE_URL_VARIABLE} is refused — {}",
+                            refusal.message()
+                        ))
+                    },
+                )?;
                 Some(ConnectorSettings {
                     source_id,
                     base_url,

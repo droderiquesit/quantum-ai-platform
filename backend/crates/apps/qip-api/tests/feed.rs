@@ -488,18 +488,18 @@ fn a_tape_and_a_connector_together_are_a_contradiction_refused_by_both_names() -
     assert_eq!(
         FeedSettings::parse(&vars(&[
             (CONNECTOR_SOURCE_VARIABLE, "frankfurter-ecb-reference-rates"),
-            (CONNECTOR_BASE_URL_VARIABLE, "http://egress.test:8080"),
+            (CONNECTOR_BASE_URL_VARIABLE, "http://127.0.0.1:8080"),
         ]))?,
         FeedSettings::Connector(ConnectorSettings {
             source_id: "frankfurter-ecb-reference-rates".to_string(),
-            base_url: "http://egress.test:8080".to_string(),
+            base_url: "http://127.0.0.1:8080".to_string(),
         })
     );
 
     let refusal = FeedSettings::parse(&vars(&[
         (TAPE_PATH_VARIABLE, "/tmp/tape.json"),
         (CONNECTOR_SOURCE_VARIABLE, "frankfurter-ecb-reference-rates"),
-        (CONNECTOR_BASE_URL_VARIABLE, "http://egress.test:8080"),
+        (CONNECTOR_BASE_URL_VARIABLE, "http://127.0.0.1:8080"),
     ]))
     .expect_err("a tape and a connector on two clocks were opened as one feed");
     assert!(
@@ -523,7 +523,7 @@ fn a_tape_and_a_connector_together_are_a_contradiction_refused_by_both_names() -
     );
     let other_half = FeedSettings::parse(&vars(&[(
         CONNECTOR_BASE_URL_VARIABLE,
-        "http://egress.test:8080",
+        "http://127.0.0.1:8080",
     )]))
     .expect_err("an egress address with no source was accepted");
     assert!(
@@ -537,6 +537,36 @@ fn a_tape_and_a_connector_together_are_a_contradiction_refused_by_both_names() -
     ]))
     .expect_err("https was accepted by a transport with no TLS stack");
     assert!(tls.message().contains("egress proxy"), "{}", tls.message());
+
+    // And a plaintext address off loopback, by the name of the variable.
+    // Until 2026-09-12 this parser refused only `https` and left the rest
+    // to `ConnectorFeed::open`, whose refusal names no variable; and this
+    // process has an egress sidecar (ADR 0024), so an address off the
+    // instance here is a real route in the clear. The userinfo row is the
+    // one a hand-rolled host check read as loopback; `localhost` is a name
+    // the resolver answers, not a verified address.
+    //
+    // Mutated by restoring the `https`-only check in `FeedSettings::parse`
+    // — confirmed the three rows then parse as a connector and this fails,
+    // then restored.
+    for (off_loopback, expected) in [
+        ("http://egress.test:8080", "loopback"),
+        ("http://127.0.0.1:8080@egress.test/", "userinfo"),
+        ("http://localhost:8080", "loopback"),
+    ] {
+        let refused = FeedSettings::parse(&vars(&[
+            (CONNECTOR_SOURCE_VARIABLE, "frankfurter-ecb-reference-rates"),
+            (CONNECTOR_BASE_URL_VARIABLE, off_loopback),
+        ]))
+        .err()
+        .unwrap_or_else(|| panic!("{off_loopback} was accepted as the egress proxy"));
+        assert!(
+            names_token(refused.message(), CONNECTOR_BASE_URL_VARIABLE)
+                && refused.message().contains(expected),
+            "the refusal of {off_loopback} does not name the variable and `{expected}`: {}",
+            refused.message()
+        );
+    }
     Ok(())
 }
 
