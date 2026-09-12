@@ -44,6 +44,25 @@ one process per log file, the sketch's rows held to its total, the
 reference's locator held to its door and its hash to its shape, and each
 source observed as soon as its own poll succeeds.
 
+**Amended in place a fourth time, 2026-09-12**, after the third round of
+repairs (`2c954cd..672563f`) was re-reviewed by a fresh security-engineer
+and a fresh code-reviewer: no blocking or high finding; one medium, two
+low and a set of wording items, every one fixed in the commits that follow
+`672563f`. Nothing this record *decides* changes; three things it
+*claimed* in its costs and checks were wrong and are corrected below. The
+log lock's cost said a held log could not be inspected because the type
+had no read-only open; the writer's open was also the only open, so
+`qip replay` failed on a read-only mount and relabelled the lock refusal
+as a corrupt file, and it now reads through `EventLog::inspect` (§costs).
+The loopback check was a second URL parser that read a userinfo trick as
+loopback and admitted `localhost` where Terraform admits only the
+literal; it parses with the transport's parser and admits `127.0.0.1`
+alone, on the API's parser as well as the brains' (§7, checks). And the
+journal's "one poll ahead, heals itself" cost was true only inside the
+process that failed; the ledger and the checkpoint are one value under
+one key now (§costs). The remaining items are wording, one assertion, and
+the deep brain's error exit releasing its connector sessions.
+
 **Relates to:** blueprint §22.1 (Retention Classes), §22.2 (Sufficient
 Statistics), §22.3 (Data References), §22.4 (Fetch-on-Demand for Research),
 §56.3 rules 30 and 31, §56.4 rules 33 and 35
@@ -401,12 +420,21 @@ reference on the ledger through the replayed door: both read
 Three more corrections to this section from the same review. The arm
 accepted any plaintext `http://` host in the process: `connector_feed`
 refused only `https://`, and the loopback requirement lived in
-`variables.tf`'s validation alone, on the one binary with an egress path.
+`variables.tf`'s validation alone — on a binary with an egress sidecar,
+and not the only one: the API has one too (ADR 0024), and the third
+amendment's "the one binary with an egress path" was wrong about that.
 `qip_market_ingestion::connector_feed::require_loopback_egress` — an
-absolute `http://` URL whose host is `127.0.0.1` or `localhost`, nothing
-else — is now called at three seams: `ConnectorFeed::open`, the deep
-brain's parser and, for parity, the fast brain's. Terraform catches the
-committed mistake, the process the unreviewed one. Multi-arm `sense`
+absolute `http://` URL, parsed by the transport's own parser, whose host
+is the literal `127.0.0.1` and nothing else — is now called at four
+seams: `ConnectorFeed::open`, the deep brain's parser, the API's, and,
+for parity, the fast brain's. The third amendment admitted `localhost`
+beside the literal and parsed the address by hand; the fourth review
+found the hand parser read `http://127.0.0.1:9105@evil.example/` as
+loopback (the transport's refusal of userinfo was all that kept the
+socket shut) and that `localhost` is a name the resolver answers rather
+than a verified address, which is why Terraform never admitted it. Both
+are corrected: one parser, one spelling. Terraform catches the committed
+mistake, the process the unreviewed one. Multi-arm `sense`
 collected every source's records into one batch and observed it at the
 end, so an arm whose poll refused after an earlier arm had referenced,
 journaled and committed its fetch left that batch neither delivered nor
@@ -462,19 +490,28 @@ mutation-verified.
   count its error bound is stated against. Each refusal has a test and
   each test was mutated.
 - **The connector base URL is loopback in the process, not only in
-  Terraform.** `require_loopback_egress` at `ConnectorFeed::open` and both
-  brains' parsers; an `https` address, an RFC 1918 host, a vendor host, a
-  `127.0.0.1.evil.example` host and a bare authority are each refused by a
-  test, and both spellings of loopback admitted.
-- **One process per log file, and one journal step per poll.**
+  Terraform, and the process and Terraform mean the same thing by it.**
+  `require_loopback_egress` at `ConnectorFeed::open`, the API's parser and
+  both brains'; the address is parsed by `qip_transport::http::Url::parse`
+  and its host must be the literal `127.0.0.1`. An `https` address, an
+  RFC 1918 host, a vendor host, a `127.0.0.1.evil.example` host, both
+  `localhost` spellings, `[::1]`, both userinfo spellings and a bare
+  authority are each refused by a test; the third amendment said "both
+  spellings of loopback admitted", and that admission is withdrawn.
+- **One process per log file, and one write per poll.**
   `EventLog::open_with_capacity` takes an exclusive advisory lock
   (`std::fs::File::try_lock`, which is why the workspace's declared MSRV
   is 1.89) and refuses a log another handle holds, so two writers cannot
   mint one sequence — the uniqueness campaign ids claim across restarts
-  was silently false across concurrent writers. `StreamJournal::record_and_commit`
-  writes the ledger, then the checkpoint, and adopts the ledger only once
-  both succeeded, so a failed write bills the re-fetch once and never
-  leaves the durable checkpoint ahead of what was delivered.
+  was silently false across concurrent writers. `EventLog::inspect` is
+  the reader's open: read-only, never creating, under the shared side of
+  the same lock for the read and no longer, so `qip replay` checks a
+  journal on a read-only mount and is refused a journal a node holds by
+  the message naming the holder. `StreamJournal::record_and_commit`
+  writes the ledger and the checkpoint as one value under one key in one
+  `put`, so a failed write leaves the store, this process and the next
+  process at the last poll that succeeded; the third amendment's "ledger,
+  then checkpoint" left the durable ledger one poll ahead across a crash.
 - **The paper-trading boundary is untouched.** No file under
   `qip-risk-engine`, `qip-execution-engine`, `qip-capital`, `qip-edge` or
   `infrastructure/terraform` changed; the only promotion touched is the
@@ -653,15 +690,40 @@ refusal path and the memory bound a many-subject campaign would draw on.
 ledger's schedule, not its own; the trade is stated in the ledger's doc.
 
 **A log a running node holds cannot be opened by anything else, the CLI's
-replay included.** The lock is exclusive and this type has no read-only
-open that could promise a reader a whole record mid-append; copy the file
-first. It is advisory: it holds against everything that opens the file
-through `EventLog` and against nothing that writes the bytes another way.
+replay included — and the replay is told so.** The writer's lock is
+exclusive; `EventLog::inspect` takes the shared side of it and is refused
+while a node holds the file, with the message naming the holder, because
+a reader of a file mid-append reads a partial record and "corrupt at line
+n" would be the wrong diagnosis. Copy the file and inspect the copy. The
+third amendment said the type had no read-only open at all, and the
+consequence it did not state was that `qip replay` used the writer's
+open: on a read-only mount — where an archive is kept on purpose — the
+append open failed and was reported as "not an event log this platform
+wrote", the lock refusal was relabelled the same way, and a mistyped path
+created an empty file. The inspection is read-only, creates nothing and
+releases its lock with the read; the CLI passes the lock refusal through
+unwrapped. The lock is advisory — it holds against everything that opens
+the file through `EventLog` and against nothing that writes the bytes
+another way — and it is proven so on Unix only: the workspace is built
+and deployed on Linux, there is no Windows CI, and what `std` maps the
+call to elsewhere has not been exercised.
 
-**The journal's two keys are two writes.** A ledger write that succeeds
-before a checkpoint write that fails leaves the durable ledger one poll
-ahead of the process until the next successful write overwrites it whole;
-the test asserts that gap rather than hiding it.
+**The journal is one value under one key, and a store holding the two
+old keys is refused.** The third amendment made the ledger and the
+checkpoint one step over two keys, ledger first, and stated that a
+ledger write succeeding before a checkpoint write failed left the
+durable ledger one poll ahead "until the next successful write". That
+held only inside the process that failed: the failure propagates out of
+`poll_referencing`, the deep brain exits on it, and the restart loaded
+the ledger already counting the poll, resumed from the older checkpoint
+and billed the re-fetch again — one high for the life of the stream.
+One `put` of one value is atomic on every store's own terms (a map
+insert; an atomic rename with `fsync`; a `SET`), and no store here offers
+a multi-key transaction. The cost is the layout change: nothing is
+deployed, so no migration is written, and a store still holding
+`…/ledger` or `…/checkpoint` is refused at open by name with the remedy
+rather than read as a fresh stream. `StreamJournal::record`, the first
+half of the old double bill, is gone.
 
 **The `Discovered` door has no live gate at `sources_backing`.** The
 discovery path's registration reaches no real bytes in production
@@ -716,3 +778,17 @@ applied rather than silenced.
   gap tolerance is safe only because `open_with_capacity` refuses a
   non-contiguous file first; removing that refusal turns a deleted line
   into a silent eviction.
+- **An inspection that creates the file, opens it for append, or takes
+  the exclusive lock.** Each returns `qip replay` to the state the fourth
+  review found: a checker that cannot read an archive, or that reads a
+  node's journal mid-append, or that leaves an empty file at a typo.
+  Three tests hold the three properties, one of them run unprivileged
+  because uid 0 ignores the mode bits.
+- **A second URL parser in front of the transport, or a resolver name
+  admitted as loopback.** The gate's host must be the host the transport
+  connects to, by construction, and the literal is the only spelling
+  Terraform admits; a hand parser or a `localhost` arm re-opens the
+  userinfo case and the hosts-file case.
+- **The journal's ledger and checkpoint written as two values again.**
+  Any second `put` between them is the crash gap; the store in the
+  billing test refuses exactly the write a split would leave alone.
