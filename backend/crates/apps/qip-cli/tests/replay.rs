@@ -389,7 +389,8 @@ fn a_missing_empty_or_malformed_journal_is_refused_by_name_rather_than_replayed_
     std::fs::remove_file(&good).ok();
 
     // Missing. `EventLog::open` would answer with an empty log, and every
-    // comparison would then pass against nothing.
+    // comparison would then pass against nothing — and would leave an empty
+    // file at the path, which is checked for too.
     let missing = journal_path("refusals-missing")?;
     let (_, stderr, code) = run(&["replay", "--journal", &missing.display().to_string()])?;
     assert_eq!(
@@ -399,6 +400,10 @@ fn a_missing_empty_or_malformed_journal_is_refused_by_name_rather_than_replayed_
     assert!(
         stderr.contains(&missing.display().to_string()),
         "the refusal does not name the path it could not find: {stderr}"
+    );
+    assert!(
+        !missing.exists(),
+        "the command created the journal it was asked to check"
     );
 
     // Present and empty. The dangerous one: it verifies, rebuilds three
@@ -434,5 +439,53 @@ fn a_missing_empty_or_malformed_journal_is_refused_by_name_rather_than_replayed_
         stderr.contains("--jrnal"),
         "the refusal does not name the argument it did not understand: {stderr}"
     );
+    Ok(())
+}
+
+/// A journal a running node holds is refused by the message that names the
+/// holder, and not as a file that is not a log. Until 2026-09-12 the command
+/// opened the journal through the writer's open, and every failure of that
+/// open — the lock refusal included — was relabelled "is not an event log
+/// this platform wrote", which sent an operator looking for corruption in a
+/// file that was merely in use. The same journal is checked cleanly once the
+/// holder lets go, so the refusal is about the holder and not the file.
+///
+/// Mutated by deleting the `Err(held @ Error::Denied(_))` arm in
+/// `replay::open` — confirmed the refusal then reads "is not an event log"
+/// and this fails, then restored.
+#[test]
+fn a_journal_a_running_node_holds_is_refused_naming_the_holder_not_as_a_corrupt_file() -> Result<()>
+{
+    let path = journal_path("held")?;
+    write_journal(&path, false, 1)?;
+
+    // This process stands in for the node: the writer's open holds the
+    // exclusive lock for as long as `holder` lives.
+    let holder = qip_events::log::EventLog::open(&path)?;
+    assert!(!holder.is_empty(), "premise: the held journal has records");
+    let (_, stderr, code) = run(&["replay", "--journal", &path.display().to_string()])?;
+    assert_eq!(code, 1, "a held journal did not stop the command: {stderr}");
+    assert!(
+        stderr.contains("held by another process"),
+        "the refusal does not name the holder: {stderr}"
+    );
+    assert!(
+        !stderr.contains("is not an event log"),
+        "the lock refusal was relabelled as a corrupt file: {stderr}"
+    );
+
+    drop(holder);
+    let (stdout, stderr, code) = run(&["replay", "--journal", &path.display().to_string()])?;
+    assert_eq!(
+        code,
+        i32::from(AGREES),
+        "the released journal was still refused: {stderr}"
+    );
+    assert_eq!(
+        verdict(&stdout, "chain").as_deref(),
+        Some("intact"),
+        "the released journal did not verify: {stdout}"
+    );
+    std::fs::remove_file(&path).ok();
     Ok(())
 }

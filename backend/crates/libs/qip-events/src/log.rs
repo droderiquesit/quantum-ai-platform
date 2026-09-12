@@ -167,6 +167,23 @@ impl Durability {
     }
 }
 
+/// The refusal for a file another handle holds — one text for the writer's
+/// open and the inspection, so an operator reading either learns the same
+/// two things: who holds it, and what to do instead. The CLI's replay
+/// passes it through unwrapped; a refusal wrapped in "not an event log this
+/// platform wrote", which is what happened until 2026-09-12, sent an
+/// operator looking for a corrupt file when the file was merely in use.
+fn held_by_another(path: &Path) -> String {
+    format!(
+        "the event log at {} is held by another process (or another handle in this one); a \
+         second writer would mint the same sequences from the same tail and the file would \
+         hold two records under one number, and a reader would read a record mid-append. \
+         Stop the process that holds it, or point this one at its own log; to inspect a log \
+         a running node holds, copy the file first and inspect the copy",
+        path.display()
+    )
+}
+
 impl Default for EventLog {
     fn default() -> Self {
         Self::in_memory()
@@ -219,10 +236,19 @@ impl EventLog {
     /// released when it is dropped, so a crashed process releases it with
     /// its descriptors. It is advisory: it holds against anything that
     /// opens the file through this type, and against nothing that writes
-    /// the bytes some other way. A reader that only wants to inspect a log
-    /// a running node holds is refused too — copy the file first — because
-    /// a reader of a file mid-append reads a partial record and this type
-    /// has no read-only open that could promise otherwise.
+    /// the bytes some other way. It is proven so on Unix only — `flock`
+    /// semantics, exercised by the test suite on Linux, which is the only
+    /// platform this workspace is built and deployed on (an Alpine image);
+    /// there is no Windows CI, and what `std` maps the call to there has
+    /// not been exercised here.
+    ///
+    /// This open is a *writer's* open: the file is created if absent, and
+    /// opened for append, so it cannot succeed on a read-only mount. A
+    /// reader that only wants to look at a log — an archived one, or one a
+    /// running node holds — goes through [`Self::inspect`], which creates
+    /// nothing, writes nothing, and takes the *shared* side of the same
+    /// lock so that it is refused while a writer holds the file rather than
+    /// reading a record mid-append.
     pub fn open_with_capacity(path: impl AsRef<Path>, capacity: usize) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let mut log = Self::in_memory().with_capacity(capacity)?;
@@ -237,66 +263,136 @@ impl EventLog {
         match handle.try_lock() {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
-                return Err(Error::denied(format!(
-                    "the event log at {} is held by another process (or another handle in \
-                     this one); a second writer would mint the same sequences from the same \
-                     tail and the file would hold two records under one number. Stop the \
-                     process that holds it, or point this one at its own log; to inspect a \
-                     log a running node holds, copy the file first",
-                    path.display()
-                )));
+                return Err(Error::denied(held_by_another(&path)));
             }
             Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
         }
         log.lock = Some(handle);
-        {
-            let file = std::fs::File::open(&path)?;
-            let mut expected_sequence: u64 = 1;
-            for (line_number, line) in BufReader::new(file).lines().enumerate() {
-                let line = line?;
-                if line.trim().is_empty() {
-                    continue;
-                }
-                let record: LogRecord = serde_json::from_str(&line).map_err(|e| {
-                    Error::schema(format!(
-                        "corrupt log record at line {}: {e}",
-                        line_number + 1
-                    ))
-                })?;
-                // The file is append-only and every append takes the next
-                // sequence, so a file whose sequences are not 1, 2, 3, … has
-                // had a line removed, duplicated or renumbered. Refused
-                // here, before any hash is looked at, because
-                // `verify_retained_chain` reads a sequence gap as an
-                // eviction this process performed — which it can only be
-                // once the file it loaded from had none.
-                if record.sequence != expected_sequence {
-                    return Err(Error::schema(format!(
-                        "log record at line {} carries sequence {} where {} was expected; the \
-                         file is append-only and its sequences are contiguous from 1, so a gap \
-                         or a repeat means a line was removed, duplicated or renumbered. Restore \
-                         the file the log was written to, or archive it and start a new one",
-                        line_number + 1,
-                        record.sequence,
-                        expected_sequence
-                    )));
-                }
-                expected_sequence = expected_sequence.saturating_add(1);
-                // Same duplicate-id refusal as a live append: a file that
-                // reused an id (corruption, a hand edit, two processes
-                // appending to the same path) must fail to load rather than
-                // load with `by_event_id` silently pointing at only the
-                // later of the two records.
-                log.reject_duplicate_event_id(record.event.event_id.as_str())?;
-                // Make room before indexing, so loading a file larger than the
-                // ceiling never puts the whole file in memory first — which is
-                // the failure the ceiling exists to prevent, arriving at
-                // start-up instead of during the run.
-                log.make_room(record.event.topic)?;
-                log.index(record);
-            }
-        }
+        log.load(std::fs::File::open(&path)?)?;
         Ok(log)
+    }
+
+    /// Load a log for inspection only, at the default capacity.
+    ///
+    /// See [`Self::inspect_with_capacity`].
+    pub fn inspect(path: impl AsRef<Path>) -> Result<Self> {
+        Self::inspect_with_capacity(path, DEFAULT_CAPACITY)
+    }
+
+    /// Load a log for inspection only: read-only, never created, and
+    /// refused while a writer holds the file.
+    ///
+    /// The returned log is *not* file-backed. It carries the records the
+    /// file held at the instant it was read and no path, so an append to it
+    /// reaches memory and never the file — it is the shape for a tool that
+    /// checks a journal, not one that resumes it. Three things distinguish
+    /// it from [`Self::open_with_capacity`], each of which the CLI's replay
+    /// needed and the writer's open could not give it until 2026-09-12:
+    ///
+    /// * **It never creates the file.** The writer's open creates an absent
+    ///   path and returns an empty log, and a checker pointed at a mistyped
+    ///   path would then have verified nothing against nothing — and left
+    ///   an empty file behind where the operator would next look. An absent
+    ///   path is refused by name here.
+    /// * **It opens the file read-only**, so it succeeds on a read-only
+    ///   mount — which is where an archived journal is kept on purpose. The
+    ///   writer's open, which needs append, reported such a mount as an
+    ///   I/O failure that the CLI then relabelled as "not an event log".
+    /// * **It takes the shared side of the advisory lock**, for the read
+    ///   and no longer. A writer holds the exclusive side for its life, so a
+    ///   log a running node is appending to is refused with a message that
+    ///   says so — a reader of a file mid-append reads a partial record, and
+    ///   a refusal that names the holder is the honest answer where "corrupt
+    ///   record at line n" would send an operator looking for damage that
+    ///   is not there. The shared lock is released before this returns, so
+    ///   an inspection never stops a node from starting afterwards; a node
+    ///   that tries to open the file *during* the read is refused for that
+    ///   instant and nothing else.
+    ///
+    /// The lock is advisory on the same terms as the writer's, and proven
+    /// on Unix only; see [`Self::open_with_capacity`].
+    pub fn inspect_with_capacity(path: impl AsRef<Path>, capacity: usize) -> Result<Self> {
+        let path = path.as_ref();
+        let mut log = Self::in_memory().with_capacity(capacity)?;
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(Error::not_found(format!(
+                    "no event log at {}; an inspection reads a log this platform wrote and \
+                     will not create one",
+                    path.display()
+                )));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        match file.try_lock_shared() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(Error::denied(held_by_another(path)));
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+        }
+        log.load(file)?;
+        // `file` — and the shared lock with it — is released here, before
+        // the log is handed back: an inspection that outlived its read
+        // would refuse the next writer for as long as the caller held the
+        // result, which is a checker stopping a node.
+        Ok(log)
+    }
+
+    /// Index every record `file` holds, in file order, refusing a file that
+    /// is not an intact append-only log.
+    ///
+    /// Shared by the writer's open and the inspection so that the two cannot
+    /// disagree about what a loadable file is: a refusal one applied and the
+    /// other did not would let a file the node refuses to resume be
+    /// inspected as sound, or the reverse.
+    fn load(&mut self, file: std::fs::File) -> Result<()> {
+        let mut expected_sequence: u64 = 1;
+        for (line_number, line) in BufReader::new(file).lines().enumerate() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let record: LogRecord = serde_json::from_str(&line).map_err(|e| {
+                Error::schema(format!(
+                    "corrupt log record at line {}: {e}",
+                    line_number + 1
+                ))
+            })?;
+            // The file is append-only and every append takes the next
+            // sequence, so a file whose sequences are not 1, 2, 3, … has
+            // had a line removed, duplicated or renumbered. Refused
+            // here, before any hash is looked at, because
+            // `verify_retained_chain` reads a sequence gap as an
+            // eviction this process performed — which it can only be
+            // once the file it loaded from had none.
+            if record.sequence != expected_sequence {
+                return Err(Error::schema(format!(
+                    "log record at line {} carries sequence {} where {} was expected; the \
+                     file is append-only and its sequences are contiguous from 1, so a gap \
+                     or a repeat means a line was removed, duplicated or renumbered. Restore \
+                     the file the log was written to, or archive it and start a new one",
+                    line_number + 1,
+                    record.sequence,
+                    expected_sequence
+                )));
+            }
+            expected_sequence = expected_sequence.saturating_add(1);
+            // Same duplicate-id refusal as a live append: a file that
+            // reused an id (corruption, a hand edit, two processes
+            // appending to the same path) must fail to load rather than
+            // load with `by_event_id` silently pointing at only the
+            // later of the two records.
+            self.reject_duplicate_event_id(record.event.event_id.as_str())?;
+            // Make room before indexing, so loading a file larger than the
+            // ceiling never puts the whole file in memory first — which is
+            // the failure the ceiling exists to prevent, arriving at
+            // start-up instead of during the run.
+            self.make_room(record.event.topic)?;
+            self.index(record);
+        }
+        Ok(())
     }
 
     /// Trade the durability guarantee for throughput, deliberately.

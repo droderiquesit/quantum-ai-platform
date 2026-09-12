@@ -16,15 +16,32 @@
 //! file-backed log appends to that file — the assembly record, and every
 //! registration and eligibility decision the configuration commits — which
 //! is exactly right for a platform resuming its own log and exactly wrong
-//! for a tool asked to check one. So the journal is read where it lies, and
-//! the platform is assembled on a copy that is deleted on the way out. The
-//! practical consequence is that an archived journal on a read-only mount
-//! can be checked at all.
+//! for a tool asked to check one. So the journal is read where it lies,
+//! through [`qip_events::log::EventLog::inspect`] — opened read-only, never
+//! created, under the shared side of the log's advisory lock for the read
+//! and no longer — and the platform is assembled on a copy that is deleted
+//! on the way out. The practical consequence is that an archived journal on
+//! a read-only mount can be checked at all: until 2026-09-12 the journal
+//! was opened through the writer's open, which needs append, and a
+//! read-only mount was reported as "not an event log this platform wrote".
+//!
+//! **It does not read a journal a running node holds.** The node holds the
+//! exclusive side of the lock for its life, so the inspection is refused
+//! with a message that names the holder, passed through as written rather
+//! than wrapped — the same relabelling sent an operator looking for
+//! corruption in a file that was merely in use. A record read mid-append
+//! is a partial record, and "corrupt at line n" would be the wrong
+//! diagnosis of it. To check a live node's journal, stop the node, or copy
+//! the file and check the copy; the copy is not under the node's lock and
+//! may itself end in a partial last line, which this command then reports
+//! as the unreadable line it is.
 //!
 //! **It does not treat an absent journal as an empty one.**
 //! [`qip_events::log::EventLog::open`] creates the parent directory of a
 //! path that does not exist and returns a log with no records, and every
-//! comparison below would then pass against nothing. A missing path, a
+//! comparison below would then pass against nothing. The inspection creates
+//! nothing, and the check is kept in front of it anyway so the refusal
+//! names a missing journal rather than an I/O error. A missing path, a
 //! path that is not a file, an unreadable line and a file holding no
 //! records are each refused by name.
 //!
@@ -184,13 +201,23 @@ fn open(journal: &Path) -> Result<EventLog> {
             journal.display()
         )));
     }
-    let log = EventLog::open(journal).map_err(|error| {
-        Error::schema(format!(
-            "{} is not an event log this platform wrote: {}",
-            journal.display(),
-            error.message()
-        ))
-    })?;
+    // Through the inspection, not the writer's open: read-only, so a
+    // read-only mount is fine; never created; and refused while a node
+    // holds the file. That last refusal is the one an operator must see as
+    // written — it says who holds the file and what to do — so it is the
+    // one error class passed through rather than relabelled as a file that
+    // is not a log, which until 2026-09-12 is what every failure became.
+    let log = match EventLog::inspect(journal) {
+        Ok(log) => log,
+        Err(held @ Error::Denied(_)) => return Err(held),
+        Err(error) => {
+            return Err(Error::schema(format!(
+                "{} is not an event log this platform wrote: {}",
+                journal.display(),
+                error.message()
+            )));
+        }
+    };
     if log.is_empty() {
         return Err(Error::invalid(format!(
             "{} holds no records, so there is nothing to replay and nothing this command could \

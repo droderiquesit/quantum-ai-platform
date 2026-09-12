@@ -1762,6 +1762,165 @@ fn a_log_another_handle_holds_is_refused_until_the_handle_is_released() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An inspection of a log a writer holds is refused by a message naming the
+/// holder, succeeds once the writer is gone, and holds nothing afterwards:
+/// the writer's open is not refused behind it, and an append to the
+/// inspected log never reaches the file. Until 2026-09-12 the only open was
+/// the writer's, so `qip replay` on a running node's journal got the lock
+/// refusal relabelled as "not an event log this platform wrote" — an
+/// operator sent to look for corruption in a file that was merely in use.
+///
+/// Mutated by deleting the `try_lock_shared` match in
+/// `inspect_with_capacity` — confirmed the inspection then succeeds while
+/// the writer holds the file and the first assertion fails, then restored.
+#[test]
+fn an_inspection_of_a_held_log_names_the_holder_and_once_released_holds_nothing_itself() {
+    let dir = std::env::temp_dir().join(format!("qip-log-inspect-held-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("events.jsonl");
+    let (ctx, now) = context();
+
+    let mut writer = EventLog::open(&path).unwrap();
+    writer.append(&erased(&ctx, now, tick("T1"))).unwrap();
+    writer.append(&erased(&ctx, now, tick("T2"))).unwrap();
+    let refused = EventLog::inspect(&path).expect_err("a log a writer holds was inspected");
+    assert_eq!(refused.code(), "denied", "got {refused:?}");
+    assert!(
+        refused.message().contains("held by another process"),
+        "the refusal does not say who holds it: {refused}"
+    );
+    // The writer is unaffected by the refused inspection.
+    writer.append(&erased(&ctx, now, tick("T3"))).unwrap();
+    drop(writer);
+
+    let mut inspected = EventLog::inspect(&path).expect("a released log is inspectable");
+    assert_eq!(
+        inspected.len(),
+        3,
+        "the inspection loads what the writer wrote"
+    );
+    assert_eq!(inspected.verify_chain(), Ok(()));
+    // The inspection released its lock with the read: a writer opens the
+    // file afterwards, and the inspected log's own append reaches memory
+    // only, so the file still holds exactly what the writer wrote.
+    let reopened = EventLog::open(&path).expect("an inspection must not hold the file");
+    assert_eq!(reopened.len(), 3);
+    drop(reopened);
+    inspected.append(&erased(&ctx, now, tick("T4"))).unwrap();
+    assert_eq!(inspected.len(), 4, "premise: the append reached memory");
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        on_disk
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count(),
+        3,
+        "an append to an inspected log reached the file"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An inspection of a path that does not exist is refused by name and
+/// leaves nothing behind — neither the file nor its parent directory. The
+/// writer's open creates both and returns an empty log, which is right for
+/// a node starting its journal and wrong for a checker: pointed at a
+/// mistyped path it would have verified nothing against nothing and left an
+/// empty file where the operator would look next.
+///
+/// Mutated by opening the file in `inspect_with_capacity` through
+/// `OpenOptions::new().create(true).append(true).read(true)` — confirmed
+/// the file then exists after the refusal and this fails, then restored.
+#[test]
+fn an_inspection_of_a_missing_path_refuses_by_name_and_creates_nothing() {
+    let dir = std::env::temp_dir().join(format!("qip-log-inspect-missing-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    // The directory exists and the file does not: the one case in which a
+    // creating open would succeed and leave a file behind. A path whose
+    // parent is absent too fails any open, and proved nothing about
+    // creation when this test first used one.
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("events.jsonl");
+    assert!(!path.exists(), "premise: the file is not there yet");
+
+    let refused = EventLog::inspect(&path).expect_err("a missing path was inspected");
+    assert_eq!(refused.code(), "not_found", "got {refused:?}");
+    assert!(
+        refused.message().contains(&path.display().to_string())
+            && refused.message().contains("will not create"),
+        "the refusal does not name the path or say it creates nothing: {refused}"
+    );
+    assert!(!path.exists(), "the inspection created the file");
+    // Nor a directory: the writer's open creates the parent, and a checker
+    // pointed at a mistyped directory must not.
+    let nested = dir.join("nested").join("events.jsonl");
+    let _ = EventLog::inspect(&nested).expect_err("a path under a missing directory was inspected");
+    assert!(
+        !dir.join("nested").exists(),
+        "the inspection created the parent directory"
+    );
+
+    // The contrast that makes the assertion above meaningful: the writer's
+    // open does create it, and that is the behaviour a checker must not
+    // inherit.
+    let created = EventLog::open(&path).expect("the writer's open creates the path");
+    assert!(created.is_empty() && path.exists());
+    drop(created);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A journal on read-only storage — an archive, which is exactly where the
+/// CLI's replay is pointed — is inspectable, where the writer's open, which
+/// needs append, is refused. Until 2026-09-12 `qip replay` used the
+/// writer's open and reported such a journal as "not an event log this
+/// platform wrote".
+///
+/// The read-only half is provable only by a process the mode bits bind: a
+/// privileged one (uid 0, which is what a container build often runs as)
+/// opens a `0o444` file for append regardless, so the premise is probed
+/// rather than assumed, and when it does not hold the test still proves
+/// the inspection loads the file and says which half it could not prove.
+/// CI's runner is unprivileged, so the whole property is proven there.
+///
+/// Mutated, as an unprivileged user, by opening the file in
+/// `inspect_with_capacity` through `OpenOptions::new().append(true).read(true)`
+/// — confirmed the inspection is then refused with a permission error and
+/// this fails, then restored.
+#[cfg(unix)]
+#[test]
+fn a_journal_on_read_only_storage_is_inspectable_where_the_writers_open_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("qip-log-inspect-ro-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("events.jsonl");
+    let (ctx, now) = context();
+    let mut writer = EventLog::open(&path).unwrap();
+    writer.append(&erased(&ctx, now, tick("T1"))).unwrap();
+    writer.append(&erased(&ctx, now, tick("T2"))).unwrap();
+    drop(writer);
+
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let mode_binds = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .is_err();
+    if mode_binds {
+        let refused = EventLog::open(&path).expect_err("the writer's open succeeded read-only");
+        assert_eq!(refused.code(), "io", "got {refused:?}");
+    } else {
+        eprintln!(
+            "this process ignores the mode bits (privileged); the refusal of the writer's open \
+             on read-only storage is not proven by this run"
+        );
+    }
+    let inspected =
+        EventLog::inspect(&path).expect("a journal on read-only storage is inspectable");
+    assert_eq!(inspected.len(), 2);
+    assert_eq!(inspected.verify_chain(), Ok(()));
+
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The retained chain verifies across an *interior* eviction, not only a
 /// head one, and still names an edited record after the gap by sequence.
 /// `make_room` evicts the oldest evictable record wherever it sits, so once
