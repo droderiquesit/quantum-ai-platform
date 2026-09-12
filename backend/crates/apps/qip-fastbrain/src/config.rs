@@ -333,13 +333,14 @@ fn connector_feed(
              nothing to fetch; set both, or neither"
         ))),
         (Some(source_id), Some(base_url)) => {
-            if base_url.starts_with("https://") {
-                return Err(Error::invalid(format!(
-                    "{BASE_URL} is {base_url}. `qip_transport::http` speaks plaintext \
-                     HTTP/1.1 and has no TLS stack: point this at the egress proxy, which \
-                     terminates TLS to the vendor, never at the vendor itself"
-                )));
-            }
+            // Loopback or nothing, for parity with the deep brain's reading
+            // of the same pair: this brain has no egress path (ADR 0024) and
+            // an address off the instance is a route that does not exist,
+            // but a check that refused only `https` would let a plaintext
+            // address off the instance reach the transport unrefused.
+            qip_market_ingestion::connector_feed::require_loopback_egress(&base_url).map_err(
+                |refusal| Error::invalid(format!("{BASE_URL} is refused — {}", refusal.message())),
+            )?;
             Ok(Some(ConnectorFeedSettings {
                 source_id,
                 base_url,
@@ -617,6 +618,50 @@ mod tests {
             "the refusal does not say what it is protecting: {}",
             refusal.message()
         );
+    }
+
+    /// The connector pair is held to the loopback egress proxy, for parity
+    /// with the deep brain's reading of the same pair: `https` is refused
+    /// by name, and so is a plaintext `http://` address off the instance —
+    /// which until 2026-09-12 this parser admitted, leaving the loopback
+    /// requirement to `variables.tf` alone. Both spellings of loopback are
+    /// admitted, so the refusal is of the host and not of everything.
+    ///
+    /// Mutated by making `require_loopback_egress` return `Ok(())` for any
+    /// `http://` address — confirmed the off-instance case then parses and
+    /// this fails, then restored.
+    #[test]
+    fn the_connector_pair_is_held_to_the_loopback_egress_proxy() {
+        const SOURCE: &str = "QIP_CONNECTOR_SOURCE";
+        const BASE_URL: &str = "QIP_CONNECTOR_BASE_URL";
+        for admitted in ["http://127.0.0.1:9105", "http://localhost:9105"] {
+            let config = FastBrainConfig::parse(&vars(&[
+                (SOURCE, "frankfurter-ecb-reference-rates"),
+                (BASE_URL, admitted),
+            ]))
+            .unwrap_or_else(|error| panic!("{admitted} was refused: {error}"));
+            assert!(
+                config.connector_feed.is_some(),
+                "premise: the loopback proxy at {admitted} configures the arm"
+            );
+        }
+        for (refused, expected) in [
+            ("https://api.frankfurter.dev", "never at the vendor"),
+            ("http://10.0.0.5:9105", "loopback"),
+            ("http://qip-egress.qip.svc.cluster.local:9105", "loopback"),
+        ] {
+            let error = FastBrainConfig::parse(&vars(&[
+                (SOURCE, "frankfurter-ecb-reference-rates"),
+                (BASE_URL, refused),
+            ]))
+            .err()
+            .unwrap_or_else(|| panic!("{refused} was admitted as a connector address"));
+            assert!(
+                error.message().contains(BASE_URL) && error.message().contains(expected),
+                "the refusal of {refused} does not name the variable and `{expected}`: {}",
+                error.message()
+            );
+        }
     }
 
     #[test]

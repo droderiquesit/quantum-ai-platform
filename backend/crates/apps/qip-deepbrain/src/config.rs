@@ -548,14 +548,19 @@ fn connector_feed(vars: &BTreeMap<String, String>) -> Result<Option<ConnectorFee
              neither"
         ))),
         (Some(sources), Some(base_url)) => {
-            if base_url.starts_with("https://") {
-                return Err(Error::invalid(format!(
-                    "configuration: {CONNECTOR_BASE_URL_VARIABLE} is {base_url}. \
-                     `qip_transport::http` speaks plaintext HTTP/1.1 and has no TLS stack: point \
-                     this at the egress proxy, which terminates TLS to the vendor, never at the \
-                     vendor itself"
-                )));
-            }
+            // Loopback or nothing, and not only `https` refused: this is the
+            // one brain with an egress path (ADR 0024), and until 2026-09-12
+            // the loopback requirement lived in `variables.tf` alone, so a
+            // plaintext address off the instance set by any path but the
+            // reviewed tfvars opened a socket to whatever host it named.
+            qip_market_ingestion::connector_feed::require_loopback_egress(&base_url).map_err(
+                |refusal| {
+                    Error::invalid(format!(
+                        "configuration: {CONNECTOR_BASE_URL_VARIABLE} is refused — {}",
+                        refusal.message()
+                    ))
+                },
+            )?;
             let mut source_ids: Vec<String> = Vec::new();
             for source_id in sources.split(',').map(str::trim) {
                 if source_id.is_empty() {
@@ -1017,8 +1022,30 @@ mod tests {
                 .is_none(),
             "an unconfigured node polls no vendor"
         );
+        // `localhost` is the other spelling of the loopback proxy and is
+        // admitted, so the refusal below is of the host and not of every
+        // address that is not the literal `127.0.0.1`.
+        assert!(
+            DeepBrainConfig::parse(&vars(&[
+                (CONNECTOR_SOURCE_VARIABLE, "coinbase-spot-ticker"),
+                (CONNECTOR_BASE_URL_VARIABLE, "http://localhost:9105/"),
+            ]))
+            .expect("the loopback proxy by name is a valid address")
+            .connector_feed
+            .is_some()
+        );
 
         for (pairs, expected) in [
+            // A plaintext address off the instance: not `https`, and until
+            // 2026-09-12 admitted here, with the loopback requirement held
+            // by `variables.tf` alone — on the one brain with an egress path.
+            (
+                vec![
+                    (CONNECTOR_SOURCE_VARIABLE, "coinbase-spot-ticker"),
+                    (CONNECTOR_BASE_URL_VARIABLE, "http://10.0.0.5:9105"),
+                ],
+                "loopback",
+            ),
             (
                 vec![(CONNECTOR_SOURCE_VARIABLE, "coinbase-spot-ticker")],
                 CONNECTOR_BASE_URL_VARIABLE,

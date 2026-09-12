@@ -130,6 +130,57 @@ pub fn shipped_class(source_id: &str) -> Result<qip_financial::quality::Licensin
     Ok(shipped_manifest(source_id)?.licensing)
 }
 
+/// Refuse a connector base URL that is not the egress proxy on loopback.
+///
+/// The transport speaks plaintext HTTP/1.1 and has no TLS stack (ADR 0009),
+/// so the only address a connector may be pointed at is the loopback
+/// listener of the egress proxy that terminates TLS to the vendor (ADR
+/// 0024): `http://127.0.0.1:<port>` or `http://localhost:<port>`. Until
+/// 2026-09-12 the in-process check refused only `https://`, and the loopback
+/// requirement lived in `infrastructure/terraform/variables.tf` alone — so a
+/// plaintext `http://` address off the instance, reached through any path
+/// but the reviewed tfvars, opened a socket to whatever host it named and
+/// sent a vendor request in the clear. Terraform catches the committed
+/// mistake; this catches the unreviewed one, and neither is redundant.
+///
+/// Called at three seams — the deep brain's and the fast brain's
+/// configuration parsers, so the refusal names the variable, and
+/// [`ConnectorFeed::open`], so a root that reaches the feed by another path
+/// is refused too. Refuses rather than rewriting: an address that is nearly
+/// right is a deployment mistake somebody should see.
+pub fn require_loopback_egress(base_url: &str) -> Result<()> {
+    if base_url.starts_with("https://") {
+        return Err(Error::invalid(format!(
+            "the connector egress address is {base_url}. This transport speaks plaintext \
+             HTTP/1.1 and has no TLS stack: point it at the egress proxy that terminates TLS \
+             to the vendor, never at the vendor itself"
+        )));
+    }
+    let Some(rest) = base_url.strip_prefix("http://") else {
+        return Err(Error::invalid(format!(
+            "the connector egress address is {base_url:?}, which is not an absolute http:// \
+             URL; the egress proxy is reached at http://127.0.0.1:<port>"
+        )));
+    };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..end];
+    let host = authority
+        .rsplit_once(':')
+        .map_or(authority, |(host, _port)| host);
+    let loopback = host == "127.0.0.1" || host.eq_ignore_ascii_case("localhost");
+    if !loopback {
+        return Err(Error::invalid(format!(
+            "the connector egress address is {base_url}, whose host is `{host}`. A connector \
+             is reached only through the egress proxy on loopback — http://127.0.0.1:<port> — \
+             which terminates TLS to the vendor (ADR 0024) and reaches only the hosts its \
+             bootstrap names; this transport has no TLS stack (ADR 0009), so a plaintext \
+             address off the instance would carry a vendor request in the clear to whatever \
+             answers there"
+        )));
+    }
+    Ok(())
+}
+
 /// A live connector, its transport and its runtime, behind the loop's own
 /// adapter contract.
 ///
@@ -162,13 +213,7 @@ impl ConnectorFeed {
     /// licensing class and the descriptor repeats it, so a record's
     /// provenance says what its source's terms were wherever it ends up.
     pub fn open(source_id: &str, base_url: &str, seed: u64, at: Timestamp) -> Result<Self> {
-        if base_url.starts_with("https://") {
-            return Err(Error::invalid(format!(
-                "the connector egress address is {base_url}. This transport speaks plaintext \
-                 HTTP/1.1 and has no TLS stack: point it at the egress proxy that terminates \
-                 TLS to the vendor, never at the vendor itself"
-            )));
-        }
+        require_loopback_egress(base_url)?;
         let (connector, mut manifest): (Box<dyn SourceConnector + Send>, SourceManifest) =
             match source_id {
                 CoinbaseTickerConnector::SOURCE_ID => {
@@ -632,6 +677,64 @@ mod tests {
             "an accepted reference commits the cursor past the records"
         );
         assert_eq!(feed.ledger().map(|ledger| ledger.polls), Some(1));
+    }
+
+    /// A base URL whose host is not loopback is refused before any socket
+    /// is opened, at `open` itself and not only in a root's parser. Until
+    /// 2026-09-12 `open` refused `https` alone, so a plaintext address off
+    /// the instance built a transport and sent the health probe to whatever
+    /// host it named in the clear. The refusal names loopback rather than
+    /// the connection failure a real host would produce, which is how the
+    /// test tells the gate from the network.
+    ///
+    /// Mutated by making `require_loopback_egress` return `Ok(())` after the
+    /// `https` check — confirmed the off-loopback addresses then pass the
+    /// helper and `open` fails on the probe instead, naming no loopback,
+    /// and this fails, then restored.
+    #[test]
+    fn a_base_url_off_loopback_is_refused_before_a_socket_is_opened() {
+        for admitted in [
+            "http://127.0.0.1:9105",
+            "http://localhost:9105",
+            "http://LOCALHOST:9105/v1",
+            "http://127.0.0.1",
+        ] {
+            assert!(
+                require_loopback_egress(admitted).is_ok(),
+                "premise: {admitted} is the loopback proxy and must be admitted"
+            );
+        }
+        for (refused, expected) in [
+            ("https://api.frankfurter.dev", "never at the vendor"),
+            ("http://10.0.0.5:9105", "loopback"),
+            ("http://api.frankfurter.dev:80/v1", "loopback"),
+            ("http://127.0.0.1.evil.example:9105", "loopback"),
+            ("ftp://127.0.0.1:9105", "absolute http://"),
+            ("127.0.0.1:9105", "absolute http://"),
+        ] {
+            let error = require_loopback_egress(refused)
+                .expect_err(&format!("{refused} was admitted as a connector address"));
+            assert!(
+                error.message().contains(expected),
+                "the refusal of {refused} does not say `{expected}`: {}",
+                error.message()
+            );
+        }
+        // And `open` itself, which a root may reach without a parser in
+        // front of it. A host nothing here resolves, so a transport built
+        // for it would fail on the probe with a message naming no loopback.
+        let error = ConnectorFeed::open(
+            FrankfurterRatesConnector::SOURCE_ID,
+            "http://vendor.invalid:9105",
+            7,
+            instant("2026-08-27T00:00:00Z"),
+        )
+        .expect_err("a connector was opened against a host off the instance");
+        assert!(
+            error.message().contains("loopback"),
+            "open's refusal is not the loopback gate's: {}",
+            error.message()
+        );
     }
 
     #[test]
