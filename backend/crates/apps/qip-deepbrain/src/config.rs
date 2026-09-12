@@ -201,6 +201,35 @@ pub struct DeepBrainConfig {
     /// `QIP_LANGUAGE_MODEL_PROVIDER` names one. `None` is the deterministic
     /// model alone.
     pub language_model: Option<HostedLanguageModel>,
+    /// The catalogued connectors this node polls beside its own stream, when
+    /// `QIP_CONNECTOR_SOURCE` names any. `None` is every deployment today.
+    /// Refused beside a tape: a tape runs on its own clock and a vendor on
+    /// the wall clock, and a licence question or a knowability check asked
+    /// about a tape instant answers about the wrong day.
+    pub connector_feed: Option<ConnectorFeedSettings>,
+}
+
+/// The variable naming the catalogued connector source or sources this node
+/// polls — the same variable the fast brain and the API read, and on this
+/// node a comma-separated list, because rule 31 asks for two vendors behind
+/// a subject and a process fed one connector can never hold two.
+pub const CONNECTOR_SOURCE_VARIABLE: &str = "QIP_CONNECTOR_SOURCE";
+
+/// The egress proxy's loopback address the connectors are reached through —
+/// never the vendor's; the transport has no TLS.
+pub const CONNECTOR_BASE_URL_VARIABLE: &str = "QIP_CONNECTOR_BASE_URL";
+
+/// Catalogued connector sources and the egress address to reach them
+/// through. No credential, for the reason the fast brain's settings carry
+/// none: every source this build ships is unauthenticated by its manifest,
+/// and the licensing catalogue decides whether it may be used at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnectorFeedSettings {
+    /// Each a manifest's `source_id`, distinct, in the order named. Every
+    /// one must be catalogued or the arm refuses to open.
+    pub source_ids: Vec<String>,
+    /// `http://127.0.0.1:<port>` of the egress proxy beside this process.
+    pub base_url: String,
 }
 
 impl Default for DeepBrainConfig {
@@ -217,6 +246,7 @@ impl Default for DeepBrainConfig {
             shutdown_budget: DEFAULT_SHUTDOWN_BUDGET,
             tape_path: None,
             language_model: None,
+            connector_feed: None,
         }
     }
 }
@@ -282,6 +312,16 @@ impl DeepBrainConfig {
         let event_log = event_log_destination(vars, &storage)?;
 
         let language_model = hosted_language_model(vars)?;
+        let tape_path = text(vars, "QIP_DEEPBRAIN_TAPE_PATH");
+        let connector_feed = connector_feed(vars)?;
+        if connector_feed.is_some() && tape_path.is_some() {
+            return Err(Error::invalid(format!(
+                "configuration: both QIP_DEEPBRAIN_TAPE_PATH and {CONNECTOR_SOURCE_VARIABLE} are \
+                 set. A tape drives this node's clock one period per cycle, and a vendor is \
+                 polled on the wall clock; a licence question or a knowability check asked \
+                 about a tape instant answers about the wrong day. Unset one of them"
+            )));
+        }
 
         Ok(Self {
             health_address,
@@ -293,8 +333,9 @@ impl DeepBrainConfig {
             storage,
             event_log,
             shutdown_budget,
-            tape_path: text(vars, "QIP_DEEPBRAIN_TAPE_PATH"),
+            tape_path,
             language_model,
+            connector_feed,
         })
     }
 
@@ -481,6 +522,64 @@ fn provider_terms_attestation(
                 error.message()
             ))
         })
+}
+
+/// The connector sources and the proxy address, or `None` when neither
+/// variable is set.
+///
+/// Both or neither, as the fast brain's reading of the same pair: half a
+/// configuration is refused by name rather than read as "no connector",
+/// because the silent alternative is a node running its synthetic exchange
+/// alone while its manifest says a vendor is polled. The source list is
+/// comma-separated; a repeated id is refused, since two arms on one source
+/// would be two ledgers and two admissions for one licence.
+fn connector_feed(vars: &BTreeMap<String, String>) -> Result<Option<ConnectorFeedSettings>> {
+    let source = text(vars, CONNECTOR_SOURCE_VARIABLE);
+    let base_url = text(vars, CONNECTOR_BASE_URL_VARIABLE);
+    match (source, base_url) {
+        (None, None) => Ok(None),
+        (Some(_), None) => Err(Error::invalid(format!(
+            "configuration: {CONNECTOR_SOURCE_VARIABLE} is set and {CONNECTOR_BASE_URL_VARIABLE} \
+             is not. A connector source needs the egress proxy's address; set both, or neither"
+        ))),
+        (None, Some(_)) => Err(Error::invalid(format!(
+            "configuration: {CONNECTOR_BASE_URL_VARIABLE} is set and {CONNECTOR_SOURCE_VARIABLE} \
+             is not. An egress address with no source names nothing to fetch; set both, or \
+             neither"
+        ))),
+        (Some(sources), Some(base_url)) => {
+            if base_url.starts_with("https://") {
+                return Err(Error::invalid(format!(
+                    "configuration: {CONNECTOR_BASE_URL_VARIABLE} is {base_url}. \
+                     `qip_transport::http` speaks plaintext HTTP/1.1 and has no TLS stack: point \
+                     this at the egress proxy, which terminates TLS to the vendor, never at the \
+                     vendor itself"
+                )));
+            }
+            let mut source_ids: Vec<String> = Vec::new();
+            for source_id in sources.split(',').map(str::trim) {
+                if source_id.is_empty() {
+                    return Err(Error::invalid(format!(
+                        "configuration: {CONNECTOR_SOURCE_VARIABLE} is `{sources}`, which names \
+                         an empty source; list the manifest ids, comma-separated, with none \
+                         blank"
+                    )));
+                }
+                if source_ids.iter().any(|known| known == source_id) {
+                    return Err(Error::invalid(format!(
+                        "configuration: {CONNECTOR_SOURCE_VARIABLE} names `{source_id}` twice; \
+                         two arms on one source would be two ledgers and two admissions for one \
+                         licence"
+                    )));
+                }
+                source_ids.push(source_id.to_string());
+            }
+            Ok(Some(ConnectorFeedSettings {
+                source_ids,
+                base_url,
+            }))
+        }
+    }
 }
 
 /// A non-empty value, trimmed. Empty is treated as unset: a variable set to the
@@ -877,6 +976,103 @@ mod tests {
             "{}",
             refusal.message()
         );
+    }
+
+    /// The connector pair is read as the fast brain reads it — both or
+    /// neither, never the vendor's own address — and on this node the source
+    /// is a list: rule 31 asks for two vendors behind a subject, and a
+    /// process fed one connector can never hold two. A repeated id and a
+    /// blank entry are refused by name, and a tape beside a connector is a
+    /// contradiction of clocks refused outright.
+    ///
+    /// Mutated by deleting the duplicate check in `connector_feed` —
+    /// confirmed the repeated id then parses as two arms and this fails,
+    /// then restored.
+    #[test]
+    fn the_connector_pair_is_both_or_neither_and_the_source_is_a_distinct_list() {
+        let config = DeepBrainConfig::parse(&vars(&[
+            (
+                CONNECTOR_SOURCE_VARIABLE,
+                " frankfurter-ecb-reference-rates, coinbase-spot-ticker ",
+            ),
+            (CONNECTOR_BASE_URL_VARIABLE, "http://127.0.0.1:9105"),
+        ]))
+        .expect("two catalogued sources over the proxy is a valid pair");
+        let feed = config
+            .connector_feed
+            .expect("the pair was set, so a connector feed is configured");
+        assert_eq!(
+            feed.source_ids,
+            vec![
+                "frankfurter-ecb-reference-rates".to_string(),
+                "coinbase-spot-ticker".to_string()
+            ],
+            "the list is read in order, trimmed"
+        );
+        assert_eq!(feed.base_url, "http://127.0.0.1:9105");
+        assert!(
+            DeepBrainConfig::parse(&vars(&[]))
+                .expect("defaults are valid")
+                .connector_feed
+                .is_none(),
+            "an unconfigured node polls no vendor"
+        );
+
+        for (pairs, expected) in [
+            (
+                vec![(CONNECTOR_SOURCE_VARIABLE, "coinbase-spot-ticker")],
+                CONNECTOR_BASE_URL_VARIABLE,
+            ),
+            (
+                vec![(CONNECTOR_BASE_URL_VARIABLE, "http://127.0.0.1:9105")],
+                CONNECTOR_SOURCE_VARIABLE,
+            ),
+            (
+                vec![
+                    (CONNECTOR_SOURCE_VARIABLE, "coinbase-spot-ticker"),
+                    (
+                        CONNECTOR_BASE_URL_VARIABLE,
+                        "https://api.exchange.coinbase.com",
+                    ),
+                ],
+                "never at the vendor",
+            ),
+            (
+                vec![
+                    (
+                        CONNECTOR_SOURCE_VARIABLE,
+                        "coinbase-spot-ticker,coinbase-spot-ticker",
+                    ),
+                    (CONNECTOR_BASE_URL_VARIABLE, "http://127.0.0.1:9105"),
+                ],
+                "twice",
+            ),
+            (
+                vec![
+                    (CONNECTOR_SOURCE_VARIABLE, "coinbase-spot-ticker,,"),
+                    (CONNECTOR_BASE_URL_VARIABLE, "http://127.0.0.1:9105"),
+                ],
+                "empty source",
+            ),
+            (
+                vec![
+                    (CONNECTOR_SOURCE_VARIABLE, "coinbase-spot-ticker"),
+                    (CONNECTOR_BASE_URL_VARIABLE, "http://127.0.0.1:9105"),
+                    ("QIP_DEEPBRAIN_TAPE_PATH", "/etc/qip/tape.json"),
+                ],
+                "QIP_DEEPBRAIN_TAPE_PATH",
+            ),
+        ] {
+            let refusal = DeepBrainConfig::parse(&vars(&pairs))
+                .err()
+                .unwrap_or_else(|| panic!("{pairs:?} was admitted"));
+            assert!(
+                refusal.message().starts_with("configuration:")
+                    && refusal.message().contains(expected),
+                "the refusal of {pairs:?} does not say `{expected}`: {}",
+                refusal.message()
+            );
+        }
     }
 
     #[test]

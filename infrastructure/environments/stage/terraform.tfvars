@@ -81,6 +81,10 @@ execution_nodes = {}
 # alongside them, on purpose: a cadence with no candidate list to assess
 # would run a pass that decides about nothing, so the pair is turned on
 # together or not at all — see dev/terraform.tfvars for the whole argument.
+# deepbrain_connector stays null too: the deep brain is the one brain that
+# can reach a vendor, and no subject has two vendors among the shipped
+# connectors, so polling one here would feed a rule-31 hold it cannot lift —
+# dev/terraform.tfvars says what setting it would mean.
 
 enable_bigquery      = false
 enable_cloud_storage = false

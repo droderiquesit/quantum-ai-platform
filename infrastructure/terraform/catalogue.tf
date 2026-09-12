@@ -443,6 +443,19 @@ locals {
         var.deepbrain_discover_every == null ? {} : {
           QIP_DEEPBRAIN_DISCOVER_EVERY = var.deepbrain_discover_every
         },
+        # The catalogued connectors this node polls beside its own stream, or
+        # nothing. Both keys or neither: `DeepBrainConfig` refuses half a
+        # configuration by name, and the root variable's type makes half
+        # impossible. This is the workload that can reach a vendor — it
+        # carries the proxy the fast brain deliberately does not — so unlike
+        # `market_data_connector` above, a value here configures a fetch that
+        # can happen. Absent, the node polls no vendor and its reference
+        # ledger holds no vendor's standing, which is what every environment
+        # does today.
+        var.deepbrain_connector == null ? {} : {
+          QIP_CONNECTOR_SOURCE   = join(",", var.deepbrain_connector.sources)
+          QIP_CONNECTOR_BASE_URL = var.deepbrain_connector.base_url
+        },
       )
       # The universe every root reads, and whatever optional files the
       # tfvars named for this workload — the §23.4 horizon policy and the

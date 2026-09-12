@@ -49,6 +49,7 @@ use qip_deepbrain::{health, node, roster};
 use qip_financial::universe::Universe;
 use qip_kernel::central::{CentralConfig, HorizonPolicy};
 use qip_kernel::{Platform, PlatformConfig};
+use qip_market_ingestion::connector::journal::StreamJournal;
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
 use qip_risk_engine::autonomy::AutonomyLevel;
@@ -478,6 +479,50 @@ fn run() -> Result<()> {
         discovery_config,
         source_candidates,
     ));
+    // The catalogued connectors this node polls beside its own stream, each
+    // through the licensing gate before any socket, each with its stream's
+    // durable record opened before the first poll — see
+    // `qip_deepbrain::connectors` for why the arm is additive here and why
+    // this is the one brain that can reach the vendor its manifest names
+    // (ADR 0024). None in every environment today.
+    let mut connector_banner = Vec::new();
+    if let Some(settings) = &config.connector_feed {
+        let registrations = platform
+            .config()
+            .registration_registry()
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+        for source_id in &settings.source_ids {
+            let mut arm = qip_deepbrain::connectors::ConnectorArm::open(
+                source_id,
+                &settings.base_url,
+                &registrations,
+                platform.config().seed,
+                clock.now(),
+            )
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+            let resumed = arm
+                .journal_to(config.storage.key_value(StreamJournal::NAMESPACE)?)
+                .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+            connector_banner.push(format!(
+                "  connector:        {}; {}",
+                arm.describe(),
+                match resumed {
+                    0 => "nothing resumed, so this is a first session (or the last checkpoint \
+                          carried nothing) and the next poll republishes whatever the source \
+                          re-serves"
+                        .to_string(),
+                    resumed => format!(
+                        "{resumed} fingerprint(s) resumed from the previous session, so a \
+                         redelivery of them is absorbed rather than republished"
+                    ),
+                }
+            ));
+            evolution = evolution.with_connector(arm);
+        }
+    }
+    for line in &connector_banner {
+        println!("{line}");
+    }
     // Every learning round's window is assembled through a fetch campaign
     // (§22.4), and the manifest a closed campaign leaves behind goes to the
     // platform's event log under its own permanently retained topic — the

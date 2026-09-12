@@ -417,6 +417,49 @@ variable "market_data_connector" {
   }
 }
 
+variable "deepbrain_connector" {
+  description = <<-EOT
+    The catalogued connector sources the deep brain polls beside its own
+    stream, or null for none — every environment today.
+
+    The deep brain is the one brain that can reach a vendor: it carries the
+    egress sidecar and the fast brain deliberately does not (ADR 0008, ADR
+    0024), so the pair `market_data_connector` sets on the fast brain
+    configures a fetch that cannot happen while this pair configures one that
+    can. `sources` is a list because rule 31 (§56.3) asks for two independent
+    vendors behind a subject before promotion past validation, and a process
+    fed one connector can never hold two; each entry is a manifest's
+    `source_id`, rendered comma-separated as `QIP_CONNECTOR_SOURCE`, and the
+    node refuses a source the licensing catalogue has not admitted before it
+    builds a transport. `base_url` is the egress proxy's
+    `http://127.0.0.1:<port>` address and never the vendor's —
+    `qip_transport::http` refuses `https` by name — and that proxy reaches
+    only the hosts its bootstrap names, so selecting a source means its
+    listener exists in `infrastructure/egress/envoy.yaml` in the same change
+    (today only the ECB rates' does). Both keys or neither, which the object
+    type makes structural. A replay of a connector's data is not a vendor and
+    never was, whatever its header says (ADR 0057, amended); this is the only
+    way a deep brain's reference ledger holds a vendor's standing.
+  EOT
+
+  type = object({
+    sources  = list(string)
+    base_url = string
+  })
+
+  default = null
+
+  validation {
+    condition     = var.deepbrain_connector == null ? true : startswith(var.deepbrain_connector.base_url, "http://127.0.0.1:")
+    error_message = "The deep brain's connector base URL is the egress proxy on loopback, http://127.0.0.1:<port>. `qip_transport::http` refuses https by name, and an address off the instance is a route that does not exist."
+  }
+
+  validation {
+    condition     = var.deepbrain_connector == null ? true : length(var.deepbrain_connector.sources) > 0 && alltrue([for source in var.deepbrain_connector.sources : can(regex("^[a-z0-9]+(-[a-z0-9]+)*$", source))])
+    error_message = "The deep brain's connector sources are one or more manifest ids, each lower-case letters, digits and single hyphens (e.g. frankfurter-ecb-reference-rates); an empty list names nothing to fetch and a value with a comma or a space would be rendered into QIP_CONNECTOR_SOURCE as two sources."
+  }
+}
+
 variable "venue_registrations_file" {
   description = <<-EOT
     A committed JSON file of `RegistrationRecord`s the API mounts and reads as

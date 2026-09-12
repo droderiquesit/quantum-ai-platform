@@ -57,6 +57,7 @@ use qip_strategy::compile::StrategyCompiler;
 use std::collections::BTreeMap;
 
 use crate::campaign::{self, Assembly, CampaignConfig, StreamProvenance};
+use crate::connectors::ConnectorArm;
 use qip_data_finder::admission::{AdmittedSource, StandingAdmission};
 use qip_data_finder::campaign::{ConcentrationVerdict, assess_concentration};
 use qip_data_finder::reference::SourceOrigin;
@@ -287,6 +288,10 @@ pub struct EvolutionEngine {
     /// admission is the gate's current answer and a licence that lapses
     /// mid-run refuses the next round rather than the next restart.
     admission: Option<(StandingAdmission, SourceManifest)>,
+    /// Catalogued connectors polled beside the own stream, each under its
+    /// own standing gate, each referenced on the platform's ledger. Empty in
+    /// every shipped deployment; see [`crate::connectors`].
+    connectors: Vec<ConnectorArm>,
 }
 
 impl std::fmt::Debug for EvolutionEngine {
@@ -329,7 +334,21 @@ impl EvolutionEngine {
             discovery: None,
             campaign_config: CampaignConfig::standard()?,
             admission: None,
+            connectors: Vec::new(),
         })
+    }
+
+    /// Poll `arm` beside the own stream on every sense, under its own gate,
+    /// with every fetch referenced on the platform's ledger. May be called
+    /// once per source; the configuration refuses a source named twice.
+    pub fn with_connector(mut self, arm: ConnectorArm) -> Self {
+        self.connectors.push(arm);
+        self
+    }
+
+    /// The connector arms, for the banner and the tests.
+    pub fn connectors(&self) -> &[ConnectorArm] {
+        &self.connectors
     }
 
     /// Hold the licensing gate open for the connector source this engine's
@@ -558,10 +577,19 @@ impl EvolutionEngine {
         self.adapter.advance()
     }
 
-    /// Poll the adapter, feed the platform, tee the bars. Returns how many
-    /// records the platform absorbed, for the cycle line.
+    /// Poll the adapter and every connector arm, feed the platform, tee the
+    /// bars. Returns how many records the platform absorbed, for the cycle
+    /// line.
+    ///
+    /// The arms are polled after the own stream and each is referenced on
+    /// the platform's ledger between its poll and its checkpoint commit; a
+    /// gate that has stopped granting withdraws its source and stops the
+    /// node here, as it stops the fast brain (see [`crate::connectors`]).
     pub fn sense(&mut self, platform: &mut Platform, until: Timestamp) -> Result<usize> {
-        let records = self.adapter.poll(until)?;
+        let mut records = self.adapter.poll(until)?;
+        for arm in &mut self.connectors {
+            records.extend(arm.poll(platform, until)?);
+        }
         for record in &records {
             if let SensedRecord::Bar(bar) = record {
                 let bars = self
@@ -2448,6 +2476,331 @@ mod tests {
         assert!(
             platform.admitted_source(source).is_none(),
             "the licence lapsed and the platform still holds the admission"
+        );
+        Ok(())
+    }
+
+    /// A connector that maps whatever its manifest's source serves onto one
+    /// subject of this test's choosing, so two admitted vendors can be put
+    /// behind one subject on the ledger. The shipped Frankfurter connector
+    /// maps the ECB table to currency series and the Coinbase ticker to one
+    /// product, so no two shipped connectors share a subject — the honest
+    /// cost ADR 0057 states — and the premise rule 31 is about has to be
+    /// stated by a stand-in. The manifest, the transport, the runtime and
+    /// the gate are the real ones; only the mapping is this test's.
+    #[derive(Debug)]
+    struct SubjectStandIn {
+        manifest: SourceManifest,
+        subject: ObjectId,
+        at: Timestamp,
+    }
+
+    impl qip_market_ingestion::connector::SourceConnector for SubjectStandIn {
+        fn manifest(&self) -> &SourceManifest {
+            &self.manifest
+        }
+
+        fn decode(
+            &self,
+            payload: &serde_json::Value,
+            _cursor: &qip_market_ingestion::connector::Cursor,
+        ) -> Result<Vec<qip_market_ingestion::connector::RawEvent>> {
+            Ok(vec![qip_market_ingestion::connector::RawEvent::new(
+                "stand-in",
+                self.at,
+                payload.clone(),
+            )])
+        }
+
+        fn map(
+            &self,
+            _event: &qip_market_ingestion::connector::RawEvent,
+            _ingest_time: Timestamp,
+        ) -> Result<SensedRecord> {
+            Ok(SensedRecord::Tick(qip_market::quote::Tick {
+                object_id: self.subject.clone(),
+                venue: "STANDIN".to_string(),
+                at: self.at,
+                price: Decimal::from_int(100),
+                volume: Decimal::from_int(1),
+                quality: qip_financial::quality::DataQuality::clean(),
+            }))
+        }
+    }
+
+    /// The Coinbase ticker, real connector over the emulator, mapped to
+    /// `subject` — the connector takes the `ObjectId` its product stands
+    /// for as a parameter — serving one print at `at`.
+    fn coinbase_arm(subject: &ObjectId, at: Timestamp) -> Result<ConnectorArm> {
+        use qip_data_finder::registration::RegistrationRegistry;
+        use qip_market_ingestion::connector::emulator::SourceEmulator;
+        use qip_market_ingestion::connectors::CoinbaseTickerConnector;
+        let mut manifest = CoinbaseTickerConnector::shipped_manifest()?;
+        manifest.endpoint.base_url = Some("http://127.0.0.1:1".to_string());
+        let connector = CoinbaseTickerConnector::new(
+            manifest.clone(),
+            "BTC-USD",
+            subject.clone(),
+            CoinbaseTickerConnector::VENUE,
+        )?;
+        let body = format!(
+            r#"{{"ask":"64231.55","bid":"64230.11","volume":"9184.4","trade_id":712553481,"price":"64230.99","size":"0.0018","time":"{}"}}"#,
+            at.to_rfc3339()
+        );
+        ConnectorArm::over_transport(
+            Box::new(connector),
+            manifest.clone(),
+            Box::new(SourceEmulator::serving(
+                manifest.endpoint.path.clone(),
+                body,
+            )),
+            &RegistrationRegistry::shipped(),
+            7,
+            at,
+        )
+    }
+
+    /// The ECB rates source — its shipped manifest, its schema-valid table,
+    /// its real gate — mapped onto `subject` by the stand-in, with the
+    /// table's date a day back so the manifest's sixteen-hour publication
+    /// delay has passed.
+    fn frankfurter_arm(subject: &ObjectId, at: Timestamp) -> Result<ConnectorArm> {
+        use qip_data_finder::registration::RegistrationRegistry;
+        use qip_market_ingestion::connector::emulator::SourceEmulator;
+        use qip_market_ingestion::connectors::FrankfurterRatesConnector;
+        let mut manifest = FrankfurterRatesConnector::shipped_manifest()?;
+        manifest.endpoint.base_url = Some("http://127.0.0.1:1".to_string());
+        let connector = SubjectStandIn {
+            manifest: manifest.clone(),
+            subject: subject.clone(),
+            at: at.saturating_sub(Duration::from_days(1)),
+        };
+        ConnectorArm::over_transport(
+            Box::new(connector),
+            manifest.clone(),
+            Box::new(SourceEmulator::serving(
+                manifest.endpoint.path.clone(),
+                r#"{"amount":1.0,"base":"EUR","date":"2026-08-26","rates":{"USD":1.1622}}"#,
+            )),
+            &RegistrationRegistry::shipped(),
+            7,
+            at,
+        )
+    }
+
+    /// Rule 31's gate opens for two *live* admitted connectors over one
+    /// subject, and not for one. The engine's own stream is the synthetic
+    /// exchange — generated, a vendor for nothing — and two catalogued
+    /// connectors are polled beside it through the real gate and the real
+    /// runtime over scripted transports: the Coinbase ticker mapped to the
+    /// subject the search will pick, and the ECB rates source mapped there
+    /// by a stand-in. Each fetch is digested where its bytes existed and
+    /// referenced on the platform's ledger under a live admission, so the
+    /// next search round counts two vendors and is not held back. One arm
+    /// alone is one vendor, held back. Replays, however headed, never do
+    /// (`replays_under_two_vendors_admissions_back_no_vendor_and_never_lift_the_hold`).
+    ///
+    /// Mutated by making `ConnectorArm::poll` pass a hook that accepts
+    /// without calling `Platform::reference_fetch` — confirmed the ledger
+    /// then holds nothing, the round is held back and this fails, then
+    /// restored.
+    #[test]
+    fn two_live_admitted_connectors_over_one_subject_lift_the_hold_and_one_does_not() -> Result<()>
+    {
+        let mut platform = platform()?;
+        let mut engine = engine(1);
+        let mut now = start();
+        let minutes = (engine.config.minimum_bars as i64 + 60) * 2;
+        for _ in 0..minutes {
+            now = now.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, now)?;
+        }
+        // The subject the search will pick: the deepest, exactly as `turn`
+        // picks it.
+        let subject = engine
+            .history
+            .iter()
+            .filter_map(|(subject, bars)| depth(bars).map(|depth| (subject, depth)))
+            .max_by(|left, right| left.1.total_cmp(&right.1))
+            .map(|(subject, _)| ObjectId::from_string(subject))
+            .ok_or_else(|| Error::not_found("a subject with history"))?;
+        assert!(
+            platform.sources_backing(subject.as_str()).is_empty(),
+            "premise: nothing backs the subject before a connector is polled"
+        );
+
+        // Two arms, two vendors, one subject; a minute of polling references
+        // both fetches.
+        let mut engine = engine
+            .with_connector(coinbase_arm(&subject, now)?)
+            .with_connector(frankfurter_arm(&subject, now)?);
+        now = now.saturating_add(Duration::from_mins(1));
+        let observed = engine.sense(&mut platform, now)?;
+        assert!(observed > 0, "premise: the arms delivered");
+        let backing = platform.sources_backing(subject.as_str());
+        assert_eq!(
+            backing.get("coinbase-spot-ticker"),
+            Some(&SourceOrigin::CatalogueAdmitted),
+            "the Coinbase fetch was not referenced under a live admission: {backing:?}"
+        );
+        assert_eq!(
+            backing.get("frankfurter-ecb-reference-rates"),
+            Some(&SourceOrigin::CatalogueAdmitted),
+            "the ECB fetch was not referenced under a live admission: {backing:?}"
+        );
+        assert!(
+            platform
+                .reference_ledger()
+                .sources_backing(subject.as_str())
+                .keys()
+                .all(|source| !source.starts_with("replay://")),
+            "a live fetch was referenced under a replay locator"
+        );
+
+        let summary = engine
+            .maybe_turn(&mut platform, 1, now)?
+            .ok_or_else(|| Error::not_found("a search round on a cadence of every cycle"))?;
+        assert_eq!(
+            summary.subject,
+            subject.as_str(),
+            "premise: the search picked the subject"
+        );
+        assert!(
+            summary.registered >= 1,
+            "nothing was registered, so nothing could be held or promoted: {summary:?}"
+        );
+        let verdict = summary
+            .concentration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a concentration verdict"))?;
+        assert!(
+            verdict.is_sufficient(),
+            "two live admitted vendors were read as insufficient: {}",
+            verdict.describe()
+        );
+        assert_eq!(verdict.viable_sources(), 2);
+        assert_eq!(
+            verdict.generated(),
+            1,
+            "the own stream is a generated one and is reported as excluded"
+        );
+        assert_eq!(summary.held_back, 0, "{summary:?}");
+
+        // One arm alone: one vendor, held back.
+        let mut alone = self::platform()?;
+        let mut only = self::engine(1);
+        let mut now = start();
+        for _ in 0..minutes {
+            now = now.saturating_add(Duration::from_mins(1));
+            only.sense(&mut alone, now)?;
+        }
+        let mut only = only.with_connector(coinbase_arm(&subject, now)?);
+        now = now.saturating_add(Duration::from_mins(1));
+        only.sense(&mut alone, now)?;
+        let held = only
+            .maybe_turn(&mut alone, 1, now)?
+            .ok_or_else(|| Error::not_found("a search round"))?;
+        assert!(held.registered >= 1, "{held:?}");
+        let verdict = held
+            .concentration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a concentration verdict"))?;
+        assert!(!verdict.is_sufficient(), "{}", verdict.describe());
+        assert_eq!(verdict.viable_sources(), 1);
+        assert_eq!(held.held_back, held.registered, "{held:?}");
+        Ok(())
+    }
+
+    /// A connector arm whose licence lapses withdraws its source from the
+    /// platform and refuses the poll, which stops the node as it stops the
+    /// fast brain: an empty batch and a source this platform is no longer
+    /// licensed to read must not be indistinguishable downstream. The
+    /// catalogue is this test's, with an expiry the shipped one never
+    /// carries.
+    ///
+    /// Mutated by deleting `platform.withdraw_source(...)` in
+    /// `ConnectorArm::poll`'s refusal arm — confirmed the platform then
+    /// still holds the admission after the lapse and this fails, then
+    /// restored.
+    #[test]
+    fn a_connector_arm_whose_licence_lapses_withdraws_its_source_and_refuses_the_poll() -> Result<()>
+    {
+        use qip_contracts::governance::Usage;
+        use qip_data_finder::admission::CatalogueEntry;
+        use qip_data_finder::legal::{LicensingPosture, SourceLicense};
+        use qip_data_finder::registration::RegistrationRegistry;
+        use qip_market_ingestion::connector::emulator::SourceEmulator;
+        use qip_market_ingestion::connectors::CoinbaseTickerConnector;
+        let subject = ObjectId::from_string("OBJ0000000000000000BTCUSD");
+        let opened = start();
+        let expiry = opened.saturating_add(Duration::from_days(1));
+        let mut manifest = CoinbaseTickerConnector::shipped_manifest()?;
+        manifest.endpoint.base_url = Some("http://127.0.0.1:1".to_string());
+        let connector = CoinbaseTickerConnector::new(
+            manifest.clone(),
+            "BTC-USD",
+            subject.clone(),
+            CoinbaseTickerConnector::VENUE,
+        )?;
+        let body = format!(
+            r#"{{"ask":"1","bid":"1","volume":"1","trade_id":1,"price":"1","size":"1","time":"{}"}}"#,
+            opened.to_rfc3339()
+        );
+        let mut arm = ConnectorArm::over_transport_admitted_by(
+            &[CatalogueEntry {
+                source_id: "coinbase-spot-ticker",
+                expected_class: manifest.licensing,
+                posture: LicensingPosture::declared(
+                    SourceLicense::new("terms-with-an-end-date", [Usage::Derive, Usage::Trade])?
+                        .expiring_at(expiry),
+                ),
+            }],
+            Box::new(connector),
+            manifest.clone(),
+            Box::new(SourceEmulator::serving(
+                manifest.endpoint.path.clone(),
+                body,
+            )),
+            &RegistrationRegistry::shipped(),
+            7,
+            opened,
+        )?;
+        let mut platform = platform()?;
+
+        let granted_at = opened.saturating_add(Duration::from_hours(1));
+        let records = arm.poll(&mut platform, granted_at)?;
+        assert_eq!(
+            records.len(),
+            1,
+            "premise: while the licence runs, the arm delivers"
+        );
+        assert!(
+            platform.admitted_source("coinbase-spot-ticker").is_some(),
+            "premise: the poll admitted the source to the platform"
+        );
+        assert!(
+            platform
+                .sources_backing(subject.as_str())
+                .contains_key("coinbase-spot-ticker"),
+            "premise: the fetch was referenced"
+        );
+
+        let refusal = arm
+            .poll(&mut platform, expiry)
+            .expect_err("an expired licence kept the arm polling");
+        assert!(
+            refusal.message().contains("expired"),
+            "the refusal is not the gate's: {refusal}"
+        );
+        assert!(
+            platform.admitted_source("coinbase-spot-ticker").is_none(),
+            "the licence lapsed and the platform still holds the admission"
+        );
+        assert!(
+            !platform
+                .sources_backing(subject.as_str())
+                .contains_key("coinbase-spot-ticker"),
+            "a lapsed licence still backs the subject"
         );
         Ok(())
     }

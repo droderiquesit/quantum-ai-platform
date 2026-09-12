@@ -52,6 +52,7 @@
 pub mod attestation;
 pub mod campaign;
 pub mod config;
+pub mod connectors;
 pub mod discovery;
 pub mod evolution;
 pub mod health;

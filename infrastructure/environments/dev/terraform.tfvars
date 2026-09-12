@@ -343,6 +343,18 @@ vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7ec
 #   assess candidates nobody reviewed, for a probe that answers every one of
 #   them "refused".
 #
+# deepbrain_connector = { sources = ["frankfurter-ecb-reference-rates"], base_url = "http://127.0.0.1:9105" }
+#   would have the deep brain poll the named catalogued connectors beside its
+#   own stream (QIP_CONNECTOR_SOURCE, QIP_CONNECTOR_BASE_URL), through the
+#   egress sidecar it carries — the one brain that can reach a vendor (ADR
+#   0024) — with every fetch digested and referenced on its ledger. Left
+#   null: the proxy has never been applied, the one FX host its bootstrap
+#   names answered a 301 from the host the manifest named until that was
+#   corrected, and no subject has two vendors among the shipped connectors
+#   anyway, so a value today would start polling a vendor for a rule-31 hold
+#   it cannot lift. Setting it is the reviewed step that turns a deployment's
+#   reference ledger from replays-only to a vendor's own bytes.
+#
 # deepbrain_discover_every = "<a whole number of cycles, or explicitly "0">"
 #   would turn on the source-discovery pass on its own cadence
 #   (QIP_DEEPBRAIN_DISCOVER_EVERY). Left null, the desk keeps its own default
