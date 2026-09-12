@@ -61,6 +61,7 @@
 //! for the services they cannot reach.
 
 pub mod admission;
+pub mod category;
 pub mod coverage;
 pub mod decision;
 pub mod endpoint;
@@ -81,6 +82,7 @@ pub mod tier;
 pub use admission::{
     CatalogueEntry, LicensingDecision, admit, admit_from, admit_from_registered, admit_registered,
 };
+pub use category::{ContentSignal, SourceCategory};
 pub use coverage::{CoverageGap, CoverageMatch, SourceCoverage, SourceRegion, UpdateFrequency};
 pub use decision::{
     DecisionOutcome, LifecycleStage, ReasonStep, Reasoning, RegisteredSource, RegistrationDecision,

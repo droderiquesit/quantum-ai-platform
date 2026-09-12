@@ -11,6 +11,7 @@
 //! reviewer can see which stage a rejection came from without re-running the
 //! lifecycle.
 
+use crate::category::SourceCategory;
 use crate::legal::{LegalAssessment, SourcePolicy};
 use crate::schema::SchemaDrift;
 use crate::scoring::{Routing, RoutingClass, SourceScores};
@@ -437,6 +438,15 @@ pub struct RegisteredSource {
     entitlements: Vec<Entitlement>,
     registered_at: Timestamp,
     quarantined: Option<String>,
+    /// The §7.6.1 category the finder placed this source in at registration,
+    /// where classification succeeded. `None` means the candidate declared no
+    /// [`crate::category::ContentSignal`] or declared one
+    /// [`SourceCategory::classify`] refused — a fact distinct from "surface
+    /// news", which is itself outside the eight categories. A source with no
+    /// recorded category cannot back a [`crate::reference::DataReference`]:
+    /// see that type's constructor.
+    #[serde(default)]
+    category: Option<SourceCategory>,
 }
 
 impl RegisteredSource {
@@ -447,6 +457,7 @@ impl RegisteredSource {
         lineage: SourceLineage,
         entitlements: Vec<Entitlement>,
         registered_at: Timestamp,
+        category: Option<SourceCategory>,
     ) -> Self {
         Self {
             source,
@@ -456,6 +467,7 @@ impl RegisteredSource {
             entitlements,
             registered_at,
             quarantined: None,
+            category,
         }
     }
 
@@ -465,6 +477,11 @@ impl RegisteredSource {
 
     pub fn id(&self) -> &str {
         self.source.id()
+    }
+
+    /// The §7.6.1 category this source was classified into, where it was.
+    pub fn category(&self) -> Option<SourceCategory> {
+        self.category
     }
 
     pub fn routing(&self) -> &Routing {

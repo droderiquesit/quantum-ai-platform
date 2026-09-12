@@ -10,6 +10,7 @@
 //! identifier — never from iteration order, which would make the answer depend
 //! on how the caller happened to build the list.
 
+use crate::category::SourceCategory;
 use crate::coverage::UpdateFrequency;
 use crate::decision::{
     DecisionOutcome, LifecycleStage, Reasoning, RegisteredSource, RegistrationDecision,
@@ -340,6 +341,31 @@ impl DataFinder {
             ),
         );
 
+        // §7.6.1's category, from what the candidate itself declares. Asked
+        // before the probe, like the tier below, because it is a claim about
+        // what the location *is* rather than a finding about how it answers,
+        // and nothing here reads a page to check it. A candidate with no
+        // declared signal, or one whose signal fits no category cleanly, is
+        // recorded as unclassified rather than guessed — the refusal names
+        // why, and registration proceeds regardless: a category is metadata
+        // a `DataReference` will later require, not a legality gate.
+        let category = match SourceCategory::classify(candidate.content_signal()) {
+            Ok(category) => {
+                reasoning.record(
+                    LifecycleStage::Classify,
+                    format!("category {}", category.as_str()),
+                );
+                Some(category)
+            }
+            Err(error) => {
+                reasoning.record(
+                    LifecycleStage::Classify,
+                    format!("not categorised: {error}"),
+                );
+                None
+            }
+        };
+
         // The tier is asked about before any request is made, on what the
         // candidate's own description supports. It usually cannot be settled
         // yet — surface web is a finding about reachability the probe has to
@@ -648,6 +674,7 @@ impl DataFinder {
                     lineage,
                     registration.entitlements().to_vec(),
                     now,
+                    category,
                 ),
             );
         }

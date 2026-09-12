@@ -11,6 +11,7 @@
 //! false, a check that forgets to read it, and a registration decision made
 //! against a schema nobody fetched.
 
+use crate::category::ContentSignal;
 use crate::coverage::{SourceCoverage, SourceRegion};
 use crate::endpoint::SourceEndpoint;
 use crate::legal::LicensingPosture;
@@ -94,6 +95,13 @@ pub struct SourceCandidate {
     /// Where the candidate came from — a directory, a sitemap, an operator.
     discovered_from: String,
     discovered_at: Timestamp,
+    /// What the discoverer says this location actually is — a filing search,
+    /// customs data, a press room. `None` until
+    /// [`Self::with_content_signal`] declares one, and never a default: see
+    /// [`crate::category::SourceCategory::classify`] for why a candidate
+    /// nobody has said anything about is unclassified rather than guessed.
+    #[serde(default)]
+    content_signal: Option<ContentSignal>,
 }
 
 impl SourceCandidate {
@@ -133,7 +141,26 @@ impl SourceCandidate {
             produces,
             discovered_from,
             discovered_at,
+            content_signal: None,
         })
+    }
+
+    /// Declare what this location actually is, for §7.6.1's classification.
+    ///
+    /// Optional and separate from [`Self::new`] rather than a required
+    /// argument: every existing caller of `new` built a candidate before this
+    /// question existed, and a required field would force each of them to
+    /// state a claim about content nothing in this crate reads. A candidate
+    /// with no declared signal is simply unclassified —
+    /// [`crate::category::SourceCategory::classify`] refuses it rather than
+    /// guessing.
+    pub fn with_content_signal(mut self, signal: ContentSignal) -> Self {
+        self.content_signal = Some(signal);
+        self
+    }
+
+    pub fn content_signal(&self) -> Option<&ContentSignal> {
+        self.content_signal.as_ref()
     }
 
     pub fn identity(&self) -> &SourceIdentity {
@@ -245,6 +272,10 @@ impl Source {
 
     pub fn region(&self) -> SourceRegion {
         self.candidate.region()
+    }
+
+    pub fn content_signal(&self) -> Option<&ContentSignal> {
+        self.candidate.content_signal()
     }
 
     pub fn evidence(&self) -> &ProbeEvidence {
