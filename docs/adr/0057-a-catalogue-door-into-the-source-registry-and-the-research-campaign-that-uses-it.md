@@ -10,6 +10,20 @@ the process, the gate is the only way in on the wire as well as in code, a
 door refusal is a round's outcome, and rule 31's hold can open. The costs
 section says what each of those costs.
 
+**Amended in place a second time, 2026-09-12**, after the repair commits
+(`93c4c7b..8a19737`) were themselves independently re-reviewed and found
+one high finding, one blocking, three medium and a set of lower ones. Every
+one is fixed in the commits that follow `8a19737`, and this record is
+corrected where those commits made it false. The two that change what this
+record decides: **a replay's bytes are never a vendor** — the replay door is
+its own `SourceOrigin`, `ReplayedAdmitted`, and the concentration rule does
+not count it, because the earlier text let a hand-written file open rule
+31's hold on zero vendor bytes — and **the deep brain has a connector arm**,
+so the only way its ledger holds a vendor's standing is a fetch this process
+made from the vendor. Sections 3, 5 and 7, the mitigation table, the checks
+and the costs are the amended text; the earlier claims they replace are
+named where they stood.
+
 **Relates to:** blueprint §22.1 (Retention Classes), §22.2 (Sufficient
 Statistics), §22.3 (Data References), §22.4 (Fetch-on-Demand for Research),
 §56.3 rules 30 and 31, §56.4 rules 33 and 35
@@ -161,6 +175,28 @@ version filed the revision under `DataQualityFailed` — not permanently
 retained, and already carrying another body — and the ledger died with the
 process.
 
+The second review found the rebuild believed what it read. `EventLog::open`
+parses the file and recomputes no hash, `DataReference` and `RevisionRecord`
+derived `Deserialize` with no gate in front of it, and `resume_references`
+restored every frame verbatim — so a frame edited on disk, or forged into a
+shape `build_hashed` refuses, became the ledger's latest reference. Now both
+types deserialise through their constructors (`#[serde(try_from)]`, the
+`ErrorBound` pattern), the retained chain is verified before any frame is
+restored (`EventLog::verify_retained_chain`, held to genesis only when the
+log still starts there, because a capped log evicts its head at load) and a
+broken link refuses the resume by sequence, the fabric journal's posture. A
+catalogue-admitted reference counts as backing only while this process
+holds the source's admission (`Platform::sources_backing` intersects the
+ledger with the admission table; `Platform::withdraw_source` is what a
+lapsed gate calls), because a reference restored from the log is a fact
+about what was fetched then, not a vendor behind the subject now. And
+`SourceRevisionDetected` carries the revising reference beside the finding,
+at schema version two: the reference's own record is Sense-group and
+evictable while the revision is permanent, and a log that had evicted the
+former restored a ledger that held no latest reference to the extent, so
+the next revision of it was missed. A version-one frame is refused at
+resume rather than half-read.
+
 Both composition roots reference the fetch through the bridge's hook before
 `Platform::observe`, and the platform's admission is derived from the feed's
 one seam below the root — `Api::with_feed`, `qip-fastbrain`'s `node::step`
@@ -217,9 +253,32 @@ A replay may name the shipped connector it was recorded from
 (`# recorded-from:`); the root runs that source through
 `StandingAdmission::open`, gives the replay the source's name and class, and
 the engine re-asks the gate on every due round and copies the answer into
-the platform before the door is resolved. That is the one way a deep brain
-without a live vendor call researches through the catalogue door, and it is
-what lets a second vendor back a subject.
+the platform before the door is resolved — and, since the second amendment,
+withdraws it from the platform on the round the gate stops granting. The
+first amendment said this was "the one way a deep brain without a live
+vendor call researches through the catalogue door, and what lets a second
+vendor back a subject". The second review showed that to be the defect it
+sounds like: a hand-written bars file headed with the ECB connector, then
+restarted under the Coinbase header, was two vendors on the ledger, and rule
+31's hold opened on zero vendor bytes with the ECB's licence attributed to
+fabricated bars on the permanent log. So a replay under an admission is now
+referenced through the **replayed door**, `SourceOrigin::ReplayedAdmitted`,
+with a `replay://` locator so the ledger says on its face that the bytes
+were read from a file, and `is_independent_vendor` is false for it: the
+licence is the gate's answer, the bytes are the file's author's word, and
+only a fetch this platform made is evidence the vendor served it. The
+adapter also holds the file to the source it names — every record must be
+of a topic the connector ships, so a bars file headed with a ticker
+connector is refused at open — and refuses a second header or one after the
+first record. No shipped connector ships a bar, so no file honestly recorded
+from one carries a window the desk can fit; the door exists for the day a
+bar-emitting connector is admitted, and it will never count as a vendor.
+Campaign ids carry the log's last sequence beside the cycle, because the
+cycle count restarts at one in every process and after any restart every
+manifest was suppressed as a duplicate of the previous run's while the
+round line said "manifest journaled"; `Platform::journal_campaign` now
+returns whether it wrote and `assemble` refuses a `false` for an id it has
+just minted.
 
 ### 6. Rule 31's consequence: promotion past validation is gated
 
@@ -240,6 +299,43 @@ That is the rule working, and it is why the choice fell on promotion rather
 than on training: a fit is evidence and may be gathered on one source;
 promotion is a decision and may not.
 
+### 7. The deep brain's connector arm — the only way its ledger holds a vendor's standing
+
+With replayed bytes no longer a vendor, the deep brain had no way to hold a
+vendor's standing on its ledger, and the hold could open in no
+configuration. `qip_deepbrain::connectors::ConnectorArm` is the fast
+brain's `Feed::Connector` on the research node: one or more catalogued
+connectors, each opened through the licensing gate before any socket, each
+with its stream's durable record opened before the first poll, each
+re-asked at the instant of every poll, and each fetch digested where its
+bytes existed and referenced on the platform's ledger between the poll and
+the checkpoint commit. The arm is additive rather than a replacement — the
+learning desk fits on bars and no shipped connector emits one, so the own
+stream keeps feeding the desk while the arms feed the platform's
+observations and its ledger, which is what the concentration rule counts.
+A gate that stops granting withdraws its source and refuses the poll, which
+stops the node as it stops the fast brain; the replay path keeps its
+refused-round posture because a replay is a file this repository owns and a
+vendor is not.
+
+ADR 0024 is why this is the right binary: the deep brain carries the egress
+sidecar and the fast brain deliberately does not (ADR 0008), so the arm the
+fast brain has always had is one it cannot use — `manifest_wiring.rs`'s
+credential-mount rule says so — and this is the first on a workload with an
+outbound path. The root reads the variables the other roots read,
+`QIP_CONNECTOR_SOURCE` (a comma-separated list here, since a process fed one
+connector can never hold two) and `QIP_CONNECTOR_BASE_URL`; both or
+neither, never the vendor's own address, a repeated id refused, a tape
+beside a connector refused as a contradiction of clocks. The Terraform half
+is a root variable `deepbrain_connector`, null in every environment with
+the reason beside it, rendered into the deep brain's catalogue entry in a
+conditional arm so `manifest_wiring.rs`'s allowlist gains nothing. Proven
+end to end over scripted transports through the real gate and runtime:
+two live admitted connectors over one subject lift the hold and one does
+not (`two_live_admitted_connectors_over_one_subject_lift_the_hold_and_one_does_not`),
+and replays never do
+(`replays_under_two_vendors_admissions_back_no_vendor_and_never_lift_the_hold`).
+
 ## Which of §22.4's five mitigations this closes — read exactly
 
 | Mitigation (§22.4's table) | Status | Where |
@@ -247,7 +343,7 @@ promotion is a decision and may not.
 | Source revises history after use | **Built, with a consequence** | `ReferenceLedger::assess` → `Platform::record_reference`: log record under its own topic, the closed campaigns that read the original named on the log, metric, `revision_covering` flag; `campaign::assemble` flags its own manifest only where it read the withdrawn bytes |
 | Research is slower than a local copy | **Built, on the path** | `FetchCampaign` under `CampaignConfig::cache`; the window is read back from the cache |
 | Regulatory demand for data not retained | **Built, on the log** | `ResearchCampaignClosed` on the log under its own permanently retained topic, and nowhere else |
-| Vendor withdraws historical access | **Built; shut in every shipped deployment** | `assess_concentration` over vendor doors only, gating promotion in `EvolutionEngine::turn`; `FallbackSeries` fed from `observe`, drawn on by `assemble` and recorded on the manifest. The gate opens for two admitted replays from two vendors and for nothing shipped — see the costs |
+| Vendor withdraws historical access | **Built; shut in every shipped deployment** | `assess_concentration` over vendor doors only, gating promotion in `EvolutionEngine::turn`; `FallbackSeries` fed from `observe`, drawn on by `assemble` and recorded on the manifest. The gate opens for two live admitted connectors over one subject, never for replays, and for nothing shipped — see the costs |
 | Sketch or reservoir error affects a model | **Built** | `CountMinSketch` with a declared `ErrorBound` on the manifest; `assemble` refuses when `tolerable_for` says no |
 
 Five of five, each with a production call path, each with a test that was
@@ -271,9 +367,13 @@ mutation-verified.
   takes any caller's word — the first version of this record claimed the
   gate was the only way in while both types derived it, and a
   `compile_fail` doctest now pins the absence. `ReferenceLedger` and
-  `FallbackSeries` do not deserialise either; `ErrorBound` and
-  `SketchedStatistic` deserialise through their constructors. Each refusal
-  has a test and each test was mutated.
+  `FallbackSeries` do not deserialise either; `ErrorBound`,
+  `SketchedStatistic`, and since the second amendment `DataReference`,
+  `RevisionRecord` and `CountMinSketch` deserialise through their
+  constructors — the first two had a derive that the first amendment's
+  claim overlooked, and the sketch's accepted a zero width. The chain over
+  the log's retained span is verified before a frame is restored. Each
+  refusal has a test and each test was mutated.
 - **The paper-trading boundary is untouched.** No file under
   `qip-risk-engine`, `qip-execution-engine`, `qip-capital`, `qip-edge` or
   `infrastructure/terraform` changed; the only promotion touched is the
@@ -285,9 +385,17 @@ mutation-verified.
   key and subject sets bounded by the manifest's batch cap; the log's
   idempotency index bounded by the log's capacity; the fallback refusal
   set bounded by the instruments observed.
-- **No new environment variable**, so no Terraform half and no change to
-  `manifest_wiring.rs`'s allowlist. The replay's `# recorded-from:` header
-  is a line in a file the existing variable already names.
+- **The deep brain reads the connector pair the other roots read**, and the
+  Terraform half is in the same change: `deepbrain_connector`, null in
+  every environment, rendered in a conditional arm, so `manifest_wiring.rs`'s
+  allowlist gains nothing. The first amendment said no environment variable
+  was added; the second adds none by name and gives one binary two it did
+  not read before. The replay's `# recorded-from:` header is still a line
+  in a file the existing variable already names.
+- **The changed files touch no file under** `qip-risk-engine`,
+  `qip-execution-engine`, `qip-capital`, `qip-edge`, `qip-brokers`,
+  `qip-routing` or `qip-compliance`; under `infrastructure/` only the
+  variable, its catalogue arm and the tfvars prose that explains the null.
 
 ## Alternatives considered and rejected
 
@@ -342,20 +450,51 @@ their terms are read) — so no connector-fed deep brain can count two either,
 until the catalogue gains a second vendor for a subject. And a single
 deep-brain process feeds one stream, so even then both vendors' references
 reach one ledger only through two learning streams, which no deployment
-shape provides today. The gate *can* open without a live vendor call — two
-replays recorded from two admitted connectors, each through its own gate,
-proven end to end in `two_admitted_replays_from_two_vendors_lift_the_hold_
-and_one_does_not` — and in every shipped deployment it is shut. That is the
+shape provided until the second amendment. The first amendment said the
+gate "can open without a live vendor call" for two admitted replays; that
+was the defect, and it is withdrawn. The gate opens for two *live* admitted
+connectors over one subject, proven end to end in
+`two_live_admitted_connectors_over_one_subject_lift_the_hold_and_one_does_not`,
+and replays never open it. In every shipped deployment it is shut:
+`deepbrain_connector` is null everywhere, the proxy's bootstrap names only
+the ECB host, and no two shipped connectors share a subject. That is the
 rule working; a deployment that wants promotion needs a second vendor for
-the subject and a process fed both, which is what the rule exists to demand.
+the subject and a process fed both, which is now a configuration a
+deployment can state and which the rule exists to demand.
 
-**A connector-fed deep brain fails closed per subject, not per process.** A
-stream the door refuses — an undeclared replay, a replay whose named source
-the catalogue refuses, a standing admission that has lapsed — is a learning
-round with no campaign, on the round line and counted, every round, for as
-long as the stream is refused; the node keeps cycling and fits nothing. The
-first version stopped the process on the first such round, which read as a
-crash and was the door working.
+**The deep brain fails closed per subject at the door, and per process at a
+connector arm.** A stream the door refuses — an undeclared replay, a replay
+whose named source the catalogue refuses, a standing admission that has
+lapsed — is a learning round with no campaign, on the round line and
+counted, every round, for as long as the stream is refused; the node keeps
+cycling and fits nothing, and a lapsed admission is withdrawn from the
+platform on the round it lapsed. The first version stopped the process on
+the first such round, which read as a crash and was the door working. A
+connector *arm* whose gate stops granting takes the fast brain's posture
+instead: the source is withdrawn and the poll's refusal stops the node,
+because an empty batch and a vendor this platform is no longer licensed to
+read must not be indistinguishable downstream. The earlier text said
+"connector-fed" of a deep brain that had no connector; it has one now.
+
+**A lapsed connector licence stops the research node.** The cost of the
+posture above: a vendor whose terms expire mid-run takes the deep brain out
+of rotation until an operator re-admits or unconfigures it, rather than
+leaving it cycling on its own stream with the vendor's references quietly
+gone from the count.
+
+**A `SourceRevisionDetected` frame written before the second amendment is
+refused at resume.** The body is schema version two and the revising
+reference is required; a version-one log holding one cannot rebuild its
+ledger. Nothing is deployed and no committed log holds one, so no
+migration is written; a log that does needs archiving, not editing.
+
+**A source a previous process admitted backs nothing until this one admits
+it.** The ledger restores the reference; the count waits for the gate.
+
+**A replay research window under a shipped connector's name cannot exist
+today.** No shipped connector ships a bar, the adapter refuses a file whose
+records the named connector never ships, and the desk fits on bars; the
+replayed door is reachable only once a bar-emitting connector is admitted.
 
 **The ledger is rebuilt from the log on every restart, and only from what
 the log retains.** Every reference is a `DataReferenceRecorded` record
@@ -391,12 +530,14 @@ is loud on the cycle line and is the intended shape of a root that skipped
 a step. The alternative, committing past records nobody reasoned over, was
 silent loss.
 
-**A replay's `# recorded-from:` header is a claim by the file's author.**
-The platform verifies that the named source's licence exists and is
-granted, not that the bytes came from that vendor — the same trust it
-already extends to a `with_licensing` call, and the same standing as a
-manifest's declared category: a claim by this platform's authors, reviewed
-like the file.
+**A replay's `# recorded-from:` header is a claim by the file's author, and
+the platform no longer extends it a vendor's standing.** It verifies that
+the named source's licence exists and is granted, holds the file's records
+to the topics that source ships, and references the bytes through a door
+that counts for no vendor. The first amendment said the file's author was
+"answerable" for the bytes being the vendor's; the second review showed
+that answerability was the whole of the control, and it is replaced by
+structure.
 
 **The platform holds a second copy of the feed's admission.** Two records
 of one decision, derived one from the other at a stated seam; if the seam
@@ -421,11 +562,20 @@ ledger's schedule, not its own; the trade is stated in the ledger's doc.
 - **A category declared on a manifest that is not what the source is.** The
   declaration is a claim by this platform's authors, reviewed like the
   manifest; the manifest suite asserts each by name.
-- **A deployment that admits a second source to lift the concentration hold
-  without it being independent** — a replay of the same vendor's data
-  declared as recorded from another is not a second vendor, and the ledger
-  counts source ids and doors, not provenance. The file's author is
-  answerable for the declaration.
+- **A door that counts a replay as a vendor again.** `SourceOrigin::
+  is_independent_vendor` must stay false for `ReplayedAdmitted`, `assemble`
+  must resolve a replayed stream to that door, and the adapter must keep
+  holding a headed file to its source's topics. Any one of the three
+  relaxed re-opens the two-header scenario the second review found.
+- **A catalogue-admitted reference counted without a live admission.**
+  `Platform::sources_backing` intersects with the admission table; a caller
+  reading `ReferenceLedger::sources_backing` directly counts what a previous
+  process admitted.
+- **A `resume_references` that believes a frame before the chain is
+  checked**, or a `Deserialize` derive returning to `DataReference` or
+  `RevisionRecord`.
+- **A campaign id minted from the cycle alone.** `campaign_id` carries the
+  log's sequence; a restart with a per-process id collides silently.
 - **A record here journaled under a shared topic again.** Every body in
   `qip_kernel::references` has its own `Topic`; one filed under
   `LearningCompleted` breaks `Platform::journal_entries` on the first close,
