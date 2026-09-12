@@ -149,14 +149,12 @@ impl FeedSettings {
                 // and this process has an egress sidecar of its own (ADR
                 // 0024), so an address off the instance here is a real
                 // route in the clear, not a route that does not exist.
-                qip_market_ingestion::connector_feed::require_loopback_egress(&base_url).map_err(
-                    |refusal| {
-                        Error::invalid(format!(
-                            "{CONNECTOR_BASE_URL_VARIABLE} is refused — {}",
-                            refusal.message()
-                        ))
-                    },
-                )?;
+                qip_transport::http::require_loopback_egress(&base_url).map_err(|refusal| {
+                    Error::invalid(format!(
+                        "{CONNECTOR_BASE_URL_VARIABLE} is refused — {}",
+                        refusal.message()
+                    ))
+                })?;
                 Some(ConnectorSettings {
                     source_id,
                     base_url,

@@ -454,15 +454,22 @@ fn hosted_language_model(vars: &BTreeMap<String, String>) -> Result<Option<Hoste
              `huggingface` listener, http://127.0.0.1:<port>; the proxy is the only path out"
         ))
     })?;
-    if !(base_url.starts_with("http://127.0.0.1:") || base_url.starts_with("http://localhost:")) {
-        return Err(Error::invalid(format!(
-            "configuration: {LANGUAGE_MODEL_BASE_URL_VARIABLE} is {base_url}. It must be \
-             http://127.0.0.1:<port> or http://localhost:<port>, the egress proxy's \
-             `huggingface` listener beside this process. The proxy is the only path to \
-             router.huggingface.co: this transport has no TLS, and a base URL naming anything \
-             else is a bearer token sent in clear text to wherever it points (ADR 0024)"
-        )));
-    }
+    // The one address in this process that carries a bearer token, held to
+    // the same gate as every connector address: the transport's own parser,
+    // the literal loopback host, an explicit port. Until 2026-09-12 this
+    // was a hand check on two string prefixes that admitted `localhost` —
+    // a name the resolver answers, which Terraform never admitted — and
+    // read `http://127.0.0.1:9106@evil.example/` as loopback, so the one
+    // gate in front of the token was the weakest of the four.
+    qip_transport::http::require_loopback_egress(&base_url).map_err(|refusal| {
+        Error::invalid(format!(
+            "configuration: {LANGUAGE_MODEL_BASE_URL_VARIABLE} is refused — {}. The egress \
+             proxy's `huggingface` listener beside this process is the only path to \
+             router.huggingface.co, and a base URL naming anything else is a bearer token \
+             sent in clear text to wherever it points (ADR 0024)",
+            refusal.message()
+        ))
+    })?;
     // Through `qip_core::secret`, so the deployment may mount the credential
     // as a file rather than set it: a credential in the environment is in
     // `/proc/<pid>/environ`, in every child process and in every crash dump.
@@ -554,14 +561,12 @@ fn connector_feed(vars: &BTreeMap<String, String>) -> Result<Option<ConnectorFee
             // requirement lived in `variables.tf` alone, so a plaintext
             // address off the instance set by any path but the reviewed
             // tfvars opened a socket to whatever host it named.
-            qip_market_ingestion::connector_feed::require_loopback_egress(&base_url).map_err(
-                |refusal| {
-                    Error::invalid(format!(
-                        "configuration: {CONNECTOR_BASE_URL_VARIABLE} is refused — {}",
-                        refusal.message()
-                    ))
-                },
-            )?;
+            qip_transport::http::require_loopback_egress(&base_url).map_err(|refusal| {
+                Error::invalid(format!(
+                    "configuration: {CONNECTOR_BASE_URL_VARIABLE} is refused — {}",
+                    refusal.message()
+                ))
+            })?;
             let mut source_ids: Vec<String> = Vec::new();
             for source_id in sources.split(',').map(str::trim) {
                 if source_id.is_empty() {
@@ -924,16 +929,35 @@ mod tests {
         assert!(dark.language_model.expect("configured").token.is_none());
     }
 
+    /// The failure this prevents: the adapter pointed at the vendor, or at
+    /// any address off this instance, so a bearer token leaves in clear
+    /// text. The proxy is the only path (ADR 0024). This is the one address
+    /// in the process that carries a bearer token, and until 2026-09-12 it
+    /// had the weakest gate of the four: a hand check on two string
+    /// prefixes that admitted `localhost` — which Terraform never admitted
+    /// and this test's own admitted list named as "the other spelling of
+    /// loopback" — and read `http://127.0.0.1:9106@evil.example/` as
+    /// loopback. The `localhost` row is now refused, the userinfo rows are
+    /// refused, and the port-less row is refused for naming no listener
+    /// rather than for failing a prefix.
+    ///
+    /// Mutated by restoring the prefix check
+    /// (`base_url.starts_with("http://127.0.0.1:")`) in place of the gate —
+    /// confirmed both userinfo rows then pass the parser and this fails;
+    /// restored. The token row is held at this seam as well as the gate's,
+    /// because the wrapper here is what writes the refusal to stderr.
     #[test]
     fn a_base_url_that_is_not_loopback_is_refused_and_the_refusal_names_the_proxy() {
-        // The failure this prevents: the adapter pointed at the vendor, or at
-        // any address off this instance, so a bearer token leaves in clear
-        // text. The proxy is the only path (ADR 0024).
         for bad in [
             "http://router.huggingface.co/",
             "http://10.0.0.5:9106",
             "https://127.0.0.1:9106",
             "http://127.0.0.1",
+            "http://localhost:9106",
+            "http://LOCALHOST:9106/",
+            "http://[::1]:9106",
+            "http://127.0.0.1:9106@evil.example/",
+            "http://evil.example@127.0.0.1:9106/",
         ] {
             let refusal =
                 DeepBrainConfig::parse(&vars(&hosted(&[(LANGUAGE_MODEL_BASE_URL_VARIABLE, bad)])))
@@ -947,9 +971,22 @@ mod tests {
                 refusal.message()
             );
         }
-        // And the two loopback spellings are admitted, or the gate refuses
-        // everything and proves nothing.
-        for good in ["http://127.0.0.1:9106", "http://localhost:9106"] {
+        // A refusal that echoed the address would put the credential it
+        // carries on stderr at start-up, from the one check meant to keep
+        // it off the wire.
+        let refusal = DeepBrainConfig::parse(&vars(&hosted(&[(
+            LANGUAGE_MODEL_BASE_URL_VARIABLE,
+            "http://svc:TOKEN@127.0.0.1:9106/",
+        )])))
+        .expect_err("premise: an address carrying userinfo is refused");
+        assert!(
+            !refusal.message().contains("TOKEN"),
+            "the refusal echoed the credential the address carried: {}",
+            refusal.message()
+        );
+        // And the literal loopback listener, with a path or without, is
+        // admitted, or the gate refuses everything and proves nothing.
+        for good in ["http://127.0.0.1:9106", "http://127.0.0.1:9106/v1"] {
             DeepBrainConfig::parse(&vars(&hosted(&[(LANGUAGE_MODEL_BASE_URL_VARIABLE, good)])))
                 .unwrap_or_else(|error| panic!("{good} was refused: {}", error.message()));
         }

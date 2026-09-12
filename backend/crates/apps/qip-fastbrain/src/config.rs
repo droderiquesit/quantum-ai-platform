@@ -338,9 +338,9 @@ fn connector_feed(
             // an address off the instance is a route that does not exist,
             // but a check that refused only `https` would let a plaintext
             // address off the instance reach the transport unrefused.
-            qip_market_ingestion::connector_feed::require_loopback_egress(&base_url).map_err(
-                |refusal| Error::invalid(format!("{BASE_URL} is refused — {}", refusal.message())),
-            )?;
+            qip_transport::http::require_loopback_egress(&base_url).map_err(|refusal| {
+                Error::invalid(format!("{BASE_URL} is refused — {}", refusal.message()))
+            })?;
             Ok(Some(ConnectorFeedSettings {
                 source_id,
                 base_url,
@@ -386,16 +386,16 @@ fn live_feed(vars: &BTreeMap<String, String>) -> Result<Option<LiveFeedSettings>
     };
 
     let base_url = require(BASE_URL)?;
-    // The transport has no TLS stack, so `https` is refused at construction
-    // anyway; saying so here names the deployment mistake instead of surfacing
-    // it as a connection error at the first poll.
-    if base_url.starts_with("https://") {
-        return Err(Error::invalid(format!(
-            "{BASE_URL} is {base_url}. `qip_transport::http` speaks plaintext HTTP/1.1 and has \
-             no TLS stack: point this at the in-cluster egress proxy, which terminates TLS to \
-             the vendor, never at the vendor itself"
-        )));
-    }
+    // Loopback or nothing, through the transport's own gate — the one every
+    // credential-bearing address in every root goes through. Until
+    // 2026-09-12 this refused `https` alone, so a plaintext `http://`
+    // address off the instance reached `RestFeedConfig` unrefused, with the
+    // API key in its header. That this brain has no egress sidecar (ADR
+    // 0024), so such an address is a route that does not exist, is a fact
+    // about the VPC and not a guarantee this process holds; the gate is.
+    qip_transport::http::require_loopback_egress(&base_url).map_err(|refusal| {
+        Error::invalid(format!("{BASE_URL} is refused — {}", refusal.message()))
+    })?;
 
     let symbols: Vec<String> = require(SYMBOLS)?
         .split(',')
@@ -691,10 +691,11 @@ mod live_feed_tests {
 
     fn full() -> Vec<(&'static str, &'static str)> {
         vec![
-            (
-                "QIP_MARKET_DATA_BASE_URL",
-                "http://qip-egress.qip.svc.cluster.local:9105",
-            ),
+            // The loopback proxy, and not the cluster DNS name this fixture
+            // carried until 2026-09-12: that name is exactly the address the
+            // gate below now refuses, and a fixture the gate refuses would
+            // make every test in this module a test of the refusal.
+            ("QIP_MARKET_DATA_BASE_URL", "http://127.0.0.1:9105"),
             ("QIP_MARKET_DATA_PATH", "/v1/quotes"),
             ("QIP_MARKET_DATA_SYMBOLS", "AAPL,MSFT"),
             ("QIP_MARKET_DATA_VENUE", "XNAS"),
@@ -780,6 +781,56 @@ mod live_feed_tests {
         assert!(
             error.message().contains("egress proxy"),
             "the refusal does not point at the proxy: {}",
+            error.message()
+        );
+    }
+
+    /// A plaintext address off loopback is refused for the market-data
+    /// vendor too, by the same gate every other credential-bearing address
+    /// goes through. Until 2026-09-12 this parser refused `https` alone, so
+    /// a plaintext `http://` address off the instance — this module's own
+    /// fixture was one, a cluster DNS name — reached `RestFeedConfig`
+    /// unrefused with the API key in its header. That this brain has no
+    /// egress sidecar (ADR 0024), so such an address is a route that does
+    /// not exist, is a fact about the VPC and not a guarantee this process
+    /// holds; the gate is the guarantee. The first row is the old fixture.
+    ///
+    /// Mutated by restoring the `https`-only check in `live_feed` in place
+    /// of the gate — confirmed every `http://` row then parses and this
+    /// fails; restored.
+    #[test]
+    fn a_vendor_address_off_loopback_is_refused_by_name() {
+        for (refused, expected) in [
+            ("http://qip-egress.qip.svc.cluster.local:9105", "loopback"),
+            ("http://10.0.0.5:9105", "loopback"),
+            ("http://vendor.example.com/", "loopback"),
+            ("http://localhost:9105", "loopback"),
+            ("http://[::1]:9105", "loopback"),
+            ("http://127.0.0.1", "names no port"),
+            ("http://127.0.0.1:9105@vendor.example.com/", "userinfo"),
+            ("http://vendor.example.com@127.0.0.1:9105/", "userinfo"),
+        ] {
+            let mut pairs = full();
+            pairs[0].1 = refused;
+            let error = FastBrainConfig::parse(&map(&pairs))
+                .err()
+                .unwrap_or_else(|| panic!("{refused} was admitted as a vendor address"));
+            assert!(
+                error.message().contains("QIP_MARKET_DATA_BASE_URL")
+                    && error.message().contains(expected),
+                "the refusal of {refused} does not name the variable and `{expected}`: {}",
+                error.message()
+            );
+        }
+        // A refusal that echoed the address would put the credential it
+        // carries on stderr at start-up.
+        let mut pairs = full();
+        pairs[0].1 = "http://svc:TOKEN@127.0.0.1:9105/";
+        let error = FastBrainConfig::parse(&map(&pairs))
+            .expect_err("premise: an address carrying userinfo is refused");
+        assert!(
+            !error.message().contains("TOKEN"),
+            "the refusal echoed the credential the address carried: {}",
             error.message()
         );
     }

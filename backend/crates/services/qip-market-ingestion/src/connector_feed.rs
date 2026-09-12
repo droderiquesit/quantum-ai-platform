@@ -130,80 +130,6 @@ pub fn shipped_class(source_id: &str) -> Result<qip_financial::quality::Licensin
     Ok(shipped_manifest(source_id)?.licensing)
 }
 
-/// The one host a connector may be pointed at: the egress proxy's loopback
-/// listener, as a literal address.
-///
-/// The literal and not `localhost`, which this gate admitted until
-/// 2026-09-12. `localhost` is a name the resolver answers — from
-/// `/etc/hosts`, or whatever `nsswitch.conf` names — and nothing in this
-/// process verifies that the answer is loopback; one hosts-file line,
-/// writable by whoever can write the image, would send a plaintext vendor
-/// request off the instance under a name that reads as safe. `127.0.0.1` is
-/// an address the transport connects to without a lookup. It is also the
-/// only spelling `infrastructure/terraform/variables.tf` admits, so the
-/// gate in the process and the gate at plan time now agree on what
-/// loopback is, where before the process was the wider of the two.
-const LOOPBACK_HOST: &str = "127.0.0.1";
-
-/// Refuse a connector base URL that is not the egress proxy on loopback.
-///
-/// The transport speaks plaintext HTTP/1.1 and has no TLS stack (ADR 0009),
-/// so the only address a connector may be pointed at is the loopback
-/// listener of the egress proxy that terminates TLS to the vendor (ADR
-/// 0024): `http://127.0.0.1:<port>`, and nothing else — see
-/// [`LOOPBACK_HOST`] for why not `localhost`. Until 2026-09-12 the
-/// in-process check refused only `https://`, and the loopback requirement
-/// lived in `infrastructure/terraform/variables.tf` alone — so a plaintext
-/// `http://` address off the instance, reached through any path but the
-/// reviewed tfvars, opened a socket to whatever host it named and sent a
-/// vendor request in the clear. Terraform catches the committed mistake;
-/// this catches the unreviewed one, and neither is redundant.
-///
-/// The address is parsed by the transport's own parser,
-/// [`qip_transport::http::Url::parse`], and not by a second one here. The
-/// first version of this gate split the authority on its last colon and
-/// read `http://127.0.0.1:9105@evil.example/` as loopback: the transport
-/// refused that address later, on its userinfo, so no socket was opened —
-/// but a gate that disagrees with the thing it guards about what an
-/// address *is* will one day admit what the other refuses, or refuse what
-/// the other would have opened, and the whole point of the gate is to
-/// decide before the transport exists. Now the host this gate checks is
-/// the host the transport would connect to, by construction.
-///
-/// Called at four seams — the API's, the deep brain's and the fast brain's
-/// configuration parsers, so the refusal names the variable, and
-/// [`ConnectorFeed::open`], so a root that reaches the feed by another path
-/// is refused too. Refuses rather than rewriting: an address that is nearly
-/// right is a deployment mistake somebody should see.
-pub fn require_loopback_egress(base_url: &str) -> Result<()> {
-    if base_url.starts_with("https://") {
-        return Err(Error::invalid(format!(
-            "the connector egress address is {base_url}. This transport speaks plaintext \
-             HTTP/1.1 and has no TLS stack: point it at the egress proxy that terminates TLS \
-             to the vendor, never at the vendor itself"
-        )));
-    }
-    let url = qip_transport::http::Url::parse(base_url).map_err(|error| {
-        Error::invalid(format!(
-            "the connector egress address {base_url:?} is not an absolute http:// URL this \
-             transport would open — {error}. The egress proxy is reached at \
-             http://127.0.0.1:<port>"
-        ))
-    })?;
-    let host = url.host();
-    if host != LOOPBACK_HOST {
-        return Err(Error::invalid(format!(
-            "the connector egress address is {base_url}, whose host is `{host}`. A connector \
-             is reached only through the egress proxy on loopback — http://127.0.0.1:<port>, \
-             the literal address and not a name a resolver answers — which terminates TLS to \
-             the vendor (ADR 0024) and reaches only the hosts its bootstrap names; this \
-             transport has no TLS stack (ADR 0009), so a plaintext address off the instance \
-             would carry a vendor request in the clear to whatever answers there"
-        )));
-    }
-    Ok(())
-}
-
 /// A live connector, its transport and its runtime, behind the loop's own
 /// adapter contract.
 ///
@@ -236,7 +162,13 @@ impl ConnectorFeed {
     /// licensing class and the descriptor repeats it, so a record's
     /// provenance says what its source's terms were wherever it ends up.
     pub fn open(source_id: &str, base_url: &str, seed: u64, at: Timestamp) -> Result<Self> {
-        require_loopback_egress(base_url)?;
+        // Loopback or nothing, decided by the transport's own gate beside
+        // its parser. Until 2026-09-12 this refused `https` alone, and the
+        // loopback rule lived in `variables.tf`; then a gate here parsed the
+        // address a second way and disagreed with the transport about what
+        // its host was. Here as well as in every root's parser, so a root
+        // that reaches the feed by another path is refused too.
+        qip_transport::http::require_loopback_egress(base_url)?;
         let (connector, mut manifest): (Box<dyn SourceConnector + Send>, SourceManifest) =
             match source_id {
                 CoinbaseTickerConnector::SOURCE_ID => {
@@ -711,29 +643,26 @@ mod tests {
     /// the connection failure a real host would produce, which is how the
     /// test tells the gate from the network.
     ///
-    /// Two rows are the ones the gate's first version got wrong. The
+    /// Three rows are the ones earlier versions of the gate got wrong. The
     /// userinfo rows: a hand parser that split the authority on its last
     /// colon read `http://127.0.0.1:9105@evil.example/` as loopback, and
     /// only the transport's later refusal of userinfo kept the socket shut.
     /// The `localhost` rows: a name the resolver answers is not a verified
-    /// loopback address, and Terraform admits only the literal.
+    /// loopback address, and Terraform admits only the literal. The
+    /// port-less row: this test's own premise list admitted
+    /// `http://127.0.0.1` until 2026-09-12, an address Terraform's
+    /// `startswith("http://127.0.0.1:")` has never admitted and one that
+    /// names no listener of the proxy's.
     ///
-    /// Mutated three ways. Making `require_loopback_egress` return `Ok(())`
-    /// after the `https` check — confirmed the off-loopback addresses then
-    /// pass the helper and `open` fails on the probe instead, naming no
-    /// loopback, and this fails. Restoring the hand parser (authority up to
-    /// the last colon) in place of `Url::parse` — confirmed both userinfo
-    /// rows then pass the helper and this fails. Admitting
-    /// `host.eq_ignore_ascii_case("localhost")` beside the literal —
-    /// confirmed both `localhost` rows then pass and this fails. Each
-    /// restored.
+    /// The gate is `qip_transport::http::require_loopback_egress` and its
+    /// own tests hold the parser, the port rule and the redaction; this one
+    /// holds that `open` runs it. Mutated by making `open` skip the call —
+    /// confirmed the `open` half then fails on the probe naming no loopback
+    /// and this fails; restored.
     #[test]
     fn a_base_url_off_loopback_is_refused_before_a_socket_is_opened() {
-        for admitted in [
-            "http://127.0.0.1:9105",
-            "http://127.0.0.1:9105/v1",
-            "http://127.0.0.1",
-        ] {
+        use qip_transport::http::require_loopback_egress;
+        for admitted in ["http://127.0.0.1:9105", "http://127.0.0.1:9105/v1"] {
             assert!(
                 require_loopback_egress(admitted).is_ok(),
                 "premise: {admitted} is the loopback proxy and must be admitted"
@@ -747,6 +676,7 @@ mod tests {
             ("http://localhost:9105", "loopback"),
             ("http://LOCALHOST:9105/v1", "loopback"),
             ("http://[::1]:9105", "loopback"),
+            ("http://127.0.0.1", "names no port"),
             ("http://127.0.0.1:9105@evil.example/", "userinfo"),
             ("http://evil.example@127.0.0.1:9105/", "userinfo"),
             ("ftp://127.0.0.1:9105", "absolute http://"),

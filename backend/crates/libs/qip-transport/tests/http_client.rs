@@ -45,6 +45,16 @@ fn https_is_refused_by_name_rather_than_quietly_downgraded() {
     );
 }
 
+/// The refusal of a URL carrying a credential does not itself carry the
+/// credential. Until 2026-09-12 `InvalidUrl` stored and printed the whole
+/// URL, so the one check that existed to keep a credential out of the log
+/// wrote it there, on stderr and into Cloud Logging, from every root's
+/// start-up. Both the `Display` and the `Debug` of the error are checked,
+/// because a root that formats `{error:?}` is as much a log line as one
+/// that formats `{error}`.
+///
+/// Mutated by storing `raw.to_string()` in `InvalidUrl` again — confirmed
+/// the refusal then prints `hunter2` and this fails; restored.
 #[test]
 fn a_url_that_carries_a_credential_is_refused() {
     let error = Url::parse("http://operator:hunter2@central.internal/v1/mesh/publish")
@@ -53,6 +63,111 @@ fn a_url_that_carries_a_credential_is_refused() {
         error.to_string().contains("credential"),
         "the refusal must name what is wrong with it: {error}"
     );
+    for rendered in [error.to_string(), format!("{error:?}")] {
+        assert!(
+            !rendered.contains("hunter2") && !rendered.contains("operator"),
+            "the refusal of a credential-bearing URL echoed the credential: {rendered}"
+        );
+        assert!(
+            rendered.contains("…@central.internal/v1/mesh/publish"),
+            "the refusal must keep the host so the mistake can be found: {rendered}"
+        );
+    }
+}
+
+/// The egress gate admits `http://127.0.0.1:<port>` and nothing else, and
+/// what it echoes on refusal is safe to log. The gate lived in
+/// `qip-market-ingestion` with a parser of its own until 2026-09-12 and
+/// read `http://127.0.0.1:9105@evil.example/` as loopback; it lives beside
+/// the parser now so that the host it checks is the host a request would
+/// connect to, by construction. The port-less row is the one the earlier
+/// gate admitted and Terraform's `startswith("http://127.0.0.1:")` never
+/// did. The credential rows are refused for their userinfo and the refusal
+/// is checked for the token at both the parser's seam and the gate's.
+///
+/// Mutated four ways. Admitting `host.eq_ignore_ascii_case("localhost")`
+/// beside the literal — confirmed `http://localhost:9106` is then admitted
+/// and this fails. Deleting the `port_is_explicit` check — confirmed
+/// `http://127.0.0.1` is then admitted and this fails. Echoing `base_url`
+/// in place of `shown` in the `https` arm — confirmed the refusal of
+/// `https://svc:TOKEN@127.0.0.1:9106/` then prints `TOKEN` and this fails.
+/// Echoing `{base_url:?}` in the parse-failure arm — confirmed the refusal
+/// of `http://svc:TOKEN@127.0.0.1:9106/` then prints `TOKEN` and this
+/// fails. Each restored. The same mutation on the host arm does **not**
+/// fire, and that is structural rather than a gap in the rows: the parser
+/// refuses userinfo before the host and port arms run, so neither can
+/// reach an address carrying one; they echo `shown` anyway so that a
+/// reordering of the arms cannot reopen the leak silently.
+#[test]
+fn an_egress_address_is_loopback_with_a_port_and_a_refusal_never_echoes_a_credential() {
+    use qip_transport::http::{redact_userinfo, require_loopback_egress};
+
+    for admitted in [
+        "http://127.0.0.1:9105",
+        "http://127.0.0.1:9105/",
+        "http://127.0.0.1:9106/v1/chat",
+    ] {
+        require_loopback_egress(admitted)
+            .unwrap_or_else(|error| panic!("premise: {admitted} was refused: {error}"));
+    }
+    for (refused, expected) in [
+        ("https://router.huggingface.co", "never at the vendor"),
+        ("https://127.0.0.1:9106", "never at the vendor"),
+        ("http://10.0.0.5:9106", "loopback"),
+        ("http://router.huggingface.co/", "loopback"),
+        ("http://127.0.0.1.evil.example:9106", "loopback"),
+        ("http://localhost:9106", "loopback"),
+        ("http://LOCALHOST:9106/v1", "loopback"),
+        ("http://[::1]:9106", "loopback"),
+        ("http://127.0.0.1", "names no port"),
+        ("http://127.0.0.1/v1", "names no port"),
+        ("http://127.0.0.1:9106@evil.example/", "userinfo"),
+        ("http://evil.example@127.0.0.1:9106/", "userinfo"),
+        ("http://svc:TOKEN@127.0.0.1:9106/", "userinfo"),
+        ("ftp://127.0.0.1:9106", "absolute http://"),
+        ("127.0.0.1:9106", "absolute http://"),
+        ("", "absolute http://"),
+    ] {
+        let error = require_loopback_egress(refused)
+            .expect_err(&format!("{refused:?} was admitted as an egress address"));
+        assert!(
+            error.message().contains(expected),
+            "the refusal of {refused:?} does not say `{expected}`: {}",
+            error.message()
+        );
+    }
+
+    // The token never reaches the message, whichever arm refuses the
+    // address: the parser's (userinfo on a loopback host) and the gate's
+    // own (userinfo the parser would have refused, but an `https` prefix or
+    // an off-loopback host is decided first and echoes the address).
+    for carrying in [
+        "http://svc:TOKEN@127.0.0.1:9106/",
+        "https://svc:TOKEN@127.0.0.1:9106/",
+        "http://svc:TOKEN@10.0.0.5:9106/",
+        "http://TOKEN@127.0.0.1/",
+    ] {
+        let error = require_loopback_egress(carrying).expect_err("premise: refused");
+        assert!(
+            !error.message().contains("TOKEN") && !error.message().contains("svc"),
+            "the refusal of an address carrying a credential echoed it: {}",
+            error.message()
+        );
+    }
+
+    // The redaction itself, on text the parser refuses: everything through
+    // the last `@` of the authority goes, the host stays, and an address
+    // with no userinfo is returned as it was.
+    assert_eq!(
+        redact_userinfo("http://svc:TOK@EN@127.0.0.1:9106/v1?x=1"),
+        "http://…@127.0.0.1:9106/v1?x=1"
+    );
+    assert_eq!(
+        redact_userinfo("http://127.0.0.1:9106/v1?to=a@b"),
+        "http://127.0.0.1:9106/v1?to=a@b",
+        "an `@` past the authority is not userinfo and must be kept"
+    );
+    assert_eq!(redact_userinfo("no scheme@here"), "no scheme@here");
 }
 
 #[test]

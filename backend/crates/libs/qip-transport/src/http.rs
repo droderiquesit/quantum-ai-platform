@@ -338,14 +338,142 @@ impl std::fmt::Display for Method {
     }
 }
 
+/// `raw` with any userinfo in its authority replaced by `…@`, for echoing
+/// an address in a refusal.
+///
+/// A URL carrying userinfo is refused by [`Url::parse`] precisely because a
+/// credential in the URL lands in every line that records it — and until
+/// 2026-09-12 the refusal itself echoed the whole URL, so
+/// `http://svc:TOKEN@127.0.0.1:9105` set in a deployment put `TOKEN` on
+/// stderr and into Cloud Logging at start-up, from the one check that
+/// existed to keep it out of there. Everything through the last `@` of the
+/// authority goes, so no fragment of a credential that itself contains an
+/// `@` survives; the host after it is kept, because that is the part an
+/// operator needs to see to find the mistake. A URL with no userinfo is
+/// returned unchanged. Pure text, no parse: it must work on exactly the
+/// addresses the parser refuses.
+pub fn redact_userinfo(raw: &str) -> String {
+    let Some((scheme, rest)) = raw.split_once("://") else {
+        return raw.to_string();
+    };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, remainder) = rest.split_at(end);
+    match authority.rsplit_once('@') {
+        Some((_, host)) => format!("{scheme}://…@{host}{remainder}"),
+        None => raw.to_string(),
+    }
+}
+
+/// The one host an egress address may name: the proxy's loopback listener,
+/// as a literal address.
+///
+/// The literal and not `localhost`, which the connector gate admitted until
+/// 2026-09-12. `localhost` is a name the resolver answers — from
+/// `/etc/hosts`, or whatever `nsswitch.conf` names — and nothing in this
+/// process verifies that the answer is loopback; one hosts-file line,
+/// writable by whoever can write the image, would send a plaintext request
+/// carrying a credential off the instance under a name that reads as safe.
+/// `127.0.0.1` is an address this client connects to without a lookup. It
+/// is also the only spelling `infrastructure/terraform/variables.tf`
+/// admits, so the gate in the process and the gate at plan time agree on
+/// what loopback is.
+pub const LOOPBACK_HOST: &str = "127.0.0.1";
+
+/// Refuse a base URL that is not the egress proxy on loopback, with a port.
+///
+/// This client speaks plaintext HTTP/1.1 and has no TLS stack (ADR 0009),
+/// so the only address a request carrying a credential may be pointed at is
+/// a loopback listener of the egress proxy that terminates TLS to the
+/// vendor (ADR 0024): `http://127.0.0.1:<port>`, and nothing else — see
+/// [`LOOPBACK_HOST`] for why not `localhost`. Three refusals, in order:
+///
+/// * **`https://`**, by name, because the deployment mistake it signals —
+///   the vendor's own address — deserves a message naming the proxy rather
+///   than the parser's "unsupported scheme".
+/// * **Anything [`Url::parse`] refuses**, and the parse is this client's own:
+///   the first version of this gate lived in `qip-market-ingestion`, split
+///   the authority on its last colon and read
+///   `http://127.0.0.1:9105@evil.example/` as loopback; the parser refused
+///   that address later, on its userinfo, so no socket was opened — but a
+///   gate that disagrees with the client it guards about what an address
+///   *is* will one day admit what the client refuses, or refuse what it
+///   would have opened. Now the host this gate checks is the host the
+///   client would connect to, by construction, which is why the gate lives
+///   beside the parser.
+/// * **A host other than the literal, or no explicit port.** The proxy's
+///   listeners are one per vendor on distinct ports; an address naming no
+///   port would reach whatever answers on loopback port 80, and Terraform's
+///   validation (`startswith("http://127.0.0.1:")`) has never admitted one,
+///   so until 2026-09-12 the process was again the wider of the two gates.
+///
+/// Every echo of the address goes through [`redact_userinfo`], so a refusal
+/// of `http://svc:TOKEN@…` does not print `TOKEN`. Only the first two arms
+/// can meet a credential — the parser refuses userinfo before the host and
+/// port arms run — but all four echo the redacted form, so a reordering
+/// cannot reopen the leak. Called at the seams that
+/// carry a credential — the connector pair in the API's, the deep brain's
+/// and the fast brain's parsers and at `ConnectorFeed::open`; the deep
+/// brain's hosted language-model listener; the fast brain's market-data
+/// vendor — so the refusal names the variable there and the type here.
+/// Refuses rather than rewriting: an address that is nearly right is a
+/// deployment mistake somebody should see.
+pub fn require_loopback_egress(base_url: &str) -> qip_core::Result<()> {
+    let shown = redact_userinfo(base_url);
+    if base_url.starts_with("https://") {
+        return Err(qip_core::Error::invalid(format!(
+            "the egress address is {shown}. This transport speaks plaintext HTTP/1.1 and has \
+             no TLS stack: point it at the egress proxy that terminates TLS to the vendor, \
+             never at the vendor itself"
+        )));
+    }
+    let url = Url::parse(base_url).map_err(|error| {
+        qip_core::Error::invalid(format!(
+            "the egress address {shown:?} is not an absolute http:// URL this transport would \
+             open — {error}. The egress proxy is reached at http://127.0.0.1:<port>"
+        ))
+    })?;
+    let host = url.host();
+    if host != LOOPBACK_HOST {
+        return Err(qip_core::Error::invalid(format!(
+            "the egress address is {shown}, whose host is `{host}`. A vendor is reached only \
+             through the egress proxy on loopback — http://127.0.0.1:<port>, the literal \
+             address and not a name a resolver answers — which terminates TLS to the vendor \
+             (ADR 0024) and reaches only the hosts its bootstrap names; this transport has no \
+             TLS stack (ADR 0009), so a plaintext address off the instance would carry a \
+             request in the clear to whatever answers there"
+        )));
+    }
+    if !url.port_is_explicit() {
+        return Err(qip_core::Error::invalid(format!(
+            "the egress address is {shown}, which names no port. The egress proxy's listeners \
+             are one per vendor on distinct ports, http://127.0.0.1:<port>; an address with no \
+             port would reach whatever answers on loopback port 80, and it is not the address \
+             Terraform admits"
+        )));
+    }
+    Ok(())
+}
+
 /// An absolute `http://` URL, parsed once so a malformed peer address fails at
 /// configuration time rather than on the first publish.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct Url {
     host: String,
     port: u16,
+    /// Whether the port was written in the address rather than defaulted.
+    /// Not part of what the URL *is* — `http://h` and `http://h:80` open
+    /// the same socket — so [`PartialEq`] ignores it; see the manual impl.
+    port_explicit: bool,
     target: String,
 }
+
+impl PartialEq for Url {
+    fn eq(&self, other: &Self) -> bool {
+        self.host == other.host && self.port == other.port && self.target == other.target
+    }
+}
+
+impl Eq for Url {}
 
 impl Url {
     /// Parse `http://host[:port][/path][?query]`.
@@ -353,9 +481,12 @@ impl Url {
     /// Refuses `https` by name, refuses userinfo (`http://user:pass@host` puts
     /// a credential in every log line that records the URL), and refuses a
     /// fragment (it is a client-side construct that never goes on the wire).
+    /// The address the error carries has its userinfo redacted — see
+    /// [`redact_userinfo`] — so the refusal of a credential-bearing URL is
+    /// not itself the leak.
     pub fn parse(raw: &str) -> HttpResult<Self> {
         let invalid = |detail: &str| HttpError::InvalidUrl {
-            url: raw.to_string(),
+            url: redact_userinfo(raw),
             detail: detail.to_string(),
         };
 
@@ -382,6 +513,8 @@ impl Url {
         }
 
         let (host, port) = split_authority(authority).ok_or_else(|| invalid("malformed host"))?;
+        let port_explicit = port.is_some();
+        let port = port.unwrap_or(80);
         if host.is_empty() {
             return Err(invalid("empty host"));
         }
@@ -403,7 +536,12 @@ impl Url {
             ));
         }
 
-        Ok(Self { host, port, target })
+        Ok(Self {
+            host,
+            port,
+            port_explicit,
+            target,
+        })
     }
 
     /// This URL's authority with `path` appended, for a base address plus an
@@ -424,6 +562,14 @@ impl Url {
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Whether the address wrote its port rather than leaving it to the
+    /// scheme's default. `http://127.0.0.1` and `http://127.0.0.1:80` open
+    /// the same socket, but only the second names a listener on purpose,
+    /// and [`require_loopback_egress`] holds an egress address to that.
+    pub fn port_is_explicit(&self) -> bool {
+        self.port_explicit
     }
 
     /// Path and query, as it goes on the request line.
@@ -451,19 +597,21 @@ impl std::fmt::Display for Url {
     }
 }
 
-/// Split `host:port`, `host`, `[v6]:port` or `[v6]`.
-fn split_authority(authority: &str) -> Option<(String, u16)> {
+/// Split `host:port`, `host`, `[v6]:port` or `[v6]`. The port is `None`
+/// when the authority did not write one, so the caller can tell a default
+/// from a choice; the default itself is the caller's.
+fn split_authority(authority: &str) -> Option<(String, Option<u16>)> {
     if let Some(rest) = authority.strip_prefix('[') {
         let (host, tail) = rest.split_once(']')?;
         let port = match tail {
-            "" => 80,
-            _ => tail.strip_prefix(':')?.parse().ok()?,
+            "" => None,
+            _ => Some(tail.strip_prefix(':')?.parse().ok()?),
         };
         return Some((host.to_string(), port));
     }
     match authority.rsplit_once(':') {
-        Some((host, port)) => Some((host.to_string(), port.parse().ok()?)),
-        None => Some((authority.to_string(), 80)),
+        Some((host, port)) => Some((host.to_string(), Some(port.parse().ok()?))),
+        None => Some((authority.to_string(), None)),
     }
 }
 
