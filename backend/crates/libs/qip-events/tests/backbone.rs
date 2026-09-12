@@ -1638,3 +1638,84 @@ fn a_file_with_a_reused_event_id_fails_to_load_rather_than_shadowing_the_earlier
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The chain over what a capped log *retains* verifies after eviction, and
+/// still catches a record edited on disk; and the last sequence survives a
+/// reopen. `verify_chain` is held to genesis and reports the first retained
+/// link once the log has evicted its head — the limit the module doc states
+/// — which made it the wrong question for a consumer rebuilding state from
+/// the retained span, and until 2026-09-12 no consumer asked any question at
+/// all: the kernel restored its reference ledger from frames it had never
+/// checked against their hashes.
+///
+/// Mutated by making `verify_retained_chain` skip the recomputed-hash
+/// comparison — confirmed the tampered half then reads as intact and this
+/// fails, then restored.
+#[test]
+fn the_retained_chain_verifies_after_eviction_and_catches_an_edited_record() {
+    let dir = std::env::temp_dir().join(format!("qip-log-retained-chain-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("events.jsonl");
+    let (ctx, now) = context();
+    {
+        let mut log = EventLog::open(&path).unwrap();
+        for index in 0..5 {
+            let event = Envelope::new(
+                ctx.ids().generate(now),
+                now,
+                now,
+                root_lineage("feed"),
+                Tick {
+                    symbol: format!("T{index}"),
+                    price: 100.0 + index as f64,
+                },
+            )
+            .erase()
+            .unwrap();
+            log.append(&event).unwrap();
+        }
+        assert_eq!(
+            log.last_sequence(),
+            5,
+            "premise: five records, five sequences"
+        );
+    }
+
+    // Reopened under a ceiling of three, the two oldest ticks are evicted at
+    // load: the retained span no longer starts at genesis.
+    let capped = EventLog::open_with_capacity(&path, 3).unwrap();
+    assert_eq!(capped.len(), 3, "premise: the ceiling evicted the head");
+    assert_eq!(
+        capped.last_sequence(),
+        5,
+        "the sequence must survive eviction, or a restarted process would mint the evicted \
+         sequences again"
+    );
+    assert!(
+        capped.verify_chain().is_err(),
+        "premise: from genesis the evicted head reads as the first broken link, which is why a \
+         second question exists"
+    );
+    assert_eq!(
+        capped.verify_retained_chain(),
+        Ok(()),
+        "every retained record hashes to what its predecessor committed to"
+    );
+
+    // Edit the payload of the fourth record on disk, leaving its hashes as
+    // they were: the edited record no longer hashes to what it claims.
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let mut record: serde_json::Value = serde_json::from_str(&lines[3]).unwrap();
+    record["event"]["payload"]["price"] = serde_json::json!(999.0);
+    lines[3] = serde_json::to_string(&record).unwrap();
+    std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+
+    let tampered = EventLog::open_with_capacity(&path, 3).unwrap();
+    assert_eq!(
+        tampered.verify_retained_chain(),
+        Err(4),
+        "the edited record must be named by its sequence"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

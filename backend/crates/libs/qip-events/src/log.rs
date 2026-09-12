@@ -538,9 +538,48 @@ impl EventLog {
             .collect()
     }
 
+    /// The sequence of the newest record this log holds, or zero for a log
+    /// that holds none. Monotonic across restarts of a file-backed log, which
+    /// is what makes it usable as the process-independent half of an
+    /// identifier a caller mints — a per-process counter restarts at one and
+    /// collides with everything the previous process minted.
+    pub const fn last_sequence(&self) -> u64 {
+        self.last_sequence
+    }
+
     /// Verify the hash chain. Returns the sequence of the first broken link.
     pub fn verify_chain(&self) -> std::result::Result<(), u64> {
-        let mut expected_previous = GENESIS_HASH.to_string();
+        self.verify_chain_from(GENESIS_HASH)
+    }
+
+    /// Verify the chain over what the log retains, rather than from genesis.
+    ///
+    /// A capped log evicts its oldest replaceable records at load
+    /// ([`Self::open_with_capacity`]) and during a run, so the first retained
+    /// record's predecessor is usually gone and [`Self::verify_chain`] reports
+    /// it as the first broken link — the limit the module doc states. That
+    /// makes `verify_chain` the wrong question for a consumer rebuilding
+    /// state from the retained span: it wants to know that every record it
+    /// is about to read hashes to what its predecessor committed to, and
+    /// that the first of them is either genesis or honestly claims a
+    /// predecessor. This checks exactly that: the first retained record is
+    /// held to genesis only when it is sequence one, every later record is
+    /// held to the one before it, and every record's own hash is recomputed.
+    /// A record whose payload was edited on disk fails here whether or not
+    /// anything before it was evicted.
+    pub fn verify_retained_chain(&self) -> std::result::Result<(), u64> {
+        let Some(first) = self.records.first() else {
+            return Ok(());
+        };
+        if first.sequence == 1 {
+            return self.verify_chain_from(GENESIS_HASH);
+        }
+        let claimed_predecessor = first.previous_hash.clone();
+        self.verify_chain_from(&claimed_predecessor)
+    }
+
+    fn verify_chain_from(&self, genesis: &str) -> std::result::Result<(), u64> {
+        let mut expected_previous = genesis.to_string();
         for record in &self.records {
             if record.previous_hash != expected_previous {
                 return Err(record.sequence);

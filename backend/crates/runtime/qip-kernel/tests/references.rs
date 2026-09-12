@@ -443,6 +443,10 @@ fn a_restarted_platform_rebuilds_its_reference_ledger_from_the_log() -> Result<(
             .is_some(),
         "the revision the first process caught must still flag after the restart"
     );
+    // The restored reference backs the series only once this process holds
+    // the admission again — see
+    // `a_restored_reference_without_a_live_admission_is_not_vendor_backing`.
+    platform.admit_source(admitted_frankfurter()?);
     assert!(
         platform
             .sources_backing(&dollar_series())
@@ -450,13 +454,167 @@ fn a_restarted_platform_rebuilds_its_reference_ledger_from_the_log() -> Result<(
     );
     // And the restored ledger keeps detecting: the rewritten table again is
     // unchanged, not a first reference, and a third rewrite is a revision.
-    platform.admit_source(admitted_frankfurter()?);
     assert_eq!(
         platform
             .reference_fetch(&frankfurter_digest(REVISED_TABLE, again)?, again)?
             .outcome,
         LedgerOutcome::Unchanged,
         "a restarted ledger that read the log knows the hash it holds"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
+/// A log whose hash chain no longer verifies does not rebuild the reference
+/// ledger: a frame edited on disk is refused at `Platform::new`, by sequence,
+/// rather than restored as the extent's latest reference. `EventLog::open`
+/// recomputes no hash, and until 2026-09-12 nothing between it and the ledger
+/// did either, so an origin or a hash rewritten in the file became what the
+/// ledger believed. (A frame forged into a shape the type refuses — no
+/// symbols, no locator — is refused one layer down, by
+/// `DataReference`'s own wire gate; this is the frame that is well-formed and
+/// simply not what was written.)
+///
+/// Mutated by deleting the `verify_retained_chain` check in
+/// `resume_references` — confirmed the tampered log then assembles a
+/// platform and this fails, then restored.
+#[test]
+fn a_log_whose_chain_is_broken_refuses_to_rebuild_the_reference_ledger() -> Result<()> {
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-references-tampered-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let path = directory.join("events.jsonl");
+    {
+        let config = PlatformConfig::default().with_event_log_file(&path);
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )?;
+        platform.admit_source(admitted_frankfurter()?);
+        platform.reference_fetch(&frankfurter_digest(TABLE, start())?, start())?;
+    }
+
+    // Edit the reference frame on disk: the availability the fetch recorded
+    // becomes another well-formed value, and nothing else changes.
+    let text = std::fs::read_to_string(&path)?;
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let index = lines
+        .iter()
+        .position(|line| line.contains("\"availability\":1.0"))
+        .expect("premise: the reference frame is on disk with the availability it recorded");
+    let mut record: serde_json::Value = serde_json::from_str(&lines[index])?;
+    record["event"]["payload"]["reference"]["availability"] = serde_json::json!(0.5);
+    lines[index] = serde_json::to_string(&record)?;
+    std::fs::write(&path, format!("{}\n", lines.join("\n")))?;
+
+    let again = start().saturating_add(Duration::from_hours(1));
+    let config = PlatformConfig::default().with_event_log_file(&path);
+    let (context, _clock) = Context::deterministic(again, config.seed);
+    let refused = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        Universe::new(),
+        LimitSet::conservative_default(),
+    )
+    .expect_err("a platform assembled over a log whose chain is broken");
+    assert!(
+        refused.message().contains("hash chain breaks at sequence"),
+        "the refusal does not name the broken link: {refused}"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
+/// A reference restored from the log is a fact about what a previous process
+/// fetched, not a vendor standing behind the subject now: until this process
+/// holds the source's admission, the restored reference backs nothing, and
+/// once it does — or once the admission is withdrawn again — the count
+/// follows the admission. Until 2026-09-12 `sources_backing` read the ledger
+/// alone, so a connector the deployment no longer configured, or a licence
+/// the gate had since refused, went on counting as a live vendor.
+///
+/// Mutated by deleting the `admitted_sources.contains_key` filter in
+/// `Platform::sources_backing` — confirmed the restored reference then
+/// counts before any admission and this fails, then restored.
+#[test]
+fn a_restored_reference_without_a_live_admission_is_not_vendor_backing() -> Result<()> {
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-references-unadmitted-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let path = directory.join("events.jsonl");
+    {
+        let config = PlatformConfig::default().with_event_log_file(&path);
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )?;
+        platform.admit_source(admitted_frankfurter()?);
+        platform.reference_fetch(&frankfurter_digest(TABLE, start())?, start())?;
+        assert!(
+            platform
+                .sources_backing(&dollar_series())
+                .contains_key(SOURCE),
+            "premise: with the admission held, the connector backs the series"
+        );
+    }
+
+    let again = start().saturating_add(Duration::from_hours(1));
+    let config = PlatformConfig::default().with_event_log_file(&path);
+    let (context, _clock) = Context::deterministic(again, config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        Universe::new(),
+        LimitSet::conservative_default(),
+    )?;
+    assert_eq!(
+        platform.reference_ledger().len(),
+        1,
+        "premise: the reference was restored from the log"
+    );
+    assert!(
+        platform.admitted_source(SOURCE).is_none(),
+        "premise: this process has admitted nothing"
+    );
+    assert!(
+        !platform
+            .sources_backing(&dollar_series())
+            .contains_key(SOURCE),
+        "a reference from a source this process holds no admission for counted as a vendor"
+    );
+
+    platform.admit_source(admitted_frankfurter()?);
+    assert!(
+        platform
+            .sources_backing(&dollar_series())
+            .contains_key(SOURCE),
+        "the admission held again, the restored reference backs the series again"
+    );
+    assert!(
+        platform.withdraw_source(SOURCE).is_some(),
+        "premise: an admission was held to withdraw"
+    );
+    assert!(
+        !platform
+            .sources_backing(&dollar_series())
+            .contains_key(SOURCE),
+        "a withdrawn admission must stop backing the series"
     );
     let _ = std::fs::remove_dir_all(&directory);
     Ok(())

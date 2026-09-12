@@ -146,6 +146,11 @@ pub struct CampaignSummary {
     pub fallback_used: bool,
     pub concentration: ConcentrationVerdict,
     pub statistic: SketchedStatistic,
+    /// What `Platform::journal_campaign` returned: whether the manifest was
+    /// written to the log by this close. Reported rather than assumed —
+    /// `describe` hard-coded "manifest journaled" until 2026-09-12, while
+    /// every manifest after a restart was being suppressed as a duplicate.
+    pub journaled: bool,
 }
 
 impl CampaignSummary {
@@ -169,9 +174,28 @@ impl CampaignSummary {
             },
             self.concentration.describe(),
             self.statistic.describe(),
-            "; manifest journaled"
+            if self.journaled {
+                "; manifest journaled"
+            } else {
+                "; manifest NOT journaled: the log already held this campaign id"
+            }
         )
     }
+}
+
+/// The id a learning round's campaign closes under.
+///
+/// Unique across restarts, not only within a process. It carries the cycle
+/// for a reader, and the event log's last sequence at the instant of
+/// minting for uniqueness: a file-backed log's sequence is monotonic across
+/// every process that has written to it, and every closed campaign appends
+/// a record, so no two campaigns — in one process or across a restart —
+/// mint at the same tail. Until 2026-09-12 the id was `learn-{subject}-{cycle}`
+/// with the cycle counted from one in every process, so after any restart
+/// the first campaign for a subject collided with the previous run's and
+/// the idempotent log silently kept the old manifest.
+pub fn campaign_id(subject: &ObjectId, cycle: u64, log_sequence: u64) -> String {
+    format!("learn-{}-c{cycle}-s{log_sequence}", subject.as_str())
 }
 
 /// The window a round fits on, read back from the campaign's cache, and
@@ -329,7 +353,7 @@ pub fn assemble(
     // fetched the corrected extent is not the backtest that used the
     // original, and the kernel has already named the closed campaign that
     // was, on the log, when it recorded the reference above.
-    let id = format!("learn-{}-{cycle}", subject.as_str());
+    let id = campaign_id(subject, cycle, platform.event_log().last_sequence());
     let mut campaign = FetchCampaign::open(&id, config.cache, now)?;
     campaign.fetch(reference, &bytes, now)?;
     if let Some(revision) = platform.revision_covering(&source_id, subject.as_str(), &period) {
@@ -389,7 +413,20 @@ pub fn assemble(
     };
     let flagged = closed.flagged();
     let fallback_used = closed.fallback_used();
-    platform.journal_campaign(closed, now)?;
+    // The id was minted an instant ago, so a log that already holds it is a
+    // collision with a campaign some other process closed — and a manifest
+    // that is not on the log is a fit nobody can later be shown the inputs
+    // of. An error, never a silent `false`.
+    let journaled = platform.journal_campaign(closed, now)?;
+    if !journaled {
+        return Err(Error::invalid(format!(
+            "the log already holds a closed campaign under `{id}`, which this round has just \
+             minted; the manifest for this fit is therefore not on the log. Campaign ids carry \
+             the log's own sequence so this cannot happen across restarts of one log; two \
+             processes writing one log, or a log truncated and re-grown, can make it happen, \
+             and either is a fault to find rather than a round to report as journaled"
+        )));
+    }
 
     Ok(Assembly::Window(Box::new(AssembledWindow {
         bars: assembled,
@@ -405,6 +442,7 @@ pub fn assemble(
             fallback_used,
             concentration,
             statistic,
+            journaled,
         },
     })))
 }
@@ -506,10 +544,12 @@ mod tests {
     }
 
     /// Two shipped connectors, through the real catalogue and the real gate
-    /// — the two whose terms are read — each referencing an extent that
-    /// names `subject` onto the platform's ledger: the premise "two
-    /// independent vendors back this subject", stated the way the ledger
-    /// states it.
+    /// — the two whose terms are read — each admitted to this platform and
+    /// each referencing an extent that names `subject` onto its ledger: the
+    /// premise "two independent vendors back this subject", stated the way
+    /// the ledger states it. Admitted as well as referenced, because a
+    /// catalogue-admitted reference counts only while the process holds the
+    /// admission (`Platform::sources_backing`).
     fn back_with_two_admitted_sources(
         platform: &mut Platform,
         subject: &ObjectId,
@@ -521,6 +561,7 @@ mod tests {
         ] {
             let decision = admission::admit(&manifest.source_id, manifest.licensing, now)?;
             let admitted = AdmittedSource::from_decision(&decision, &manifest)?;
+            platform.admit_source(admitted.clone());
             platform.record_reference(
                 DataReference::of_admitted(
                     &admitted,
@@ -599,7 +640,17 @@ mod tests {
             "the desk fits on the window read back from the cache"
         );
         let summary = &window.summary;
-        assert_eq!(summary.id, "learn-OBJ0000000000000000000AAA-1");
+        assert!(
+            summary
+                .id
+                .starts_with("learn-OBJ0000000000000000000AAA-c1-s"),
+            "the id carries the subject, the cycle and the log's sequence: {}",
+            summary.id
+        );
+        assert!(
+            summary.journaled,
+            "the summary must report what the log said"
+        );
         assert_eq!(summary.origin, SourceOrigin::Generated);
         assert_eq!(summary.source_id, "synthetic-exchange");
         assert_eq!(summary.ledger, "first");
@@ -662,6 +713,91 @@ mod tests {
         assert!(next.summary.concentration.is_sufficient());
         assert_eq!(next.summary.concentration.viable_sources(), 2);
         assert_eq!(next.summary.concentration.generated(), 1);
+        Ok(())
+    }
+
+    /// Campaign ids survive a restart: two processes over one file-backed
+    /// log, each closing a campaign for the same subject at cycle one, leave
+    /// two `ResearchCampaignClosed` records on the log with two ids, and each
+    /// round reports the journal's own answer. Until 2026-09-12 the id was
+    /// the per-process cycle count alone, the second process's campaign
+    /// collided with the first's, `journal_once` kept the old manifest and
+    /// returned `false`, and the round line said "manifest journaled".
+    ///
+    /// Mutated by minting the id as `learn-{subject}-{cycle}` again —
+    /// confirmed the second process's assembly then errors on the collision
+    /// (the loud half of the fix) and this fails, then restored.
+    #[test]
+    fn a_campaign_closed_after_a_restart_is_journaled_under_its_own_id() -> Result<()> {
+        let directory = std::env::temp_dir().join(format!(
+            "qip-deepbrain-campaign-restart-{}-{}",
+            std::process::id(),
+            start().as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("events.jsonl");
+        let stream = bars(300, Interval::Minute, 0);
+        let config = CampaignConfig::standard()?;
+        let assemble_at = |at: Timestamp| -> Result<CampaignSummary> {
+            let platform_config = PlatformConfig::default().with_event_log_file(&path);
+            let (context, _clock) = Context::deterministic(at, platform_config.seed);
+            let mut platform = Platform::new(
+                platform_config,
+                context,
+                Telemetry::silent(),
+                Universe::new(),
+                LimitSet::conservative_default(),
+            )?;
+            let window = assemble(
+                &mut platform,
+                &descriptor(LicensingClass::Synthetic),
+                &subject(),
+                &stream,
+                MINIMUM,
+                1,
+                at,
+                &config,
+            )?
+            .window()
+            .ok_or_else(|| Error::not_found("a window"))?;
+            assert_eq!(
+                closed_campaigns(&platform)?.len(),
+                1 + usize::from(at != start())
+            );
+            Ok(window.summary)
+        };
+
+        let first = assemble_at(start())?;
+        // The second process assembles an hour on, as a restart is in life
+        // and because the id stream is stamped with the assembly instant.
+        let second = assemble_at(start().saturating_add(Duration::from_hours(1)))?;
+        assert_ne!(
+            first.id, second.id,
+            "two campaigns, two ids across a restart"
+        );
+        assert!(first.journaled && second.journaled);
+
+        let platform_config = PlatformConfig::default().with_event_log_file(&path);
+        let (context, _clock) = Context::deterministic(
+            start().saturating_add(Duration::from_hours(2)),
+            platform_config.seed,
+        );
+        let platform = Platform::new(
+            platform_config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )?;
+        let closed = closed_campaigns(&platform)?;
+        assert_eq!(
+            closed.len(),
+            2,
+            "one process per campaign, two campaigns, two records on the log"
+        );
+        assert_eq!(closed[0].campaign_id, first.id);
+        assert_eq!(closed[1].campaign_id, second.id);
+        let _ = std::fs::remove_dir_all(&directory);
         Ok(())
     }
 

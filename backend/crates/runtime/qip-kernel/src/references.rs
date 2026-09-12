@@ -116,14 +116,28 @@ impl EventBody for DataReferenceRecorded {
 /// extent was used and when the revision was caught — so a replay can
 /// re-derive every flag [`Platform::revision_covering`] would have raised,
 /// and [`Platform::resume_references`] restores the revision queue from it.
+///
+/// It also carries the *revising* reference — the one that hashed
+/// differently — and not only the finding about it. The reference's own
+/// [`DataReferenceRecorded`] record sits in the Sense group and is evictable;
+/// this one is permanent. A log that had evicted the reference record but
+/// kept the revision restored a ledger that knew the extent had been revised
+/// and held no latest reference to it, so the *next* revision of the same
+/// extent found nothing to compare against and was missed. Schema version
+/// two, because the field is required: a version-one record without it is
+/// refused at resume rather than restored half-full, the same posture the
+/// fabric journal takes for an older body schema.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SourceRevisionDetected {
     pub revision: RevisionRecord,
+    /// The reference whose hash contradicted the ledger's — what the source
+    /// now serves — restored as the extent's latest reference on resume.
+    pub reference: DataReference,
 }
 
 impl EventBody for SourceRevisionDetected {
     const TOPIC: Topic = Topic::SourceRevisionDetected;
-    const SCHEMA_VERSION: u32 = 1;
+    const SCHEMA_VERSION: u32 = 2;
 
     fn idempotency_key(&self) -> Option<String> {
         let period = self.revision.period();
@@ -137,6 +151,35 @@ impl EventBody for SourceRevisionDetected {
             self.revision.now()
         ))
     }
+}
+
+/// Whether a closed-campaign frame's manifest names any of `symbols`, read
+/// off the raw payload so a campaign that could not be contradicted is not
+/// decoded in full. `true` for any payload not shaped as expected, so the
+/// full decode — and its refusal — is what handles it.
+fn manifest_may_name(
+    payload: &serde_json::Value,
+    symbols: &std::collections::BTreeSet<String>,
+) -> bool {
+    let Some(entries) = payload
+        .get("manifest")
+        .and_then(|manifest| manifest.get("entries"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return true;
+    };
+    entries.iter().any(|entry| {
+        entry
+            .get("reference")
+            .and_then(|reference| reference.get("symbols"))
+            .and_then(serde_json::Value::as_array)
+            .is_none_or(|named| {
+                named
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .any(|symbol| symbols.contains(symbol))
+            })
+    })
 }
 
 /// What recording a reference on the platform produced.
@@ -274,6 +317,19 @@ impl Platform {
             .insert(source.source_id().to_string(), source)
     }
 
+    /// Withdraw the admission the platform holds for `source_id`, returning
+    /// it, so a licence that has stopped granting stops backing anything.
+    ///
+    /// The composition root's standing gate re-asks the licence question on
+    /// every use, and a refusal used to leave the previous `AdmittedSource`
+    /// in this table: the round was refused, and the ledger went on counting
+    /// the source as a live vendor behind every subject it had ever named.
+    /// `None` when no admission was held, which is not an error — a gate
+    /// that refused at its first check never admitted anything to withdraw.
+    pub fn withdraw_source(&mut self, source_id: &str) -> Option<AdmittedSource> {
+        self.admitted_sources.remove(source_id)
+    }
+
     /// The admission the platform holds for `source_id`, if any.
     pub fn admitted_source(&self, source_id: &str) -> Option<&AdmittedSource> {
         self.admitted_sources.get(source_id)
@@ -341,6 +397,7 @@ impl Platform {
             self.journal_once(
                 SourceRevisionDetected {
                     revision: revision.clone(),
+                    reference: reference.clone(),
                 },
                 "kernel/references",
                 now,
@@ -367,6 +424,30 @@ impl Platform {
     /// found by joining the revision against the closed manifests rather
     /// than against whatever campaign happens to be open. Returns the
     /// campaign ids flagged, in log order.
+    ///
+    /// # Fails closed on a frame it cannot read
+    ///
+    /// A closed-campaign frame that does not decode — an older body schema,
+    /// a payload edited on disk — is an error from [`Platform::record_reference`],
+    /// not a frame skipped. The alternative is a revision recorded as
+    /// contradicting nobody because the one campaign that used the original
+    /// was the one whose manifest could not be read, and §22.3's "flagged,
+    /// not silently invalidated" would then be silently un-flagged.
+    ///
+    /// # Cost
+    ///
+    /// Every closed-campaign frame the log retains is read on every revision.
+    /// The topic is permanently retained, so the set grows for the life of
+    /// the log — one frame per learning round, a few hundred kilobytes each
+    /// with its manifest. A revision is rare by construction, so the join is
+    /// bounded by the log's capacity rather than by a second index here; a
+    /// second index would be a second claim about which campaigns the log
+    /// holds. What is bounded cheaply is the decode: the symbols a frame's
+    /// manifest entries name are read off the raw payload first, and a
+    /// campaign none of whose entries names a symbol the revision covers is
+    /// not decoded further, because `contradicts` could never hold of it. A
+    /// frame whose payload does not have that shape is decoded in full and
+    /// refused there, not skipped here.
     fn flag_closed_campaigns(
         &mut self,
         revision: &RevisionRecord,
@@ -376,6 +457,7 @@ impl Platform {
             .event_log()
             .by_topic(Topic::ResearchCampaignClosed)
             .into_iter()
+            .filter(|frame| manifest_may_name(&frame.payload, revision.symbols()))
             .map(|frame| {
                 StreamEnvelope::from_frame(frame)?
                     .decode::<ResearchCampaignClosed>()
@@ -447,8 +529,42 @@ impl Platform {
     /// body schema are refused rather than skipped, as the fabric journal's
     /// resume refuses them: a ledger rebuilt from half a log would flag
     /// half of what it should and say nothing about the other half.
+    ///
+    /// # The chain is checked before a frame is believed
+    ///
+    /// `EventLog::open` parses the file and refuses a reused event id; it
+    /// does not recompute a single hash. Until 2026-09-12 this function
+    /// restored every reference and revision frame verbatim from a log it
+    /// had never verified, so a frame edited on disk — a `catalogue_admitted`
+    /// origin written over a `generated` one, a hash swapped — became the
+    /// ledger's latest reference to its extent with the chain still
+    /// reporting whatever it reported. Now, where the log holds any frame
+    /// this function would restore, the chain over the retained span is
+    /// verified first ([`EventLog::verify_retained_chain`]) and a broken
+    /// link refuses the resume by sequence, the posture the fabric journal's
+    /// resume takes. A log holding no such frame is not checked here: there
+    /// is nothing to restore from it, and the check belongs to whoever reads
+    /// it.
     pub(crate) fn resume_references(log: &EventLog) -> Result<ReferenceLedger> {
         let mut ledger = ReferenceLedger::bounded();
+        let restorable = log.records().iter().any(|record| {
+            matches!(
+                record.event.topic,
+                Topic::DataReferenceRecorded | Topic::SourceRevisionDetected
+            )
+        });
+        if !restorable {
+            return Ok(ledger);
+        }
+        if let Err(sequence) = log.verify_retained_chain() {
+            return Err(Error::invalid(format!(
+                "the event log holds data reference records but its hash chain breaks at \
+                 sequence {sequence}, so the reference ledger cannot be rebuilt from it; a \
+                 ledger restored from frames nobody can verify would attribute a licence to \
+                 bytes nobody fetched. Archive the log and start a new one, or restore the \
+                 file the chain was written over"
+            )));
+        }
         for record in log.records() {
             match record.event.topic {
                 Topic::DataReferenceRecorded => {
@@ -462,6 +578,10 @@ impl Platform {
                         .decode::<SourceRevisionDetected>()?
                         .body;
                     ledger.restore_revision(detected.revision);
+                    // The revising reference too: its own Sense-group record
+                    // may have been evicted, and without it the next revision
+                    // of the same extent has nothing to be compared against.
+                    ledger.restore_reference(detected.reference);
                 }
                 _ => {}
             }
@@ -491,8 +611,25 @@ impl Platform {
     /// The distinct sources whose held references name `symbol`, each with
     /// the door it came through — what `assess_concentration` counts, and
     /// it counts only the vendor doors.
+    ///
+    /// A catalogue-admitted reference counts only while this process holds
+    /// a live [`AdmittedSource`] for it. The ledger is rebuilt from the log
+    /// on every restart, so it holds references from sources the previous
+    /// process admitted and this one has not — a connector the deployment no
+    /// longer configures, a licence the gate has since refused — and a
+    /// reference restored from the log is a fact about what was fetched
+    /// then, not a vendor standing behind the subject now. Such a reference
+    /// is left out rather than re-labelled: the origin is what happened, and
+    /// the count is what is true of this process.
     pub fn sources_backing(&self, symbol: &str) -> BTreeMap<String, SourceOrigin> {
-        self.references.sources_backing(symbol)
+        self.references
+            .sources_backing(symbol)
+            .into_iter()
+            .filter(|(source_id, origin)| {
+                *origin != SourceOrigin::CatalogueAdmitted
+                    || self.admitted_sources.contains_key(source_id)
+            })
+            .collect()
     }
 
     /// §22.1's fallback series, as the platform holds it.
@@ -515,22 +652,142 @@ impl Platform {
     /// is one whose manifest nobody can later be shown. The outcome label is
     /// read off the manifest, which is the one place the fact lives. A
     /// campaign journaled twice is one record and one count.
+    ///
+    /// Returns whether a record was written: `false` means the log already
+    /// held a campaign with this id. That is the caller's fact to act on,
+    /// not this method's to swallow — a caller that has just minted the id
+    /// and is told the log already holds it has minted an id that collides
+    /// with a previous process's, and its manifest is not on the log. Until
+    /// 2026-09-12 this returned `()`, every restarted deep brain restarted
+    /// its cycle count at one, and every manifest after the first restart
+    /// was suppressed as a duplicate of the previous run's while the round
+    /// line said "manifest journaled".
     pub fn journal_campaign(
         &mut self,
         closed: ResearchCampaignClosed,
         now: Timestamp,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let outcome = if closed.flagged() > 0 {
             "flagged"
         } else {
             "clean"
         };
-        if self.journal_once(closed, "kernel/campaign", now)? {
+        let written = self.journal_once(closed, "kernel/campaign", now)?;
+        if written {
             self.telemetry.metrics.count(
                 names::RESEARCH_CAMPAIGNS_CLOSED,
                 labels([("outcome", outcome)]),
             );
         }
+        Ok(written)
+    }
+}
+
+// In-crate, because `resume_references` is `pub(crate)` and the property
+// under test is what it restores from a log that has evicted part of what
+// it once held — a shape an integration test cannot build, since the
+// platform's log capacity is not a configuration knob.
+#[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
+mod tests {
+    use super::*;
+    use crate::config::PlatformConfig;
+    use qip_core::Duration;
+    use qip_data_finder::schema::{FieldType, SourceSchema};
+    use qip_financial::quality::LicensingClass;
+    use qip_financial::universe::Universe;
+    use qip_market_ingestion::adapter::SourceDescriptor;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn platform() -> Result<Platform> {
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+    }
+
+    fn generated(bytes: &[u8], at: Timestamp) -> Result<DataReference> {
+        DataReference::of_generated(
+            &SourceDescriptor {
+                name: "synthetic-exchange".to_string(),
+                provider: "this process".to_string(),
+                licensing: LicensingClass::Synthetic,
+                topics: vec![Topic::MarketBar],
+                expected_latency: Duration::ZERO,
+                production_requirement: None,
+            },
+            "bars://synthetic-exchange/AAA?interval=1m",
+            ["AAA".to_string()],
+            DataPeriod::instant(start()),
+            SourceSchema::from_fields([("close".to_string(), FieldType::Number)]),
+            bytes,
+            at,
+        )
+    }
+
+    /// A revision record restores the extent's latest reference as well as
+    /// the revision, so a log that has evicted the reference's own
+    /// Sense-group record still rebuilds a ledger that can catch the *next*
+    /// revision of that extent. The eviction is simulated by re-chaining
+    /// every frame but the `DataReferenceRecorded` ones into a fresh log —
+    /// the platform's capacity is not a knob, and this is exactly what the
+    /// log's own eviction leaves behind.
+    ///
+    /// Mutated by deleting `ledger.restore_reference(detected.reference)`
+    /// in `resume_references` — confirmed the restored ledger then holds no
+    /// reference to the extent and this fails, then restored.
+    #[test]
+    fn a_revision_restores_the_revising_reference_after_its_own_record_was_evicted() -> Result<()> {
+        let mut platform = platform()?;
+        let later = start().saturating_add(Duration::from_hours(1));
+        platform.record_reference(generated(b"version one", start())?, start())?;
+        let revised = platform.record_reference(generated(b"version two", later)?, later)?;
+        assert!(
+            revised.outcome.is_revised(),
+            "premise: the extent was revised"
+        );
+
+        let mut evicted = EventLog::in_memory();
+        let mut dropped = 0usize;
+        for record in platform.event_log().records() {
+            if record.event.topic == Topic::DataReferenceRecorded {
+                dropped += 1;
+                continue;
+            }
+            evicted.append(&record.event)?;
+        }
+        assert_eq!(dropped, 2, "premise: both reference records were evicted");
+        assert_eq!(
+            evicted.by_topic(Topic::SourceRevisionDetected).len(),
+            1,
+            "premise: the permanent revision record survived"
+        );
+
+        let ledger = Platform::resume_references(&evicted)?;
+        assert_eq!(ledger.revisions().count(), 1);
+        let held = ledger
+            .get(
+                "synthetic-exchange",
+                "bars://synthetic-exchange/AAA?interval=1m",
+                DataPeriod::instant(start()),
+            )
+            .ok_or_else(|| Error::not_found("the revising reference was not restored"))?;
+        assert_eq!(
+            held.content_hash(),
+            revised.reference.content_hash(),
+            "the ledger must hold what the source now serves, or the next revision of this \
+             extent is compared against nothing"
+        );
         Ok(())
     }
 }

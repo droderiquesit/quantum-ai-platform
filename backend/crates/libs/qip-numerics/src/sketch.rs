@@ -182,7 +182,14 @@ impl ErrorBound {
 }
 
 /// See the module doc.
+///
+/// Deserialises through the same shape checks [`CountMinSketch::new`]
+/// establishes, so a sketch read off a wire cannot carry a `width` of zero
+/// (every `index` would then divide by it) or a `counts` shorter than its
+/// rows claim (every `index` past the end would panic) — a derived
+/// `Deserialize` accepted both until 2026-09-12.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "CountMinSketchWire")]
 pub struct CountMinSketch {
     bound: ErrorBound,
     width: usize,
@@ -193,6 +200,63 @@ pub struct CountMinSketch {
     /// index so two sketches with the same bound hash identically.
     multipliers: Vec<u64>,
     total: u64,
+}
+
+/// The wire shape, held to the bound it names on the way in.
+#[derive(Deserialize)]
+struct CountMinSketchWire {
+    bound: ErrorBound,
+    width: usize,
+    depth: usize,
+    counts: Vec<u64>,
+    multipliers: Vec<u64>,
+    total: u64,
+}
+
+impl TryFrom<CountMinSketchWire> for CountMinSketch {
+    type Error = Error;
+
+    fn try_from(wire: CountMinSketchWire) -> Result<Self> {
+        let expected = Self::new(wire.bound);
+        if wire.width != expected.width || wire.depth != expected.depth {
+            return Err(Error::invalid(format!(
+                "a serialised sketch claims {} counters per row across {} rows, and its own bound \
+                 ({}) implies {} by {}; a sketch whose geometry disagrees with its bound abides \
+                 by no bound at all, and is refused",
+                wire.width,
+                wire.depth,
+                wire.bound.describe(),
+                expected.width,
+                expected.depth
+            )));
+        }
+        if wire.counts.len() != expected.counts.len() {
+            return Err(Error::invalid(format!(
+                "a serialised sketch holds {} counter(s) and its bound implies {}; a row that \
+                 indexes past the end is a crash and a row that stops short is a count nobody \
+                 took, so the sketch is refused",
+                wire.counts.len(),
+                expected.counts.len()
+            )));
+        }
+        if wire.multipliers != expected.multipliers {
+            return Err(Error::invalid(format!(
+                "a serialised sketch carries {} row multiplier(s) that are not the ones its {} \
+                 rows derive deterministically; two sketches with one bound must hash \
+                 identically, so a sketch with foreign multipliers is refused",
+                wire.multipliers.len(),
+                expected.depth
+            )));
+        }
+        Ok(Self {
+            bound: wire.bound,
+            width: wire.width,
+            depth: wire.depth,
+            counts: wire.counts,
+            multipliers: wire.multipliers,
+            total: wire.total,
+        })
+    }
 }
 
 impl CountMinSketch {
@@ -436,6 +500,53 @@ mod tests {
         );
         let round_trip: ErrorBound = serde_json::from_str(&serde_json::to_string(&campaign)?)?;
         assert_eq!(round_trip, campaign);
+        Ok(())
+    }
+
+    /// A sketch off the wire is held to its own bound's geometry: a zero
+    /// width, a counter vector shorter than the rows claim, and foreign
+    /// multipliers are each refused by name, and an honest round trip
+    /// survives with its counts intact. Until 2026-09-12 the derive accepted
+    /// all three, and `width: 0` was a division by zero on the first
+    /// `estimate`.
+    ///
+    /// Mutated by deleting the `counts.len()` comparison in `try_from` —
+    /// confirmed the short-counts half then deserialises and this fails,
+    /// then restored.
+    #[test]
+    fn a_sketch_off_the_wire_is_held_to_the_geometry_its_bound_implies() -> Result<()> {
+        let bound = ErrorBound::new(0.01, 0.01)?;
+        let mut sketch = CountMinSketch::new(bound);
+        sketch.add("subject", 7);
+        let honest: serde_json::Value = serde_json::to_value(&sketch)?;
+        // Premise: the honest form round-trips and still answers.
+        let back: CountMinSketch = serde_json::from_value(honest.clone())?;
+        assert_eq!(back, sketch);
+        assert_eq!(back.estimate("subject"), 7);
+
+        let mut zero_width = honest.clone();
+        zero_width["width"] = serde_json::json!(0);
+        assert!(
+            serde_json::from_value::<CountMinSketch>(zero_width).is_err(),
+            "a zero-width sketch was accepted; its first estimate divides by zero"
+        );
+
+        let mut short = honest.clone();
+        short["counts"] = serde_json::json!([0, 0, 0]);
+        assert!(
+            serde_json::from_value::<CountMinSketch>(short).is_err(),
+            "a sketch with three counters for {} rows of {} was accepted; the first row \
+             indexes past the end",
+            bound.depth(),
+            bound.width()
+        );
+
+        let mut foreign = honest;
+        foreign["multipliers"] = serde_json::json!(vec![1u64; bound.depth()]);
+        assert!(
+            serde_json::from_value::<CountMinSketch>(foreign).is_err(),
+            "a sketch with multipliers its rows do not derive was accepted"
+        );
         Ok(())
     }
 

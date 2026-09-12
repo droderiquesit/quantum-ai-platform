@@ -88,7 +88,16 @@ impl ExtentKey {
 }
 
 /// A source found to have revised an extent this platform had already used.
+///
+/// Built only by [`ReferenceLedger::assess`], whose finding satisfies the
+/// shape checks by construction — two differing hashes from
+/// [`RevisionCheck::Revised`], the contradicted reference's own symbols and
+/// locator — and on the wire only through the same checks: a record read
+/// off the log naming no symbols, no locator, or two identical hashes (no
+/// revision at all) is refused at the read rather than restored into the
+/// revision queue, where [`Self::covers`] would answer from it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RevisionRecordWire")]
 pub struct RevisionRecord {
     source_id: String,
     origin: SourceOrigin,
@@ -106,7 +115,91 @@ pub struct RevisionRecord {
     detected_at: Timestamp,
 }
 
+/// The wire shape of a [`RevisionRecord`], validated on the way in.
+#[derive(Deserialize)]
+struct RevisionRecordWire {
+    source_id: String,
+    origin: SourceOrigin,
+    locator: String,
+    period: DataPeriod,
+    symbols: BTreeSet<String>,
+    was: String,
+    now: String,
+    used_at: Timestamp,
+    detected_at: Timestamp,
+}
+
+impl TryFrom<RevisionRecordWire> for RevisionRecord {
+    type Error = Error;
+
+    fn try_from(wire: RevisionRecordWire) -> Result<Self> {
+        RevisionRecord::build(
+            wire.source_id,
+            wire.origin,
+            wire.locator,
+            wire.period,
+            wire.symbols,
+            wire.was,
+            wire.now,
+            wire.used_at,
+            wire.detected_at,
+        )
+    }
+}
+
 impl RevisionRecord {
+    /// The one place a revision record's invariants are checked, for the
+    /// ledger's own finding and for a record read off the wire alike.
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        source_id: String,
+        origin: SourceOrigin,
+        locator: String,
+        period: DataPeriod,
+        symbols: BTreeSet<String>,
+        was: String,
+        now: String,
+        used_at: Timestamp,
+        detected_at: Timestamp,
+    ) -> Result<Self> {
+        if locator.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "a revision record for `{source_id}` names no locator, so it flags an extent \
+                 nobody can re-fetch; refused rather than restored"
+            )));
+        }
+        if symbols.is_empty() {
+            return Err(Error::invalid(format!(
+                "a revision record for `{source_id}` names no symbols, so it covers no subject a \
+                 research run could ask about; refused rather than restored"
+            )));
+        }
+        if was.trim().is_empty() || now.trim().is_empty() || was == now {
+            return Err(Error::invalid(format!(
+                "a revision record for `{source_id}` says the extent was `{was}` and is now \
+                 `{now}`; a record whose two hashes do not differ records no revision, and is \
+                 refused rather than restored"
+            )));
+        }
+        // No ordering check between `used_at` and `detected_at`, deliberately:
+        // both are instants the ledger was handed, and a wire gate that
+        // refused a record the ledger's own `assess` can produce under a
+        // stepped clock would stop a restart over a log the process itself
+        // wrote. The three refusals above are about shape, which no caller
+        // can legitimately produce.
+        Ok(Self {
+            source_id,
+            origin,
+            locator,
+            period,
+            symbols,
+            was,
+            now,
+            used_at,
+            detected_at,
+        })
+    }
+
     pub fn source_id(&self) -> &str {
         &self.source_id
     }
@@ -163,6 +256,14 @@ impl RevisionRecord {
     /// corrected extent, while the campaign that had read the original was
     /// closed on the log and flagged by nothing. This predicate is the one
     /// place the rule lives; the manifest and the kernel both ask it.
+    ///
+    /// The time clause is `<=`, not `<`, and equality is deliberate: a fetch
+    /// made at the very instant of the contradicted use — the ledger's own
+    /// re-fetch of an unchanged extent is recorded at the instant it was
+    /// first referenced — can only have seen the old bytes, because the
+    /// source had not yet served the new ones at that instant. Excluding the
+    /// boundary would leave the campaign that closed in the same second as
+    /// the use it read unflagged.
     pub fn contradicts(&self, reference: &DataReference) -> bool {
         reference.source_id() == self.source_id
             && reference
@@ -600,6 +701,57 @@ mod tests {
             "the ledger must keep what the source now serves"
         );
         assert_eq!(ledger.revisions().count(), 1);
+        Ok(())
+    }
+
+    /// A revision record off the wire is held to the shape the ledger's own
+    /// finding has: no symbols, no locator, or two hashes that do not differ
+    /// are each refused, and the ledger's own record round-trips. Until
+    /// 2026-09-12 the derive restored any of the three into the revision
+    /// queue, where `covers` answered from it.
+    ///
+    /// Mutated by deleting the `was == now` clause in `RevisionRecord::build`
+    /// — confirmed the identical-hashes half then deserialises and this
+    /// fails, then restored.
+    #[test]
+    fn a_revision_record_off_the_wire_is_held_to_the_ledgers_own_shape() -> Result<()> {
+        let mut ledger = ReferenceLedger::bounded();
+        ledger.record(
+            reference("synthetic-exchange", "bars://AAA", now(), b"one")?,
+            now(),
+        );
+        let later = now().saturating_add(Duration::from_secs(60));
+        let LedgerOutcome::Revised(record) = ledger.record(
+            DataReference::of_generated(
+                &descriptor("synthetic-exchange"),
+                "bars://AAA",
+                ["AAA".to_string()],
+                DataPeriod::instant(now()),
+                SourceSchema::from_fields([("close".to_string(), FieldType::Number)]),
+                b"two",
+                later,
+            )?,
+            later,
+        ) else {
+            panic!("premise: the extent was revised");
+        };
+        let honest = serde_json::to_value(&record)?;
+        let back: RevisionRecord = serde_json::from_value(honest.clone())?;
+        assert_eq!(back, record, "premise: the ledger's own record round-trips");
+
+        let same_hash = honest["was"].clone();
+        for (field, forged) in [
+            ("symbols", serde_json::json!([])),
+            ("locator", serde_json::json!("")),
+            ("now", same_hash),
+        ] {
+            let mut wire = honest.clone();
+            wire[field] = forged;
+            assert!(
+                serde_json::from_value::<RevisionRecord>(wire).is_err(),
+                "a revision record with a forged `{field}` was restored off the wire"
+            );
+        }
         Ok(())
     }
 

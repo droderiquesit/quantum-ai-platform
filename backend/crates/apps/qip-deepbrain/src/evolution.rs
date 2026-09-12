@@ -2017,13 +2017,15 @@ mod tests {
         Ok(())
     }
 
-    /// Record, on the platform's ledger, a reference from each of the two
-    /// shipped connectors whose terms are read — Frankfurter and Coinbase,
-    /// through the real catalogue and the real gate — naming `subject`: the
-    /// premise "two independent vendors back this data class", stated the
-    /// way the ledger states it. Two admitted sources and not a second
-    /// generated one, because a generated stream is not a vendor and no
-    /// longer counts.
+    /// Admit to the platform, and record on its ledger a reference from,
+    /// each of the two shipped connectors whose terms are read —
+    /// Frankfurter and Coinbase, through the real catalogue and the real
+    /// gate — naming `subject`: the premise "two independent vendors back
+    /// this data class", stated the way the ledger states it. Two admitted
+    /// sources and not a second generated one, because a generated stream
+    /// is not a vendor and no longer counts; admitted as well as
+    /// referenced, because a reference from a source this process holds no
+    /// admission for is a fact about a previous process, not a vendor now.
     fn back_with_two_admitted_sources(
         platform: &mut Platform,
         subject: &str,
@@ -2040,6 +2042,7 @@ mod tests {
         ] {
             let decision = admission::admit(&manifest.source_id, manifest.licensing, now)?;
             let admitted = AdmittedSource::from_decision(&decision, &manifest)?;
+            platform.admit_source(admitted.clone());
             let reference = DataReference::of_admitted(
                 &admitted,
                 format!("{}?subject={subject}", admitted.endpoint()),
