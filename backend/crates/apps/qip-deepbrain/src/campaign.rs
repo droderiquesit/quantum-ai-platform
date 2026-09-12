@@ -21,10 +21,18 @@
 //!
 //! * **resolve references** — the subject's stream is resolved to the door
 //!   it came through: a catalogue-admitted connector the platform holds an
-//!   admission for, or a stream the platform generated itself (the
-//!   synthetic exchange, a committed tape). A stream that is neither is
+//!   admission for — a live connector, or a replay recorded from one and
+//!   admitted under its licence — or a stream the platform generated itself
+//!   (the synthetic exchange, a committed tape). A stream that is neither is
 //!   refused before any bytes are read, because a fit on data whose licence
 //!   nobody evaluated is the "use before evaluation" the data domain forbids.
+//!   The refusal is [`Assembly::RefusedAtDoor`], a fact about one subject
+//!   and one round that the round line carries and
+//!   `qip_research_campaigns_refused_total{gate="door"}` counts — not an
+//!   error, because until 2026-09-12 it was one, `maybe_learn` propagated
+//!   it, and the deep brain's node loop stopped on the first due learning
+//!   round over an undeclared replay. A connector-fed deep brain now fails
+//!   closed per subject, not per process.
 //! * **fetch into TTL cache** — the window is serialised, referenced through
 //!   that door, and fetched into a [`FetchCampaign`] under a stated
 //!   [`CacheBound`]. The bars the desk then fits on are *read back out of the
@@ -58,9 +66,10 @@
 //! fallback series instead, and the manifest says so ("vendor withdraws
 //! historical access"). And the distinct sources backing the subject —
 //! this stream plus every source the platform's ledger holds references
-//! from naming it — are put to `assess_concentration`, whose verdict rides
-//! on the manifest and, in `EvolutionEngine::turn`, holds a single-source
-//! universe back from promotion past validation.
+//! from naming it, each with the door it came through — are put to
+//! `assess_concentration`, which counts only the vendor doors, and whose
+//! verdict rides on the manifest and, in `EvolutionEngine::turn`, holds a
+//! universe with fewer than two vendors back from promotion past validation.
 
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp};
@@ -76,6 +85,7 @@ use qip_kernel::references::ResearchCampaignClosed;
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SourceDescriptor;
 use qip_numerics::sketch::{CountMinSketch, ErrorBound};
+use qip_observability::metrics::{labels, names};
 
 /// How long a campaign's cache may hold an extract. A learning round
 /// finishes inside one cycle, so an hour is generous; it is a ceiling, not a
@@ -200,14 +210,46 @@ enum Door {
     Generated,
 }
 
+/// What assembling a subject's window produced.
+#[derive(Debug)]
+pub enum Assembly {
+    /// The window, read back from the campaign's cache, and the campaign's
+    /// own account of itself. Boxed: a window is hundreds of bars and the
+    /// other two arms are a sentence, and an enum sized for its largest arm
+    /// would carry that on every "not yet".
+    Window(Box<AssembledWindow>),
+    /// Neither the subject's stream nor the fallback series holds enough
+    /// history yet — the ordinary "not yet" of a node that has just started.
+    NotYet,
+    /// The stream was refused at the door before a byte was read: neither a
+    /// source the platform holds an admission for nor one it generated. A
+    /// fact about this subject and this round, carried on the round line
+    /// and counted, and not an error that leaves the node loop.
+    RefusedAtDoor(String),
+}
+
+/// The gate label a door refusal is counted under.
+pub const GATE_DOOR: &str = "door";
+
+/// Count a campaign refused at the door, once per round. Recorded here, at
+/// the seam where the refusal is known, for the standing-admission refusal
+/// `EvolutionEngine::maybe_learn` makes before it reaches [`assemble`] as
+/// well as for the door refusal inside it.
+pub fn count_door_refusal(platform: &Platform) {
+    platform.telemetry().metrics.count(
+        names::RESEARCH_CAMPAIGNS_REFUSED,
+        labels([("gate", GATE_DOOR)]),
+    );
+}
+
 /// Assemble `subject`'s research window through a campaign. See the module
 /// doc for what each step is.
 ///
-/// `bars` is the subject's own history as the engine holds it. `Ok(None)`
-/// means neither it nor the fallback series holds `minimum_bars`, which is
-/// the ordinary "not yet" of a node that has just started and is not an
-/// error. A stream that is neither catalogue-admitted nor generated, and a
-/// sketch whose declared error exceeds the tolerance, are refused.
+/// `bars` is the subject's own history as the engine holds it. A stream
+/// that is neither catalogue-admitted nor generated is
+/// [`Assembly::RefusedAtDoor`], counted; a sketch whose declared error
+/// exceeds the tolerance is refused as an error, because it is a
+/// configuration the deployment chose and not a fact about one subject.
 #[allow(clippy::too_many_arguments)]
 pub fn assemble(
     platform: &mut Platform,
@@ -218,17 +260,19 @@ pub fn assemble(
     cycle: u64,
     now: Timestamp,
     config: &CampaignConfig,
-) -> Result<Option<AssembledWindow>> {
+) -> Result<Assembly> {
     // Resolve the door before reading a byte.
     let door = match platform.admitted_source(&descriptor.name) {
         Some(admitted) => Door::Admitted(admitted.clone()),
         None if descriptor.licensing == LicensingClass::Synthetic => Door::Generated,
         None => {
-            return Err(Error::denied(format!(
+            count_door_refusal(platform);
+            return Ok(Assembly::RefusedAtDoor(format!(
                 "the research stream `{}` declares licensing class `{:?}` and this platform \
                  holds no admission for it; a fit on data whose licence nobody evaluated is \
-                 refused. Admit the source through the licensing gate, or research over a \
-                 stream this platform generated",
+                 refused. Admit the source through the licensing gate — a replay names the \
+                 connector it was recorded from with `# recorded-from:` — or research over \
+                 a stream this platform generated",
                 descriptor.name, descriptor.licensing
             )));
         }
@@ -243,11 +287,11 @@ pub fn assemble(
         if fallback.len() >= minimum_bars {
             (fallback.to_vec(), true)
         } else {
-            return Ok(None);
+            return Ok(Assembly::NotYet);
         }
     };
     let Some(first) = window.first() else {
-        return Ok(None);
+        return Ok(Assembly::NotYet);
     };
 
     // The reference: the window's bytes through the door it came from.
@@ -325,10 +369,12 @@ pub fn assemble(
     let assembled: Vec<Bar> = serde_json::from_slice(cached)?;
 
     // Concentration: this stream plus every source the ledger holds a
-    // reference from naming the subject.
+    // reference from naming the subject, each with its door; only the
+    // vendor doors count.
     let mut backing = platform.sources_backing(subject.as_str());
-    backing.insert(source_id.clone());
-    let concentration = assess_concentration(backing.iter().map(String::as_str));
+    backing.insert(source_id.clone(), origin);
+    let concentration =
+        assess_concentration(backing.iter().map(|(id, origin)| (id.as_str(), *origin)));
 
     // Close: the cache is dropped, the manifest is kept where an audit can
     // find it — on the log, and nowhere else.
@@ -345,7 +391,7 @@ pub fn assemble(
     let fallback_used = closed.fallback_used();
     platform.journal_campaign(closed, now)?;
 
-    Ok(Some(AssembledWindow {
+    Ok(Assembly::Window(Box::new(AssembledWindow {
         bars: assembled,
         summary: CampaignSummary {
             id,
@@ -360,7 +406,18 @@ pub fn assemble(
             concentration,
             statistic,
         },
-    }))
+    })))
+}
+
+impl Assembly {
+    /// The window, or `None` for either other outcome. For the tests that
+    /// assemble and want the window; production reads the outcome.
+    pub fn window(self) -> Option<AssembledWindow> {
+        match self {
+            Self::Window(window) => Some(*window),
+            Self::NotYet | Self::RefusedAtDoor(_) => None,
+        }
+    }
 }
 
 // The workspace denies `panic_in_result_fn` for production code; in a test
@@ -370,11 +427,13 @@ pub fn assemble(
 mod tests {
     use super::*;
     use qip_core::Context;
+    use qip_data_finder::admission;
     use qip_events::Topic;
     use qip_financial::quality::DataQuality;
     use qip_financial::universe::Universe;
     use qip_kernel::config::PlatformConfig;
     use qip_market_ingestion::adapter::SensedRecord;
+    use qip_market_ingestion::connectors::{CoinbaseTickerConnector, FrankfurterRatesConnector};
     use qip_observability::Telemetry;
     use qip_observability::metrics::{labels, names};
     use qip_risk::limits::LimitSet;
@@ -446,6 +505,39 @@ mod tests {
             .collect()
     }
 
+    /// Two shipped connectors, through the real catalogue and the real gate
+    /// — the two whose terms are read — each referencing an extent that
+    /// names `subject` onto the platform's ledger: the premise "two
+    /// independent vendors back this subject", stated the way the ledger
+    /// states it.
+    fn back_with_two_admitted_sources(
+        platform: &mut Platform,
+        subject: &ObjectId,
+        now: Timestamp,
+    ) -> Result<()> {
+        for manifest in [
+            FrankfurterRatesConnector::shipped_manifest()?,
+            CoinbaseTickerConnector::shipped_manifest()?,
+        ] {
+            let decision = admission::admit(&manifest.source_id, manifest.licensing, now)?;
+            let admitted = AdmittedSource::from_decision(&decision, &manifest)?;
+            platform.record_reference(
+                DataReference::of_admitted(
+                    &admitted,
+                    format!("{}?subject={}", admitted.endpoint(), subject.as_str()),
+                    [subject.as_str().to_string()],
+                    DataPeriod::instant(now),
+                    b"{\"served\":true}",
+                    now,
+                    Decimal::ZERO,
+                    1.0,
+                )?,
+                now,
+            )?;
+        }
+        Ok(())
+    }
+
     fn campaigns_closed(platform: &Platform, outcome: &str) -> u64 {
         platform.telemetry().metrics.snapshot().counter(
             names::RESEARCH_CAMPAIGNS_CLOSED,
@@ -499,6 +591,7 @@ mod tests {
             start(),
             &config,
         )?
+        .window()
         .ok_or_else(|| Error::not_found("a window from 300 bars against a minimum of 256"))?;
 
         assert_eq!(
@@ -520,6 +613,12 @@ mod tests {
             !summary.concentration.is_sufficient(),
             "one stream was read as sufficient backing"
         );
+        assert_eq!(
+            summary.concentration.viable_sources(),
+            0,
+            "a generated stream is not a vendor and must not count as one"
+        );
+        assert_eq!(summary.concentration.generated(), 1);
 
         // The ledger holds the reference, the log holds the closed record
         // under its own topic, the cycle journal still decodes, and the
@@ -540,24 +639,10 @@ mod tests {
         assert_eq!(campaigns_closed(&platform, "clean"), 1);
         assert_eq!(campaigns_closed(&platform, "flagged"), 0);
 
-        // A second source naming the subject, and the next round's verdict
-        // turns.
-        let second = SourceDescriptor {
-            name: "committed-tape".to_string(),
-            ..descriptor(LicensingClass::Synthetic)
-        };
-        platform.record_reference(
-            DataReference::of_generated(
-                &second,
-                "bars://committed-tape/OBJ0000000000000000000AAA",
-                [subject().as_str().to_string()],
-                DataPeriod::instant(start()),
-                SourceSchema::from_fields([]),
-                b"[]",
-                start(),
-            )?,
-            start(),
-        )?;
+        // Two admitted vendors naming the subject on the ledger, and the
+        // next round's verdict turns; a second generated stream would not
+        // have turned it.
+        back_with_two_admitted_sources(&mut platform, &subject(), start())?;
         let next = assemble(
             &mut platform,
             &descriptor(LicensingClass::Synthetic),
@@ -568,6 +653,7 @@ mod tests {
             start(),
             &config,
         )?
+        .window()
         .ok_or_else(|| Error::not_found("a second window"))?;
         assert_eq!(
             next.summary.ledger, "unchanged",
@@ -575,6 +661,7 @@ mod tests {
         );
         assert!(next.summary.concentration.is_sufficient());
         assert_eq!(next.summary.concentration.viable_sources(), 2);
+        assert_eq!(next.summary.concentration.generated(), 1);
         Ok(())
     }
 
@@ -616,6 +703,7 @@ mod tests {
             earlier,
             &config,
         )?
+        .window()
         .ok_or_else(|| Error::not_found("the first window"))?;
         assert_eq!(first.summary.ledger, "first", "premise");
         assert_eq!(first.summary.flagged, 0, "premise: nothing to flag yet");
@@ -639,6 +727,7 @@ mod tests {
             earlier,
             &config,
         )?
+        .window()
         .ok_or_else(|| Error::not_found("the unrelated window"))?;
         assert_ne!(
             unrelated.summary.id, first.summary.id,
@@ -663,6 +752,7 @@ mod tests {
             start(),
             &config,
         )?
+        .window()
         .ok_or_else(|| Error::not_found("the second window"))?;
         assert_eq!(second.summary.ledger, "revised");
         assert_eq!(second.bars.len(), 300, "the fit still gets its window");
@@ -737,6 +827,7 @@ mod tests {
             start().saturating_add(Duration::from_hours(1)),
             &config,
         )?
+        .window()
         .ok_or_else(|| Error::not_found("the third window"))?;
         assert_eq!(again.summary.ledger, "unchanged");
         assert_eq!(
@@ -800,17 +891,18 @@ mod tests {
     }
 
     /// A stream that is neither catalogue-admitted nor generated is refused
-    /// at the door, before a byte is serialised or referenced.
+    /// at the door, before a byte is serialised or referenced — as an
+    /// outcome that names the door and is counted, not as an error.
     ///
     /// Mutated by changing the `None if descriptor.licensing == Synthetic`
-    /// arm to a bare `None => Door::Generated` — confirmed the refusal then
-    /// comes from `of_generated` with a different message and this test
-    /// fails on the message, then restored.
+    /// arm to a bare `None => Door::Generated` — confirmed the assembly then
+    /// proceeds to `of_generated`, which refuses as an error, and this test
+    /// fails on the outcome, then restored.
     #[test]
     fn a_stream_that_is_neither_admitted_nor_generated_is_refused_at_the_door() -> Result<()> {
         let mut platform = platform()?;
         let stream = bars(300, Interval::Minute, 0);
-        let error = assemble(
+        let outcome = assemble(
             &mut platform,
             &descriptor(LicensingClass::Licensed),
             &subject(),
@@ -819,16 +911,27 @@ mod tests {
             1,
             start(),
             &CampaignConfig::standard()?,
-        )
-        .expect_err("a licensed stream nobody admitted was researched over");
-        assert_eq!(error.code(), "denied", "got {error:?}");
+        )?;
+        let Assembly::RefusedAtDoor(reason) = outcome else {
+            return Err(Error::invalid(format!(
+                "a licensed stream nobody admitted was researched over: {outcome:?}"
+            )));
+        };
         assert!(
-            error.message().contains("holds no admission for it"),
-            "the refusal is not the door's: {error}"
+            reason.contains("holds no admission for it"),
+            "the refusal is not the door's: {reason}"
         );
         assert!(
             platform.reference_ledger().is_empty(),
             "nothing was referenced"
+        );
+        assert_eq!(
+            platform.telemetry().metrics.snapshot().counter(
+                names::RESEARCH_CAMPAIGNS_REFUSED,
+                &labels([("gate", GATE_DOOR)])
+            ),
+            1,
+            "a door refusal is counted"
         );
         Ok(())
     }
@@ -858,6 +961,7 @@ mod tests {
                 start(),
                 &config,
             )?
+            .window()
             .is_none()
         );
 
@@ -882,6 +986,7 @@ mod tests {
             start(),
             &config,
         )?
+        .window()
         .ok_or_else(|| Error::not_found("a window from the fallback series"))?;
         assert!(window.summary.fallback_used);
         assert_eq!(window.bars.len(), 300);

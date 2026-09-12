@@ -736,6 +736,67 @@ fn production_licensing_enforcement_refuses_synthetic_sources() {
     );
 }
 
+/// A replay may name the shipped connector it was recorded from on a
+/// `# recorded-from:` header, and until a root has run that source through
+/// the gate the declaration changes nothing: the descriptor still reports
+/// `Restricted` under the name the caller gave. `as_recorded_from` — the
+/// root's call after the gate admits — is what gives the replay the source's
+/// name and class, so the research campaign resolves it to the catalogue
+/// door. A header naming nothing is reported as a skipped line, not read as
+/// a source.
+///
+/// Mutated by deleting the `strip_prefix(RECORDED_FROM_HEADER)` arm in
+/// `ReplayAdapter::open` — confirmed `recorded_from()` then reads `None`
+/// and this fails, then restored.
+#[test]
+fn a_replay_names_the_connector_it_was_recorded_from_and_the_root_admits_it() {
+    let mut environment = environment(163);
+    let original = environment.run_until(start().saturating_add(Duration::from_mins(5)));
+    assert!(!original.is_empty());
+
+    let dir = std::env::temp_dir().join(format!("qip-replay-header-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("capture.jsonl");
+    ReplayAdapter::write(&path, &original).unwrap();
+    let body = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        format!(
+            "{} frankfurter-ecb-reference-rates\n# a comment the reader skips\n{}\n{} \n",
+            qip_market_ingestion::replay::RECORDED_FROM_HEADER,
+            body,
+            qip_market_ingestion::replay::RECORDED_FROM_HEADER
+        ),
+    )
+    .unwrap();
+
+    let replay = ReplayAdapter::open("capture", &path).unwrap();
+    assert_eq!(replay.len(), original.len(), "the header cost no record");
+    assert_eq!(
+        replay.recorded_from(),
+        Some("frankfurter-ecb-reference-rates"),
+        "the header's source was not read"
+    );
+    assert_eq!(
+        replay.skipped().len(),
+        1,
+        "a header naming no source is a skipped line, reported: {:?}",
+        replay.skipped()
+    );
+    // Declared is not admitted: the descriptor is what it was.
+    let before = replay.descriptor();
+    assert_eq!(before.name, "capture");
+    assert_eq!(before.licensing, LicensingClass::Restricted);
+
+    // The root's call, after the gate: the source's name and class.
+    let admitted =
+        replay.as_recorded_from("frankfurter-ecb-reference-rates", LicensingClass::Public);
+    let after = admitted.descriptor();
+    assert_eq!(after.name, "frankfurter-ecb-reference-rates");
+    assert_eq!(after.licensing, LicensingClass::Public);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn records_round_trip_through_the_replay_adapter() {
     let mut environment = environment(163);

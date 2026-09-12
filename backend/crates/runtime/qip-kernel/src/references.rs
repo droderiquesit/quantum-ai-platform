@@ -60,14 +60,14 @@ use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_data_finder::admission::AdmittedSource;
 use qip_data_finder::ledger::{LedgerOutcome, ReferenceLedger, RevisionRecord};
-use qip_data_finder::reference::{DataPeriod, DataReference};
+use qip_data_finder::reference::{DataPeriod, DataReference, SourceOrigin};
 use qip_events::log::EventLog;
 use qip_events::{EventBody, Topic};
 use qip_market_ingestion::connector::FetchDigest;
 use qip_observability::metrics::{labels, names};
 use qip_streaming::envelope::StreamEnvelope;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 /// The event-log record of the kernel referencing a fetch — every fetch,
 /// whether the ledger found it first, unchanged or revised.
@@ -488,8 +488,10 @@ impl Platform {
         self.references.revision_covering(source_id, symbol, period)
     }
 
-    /// The distinct sources whose held references name `symbol`.
-    pub fn sources_backing(&self, symbol: &str) -> BTreeSet<String> {
+    /// The distinct sources whose held references name `symbol`, each with
+    /// the door it came through — what `assess_concentration` counts, and
+    /// it counts only the vendor doors.
+    pub fn sources_backing(&self, symbol: &str) -> BTreeMap<String, SourceOrigin> {
         self.references.sources_backing(symbol)
     }
 

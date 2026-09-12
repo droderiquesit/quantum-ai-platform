@@ -417,13 +417,15 @@ impl ReferenceLedger {
             .find(|revision| revision.source_id == source_id && revision.covers(symbol, period))
     }
 
-    /// The distinct sources whose held references name `symbol` — the set
-    /// `crate::campaign::assess_concentration` is asked about.
-    pub fn sources_backing(&self, symbol: &str) -> BTreeSet<String> {
+    /// The distinct sources whose held references name `symbol`, each with
+    /// the door it came through — the set `crate::campaign::
+    /// assess_concentration` is asked about, which counts only the doors a
+    /// vendor stands behind.
+    pub fn sources_backing(&self, symbol: &str) -> BTreeMap<String, SourceOrigin> {
         self.entries
             .values()
             .filter(|reference| reference.symbols().contains(symbol))
-            .map(|reference| reference.source_id().to_string())
+            .map(|reference| (reference.source_id().to_string(), reference.origin()))
             .collect()
     }
 }

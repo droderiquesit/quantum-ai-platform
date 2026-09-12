@@ -59,7 +59,7 @@
 //! exactly that reason.
 
 use crate::ledger::RevisionRecord;
-use crate::reference::{DataReference, RevisionCheck};
+use crate::reference::{DataReference, RevisionCheck, SourceOrigin};
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
 use qip_numerics::sketch::ErrorBound;
@@ -540,12 +540,22 @@ impl FetchCampaign {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConcentrationVerdict {
     /// At least [`ConcentrationVerdict::MINIMUM_VIABLE_SOURCES`] independent,
-    /// non-quarantined sources back this class.
-    Sufficient { viable_sources: usize },
+    /// non-quarantined vendor sources back this class.
+    Sufficient {
+        viable_sources: usize,
+        /// Generated streams that named the class and were not counted.
+        #[serde(default)]
+        generated: usize,
+    },
     /// A concentration risk: fewer than the minimum back this class, and it
     /// must be held back from promotion past validation however good the
     /// one source it has is.
-    HeldBack { viable_sources: usize },
+    HeldBack {
+        viable_sources: usize,
+        /// Generated streams that named the class and were not counted.
+        #[serde(default)]
+        generated: usize,
+    },
 }
 
 impl ConcentrationVerdict {
@@ -559,21 +569,37 @@ impl ConcentrationVerdict {
 
     pub fn viable_sources(&self) -> usize {
         match self {
-            Self::Sufficient { viable_sources } | Self::HeldBack { viable_sources } => {
+            Self::Sufficient { viable_sources, .. } | Self::HeldBack { viable_sources, .. } => {
                 *viable_sources
             }
         }
     }
 
-    pub fn describe(&self) -> String {
+    /// Generated streams that named the class and were not counted as
+    /// backing it.
+    pub fn generated(&self) -> usize {
         match self {
-            Self::Sufficient { viable_sources } => format!(
-                "sufficient: {viable_sources} independently viable source(s) back this class"
+            Self::Sufficient { generated, .. } | Self::HeldBack { generated, .. } => *generated,
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        let excluded = match self.generated() {
+            0 => String::new(),
+            generated => format!(
+                "; {generated} generated stream(s) named it and do not count — this platform \
+                 cannot withdraw access from itself"
             ),
-            Self::HeldBack { viable_sources } => format!(
+        };
+        match self {
+            Self::Sufficient { viable_sources, .. } => format!(
+                "sufficient: {viable_sources} independently viable source(s) back this \
+                 class{excluded}"
+            ),
+            Self::HeldBack { viable_sources, .. } => format!(
                 "held back: only {viable_sources} independently viable source(s) back this \
                  class, and §22.3 requires at least {} before promotion past validation — a \
-                 concentration risk",
+                 concentration risk{excluded}",
                 Self::MINIMUM_VIABLE_SOURCES
             ),
         }
@@ -583,24 +609,43 @@ impl ConcentrationVerdict {
 /// §22.4's concentration-risk mitigation: assess whether a data class has
 /// enough independent backing to be promoted.
 ///
-/// Takes the distinct source identifiers backing the class directly, already
-/// filtered to whichever the caller considers viable (typically: registered
-/// and not quarantined — see
-/// `crate::decision::RegisteredSource::is_quarantined`). Kept as a plain set
-/// rather than a method on `DataFinder` because "viable" is the caller's own
-/// judgement about a class (asset class, instrument, or however a universe is
-/// carved) that this crate has no concept of; what this function owns is only
-/// the arithmetic §22.3's row states, applied to whatever set the caller
-/// hands it.
+/// Takes the distinct source identifiers backing the class, each with the
+/// door it came through, already filtered to whichever the caller considers
+/// viable (typically: registered and not quarantined — see
+/// `crate::decision::RegisteredSource::is_quarantined`). Only the doors a
+/// vendor stands behind count — [`SourceOrigin::is_independent_vendor`] — a
+/// generated stream names the class and is reported as excluded, because
+/// the rule is about a vendor withdrawing access and this platform cannot
+/// withdraw access from itself. Kept as a plain function rather than a
+/// method on `DataFinder` because "viable" is the caller's own judgement
+/// about a class (asset class, instrument, or however a universe is carved)
+/// that this crate has no concept of; what this function owns is only the
+/// arithmetic §22.3's row states, applied to whatever set the caller hands
+/// it.
 pub fn assess_concentration<'a>(
-    viable_source_ids: impl IntoIterator<Item = &'a str>,
+    sources: impl IntoIterator<Item = (&'a str, SourceOrigin)>,
 ) -> ConcentrationVerdict {
-    let distinct: std::collections::BTreeSet<&str> = viable_source_ids.into_iter().collect();
-    let viable_sources = distinct.len();
+    let mut vendors: BTreeSet<&str> = BTreeSet::new();
+    let mut generated_ids: BTreeSet<&str> = BTreeSet::new();
+    for (id, origin) in sources {
+        if origin.is_independent_vendor() {
+            vendors.insert(id);
+        } else {
+            generated_ids.insert(id);
+        }
+    }
+    let viable_sources = vendors.len();
+    let generated = generated_ids.len();
     if viable_sources >= ConcentrationVerdict::MINIMUM_VIABLE_SOURCES {
-        ConcentrationVerdict::Sufficient { viable_sources }
+        ConcentrationVerdict::Sufficient {
+            viable_sources,
+            generated,
+        }
     } else {
-        ConcentrationVerdict::HeldBack { viable_sources }
+        ConcentrationVerdict::HeldBack {
+            viable_sources,
+            generated,
+        }
     }
 }
 
@@ -715,13 +760,19 @@ mod tests {
     }
 
     /// A universe backed by exactly one viable source is held back — the
-    /// concentration-risk mitigation §22.3's own table names.
+    /// concentration-risk mitigation §22.3's own table names — and a
+    /// generated stream is not a viable source, however many of them name
+    /// the class.
     ///
     /// Mutated by changing `MINIMUM_VIABLE_SOURCES` to `1` — confirmed this
     /// test then fails because one source reads as sufficient, then restored.
+    /// Also mutated by making `SourceOrigin::is_independent_vendor` return
+    /// `true` for `Generated` — confirmed the two-generated-streams half then
+    /// reads as sufficient and this fails, then restored.
     #[test]
     fn a_universe_backed_by_only_one_viable_source_is_held_back() {
-        let verdict = assess_concentration(["source-a"]);
+        let admitted = SourceOrigin::CatalogueAdmitted;
+        let verdict = assess_concentration([("source-a", admitted)]);
         assert!(
             !verdict.is_sufficient(),
             "one viable source was treated as sufficient backing"
@@ -733,7 +784,10 @@ mod tests {
             verdict.describe()
         );
 
-        let two = assess_concentration(["source-a", "source-b"]);
+        let two = assess_concentration([
+            ("source-a", admitted),
+            ("source-b", SourceOrigin::Discovered),
+        ]);
         assert!(
             two.is_sufficient(),
             "two independent viable sources were not treated as sufficient"
@@ -742,11 +796,36 @@ mod tests {
 
         // Duplicates of the same source id do not count twice — two reports
         // of the same one source is still one source.
-        let duplicated = assess_concentration(["source-a", "source-a"]);
+        let duplicated = assess_concentration([("source-a", admitted), ("source-a", admitted)]);
         assert!(
             !duplicated.is_sufficient(),
             "the same source counted twice was treated as two independent sources"
         );
+
+        // Two streams this platform generated are not two vendors: the rule
+        // is about a vendor withdrawing access, and this platform cannot
+        // withdraw access from itself. They are reported, not counted.
+        let generated = assess_concentration([
+            ("synthetic-exchange", SourceOrigin::Generated),
+            ("committed-tape", SourceOrigin::Generated),
+        ]);
+        assert!(
+            !generated.is_sufficient(),
+            "two generated streams were treated as two independent vendors"
+        );
+        assert_eq!(generated.viable_sources(), 0);
+        assert_eq!(generated.generated(), 2);
+        assert!(
+            generated.describe().contains("do not count"),
+            "the verdict does not say the generated streams were excluded: {}",
+            generated.describe()
+        );
+        let mixed = assess_concentration([
+            ("synthetic-exchange", SourceOrigin::Generated),
+            ("source-a", admitted),
+        ]);
+        assert_eq!(mixed.viable_sources(), 1);
+        assert!(!mixed.is_sufficient());
     }
 
     /// The cache never exceeds its stated bound, and evicting an expired

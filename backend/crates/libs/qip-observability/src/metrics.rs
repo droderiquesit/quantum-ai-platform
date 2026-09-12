@@ -626,6 +626,14 @@ pub mod names {
     /// `ResearchCampaignFlagged` record in `Platform::record_reference`,
     /// once per campaign per revision.
     pub const RESEARCH_CAMPAIGNS_FLAGGED: &str = "qip_research_campaigns_flagged_total";
+    /// Learning rounds whose campaign was refused before a byte was read,
+    /// by the gate that refused it — `door` today: the research stream is
+    /// neither a source the platform holds an admission for nor one it
+    /// generated, or its standing admission has stopped granting. A refusal
+    /// is a fact about one subject and one round, recorded on the round line
+    /// and here rather than returned as the error that stopped the node
+    /// loop until 2026-09-12. Recorded in `qip_deepbrain::campaign`.
+    pub const RESEARCH_CAMPAIGNS_REFUSED: &str = "qip_research_campaigns_refused_total";
 
     // Discovery and reasoning. The funnel from "something looked odd" to "a
     // hypothesis the platform will act on", recorded where each fact becomes

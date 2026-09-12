@@ -56,8 +56,12 @@ use qip_simulation_engine::validation::PurgedSplit;
 use qip_strategy::compile::StrategyCompiler;
 use std::collections::BTreeMap;
 
-use crate::campaign::{self, CampaignConfig};
+use crate::campaign::{self, Assembly, CampaignConfig};
+use qip_data_finder::admission::{AdmittedSource, StandingAdmission};
 use qip_data_finder::campaign::{ConcentrationVerdict, assess_concentration};
+use qip_data_finder::reference::SourceOrigin;
+use qip_financial::quality::LicensingClass;
+use qip_market_ingestion::connector::SourceManifest;
 
 /// How the evolution loop is tuned. Every knob is a policy with a reason,
 /// not a magic number discovered in a constructor.
@@ -275,6 +279,14 @@ pub struct EvolutionEngine {
     discovery: Option<crate::discovery::DiscoveryDesk>,
     /// The bounds every learning round's campaign runs under (§22.4).
     campaign_config: CampaignConfig,
+    /// The licensing gate held open for a stream recorded from a shipped
+    /// connector, with that connector's manifest — `None` for the
+    /// synthetic exchange, a tape and an undeclared replay. Re-asked at
+    /// every due learning round and copied into the platform's admission
+    /// table before the campaign resolves its door, so the ledger's
+    /// admission is the gate's current answer and a licence that lapses
+    /// mid-run refuses the next round rather than the next restart.
+    admission: Option<(StandingAdmission, SourceManifest)>,
 }
 
 impl std::fmt::Debug for EvolutionEngine {
@@ -316,7 +328,27 @@ impl EvolutionEngine {
             stats: EvolutionStats::default(),
             discovery: None,
             campaign_config: CampaignConfig::standard()?,
+            admission: None,
         })
+    }
+
+    /// Hold the licensing gate open for the connector source this engine's
+    /// stream was recorded from, so every learning round researches through
+    /// the catalogue door under that source's admission.
+    ///
+    /// The composition root opens the gate — `StandingAdmission::open`,
+    /// which refuses a source whose terms are unread — and hands it here
+    /// with the source's shipped manifest, after giving the replay that
+    /// source's name and class. Nothing about a stream is admitted by this
+    /// call: the gate is re-asked on every due round, and its refusal is a
+    /// round refused at the door.
+    pub fn with_standing_admission(
+        mut self,
+        admission: StandingAdmission,
+        manifest: SourceManifest,
+    ) -> Self {
+        self.admission = Some((admission, manifest));
+        self
     }
 
     /// Attach a discovery desk (§7.4-§7.6.2). Replaces one attached before.
@@ -414,7 +446,29 @@ impl EvolutionEngine {
             return Ok(None);
         };
         let descriptor = self.adapter.descriptor();
-        let Some(window) = campaign::assemble(
+        // The standing gate, re-asked at this round's instant and copied
+        // into the platform before the door is resolved. A refusal is a
+        // round refused at the door — a fact about this subject and this
+        // round — and not an error that leaves the node loop.
+        if let Some((admission, manifest)) = &mut self.admission {
+            match admission
+                .check(now)
+                .and_then(|decision| AdmittedSource::from_decision(&decision, manifest))
+            {
+                Ok(admitted) => {
+                    platform.admit_source(admitted);
+                }
+                Err(refusal) => {
+                    campaign::count_door_refusal(platform);
+                    self.learning.note_door_refusal();
+                    return Ok(Some(LearningRound::refused_at_door(
+                        &subject,
+                        refusal.message(),
+                    )));
+                }
+            }
+        }
+        let window = match campaign::assemble(
             platform,
             &descriptor,
             &subject,
@@ -423,21 +477,33 @@ impl EvolutionEngine {
             cycle,
             now,
             &self.campaign_config,
-        )?
-        else {
-            return Ok(None);
+        )? {
+            Assembly::Window(window) => *window,
+            Assembly::NotYet => return Ok(None),
+            Assembly::RefusedAtDoor(reason) => {
+                self.learning.note_door_refusal();
+                return Ok(Some(LearningRound::refused_at_door(&subject, reason)));
+            }
         };
         let mut round = self.learning.learn_window(&subject, &window.bars, now)?;
         round.campaign = Some(window.summary);
         Ok(Some(round))
     }
 
-    /// The distinct sources backing `subject`: this engine's own stream plus
-    /// every source the platform's reference ledger holds a reference from
-    /// naming it. What `assess_concentration` is asked about.
-    fn sources_backing(&self, platform: &Platform, subject: &str) -> Vec<String> {
+    /// The distinct sources backing `subject`, each with its door: this
+    /// engine's own stream — through the catalogue door if the platform
+    /// holds its admission, the generated door if it is synthetic, and
+    /// through no door at all otherwise — plus every source the platform's
+    /// reference ledger holds a reference from naming it. What
+    /// `assess_concentration` is asked about; it counts the vendor doors.
+    fn sources_backing(&self, platform: &Platform, subject: &str) -> Vec<(String, SourceOrigin)> {
         let mut backing = platform.sources_backing(subject);
-        backing.insert(self.adapter.descriptor().name);
+        let descriptor = self.adapter.descriptor();
+        if platform.admitted_source(&descriptor.name).is_some() {
+            backing.insert(descriptor.name, SourceOrigin::CatalogueAdmitted);
+        } else if descriptor.licensing == LicensingClass::Synthetic {
+            backing.insert(descriptor.name, SourceOrigin::Generated);
+        }
         backing.into_iter().collect()
     }
 
@@ -544,7 +610,8 @@ impl EvolutionEngine {
         // so every round is held back until a second source backs the
         // subject; that is the rule working, and the round line says so.
         let backing = self.sources_backing(platform, subject);
-        let concentration = assess_concentration(backing.iter().map(String::as_str));
+        let concentration =
+            assess_concentration(backing.iter().map(|(id, origin)| (id.as_str(), *origin)));
         let foundry = match self.foundries.entry(subject.to_string()) {
             std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::btree_map::Entry::Vacant(entry) => {
@@ -1875,11 +1942,13 @@ mod tests {
         // a pass would break for a reason that is not a defect. What must
         // never happen again is a registered candidate nobody asked about.
         //
-        // The subject is backed by a second source first, because since
-        // §22.3's concentration rule reached this loop a single-source
-        // subject's candidates are held back from the gate rather than put in
-        // front of it — which is the rule working, and is pinned by its own
-        // test below rather than allowed to make this one vacuous.
+        // The subject is backed by two admitted vendors first, because since
+        // §22.3's concentration rule reached this loop a subject with fewer
+        // than two is held back from the gate rather than put in front of
+        // it — which is the rule working, and is pinned by its own test
+        // below rather than allowed to make this one vacuous. The synthetic
+        // stream itself counts for nothing: a generated stream is not a
+        // vendor.
         let mut platform = platform()?;
         let mut engine = engine(1);
 
@@ -1890,7 +1959,7 @@ mod tests {
             engine.sense(&mut platform, now)?;
         }
         for subject in engine.history.keys().cloned().collect::<Vec<_>>() {
-            back_with_a_second_source(&mut platform, &subject, now)?;
+            back_with_two_admitted_sources(&mut platform, &subject, now)?;
         }
         let summary = engine
             .maybe_turn(&mut platform, 1, now)?
@@ -1948,35 +2017,41 @@ mod tests {
         Ok(())
     }
 
-    /// Record, on the platform's ledger, a reference from a second generated
-    /// source naming `subject` — the premise "two independent sources back
-    /// this data class", stated the way the ledger states it.
-    fn back_with_a_second_source(
+    /// Record, on the platform's ledger, a reference from each of the two
+    /// shipped connectors whose terms are read — Frankfurter and Coinbase,
+    /// through the real catalogue and the real gate — naming `subject`: the
+    /// premise "two independent vendors back this data class", stated the
+    /// way the ledger states it. Two admitted sources and not a second
+    /// generated one, because a generated stream is not a vendor and no
+    /// longer counts.
+    fn back_with_two_admitted_sources(
         platform: &mut Platform,
         subject: &str,
         now: Timestamp,
     ) -> Result<()> {
+        use qip_data_finder::admission;
         use qip_data_finder::reference::{DataPeriod, DataReference};
-        use qip_data_finder::schema::{FieldType, SourceSchema};
-        use qip_market_ingestion::adapter::SourceDescriptor;
-        let second = SourceDescriptor {
-            name: "second-generated-source".to_string(),
-            provider: "this test".to_string(),
-            licensing: qip_financial::quality::LicensingClass::Synthetic,
-            topics: vec![qip_events::Topic::MarketBar],
-            expected_latency: Duration::ZERO,
-            production_requirement: None,
+        use qip_market_ingestion::connectors::{
+            CoinbaseTickerConnector, FrankfurterRatesConnector,
         };
-        let reference = DataReference::of_generated(
-            &second,
-            format!("bars://second-generated-source/{subject}"),
-            [subject.to_string()],
-            DataPeriod::instant(now),
-            SourceSchema::from_fields([("close".to_string(), FieldType::Number)]),
-            b"[]",
-            now,
-        )?;
-        platform.record_reference(reference, now)?;
+        for manifest in [
+            FrankfurterRatesConnector::shipped_manifest()?,
+            CoinbaseTickerConnector::shipped_manifest()?,
+        ] {
+            let decision = admission::admit(&manifest.source_id, manifest.licensing, now)?;
+            let admitted = AdmittedSource::from_decision(&decision, &manifest)?;
+            let reference = DataReference::of_admitted(
+                &admitted,
+                format!("{}?subject={subject}", admitted.endpoint()),
+                [subject.to_string()],
+                DataPeriod::instant(now),
+                b"{\"served\":true}",
+                now,
+                Decimal::ZERO,
+                1.0,
+            )?;
+            platform.record_reference(reference, now)?;
+        }
         Ok(())
     }
 
@@ -2016,7 +2091,12 @@ mod tests {
             "one stream was read as sufficient backing: {}",
             verdict.describe()
         );
-        assert_eq!(verdict.viable_sources(), 1);
+        assert_eq!(
+            verdict.viable_sources(),
+            0,
+            "the synthetic exchange is a generated stream, not a vendor, and counts for nothing"
+        );
+        assert_eq!(verdict.generated(), 1);
         assert_eq!(
             summary.held_back, summary.registered,
             "every registered candidate on a single-source subject is held back: {summary:?}"
@@ -2039,10 +2119,11 @@ mod tests {
             summary.describe()
         );
 
-        // With a second source on the ledger the same engine's next round
-        // is not held back — the verdict is about the backing, not a switch.
+        // With two admitted vendors on the ledger the same engine's next
+        // round is not held back — the verdict is about the backing, not a
+        // switch.
         for subject in engine.history.keys().cloned().collect::<Vec<_>>() {
-            back_with_a_second_source(&mut platform, &subject, now)?;
+            back_with_two_admitted_sources(&mut platform, &subject, now)?;
         }
         let next = engine
             .maybe_turn(&mut platform, 2, now)?
@@ -2053,6 +2134,206 @@ mod tests {
                 .as_ref()
                 .is_some_and(ConcentrationVerdict::is_sufficient)
         );
+        Ok(())
+    }
+
+    /// The synthetic exchange's records, as a replay would replay them:
+    /// polled minute by minute for `minutes` and collected, so two replays
+    /// built from the same list are two recordings of one market.
+    fn recorded_market(minutes: i64) -> Result<Vec<SensedRecord>> {
+        let mut environment = SyntheticEnvironment::demo(start(), recorded_config());
+        let mut records = Vec::new();
+        let mut now = start();
+        for _ in 0..minutes {
+            now = now.saturating_add(Duration::from_mins(1));
+            records.extend(environment.poll(now)?);
+        }
+        Ok(records)
+    }
+
+    fn recorded_config() -> EnvironmentConfig {
+        EnvironmentConfig {
+            seed: 7,
+            step: Duration::from_mins(1),
+            ..EnvironmentConfig::default()
+        }
+    }
+
+    /// The universe the recorded exchange's instruments make, for the
+    /// backtests — derived afresh per engine, as `Universe` is not cloned.
+    fn recorded_universe() -> Result<Universe> {
+        crate::reference::synthetic_universe(
+            &SyntheticEnvironment::demo(start(), recorded_config()),
+            start(),
+        )
+    }
+
+    /// An engine over a replay that says it was recorded from `source`,
+    /// admitted through that source's own licensing gate — the shape the
+    /// composition root builds for a replay with a `# recorded-from:`
+    /// header — with the search on every cycle and the learning desk on
+    /// every cycle at a small minimum, so one round of each is enough.
+    fn engine_over_replay_recorded_from(
+        source: &str,
+        records: Vec<SensedRecord>,
+    ) -> Result<EvolutionEngine> {
+        use qip_data_finder::admission::StandingAdmission;
+        use qip_data_finder::registration::RegistrationRegistry;
+        use qip_market_ingestion::connector_feed::shipped_manifest;
+        use qip_market_ingestion::replay::ReplayAdapter;
+        let manifest = shipped_manifest(source)?;
+        let (admission, _decision) = StandingAdmission::open(
+            RegistrationRegistry::shipped(),
+            source,
+            manifest.licensing,
+            start(),
+        )?;
+        let replay = ReplayAdapter::from_records("replay", records)
+            .as_recorded_from(source, manifest.licensing);
+        Ok(EvolutionEngine::new(
+            EvolutionConfig {
+                every_cycles: 1,
+                learning: LearningConfig {
+                    every_cycles: 1,
+                    minimum_bars: 64,
+                    ..LearningConfig::default()
+                },
+                ..EvolutionConfig::default()
+            },
+            Box::new(replay),
+            7,
+            recorded_universe()?,
+        )?
+        .with_standing_admission(admission, manifest))
+    }
+
+    /// Rule 31's gate can open without a live vendor call, and only with two
+    /// vendors. Two replays recorded from two different shipped connectors —
+    /// Coinbase and Frankfurter, the two whose terms are read — each
+    /// admitted through its own licensing gate, each researched through the
+    /// catalogue door by a learning round on one platform, put two
+    /// independent vendors behind the subject on the ledger, and the next
+    /// search round is not held back. One admitted replay alone is held
+    /// back: one vendor is one vendor. And a replay that names no source is
+    /// refused at the door and backs nothing.
+    ///
+    /// Mutated by making `SourceOrigin::is_independent_vendor` return
+    /// `false` for `CatalogueAdmitted` — confirmed the two-replay half then
+    /// reads as held back and this fails, then restored; and by making
+    /// `sources_backing` in this engine insert the own stream as `Generated`
+    /// regardless of admission — confirmed the two-replay half then counts
+    /// one vendor and fails, then restored.
+    #[test]
+    fn two_admitted_replays_from_two_vendors_lift_the_hold_and_one_does_not() -> Result<()> {
+        let records = recorded_market((EvolutionConfig::default().minimum_bars as i64 + 30) * 2)?;
+        let horizon = records
+            .last()
+            .map(SensedRecord::occurred_at)
+            .ok_or_else(|| Error::not_found("a recorded market"))?;
+        // Premise: the two sources are admitted by the real gate and are
+        // different vendors.
+        let coinbase = "coinbase-spot-ticker";
+        let frankfurter = "frankfurter-ecb-reference-rates";
+        assert_ne!(coinbase, frankfurter);
+
+        // Two replays, two vendors, one platform.
+        let mut both = platform()?;
+        let mut first = engine_over_replay_recorded_from(coinbase, records.clone())?;
+        let mut second = engine_over_replay_recorded_from(frankfurter, records.clone())?;
+        first.sense(&mut both, horizon)?;
+        second.sense(&mut both, horizon)?;
+        for engine in [&mut first, &mut second] {
+            let round = engine
+                .maybe_learn(&mut both, 1, horizon)?
+                .ok_or_else(|| Error::not_found("a learning round on a cadence of every cycle"))?;
+            assert!(
+                round.refused_by_door.is_none(),
+                "an admitted replay was refused at the door: {:?}",
+                round.refused_by_door
+            );
+            let campaign = round
+                .campaign
+                .as_ref()
+                .ok_or_else(|| Error::not_found("the campaign the round assembled through"))?;
+            assert_eq!(
+                campaign.origin,
+                qip_data_finder::reference::SourceOrigin::CatalogueAdmitted,
+                "the replay must research through the catalogue door under its admission"
+            );
+        }
+        let summary = first
+            .maybe_turn(&mut both, 1, horizon)?
+            .ok_or_else(|| Error::not_found("a search round"))?;
+        assert!(
+            summary.registered >= 1,
+            "nothing was registered, so nothing could be held or promoted: {summary:?}"
+        );
+        let verdict = summary
+            .concentration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a concentration verdict"))?;
+        assert!(
+            verdict.is_sufficient(),
+            "two admitted vendors were read as insufficient: {}",
+            verdict.describe()
+        );
+        assert_eq!(verdict.viable_sources(), 2);
+        assert_eq!(summary.held_back, 0, "{summary:?}");
+
+        // One admitted replay alone: one vendor, held back.
+        let mut alone = platform()?;
+        let mut only = engine_over_replay_recorded_from(coinbase, records.clone())?;
+        only.sense(&mut alone, horizon)?;
+        only.maybe_learn(&mut alone, 1, horizon)?
+            .ok_or_else(|| Error::not_found("a learning round"))?;
+        let held = only
+            .maybe_turn(&mut alone, 1, horizon)?
+            .ok_or_else(|| Error::not_found("a search round"))?;
+        assert!(held.registered >= 1, "{held:?}");
+        let verdict = held
+            .concentration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a concentration verdict"))?;
+        assert!(!verdict.is_sufficient(), "{}", verdict.describe());
+        assert_eq!(verdict.viable_sources(), 1);
+        assert_eq!(held.held_back, held.registered, "{held:?}");
+
+        // A replay that names no source: refused at the door, per subject,
+        // and it backs nothing.
+        let mut undeclared = platform()?;
+        let mut anonymous = EvolutionEngine::new(
+            EvolutionConfig {
+                every_cycles: 0,
+                learning: LearningConfig {
+                    every_cycles: 1,
+                    minimum_bars: 64,
+                    ..LearningConfig::default()
+                },
+                ..EvolutionConfig::default()
+            },
+            Box::new(qip_market_ingestion::replay::ReplayAdapter::from_records(
+                "replay", records,
+            )),
+            7,
+            recorded_universe()?,
+        )?;
+        anonymous.sense(&mut undeclared, horizon)?;
+        let refused = anonymous
+            .maybe_learn(&mut undeclared, 1, horizon)?
+            .ok_or_else(|| Error::not_found("a learning round"))?;
+        let reason = refused
+            .refused_by_door
+            .as_deref()
+            .ok_or_else(|| Error::invalid("an undeclared replay was researched over"))?;
+        assert!(
+            reason.contains("holds no admission for it"),
+            "the refusal is not the door's: {reason}"
+        );
+        assert!(
+            undeclared.reference_ledger().is_empty(),
+            "an undeclared replay must reference nothing"
+        );
+        assert_eq!(anonymous.learning_stats().refused_at_door, 1);
         Ok(())
     }
 
@@ -2108,10 +2389,10 @@ mod tests {
             now = now.saturating_add(Duration::from_mins(1));
             engine.sense(&mut platform, now)?;
         }
-        // A second source, so the concentration rule lets the gate speak at
-        // all — see `every_candidate_the_round_registers_is_put_in_front_of_the_holdout_gate`.
+        // Two admitted vendors, so the concentration rule lets the gate speak
+        // at all — see `every_candidate_the_round_registers_is_put_in_front_of_the_holdout_gate`.
         for subject in engine.history.keys().cloned().collect::<Vec<_>>() {
-            back_with_a_second_source(&mut platform, &subject, now)?;
+            back_with_two_admitted_sources(&mut platform, &subject, now)?;
         }
         let summary = engine
             .maybe_turn(&mut platform, 1, now)?

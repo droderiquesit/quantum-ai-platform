@@ -274,7 +274,9 @@ fn a_source_that_revises_an_extent_after_use_is_flagged_in_the_ledger_the_log_an
         );
     }
     assert!(
-        platform.sources_backing(&dollar_series()).contains(SOURCE),
+        platform
+            .sources_backing(&dollar_series())
+            .contains_key(SOURCE),
         "the connector must count as backing the series it serves"
     );
 
@@ -441,7 +443,11 @@ fn a_restarted_platform_rebuilds_its_reference_ledger_from_the_log() -> Result<(
             .is_some(),
         "the revision the first process caught must still flag after the restart"
     );
-    assert!(platform.sources_backing(&dollar_series()).contains(SOURCE));
+    assert!(
+        platform
+            .sources_backing(&dollar_series())
+            .contains_key(SOURCE)
+    );
     // And the restored ledger keeps detecting: the rewritten table again is
     // unchanged, not a first reference, and a third rewrite is a revision.
     platform.admit_source(admitted_frankfurter()?);

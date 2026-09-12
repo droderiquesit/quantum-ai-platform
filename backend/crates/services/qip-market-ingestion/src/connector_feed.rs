@@ -86,29 +86,33 @@ fn topic_for(source_id: &str) -> Result<Topic> {
     }
 }
 
-/// The licensing class a named source's shipped manifest declares.
+/// The shipped manifest of a named source.
 ///
-/// For the gate that must run *before* the source is opened: the caller
-/// compares this against its catalogue's evaluation, and a disagreement
-/// between the two claims refuses the source. Reading it does not construct a
-/// connector and touches no socket.
-pub fn shipped_class(source_id: &str) -> Result<qip_financial::quality::LicensingClass> {
+/// For a caller that needs what the manifest declares — its licensing
+/// class, its category, its schema — without opening the source: the
+/// licensing gate, and a root admitting a replay recorded from a connector
+/// to the reference ledger under that connector's own admission. Reading it
+/// does not construct a connector and touches no socket.
+pub fn shipped_manifest(source_id: &str) -> Result<SourceManifest> {
     match source_id {
-        CoinbaseTickerConnector::SOURCE_ID => {
-            Ok(CoinbaseTickerConnector::shipped_manifest()?.licensing)
-        }
-        FrankfurterRatesConnector::SOURCE_ID => {
-            Ok(FrankfurterRatesConnector::shipped_manifest()?.licensing)
-        }
-        KalshiMarketsConnector::SOURCE_ID => {
-            Ok(KalshiMarketsConnector::shipped_manifest()?.licensing)
-        }
-        AlpacaBarsConnector::SOURCE_ID => Ok(AlpacaBarsConnector::shipped_manifest()?.licensing),
+        CoinbaseTickerConnector::SOURCE_ID => CoinbaseTickerConnector::shipped_manifest(),
+        FrankfurterRatesConnector::SOURCE_ID => FrankfurterRatesConnector::shipped_manifest(),
+        KalshiMarketsConnector::SOURCE_ID => KalshiMarketsConnector::shipped_manifest(),
+        AlpacaBarsConnector::SOURCE_ID => AlpacaBarsConnector::shipped_manifest(),
         other => Err(Error::invalid(format!(
             "{other:?} names no connector this build carries; the known sources are: {}",
             KNOWN_SOURCES.join(", ")
         ))),
     }
+}
+
+/// The licensing class a named source's shipped manifest declares.
+///
+/// For the gate that must run *before* the source is opened: the caller
+/// compares this against its catalogue's evaluation, and a disagreement
+/// between the two claims refuses the source.
+pub fn shipped_class(source_id: &str) -> Result<qip_financial::quality::LicensingClass> {
+    Ok(shipped_manifest(source_id)?.licensing)
 }
 
 /// A live connector, its transport and its runtime, behind the loop's own

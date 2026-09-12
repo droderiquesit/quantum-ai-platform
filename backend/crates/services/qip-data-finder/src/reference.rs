@@ -129,6 +129,16 @@ impl SourceOrigin {
             Self::Generated => "generated",
         }
     }
+
+    /// Whether a source through this door is a vendor that could withdraw
+    /// access — the thing §22.3's concentration rule counts. A stream this
+    /// platform generated is not: it cannot withdraw, and two of them are
+    /// not two independent sources of anything about the world. Until
+    /// 2026-09-12 `assess_concentration` counted a synthetic tape beside a
+    /// synthetic exchange as sufficient backing.
+    pub const fn is_independent_vendor(&self) -> bool {
+        matches!(self, Self::Discovered | Self::CatalogueAdmitted)
+    }
 }
 
 /// Whether a re-fetch still says what a [`DataReference`] recorded.

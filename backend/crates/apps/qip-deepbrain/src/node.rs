@@ -1207,6 +1207,119 @@ mod tests {
     }
 
     #[test]
+    fn a_replay_the_door_refuses_is_a_learning_outcome_and_the_node_keeps_cycling() {
+        // The defect this pins: the deep brain opened a replay as
+        // `Restricted`, the campaign's door refused the stream as neither
+        // admitted nor generated, `maybe_learn` propagated the refusal with
+        // `?`, and `run` returned out of its loop on the first due learning
+        // round — a fact about one subject stopped the process. The refusal
+        // is now the round's outcome, on the round line and counted, and the
+        // loop goes on to its bound.
+        //
+        // Mutated by making `maybe_learn` return `Err` for
+        // `Assembly::RefusedAtDoor` again — confirmed `run` then returns an
+        // error on the first cycle and this fails, then restored.
+        use qip_market_ingestion::adapter::DataAdapter;
+        use qip_market_ingestion::replay::ReplayAdapter;
+        use qip_market_ingestion::synthetic::{EnvironmentConfig, SyntheticEnvironment};
+        use qip_observability::metrics::{labels, names};
+
+        // A recording of the synthetic exchange, replayed with no
+        // `# recorded-from:` declaration: `Restricted`, and admitted by
+        // nobody.
+        let mut environment = SyntheticEnvironment::demo(
+            start(),
+            EnvironmentConfig {
+                seed: 7,
+                step: Duration::from_mins(1),
+                ..EnvironmentConfig::default()
+            },
+        );
+        let mut records = Vec::new();
+        let mut at = start();
+        for _ in 0..100 {
+            at = at.saturating_add(Duration::from_mins(1));
+            records.extend(environment.poll(at).expect("the exchange polls"));
+        }
+        let replay = ReplayAdapter::from_records("replay", records);
+        assert_eq!(
+            replay.licensing(),
+            qip_financial::quality::LicensingClass::Restricted,
+            "premise: an undeclared replay is restricted, so the door must refuse it"
+        );
+
+        let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(at));
+        let mut platform = platform(clock.clone());
+        let config = DeepBrainConfig {
+            max_cycles: Some(3),
+            ..brisk()
+        };
+        let status = shared(&config);
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut engine = crate::evolution::EvolutionEngine::new(
+            crate::evolution::EvolutionConfig {
+                every_cycles: 0,
+                learning: crate::learning::LearningConfig {
+                    every_cycles: 1,
+                    minimum_bars: 64,
+                    ..crate::learning::LearningConfig::default()
+                },
+                ..crate::evolution::EvolutionConfig::default()
+            },
+            Box::new(replay),
+            7,
+            Universe::new(),
+        )
+        .expect("the engine assembles");
+
+        let mut refused = Vec::new();
+        let summary = run(
+            &mut platform,
+            &archive(),
+            &config,
+            &status,
+            &stop,
+            &clock,
+            0,
+            Some(&mut engine),
+            |outcome| {
+                if let Some(round) = &outcome.learning {
+                    refused.push(round.refused_by_door.clone());
+                }
+            },
+        )
+        .expect("a door refusal must not stop the node loop");
+
+        assert_eq!(summary.stopped_because, Stop::CycleLimit);
+        assert_eq!(summary.cycles, 3, "the node did not keep cycling");
+        // Premise: the learning desk was due and history was deep enough,
+        // so a round ran every cycle and each was the door's refusal.
+        assert_eq!(refused.len(), 3, "a learning round did not run every cycle");
+        for reason in &refused {
+            let reason = reason
+                .as_deref()
+                .expect("the round's outcome is the door's refusal, not a fit");
+            assert!(
+                reason.contains("holds no admission for it"),
+                "the outcome does not name the door: {reason}"
+            );
+        }
+        assert_eq!(engine.learning_stats().refused_at_door, 3);
+        assert_eq!(
+            platform.telemetry().metrics.snapshot().counter(
+                names::RESEARCH_CAMPAIGNS_REFUSED,
+                &labels([("gate", crate::campaign::GATE_DOOR)])
+            ),
+            3,
+            "each refusal is counted"
+        );
+        assert!(
+            platform.reference_ledger().is_empty(),
+            "a refused stream must reference nothing"
+        );
+    }
+
+    #[test]
     fn a_bounded_run_exits_when_its_last_cycle_lands_rather_than_sleeping_out_the_cadence() {
         // At the deployed cadence the difference between deciding before the
         // wait and deciding after it is five minutes of a run that had already

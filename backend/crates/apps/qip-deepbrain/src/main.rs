@@ -338,23 +338,70 @@ fn run() -> Result<()> {
             platform.config().seed,
             load_universe(&config.storage, started)?.universe,
         )?,
-        (None, Some(path)) => qip_deepbrain::evolution::EvolutionEngine::new(
-            evolution_config,
-            Box::new(qip_market_ingestion::replay::ReplayAdapter::open(
-                "replay", path,
-            )?),
-            platform.config().seed,
-            // The replay path has no reference-data source — a tape carries
-            // bars, not listings — so this is empty and the loop's backtests
-            // refuse every candidate with "no fill" rather than register a
-            // flat equity curve as evidence. That refusal is the point:
-            // before it, an empty universe rejected every order silently and
-            // the gate scored the resulting flat line as a real holdout. A
-            // reference source derived from the tape's own instruments is
-            // what would turn the loop on here, and until then the replay
-            // path is visibly off rather than invisibly producing nothing.
-            Universe::new(),
-        )?,
+        (None, Some(path)) => {
+            let replay = qip_market_ingestion::replay::ReplayAdapter::open("replay", path)?;
+            // A replay that says which shipped connector it was recorded
+            // from is run through that connector's own licensing gate here,
+            // and held open for every learning round: the campaign then
+            // researches through the catalogue door under the connector's
+            // admission, which is what lets a subject count a second vendor
+            // without a live vendor call (ADR 0057). The file's claim is a
+            // claim; the gate is the admission. A replay that says nothing
+            // reports `Restricted` and every learning round is refused at
+            // the campaign's door, per subject, with the reason on the
+            // round line — the node keeps cycling.
+            let (adapter, admission) = match replay.recorded_from().map(str::to_string) {
+                Some(source) => {
+                    let manifest = qip_market_ingestion::connector_feed::shipped_manifest(&source)?;
+                    let (admission, decision) =
+                        qip_data_finder::admission::StandingAdmission::open(
+                            platform.config().registration_registry()?,
+                            &source,
+                            manifest.licensing,
+                            clock.now(),
+                        )?;
+                    println!(
+                        "  replay:           recorded from {source}, {}; the learning round \
+                         researches through the catalogue door under this admission, re-asked \
+                         every round",
+                        decision.describe()
+                    );
+                    (
+                        replay.as_recorded_from(&source, manifest.licensing),
+                        Some((admission, manifest)),
+                    )
+                }
+                None => {
+                    println!(
+                        "  replay:           names no `# recorded-from:` source, so it reports \
+                         {:?}; every learning round will be refused at the campaign's door, per \
+                         subject, and the refusal is on the round line (ADR 0057)",
+                        replay.licensing()
+                    );
+                    (replay, None)
+                }
+            };
+            let engine = qip_deepbrain::evolution::EvolutionEngine::new(
+                evolution_config,
+                Box::new(adapter),
+                platform.config().seed,
+                // The replay path has no reference-data source — a tape
+                // carries bars, not listings — so this is empty and the
+                // loop's backtests refuse every candidate with "no fill"
+                // rather than register a flat equity curve as evidence.
+                // That refusal is the point: before it, an empty universe
+                // rejected every order silently and the gate scored the
+                // resulting flat line as a real holdout. A reference source
+                // derived from the tape's own instruments is what would turn
+                // the loop on here, and until then the replay path is
+                // visibly off rather than invisibly producing nothing.
+                Universe::new(),
+            )?;
+            match admission {
+                Some((admission, manifest)) => engine.with_standing_admission(admission, manifest),
+                None => engine,
+            }
+        }
         (None, None) => {
             // The bar interval must match the step, or a fast cadence
             // closes a bar every sixty cycles and the node runs blind for

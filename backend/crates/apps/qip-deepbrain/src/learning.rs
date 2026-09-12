@@ -148,10 +148,38 @@ pub struct LearningRound {
     /// engine assembled it through one — every production round does; a
     /// desk driven directly by a test may not have.
     pub campaign: Option<crate::campaign::CampaignSummary>,
+    /// Why no campaign opened this round: the stream was refused at the
+    /// door — neither a source the platform holds an admission for nor one
+    /// it generated, or a standing admission that has stopped granting.
+    /// Nothing else on this round is set when this is: no fit, no drift, no
+    /// campaign. A fact about one subject and one round, on the round line
+    /// where an operator reads it, rather than the error that stopped the
+    /// node loop until 2026-09-12.
+    pub refused_by_door: Option<String>,
 }
 
 impl LearningRound {
+    /// A round that opened no campaign because the door refused the stream.
+    pub fn refused_at_door(subject: &ObjectId, reason: impl Into<String>) -> Self {
+        Self {
+            subject: subject.as_str().to_string(),
+            registration: None,
+            drift: Vec::new(),
+            ineligible: Vec::new(),
+            distillation: None,
+            distillation_refusal: None,
+            campaign: None,
+            refused_by_door: Some(reason.into()),
+        }
+    }
+
     pub fn describe(&self) -> String {
+        if let Some(reason) = &self.refused_by_door {
+            return format!(
+                "learning: no campaign for {} — refused at the door: {reason}",
+                self.subject
+            );
+        }
         let registered = match &self.registration {
             Some(registration) => registration.summarise(),
             None => "no fit this round".to_string(),
@@ -213,6 +241,10 @@ pub struct LearningStats {
     /// nothing.
     pub without_skill: u64,
     pub drift_measurements: u64,
+    /// Rounds whose campaign was refused at the door and so fitted nothing.
+    /// Kept separately from `rounds`, which counts fits attempted: a node
+    /// refused every round and a node that never came due read differently.
+    pub refused_at_door: u64,
 }
 
 /// Fits models from observed bars and watches the ones it has fitted age.
@@ -311,6 +343,11 @@ impl LearningDesk {
         self.config.minimum_bars
     }
 
+    /// Note a round that opened no campaign because the door refused it.
+    pub const fn note_door_refusal(&mut self) {
+        self.stats.refused_at_door = self.stats.refused_at_door.saturating_add(1);
+    }
+
     /// Fit on a window the caller has already assembled — through a
     /// campaign, in production — refusing one shorter than the minimum
     /// rather than fitting on it.
@@ -391,6 +428,7 @@ impl LearningDesk {
                         distillation: None,
                         distillation_refusal: None,
                         campaign: None,
+                        refused_by_door: None,
                     });
                 }
             };
@@ -410,6 +448,7 @@ impl LearningDesk {
             distillation,
             distillation_refusal,
             campaign: None,
+            refused_by_door: None,
         })
     }
 

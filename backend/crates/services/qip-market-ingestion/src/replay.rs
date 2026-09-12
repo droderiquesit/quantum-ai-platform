@@ -27,6 +27,24 @@
 //!
 //! [`ReplayAdapter::with_licensing`] is how a caller that *does* know says so.
 //! It is a statement about the file, made by whoever chose the path.
+//!
+//! # A replay recorded from a connector
+//!
+//! A file may say which shipped connector it was recorded from, on a header
+//! line before its records: `# recorded-from: frankfurter-ecb-reference-rates`.
+//! That is a claim by whoever wrote the file — the same standing as a
+//! `with_licensing` call — and it is not an admission. What makes it one is
+//! the composition root running the named source through the licensing gate
+//! ([`qip_data_finder::admission::StandingAdmission`]) and, if the gate
+//! grants, giving the replay that source's name and class
+//! ([`ReplayAdapter::as_recorded_from`]) so the research campaign resolves
+//! it to the catalogue door under the connector's own admission. A file
+//! naming a source the catalogue refuses — Kalshi, Alpaca, anything unread —
+//! is refused at start-up by the gate, and a file naming nothing reports
+//! `Restricted` and is refused per subject at the campaign's door. The
+//! platform verifies that the licence exists and is granted, not that the
+//! bytes came from that vendor; the file's author is answerable for that,
+//! as the author of a `with_licensing` call already is.
 
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
@@ -45,6 +63,10 @@ use crate::adapter::{DataAdapter, SensedRecord, SourceDescriptor};
 /// back to for an unconfigured feed.
 const UNDECLARED_LICENSING: LicensingClass = LicensingClass::Restricted;
 
+/// The header line a replay names its connector source on. See the module
+/// doc: a claim, gated by the root.
+pub const RECORDED_FROM_HEADER: &str = "# recorded-from:";
+
 /// Reads [`SensedRecord`]s from a JSONL file in timestamp order.
 #[derive(Debug)]
 pub struct ReplayAdapter {
@@ -56,6 +78,9 @@ pub struct ReplayAdapter {
     /// the descriptor reports as `Restricted` rather than as the permissive
     /// `Internal` a `LicensingClass::default()` would have supplied.
     licensing: Option<LicensingClass>,
+    /// The shipped connector source the file says it was recorded from, if
+    /// it says. A claim until a root has run it through the gate.
+    recorded_from: Option<String>,
     /// Malformed lines, reported rather than silently skipped.
     skipped: Vec<String>,
 }
@@ -69,8 +94,21 @@ impl ReplayAdapter {
 
         let mut records = Vec::new();
         let mut skipped = Vec::new();
+        let mut recorded_from = None;
         for (number, line) in BufReader::new(file).lines().enumerate() {
             let line = line?;
+            if let Some(source) = line.trim_start().strip_prefix(RECORDED_FROM_HEADER) {
+                let source = source.trim();
+                if source.is_empty() {
+                    skipped.push(format!(
+                        "line {}: `{RECORDED_FROM_HEADER}` names no source",
+                        number + 1
+                    ));
+                } else {
+                    recorded_from = Some(source.to_string());
+                }
+                continue;
+            }
             if line.trim().is_empty() || line.trim_start().starts_with('#') {
                 continue;
             }
@@ -89,6 +127,7 @@ impl ReplayAdapter {
             cursor: 0,
             // Deliberately not `LicensingClass::Internal`: see the module.
             licensing: None,
+            recorded_from,
             skipped,
         })
     }
@@ -103,6 +142,7 @@ impl ReplayAdapter {
             cursor: 0,
             // Deliberately not `LicensingClass::Internal`: see the module.
             licensing: None,
+            recorded_from: None,
             skipped: Vec::new(),
         }
     }
@@ -120,6 +160,29 @@ impl ReplayAdapter {
     /// The class this replay reports, which is `Restricted` until declared.
     pub fn licensing(&self) -> LicensingClass {
         self.licensing.unwrap_or(UNDECLARED_LICENSING)
+    }
+
+    /// The shipped connector source the file says it was recorded from —
+    /// its `# recorded-from:` header — if it says. A claim, not an
+    /// admission: see the module doc for what the root does with it.
+    pub fn recorded_from(&self) -> Option<&str> {
+        self.recorded_from.as_deref()
+    }
+
+    /// Give this replay the name and class of the connector source it was
+    /// recorded from, so the research campaign resolves its stream to the
+    /// catalogue door under that source's admission.
+    ///
+    /// For the composition root, *after* the gate has admitted `source_id`:
+    /// the name is what `Platform::admitted_source` is looked up by, and the
+    /// class is the manifest's, which the gate agreed with. Calling this for
+    /// a source the gate refused would name a door the platform does not
+    /// hold, and the campaign would refuse the stream by name.
+    pub fn as_recorded_from(mut self, source_id: &str, licensing: LicensingClass) -> Self {
+        self.name = source_id.to_string();
+        self.licensing = Some(licensing);
+        self.recorded_from = Some(source_id.to_string());
+        self
     }
 
     /// Write records to a JSONL file, for later replay.
