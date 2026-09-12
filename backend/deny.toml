@@ -1,0 +1,112 @@
+# cargo-deny configuration.
+#
+# ADR 0002/0009 hold the dependency policy in prose and
+# `scripts/check-dependencies.sh` holds it as a name-list checked against
+# `Cargo.lock`. Neither one checks a license, a duplicate version, or a
+# published advisory — a crate can be the right *name* and still be the wrong
+# *version*, carrying a known vulnerability or a licence nobody reviewed. This
+# file is that second, narrower check, run by `cargo deny check` in CI and in
+# `make check`. It is a development/CI tool like clippy or rustfmt, not a
+# workspace dependency, so it needs no ADR of its own — it audits the two
+# dependencies ADR 0002 permits; it is not a third one.
+#
+# The `[bans].allow` list below must name exactly the packages
+# `scripts/check-dependencies.sh` permits. If the two disagree, one of them is
+# wrong and this comment is where a reviewer should look first.
+
+[graph]
+# The workspace targets Cloud Run and a Compute Engine execution node, both
+# linux/amd64, and nothing here is conditionally compiled per-target. Checking
+# every target cargo-deny knows about would let a target-specific dependency
+# hide from review by never being active on the target the graph actually
+# resolves for.
+targets = []
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# Vulnerabilities and unsound-code advisories always fail in cargo-deny 0.20 —
+# there is no severity threshold to relax. What is left to configure is yanked
+# crates and unmaintained crates, and both fail closed here rather than
+# defaulting to a warning nobody has to act on (CLAUDE.md principle 3).
+[advisories]
+db-urls = ["https://github.com/RustSec/advisory-db"]
+yanked = "deny"
+unmaintained = "all"
+unsound = "all"
+# No advisory is pre-ignored. An ignore entry here is a decision, and it
+# belongs in a diff a reviewer sees, not a default.
+ignore = []
+
+# The licence allowlist, built from what the eleven permitted packages in
+# `Cargo.lock` actually declare (checked with `cargo metadata --format-version
+# 1`, one entry per package, rather than assumed from the crates' reputation):
+# serde, serde_json, serde_derive, proc-macro2, quote, syn, serde_core and
+# itoa are `MIT OR Apache-2.0`; unicode-ident is `(MIT OR Apache-2.0) AND
+# Unicode-3.0`; zmij is `MIT`; memchr is `Unlicense OR MIT`. Four SPDX
+# identifiers cover the whole permitted set, and a fifth appearing here would
+# mean either a new package or a version bump that changed its declared
+# licence — either way, a reason to look rather than a reason to pass.
+[licenses]
+allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Unlicense"]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = false
+
+# Duplicate versions of the same crate are exactly the shape of drift ADR 0002
+# exists to prevent: two versions of a crate in the same binary is two
+# implementations of whatever it computes, resolved by which one the linker
+# picked rather than by a decision anyone made. `scripts/check-dependencies.sh`
+# checks the lockfile has no *extra names*; this checks it has no extra
+# *versions* of the names it does have.
+[bans]
+multiple-versions = "deny"
+# Not "deny": cargo-deny treats every unversioned `path` dependency as a
+# wildcard, and every one of the fifty-eight `qip-*` crates depends on its
+# siblings that way by design — there is no registry version for a crate that
+# is never published. Denying this would fail on every workspace edge rather
+# than on the third-party "*" version string this field exists to catch, and
+# would give a reviewer no way to tell the two apart in the output. Left at
+# the tool's own default.
+wildcards = "allow"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+# The allowlist. `allow-workspace = true` admits every `qip-*` workspace
+# member without naming fifty-eight crates here; every name below is a
+# third-party package, and the list is the same eleven
+# `scripts/check-dependencies.sh` permits, spelled out again in a format
+# `cargo deny` enforces independently rather than trusting the shell script's
+# arithmetic. A crate not named here fails the check, per cargo-deny's own
+# rule that a non-empty `allow` list makes everything else denied.
+allow-workspace = true
+allow = [
+    "serde",
+    "serde_json",
+    "serde_derive",
+    "proc-macro2",
+    "quote",
+    "syn",
+    "unicode-ident",
+    "serde_core",
+    "itoa",
+    "zmij",
+    "memchr",
+]
+
+[bans.workspace-dependencies]
+duplicates = "deny"
+include-path-dependencies = true
+unused = "deny"
+
+# No crate here reaches a registry other than crates.io or a git remote at
+# all; both are refused rather than warned about, so a dependency quietly
+# pointed at a fork cannot pass silently.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

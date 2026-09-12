@@ -23,7 +23,7 @@ TERRAFORM_DIR := infrastructure/terraform
 ENVIRONMENTS_DIR := infrastructure/environments
 
 .PHONY: check all fmt fmt-check lint test test-release build release \
-        deps secrets audit sbom tf-fmt tf-tfvars tf-validate infra e2e acceptance \
+        deps secrets audit deny sbom tf-fmt tf-tfvars tf-validate infra e2e acceptance \
         count doc clean help
 
 # ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ check: fmt-check lint test deps secrets
 	@echo "offline gates: all passed"
 
 # Everything, including the gates that need a network.
-all: check build audit sbom infra
+all: check build audit deny sbom infra
 	@echo "all gates: all passed"
 
 # ---------------------------------------------------------------------------
@@ -99,6 +99,16 @@ secrets:
 # Needs the advisory database, so it is not in the offline set.
 audit:
 	cd backend && cargo audit --deny warnings
+
+# The name-list and the advisory database are two different checks: `deps`
+# above holds `Cargo.lock` to the eleven permitted package *names*;
+# `backend/deny.toml` holds the versions and licences behind those names —
+# no duplicate version of a permitted crate, no licence outside the observed
+# set, no advisory, no registry but crates.io. Same reason as `audit`, and the
+# same database: this fetches from the network, so it is not in the offline
+# set either.
+deny:
+	cd backend && cargo deny check
 
 sbom:
 	cd backend && cargo cyclonedx --format json --all
@@ -170,6 +180,7 @@ help:
 	@echo "deps       the dependency policy"
 	@echo "secrets    secret scan over the diff"
 	@echo "audit      cargo audit; needs the advisory database"
+	@echo "deny       cargo deny; licences, duplicate versions, sources; needs the advisory database"
 	@echo "sbom       cyclonedx bill of materials"
 	@echo "infra      terraform fmt and validate; needs the provider schema"
 	@echo "doc        rustdoc for the workspace"

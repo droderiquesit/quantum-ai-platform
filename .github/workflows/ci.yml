@@ -119,6 +119,28 @@ jobs:
       - run: cargo install cargo-audit --locked
       - run: cargo audit --deny warnings
 
+  # `cargo audit` reads only the advisory database; it has no opinion on a
+  # licence or a duplicate version, and `scripts/check-dependencies.sh` checks
+  # only crate *names* against the eleven permitted in `Cargo.lock`, not the
+  # versions or licences behind them. `deny.toml` closes that: it repeats the
+  # same eleven-name allowlist in a format `cargo deny` enforces on its own
+  # rather than trusting the shell script's arithmetic, and it fails on a
+  # licence outside the observed MIT/Apache-2.0/Unicode-3.0/Unlicense set, a
+  # duplicate version of a permitted crate, or a dependency from a registry or
+  # git remote other than crates.io.
+  dependency-supply-chain:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - name: install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - run: cargo install cargo-deny --locked
+      - run: cargo deny check
+
   # A software bill of materials for every release build, so an operator can
   # answer "is this affected" without guessing.
   sbom:
