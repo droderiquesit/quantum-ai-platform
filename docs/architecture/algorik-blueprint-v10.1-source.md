@@ -5147,7 +5147,7 @@ A compiled plan exceeding the evaluation budget fails to compile. It is never de
 16
 Compiled plans and models are signed at source and verified by the node before swap.
 17
-Both gates return veto or silence. Neither ever returns approval. Errors and timeouts are vetoes.
+Both gates refuse or admit deterministically; permission is never inferred, only computed. An order or movement that breaches nothing is admitted. A breach may be resized to the largest quantity that still clears every check — computed exactly, never approximated, and only where a composition root has explicitly enabled resizing — and a figure the state could not evaluate, or any error or timeout, refuses outright rather than approving by default. [Corrected 2026-09-12 by ADR 0052. This rule read "Both gates return veto or silence. Neither ever returns approval. Errors and timeouts are vetoes." until then — a claim in tension with this document's own §33, whose belief-freshness check already resizes rather than only vetoing ("Reduce to conservative multiplier"), and with the fact that a deterministic pre-trade check must be able to let a compliant order through. `qip-risk-engine::pretrade::PreTradeDecision`'s `Approved`/`Reduced`/`Rejected` shape is the structural form of the rule as corrected, not a violation of the rule as it previously read.]
 18
 Cycles are gated as a unit. Never approve or fire a leg independently.
 19
