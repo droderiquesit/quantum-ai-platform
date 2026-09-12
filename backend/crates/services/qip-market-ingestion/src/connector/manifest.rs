@@ -824,6 +824,20 @@ pub struct SourceManifest {
     /// Most events one response may yield, so a well-formed large answer
     /// cannot become an unbounded allocation downstream.
     pub max_events_per_batch: usize,
+    /// The §7.6.1 category this platform's own authors declare the source to
+    /// be — a marketplace for an exchange's price feed, government and trade
+    /// data for a central bank's reference rates.
+    ///
+    /// Declared, never inferred: it is the same shape of claim
+    /// `qip_data_finder::category::ContentSignal` is for a discovered
+    /// candidate, made here by whoever wrote the adapter and reviewed like
+    /// the rest of the manifest. `None` is a manifest nobody has placed in
+    /// the table, and the finder's `AdmittedSource` refuses to build a data
+    /// reference for such a source rather than guess where it belongs. Optional
+    /// in the wire shape so a manifest written before the field existed still
+    /// parses; what it cannot do without one is be referenced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<qip_financial::category::SourceCategory>,
 }
 
 impl SourceManifest {

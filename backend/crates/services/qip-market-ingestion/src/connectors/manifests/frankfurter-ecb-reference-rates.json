@@ -31,5 +31,6 @@
   "freshness_sla_ms": 345600000,
   "publication_delay_ms": 57600000,
   "licensing": "public",
-  "max_events_per_batch": 64
+  "max_events_per_batch": 64,
+  "category": "government_and_trade"
 }

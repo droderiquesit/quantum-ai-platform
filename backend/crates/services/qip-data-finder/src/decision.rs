@@ -441,7 +441,7 @@ pub struct RegisteredSource {
     /// The §7.6.1 category the finder placed this source in at registration,
     /// where classification succeeded. `None` means the candidate declared no
     /// [`crate::category::ContentSignal`] or declared one
-    /// [`SourceCategory::classify`] refused — a fact distinct from "surface
+    /// [`crate::category::classify`] refused — a fact distinct from "surface
     /// news", which is itself outside the eight categories. A source with no
     /// recorded category cannot back a [`crate::reference::DataReference`]:
     /// see that type's constructor.

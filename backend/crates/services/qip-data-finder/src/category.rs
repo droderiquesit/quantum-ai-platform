@@ -8,6 +8,14 @@
 //! question that places a candidate into one of them: "is this news, filings,
 //! data, discussion, a marketplace, a leak forum?"
 //!
+//! The eight-variant enum itself lives in [`qip_financial::category`] and is
+//! re-exported here under the path it was born with. It moved down one layer
+//! because a shipped connector manifest in `qip-market-ingestion` now
+//! *declares* a category too, and that crate sits below this one on the
+//! dependency edge: an enum kept here could never be written into a manifest,
+//! and a second enum there would be two copies of one table. What stays here
+//! is the part that decides — [`ContentSignal`] and [`classify`].
+//!
 //! That question cannot be answered by inference in this crate: nothing here
 //! reads a page (§7.4's own Sample stage, which does, is not built — see
 //! `docs/DELIVERY-STATUS.md`'s row for it). What a directory listing, an
@@ -16,157 +24,72 @@
 //! of pre-probe evidence [`crate::tier::TierEvidence::from_candidate`] already
 //! builds from a candidate's own description, extended to a second question.
 //!
-//! [`SourceCategory::classify`] is the refusal this module exists to hold:
-//! "news" and "discussion" in the blueprint's own question are deliberately
-//! *not* among the eight categories a source can land in, because neither
-//! names anything about a source recurring, lawful and useful the way the
-//! table's eight do — a general news wire is a surface-web feed the ordinary
-//! §7.3 pipeline already ingests, and unspecialised discussion is exactly the
-//! shape a forum has before someone has read enough of it to say what it is
-//! forums *about*. A leak forum is excluded for the reason §7.5 gives one a
-//! hard line: no category on this table describes a source whose defining
-//! trait is that it deals in what should not have been shared. Force-fitting
-//! any of the three into the nearest category would be exactly the "refuse
-//! rather than guess" failure `.claude/rules/00-enterprise-governance.md`
-//! exists to prevent — a category assigned because something has to be
-//! assigned reads downstream as a finding, and it would not be one.
+//! [`classify`] is the refusal this module exists to hold: "news" and
+//! "discussion" in the blueprint's own question are deliberately *not* among
+//! the eight categories a source can land in, because neither names anything
+//! about a source recurring, lawful and useful the way the table's eight do —
+//! a general news wire is a surface-web feed the ordinary §7.3 pipeline
+//! already ingests, and unspecialised discussion is exactly the shape a forum
+//! has before someone has read enough of it to say what it is forums *about*.
+//! A leak forum is excluded for the reason §7.5 gives one a hard line: no
+//! category on this table describes a source whose defining trait is that it
+//! deals in what should not have been shared. Force-fitting any of the three
+//! into the nearest category would be exactly the "refuse rather than guess"
+//! failure `.claude/rules/00-enterprise-governance.md` exists to prevent — a
+//! category assigned because something has to be assigned reads downstream as
+//! a finding, and it would not be one.
 
 use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
-/// One of the blueprint's eight kinds of deep-web source.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceCategory {
-    /// Full-text filing search, company registers, transparency registers,
-    /// broker records, court dockets, patent and trademark offices.
-    RegulatoryAndLegal,
-    /// Customs and trade data, procurement portals, permit filings, drug and
-    /// device approvals, energy and utility regulators, statistical agencies.
-    GovernmentAndTrade,
-    /// Investor relations, product and pricing pages, job postings, press
-    /// rooms, developer changelogs, status pages.
-    CorporateSelfDisclosure,
-    /// Vessel tracking, port authorities, satellite imagery services,
-    /// commodity inventory reports, weather services.
-    PhysicalAndGeospatial,
-    /// Developer forums, repository activity, governance forums for on-chain
-    /// projects, specialist trade forums.
-    CommunityAndTechnical,
-    /// Pre-print servers, working paper series, conference proceedings.
-    Academic,
-    /// Product listings, price histories, inventory levels, auction results.
-    Marketplace,
-    /// The official pages that determine event outcomes.
-    ResolutionSource,
-}
+pub use qip_financial::category::SourceCategory;
 
-impl SourceCategory {
-    /// The eight categories, in the blueprint's own table order.
-    pub const ALL: [Self; 8] = [
-        Self::RegulatoryAndLegal,
-        Self::GovernmentAndTrade,
-        Self::CorporateSelfDisclosure,
-        Self::PhysicalAndGeospatial,
-        Self::CommunityAndTechnical,
-        Self::Academic,
-        Self::Marketplace,
-        Self::ResolutionSource,
-    ];
-
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::RegulatoryAndLegal => "regulatory_and_legal",
-            Self::GovernmentAndTrade => "government_and_trade",
-            Self::CorporateSelfDisclosure => "corporate_self_disclosure",
-            Self::PhysicalAndGeospatial => "physical_and_geospatial",
-            Self::CommunityAndTechnical => "community_and_technical",
-            Self::Academic => "academic",
-            Self::Marketplace => "marketplace",
-            Self::ResolutionSource => "resolution_source",
+/// Classify from what is declared about a location, refusing rather than
+/// guessing when the declaration does not cleanly name one of the eight.
+///
+/// `None` is refused outright: a candidate nobody has said anything about
+/// beyond its endpoint has not been classified, and defaulting it to any one
+/// category — even the most common — would be exactly the guess this
+/// function exists not to make.
+pub fn classify(signal: Option<&ContentSignal>) -> Result<SourceCategory> {
+    let Some(signal) = signal else {
+        return Err(Error::invalid(
+            "no content signal is declared for this candidate; classification asks what a \
+             location actually is — a filing search, customs data, a press room, a \
+             specialist forum — and a candidate with nothing declared cannot be placed in a \
+             category rather than guessed into one. Declare one with \
+             `SourceCandidate::with_content_signal`",
+        ));
+    };
+    match signal {
+        ContentSignal::RegulatoryFiling | ContentSignal::CourtDocket => {
+            Ok(SourceCategory::RegulatoryAndLegal)
         }
-    }
-
-    /// The signal this category carries, per §7.6.1's own table — used only
-    /// in decision records and banners, never as an input to a decision.
-    pub const fn signal(&self) -> &'static str {
-        match self {
-            Self::RegulatoryAndLegal => {
-                "corporate events before they are news, litigation exposure, ownership \
-                 changes, innovation pipelines"
-            }
-            Self::GovernmentAndTrade => {
-                "real activity before it reaches an income statement: supply chain \
-                 movement, regulatory outcomes"
-            }
-            Self::CorporateSelfDisclosure => {
-                "hiring velocity, price changes, product launches, outages — all public, \
-                 all leading"
-            }
-            Self::PhysicalAndGeospatial => {
-                "physical flow that precedes financial flow: commodity supply, freight \
-                 congestion"
-            }
-            Self::CommunityAndTechnical => {
-                "sentiment and intent that is public but unaggregated, protocol changes \
-                 before they ship"
-            }
-            Self::Academic => "methods and findings before they are commercialised",
-            Self::Marketplace => "direct input to product arbitrage and to consumer demand signals",
-            Self::ResolutionSource => {
-                "what prediction markets settle on; knowing the source is knowing the \
-                 answer's timing"
-            }
+        ContentSignal::CustomsOrTradeData | ContentSignal::GovernmentProcurement => {
+            Ok(SourceCategory::GovernmentAndTrade)
         }
-    }
-
-    /// Classify from what is declared about a location, refusing rather than
-    /// guessing when the declaration does not cleanly name one of the eight.
-    ///
-    /// `None` is refused outright: a candidate nobody has said anything about
-    /// beyond its endpoint has not been classified, and defaulting it to any
-    /// one category — even the most common — would be exactly the guess this
-    /// function exists not to make.
-    pub fn classify(signal: Option<&ContentSignal>) -> Result<Self> {
-        let Some(signal) = signal else {
-            return Err(Error::invalid(
-                "no content signal is declared for this candidate; classification asks what a \
-                 location actually is — a filing search, customs data, a press room, a \
-                 specialist forum — and a candidate with nothing declared cannot be placed in a \
-                 category rather than guessed into one. Declare one with \
-                 `SourceCandidate::with_content_signal`",
-            ));
-        };
-        match signal {
-            ContentSignal::RegulatoryFiling | ContentSignal::CourtDocket => {
-                Ok(Self::RegulatoryAndLegal)
-            }
-            ContentSignal::CustomsOrTradeData | ContentSignal::GovernmentProcurement => {
-                Ok(Self::GovernmentAndTrade)
-            }
-            ContentSignal::InvestorRelations
-            | ContentSignal::CorporatePressRoom
-            | ContentSignal::JobPostings => Ok(Self::CorporateSelfDisclosure),
-            ContentSignal::VesselOrPortTracking | ContentSignal::SatelliteOrWeatherImagery => {
-                Ok(Self::PhysicalAndGeospatial)
-            }
-            ContentSignal::DeveloperOrRepositoryActivity | ContentSignal::SpecialistTradeForum => {
-                Ok(Self::CommunityAndTechnical)
-            }
-            ContentSignal::PreprintOrWorkingPaper => Ok(Self::Academic),
-            ContentSignal::ProductListingOrAuction => Ok(Self::Marketplace),
-            ContentSignal::EventResolutionPage => Ok(Self::ResolutionSource),
-            ContentSignal::GeneralNews
-            | ContentSignal::UnspecialisedDiscussion
-            | ContentSignal::LeakForum => Err(Error::invalid(format!(
-                "`{}` fits none of the eight source categories cleanly. §7.4's own Classify \
-                 question is \"is this news, filings, data, discussion, a marketplace, a leak \
-                 forum?\" — general news, unspecialised discussion and a leak forum are exactly \
-                 the three shapes that question names and none of the eight admits, so the \
-                 candidate is refused rather than force-fit into whichever category is nearest",
-                signal.as_str()
-            ))),
+        ContentSignal::InvestorRelations
+        | ContentSignal::CorporatePressRoom
+        | ContentSignal::JobPostings => Ok(SourceCategory::CorporateSelfDisclosure),
+        ContentSignal::VesselOrPortTracking | ContentSignal::SatelliteOrWeatherImagery => {
+            Ok(SourceCategory::PhysicalAndGeospatial)
         }
+        ContentSignal::DeveloperOrRepositoryActivity | ContentSignal::SpecialistTradeForum => {
+            Ok(SourceCategory::CommunityAndTechnical)
+        }
+        ContentSignal::PreprintOrWorkingPaper => Ok(SourceCategory::Academic),
+        ContentSignal::ProductListingOrAuction => Ok(SourceCategory::Marketplace),
+        ContentSignal::EventResolutionPage => Ok(SourceCategory::ResolutionSource),
+        ContentSignal::GeneralNews
+        | ContentSignal::UnspecialisedDiscussion
+        | ContentSignal::LeakForum => Err(Error::invalid(format!(
+            "`{}` fits none of the eight source categories cleanly. §7.4's own Classify \
+             question is \"is this news, filings, data, discussion, a marketplace, a leak \
+             forum?\" — general news, unspecialised discussion and a leak forum are exactly \
+             the three shapes that question names and none of the eight admits, so the \
+             candidate is refused rather than force-fit into whichever category is nearest",
+            signal.as_str()
+        ))),
     }
 }
 
@@ -301,7 +224,7 @@ mod tests {
         ];
         for (signal, expected) in cases {
             assert_eq!(
-                SourceCategory::classify(Some(&signal))?,
+                classify(Some(&signal))?,
                 expected,
                 "{signal:?} did not classify into {expected:?}"
             );
@@ -314,8 +237,8 @@ mod tests {
     /// category admits is refused, not force-fit into the nearest row.
     ///
     /// Mutated by replacing the `Err` arm with, e.g.,
-    /// `Ok(Self::CorporateSelfDisclosure)` for `GeneralNews` — confirmed to
-    /// fail this assertion, then restored.
+    /// `Ok(SourceCategory::CorporateSelfDisclosure)` for `GeneralNews` —
+    /// confirmed to fail this assertion, then restored.
     #[test]
     fn a_signal_that_fits_no_category_is_refused_rather_than_force_fit() {
         for signal in [
@@ -323,7 +246,7 @@ mod tests {
             ContentSignal::UnspecialisedDiscussion,
             ContentSignal::LeakForum,
         ] {
-            let error = SourceCategory::classify(Some(&signal))
+            let error = classify(Some(&signal))
                 .expect_err(&format!("{signal:?} was classified into a category"));
             assert_eq!(error.code(), "invalid", "got {error:?}");
             assert!(
@@ -340,8 +263,7 @@ mod tests {
     /// holds, applied to a second question.
     #[test]
     fn no_declared_signal_is_refused_rather_than_defaulted() {
-        let error =
-            SourceCategory::classify(None).expect_err("an unclassified candidate was classified");
+        let error = classify(None).expect_err("an unclassified candidate was classified");
         assert_eq!(error.code(), "invalid", "got {error:?}");
         assert!(
             error.message().contains("no content signal is declared"),

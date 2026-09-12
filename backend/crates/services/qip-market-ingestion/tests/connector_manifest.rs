@@ -749,3 +749,63 @@ fn the_one_header_manifests_written_before_the_companion_existed_still_validate(
     }
     Ok(())
 }
+
+/// Every shipped manifest declares the §7.6.1 category its authors place the
+/// source in, so the finder's catalogue door can build a data reference for
+/// it without guessing (ADR 0057).
+///
+/// The categories are asserted by name rather than merely `is_some()`: a
+/// manifest that declared the ECB reference rates a marketplace would pass a
+/// presence check and mislabel every reference built from it. The Kalshi
+/// declaration is `marketplace` and not `resolution_source` on purpose — the
+/// connector decodes yes-price *quotes* on open contracts, which is price
+/// history on a venue, and the blueprint's resolution source is "the official
+/// pages that determine event outcomes", which those quotes settle against
+/// rather than are.
+///
+/// Mutated by deleting the `category` line from the Frankfurter manifest —
+/// confirmed this test then fails naming that source, then restored.
+#[test]
+fn every_shipped_manifest_declares_the_category_its_authors_place_it_in() -> Result<()> {
+    use qip_financial::category::SourceCategory;
+    let expected = [
+        (
+            coinbase_ticker::CoinbaseTickerConnector::shipped_manifest()?,
+            SourceCategory::Marketplace,
+        ),
+        (
+            alpaca_bars::AlpacaBarsConnector::shipped_manifest()?,
+            SourceCategory::Marketplace,
+        ),
+        (
+            frankfurter_rates::FrankfurterRatesConnector::shipped_manifest()?,
+            SourceCategory::GovernmentAndTrade,
+        ),
+        (
+            kalshi_markets::KalshiMarketsConnector::shipped_manifest()?,
+            SourceCategory::Marketplace,
+        ),
+    ];
+    // Premise: the table above covers every source the build can open, so a
+    // fifth connector added without a declaration is caught here rather than
+    // at the door.
+    assert_eq!(
+        expected.len(),
+        qip_market_ingestion::connector_feed::KNOWN_SOURCES.len(),
+        "a known source is missing from this table"
+    );
+    for (manifest, category) in expected {
+        assert_eq!(
+            manifest.category,
+            Some(category),
+            "{} does not declare the category its authors placed it in",
+            manifest.source_id
+        );
+    }
+    // And the fixture manifest the runtime tests use declares none, which is
+    // what proves the field is optional in the wire shape and required only
+    // at the door.
+    let fixture = SourceManifest::from_json(&manifest_json("test-source", 0, "1.0"))?;
+    assert_eq!(fixture.category, None);
+    Ok(())
+}

@@ -98,7 +98,7 @@ pub struct SourceCandidate {
     /// What the discoverer says this location actually is — a filing search,
     /// customs data, a press room. `None` until
     /// [`Self::with_content_signal`] declares one, and never a default: see
-    /// [`crate::category::SourceCategory::classify`] for why a candidate
+    /// [`crate::category::classify`] for why a candidate
     /// nobody has said anything about is unclassified rather than guessed.
     #[serde(default)]
     content_signal: Option<ContentSignal>,
@@ -152,7 +152,7 @@ impl SourceCandidate {
     /// question existed, and a required field would force each of them to
     /// state a claim about content nothing in this crate reads. A candidate
     /// with no declared signal is simply unclassified —
-    /// [`crate::category::SourceCategory::classify`] refuses it rather than
+    /// [`crate::category::classify`] refuses it rather than
     /// guessing.
     pub fn with_content_signal(mut self, signal: ContentSignal) -> Self {
         self.content_signal = Some(signal);

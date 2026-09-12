@@ -44,5 +44,6 @@
   "freshness_sla_ms": 345600000,
   "publication_delay_ms": 61200000,
   "licensing": "restricted",
-  "max_events_per_batch": 20
+  "max_events_per_batch": 20,
+  "category": "marketplace"
 }

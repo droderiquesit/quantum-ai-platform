@@ -56,10 +56,14 @@ use qip_contracts::governance::Usage;
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_financial::quality::LicensingClass;
+use qip_market_ingestion::connector::{FieldKind, SchemaContract, SourceManifest};
 use qip_market_ingestion::connector_feed::KNOWN_SOURCES;
+use serde::{Deserialize, Serialize};
 
+use crate::category::SourceCategory;
 use crate::legal::{LicensingPosture, SourceLicense};
 use crate::registration::{RegistrationRegistry, RegistrationStanding};
+use crate::schema::{FieldType, SourceSchema};
 
 /// One catalogued source: the evaluation of its actual terms.
 ///
@@ -84,6 +88,19 @@ pub struct CatalogueEntry {
 /// The usages every source is asked about before it may feed the loop.
 pub const REQUIRED_USAGES: [Usage; 2] = [Usage::Derive, Usage::Trade];
 
+/// Proof that [`admit_from_registered`] ran and said yes.
+///
+/// A zero-sized value with no public constructor, held privately by
+/// [`LicensingDecision`]. Every other field of that type is public so a
+/// banner can read it, which until this marker existed also meant any code
+/// could *write* one — a struct literal naming a licence nobody evaluated
+/// would have been indistinguishable from the gate's own answer. Now a
+/// decision can only be minted at the one site in this module that has just
+/// asked every usage question, so a type that takes `&LicensingDecision` as
+/// its precondition is genuinely gated on the licence having been read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GatePassed(());
+
 /// What the gate decided, for the banner and the record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LicensingDecision {
@@ -99,6 +116,8 @@ pub struct LicensingDecision {
     /// decision on a keyless source says "keyless" rather than nothing.
     pub registration: RegistrationStanding,
     pub decided_at: Timestamp,
+    /// See [`GatePassed`]: the one field a caller cannot supply.
+    gate: GatePassed,
 }
 
 impl LicensingDecision {
@@ -343,7 +362,194 @@ pub fn admit_from_registered(
         usages: REQUIRED_USAGES.to_vec(),
         registration,
         decided_at: now,
+        gate: GatePassed(()),
     })
+}
+
+/// A shipped connector source the licensing gate admitted, as the finder's
+/// reference machinery sees it — the second, honestly-labelled door into the
+/// source registry (ADR 0057).
+///
+/// # Why this is not a `RegisteredSource`
+///
+/// [`crate::decision::RegisteredSource`] is what the discovery pipeline
+/// produces for a previously-unknown URL, and it carries what that pipeline
+/// gathered: probe evidence (robots.txt, a HEAD, a payload sample), a scored
+/// `Routing`, a `SourceLineage` naming where the candidate was found. None of
+/// that ever happened to a connector this platform's own authors wrote an
+/// adapter for, and a `RegisteredSource` built for one would either claim
+/// evidence nobody gathered or hold defaults that read as findings. This type
+/// carries exactly what *did* happen — the catalogue's licensing evaluation,
+/// the manifest's declared category and schema — and nothing else. A
+/// [`crate::reference::DataReference`] records which door it came through in
+/// its [`crate::reference::SourceOrigin`], so the two are never confused
+/// downstream.
+///
+/// # The gate is still the only way in
+///
+/// The one constructor takes a [`LicensingDecision`], which can only be
+/// minted by [`admit_from_registered`] after every usage question has been
+/// answered `permitted` — see [`GatePassed`]. There is no path from a
+/// catalogue entry whose posture is ambiguous, or from a manifest alone, to a
+/// value of this type.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AdmittedSource {
+    source_id: String,
+    provider: String,
+    category: SourceCategory,
+    licence: String,
+    class: LicensingClass,
+    /// The shape the manifest's schema contract declares, in the finder's own
+    /// versioned form, so a reference from this door carries the same kind of
+    /// schema a discovered source's does.
+    schema: SourceSchema,
+    /// The manifest's path and fixed query — the locator prefix every fetch
+    /// from this source shares.
+    endpoint: String,
+    admitted_at: Timestamp,
+}
+
+impl AdmittedSource {
+    /// Bind the gate's decision to the manifest it was decided about.
+    ///
+    /// Refuses:
+    /// * a decision and a manifest that name different sources — two claims
+    ///   about two sources are not one admission;
+    /// * a manifest whose licensing class disagrees with the class the
+    ///   decision recorded, for the reason [`admit_from_registered`] refuses
+    ///   the same disagreement: neither claim is then current;
+    /// * a `Synthetic` class — a stream this platform generates is not a
+    ///   vendor source and has its own origin
+    ///   ([`crate::reference::SourceOrigin::Generated`]);
+    /// * a manifest that declares no category. A reference must say what kind
+    ///   of source it came from, and for a shipped connector the only honest
+    ///   answer is the one its authors wrote down.
+    pub fn from_decision(decision: &LicensingDecision, manifest: &SourceManifest) -> Result<Self> {
+        if decision.source_id != manifest.source_id {
+            return Err(Error::invalid(format!(
+                "the licensing decision names `{}` and the manifest names `{}`; an admission \
+                 is one decision about one source, and these are two",
+                decision.source_id, manifest.source_id
+            )));
+        }
+        if decision.class != manifest.licensing {
+            return Err(Error::denied(format!(
+                "the manifest for {} declares licensing class `{:?}` and the decision that \
+                 admitted it was taken against `{:?}`. Two claims about one licence disagree, \
+                 so neither is treated as current; re-run the gate against this manifest",
+                manifest.source_id, manifest.licensing, decision.class
+            )));
+        }
+        if manifest.licensing == LicensingClass::Synthetic {
+            return Err(Error::invalid(format!(
+                "{} declares itself `Synthetic`; a stream this platform generates is not a \
+                 vendor source and is referenced under its own origin, never through the \
+                 catalogue door",
+                manifest.source_id
+            )));
+        }
+        let category = manifest.category.ok_or_else(|| {
+            Error::invalid(format!(
+                "the manifest for {} declares no §7.6.1 category, so a data reference cannot \
+                 say what kind of source it came from; declare `category` in the manifest \
+                 rather than have this platform guess",
+                manifest.source_id
+            ))
+        })?;
+        Ok(Self {
+            source_id: manifest.source_id.clone(),
+            provider: manifest.provider.clone(),
+            category,
+            licence: decision.licence.clone(),
+            class: manifest.licensing,
+            schema: schema_of_contract(&manifest.schema),
+            endpoint: endpoint_of(manifest),
+            admitted_at: decision.decided_at,
+        })
+    }
+
+    pub fn source_id(&self) -> &str {
+        &self.source_id
+    }
+
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+
+    pub fn category(&self) -> SourceCategory {
+        self.category
+    }
+
+    pub fn licence(&self) -> &str {
+        &self.licence
+    }
+
+    pub fn class(&self) -> LicensingClass {
+        self.class
+    }
+
+    pub fn schema(&self) -> &SourceSchema {
+        &self.schema
+    }
+
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    pub fn admitted_at(&self) -> Timestamp {
+        self.admitted_at
+    }
+
+    /// One line for a banner.
+    pub fn describe(&self) -> String {
+        format!(
+            "{} admitted through the catalogue under `{}` as a {} source at {}",
+            self.source_id,
+            self.licence,
+            self.category.as_str(),
+            self.admitted_at.to_rfc3339()
+        )
+    }
+}
+
+/// The manifest's declared contract in the finder's own schema form.
+///
+/// A declared contract names required fields and their kinds; it does not
+/// enumerate the fields inside an object it names, so an object lands as
+/// `Object { fields: 0 }` — "a record whose fields the contract does not
+/// count" — and an array's element type is `Unknown`. Both read as *declared
+/// and unexamined*, which is exactly what they are, rather than as a sampled
+/// shape nobody sampled.
+fn schema_of_contract(contract: &SchemaContract) -> SourceSchema {
+    SourceSchema::from_fields(contract.required_fields.iter().map(|field| {
+        let kind = match field.kind {
+            FieldKind::String | FieldKind::DecimalString | FieldKind::Timestamp => FieldType::Text,
+            FieldKind::Number => FieldType::Number,
+            FieldKind::Bool => FieldType::Boolean,
+            FieldKind::Object => FieldType::Object { fields: 0 },
+            FieldKind::Array => FieldType::Array {
+                element: Box::new(FieldType::Unknown),
+            },
+        };
+        (field.path.clone(), kind)
+    }))
+}
+
+/// The manifest's path and fixed query, spelled the way the transport puts
+/// them on the wire — the same string `SourceRequest::target` produces for a
+/// fetch with no cursor, so a locator recorded at the runtime seam and one
+/// derived here agree byte for byte.
+fn endpoint_of(manifest: &SourceManifest) -> String {
+    let endpoint = &manifest.endpoint;
+    if endpoint.query.is_empty() {
+        return endpoint.path.clone();
+    }
+    let query: Vec<String> = endpoint
+        .query
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect();
+    format!("{}?{}", endpoint.path, query.join("&"))
 }
 
 /// The licensing gate held open for as long as a source is being polled.

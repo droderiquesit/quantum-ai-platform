@@ -10,7 +10,6 @@
 //! identifier — never from iteration order, which would make the answer depend
 //! on how the caller happened to build the list.
 
-use crate::category::SourceCategory;
 use crate::coverage::UpdateFrequency;
 use crate::decision::{
     DecisionOutcome, LifecycleStage, Reasoning, RegisteredSource, RegistrationDecision,
@@ -349,7 +348,7 @@ impl DataFinder {
         // recorded as unclassified rather than guessed — the refusal names
         // why, and registration proceeds regardless: a category is metadata
         // a `DataReference` will later require, not a legality gate.
-        let category = match SourceCategory::classify(candidate.content_signal()) {
+        let category = match crate::category::classify(candidate.content_signal()) {
             Ok(category) => {
                 reasoning.record(
                     LifecycleStage::Classify,

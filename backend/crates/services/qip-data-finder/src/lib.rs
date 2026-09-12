@@ -81,6 +81,7 @@ pub mod scoring;
 pub mod source;
 pub mod tier;
 
+pub use admission::AdmittedSource;
 pub use admission::{
     CatalogueEntry, LicensingDecision, admit, admit_from, admit_from_registered, admit_registered,
 };
@@ -108,7 +109,7 @@ pub use probe::{
     SourceProbe,
 };
 pub use quality::{SourceCost, SourceQuality};
-pub use reference::{DataPeriod, DataReference, RevisionCheck};
+pub use reference::{DataPeriod, DataReference, RevisionCheck, SourceOrigin};
 pub use registration::{
     NOT_OFFERED, RegistrationRecord, RegistrationRegistry, RegistrationRequirement,
     RegistrationStanding,
