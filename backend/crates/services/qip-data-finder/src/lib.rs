@@ -61,6 +61,7 @@
 //! for the services they cannot reach.
 
 pub mod admission;
+pub mod campaign;
 pub mod category;
 pub mod coverage;
 pub mod decision;
@@ -71,6 +72,7 @@ pub mod ingestion;
 pub mod legal;
 pub mod probe;
 pub mod quality;
+pub mod reference;
 pub mod registration;
 pub mod replacement;
 pub mod robots;
@@ -81,6 +83,10 @@ pub mod tier;
 
 pub use admission::{
     CatalogueEntry, LicensingDecision, admit, admit_from, admit_from_registered, admit_registered,
+};
+pub use campaign::{
+    CacheBound, CampaignManifest, ConcentrationVerdict, FetchCampaign, ManifestEntry,
+    ResearchCache, assess_concentration,
 };
 pub use category::{ContentSignal, SourceCategory};
 pub use coverage::{CoverageGap, CoverageMatch, SourceCoverage, SourceRegion, UpdateFrequency};
@@ -102,6 +108,7 @@ pub use probe::{
     SourceProbe,
 };
 pub use quality::{SourceCost, SourceQuality};
+pub use reference::{DataPeriod, DataReference, RevisionCheck};
 pub use registration::{
     NOT_OFFERED, RegistrationRecord, RegistrationRegistry, RegistrationRequirement,
     RegistrationStanding,

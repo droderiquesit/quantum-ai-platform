@@ -316,8 +316,8 @@ these four are commands the build runs.
 | 21.3 | Rust for Machine Learning — Honest Assessment | NARRATIVE | An assessment of where Rust is and is not adequate, and the claim that training and inference sharing feature code removes training-serving skew structurally. No deliverable of its own; the shared-feature-code claim is scored under 21.2, where the training and scoring paths are the same `LearningDesk` code. |
 | 22.1 | Retention Classes | PARTIAL | Reached: the irreplaceable-versus-replaceable distinction is enforced, not documented. `grep -n 'requires_permanent_retention' backend/crates/libs/qip-events/src/log.rs` shows the log evicting lossy-tolerable records first, then replaceable ones, and *refusing the append* rather than dropping an audit record when only permanent ones remain; the topic predicate is `grep -n 'fn requires_permanent_retention' backend/crates/libs/qip-events/src/topic.rs`. Absent: the taxonomy itself. No retention-class type covering the ten rows, no three-year fallback OHLCV series, no 90-day event-anchored roll, no per-class size accounting — `grep -rn 'RetentionClass\|fallback_series\|ohlcv' backend/crates --include=*.rs` returns nothing. |
 | 22.2 | Sufficient Statistics | PARTIAL | Reached: exactly one row of the table. `grep -n 'stats::covariance' backend/crates/runtime/qip-kernel/src/platform.rs` computes pairwise covariance in production — but from a retained return series, batch, not the exponentially weighted online update the section names. Built-not-reached: Welford (`grep -rn 'RunningStats' backend/crates --include=*.rs` — no caller) and `grep -n 'pub fn ewma' backend/crates/libs/qip-numerics/src/stats.rs` (`grep -rn 'stats::ewma(' backend/crates --include=*.rs` finds no production caller). Absent: t-digest/KLL quantiles, count-min, HyperLogLog, weighted reservoir sampling, recursive least squares, and streaming PCA — `grep -rn 'digest\|CountMin\|HyperLogLog\|eservoir\|recursive_least\|Oja' backend/crates --include=*.rs` returns nothing. |
-| 22.3 | Data References | ABSENT | `grep -rn 'DataReference\|content_hash\|cost_estimate' backend/crates --include=*.rs` returns nothing. No reference record, and in particular no content hash — the field the section calls the single most important one, because it is what flags a backtest whose source revised its history. `qip-data-finder` registers *sources* with licensing and health (`grep -n 'pub struct RegisteredSource' backend/crates/services/qip-data-finder/src/decision.rs`), which is a different object: it says a source may be used, not what was fetched from it, over what range, in what shape. |
-| 22.4 | Fetch-on-Demand for Research | ABSENT | No campaign, no TTL cache, no hash verification and no manifest: `grep -rn 'campaign\|Campaign\|TtlCache' backend/crates --include=*.rs` returns nothing. None of the five mitigations is implemented — in particular `grep -rn 'two registered\|second source\|concentration risk' backend/crates/services/qip-data-finder/src` returns nothing, so no universe is held back for having fewer than two viable sources. The whole section depends on 22.3, which does not exist. |
+| 22.3 | Data References | PARTIAL | Re-scored 2026-09-12 (ADR 0056). `DataReference` now exists with every pseudo-code field — source (by id, requiring the §7.6.1 category already recorded on the `RegisteredSource`), locator, symbols, a `DataPeriod` range, the `SourceSchema` shape, a content hash, `retrieved_at`, a `Decimal` cost estimate, and an availability fraction: `grep -n 'pub struct DataReference' -A 15 backend/crates/services/qip-data-finder/src/reference.rs`. The content hash is real and reuses the exact mechanism `SourceManifest` uses for §7.2, rather than a second scheme: `grep -n 'qip_core::sha256_hex' backend/crates/services/qip-data-finder/src/reference.rs backend/crates/libs/qip-financial/src/manifest.rs` finds both call sites. `DataReference::verify` re-hashes a re-fetch and reports a `RevisionCheck`, tested and mutation-verified (`grep -c '#\[test\]' backend/crates/services/qip-data-finder/src/reference.rs` — 3). Not `REACHED`: **no non-test caller exists.** `grep -rn 'DataReference' --include=*.rs backend/crates/apps` returns nothing — unlike §7.6.1's `SourceCategory`, which the existing `assess_one` pipeline calls automatically, nothing in this build fetches real bytes for a `DataReference` to describe (no HTTP transport is linked into this build, ADR 0009), so there is no seam yet where a composition root would construct one. That is a structural absence, not an oversight this change could close without adding a network client, which is out of scope. |
+| 22.4 | Fetch-on-Demand for Research | PARTIAL | Re-scored 2026-09-12 (ADR 0056). A named, bounded `FetchCampaign` exists — `grep -n 'pub struct FetchCampaign' -A 10 backend/crates/services/qip-data-finder/src/campaign.rs` — with a TTL- and entry-bounded `ResearchCache` that never exceeds its stated ceiling, a `CampaignManifest` that survives the campaign's close while the cache is deleted, and `assess_concentration`, closing the exact gap this row's last version named: `grep -rn 'two registered\|second source\|concentration risk' backend/crates/services/qip-data-finder/src` now finds `campaign.rs`'s own doc comments and `ConcentrationVerdict::MINIMUM_VIABLE_SOURCES = 2`. **3 of the section's 5 named mitigations are built, 1 is partial, 1 is not built** — read exactly, because rounding this to `REACHED` would overstate it: *source revises history after use* (built, hash verification + manifest flagging), *research is slower than a local copy* (built, the bounded TTL cache), *regulatory demand for data not retained* (built, the manifest), *vendor withdraws historical access* (partial — the two-sources half is `assess_concentration`; the three-year bar-level fallback series is §22.1's retention taxonomy, which that row still records as absent, and building it here would be re-scoping onto a different section's foundation), *sketch or reservoir error affects a model* (not built — §22.2's row records that no sketch exists anywhere in this codebase, so there is nothing to bound). Not `REACHED` for the same structural reason as §22.3: `grep -rn 'FetchCampaign\|assess_concentration' --include=*.rs backend/crates/apps` returns nothing, because a campaign needs real fetched bytes and this build has no transport to fetch them with. Tested and mutation-verified (`grep -c '#\[test\]' backend/crates/services/qip-data-finder/src/campaign.rs` — 5), depends on 22.3 as the blueprint requires, and was built after it in this change (ADR 0056). |
 | 23.1 | Allocation Across Ten Thousand Strategies | PARTIAL | LEVEL 1 is REACHED: `grep -n 'FamilyClustering::new' backend/crates/runtime/qip-kernel/src/central/structure.rs` clusters realised returns by stress correlation, and `grep -n 'central.family_structure(' backend/crates/runtime/qip-kernel/src/platform.rs` shows `stage_learn` calling it every cycle. LEVELs 2 and 3 are ABSENT: nothing allocates across the families or distributes a family budget by capacity — the kernel's own comment at that call site says "this measures and allocates nothing: no seam in this platform consumes a family", and `grep -rn 'FamilyId' backend/crates --include=*.rs` finds no consumer outside `qip-optimization-engine` and its tests. Cardinality constraint and effective-breadth objective: not built. |
 | 23.2 | Hardware | NARRATIVE | IBM processor counts, gate depths, fidelities and the Starling roadmap. Facts about somebody else's hardware. The one design claim — every workload sized to ~200 binary variables — has no expression in code: `grep -rn 'max_variables\|MAX_VARIABLES' backend/crates --include=*.rs` returns nothing, so nothing refuses an oversized instance. |
 | 23.3 | Regime-Conditional Allocation | ABSENT | A regime *is* classified in production — `grep -n 'fn market_regime' backend/crates/runtime/qip-kernel/src/platform.rs` — but it feeds the cost router's intelligence rung, not allocation: `grep -rn 'regime' backend/crates/services/qip-portfolio-engine/src backend/crates/services/qip-optimization-engine/src` finds two doc comments and no code, so no family weighting shifts with it and the "when uncertain, concentrate in regime-agnostic arbitrage" rule is nowhere expressed. The six-row regime/favours table has no counterpart in code. |
@@ -812,6 +812,103 @@ concurrent snapshot reported with one failure that is now explained and
 fixed); dependency policy `dependency policy: 11 third-party package(s), all
 permitted`; secret scan `secret scan: nothing found`. Terraform gates were
 not run: no Terraform file was touched.
+
+**Re-scored 2026-09-12**, three rows in sequence, closing the chain the
+blueprint itself states as ordered: §7.6.1 (Source Categories) built first,
+then §22.3 (Data References) against it, then §22.4 (Fetch-on-Demand for
+Research) against that (ADR 0056). §7.4's stale "Sample and Classify are
+likewise absent (see §7.6.1)" is corrected — Classify now exists, Sample does
+not — and §7.6.3's stale "cannot be built without §7.6.1's categories, which
+are absent" is corrected to say the categories now exist and the governance
+clause built on them (per-category human approval, auto-promoted adapters)
+still does not.
+
+§7.6.1 moves `ABSENT` → `REACHED`: `SourceCategory`, the eight-variant enum,
+and `SourceCategory::classify`, which refuses a candidate with no declared
+`ContentSignal` and refuses the three shapes §7.4's own Classify question
+names that none of the eight categories admits (general news, unspecialised
+discussion, a leak forum) rather than force-fitting one. Wired into
+`DataFinder::assess_one` at the existing `LifecycleStage::Classify` step, on
+the same production chain §7.4/§7.5/§7.6/§7.6.2 already established
+(`qip-deepbrain`'s `DiscoveryDesk` through `Platform::assess_sources`) — not
+a new, separate, unused function.
+
+§22.3 moves `ABSENT` → `PARTIAL`, not `REACHED`: `DataReference` exists with
+every field the blueprint's pseudo-code names, and the content hash — "the
+single most important field" — reuses `qip_core::sha256_hex`, the exact
+mechanism `qip_financial::manifest::SourceManifest` already uses for §7.2,
+rather than a second scheme. `DataReference::of` refuses a `RegisteredSource`
+with no recorded category, so the licensing-and-classification gate a
+`DataReference` depends on cannot be routed around. It is not `REACHED`
+because, unlike §7.6.1, it has no non-test caller: `grep -rn 'DataReference'
+--include=*.rs backend/crates/apps` returns nothing, since nothing in this
+build fetches real bytes for it to describe (no HTTP transport is linked in,
+ADR 0009) — a structural absence this change does not paper over by adding a
+network client, which was out of scope.
+
+§22.4 moves `ABSENT` → `PARTIAL`, explicitly not rounded to `REACHED`: a
+named, bounded `FetchCampaign` with a TTL- and entry-bounded `ResearchCache`,
+a `CampaignManifest` that survives the campaign's own close, and
+`assess_concentration` closing the concentration-risk gap the previous
+version of this row named by grep. Of the section's five mitigations, three
+are built in full (source revises history after use; research is slower than
+a local copy; regulatory demand for data not retained), one is partial
+(vendor withdraws historical access — the two-sources half only; the
+three-year bar-level fallback series is §22.1's still-absent retention
+taxonomy), and one is not built at all (sketch or reservoir error affects a
+model — §22.2 records that no sketch exists anywhere in this codebase for a
+bound to apply to). Same non-test-caller absence as §22.3, for the same
+reason.
+
+Twelve new tests, all in the three new modules — `category.rs` (4),
+`reference.rs` (3), `campaign.rs` (5) — each mutation-verified: the
+implementation broken, the test confirmed to fail for the stated reason, the
+code restored byte-for-byte, the test reconfirmed passing. Among them: a
+`ContentSignal` that fits no category is refused rather than force-classified
+(mutated the `Err` arm to `Ok`, confirmed failure, restored); a re-fetch with
+a different
+hash is detected as `RevisionCheck::Revised` (mutated `verify` to always
+return `Unchanged`, confirmed failure, restored); a universe backed by one
+viable source is held back (mutated `MINIMUM_VIABLE_SOURCES` to `1`,
+confirmed failure, restored).
+
+Licensing-before-use is not weakened: `RegisteredSource`'s only constructor is
+`pub(crate)`, reachable solely from `DataFinder::assess_one` after
+`RegistrationDecision::registered` has already refused to run unless
+`LegalAssessment::overall().is_permitted()` (`LicensingPosture::legality_for`
+is what answers that). `DataReference::of` takes `&RegisteredSource`, so
+there is no path from an unlicensed candidate to a `DataReference` or a
+`FetchCampaign` entry — `grep -n 'RegisteredSource::new'
+backend/crates/services/qip-data-finder/src/*.rs` finds exactly the one call
+site, after the gate.
+
+Gate: `cargo fmt --all --check` clean; `cargo clippy --workspace
+--all-targets` zero warnings across all 58 crates; `cargo test -p
+qip-data-finder --no-fail-fast` **123 passed, 0 failed** across the crate's
+lib tests, all nine integration suites, and its one doc-test; dependency
+policy `dependency policy: 11 third-party package(s), all permitted`; secret
+scan `secret scan: nothing found`. `cargo test --workspace --no-fail-fast`
+reported **4893 passed, 2 failed** — both failures (`qip-kernel`'s
+`platform::counterfactual_sizing_tests::a_pattern_of_wrongly_declined_paths_
+never_widens_sizing` and `tests/learning.rs`'s
+`a_persistent_pattern_of_unfavourable_declines_on_one_instrument_narrows_only_
+that_instruments_sizing`) are the concurrent §12.3 lane's in-progress work:
+`git status` at the time showed `backend/crates/runtime/qip-kernel/src/
+platform.rs` and `backend/crates/runtime/qip-kernel/tests/learning.rs` as
+modified, uncommitted, and untouched by this change, and both failing tests
+assert against `ADR 0055`'s not-yet-passing discount arithmetic.
+`RegisteredSource::new` is `pub(crate)`, so no cross-crate effect from this
+change is possible into
+`qip-kernel`; the full-workspace clippy pass (zero warnings across all 58
+crates including `qip-kernel`) confirms this change compiles cleanly
+everywhere it is visible. Left for the §12.3 lane to land against a clean
+tree, as the immediately preceding two entries in this section already
+describe the same shared-checkout hazard occurring twice before. Two
+doc-test targets (`qip-cli`, `qip-deepbrain`, `qip-fastbrain`) also failed
+transiently in the same full-workspace run with `error[E0463]: can't find
+crate for qip_api` under a concurrent cargo lock ("Blocking waiting for file
+lock on artifact directory"); re-run individually once the lock cleared, all
+three passed. Terraform gates were not run: no Terraform file was touched.
 
 To re-score a row: read the section in
 `docs/architecture/algorik-blueprint-v10.1-source.md`, run the row's command,
