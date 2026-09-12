@@ -24,6 +24,26 @@ made from the vendor. Sections 3, 5 and 7, the mitigation table, the checks
 and the costs are the amended text; the earlier claims they replace are
 named where they stood.
 
+**Amended in place a third time, 2026-09-12**, after the second round of
+repairs (`8a19737..2c954cd`) was re-reviewed by a fresh security-engineer
+and a fresh code-reviewer: one high finding, two medium, three should-fix
+and a set of lower ones, every one fixed in the commits that follow
+`2c954cd`. Nothing this record *decides* changes; four things it *claimed*
+were false or unpinned and are corrected below. The retained-chain check
+failed on any log with an interior eviction, so `Platform::new` refused to
+restart over its own honest log (§3, now stated with what the chain
+actually proves: unkeyed SHA-256, ADR 0043). A stream's provenance was
+inferred from the configuration and pinned by nothing; it is now the
+adapter's own answer (§5). The connector arm accepted any plaintext
+`http://` host in the process, with the loopback rule held by Terraform
+alone; it is refused at three seams now (§7). And the test this record
+cited as proof that replays never lift the hold iterated an empty history
+(§7, corrected to what holds it). The checks and costs carry the smaller
+findings: a poll's ledger and checkpoint as one adopt-on-success write,
+one process per log file, the sketch's rows held to its total, the
+reference's locator held to its door and its hash to its shape, and each
+source observed as soon as its own poll succeeds.
+
 **Relates to:** blueprint §22.1 (Retention Classes), §22.2 (Sufficient
 Statistics), §22.3 (Data References), §22.4 (Fetch-on-Demand for Research),
 §56.3 rules 30 and 31, §56.4 rules 33 and 35
@@ -182,9 +202,28 @@ restored every frame verbatim — so a frame edited on disk, or forged into a
 shape `build_hashed` refuses, became the ledger's latest reference. Now both
 types deserialise through their constructors (`#[serde(try_from)]`, the
 `ErrorBound` pattern), the retained chain is verified before any frame is
-restored (`EventLog::verify_retained_chain`, held to genesis only when the
-log still starts there, because a capped log evicts its head at load) and a
-broken link refuses the resume by sequence, the fabric journal's posture. A
+restored (`EventLog::verify_retained_chain`) and a broken link refuses the
+resume by sequence, the fabric journal's posture.
+
+The third review found that check wrong in the other direction. The log
+evicts its oldest evictable record *wherever it sits*, so once a permanent
+record — a closed campaign, a revision — is older than every evictable
+one, the next eviction opens a gap in the interior of the retained span;
+the check re-anchored only the head and then held every record to its
+retained predecessor, so it failed at the first record after such a gap,
+and a file-backed deep brain refused every restart over its own honest log
+naming tampering. Now every record's own hash is recomputed, a link is
+held only between consecutive sequences, and across a gap the record is
+re-anchored on its claimed predecessor exactly as the head is — the same
+trust level, no new assumption. A gap can be read as an eviction because
+the file cannot have one: `EventLog::open_with_capacity` refuses a file
+whose sequences are not contiguous from one, before any hash is looked at,
+so a line removed from the file is refused at load and never reaches the
+retained check as a gap. What the chain proves is stated exactly, because
+the refusal's wording overclaimed it: it is **unkeyed SHA-256** (ADR 0043's
+anchoring gap), so a broken link means the bytes read are not the bytes
+written — a payload edited with its hash left as written — and not that a
+writer who could recompute every hash after it has been kept out. A
 catalogue-admitted reference counts as backing only while this process
 holds the source's admission (`Platform::sources_backing` intersects the
 ledger with the admission table; `Platform::withdraw_source` is what a
@@ -278,7 +317,19 @@ cycle count restarts at one in every process and after any restart every
 manifest was suppressed as a duplicate of the previous run's while the
 round line said "manifest journaled"; `Platform::journal_campaign` now
 returns whether it wrote and `assemble` refuses a `false` for an id it has
-just minted.
+just minted. The summary carries no `journaled` flag: a summary exists only
+past that refusal, so the bool the second amendment added had one value,
+and `describe` states the fact instead.
+
+Which stream is a replay is, since the third amendment, the adapter's own
+answer — `DataAdapter::provenance`, `Live` by default and `Replayed` for
+the two adapters that read a file, `ReplayAdapter` and `TapeFeed` — and
+not an inference. The engine read `Replayed` off the presence of a standing
+admission, a fact about the configuration rather than the bytes: an
+undeclared replay read as live, and nothing at the engine level pinned it,
+so a mutation to "always live" was caught by no test. `StreamProvenance`
+lives in `qip-market-ingestion` beside the trait and the campaign
+re-exports it.
 
 ### 6. Rule 31's consequence: promotion past validation is gated
 
@@ -332,9 +383,38 @@ the reason beside it, rendered into the deep brain's catalogue entry in a
 conditional arm so `manifest_wiring.rs`'s allowlist gains nothing. Proven
 end to end over scripted transports through the real gate and runtime:
 two live admitted connectors over one subject lift the hold and one does
-not (`two_live_admitted_connectors_over_one_subject_lift_the_hold_and_one_does_not`),
-and replays never do
-(`replays_under_two_vendors_admissions_back_no_vendor_and_never_lift_the_hold`).
+not (`two_live_admitted_connectors_over_one_subject_lift_the_hold_and_one_does_not`).
+
+That replays never do was, until the third amendment, cited to
+`replays_under_two_vendors_admissions_back_no_vendor_and_never_lift_the_hold`,
+whose closing check iterated the engine's bar history — and a tick replay
+has none, so it ran zero times. What actually held the door was the
+campaign-level
+`a_replay_under_admission_is_referenced_through_the_replayed_door_and_backs_no_vendor`
+and, at the ledger, `a_replay_under_a_connectors_admission_is_not_a_vendor`.
+The engine test now asserts its premise and asks `sources_backing`
+directly over a subject given bars by hand, with a second vendor's
+reference on the ledger through the replayed door: both read
+`ReplayedAdmitted`, the verdict counts zero vendors, and two mutations —
+`is_independent_vendor` widened, the `Replayed` arm deleted — each fail it.
+
+Three more corrections to this section from the same review. The arm
+accepted any plaintext `http://` host in the process: `connector_feed`
+refused only `https://`, and the loopback requirement lived in
+`variables.tf`'s validation alone, on the one binary with an egress path.
+`qip_market_ingestion::connector_feed::require_loopback_egress` — an
+absolute `http://` URL whose host is `127.0.0.1` or `localhost`, nothing
+else — is now called at three seams: `ConnectorFeed::open`, the deep
+brain's parser and, for parity, the fast brain's. Terraform catches the
+committed mistake, the process the unreviewed one. Multi-arm `sense`
+collected every source's records into one batch and observed it at the
+end, so an arm whose poll refused after an earlier arm had referenced,
+journaled and committed its fetch left that batch neither delivered nor
+re-fetchable — the loss `poll_referencing` closes inside one poll,
+re-opened one seam up; each source is now observed the moment its own
+poll succeeds, and nothing accumulates across the loop. And
+`ConnectorArm::shutdown` had no caller; the root releases every arm's
+session after the flush.
 
 ## Which of §22.4's five mitigations this closes — read exactly
 
@@ -372,8 +452,29 @@ mutation-verified.
   `RevisionRecord` and `CountMinSketch` deserialise through their
   constructors — the first two had a derive that the first amendment's
   claim overlooked, and the sketch's accepted a zero width. The chain over
-  the log's retained span is verified before a frame is restored. Each
-  refusal has a test and each test was mutated.
+  the log's retained span is verified before a frame is restored. Since
+  the third amendment the wire gates hold more than shape: a
+  `DataReference` is refused unless its `replay://` locator and its
+  `ReplayedAdmitted` origin come together or not at all, and unless its
+  hash is sixty-four lowercase hex digits — an uppercase copy of a digest
+  would have read as a revision of the extent — and a `CountMinSketch` is
+  refused unless every row sums to its declared total, which is the
+  count its error bound is stated against. Each refusal has a test and
+  each test was mutated.
+- **The connector base URL is loopback in the process, not only in
+  Terraform.** `require_loopback_egress` at `ConnectorFeed::open` and both
+  brains' parsers; an `https` address, an RFC 1918 host, a vendor host, a
+  `127.0.0.1.evil.example` host and a bare authority are each refused by a
+  test, and both spellings of loopback admitted.
+- **One process per log file, and one journal step per poll.**
+  `EventLog::open_with_capacity` takes an exclusive advisory lock
+  (`std::fs::File::try_lock`, which is why the workspace's declared MSRV
+  is 1.89) and refuses a log another handle holds, so two writers cannot
+  mint one sequence — the uniqueness campaign ids claim across restarts
+  was silently false across concurrent writers. `StreamJournal::record_and_commit`
+  writes the ledger, then the checkpoint, and adopts the ledger only once
+  both succeeded, so a failed write bills the re-fetch once and never
+  leaves the durable checkpoint ahead of what was delivered.
 - **The paper-trading boundary is untouched.** No file under
   `qip-risk-engine`, `qip-execution-engine`, `qip-capital`, `qip-edge` or
   `infrastructure/terraform` changed; the only promotion touched is the
@@ -551,6 +652,26 @@ refusal path and the memory bound a many-subject campaign would draw on.
 **Eviction by insertion order** means a re-fetched extent ages out on the
 ledger's schedule, not its own; the trade is stated in the ledger's doc.
 
+**A log a running node holds cannot be opened by anything else, the CLI's
+replay included.** The lock is exclusive and this type has no read-only
+open that could promise a reader a whole record mid-append; copy the file
+first. It is advisory: it holds against everything that opens the file
+through `EventLog` and against nothing that writes the bytes another way.
+
+**The journal's two keys are two writes.** A ledger write that succeeds
+before a checkpoint write that fails leaves the durable ledger one poll
+ahead of the process until the next successful write overwrites it whole;
+the test asserts that gap rather than hiding it.
+
+**The `Discovered` door has no live gate at `sources_backing`.** The
+discovery path's registration reaches no real bytes in production
+(`NetworkProbe` refuses every call), so nothing puts one on the ledger;
+the day one does, it needs the same intersection the catalogue door has.
+
+**The declared MSRV is 1.89.** `File::try_lock` stabilised there; the
+pinned toolchain is well past it, and the lints the raise woke were
+applied rather than silenced.
+
 ## What would make this wrong
 
 - **A third door with no gate.** A constructor for `AdmittedSource`,
@@ -587,3 +708,11 @@ ledger's schedule, not its own; the trade is stated in the ledger's doc.
 - **A campaign that assembles many subjects** and finds the cache bound of
   four or the sketch's tolerance wrong for it. Both are constants in
   `qip_deepbrain::campaign`, chosen for one subject per round.
+- **A provenance inferred from the configuration again**, or a `sense`
+  that accumulates records across its arms before observing, or a base
+  URL check that refuses only `https`. Each was the shape the third
+  review found, and each has a test that fails on the mutation.
+- **A retained-chain check that reads a file's gap as an eviction.** The
+  gap tolerance is safe only because `open_with_capacity` refuses a
+  non-contiguous file first; removing that refusal turns a deleted line
+  into a silent eviction.
