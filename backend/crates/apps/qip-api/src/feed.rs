@@ -232,12 +232,6 @@ pub struct Sensed {
     /// than dropped: bad data must never silently become an investment
     /// input, and a rejection nobody counts is a silent one.
     pub rejections: Vec<String>,
-    /// The content hash of exactly what a connector fetched this cycle, for
-    /// the kernel's reference ledger. `None` for a tape, and for a connector
-    /// poll that delivered nothing to digest. The route hands it to
-    /// `Platform::reference_fetch` *before* `Platform::observe`, so a fetch
-    /// the platform cannot reference is one whose records it does not take.
-    pub digest: Option<FetchDigest>,
 }
 
 /// The process's record source.
@@ -520,13 +514,6 @@ impl ApiFeed {
         Ok(())
     }
 
-    fn adapter_mut(&mut self) -> &mut dyn DataAdapter {
-        match self {
-            Self::Tape(feed) => feed.as_mut(),
-            Self::Connector { feed, .. } => feed.as_mut(),
-        }
-    }
-
     pub fn descriptor(&self) -> SourceDescriptor {
         match self {
             Self::Tape(feed) => feed.descriptor(),
@@ -670,7 +657,18 @@ impl ApiFeed {
     /// indistinguishable to every route downstream, and the second must refuse
     /// the cycle rather than quietly starve it. Evaluation *then* use is a rule
     /// about every use, not about the first one.
-    pub fn sense(&mut self, wall: Timestamp) -> Result<Sensed> {
+    ///
+    /// `reference` is handed a connector poll's digest between the poll and
+    /// the checkpoint's commit — the route passes `Platform::reference_fetch`
+    /// — and a refusal there returns here with the connector unwound to
+    /// where it stood, so the records it would have released are re-fetched
+    /// next time rather than dropped past a committed cursor. A tape has no
+    /// digest and never calls it.
+    pub fn sense(
+        &mut self,
+        wall: Timestamp,
+        reference: &mut dyn FnMut(&FetchDigest) -> Result<()>,
+    ) -> Result<Sensed> {
         let at = match self {
             Self::Tape(feed) => feed.advance().ok_or_else(|| {
                 Error::unavailable(
@@ -689,9 +687,12 @@ impl ApiFeed {
             at,
             records: Vec::new(),
             rejections: Vec::new(),
-            digest: None,
         };
-        for record in self.adapter_mut().poll(at)? {
+        let polled = match self {
+            Self::Tape(feed) => feed.poll(at)?,
+            Self::Connector { feed, .. } => feed.poll_referencing(at, reference)?,
+        };
+        for record in polled {
             let issues = record.validate();
             if issues.is_empty() {
                 sensed.records.push(record);
@@ -702,9 +703,6 @@ impl ApiFeed {
                     issues.join("; ")
                 ));
             }
-        }
-        if let Self::Connector { feed, .. } = self {
-            sensed.digest = feed.take_digest();
         }
         Ok(sensed)
     }

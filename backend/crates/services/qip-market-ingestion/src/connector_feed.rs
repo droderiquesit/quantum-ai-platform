@@ -132,12 +132,6 @@ pub struct ConnectorFeed {
     /// process — the correct shape for a contract test driving an emulator,
     /// and the wrong one for anything measuring a source *sustained*.
     journal: Option<StreamJournal>,
-    /// The digest of the most recent delivered poll, held until the
-    /// composition root takes it with [`Self::take_digest`]. Held rather than
-    /// returned because [`DataAdapter::poll`] returns records and nothing
-    /// else, and widening that contract for one arm would put a field on
-    /// every adapter that has no bytes to digest.
-    last_digest: Option<FetchDigest>,
 }
 
 impl ConnectorFeed {
@@ -232,7 +226,6 @@ impl ConnectorFeed {
             runtime,
             descriptor,
             journal: None,
-            last_digest: None,
         })
     }
 
@@ -241,15 +234,6 @@ impl ConnectorFeed {
     /// build the source's admission for the kernel's reference ledger.
     pub const fn manifest(&self) -> &SourceManifest {
         self.runtime.manifest()
-    }
-
-    /// The digest of the most recent delivered poll, once.
-    ///
-    /// `None` when the last poll was deferred, refused, or decoded to nothing,
-    /// and after this has already been taken — a digest handed to the kernel
-    /// twice would record one fetch as two.
-    pub fn take_digest(&mut self) -> Option<FetchDigest> {
-        self.last_digest.take()
     }
 
     /// Keep this stream's record on `store`, and resume where the last process
@@ -362,28 +346,46 @@ impl ConnectorFeed {
     }
 }
 
-impl DataAdapter for ConnectorFeed {
-    fn descriptor(&self) -> SourceDescriptor {
-        self.descriptor.clone()
-    }
-
-    fn poll(&mut self, until: Timestamp) -> Result<Vec<SensedRecord>> {
+impl ConnectorFeed {
+    /// Poll the source, hand the fetch's digest to `reference` *before* the
+    /// journal records the poll or the checkpoint commits, and release the
+    /// records only if the reference was accepted.
+    ///
+    /// This is the seam a composition root polls through. `reference` is
+    /// the platform's `reference_fetch`: the kernel's refusal to account for
+    /// a fetch — a source it holds no admission for — used to arrive after
+    /// this bridge had already recorded the poll and committed the cursor
+    /// past it, so the root dropped the records, the next poll resumed past
+    /// them, and a batch the platform had refused was gone with every
+    /// counter reading a clean delivery. Now a refusal unwinds the runtime
+    /// to where it stood before the poll — cursor, dedup window and ingest
+    /// counters — records nothing, commits nothing and returns the refusal,
+    /// so the next poll re-fetches the same extent and the platform gets to
+    /// refuse or accept it again with the same records on offer.
+    ///
+    /// The topic is the bridge's to add — the runtime does not know it — and
+    /// it is the one the descriptor already promises. A poll that was
+    /// deferred, refused or decoded to nothing carries no digest and
+    /// `reference` is not called.
+    pub fn poll_referencing(
+        &mut self,
+        until: Timestamp,
+        reference: &mut dyn FnMut(&FetchDigest) -> Result<()>,
+    ) -> Result<Vec<SensedRecord>> {
+        let before = self.runtime.snapshot();
         let mut report =
             self.runtime
                 .poll(self.connector.as_mut(), self.transport.as_mut(), until)?;
-        // Taken before the journal writes, and replaced rather than kept: a
-        // digest is a fact about *this* poll, and one left over from a poll
-        // whose successor delivered nothing would be handed up as if it were
-        // fresh. The topic is the bridge's to add — the runtime does not
-        // know it — and it is the one the descriptor already promises.
-        self.last_digest =
-            report
-                .digest
-                .take()
-                .map(|digest| match self.descriptor.topics.first() {
-                    Some(topic) => digest.with_topic(*topic),
-                    None => digest,
-                });
+        if let Some(digest) = report.digest.take() {
+            let digest = match self.descriptor.topics.first() {
+                Some(topic) => digest.with_topic(*topic),
+                None => digest,
+            };
+            if let Err(refusal) = reference(&digest) {
+                self.runtime.unwind(before);
+                return Err(refusal);
+            }
+        }
         // Recorded before the records are released, and the error propagates
         // rather than being swallowed. A stream whose durable record cannot be
         // written is a stream nobody can afterwards say anything true about,
@@ -411,6 +413,22 @@ impl DataAdapter for ConnectorFeed {
             .into_iter()
             .map(|envelope| envelope.into_record())
             .collect())
+    }
+}
+
+impl DataAdapter for ConnectorFeed {
+    fn descriptor(&self) -> SourceDescriptor {
+        self.descriptor.clone()
+    }
+
+    /// The adapter contract, which carries no place to hand a digest up:
+    /// the fetch is polled and released with its digest accepted by nobody.
+    /// A composition root that holds a platform polls through
+    /// [`Self::poll_referencing`] instead — both shipped roots do — and this
+    /// arm exists for the callers that cannot reference: a contract test
+    /// driving the bridge over an emulator, a rig with no kernel.
+    fn poll(&mut self, until: Timestamp) -> Result<Vec<SensedRecord>> {
+        self.poll_referencing(until, &mut |_| Ok(()))
     }
 
     // `stop` keeps the trait default. The runtime's own shutdown wants the
@@ -475,6 +493,100 @@ mod tests {
 
     fn instant(text: &str) -> Timestamp {
         Timestamp::parse_rfc3339(text).expect("a literal RFC 3339 instant")
+    }
+
+    /// A refused reference leaves the connector where it stood. The poll
+    /// fetched a table and admitted three records; the caller's reference
+    /// hook refuses; the cursor has not moved, the dedup window has not seen
+    /// the records, no journal record or checkpoint was written, and the
+    /// next poll fetches the same table again and delivers it — to a hook
+    /// that accepts this time. Until 2026-09-12 the refusal arrived after
+    /// the checkpoint had committed, and the batch was gone.
+    ///
+    /// Mutated by deleting the `self.runtime.unwind(before)` call —
+    /// confirmed the cursor then moves on a refusal and the second poll
+    /// delivers nothing because the dedup window already holds the table,
+    /// failing both halves, then restored.
+    #[test]
+    fn a_refused_reference_leaves_the_checkpoint_where_it_was_and_the_next_poll_refetches() {
+        let opened = instant("2026-08-27T00:00:00Z");
+        let mut manifest =
+            FrankfurterRatesConnector::shipped_manifest().expect("the shipped manifest parses");
+        manifest.endpoint.base_url = Some("http://127.0.0.1:1".to_string());
+        let table = r#"{"amount":1.0,"base":"EUR","date":"2026-08-26","rates":{"GBP":0.85898,"JPY":181.59,"USD":1.1622}}"#;
+        // The emulator matches on a substring of the target, so one recorded
+        // exchange on the manifest's path serves the health probe and the
+        // fetch alike.
+        let transport = Box::new(SourceEmulator::serving(
+            manifest.endpoint.path.clone(),
+            table,
+        ));
+        let connector = Box::new(
+            FrankfurterRatesConnector::new(manifest.clone()).expect("the connector builds"),
+        );
+        let store: Arc<dyn qip_core::kv::KeyValueStore> =
+            Arc::new(qip_storage::MemoryKeyValueStore::default());
+        let mut feed = ConnectorFeed::over_transport(connector, manifest, transport, 7, opened)
+            .expect("the emulator answers the health probe");
+        feed.journal_to(store)
+            .expect("a journal opens on an empty store");
+        let before = feed.checkpoint(opened);
+        assert!(
+            feed.runtime.dedup().is_empty(),
+            "premise: nothing has been seen before the first poll"
+        );
+
+        // The platform refuses to account for the fetch.
+        let refused = feed
+            .poll_referencing(opened, &mut |digest| {
+                Err(Error::denied(format!(
+                    "{} is not admitted to this platform's ledger",
+                    digest.source_id()
+                )))
+            })
+            .expect_err("a refused reference released the records anyway");
+        assert!(
+            refused.message().contains("not admitted"),
+            "the refusal returned is not the hook's: {refused}"
+        );
+        let after_refusal = feed.checkpoint(opened);
+        assert_eq!(
+            after_refusal.cursor, before.cursor,
+            "a refused reference moved the cursor past the records it refused"
+        );
+        assert!(
+            feed.runtime.dedup().is_empty(),
+            "a refused reference left the records in the dedup window, so the re-fetch would \
+             drop them as duplicates"
+        );
+        assert_eq!(
+            feed.ledger().map(|ledger| ledger.polls),
+            Some(0),
+            "a refused poll must not be recorded in the durable ledger"
+        );
+
+        // The next poll fetches the same table and, with the reference
+        // accepted, delivers it.
+        let later = opened.saturating_add(qip_core::Duration::from_secs(1));
+        let mut referenced = 0usize;
+        let records = feed
+            .poll_referencing(later, &mut |_| {
+                referenced += 1;
+                Ok(())
+            })
+            .expect("the re-fetch delivers");
+        assert_eq!(
+            records.len(),
+            3,
+            "the three rates were re-fetched and released"
+        );
+        assert_eq!(referenced, 1, "the re-fetch was referenced exactly once");
+        assert_ne!(
+            feed.checkpoint(later).cursor,
+            before.cursor,
+            "an accepted reference commits the cursor past the records"
+        );
+        assert_eq!(feed.ledger().map(|ledger| ledger.polls), Some(1));
     }
 
     #[test]

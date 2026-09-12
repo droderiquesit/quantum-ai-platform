@@ -25,6 +25,7 @@ use qip_core::Timestamp;
 use qip_core::error::Result;
 use qip_financial::quality::LicensingClass;
 use qip_market_ingestion::adapter::{DataAdapter, SensedRecord};
+use qip_market_ingestion::connector::FetchDigest;
 use qip_market_ingestion::connector_feed::{ConnectorFeed, shipped_class};
 use qip_market_ingestion::connectors::FrankfurterRatesConnector;
 use server::{Action, TestServer, address_with_no_listener};
@@ -80,7 +81,16 @@ fn the_connector_feed_opens_frankfurter_by_name_and_polls_real_rates() -> Result
         "a fan-out of exchange rates is a macro observation, not a tick"
     );
 
-    let records = feed.poll(horizon())?;
+    // The bridge hands the digest of exactly what the server served, stamped
+    // with the topic the descriptor promised, to the caller's reference hook
+    // between the poll and the checkpoint commit — the seam a composition
+    // root references the fetch on the kernel's ledger from — and hands it
+    // exactly once, because one fetch is one reference.
+    let mut handed: Vec<FetchDigest> = Vec::new();
+    let records = feed.poll_referencing(horizon(), &mut |digest| {
+        handed.push(digest.clone());
+        Ok(())
+    })?;
     assert!(
         !records.is_empty(),
         "the scripted rate table produced no record through the bridge"
@@ -90,13 +100,12 @@ fn the_connector_feed_opens_frankfurter_by_name_and_polls_real_rates() -> Result
         3,
         "the manifest asks for three currencies (GBP, JPY, USD)"
     );
-    // The bridge holds the digest of exactly what the server served, stamps
-    // it with the topic the descriptor promised, and hands it up once: this
-    // is the seam a composition root takes it from for the kernel's reference
-    // ledger, and a digest taken twice would record one fetch as two.
-    let digest = feed
-        .take_digest()
-        .expect("a delivered poll leaves a digest for the composition root to take");
+    assert_eq!(
+        handed.len(),
+        1,
+        "one delivered poll hands up exactly one digest; two would record one fetch as two"
+    );
+    let digest = &handed[0];
     assert_eq!(
         digest.sha256(),
         qip_core::sha256_hex(RATE_TABLE.as_bytes()),
@@ -109,9 +118,10 @@ fn the_connector_feed_opens_frankfurter_by_name_and_polls_real_rates() -> Result
         "the locator is the manifest's path and fixed query as the transport sent them"
     );
     assert_eq!(digest.symbols().len(), 3);
-    assert!(
-        feed.take_digest().is_none(),
-        "the digest is handed up once; a second take would double-count the fetch"
+    assert_eq!(
+        digest.subjects().len(),
+        3,
+        "three series ids, one per requested currency, for the ledger to be found by"
     );
     for record in &records {
         assert!(

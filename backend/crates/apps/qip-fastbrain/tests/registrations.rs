@@ -394,6 +394,13 @@ fn line_for(lines: &[String], source_id: &str) -> String {
 /// withholding it as not yet knowable. `start()` is ten months earlier and
 /// would release nothing, which would make every count below a zero that meant
 /// nothing.
+/// A reference hook that accepts every digest, for rigs with no platform.
+/// The node passes `Platform::reference_fetch` here; these tests are about
+/// the feed's own gates and registrations, not the ledger's.
+fn unreferenced(_digest: &qip_market_ingestion::connector::FetchDigest) -> Result<()> {
+    Ok(())
+}
+
 fn streaming_instant() -> Timestamp {
     Timestamp::parse_rfc3339("2026-08-27T00:00:00Z").expect("a literal instant parses")
 }
@@ -436,10 +443,19 @@ fn a_restarted_node_resumes_the_dedup_window_instead_of_republishing_the_whole_t
     // three records each — what every deployed restart did until `journal_to`
     // had a caller in `main`.
     let mut first_run = open_keyless(&server.url)?;
-    assert_eq!(first_run.poll(streaming_instant())?.accepted.len(), 3);
+    assert_eq!(
+        first_run
+            .poll(streaming_instant(), &mut unreferenced)?
+            .accepted
+            .len(),
+        3
+    );
     let mut second_run = open_keyless(&server.url)?;
     assert_eq!(
-        second_run.poll(streaming_instant())?.accepted.len(),
+        second_run
+            .poll(streaming_instant(), &mut unreferenced)?
+            .accepted
+            .len(),
         3,
         "without a journal a restart must republish the table; if it does not, the assertion \
          below proves nothing"
@@ -452,7 +468,13 @@ fn a_restarted_node_resumes_the_dedup_window_instead_of_republishing_the_whole_t
         Some(0),
         "a first session has no previous checkpoint, so nothing may be resumed"
     );
-    assert_eq!(journalled.poll(streaming_instant())?.accepted.len(), 3);
+    assert_eq!(
+        journalled
+            .poll(streaming_instant(), &mut unreferenced)?
+            .accepted
+            .len(),
+        3
+    );
     drop(journalled);
 
     let mut restarted = open_keyless(&server.url)?;
@@ -464,7 +486,10 @@ fn a_restarted_node_resumes_the_dedup_window_instead_of_republishing_the_whole_t
         "the previous session admitted three records, so three fingerprints must come back"
     );
     assert!(
-        restarted.poll(streaming_instant())?.accepted.is_empty(),
+        restarted
+            .poll(streaming_instant(), &mut unreferenced)?
+            .accepted
+            .is_empty(),
         "the restarted node republished the table it had already published"
     );
 
@@ -504,7 +529,10 @@ fn a_licence_that_expires_mid_run_stops_the_next_poll_rather_than_the_next_resta
     // Premise: the gate grants for as long as the licence runs, so the refusal
     // below is the expiry doing its work rather than an entry that never
     // admitted anything.
-    let granted = feed.poll(opened.saturating_add(Duration::from_days(1)))?;
+    let granted = feed.poll(
+        opened.saturating_add(Duration::from_days(1)),
+        &mut unreferenced,
+    )?;
     assert_eq!(granted.accepted.len(), 3);
     let served = server.served();
     assert!(served >= 1, "the admitted source opened no socket");
@@ -513,7 +541,7 @@ fn a_licence_that_expires_mid_run_stops_the_next_poll_rather_than_the_next_resta
     // polling for the remaining four days of a seven-day run, stamping records
     // with a class the terms no longer grant.
     let refusal = feed
-        .poll(expiry)
+        .poll(expiry, &mut unreferenced)
         .expect_err("an expired licence went on feeding the node");
     assert!(
         refusal.message().contains("expired"),

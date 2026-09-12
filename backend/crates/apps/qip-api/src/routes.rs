@@ -1439,7 +1439,19 @@ impl Api {
                                 ),
                             );
                         }
-                        let mut sensed = match feed.sense(now) {
+                        // The fetch is referenced between the poll and the
+                        // connector's checkpoint commit, and before its
+                        // records are observed: a fetch the platform refuses
+                        // to reference — a source it holds no admission for
+                        // — stops the cycle here with the connector unwound
+                        // to where it stood, so the records are re-fetched
+                        // next cycle rather than dropped past a committed
+                        // cursor. The ledger is what an audit reads; a record
+                        // the loop reasoned over that the ledger cannot
+                        // account for is the gap §22.3 exists to close.
+                        let mut sensed = match feed.sense(now, &mut |digest| {
+                            platform.reference_fetch(digest, now).map(|_| ())
+                        }) {
                             Ok(sensed) => sensed,
                             Err(error) => {
                                 eprintln!("qip-api: the feed did not answer: {}", error.message());
@@ -1453,30 +1465,6 @@ impl Api {
                                 );
                             }
                         };
-                        // The fetch is referenced before its records are
-                        // observed, and a fetch the platform refuses to
-                        // reference — a source it holds no admission for —
-                        // stops the cycle here rather than feeding records
-                        // of unknown standing into it. The ledger is what an
-                        // audit reads; a record the loop reasoned over that
-                        // the ledger cannot account for is the gap §22.3
-                        // exists to close.
-                        if let Some(digest) = sensed.digest.take() {
-                            if let Err(error) = platform.reference_fetch(&digest, now) {
-                                eprintln!(
-                                    "qip-api: the fetch could not be referenced: {}",
-                                    error.message()
-                                );
-                                return Response::json(
-                                    503,
-                                    format!(
-                                        r#"{{"error":{},"source":{}}}"#,
-                                        json::string(error.message()),
-                                        json::string(&sensed.source)
-                                    ),
-                                );
-                            }
-                        }
                         let released = sensed.records.len();
                         let observed = platform.observe(std::mem::take(&mut sensed.records));
                         (

@@ -205,6 +205,25 @@ impl ConnectorHealth {
     }
 }
 
+/// The position a poll may have to be undone to.
+///
+/// Taken by [`ConnectorRuntime::snapshot`] before a poll and applied by
+/// [`ConnectorRuntime::unwind`] when the poll's records could not be
+/// accounted for by the caller — the kernel refused to reference the fetch
+/// — so the next poll re-fetches the same extent rather than skipping past
+/// records nobody reasoned over. Holds the cursor, the dedup window and the
+/// three ingest counters; not the request counts, the limiter or the
+/// quarantine, because the request did happen and what it held was a real
+/// finding about the body.
+#[derive(Clone, Debug)]
+pub struct RuntimeSnapshot {
+    cursor: Cursor,
+    dedup: DedupWindow,
+    admitted: u64,
+    duplicates: u64,
+    withheld: u64,
+}
+
 /// One connector's cross-cutting machinery.
 #[derive(Debug)]
 pub struct ConnectorRuntime {
@@ -275,6 +294,35 @@ impl ConnectorRuntime {
 
     pub const fn is_connected(&self) -> bool {
         self.connected
+    }
+
+    /// The position to unwind a poll to. See [`RuntimeSnapshot`].
+    pub fn snapshot(&self) -> RuntimeSnapshot {
+        RuntimeSnapshot {
+            cursor: self.cursor.clone(),
+            dedup: self.dedup.clone(),
+            admitted: self.stats.admitted,
+            duplicates: self.stats.duplicates,
+            withheld: self.stats.withheld,
+        }
+    }
+
+    /// Undo a poll: put the cursor, the dedup window and the ingest counters
+    /// back where `snapshot` found them, so the records the poll admitted
+    /// are neither resumed past nor remembered as seen.
+    ///
+    /// The one caller is `ConnectorFeed::poll_referencing`, when the caller
+    /// it handed the poll's digest to refused it. Until 2026-09-12 that
+    /// refusal arrived *after* the checkpoint had committed: the composition
+    /// root dropped the records, the next poll resumed past them, and a
+    /// batch the platform had refused to account for was gone with every
+    /// counter reading a clean delivery.
+    pub fn unwind(&mut self, snapshot: RuntimeSnapshot) {
+        self.cursor = snapshot.cursor;
+        self.dedup = snapshot.dedup;
+        self.stats.admitted = snapshot.admitted;
+        self.stats.duplicates = snapshot.duplicates;
+        self.stats.withheld = snapshot.withheld;
     }
 
     /// Lifecycle: **connect**. Loud on purpose.

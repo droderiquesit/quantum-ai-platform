@@ -110,18 +110,25 @@ pub fn step(
     // forgot, have a node refusing every fetch as unadmitted. The feed's
     // admission is the licensing gate's decision; the platform holding it is
     // what lets its reference ledger name the licence a digest arrived under.
+    // Copied whenever the two differ, not only when the platform holds none:
+    // a re-admission gives the feed a fresh decision, and the API's
+    // `readmit_connector` copies that one across unconditionally — a step
+    // that copied only into an empty slot would leave the ledger naming a
+    // decision the feed no longer holds.
     if let Some(source) = feed.admitted_source()
-        && platform.admitted_source(source.source_id()).is_none()
+        && platform.admitted_source(source.source_id()) != Some(source)
     {
         platform.admit_source(source.clone());
     }
-    let mut batch = feed.poll(now)?;
-    // Referenced before observed: a fetch the platform cannot account for in
-    // its reference ledger stops the step rather than feeding records of
-    // unknown standing into the cycle.
-    if let Some(digest) = batch.digest.take() {
-        platform.reference_fetch(&digest, now)?;
-    }
+    // Referenced between the poll and the connector's checkpoint commit,
+    // and before observed: a fetch the platform cannot account for in its
+    // reference ledger stops the step with the connector unwound to where
+    // it stood, so the records are re-fetched next step rather than fed
+    // into the cycle with unknown standing or dropped past a committed
+    // cursor.
+    let batch = feed.poll(now, &mut |digest| {
+        platform.reference_fetch(digest, now).map(|_| ())
+    })?;
     let observed = platform.observe(batch.accepted);
     let report = platform.run_cycle(now);
     let elapsed = monotonic(began);
@@ -569,7 +576,10 @@ mod tests {
         // Recorded entirely in the past, so the replay drains on the first poll
         // rather than waiting for a clock these tests hold still.
         let mut source = backfilled(16);
-        let recorded = source.poll(start()).expect("polls").accepted;
+        let recorded = source
+            .poll(start(), &mut |_| Ok(()))
+            .expect("polls")
+            .accepted;
         let directory =
             std::env::temp_dir().join(format!("qip-fastbrain-loop-{}", std::process::id()));
         let path = directory.join("records.jsonl");

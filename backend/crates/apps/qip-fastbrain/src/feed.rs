@@ -51,6 +51,7 @@ use qip_data_finder::registration::RegistrationRegistry;
 use qip_financial::quality::LicensingClass;
 use qip_market::bar::Interval;
 use qip_market_ingestion::adapter::{DataAdapter, SensedRecord, SourceDescriptor};
+use qip_market_ingestion::connector::FetchDigest;
 use qip_market_ingestion::connector_feed::ConnectorFeed;
 use qip_market_ingestion::replay::ReplayAdapter;
 use qip_market_ingestion::rest::{RestFeedConfig, RestInstrument, RestMarketDataAdapter};
@@ -65,11 +66,6 @@ pub struct Batch {
     pub accepted: Vec<SensedRecord>,
     /// Why each rejected record was rejected.
     pub rejections: Vec<String>,
-    /// The content hash of exactly what a connector fetched, for the kernel's
-    /// reference ledger. `None` for every other arm and for a connector poll
-    /// that delivered nothing to digest. The node hands it to
-    /// `Platform::reference_fetch` *before* `Platform::observe`.
-    pub digest: Option<qip_market_ingestion::connector::FetchDigest>,
 }
 
 impl Batch {
@@ -523,13 +519,30 @@ impl Feed {
     /// to read are indistinguishable downstream, and the second one must stop
     /// the node rather than quietly starve it. The rule is evaluation *then*
     /// use, and it is a rule about every use rather than about the first.
-    pub fn poll(&mut self, until: Timestamp) -> Result<Batch> {
+    ///
+    /// `reference` is handed a connector poll's digest between the poll and
+    /// the checkpoint's commit — the node passes `Platform::reference_fetch`
+    /// — and a refusal there returns here with the connector unwound to
+    /// where it stood, so the records are re-fetched next step rather than
+    /// dropped past a committed cursor. No other arm has a digest or calls
+    /// it.
+    pub fn poll(
+        &mut self,
+        until: Timestamp,
+        reference: &mut dyn FnMut(&FetchDigest) -> Result<()>,
+    ) -> Result<Batch> {
         if let Self::Connector { admission, .. } = self {
             admission.check(until)?;
         }
         let source = self.descriptor().name;
         let mut batch = Batch::default();
-        for record in self.adapter_mut().poll(until)? {
+        let polled = match self {
+            Self::Connector { feed, .. } => feed.poll_referencing(until, reference)?,
+            Self::Synthetic(_) | Self::Replay(_) | Self::Tape(_) | Self::Live(_) => {
+                self.adapter_mut().poll(until)?
+            }
+        };
+        for record in polled {
             let issues = record.validate();
             if issues.is_empty() {
                 batch.accepted.push(record);
@@ -540,9 +553,6 @@ impl Feed {
                     issues.join("; ")
                 ));
             }
-        }
-        if let Self::Connector { feed, .. } = self {
-            batch.digest = feed.take_digest();
         }
         Ok(batch)
     }
@@ -610,7 +620,9 @@ mod tests {
     fn the_synthetic_exchange_produces_records_and_never_runs_out() {
         let mut feed = Feed::synthetic(7, Duration::from_secs(60), start());
         let batch = feed
-            .poll(start().saturating_add(Duration::from_mins(30)))
+            .poll(start().saturating_add(Duration::from_mins(30)), &mut |_| {
+                Ok(())
+            })
             .expect("the synthetic exchange polls");
         assert!(
             !batch.accepted.is_empty(),
@@ -626,8 +638,8 @@ mod tests {
         let until = start().saturating_add(Duration::from_mins(20));
         let mut first = Feed::synthetic(99, Duration::from_secs(60), start());
         let mut second = Feed::synthetic(99, Duration::from_secs(60), start());
-        let a = first.poll(until).expect("polls");
-        let b = second.poll(until).expect("polls");
+        let a = first.poll(until, &mut |_| Ok(())).expect("polls");
+        let b = second.poll(until, &mut |_| Ok(())).expect("polls");
         assert_eq!(a.accepted.len(), b.accepted.len());
         assert_eq!(
             serde_json::to_string(&a.accepted).expect("records serialise"),
@@ -650,7 +662,9 @@ mod tests {
 
         let mut feed = Feed::synthetic(31, Duration::from_millis(100), start());
         let batch = feed
-            .poll(start().saturating_add(Duration::from_secs(5)))
+            .poll(start().saturating_add(Duration::from_secs(5)), &mut |_| {
+                Ok(())
+            })
             .expect("polls");
         let bars = batch
             .accepted
@@ -681,7 +695,9 @@ mod tests {
     fn a_replay_reports_itself_exhausted_once_its_last_record_has_been_read() {
         let mut source = Feed::synthetic(3, Duration::from_secs(60), start());
         let recorded = source
-            .poll(start().saturating_add(Duration::from_mins(10)))
+            .poll(start().saturating_add(Duration::from_mins(10)), &mut |_| {
+                Ok(())
+            })
             .expect("polls")
             .accepted;
         assert!(!recorded.is_empty(), "nothing was recorded to replay");
@@ -693,7 +709,7 @@ mod tests {
 
         let mut feed = Feed::replay(&path.display().to_string()).expect("the replay file opens");
         assert!(!feed.is_exhausted(), "a fresh replay has records left");
-        let batch = feed.poll(Timestamp::MAX).expect("polls");
+        let batch = feed.poll(Timestamp::MAX, &mut |_| Ok(())).expect("polls");
         assert_eq!(batch.accepted.len(), recorded.len());
         assert!(
             feed.is_exhausted(),
@@ -799,7 +815,10 @@ mod tape_tests {
             "the premise: the tape is in the past, so wall time would have swallowed it"
         );
         assert_eq!(
-            feed.poll(first).expect("polls").accepted.len(),
+            feed.poll(first, &mut |_| Ok(()))
+                .expect("polls")
+                .accepted
+                .len(),
             1,
             "one period released other than one bar"
         );
@@ -807,9 +826,9 @@ mod tape_tests {
 
         let second = feed.cycle_instant(&wall).expect("a second period");
         assert_eq!(second.since(first), Duration::from_days(1));
-        let _ = feed.poll(second);
+        let _ = feed.poll(second, &mut |_| Ok(()));
         let _ = feed.cycle_instant(&wall);
-        let _ = feed.poll(Timestamp::MAX);
+        let _ = feed.poll(Timestamp::MAX, &mut |_| Ok(()));
         assert!(
             feed.is_exhausted(),
             "a fully read tape still claims records"

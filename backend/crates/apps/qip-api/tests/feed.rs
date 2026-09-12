@@ -59,6 +59,14 @@ const CREDENTIAL_SLOT: &str = "QIP_FRANKFURTER_TOKEN";
 /// shipped Frankfurter fixture's reference date plus the ECB's sixteen-hour
 /// publication delay, so a connector poll at this instant releases the table
 /// rather than withholding it as not yet knowable.
+/// A reference hook that accepts every digest, for rigs with no platform.
+/// The route passes `Platform::reference_fetch` here; these tests are about
+/// the feed's own gates and licences, not the ledger's, and a rig that
+/// refused would be testing the refusal rather than the feed.
+fn unreferenced(_digest: &qip_market_ingestion::connector::FetchDigest) -> Result<()> {
+    Ok(())
+}
+
 fn wall() -> Timestamp {
     Timestamp::parse_rfc3339("2026-08-27T00:00:00Z").expect("a literal instant parses")
 }
@@ -849,10 +857,10 @@ fn a_restarted_process_resumes_the_dedup_window_instead_of_republishing_the_whol
     // "processes", three records each — that is what every deployed restart
     // did until `journal_to` had a caller.
     let mut first_run = ApiFeed::connector(&settings, 7, wall())?;
-    assert_eq!(first_run.sense(wall())?.records.len(), 3);
+    assert_eq!(first_run.sense(wall(), &mut unreferenced)?.records.len(), 3);
     let mut second_run = ApiFeed::connector(&settings, 7, wall())?;
     assert_eq!(
-        second_run.sense(wall())?.records.len(),
+        second_run.sense(wall(), &mut unreferenced)?.records.len(),
         3,
         "without a journal a restart must republish the table; if it does not, the assertion \
          below proves nothing"
@@ -865,7 +873,10 @@ fn a_restarted_process_resumes_the_dedup_window_instead_of_republishing_the_whol
         Some(0),
         "a first session has no previous checkpoint, so nothing may be resumed"
     );
-    assert_eq!(journalled.sense(wall())?.records.len(), 3);
+    assert_eq!(
+        journalled.sense(wall(), &mut unreferenced)?.records.len(),
+        3
+    );
     drop(journalled);
 
     // The restart. Same store, same source: the window the last session built
@@ -879,7 +890,10 @@ fn a_restarted_process_resumes_the_dedup_window_instead_of_republishing_the_whol
         "the previous session admitted three records, so three fingerprints must come back"
     );
     assert!(
-        restarted.sense(wall())?.records.is_empty(),
+        restarted
+            .sense(wall(), &mut unreferenced)?
+            .records
+            .is_empty(),
         "the restarted process republished the table it had already published"
     );
     Ok(())
@@ -907,7 +921,7 @@ fn re_admitting_a_connector_after_an_approval_keeps_the_journal_it_was_given() -
     feed.journal_to(journal_store())?;
     // Premise: the first cycle publishes the table, so a second publication
     // after the re-admission would be a republication and not a first one.
-    assert_eq!(feed.sense(wall())?.records.len(), 3);
+    assert_eq!(feed.sense(wall(), &mut unreferenced)?.records.len(), 3);
 
     // `POST /registrations/{source}/approve` reaches exactly this call, and it
     // replaces the whole connector. A replacement that dropped the journal
@@ -918,7 +932,7 @@ fn re_admitting_a_connector_after_an_approval_keeps_the_journal_it_was_given() -
         wall(),
     )?;
     assert!(
-        feed.sense(wall())?.records.is_empty(),
+        feed.sense(wall(), &mut unreferenced)?.records.is_empty(),
         "the re-opened connector republished the table, so the approval dropped the journal"
     );
     Ok(())
@@ -950,7 +964,10 @@ fn a_licence_that_expires_mid_run_stops_the_next_cycle_rather_than_the_next_rest
     // Premise: the gate grants for as long as the licence runs, so the refusal
     // below is the expiry doing its work rather than an entry that never
     // admitted anything.
-    let granted = feed.sense(wall().saturating_add(Duration::from_days(1)))?;
+    let granted = feed.sense(
+        wall().saturating_add(Duration::from_days(1)),
+        &mut unreferenced,
+    )?;
     assert_eq!(granted.records.len(), 3);
     let served = server.served();
     assert!(served >= 1, "the admitted source opened no socket");
@@ -959,7 +976,7 @@ fn a_licence_that_expires_mid_run_stops_the_next_cycle_rather_than_the_next_rest
     // the cycle would have gone on polling for the remaining four days of a
     // seven-day run, stamping records with a class the terms no longer grant.
     let refusal = feed
-        .sense(expiry)
+        .sense(expiry, &mut unreferenced)
         .expect_err("an expired licence went on feeding the cycle");
     assert!(
         refusal.message().contains("expired"),
