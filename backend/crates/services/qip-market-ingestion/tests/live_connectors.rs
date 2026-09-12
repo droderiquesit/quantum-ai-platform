@@ -226,7 +226,8 @@ fn the_connector_feed_fetches_a_live_tick_through_the_same_egress() -> Result<()
         return Ok(());
     };
     let mut feed = ConnectorFeed::open("coinbase-spot-ticker", &base_url, 7, horizon())?;
-    let records = feed.poll(horizon())?;
+    // No kernel in this rig, so the digest is accepted by a hook that says so.
+    let records = feed.poll_referencing(horizon(), &mut |_| Ok(()))?;
     assert!(
         !records.is_empty(),
         "the live source answered and the bridge delivered no record"
@@ -295,7 +296,7 @@ fn the_connector_feed_fetches_live_reference_rates_that_were_already_knowable_wh
         7,
         released_at,
     )?;
-    let records = feed.poll(released_at)?;
+    let records = feed.poll_referencing(released_at, &mut |_| Ok(()))?;
     assert_eq!(
         records.len(),
         3,

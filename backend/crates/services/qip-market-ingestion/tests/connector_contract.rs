@@ -528,7 +528,10 @@ fn the_connector_feed_polls_a_recorded_source_into_sensed_records() -> Result<()
         "an internal-licensed live source must be admissible for decisions"
     );
 
-    let records = feed.poll(coinbase_horizon())?;
+    // A rig with no kernel: the digest is accepted by a hook that says so,
+    // because `DataAdapter::poll` on a connector refuses rather than
+    // releasing a fetch nobody references.
+    let records = feed.poll_referencing(coinbase_horizon(), &mut |_| Ok(()))?;
     assert!(
         !records.is_empty(),
         "the recorded fixture produced no records through the bridge"
@@ -613,7 +616,7 @@ fn every_known_source_opens_by_name_through_the_bridge_over_its_own_fixture() ->
         let source_id = manifest.source_id.clone();
         let mut feed =
             ConnectorFeed::over_transport(connector, manifest, Box::new(emulator), 11, horizon)?;
-        let records = feed.poll(horizon)?;
+        let records = feed.poll_referencing(horizon, &mut |_| Ok(()))?;
         assert_eq!(records.len(), expected, "{source_id} produced {records:?}");
         let topics: std::collections::BTreeSet<_> =
             records.iter().map(|record| record.topic()).collect();

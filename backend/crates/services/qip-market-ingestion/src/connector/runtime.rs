@@ -153,6 +153,15 @@ pub struct PollReport {
     /// nothing — there is then no extent for a digest to describe, and the
     /// poll is otherwise unaffected. See [`super::digest`].
     pub digest: Option<super::digest::FetchDigest>,
+    /// The body decoded to at least one event and no digest was taken,
+    /// because nothing the events mapped to carries a subject — a news
+    /// connector's items are about entities, not one instrument. Such a poll
+    /// delivers records the platform can never reference, and until
+    /// 2026-09-12 nothing counted it: a source could poll for a week and be
+    /// referenced on no ledger with every counter reading a clean delivery.
+    /// Surfaced here and on [`RuntimeStats::unreferenced`] so a root can say
+    /// so rather than an auditor discovering it.
+    pub unreferenced: bool,
 }
 
 impl PollReport {
@@ -167,6 +176,7 @@ impl PollReport {
             waited: Duration::ZERO,
             liveness,
             digest: None,
+            unreferenced: false,
         }
     }
 }
@@ -184,6 +194,9 @@ pub struct RuntimeStats {
     pub duplicates: u64,
     pub withheld: u64,
     pub quarantined: u64,
+    /// Delivered polls that decoded to events and carried no digest — see
+    /// [`PollReport::unreferenced`].
+    pub unreferenced: u64,
 }
 
 /// A source's liveness and reachability, answered without fetching data.
@@ -668,6 +681,10 @@ impl ConnectorRuntime {
             at,
         )
         .ok();
+        if report.digest.is_none() && !events.is_empty() {
+            report.unreferenced = true;
+            self.stats.unreferenced = self.stats.unreferenced.saturating_add(1);
+        }
 
         let position = cursor_newest.map_or_else(
             || self.cursor.position.clone(),

@@ -743,7 +743,9 @@ fn production_licensing_enforcement_refuses_synthetic_sources() {
 /// root's call after the gate admits — is what gives the replay the source's
 /// name and class, so the research campaign resolves it to the catalogue
 /// door. A header naming nothing is reported as a skipped line, not read as
-/// a source.
+/// a source. The file is a recording of ticks headed with the ticker
+/// connector, because a file headed with a source whose connector never
+/// shipped its records is refused — the next test.
 ///
 /// Mutated by deleting the `strip_prefix(RECORDED_FROM_HEADER)` arm in
 /// `ReplayAdapter::open` — confirmed `recorded_from()` then reads `None`
@@ -751,30 +753,34 @@ fn production_licensing_enforcement_refuses_synthetic_sources() {
 #[test]
 fn a_replay_names_the_connector_it_was_recorded_from_and_the_root_admits_it() {
     let mut environment = environment(163);
-    let original = environment.run_until(start().saturating_add(Duration::from_mins(5)));
-    assert!(!original.is_empty());
+    let ticks: Vec<SensedRecord> = environment
+        .run_until(start().saturating_add(Duration::from_mins(5)))
+        .into_iter()
+        .filter(|record| matches!(record, SensedRecord::Tick(_)))
+        .collect();
+    assert!(!ticks.is_empty(), "premise: the exchange produced ticks");
 
     let dir = std::env::temp_dir().join(format!("qip-replay-header-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let path = dir.join("capture.jsonl");
-    ReplayAdapter::write(&path, &original).unwrap();
+    ReplayAdapter::write(&path, &ticks).unwrap();
     let body = std::fs::read_to_string(&path).unwrap();
     std::fs::write(
         &path,
         format!(
-            "{} frankfurter-ecb-reference-rates\n# a comment the reader skips\n{}\n{} \n",
+            "{} \n{} coinbase-spot-ticker\n# a comment the reader skips\n{}",
+            qip_market_ingestion::replay::RECORDED_FROM_HEADER,
             qip_market_ingestion::replay::RECORDED_FROM_HEADER,
             body,
-            qip_market_ingestion::replay::RECORDED_FROM_HEADER
         ),
     )
     .unwrap();
 
     let replay = ReplayAdapter::open("capture", &path).unwrap();
-    assert_eq!(replay.len(), original.len(), "the header cost no record");
+    assert_eq!(replay.len(), ticks.len(), "the header cost no record");
     assert_eq!(
         replay.recorded_from(),
-        Some("frankfurter-ecb-reference-rates"),
+        Some("coinbase-spot-ticker"),
         "the header's source was not read"
     );
     assert_eq!(
@@ -789,11 +795,113 @@ fn a_replay_names_the_connector_it_was_recorded_from_and_the_root_admits_it() {
     assert_eq!(before.licensing, LicensingClass::Restricted);
 
     // The root's call, after the gate: the source's name and class.
-    let admitted =
-        replay.as_recorded_from("frankfurter-ecb-reference-rates", LicensingClass::Public);
+    let admitted = replay
+        .as_recorded_from("coinbase-spot-ticker", LicensingClass::Internal)
+        .unwrap();
     let after = admitted.descriptor();
-    assert_eq!(after.name, "frankfurter-ecb-reference-rates");
-    assert_eq!(after.licensing, LicensingClass::Public);
+    assert_eq!(after.name, "coinbase-spot-ticker");
+    assert_eq!(after.licensing, LicensingClass::Internal);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A file whose header names a source its records could not have come from
+/// is refused at open, naming the topics; so is a file that names two
+/// sources, and one that names its source after a record. The scenario this
+/// pins is the review's: a hand-written bars file headed with the ECB rates
+/// connector — which has never emitted a bar — was admitted, researched
+/// under the ECB's licence and counted as a vendor behind the bars'
+/// instrument, and a restart under a second header made it two vendors.
+/// The in-memory road past `open`, `from_records` then `as_recorded_from`,
+/// is held to the same check.
+///
+/// Mutated by making `refuse_topics_outside` return `Ok(())` before its
+/// check — confirmed the bars-headed-frankfurter half then opens and this
+/// fails, then restored.
+#[test]
+fn a_replay_headed_with_a_source_that_never_shipped_its_records_is_refused() {
+    let mut environment = environment(163);
+    let recorded = environment.run_until(start().saturating_add(Duration::from_mins(5)));
+    let bars: Vec<SensedRecord> = recorded
+        .iter()
+        .filter(|record| matches!(record, SensedRecord::Bar(_)))
+        .cloned()
+        .collect();
+    assert!(!bars.is_empty(), "premise: the exchange closed bars");
+    let dir = std::env::temp_dir().join(format!("qip-replay-mislabelled-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let header = qip_market_ingestion::replay::RECORDED_FROM_HEADER;
+
+    // Bars headed with the ECB rates connector: mislabelled on its face.
+    let path = dir.join("bars-as-ecb.jsonl");
+    ReplayAdapter::write(&path, &bars).unwrap();
+    let body = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        format!("{header} frankfurter-ecb-reference-rates\n{body}"),
+    )
+    .unwrap();
+    let refusal = ReplayAdapter::open("capture", &path)
+        .expect_err("a bars file headed with the ECB rates connector was opened");
+    assert!(
+        refusal.message().contains("market.bar") && refusal.message().contains("macro.updated"),
+        "the refusal does not name the topics on both sides: {}",
+        refusal.message()
+    );
+    // And the same bars under the ticker's header, so the two-header
+    // scenario cannot be assembled from files at all.
+    let path = dir.join("bars-as-coinbase.jsonl");
+    std::fs::write(&path, format!("{header} coinbase-spot-ticker\n{body}")).unwrap();
+    assert!(
+        ReplayAdapter::open("capture", &path).is_err(),
+        "a bars file headed with the Coinbase ticker was opened"
+    );
+
+    // Two headers.
+    let ticks: Vec<SensedRecord> = recorded
+        .iter()
+        .filter(|record| matches!(record, SensedRecord::Tick(_)))
+        .cloned()
+        .collect();
+    let path = dir.join("two-headers.jsonl");
+    ReplayAdapter::write(&path, &ticks).unwrap();
+    let body = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        format!("{header} coinbase-spot-ticker\n{header} coinbase-spot-ticker\n{body}"),
+    )
+    .unwrap();
+    let refusal = ReplayAdapter::open("capture", &path)
+        .expect_err("a file naming its source twice was opened");
+    assert!(
+        refusal.message().contains("two provenances"),
+        "{}",
+        refusal.message()
+    );
+
+    // A header after the first record.
+    let path = dir.join("late-header.jsonl");
+    std::fs::write(&path, format!("{body}{header} coinbase-spot-ticker\n")).unwrap();
+    let refusal = ReplayAdapter::open("capture", &path)
+        .expect_err("a file naming its source after its records was opened");
+    assert!(
+        refusal.message().contains("before the first record"),
+        "{}",
+        refusal.message()
+    );
+
+    // The in-memory road is held to the same check, and the honest case
+    // through it still passes — or the check refuses everything.
+    assert!(
+        ReplayAdapter::from_records("replay", bars)
+            .as_recorded_from("coinbase-spot-ticker", LicensingClass::Internal)
+            .is_err(),
+        "bars were given the ticker connector's name through `as_recorded_from`"
+    );
+    assert!(
+        ReplayAdapter::from_records("replay", ticks)
+            .as_recorded_from("coinbase-spot-ticker", LicensingClass::Internal)
+            .is_ok()
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -412,9 +412,20 @@ impl StreamJournal {
     /// process this is measuring is one whose failure modes include being
     /// killed without notice, and a ledger flushed at shutdown records nothing
     /// about the runs worth recording.
+    ///
+    /// Absorbed into a scratch copy and adopted only once the store has
+    /// taken it: a write that fails must leave the in-memory ledger where
+    /// the durable one is, or the two disagree by one poll for the rest of
+    /// the process and the bridge's unwind of a failed poll — which puts the
+    /// runtime back — would leave the ledger counting a poll nobody
+    /// delivered.
     pub fn record(&mut self, report: &PollReport, at: Timestamp) -> Result<()> {
-        self.ledger.absorb(report, at);
-        self.write_ledger()
+        let mut next = self.ledger.clone();
+        next.absorb(report, at);
+        self.store
+            .put_as(&Self::ledger_key(&self.source_id), &next)?;
+        self.ledger = next;
+        Ok(())
     }
 
     /// Persist the resume position, and note how much of the window it carries.

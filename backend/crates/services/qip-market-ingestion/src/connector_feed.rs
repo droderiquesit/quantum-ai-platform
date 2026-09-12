@@ -106,6 +106,21 @@ pub fn shipped_manifest(source_id: &str) -> Result<SourceManifest> {
     }
 }
 
+/// The topics a named source's records are published under — the set a
+/// replay claiming to have been recorded from that source must stay inside.
+///
+/// One topic per shipped connector today, because each emits one kind of
+/// record; a `Vec` so a connector that legitimately emits two is a change
+/// here and not a second function. This is what lets a composition root
+/// refuse a bars file headed `# recorded-from: coinbase-spot-ticker` at
+/// start-up: the Coinbase connector has never emitted a bar, so a file that
+/// says it recorded one from it is mislabelled, and a mislabelled file
+/// researched under a vendor's licence attributes that licence to bytes the
+/// vendor never served.
+pub fn shipped_topics(source_id: &str) -> Result<Vec<Topic>> {
+    Ok(vec![topic_for(source_id)?])
+}
+
 /// The licensing class a named source's shipped manifest declares.
 ///
 /// For the gate that must run *before* the source is opened: the caller
@@ -405,12 +420,28 @@ impl ConnectorFeed {
         // did not commit reads as duplicates on the next run, which
         // `StreamLedger::duplicate_ratio` shows; a checkpoint committed for a
         // poll that was never recorded would be invisible.
-        if let Some(journal) = self.journal.as_mut() {
-            journal.record(&report, until)?;
+        //
+        // And unwound on either failure, for the same reason a refused
+        // reference is: the runtime advanced its cursor and dedup window
+        // above and the platform has already referenced the fetch, so a
+        // journal that could not be written would otherwise leave the
+        // records neither delivered nor re-fetchable — the next poll would
+        // resume past them and drop the re-served table as duplicates.
+        // Re-fetching is safe: `DataReferenceRecorded` is idempotent on the
+        // extent and its hash, so the reference the platform already holds
+        // is the same fact when it arrives again.
+        if let Some(journal) = self.journal.as_mut()
+            && let Err(failure) = journal.record(&report, until)
+        {
+            self.runtime.unwind(before);
+            return Err(failure);
         }
         let checkpoint = self.runtime.checkpoint(until);
-        if let Some(journal) = self.journal.as_mut() {
-            journal.commit(&checkpoint)?;
+        if let Some(journal) = self.journal.as_mut()
+            && let Err(failure) = journal.commit(&checkpoint)
+        {
+            self.runtime.unwind(before);
+            return Err(failure);
         }
         Ok(report
             .admitted
@@ -425,14 +456,24 @@ impl DataAdapter for ConnectorFeed {
         self.descriptor.clone()
     }
 
-    /// The adapter contract, which carries no place to hand a digest up:
-    /// the fetch is polled and released with its digest accepted by nobody.
-    /// A composition root that holds a platform polls through
-    /// [`Self::poll_referencing`] instead — both shipped roots do — and this
-    /// arm exists for the callers that cannot reference: a contract test
-    /// driving the bridge over an emulator, a rig with no kernel.
+    /// The adapter contract carries no place to hand a digest up, so this
+    /// arm refuses rather than polling: a fetch released through it would be
+    /// referenced by nobody, and until 2026-09-12 that is what it did — the
+    /// digest was taken and dropped, silently, and a root that reached the
+    /// connector through `dyn DataAdapter` fed the cycle bytes no ledger
+    /// could later be asked about. Every root polls through
+    /// [`Self::poll_referencing`]; a rig with no kernel passes a hook that
+    /// accepts, and says so at the call site rather than here.
     fn poll(&mut self, until: Timestamp) -> Result<Vec<SensedRecord>> {
-        self.poll_referencing(until, &mut |_| Ok(()))
+        Err(Error::denied(format!(
+            "the `{}` connector cannot be polled through `DataAdapter::poll` at {}: the trait \
+             carries no reference hook, so every fetch released this way would be a fetch no \
+             ledger accounts for. Poll through `ConnectorFeed::poll_referencing` and hand the \
+             digest to `Platform::reference_fetch`, or to a hook that accepts it if there is \
+             deliberately no platform",
+            self.descriptor.name,
+            until.to_rfc3339()
+        )))
     }
 
     // `stop` keeps the trait default. The runtime's own shutdown wants the
@@ -637,5 +678,270 @@ mod tests {
              position nobody asked for"
         );
         assert_eq!(checkpoint.source_id, "frankfurter-ecb-reference-rates");
+    }
+
+    /// A store whose writes fail on demand — a full disk, a revoked mount.
+    #[derive(Debug)]
+    struct FailingStore {
+        inner: qip_storage::MemoryKeyValueStore,
+        failing: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl qip_core::kv::KeyValueStore for FailingStore {
+        fn get(&self, key: &str) -> Result<Option<serde_json::Value>> {
+            self.inner.get(key)
+        }
+
+        fn put(&self, key: &str, value: serde_json::Value) -> Result<()> {
+            if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(Error::io("no space left on device"));
+            }
+            self.inner.put(key, value)
+        }
+
+        fn delete(&self, key: &str) -> Result<bool> {
+            self.inner.delete(key)
+        }
+
+        fn keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+            self.inner.keys_with_prefix(prefix)
+        }
+
+        fn len(&self) -> Result<usize> {
+            self.inner.len()
+        }
+    }
+
+    /// The Frankfurter feed over the emulator, journaled to `store`.
+    fn journaled_frankfurter(
+        store: Arc<dyn qip_core::kv::KeyValueStore>,
+        opened: Timestamp,
+    ) -> ConnectorFeed {
+        let mut manifest =
+            FrankfurterRatesConnector::shipped_manifest().expect("the shipped manifest parses");
+        manifest.endpoint.base_url = Some("http://127.0.0.1:1".to_string());
+        let table = r#"{"amount":1.0,"base":"EUR","date":"2026-08-26","rates":{"GBP":0.85898,"JPY":181.59,"USD":1.1622}}"#;
+        let transport = Box::new(SourceEmulator::serving(
+            manifest.endpoint.path.clone(),
+            table,
+        ));
+        let connector = Box::new(
+            FrankfurterRatesConnector::new(manifest.clone()).expect("the connector builds"),
+        );
+        let mut feed = ConnectorFeed::over_transport(connector, manifest, transport, 7, opened)
+            .expect("the emulator answers the health probe");
+        feed.journal_to(store)
+            .expect("a journal opens on an empty store");
+        feed
+    }
+
+    /// A journal that cannot be written leaves the connector where it stood,
+    /// exactly as a refused reference does: the reference hook accepted, the
+    /// runtime had advanced its cursor and dedup window, and until
+    /// 2026-09-12 the journal's failure propagated with both left moved —
+    /// the records were neither delivered nor re-fetchable, because the
+    /// next poll resumed past them and dropped the re-served table as
+    /// duplicates. Now the poll unwinds, and once the store writes again the
+    /// next poll re-fetches and delivers the same table.
+    ///
+    /// Mutated by deleting the `self.runtime.unwind(before)` call in the
+    /// `journal.record` failure arm — confirmed the cursor then moves on the
+    /// failure and the re-fetch delivers nothing, failing both halves, then
+    /// restored.
+    #[test]
+    fn a_journal_that_cannot_be_written_leaves_the_checkpoint_where_it_was_and_the_next_poll_refetches()
+     {
+        let opened = instant("2026-08-27T00:00:00Z");
+        let failing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let store: Arc<dyn qip_core::kv::KeyValueStore> = Arc::new(FailingStore {
+            inner: qip_storage::MemoryKeyValueStore::default(),
+            failing: failing.clone(),
+        });
+        let mut feed = journaled_frankfurter(store, opened);
+        let before = feed.checkpoint(opened);
+        assert!(feed.runtime.dedup().is_empty(), "premise: nothing seen yet");
+
+        // The disk fills between the health probe and the first poll. The
+        // platform's hook accepts — the reference is on its ledger — and the
+        // journal cannot be written.
+        failing.store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut referenced = 0usize;
+        let failure = feed
+            .poll_referencing(opened, &mut |_| {
+                referenced += 1;
+                Ok(())
+            })
+            .expect_err("a poll whose journal could not be written released its records");
+        assert_eq!(
+            referenced, 1,
+            "premise: the platform accepted the reference"
+        );
+        assert!(
+            failure.message().contains("no space left"),
+            "the failure returned is not the store's: {failure}"
+        );
+        assert_eq!(
+            feed.checkpoint(opened).cursor,
+            before.cursor,
+            "a journal failure moved the cursor past records nobody received"
+        );
+        assert!(
+            feed.runtime.dedup().is_empty(),
+            "a journal failure left the records in the dedup window, so the re-fetch would drop \
+             them as duplicates"
+        );
+
+        // The store writes again; the next poll re-fetches and delivers.
+        failing.store(false, std::sync::atomic::Ordering::SeqCst);
+        let later = opened.saturating_add(qip_core::Duration::from_secs(1));
+        let records = feed
+            .poll_referencing(later, &mut |_| Ok(()))
+            .expect("the re-fetch delivers");
+        assert_eq!(
+            records.len(),
+            3,
+            "the three rates were re-fetched and released"
+        );
+        assert_ne!(feed.checkpoint(later).cursor, before.cursor);
+        assert_eq!(feed.ledger().map(|ledger| ledger.polls), Some(1));
+    }
+
+    /// The adapter contract's `poll` refuses on a connector, naming the seam
+    /// to use instead, and moves nothing: a fetch released with its digest
+    /// accepted by nobody was, until 2026-09-12, what this arm did silently.
+    ///
+    /// Mutated by restoring the delegating body
+    /// (`self.poll_referencing(until, &mut |_| Ok(()))`) — confirmed the
+    /// poll then delivers and this fails, then restored.
+    #[test]
+    fn the_adapter_contracts_poll_refuses_a_connector_rather_than_releasing_an_unreferenced_fetch()
+    {
+        let opened = instant("2026-08-27T00:00:00Z");
+        let store: Arc<dyn qip_core::kv::KeyValueStore> =
+            Arc::new(qip_storage::MemoryKeyValueStore::default());
+        let mut feed = journaled_frankfurter(store, opened);
+        let before = feed.checkpoint(opened);
+        let refusal = DataAdapter::poll(&mut feed, opened)
+            .expect_err("a connector was polled through the trait and released a fetch");
+        assert_eq!(refusal.code(), "denied", "got {refusal:?}");
+        assert!(
+            refusal.message().contains("poll_referencing"),
+            "the refusal does not name the seam to use: {refusal}"
+        );
+        assert_eq!(feed.checkpoint(opened).cursor, before.cursor);
+        assert_eq!(feed.ledger().map(|ledger| ledger.polls), Some(0));
+        // And the seam it names still delivers, or the refusal proves nothing.
+        assert_eq!(
+            feed.poll_referencing(opened, &mut |_| Ok(()))
+                .expect("the referencing seam delivers")
+                .len(),
+            3
+        );
+    }
+
+    /// A connector whose records carry no subject — a news source, whose
+    /// items are about entities — decodes and delivers, and its poll carries
+    /// no digest because there is nothing a ledger could key a reference on.
+    /// A source that polls for a week and is referenced nowhere is a source
+    /// somebody should know about, so the poll says so and the runtime
+    /// counts it; until 2026-09-12 neither did.
+    #[derive(Debug)]
+    struct NewsOnly {
+        manifest: SourceManifest,
+        item: SensedRecord,
+    }
+
+    impl SourceConnector for NewsOnly {
+        fn manifest(&self) -> &SourceManifest {
+            &self.manifest
+        }
+
+        fn decode(&self, _payload: &serde_json::Value, _cursor: &Cursor) -> Result<Vec<RawEvent>> {
+            Ok(vec![RawEvent::new(
+                "story-1",
+                self.item.occurred_at(),
+                serde_json::json!({"headline": "a story"}),
+            )])
+        }
+
+        fn map(&self, _event: &RawEvent, _ingest_time: Timestamp) -> Result<SensedRecord> {
+            Ok(self.item.clone())
+        }
+    }
+
+    /// Mutated by deleting the `report.unreferenced = true` assignment —
+    /// confirmed the flag then stays false and this fails, then restored.
+    #[test]
+    fn a_source_whose_records_carry_no_subject_is_delivered_and_marked_unreferenced() {
+        let opened = instant("2026-08-27T00:00:00Z");
+        let mut environment = crate::synthetic::SyntheticEnvironment::demo(
+            opened,
+            crate::synthetic::EnvironmentConfig {
+                seed: 7,
+                // Loud rather than the default's 0.4 a day, so the story
+                // this test needs is narrated inside the hour it runs.
+                routine_news_per_day: 200.0,
+                ..crate::synthetic::EnvironmentConfig::default()
+            },
+        );
+        let item = environment
+            .run_until(opened.saturating_add(qip_core::Duration::from_hours(1)))
+            .into_iter()
+            .find(|record| matches!(record, SensedRecord::News(_)))
+            .expect("premise: the exchange narrated a story");
+        assert!(
+            item.subject_id().is_none(),
+            "premise: a news item names no subject"
+        );
+
+        let mut manifest =
+            FrankfurterRatesConnector::shipped_manifest().expect("the shipped manifest parses");
+        manifest.endpoint.base_url = Some("http://127.0.0.1:1".to_string());
+        // The body satisfies the manifest's schema contract — the runtime's
+        // schema guard runs before the connector decodes — and the double
+        // then decodes it as one story; what is under test is the digest,
+        // not the decode.
+        let transport = Box::new(SourceEmulator::serving(
+            manifest.endpoint.path.clone(),
+            r#"{"amount":1.0,"base":"EUR","date":"2026-08-26","rates":{"USD":1.1622}}"#,
+        ));
+        let connector = Box::new(NewsOnly {
+            manifest: manifest.clone(),
+            item,
+        });
+        let mut feed = ConnectorFeed::over_transport(connector, manifest, transport, 7, opened)
+            .expect("the emulator answers the health probe");
+        let horizon = item_horizon(opened);
+        let mut referenced = 0usize;
+        let records = feed
+            .poll_referencing(horizon, &mut |_| {
+                referenced += 1;
+                Ok(())
+            })
+            .expect("a subjectless poll still delivers");
+        assert_eq!(records.len(), 1, "the story was delivered");
+        assert_eq!(
+            referenced, 0,
+            "nothing was referenced: no digest, no hook call"
+        );
+        assert_eq!(
+            feed.runtime.stats().unreferenced,
+            1,
+            "an unreferenced delivery must be counted"
+        );
+        let report = feed
+            .runtime
+            .poll(feed.connector.as_mut(), feed.transport.as_mut(), horizon)
+            .expect("a second poll");
+        assert!(
+            report.unreferenced,
+            "the report must say the poll was unreferenced"
+        );
+        assert!(report.digest.is_none());
+    }
+
+    /// A horizon a day on, past any publication delay the manifest declares.
+    fn item_horizon(opened: Timestamp) -> Timestamp {
+        opened.saturating_add(qip_core::Duration::from_days(1))
     }
 }

@@ -343,13 +343,18 @@ fn run() -> Result<()> {
             // A replay that says which shipped connector it was recorded
             // from is run through that connector's own licensing gate here,
             // and held open for every learning round: the campaign then
-            // researches through the catalogue door under the connector's
-            // admission, which is what lets a subject count a second vendor
-            // without a live vendor call (ADR 0057). The file's claim is a
-            // claim; the gate is the admission. A replay that says nothing
-            // reports `Restricted` and every learning round is refused at
-            // the campaign's door, per subject, with the reason on the
-            // round line — the node keeps cycling.
+            // researches through the *replayed* door under the connector's
+            // admission (ADR 0057, amended). The file's claim is a claim;
+            // the gate is the admission; and the bytes are never a vendor —
+            // the replayed door counts for nothing toward rule 31, because
+            // nothing about a file proves the vendor served its contents.
+            // The adapter refuses a file whose records the named connector
+            // never ships, so a bars file headed with a ticker connector
+            // stops the process here rather than being researched under
+            // that connector's licence. A replay that says nothing reports
+            // `Restricted` and every learning round is refused at the
+            // campaign's door, per subject, with the reason on the round
+            // line — the node keeps cycling.
             let (adapter, admission) = match replay.recorded_from().map(str::to_string) {
                 Some(source) => {
                     let manifest = qip_market_ingestion::connector_feed::shipped_manifest(&source)?;
@@ -362,12 +367,12 @@ fn run() -> Result<()> {
                         )?;
                     println!(
                         "  replay:           recorded from {source}, {}; the learning round \
-                         researches through the catalogue door under this admission, re-asked \
-                         every round",
+                         researches through the replayed door under this admission, re-asked \
+                         every round, and replayed bytes count for no vendor",
                         decision.describe()
                     );
                     (
-                        replay.as_recorded_from(&source, manifest.licensing),
+                        replay.as_recorded_from(&source, manifest.licensing)?,
                         Some((admission, manifest)),
                     )
                 }

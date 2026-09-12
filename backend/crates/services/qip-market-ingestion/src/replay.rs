@@ -45,6 +45,21 @@
 //! platform verifies that the licence exists and is granted, not that the
 //! bytes came from that vendor; the file's author is answerable for that,
 //! as the author of a `with_licensing` call already is.
+//!
+//! Two things the adapter *does* hold the file to, because they are checkable
+//! without the vendor. Every record in a file that names a source must be of
+//! a topic that source's connector ships
+//! ([`crate::connector_feed::shipped_topics`]): a bars file headed with the
+//! Coinbase ticker is mislabelled on its face, since that connector has never
+//! emitted a bar, and until 2026-09-12 it was admitted, referenced under
+//! Coinbase's licence, and counted as Coinbase's backing of whatever
+//! instrument the bars named. And the header is one line, before the first
+//! record: a second header, or one after a record, is a file that says two
+//! things about its provenance, and a file that says two things is refused
+//! rather than read as whichever came last. Neither check makes the bytes
+//! the vendor's — which is why the research campaign references a replay
+//! under `SourceOrigin::ReplayedAdmitted`, a door the concentration rule does
+//! not count as a vendor.
 
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
@@ -92,9 +107,9 @@ impl ReplayAdapter {
         let file = std::fs::File::open(&path)
             .map_err(|e| Error::io(format!("cannot open replay file {}: {e}", path.display())))?;
 
-        let mut records = Vec::new();
+        let mut records: Vec<SensedRecord> = Vec::new();
         let mut skipped = Vec::new();
-        let mut recorded_from = None;
+        let mut recorded_from: Option<String> = None;
         for (number, line) in BufReader::new(file).lines().enumerate() {
             let line = line?;
             if let Some(source) = line.trim_start().strip_prefix(RECORDED_FROM_HEADER) {
@@ -104,9 +119,29 @@ impl ReplayAdapter {
                         "line {}: `{RECORDED_FROM_HEADER}` names no source",
                         number + 1
                     ));
-                } else {
-                    recorded_from = Some(source.to_string());
+                    continue;
                 }
+                if let Some(earlier) = &recorded_from {
+                    return Err(Error::invalid(format!(
+                        "replay file {} names `{source}` as its source on line {} and already \
+                         named `{earlier}` earlier; a file that claims two provenances is \
+                         refused rather than read as whichever came last",
+                        path.display(),
+                        number + 1
+                    )));
+                }
+                if !records.is_empty() {
+                    return Err(Error::invalid(format!(
+                        "replay file {} names `{source}` as its source on line {}, after {} \
+                         record(s) it would apply to; the `{RECORDED_FROM_HEADER}` header goes \
+                         before the first record, so a reader cannot be told half-way through a \
+                         file whose bytes it has been reading",
+                        path.display(),
+                        number + 1,
+                        records.len()
+                    )));
+                }
+                recorded_from = Some(source.to_string());
                 continue;
             }
             if line.trim().is_empty() || line.trim_start().starts_with('#') {
@@ -116,6 +151,9 @@ impl ReplayAdapter {
                 Ok(record) => records.push(record),
                 Err(e) => skipped.push(format!("line {}: {e}", number + 1)),
             }
+        }
+        if let Some(source) = &recorded_from {
+            Self::refuse_topics_outside(source, &records, &path.display().to_string())?;
         }
         // Replay must be in event order regardless of how the file was written.
         records.sort_by_key(|r| r.occurred_at().as_nanos());
@@ -130,6 +168,38 @@ impl ReplayAdapter {
             recorded_from,
             skipped,
         })
+    }
+
+    /// Refuse a record set that names `source` and holds a topic that
+    /// source's connector has never shipped. See the module doc: a bars file
+    /// headed with a ticker connector is mislabelled on its face.
+    fn refuse_topics_outside(source: &str, records: &[SensedRecord], file: &str) -> Result<()> {
+        let shipped = crate::connector_feed::shipped_topics(source)?;
+        let foreign: std::collections::BTreeSet<&'static str> = records
+            .iter()
+            .map(SensedRecord::topic)
+            .filter(|topic| !shipped.contains(topic))
+            .map(|topic| topic.name())
+            .collect();
+        if foreign.is_empty() {
+            return Ok(());
+        }
+        Err(Error::invalid(format!(
+            "replay {file} says it was recorded from `{source}`, whose connector ships only {} \
+             record(s), and holds {} record(s) of {}; a file whose records the named source \
+             could not have served is mislabelled, and is refused rather than researched under \
+             that source's licence",
+            shipped
+                .iter()
+                .map(|topic| topic.name())
+                .collect::<Vec<_>>()
+                .join(", "),
+            records
+                .iter()
+                .filter(|record| !shipped.contains(&record.topic()))
+                .count(),
+            foreign.into_iter().collect::<Vec<_>>().join(", ")
+        )))
     }
 
     /// Build from records already in memory.
@@ -178,11 +248,24 @@ impl ReplayAdapter {
     /// class is the manifest's, which the gate agreed with. Calling this for
     /// a source the gate refused would name a door the platform does not
     /// hold, and the campaign would refuse the stream by name.
-    pub fn as_recorded_from(mut self, source_id: &str, licensing: LicensingClass) -> Self {
+    ///
+    /// Refuses, exactly as [`Self::open`] does for a headed file, a record
+    /// set holding a topic `source_id`'s connector has never shipped. The
+    /// check is here as well as in `open` because this is the call that
+    /// gives the records the source's name, and a `from_records` replay
+    /// handed a connector's name through here alone would otherwise be the
+    /// one path past the check.
+    pub fn as_recorded_from(mut self, source_id: &str, licensing: LicensingClass) -> Result<Self> {
+        let file = if self.path.as_os_str().is_empty() {
+            format!("`{}` (in memory)", self.name)
+        } else {
+            self.path.display().to_string()
+        };
+        Self::refuse_topics_outside(source_id, &self.records, &file)?;
         self.name = source_id.to_string();
         self.licensing = Some(licensing);
         self.recorded_from = Some(source_id.to_string());
-        self
+        Ok(self)
     }
 
     /// Write records to a JSONL file, for later replay.

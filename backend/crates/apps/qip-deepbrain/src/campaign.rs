@@ -21,18 +21,22 @@
 //!
 //! * **resolve references** — the subject's stream is resolved to the door
 //!   it came through: a catalogue-admitted connector the platform holds an
-//!   admission for — a live connector, or a replay recorded from one and
-//!   admitted under its licence — or a stream the platform generated itself
-//!   (the synthetic exchange, a committed tape). A stream that is neither is
-//!   refused before any bytes are read, because a fit on data whose licence
-//!   nobody evaluated is the "use before evaluation" the data domain forbids.
-//!   The refusal is [`Assembly::RefusedAtDoor`], a fact about one subject
-//!   and one round that the round line carries and
+//!   admission for, which is the catalogue door for a stream this process
+//!   fetched from the vendor and the *replayed* door
+//!   ([`SourceOrigin::ReplayedAdmitted`]) for a replay recorded from one and
+//!   researched under its licence — the licence is the gate's answer, the
+//!   bytes are the file's author's word, and the replayed door counts for no
+//!   vendor; or a stream the platform generated itself (the synthetic
+//!   exchange, a committed tape). A stream that is none of these is refused
+//!   before any bytes are read, because a fit on data whose licence nobody
+//!   evaluated is the "use before evaluation" the data domain forbids. The
+//!   refusal is [`Assembly::RefusedAtDoor`], a fact about one subject and
+//!   one round that the round line carries and
 //!   `qip_research_campaigns_refused_total{gate="door"}` counts — not an
 //!   error, because until 2026-09-12 it was one, `maybe_learn` propagated
 //!   it, and the deep brain's node loop stopped on the first due learning
-//!   round over an undeclared replay. A connector-fed deep brain now fails
-//!   closed per subject, not per process.
+//!   round over an undeclared replay. The deep brain fails closed per
+//!   subject, not per process, whatever feeds it.
 //! * **fetch into TTL cache** — the window is serialised, referenced through
 //!   that door, and fetched into a [`FetchCampaign`] under a stated
 //!   [`CacheBound`]. The bars the desk then fits on are *read back out of the
@@ -230,8 +234,30 @@ pub fn period_of(bars: &[Bar]) -> Result<DataPeriod> {
 
 /// Which door the subject's stream came through.
 enum Door {
-    Admitted(AdmittedSource),
+    /// The platform holds the source's admission. `replayed` says whether
+    /// the bytes were read from a file rather than fetched from the vendor,
+    /// which decides the reference's origin and so whether it counts as a
+    /// vendor.
+    Admitted {
+        admitted: AdmittedSource,
+        replayed: bool,
+    },
     Generated,
+}
+
+/// Where the engine's own stream's bytes come from, as the engine knows it
+/// and the descriptor does not: a descriptor names a source and a class, and
+/// a replay given a connector's name carries that connector's descriptor.
+/// The engine holds the adapter and knows whether it is a file, so it says.
+/// Until 2026-09-12 `assemble` could not tell, and a replay under a
+/// connector's admission was referenced as if this process had fetched the
+/// bytes from the vendor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamProvenance {
+    /// This process produced or fetched the bytes itself.
+    Live,
+    /// The bytes were read back from a recording somebody made.
+    Replayed,
 }
 
 /// What assembling a subject's window produced.
@@ -278,6 +304,7 @@ pub fn count_door_refusal(platform: &Platform) {
 pub fn assemble(
     platform: &mut Platform,
     descriptor: &SourceDescriptor,
+    provenance: StreamProvenance,
     subject: &ObjectId,
     bars: &[Bar],
     minimum_bars: usize,
@@ -287,7 +314,10 @@ pub fn assemble(
 ) -> Result<Assembly> {
     // Resolve the door before reading a byte.
     let door = match platform.admitted_source(&descriptor.name) {
-        Some(admitted) => Door::Admitted(admitted.clone()),
+        Some(admitted) => Door::Admitted {
+            admitted: admitted.clone(),
+            replayed: provenance == StreamProvenance::Replayed,
+        },
         None if descriptor.licensing == LicensingClass::Synthetic => Door::Generated,
         None => {
             count_door_refusal(platform);
@@ -325,7 +355,26 @@ pub fn assemble(
     let locator = locator_for(&descriptor.name, subject, first.interval);
     let symbols = [subject.as_str().to_string()];
     let reference = match &door {
-        Door::Admitted(admitted) => DataReference::of_admitted(
+        Door::Admitted {
+            admitted,
+            replayed: false,
+        } => DataReference::of_admitted(
+            admitted,
+            &locator,
+            symbols,
+            period,
+            &bytes,
+            now,
+            Decimal::ZERO,
+            1.0,
+        )?,
+        // A replay's bytes under the connector's licence: the replayed door,
+        // whose locator says `replay://` and whose origin counts for no
+        // vendor.
+        Door::Admitted {
+            admitted,
+            replayed: true,
+        } => DataReference::of_admitted_replayed(
             admitted,
             &locator,
             symbols,
@@ -341,6 +390,10 @@ pub fn assemble(
     };
     let source_id = reference.source_id().to_string();
     let origin = reference.origin();
+    // The cache is keyed on the reference's own locator, which the replayed
+    // door prefixes; reading back by the locator this function spelled
+    // missed a replayed window the instant after fetching it.
+    let cache_key = reference.locator().to_string();
 
     // The ledger: hash verification across rounds, with the kernel's
     // consequence on a revision.
@@ -385,9 +438,9 @@ pub fn assemble(
         )));
     }
     campaign.attach_statistic(statistic.clone());
-    let (_, cached) = campaign.cache().get(&locator, now).ok_or_else(|| {
+    let (_, cached) = campaign.cache().get(&cache_key, now).ok_or_else(|| {
         Error::not_found(format!(
-            "the campaign cache does not hold {locator} an instant after fetching it"
+            "the campaign cache does not hold {cache_key} an instant after fetching it"
         ))
     })?;
     let assembled: Vec<Bar> = serde_json::from_slice(cached)?;
@@ -447,9 +500,12 @@ pub fn assemble(
     })))
 }
 
+#[cfg(test)]
 impl Assembly {
     /// The window, or `None` for either other outcome. For the tests that
-    /// assemble and want the window; production reads the outcome.
+    /// assemble and want the window; production matches the outcome, and a
+    /// public accessor that flattened two refusals into `None` would invite
+    /// it to stop.
     pub fn window(self) -> Option<AssembledWindow> {
         match self {
             Self::Window(window) => Some(*window),
@@ -625,6 +681,7 @@ mod tests {
         let window = assemble(
             &mut platform,
             &descriptor(LicensingClass::Synthetic),
+            StreamProvenance::Live,
             &subject(),
             &stream,
             MINIMUM,
@@ -697,6 +754,7 @@ mod tests {
         let next = assemble(
             &mut platform,
             &descriptor(LicensingClass::Synthetic),
+            StreamProvenance::Live,
             &subject(),
             &stream,
             MINIMUM,
@@ -713,6 +771,151 @@ mod tests {
         assert!(next.summary.concentration.is_sufficient());
         assert_eq!(next.summary.concentration.viable_sources(), 2);
         assert_eq!(next.summary.concentration.generated(), 1);
+        Ok(())
+    }
+
+    /// A replay under a connector's admission is referenced through the
+    /// replayed door — the connector's licence and category, a `replay://`
+    /// locator, and an origin the concentration rule does not count — and
+    /// the review's scenario stays held back: a bars window researched under
+    /// the ECB connector's admission in one process, then the same bars
+    /// under the Coinbase ticker's admission in a second process over the
+    /// same log, back no vendor between them, because neither process
+    /// fetched a byte from either vendor. Until 2026-09-12 that scenario
+    /// read as `Sufficient { viable_sources: 2 }` and opened rule 31's hold
+    /// on zero vendor bytes, with the ECB's licence attributed to
+    /// hand-written bars on the permanent log.
+    ///
+    /// The two vendors are admitted through the real gate, and asserted as
+    /// its decisions rather than as string literals. Mutated by making
+    /// `assemble` resolve `Door::Admitted { replayed: false }` whatever the
+    /// provenance — confirmed the second process's verdict then counts two
+    /// vendors and this fails, then restored.
+    #[test]
+    fn a_replay_under_admission_is_referenced_through_the_replayed_door_and_backs_no_vendor()
+    -> Result<()> {
+        use qip_data_finder::reference::REPLAY_LOCATOR_SCHEME;
+        let directory = std::env::temp_dir().join(format!(
+            "qip-deepbrain-campaign-replayed-{}-{}",
+            std::process::id(),
+            start().as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("events.jsonl");
+        let stream = bars(300, Interval::Minute, 0);
+        let config = CampaignConfig::standard()?;
+
+        // One process per header, over one log, as a restart is in life.
+        let mut decisions = Vec::new();
+        let mut summaries = Vec::new();
+        for (index, manifest) in [
+            FrankfurterRatesConnector::shipped_manifest()?,
+            CoinbaseTickerConnector::shipped_manifest()?,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let at = start().saturating_add(Duration::from_hours(index as i64));
+            let platform_config = PlatformConfig::default().with_event_log_file(&path);
+            let (context, _clock) = Context::deterministic(at, platform_config.seed);
+            let mut platform = Platform::new(
+                platform_config,
+                context,
+                Telemetry::silent(),
+                Universe::new(),
+                LimitSet::conservative_default(),
+            )?;
+            // The root's shape: the gate admits the named source, the
+            // platform holds the admission, and the replay carries the
+            // source's name and class.
+            let decision = admission::admit(&manifest.source_id, manifest.licensing, at)?;
+            platform.admit_source(AdmittedSource::from_decision(&decision, &manifest)?);
+            let replay = SourceDescriptor {
+                name: manifest.source_id.clone(),
+                provider: "replay of a file".to_string(),
+                licensing: manifest.licensing,
+                topics: vec![Topic::MarketBar],
+                expected_latency: Duration::ZERO,
+                production_requirement: None,
+            };
+            let window = assemble(
+                &mut platform,
+                &replay,
+                StreamProvenance::Replayed,
+                &subject(),
+                &stream,
+                MINIMUM,
+                1,
+                at,
+                &config,
+            )?
+            .window()
+            .ok_or_else(|| Error::not_found("a window through the replayed door"))?;
+            decisions.push(decision);
+            summaries.push(window.summary);
+        }
+        assert_ne!(
+            decisions[0].licence, decisions[1].licence,
+            "premise: two vendors under two licences, as the gate decided them"
+        );
+        assert_eq!(decisions[0].source_id, "frankfurter-ecb-reference-rates");
+        assert_eq!(decisions[1].source_id, "coinbase-spot-ticker");
+
+        for summary in &summaries {
+            assert_eq!(
+                summary.origin,
+                SourceOrigin::ReplayedAdmitted,
+                "a replay was referenced as a fetch this process made"
+            );
+            assert_eq!(summary.concentration.viable_sources(), 0);
+            assert!(!summary.concentration.is_sufficient());
+        }
+        let second = &summaries[1];
+        assert_eq!(second.source_id, "coinbase-spot-ticker");
+        // The second process restored the first's reference from the log
+        // and still counted it for nothing: the two headers together are
+        // not two vendors.
+        assert!(
+            !second.concentration.is_sufficient(),
+            "two replays under two vendors' admissions lifted the hold: {}",
+            second.concentration.describe()
+        );
+
+        // And the ledger says on its face what each reference was.
+        let platform_config = PlatformConfig::default().with_event_log_file(&path);
+        let (context, _clock) = Context::deterministic(
+            start().saturating_add(Duration::from_hours(3)),
+            platform_config.seed,
+        );
+        let platform = Platform::new(
+            platform_config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )?;
+        assert_eq!(
+            platform.reference_ledger().len(),
+            2,
+            "premise: both references restored"
+        );
+        let locator = locator_for(
+            "frankfurter-ecb-reference-rates",
+            &subject(),
+            Interval::Minute,
+        );
+        let held = platform
+            .reference_ledger()
+            .get(
+                "frankfurter-ecb-reference-rates",
+                &format!("{REPLAY_LOCATOR_SCHEME}{locator}"),
+                period_of(&stream)?,
+            )
+            .ok_or_else(|| {
+                Error::not_found("the replayed reference under its replay:// locator")
+            })?;
+        assert_eq!(held.origin(), SourceOrigin::ReplayedAdmitted);
+        let _ = std::fs::remove_dir_all(&directory);
         Ok(())
     }
 
@@ -751,6 +954,7 @@ mod tests {
             let window = assemble(
                 &mut platform,
                 &descriptor(LicensingClass::Synthetic),
+                StreamProvenance::Live,
                 &subject(),
                 &stream,
                 MINIMUM,
@@ -832,6 +1036,7 @@ mod tests {
         let first = assemble(
             &mut platform,
             &source,
+            StreamProvenance::Live,
             &subject(),
             &original,
             MINIMUM,
@@ -856,6 +1061,7 @@ mod tests {
         let unrelated = assemble(
             &mut platform,
             &source,
+            StreamProvenance::Live,
             &other,
             &bars_of(&other, 300, Interval::Minute, 0),
             MINIMUM,
@@ -881,6 +1087,7 @@ mod tests {
         let second = assemble(
             &mut platform,
             &source,
+            StreamProvenance::Live,
             &subject(),
             &revised,
             MINIMUM,
@@ -956,6 +1163,7 @@ mod tests {
         let again = assemble(
             &mut platform,
             &source,
+            StreamProvenance::Live,
             &subject(),
             &revised,
             MINIMUM,
@@ -1003,6 +1211,7 @@ mod tests {
         let error = assemble(
             &mut platform,
             &descriptor(LicensingClass::Synthetic),
+            StreamProvenance::Live,
             &subject(),
             &stream,
             MINIMUM,
@@ -1041,6 +1250,7 @@ mod tests {
         let outcome = assemble(
             &mut platform,
             &descriptor(LicensingClass::Licensed),
+            StreamProvenance::Live,
             &subject(),
             &stream,
             MINIMUM,
@@ -1090,6 +1300,7 @@ mod tests {
             assemble(
                 &mut platform,
                 &descriptor(LicensingClass::Synthetic),
+                StreamProvenance::Live,
                 &subject(),
                 &too_little,
                 MINIMUM,
@@ -1115,6 +1326,7 @@ mod tests {
         let window = assemble(
             &mut platform,
             &descriptor(LicensingClass::Synthetic),
+            StreamProvenance::Live,
             &subject(),
             &too_little,
             MINIMUM,

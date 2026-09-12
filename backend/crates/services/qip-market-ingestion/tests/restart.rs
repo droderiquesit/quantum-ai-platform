@@ -52,7 +52,6 @@
 use qip_core::error::{Error, Result};
 use qip_core::kv::KeyValueStore;
 use qip_core::{Clock, Duration, ManualClock, Timestamp};
-use qip_market_ingestion::adapter::DataAdapter;
 use qip_market_ingestion::connector::emulator::SourceEmulator;
 use qip_market_ingestion::connector::journal::{StreamJournal, StreamLedger};
 use qip_market_ingestion::connector::transport::SourceTransport;
@@ -765,7 +764,10 @@ fn a_feed_given_a_store_resumes_the_previous_processs_window_and_one_without_a_s
          something this test did not write"
     );
 
-    let released = feed.poll(first_poll)?;
+    // No kernel in this rig: the digest is accepted by a hook that says so,
+    // because `DataAdapter::poll` on a connector refuses to release a fetch
+    // nobody references.
+    let released = feed.poll_referencing(first_poll, &mut |_| Ok(()))?;
     assert_eq!(
         released.len() as u64,
         RATES_PER_TABLE,
@@ -795,7 +797,7 @@ fn a_feed_given_a_store_resumes_the_previous_processs_window_and_one_without_a_s
     // here so the assertion after it cannot pass because the emulator stopped
     // serving, the knowability gate closed, or the rate limiter deferred.
     let mut blind = feed_over_emulator(&body, second_poll)?;
-    let republished = blind.poll(second_poll)?;
+    let republished = blind.poll_referencing(second_poll, &mut |_| Ok(()))?;
     assert_eq!(
         republished.len() as u64,
         RATES_PER_TABLE,
@@ -812,7 +814,7 @@ fn a_feed_given_a_store_resumes_the_previous_processs_window_and_one_without_a_s
         "the whole table the last process absorbed must be taken back into the window"
     );
 
-    let released = feed.poll(second_poll)?;
+    let released = feed.poll_referencing(second_poll, &mut |_| Ok(()))?;
     assert!(
         released.is_empty(),
         "the identical table after a restart must be recognised, not republished; {} record(s) \
@@ -886,7 +888,7 @@ fn a_feed_refuses_a_second_journal_and_refuses_to_resume_a_window_it_has_already
     // is the natural mistake. A window half-restored would suppress some
     // redeliveries and republish others, and nothing downstream would show
     // which, so this refuses instead.
-    let released = feed.poll(first_poll)?;
+    let released = feed.poll_referencing(first_poll, &mut |_| Ok(()))?;
     assert_eq!(
         released.len() as u64,
         RATES_PER_TABLE,
@@ -897,7 +899,7 @@ fn a_feed_refuses_a_second_journal_and_refuses_to_resume_a_window_it_has_already
     drop(feed);
 
     let mut late = feed_over_emulator(&body, first_poll)?;
-    let released = late.poll(first_poll)?;
+    let released = late.poll_referencing(first_poll, &mut |_| Ok(()))?;
     assert_eq!(
         released.len() as u64,
         RATES_PER_TABLE,
