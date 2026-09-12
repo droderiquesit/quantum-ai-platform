@@ -42,12 +42,18 @@
 //!
 //! Two limits are stated here rather than papered over:
 //!
-//! * **Eviction breaks in-memory chain verification.** The chain is over what
-//!   was written; evicting a record from the middle of the retained span
-//!   leaves [`EventLog::verify_chain`] reporting the first link whose
-//!   predecessor is gone. That was already true of any capped log and is a
-//!   further reason the audit-class records are never evicted. For a
-//!   file-backed log the file still verifies end to end.
+//! * **Eviction breaks in-memory chain verification from genesis.** The chain
+//!   is over what was written; evicting a record from the middle of the
+//!   retained span leaves [`EventLog::verify_chain`] reporting the first link
+//!   whose predecessor is gone. That was already true of any capped log and
+//!   is a further reason the audit-class records are never evicted. For a
+//!   file-backed log the file still verifies end to end, and
+//!   [`EventLog::verify_retained_chain`] is the question to ask of the
+//!   retained span: it recomputes every retained record's hash and holds
+//!   each link only across the sequences the log still has, reading a gap
+//!   as the eviction it is. The chain is unkeyed SHA-256 (ADR 0043's
+//!   anchoring gap), so what either check proves is that the bytes read are
+//!   the bytes written, not that nobody with write access rewrote them.
 //! * **The JSONL file is still append-only.** Nothing here truncates or rolls
 //!   it, so a file-backed log bounds memory but not disk. Segmenting the file
 //!   — sealing a segment, recording its final hash as the next segment's
@@ -196,6 +202,7 @@ impl EventLog {
         log.path = Some(path.clone());
         if path.exists() {
             let file = std::fs::File::open(&path)?;
+            let mut expected_sequence: u64 = 1;
             for (line_number, line) in BufReader::new(file).lines().enumerate() {
                 let line = line?;
                 if line.trim().is_empty() {
@@ -207,6 +214,25 @@ impl EventLog {
                         line_number + 1
                     ))
                 })?;
+                // The file is append-only and every append takes the next
+                // sequence, so a file whose sequences are not 1, 2, 3, … has
+                // had a line removed, duplicated or renumbered. Refused
+                // here, before any hash is looked at, because
+                // `verify_retained_chain` reads a sequence gap as an
+                // eviction this process performed — which it can only be
+                // once the file it loaded from had none.
+                if record.sequence != expected_sequence {
+                    return Err(Error::schema(format!(
+                        "log record at line {} carries sequence {} where {} was expected; the \
+                         file is append-only and its sequences are contiguous from 1, so a gap \
+                         or a repeat means a line was removed, duplicated or renumbered. Restore \
+                         the file the log was written to, or archive it and start a new one",
+                        line_number + 1,
+                        record.sequence,
+                        expected_sequence
+                    )));
+                }
+                expected_sequence = expected_sequence.saturating_add(1);
                 // Same duplicate-id refusal as a live append: a file that
                 // reused an id (corruption, a hand edit, two processes
                 // appending to the same path) must fail to load rather than
@@ -547,9 +573,11 @@ impl EventLog {
         self.last_sequence
     }
 
-    /// Verify the hash chain. Returns the sequence of the first broken link.
+    /// Verify the hash chain from genesis, contiguously. Returns the
+    /// sequence of the first broken link — which, once the log has evicted
+    /// anything, is the first retained record after the eviction.
     pub fn verify_chain(&self) -> std::result::Result<(), u64> {
-        self.verify_chain_from(GENESIS_HASH)
+        self.verify_chain_from(GENESIS_HASH, GapPolicy::Break)
     }
 
     /// Verify the chain over what the log retains, rather than from genesis.
@@ -561,26 +589,53 @@ impl EventLog {
     /// makes `verify_chain` the wrong question for a consumer rebuilding
     /// state from the retained span: it wants to know that every record it
     /// is about to read hashes to what its predecessor committed to, and
-    /// that the first of them is either genesis or honestly claims a
-    /// predecessor. This checks exactly that: the first retained record is
-    /// held to genesis only when it is sequence one, every later record is
-    /// held to the one before it, and every record's own hash is recomputed.
-    /// A record whose payload was edited on disk fails here whether or not
-    /// anything before it was evicted.
+    /// that each link it can still check holds. This checks exactly that:
+    /// every record's own hash is recomputed; the first retained record is
+    /// held to genesis when it is sequence one and to its own claimed
+    /// predecessor otherwise; and every later record is held to the one
+    /// before it **when the two are consecutive**. Across a gap in the
+    /// retained sequence the record is re-anchored on its claimed
+    /// predecessor exactly as the head is — the same trust level, no new
+    /// assumption — because [`Self::make_room`] evicts the oldest evictable
+    /// record *wherever it sits*, and a permanent record older than every
+    /// evictable one leaves the gap in the interior. Until 2026-09-12 this
+    /// held every retained record to its retained predecessor, so a log
+    /// that had interleaved a permanent record with evictable ones failed
+    /// here at the first record after the interior gap, and the kernel
+    /// refused to restart over a log it had honestly written.
+    ///
+    /// A gap is read as an eviction because a file-backed log's file cannot
+    /// have one: [`Self::open_with_capacity`] refuses a file whose sequences
+    /// are not contiguous from one, so a line removed from the file is
+    /// refused at load and never reaches this check as a gap. What remains
+    /// unprovable is what the chain never proved: it is unkeyed SHA-256, and
+    /// a writer who can rewrite the file can rewrite the hashes with it
+    /// (ADR 0043). A record whose payload was edited on disk with its hash
+    /// left as written fails here whether or not anything around it was
+    /// evicted.
     pub fn verify_retained_chain(&self) -> std::result::Result<(), u64> {
         let Some(first) = self.records.first() else {
             return Ok(());
         };
         if first.sequence == 1 {
-            return self.verify_chain_from(GENESIS_HASH);
+            return self.verify_chain_from(GENESIS_HASH, GapPolicy::Evicted);
         }
         let claimed_predecessor = first.previous_hash.clone();
-        self.verify_chain_from(&claimed_predecessor)
+        self.verify_chain_from(&claimed_predecessor, GapPolicy::Evicted)
     }
 
-    fn verify_chain_from(&self, genesis: &str) -> std::result::Result<(), u64> {
-        let mut expected_previous = genesis.to_string();
+    fn verify_chain_from(&self, genesis: &str, gaps: GapPolicy) -> std::result::Result<(), u64> {
+        // The last record checked: its sequence and its hash as written.
+        let mut previous: Option<(u64, &str)> = None;
         for record in &self.records {
+            let expected_previous = match previous {
+                None => genesis,
+                Some((sequence, hash)) if record.sequence == sequence.saturating_add(1) => hash,
+                Some((_, hash)) => match gaps {
+                    GapPolicy::Break => hash,
+                    GapPolicy::Evicted => record.previous_hash.as_str(),
+                },
+            };
             if record.previous_hash != expected_previous {
                 return Err(record.sequence);
             }
@@ -590,7 +645,7 @@ impl EventLog {
             if recomputed != record.record_hash {
                 return Err(record.sequence);
             }
-            expected_previous = record.record_hash.clone();
+            previous = Some((record.sequence, record.record_hash.as_str()));
         }
         Ok(())
     }
@@ -637,6 +692,18 @@ impl EventLog {
             correlations: self.by_correlation.len() as u64,
         }
     }
+}
+
+/// How a gap in the retained sequence is read while verifying the chain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GapPolicy {
+    /// A gap is a broken link: the record after it is held to the record
+    /// before it, which it cannot match. What `verify_chain` asks.
+    Break,
+    /// A gap is an eviction: the record after it is re-anchored on the
+    /// predecessor it claims, as the head is. What `verify_retained_chain`
+    /// asks.
+    Evicted,
 }
 
 /// Hash committing to the record's position, its predecessor and its content.

@@ -1719,3 +1719,103 @@ fn the_retained_chain_verifies_after_eviction_and_catches_an_edited_record() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The retained chain verifies across an *interior* eviction, not only a
+/// head one, and still names an edited record after the gap by sequence.
+/// `make_room` evicts the oldest evictable record wherever it sits, so once
+/// a permanent record is older than every evictable one the gap opens in
+/// the middle of the retained span; until 2026-09-12 `verify_retained_chain`
+/// re-anchored only the head and failed at the first record after such a
+/// gap, and a file-backed kernel that had interleaved a permanent record
+/// with its observations refused every restart over a log it had honestly
+/// written, naming tampering.
+///
+/// Mutated by making `verify_chain_from` hold a record to its retained
+/// predecessor across a gap (the `GapPolicy::Evicted` arm returning `hash`)
+/// — confirmed the honest log then fails at sequence 5 and this fails, then
+/// restored. And by deleting the recomputed-hash comparison — confirmed the
+/// edited record then reads as intact and the tampered half fails, then
+/// restored.
+#[test]
+fn the_retained_chain_verifies_across_an_interior_eviction_and_still_names_an_edited_record() {
+    let dir =
+        std::env::temp_dir().join(format!("qip-log-interior-eviction-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("events.jsonl");
+    let (ctx, now) = context();
+    {
+        // Capacity three; tick, tick, fill, tick, tick, tick. The fill is
+        // Act-group and permanent, so once it is the oldest retained record
+        // the next eviction takes the tick *after* it.
+        let mut log = EventLog::open_with_capacity(&path, 3).unwrap();
+        log.append(&erased(&ctx, now, tick("T1"))).unwrap();
+        log.append(&erased(&ctx, now, tick("T2"))).unwrap();
+        log.append(&erased(
+            &ctx,
+            now,
+            Fill {
+                order: "ORD-1".to_string(),
+            },
+        ))
+        .unwrap();
+        log.append(&erased(&ctx, now, tick("T4"))).unwrap();
+        log.append(&erased(&ctx, now, tick("T5"))).unwrap();
+        log.append(&erased(&ctx, now, tick("T6"))).unwrap();
+        let retained: Vec<u64> = log.records().iter().map(|r| r.sequence).collect();
+        assert_eq!(
+            retained,
+            vec![3, 5, 6],
+            "premise: the gap is interior — the permanent fill is retained ahead of it"
+        );
+        assert_eq!(
+            log.verify_retained_chain(),
+            Ok(()),
+            "an honest log with an interior eviction must verify over what it retains"
+        );
+    }
+
+    // The same shape reloaded from disk under the same ceiling.
+    let reopened = EventLog::open_with_capacity(&path, 3).unwrap();
+    let retained: Vec<u64> = reopened.records().iter().map(|r| r.sequence).collect();
+    assert_eq!(
+        retained,
+        vec![3, 5, 6],
+        "premise: the load evicts the same records"
+    );
+    assert_eq!(reopened.verify_retained_chain(), Ok(()));
+    assert!(
+        reopened.verify_chain().is_err(),
+        "from genesis the retained span still does not verify, which is why a second question \
+         exists"
+    );
+
+    // Edit the payload of the sixth record — after the gap — leaving its
+    // hashes as written: the edit must still be named by its sequence.
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let mut record: serde_json::Value = serde_json::from_str(&lines[5]).unwrap();
+    record["event"]["payload"]["price"] = serde_json::json!(999.0);
+    lines[5] = serde_json::to_string(&record).unwrap();
+    std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+    let tampered = EventLog::open_with_capacity(&path, 3).unwrap();
+    assert_eq!(
+        tampered.verify_retained_chain(),
+        Err(6),
+        "an edited record after the gap must be named by its sequence"
+    );
+
+    // A line removed from the file is not an eviction and must not be read
+    // as one: the load refuses the file before any chain question is asked.
+    let mut without_fourth: Vec<String> = text.lines().map(str::to_string).collect();
+    without_fourth.remove(3);
+    std::fs::write(&path, format!("{}\n", without_fourth.join("\n"))).unwrap();
+    let refused = EventLog::open_with_capacity(&path, 3)
+        .expect_err("a file with a line removed loaded as if the log had evicted it");
+    assert!(
+        refused
+            .message()
+            .contains("sequence 5 where 4 was expected"),
+        "the refusal does not name the gap: {refused}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

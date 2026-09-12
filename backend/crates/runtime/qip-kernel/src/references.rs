@@ -545,6 +545,19 @@ impl Platform {
     /// resume takes. A log holding no such frame is not checked here: there
     /// is nothing to restore from it, and the check belongs to whoever reads
     /// it.
+    ///
+    /// What that verification proves is stated exactly, because the
+    /// refusal's wording used to overclaim it. The chain is unkeyed SHA-256
+    /// (ADR 0043's anchoring gap): a broken link means the bytes read are
+    /// not the bytes the log wrote — a payload edited with its hash left as
+    /// written — and not that a writer who could rewrite the hashes has
+    /// been kept out. And the retained span may have gaps: the log evicts
+    /// its oldest evictable record wherever it sits, so a permanent record
+    /// older than every evictable one leaves the gap in the interior, and
+    /// the check re-anchors across it as it does at the head. Until
+    /// 2026-09-12 it did not, and a file-backed deep brain that had
+    /// interleaved a closed campaign with its reference records refused
+    /// every restart over its own log, naming tampering.
     pub(crate) fn resume_references(log: &EventLog) -> Result<ReferenceLedger> {
         let mut ledger = ReferenceLedger::bounded();
         let restorable = log.records().iter().any(|record| {
@@ -559,10 +572,13 @@ impl Platform {
         if let Err(sequence) = log.verify_retained_chain() {
             return Err(Error::invalid(format!(
                 "the event log holds data reference records but its hash chain breaks at \
-                 sequence {sequence}, so the reference ledger cannot be rebuilt from it; a \
-                 ledger restored from frames nobody can verify would attribute a licence to \
-                 bytes nobody fetched. Archive the log and start a new one, or restore the \
-                 file the chain was written over"
+                 sequence {sequence}: that record's bytes are not the bytes the log wrote, or \
+                 its link to the record before it does not hold, so the reference ledger \
+                 cannot be rebuilt from it. A ledger restored from a record that no longer \
+                 hashes to what was written would attribute a licence to bytes nobody fetched. \
+                 Archive the log and start a new one, or restore the file the chain was \
+                 written over. (The chain is unkeyed SHA-256, so this detects an edit, not a \
+                 rewrite that recomputed every hash after it — ADR 0043.)"
             )));
         }
         for record in log.records() {
@@ -788,6 +804,81 @@ mod tests {
             "the ledger must hold what the source now serves, or the next revision of this \
              extent is compared against nothing"
         );
+        Ok(())
+    }
+
+    /// The ledger rebuilds from a log whose retained span has an *interior*
+    /// gap — the shape a capped log takes once a permanent record is older
+    /// than every evictable one, because `make_room` evicts the oldest
+    /// evictable record wherever it sits. Reference records are Sense-group
+    /// and evictable; revision records are permanent; interleave them under
+    /// a small ceiling and the gaps open in the middle. Until 2026-09-12
+    /// `verify_retained_chain` re-anchored only the head, so this resume
+    /// refused with "hash chain breaks at sequence", and a file-backed deep
+    /// brain that had journaled a closed campaign between its reference
+    /// records refused every restart over its own honest log.
+    ///
+    /// At the `resume_references` seam rather than through `Platform::new`,
+    /// because the platform's log capacity is not a knob and the default is
+    /// a million records; `Platform::new` calls this function
+    /// (`grep -n 'resume_references' backend/crates/runtime/qip-kernel/src/platform.rs`)
+    /// and nothing sits between the two.
+    ///
+    /// Mutated by making `EventLog::verify_chain_from` hold a record to its
+    /// retained predecessor across a gap — confirmed the resume then refuses
+    /// the honest log at the first record after the gap and this fails,
+    /// then restored.
+    #[test]
+    fn the_ledger_rebuilds_from_a_log_that_evicted_an_interior_record() -> Result<()> {
+        let mut platform = platform()?;
+        // Four references to one extent, each revising the last: four
+        // evictable reference records and three permanent revision records.
+        let mut at = start();
+        for version in ["one", "two", "three", "four"] {
+            platform
+                .record_reference(generated(format!("version {version}").as_bytes(), at)?, at)?;
+            at = at.saturating_add(Duration::from_hours(1));
+        }
+        assert_eq!(
+            platform
+                .event_log()
+                .by_topic(Topic::SourceRevisionDetected)
+                .len(),
+            3,
+            "premise: three revisions were journaled"
+        );
+
+        // Replay the platform's frames into a log with a ceiling of three,
+        // so the evictions fall where a running log's would.
+        let mut capped = EventLog::in_memory().with_capacity(3)?;
+        for record in platform.event_log().records() {
+            capped.append(&record.event)?;
+        }
+        let retained: Vec<u64> = capped.records().iter().map(|r| r.sequence).collect();
+        assert!(
+            retained.windows(2).any(|pair| pair[1] != pair[0] + 1),
+            "premise: the retained span has an interior gap: {retained:?}"
+        );
+        assert!(
+            capped
+                .records()
+                .iter()
+                .any(|r| r.event.topic == Topic::SourceRevisionDetected),
+            "premise: a restorable frame is retained, so the chain is checked"
+        );
+        assert!(
+            capped.verify_chain().is_err(),
+            "premise: from genesis the capped log does not verify"
+        );
+
+        let ledger = Platform::resume_references(&capped)?;
+        let restored = ledger.revisions().count();
+        let retained_revisions = capped.by_topic(Topic::SourceRevisionDetected).len();
+        assert_eq!(
+            restored, retained_revisions,
+            "every retained revision must be restored"
+        );
+        assert!(restored > 0, "premise: at least one revision was restored");
         Ok(())
     }
 }
