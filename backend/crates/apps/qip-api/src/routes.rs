@@ -714,9 +714,46 @@ impl Api {
     /// assembled on the feed's own clock where it owns one — the root does
     /// that, and a feed handed here after a platform built on the wall clock
     /// would observe last year while reasoning about today.
-    pub fn with_feed(mut self, feed: Arc<Mutex<crate::feed::ApiFeed>>) -> Self {
+    ///
+    /// The platform's admission of a connector source is derived from the
+    /// feed's here, one seam below the composition root, for the reason
+    /// `ConnectorFeed::journal_to` gives for its own ordering: every rig that
+    /// hands a feed to the API passes through this call, and a root or a test
+    /// that forgot a separate `Platform::admit_source` would have a
+    /// `POST /cycle` refusing every fetch as unadmitted. The feed's admission
+    /// *is* the licensing gate's decision; the platform holding a copy is
+    /// what lets its reference ledger name the licence a digest arrived
+    /// under. Refuses a poisoned lock on either side rather than serving a
+    /// feed the platform cannot reference.
+    pub fn with_feed(
+        mut self,
+        feed: Arc<Mutex<crate::feed::ApiFeed>>,
+    ) -> qip_core::error::Result<Self> {
+        {
+            let source = feed
+                .lock()
+                .map_err(|_| {
+                    qip_core::error::Error::invalid(
+                        "the feed is in an inconsistent state, so its source cannot be admitted \
+                         to the platform's reference ledger",
+                    )
+                })?
+                .admitted_source()
+                .cloned();
+            if let Some(source) = source {
+                self.platform
+                    .lock()
+                    .map_err(|_| {
+                        qip_core::error::Error::invalid(
+                            "the platform is in an inconsistent state, so the feed's source \
+                             cannot be admitted to its reference ledger",
+                        )
+                    })?
+                    .admit_source(source);
+            }
+        }
         self.feed = Some(feed);
-        self
+        Ok(self)
     }
 
     /// Look a connector credential slot up in `variables` rather than in the
@@ -773,7 +810,7 @@ impl Api {
     /// built.
     fn readmit_connector(
         &self,
-        platform: &Platform,
+        platform: &mut Platform,
         source_id: &str,
         slot: &str,
         now: Timestamp,
@@ -797,7 +834,16 @@ impl Api {
             return Some(Admission::refused(refusal.message()));
         }
         match feed.readmit(platform.registrations(), now) {
-            Ok(()) => Some(Admission::admitted(feed.describe())),
+            Ok(()) => {
+                // The platform's own admission moves with the feed's: a
+                // re-opened connector is the same source under a fresh
+                // decision, and the reference ledger must hold that decision
+                // or the next poll's digest is refused as unadmitted.
+                if let Some(source) = feed.admitted_source() {
+                    platform.admit_source(source.clone());
+                }
+                Some(Admission::admitted(feed.describe()))
+            }
             Err(refusal) => Some(Admission::refused(refusal.message())),
         }
     }
@@ -1331,7 +1377,7 @@ impl Api {
                         // which variable holds this venue's credential,
                         // taken from the side that will be replayed.
                         let connector = self.readmit_connector(
-                            &platform,
+                            &mut platform,
                             source_id,
                             record.secret().variable(),
                             now,
@@ -1407,6 +1453,30 @@ impl Api {
                                 );
                             }
                         };
+                        // The fetch is referenced before its records are
+                        // observed, and a fetch the platform refuses to
+                        // reference — a source it holds no admission for —
+                        // stops the cycle here rather than feeding records
+                        // of unknown standing into it. The ledger is what an
+                        // audit reads; a record the loop reasoned over that
+                        // the ledger cannot account for is the gap §22.3
+                        // exists to close.
+                        if let Some(digest) = sensed.digest.take() {
+                            if let Err(error) = platform.reference_fetch(&digest, now) {
+                                eprintln!(
+                                    "qip-api: the fetch could not be referenced: {}",
+                                    error.message()
+                                );
+                                return Response::json(
+                                    503,
+                                    format!(
+                                        r#"{{"error":{},"source":{}}}"#,
+                                        json::string(error.message()),
+                                        json::string(&sensed.source)
+                                    ),
+                                );
+                            }
+                        }
                         let released = sensed.records.len();
                         let observed = platform.observe(std::mem::take(&mut sensed.records));
                         (

@@ -65,6 +65,11 @@ pub struct Batch {
     pub accepted: Vec<SensedRecord>,
     /// Why each rejected record was rejected.
     pub rejections: Vec<String>,
+    /// The content hash of exactly what a connector fetched, for the kernel's
+    /// reference ledger. `None` for every other arm and for a connector poll
+    /// that delivered nothing to digest. The node hands it to
+    /// `Platform::reference_fetch` *before* `Platform::observe`.
+    pub digest: Option<qip_market_ingestion::connector::FetchDigest>,
 }
 
 impl Batch {
@@ -115,6 +120,11 @@ pub enum Feed {
     Connector {
         feed: Box<ConnectorFeed>,
         admission: Box<StandingAdmission>,
+        /// The source as the kernel's reference ledger sees it — the gate's
+        /// decision bound to the manifest's declared category (ADR 0057).
+        /// The composition root hands it to `Platform::admit_source` so every
+        /// digest this arm produces can be referenced.
+        admitted: Box<qip_data_finder::admission::AdmittedSource>,
     },
 }
 
@@ -221,9 +231,9 @@ impl Feed {
         at: Timestamp,
     ) -> Result<Self> {
         let class = qip_market_ingestion::connector_feed::shipped_class(&settings.source_id)?;
-        let (admission, _) =
+        let (admission, decision) =
             StandingAdmission::open(registrations.clone(), &settings.source_id, class, at)?;
-        Self::admitted_connector(settings, admission, at)
+        Self::admitted_connector(settings, admission, &decision, at)
     }
 
     /// The same opening against a caller-supplied licensing catalogue.
@@ -240,14 +250,14 @@ impl Feed {
         at: Timestamp,
     ) -> Result<Self> {
         let class = qip_market_ingestion::connector_feed::shipped_class(&settings.source_id)?;
-        let (admission, _) = StandingAdmission::over(
+        let (admission, decision) = StandingAdmission::over(
             entries.to_vec(),
             registrations.clone(),
             &settings.source_id,
             class,
             at,
         )?;
-        Self::admitted_connector(settings, admission, at)
+        Self::admitted_connector(settings, admission, &decision, at)
     }
 
     /// Construct the connector arm, once something has admitted it.
@@ -258,17 +268,30 @@ impl Feed {
     fn admitted_connector(
         settings: &ConnectorFeedSettings,
         admission: StandingAdmission,
+        decision: &qip_data_finder::admission::LicensingDecision,
         at: Timestamp,
     ) -> Result<Self> {
+        let feed = ConnectorFeed::open(&settings.source_id, &settings.base_url, settings.seed, at)?;
+        // Refused before the arm exists for a manifest that declares no
+        // category: a connector the node can poll but the platform cannot
+        // reference would fetch bytes nothing could later be asked about.
+        let admitted =
+            qip_data_finder::admission::AdmittedSource::from_decision(decision, feed.manifest())?;
         Ok(Self::Connector {
-            feed: Box::new(ConnectorFeed::open(
-                &settings.source_id,
-                &settings.base_url,
-                settings.seed,
-                at,
-            )?),
+            feed: Box::new(feed),
             admission: Box::new(admission),
+            admitted: Box::new(admitted),
         })
+    }
+
+    /// The admission the kernel's reference ledger needs for this source, or
+    /// `None` for every arm that is not a licensed connector — a tape, a
+    /// replay and the synthetic exchange are this repository's own records.
+    pub fn admitted_source(&self) -> Option<&qip_data_finder::admission::AdmittedSource> {
+        match self {
+            Self::Connector { admitted, .. } => Some(admitted.as_ref()),
+            Self::Synthetic(_) | Self::Replay(_) | Self::Tape(_) | Self::Live(_) => None,
+        }
     }
 
     /// Keep this source's stream record on `store`, resuming the last
@@ -513,6 +536,9 @@ impl Feed {
                     issues.join("; ")
                 ));
             }
+        }
+        if let Self::Connector { feed, .. } = self {
+            batch.digest = feed.take_digest();
         }
         Ok(batch)
     }

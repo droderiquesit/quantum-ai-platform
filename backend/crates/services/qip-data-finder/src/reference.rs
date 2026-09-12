@@ -54,6 +54,7 @@ use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Timestamp};
 use qip_financial::quality::LicensingClass;
 use qip_market_ingestion::adapter::SourceDescriptor;
+use qip_market_ingestion::connector::FetchDigest;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -281,6 +282,46 @@ impl DataReference {
         )
     }
 
+    /// Describe a catalogue-admitted source's fetch from the digest the
+    /// connector runtime took over its bytes.
+    ///
+    /// The hash is the digest's rather than computed here, and that is the
+    /// point rather than a shortcut: the bytes were released to the loop and
+    /// discarded, as §22.1 requires, and a [`FetchDigest`] has one
+    /// constructor that hashes a body it was given — so a hash can only reach
+    /// this constructor by having been taken over real bytes. Refuses a digest
+    /// that names a different source than the admission does.
+    pub fn from_digest(
+        source: &AdmittedSource,
+        digest: &FetchDigest,
+        cost_estimate: Decimal,
+        availability: f64,
+    ) -> Result<Self> {
+        if digest.source_id() != source.source_id() {
+            return Err(Error::invalid(format!(
+                "the digest names `{}` and the admission names `{}`; a reference binds one \
+                 fetch to one admitted source, and these disagree",
+                digest.source_id(),
+                source.source_id()
+            )));
+        }
+        let (start, end) = digest.period();
+        Self::build_hashed(
+            source.source_id(),
+            SourceOrigin::CatalogueAdmitted,
+            Some(source.category()),
+            digest.locator().to_string(),
+            digest.symbols().iter().cloned(),
+            DataPeriod::new(start, end)?,
+            source.schema().clone(),
+            digest.sha256().to_string(),
+            digest.bytes(),
+            digest.retrieved_at(),
+            cost_estimate,
+            availability,
+        )
+    }
+
     /// Describe an extent this platform generated itself.
     ///
     /// Refuses any descriptor whose licensing class is not `Synthetic`: that
@@ -327,7 +368,8 @@ impl DataReference {
         )
     }
 
-    /// The one place the invariants every door shares are checked.
+    /// The doors that hold the bytes hash them here; the invariants are
+    /// checked in [`Self::build_hashed`].
     #[allow(clippy::too_many_arguments)]
     fn build(
         source_id: &str,
@@ -338,6 +380,45 @@ impl DataReference {
         range: DataPeriod,
         schema: SourceSchema,
         bytes: &[u8],
+        retrieved_at: Timestamp,
+        cost_estimate: Decimal,
+        availability: f64,
+    ) -> Result<Self> {
+        if bytes.is_empty() {
+            return Err(Error::invalid(format!(
+                "the data reference for `{source_id}` covers no bytes; the SHA-256 of nothing is \
+                 the same for every extent that never arrived, so an empty extent is refused \
+                 rather than hashed"
+            )));
+        }
+        Self::build_hashed(
+            source_id,
+            origin,
+            category,
+            locator,
+            symbols,
+            range,
+            schema,
+            qip_core::sha256_hex(bytes),
+            bytes.len() as u64,
+            retrieved_at,
+            cost_estimate,
+            availability,
+        )
+    }
+
+    /// The one place the invariants every door shares are checked.
+    #[allow(clippy::too_many_arguments)]
+    fn build_hashed(
+        source_id: &str,
+        origin: SourceOrigin,
+        category: Option<SourceCategory>,
+        locator: String,
+        symbols: impl IntoIterator<Item = String>,
+        range: DataPeriod,
+        schema: SourceSchema,
+        content_hash: String,
+        bytes: u64,
         retrieved_at: Timestamp,
         cost_estimate: Decimal,
         availability: f64,
@@ -355,11 +436,10 @@ impl DataReference {
                  nothing identifiable cannot be checked for concentration risk against anything"
             )));
         }
-        if bytes.is_empty() {
+        if bytes == 0 {
             return Err(Error::invalid(format!(
-                "the data reference for `{source_id}` covers no bytes; the SHA-256 of nothing is \
-                 the same for every extent that never arrived, so an empty extent is refused \
-                 rather than hashed"
+                "the data reference for `{source_id}` covers no bytes; a hash over nothing \
+                 describes every extent that never arrived, so an empty extent is refused"
             )));
         }
         if cost_estimate.is_negative() {
@@ -380,8 +460,8 @@ impl DataReference {
             symbols,
             range,
             schema,
-            content_hash: qip_core::sha256_hex(bytes),
-            bytes: bytes.len() as u64,
+            content_hash,
+            bytes,
             retrieved_at,
             cost_estimate,
             availability,

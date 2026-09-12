@@ -103,7 +103,25 @@ pub fn step(
     budget: Duration,
 ) -> Result<StepOutcome> {
     let began = std::time::Instant::now();
-    let batch = feed.poll(now)?;
+    // The platform's admission of a connector source is derived from the
+    // feed's here, at the one seam every step passes through, for the reason
+    // `ConnectorFeed::journal_to` gives for its own ordering: a root that had
+    // to remember a separate `Platform::admit_source` would, the day it
+    // forgot, have a node refusing every fetch as unadmitted. The feed's
+    // admission is the licensing gate's decision; the platform holding it is
+    // what lets its reference ledger name the licence a digest arrived under.
+    if let Some(source) = feed.admitted_source()
+        && platform.admitted_source(source.source_id()).is_none()
+    {
+        platform.admit_source(source.clone());
+    }
+    let mut batch = feed.poll(now)?;
+    // Referenced before observed: a fetch the platform cannot account for in
+    // its reference ledger stops the step rather than feeding records of
+    // unknown standing into the cycle.
+    if let Some(digest) = batch.digest.take() {
+        platform.reference_fetch(&digest, now)?;
+    }
     let observed = platform.observe(batch.accepted);
     let report = platform.run_cycle(now);
     let elapsed = monotonic(began);

@@ -185,7 +185,8 @@ use std::sync::Arc;
 pub struct Platform {
     config: PlatformConfig,
     context: Context,
-    telemetry: Telemetry,
+    /// `pub(crate)` for `crate::references`, which records into it.
+    pub(crate) telemetry: Telemetry,
     event_log: EventLog,
 
     // The intelligence loop, stage by stage.
@@ -278,6 +279,19 @@ pub struct Platform {
     /// the probe, which is what keeps this composable in a test and in a
     /// deployment without two code paths.
     data_finder: DataFinder,
+    /// The connector sources a composition root admitted through the
+    /// licensing gate, by source id — the second door into the source
+    /// registry (ADR 0057). A digest from a source absent here is refused by
+    /// [`Platform::reference_fetch`] rather than referenced with no
+    /// provenance. Fields are `pub(crate)` for `crate::references`, which is
+    /// the one module that reads and writes them.
+    pub(crate) admitted_sources: BTreeMap<String, qip_data_finder::admission::AdmittedSource>,
+    /// What was fetched, keyed on the extent it describes, and the revisions
+    /// the ledger caught — bounded by count on both axes, so a ticker polled
+    /// every two seconds for a week cannot become three hundred thousand
+    /// references. The consequence of a revision lives in
+    /// `crate::references`.
+    pub(crate) references: qip_data_finder::ledger::ReferenceLedger,
     /// What datasets *do* exist. Fed from the finder's own registrations, so
     /// the two answers cannot drift apart.
     catalog: Catalog,
@@ -2895,6 +2909,8 @@ impl Platform {
             central,
             insights: crate::central::insights::CellInsights::new(config.seed),
             data_finder,
+            admitted_sources: BTreeMap::new(),
+            references: qip_data_finder::ledger::ReferenceLedger::bounded(),
             catalog: Catalog::new(),
             chain: None,
             confirmations: Confirmations::exactly(config.chain_confirmations),
@@ -4963,7 +4979,7 @@ impl Platform {
     /// Append one record to the event log and publish it to the journal,
     /// exactly as a cycle's entry is: the same frame reaches both, so neither
     /// can hold a record the other does not.
-    fn journal_record<B: EventBody>(
+    pub(crate) fn journal_record<B: EventBody>(
         &mut self,
         body: B,
         origin: &str,

@@ -59,10 +59,13 @@
 use qip_core::error::{Error, Result};
 use qip_core::kv::KeyValueStore;
 use qip_core::{Clock, ManualClock, Timestamp};
-use qip_data_finder::admission::{self, CatalogueEntry, LicensingDecision, StandingAdmission};
+use qip_data_finder::admission::{
+    self, AdmittedSource, CatalogueEntry, LicensingDecision, StandingAdmission,
+};
 use qip_data_finder::registration::RegistrationRegistry;
 use qip_kernel::Platform;
 use qip_market_ingestion::adapter::{DataAdapter, SensedRecord, SourceDescriptor};
+use qip_market_ingestion::connector::FetchDigest;
 use qip_market_ingestion::connector_feed::{ConnectorFeed, shipped_class};
 use qip_market_ingestion::tape::{Tape, TapeFeed};
 use std::collections::BTreeMap;
@@ -229,6 +232,12 @@ pub struct Sensed {
     /// than dropped: bad data must never silently become an investment
     /// input, and a rejection nobody counts is a silent one.
     pub rejections: Vec<String>,
+    /// The content hash of exactly what a connector fetched this cycle, for
+    /// the kernel's reference ledger. `None` for a tape, and for a connector
+    /// poll that delivered nothing to digest. The route hands it to
+    /// `Platform::reference_fetch` *before* `Platform::observe`, so a fetch
+    /// the platform cannot reference is one whose records it does not take.
+    pub digest: Option<FetchDigest>,
 }
 
 /// The process's record source.
@@ -268,6 +277,14 @@ pub enum ApiFeed {
         /// seven-day run kept granting for the remaining four when the only
         /// consultation was at boot.
         admission: Box<StandingAdmission>,
+        /// The source as the kernel's reference ledger sees it: the gate's
+        /// decision bound to the manifest's declared category and schema
+        /// (ADR 0057). Built here, at the one seam that holds both, and
+        /// handed to `Platform::admit_source` by the composition root and
+        /// again by [`Self::readmit`]'s caller, so every digest this arm
+        /// produces can be referenced against an admission the platform
+        /// itself holds.
+        admitted: Box<AdmittedSource>,
         /// The store this stream's durable record is kept on, when a root has
         /// given one.
         ///
@@ -390,14 +407,31 @@ impl ApiFeed {
             at,
         )?;
         let feed = ConnectorFeed::open(&settings.source_id, &settings.base_url, seed, at)?;
+        // The reference ledger's view of the source, from the decision the
+        // gate just minted and the manifest the feed was opened from. Refused
+        // here — before the arm exists — for a manifest that declares no
+        // category, because a connector the platform can poll but cannot
+        // reference would fetch bytes nothing could later be asked about.
+        let admitted = AdmittedSource::from_decision(&decision, feed.manifest())?;
         Ok(Self::Connector {
             feed: Box::new(feed),
             decision: Box::new(decision),
             settings: settings.clone(),
             seed,
             admission: Box::new(admission),
+            admitted: Box::new(admitted),
             journal: None,
         })
+    }
+
+    /// The admission the kernel's reference ledger needs for this source, or
+    /// `None` for a tape, which carries its own records and is referenced
+    /// under no vendor.
+    pub fn admitted_source(&self) -> Option<&AdmittedSource> {
+        match self {
+            Self::Tape(_) => None,
+            Self::Connector { admitted, .. } => Some(admitted.as_ref()),
+        }
     }
 
     /// Keep this source's stream record on `store`, resuming the last
@@ -649,6 +683,7 @@ impl ApiFeed {
             at,
             records: Vec::new(),
             rejections: Vec::new(),
+            digest: None,
         };
         for record in self.adapter_mut().poll(at)? {
             let issues = record.validate();
@@ -661,6 +696,9 @@ impl ApiFeed {
                     issues.join("; ")
                 ));
             }
+        }
+        if let Self::Connector { feed, .. } = self {
+            sensed.digest = feed.take_digest();
         }
         Ok(sensed)
     }

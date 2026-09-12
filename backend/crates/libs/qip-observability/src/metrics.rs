@@ -604,6 +604,21 @@ pub mod names {
 
     // Data
     pub const DATA_VALIDATION_FAILURES: &str = "qip_data_validation_failures_total";
+    /// References the kernel's ledger recorded, by what recording found —
+    /// `first`, `unchanged` or `revised` (`qip_data_finder::ledger::
+    /// LedgerOutcome`). Recorded in `Platform::record_reference`.
+    pub const DATA_REFERENCES_RECORDED: &str = "qip_data_references_recorded_total";
+    /// Extents a source was found to have revised after this platform used
+    /// them, by the door the source came through (`qip_data_finder::
+    /// reference::SourceOrigin`) — a bounded enum, never the source id, so a
+    /// tape named after its file cannot become a label. Recorded beside the
+    /// event-log record in `Platform::record_reference`; §22.3's "the backtest
+    /// that used the original is flagged" is this series moving.
+    pub const DATA_REVISIONS_DETECTED: &str = "qip_data_revisions_detected_total";
+    /// Research campaigns closed, by whether their manifest carried a flagged
+    /// entry (`flagged`) or not (`clean`). Recorded in
+    /// `Platform::journal_campaign`.
+    pub const RESEARCH_CAMPAIGNS_CLOSED: &str = "qip_research_campaigns_closed_total";
 
     // Discovery and reasoning. The funnel from "something looked odd" to "a
     // hypothesis the platform will act on", recorded where each fact becomes

@@ -174,7 +174,7 @@ fn rig_with_variables(feed: Option<ApiFeed>, variables: BTreeMap<String, String>
     )
     .with_credential_variables(variables);
     if let Some(feed) = feed {
-        api = api.with_feed(Arc::new(Mutex::new(feed)));
+        api = api.with_feed(Arc::new(Mutex::new(feed)))?;
     }
     Ok(Rig {
         api,

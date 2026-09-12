@@ -69,6 +69,7 @@ pub mod endpoint;
 pub mod finder;
 pub mod health;
 pub mod ingestion;
+pub mod ledger;
 pub mod legal;
 pub mod probe;
 pub mod quality;
@@ -101,6 +102,7 @@ pub use endpoint::{
 pub use finder::{DataFinder, FinderConfig, MonitorOutcome};
 pub use health::{HealthObservation, ObservationOutcome, SourceHealth};
 pub use ingestion::{IngestionPlan, descriptor_for, plan_for};
+pub use ledger::{LedgerOutcome, ReferenceLedger, RevisionRecord};
 pub use legal::{
     HostRules, LegalAssessment, Legality, LicensingPosture, RateLimit, SourceLicense, SourcePolicy,
 };

@@ -416,8 +416,12 @@ fn run() -> Result<()> {
     if let Some(mesh) = &mesh {
         api = api.with_mesh(mesh.clone());
     }
+    // `with_feed` also admits the feed's source to the platform's reference
+    // ledger — see its doc for why that lives there and not here.
     if let Some(feed) = &feed {
-        api = api.with_feed(feed.clone());
+        api = api
+            .with_feed(feed.clone())
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
     }
     let api = Arc::new(api);
     let console = Arc::new(Console::new(
