@@ -152,7 +152,13 @@ use qip_risk::limits::{LimitSet, RiskState};
 use qip_risk_engine::autonomy::{AutonomyController, OperatorIdentity};
 use qip_risk_engine::monitor::RiskMonitor;
 use qip_risk_engine::pretrade::PreTradeChecker;
+use qip_simulation_engine::agents::CounterpartyAgent;
 use qip_simulation_engine::costs::CostModel;
+use qip_simulation_engine::execution::SimOrder;
+use qip_simulation_engine::market::{
+    InstrumentSpec, MarketSimulator, MarketView as SimMarketView, SimStrategy, SyntheticMarket,
+};
+use qip_simulation_engine::scenario::{FactorExposure, StressTester, standard_library};
 use qip_streaming::durable::DurableLogTransport;
 use qip_streaming::envelope::{EventFacts, StreamEnvelope};
 use qip_streaming::ports::Publisher;
@@ -8425,8 +8431,67 @@ impl Platform {
             self.predictions.drain(..excess);
         }
     }
+}
 
-    fn stage_simulate(&mut self, _now: Timestamp) -> StageOutcome {
+/// What one capacity probe against the book's most-observed instrument found,
+/// through a small agent-populated market (§15.3).
+///
+/// Of the blueprint's five stated uses for the agent-based simulator --
+/// tactic learning, crowding stress, impact calibration, capacity discovery,
+/// failure rehearsal -- this is capacity discovery, chosen because it needs
+/// no learning loop, no factor-crowding model and no fault-injection harness:
+/// only the market `qip_simulation_engine::market` already builds and one
+/// plausible order against it, which is exactly the shape `stage_simulate`
+/// already had (a readiness check against accumulated history) before this.
+#[derive(Clone, Debug)]
+struct CapacityProbeResult {
+    subject: String,
+    quantity: Decimal,
+    adversity_bps: f64,
+}
+
+/// Submits exactly one order, at the first step, and nothing after.
+///
+/// A capacity probe asks one question — what would this size cost right now,
+/// against the ambient flow this cycle's agents represent — and a strategy
+/// that kept submitting on every step would be measuring the book's response
+/// to a stream of orders instead of the one order this is about.
+struct CapacityProbeStrategy {
+    object_id: String,
+    venue: String,
+    quantity: Decimal,
+    submitted: bool,
+}
+
+impl SimStrategy for CapacityProbeStrategy {
+    fn name(&self) -> &str {
+        "capacity-probe"
+    }
+
+    fn on_step(&mut self, _view: &SimMarketView<'_>) -> Vec<SimOrder> {
+        if self.submitted {
+            return Vec::new();
+        }
+        self.submitted = true;
+        vec![SimOrder::market(
+            self.object_id.clone(),
+            self.venue.clone(),
+            qip_market::book::Side::Buy,
+            self.quantity,
+        )]
+    }
+}
+
+/// What applying one scenario from the standard library to the book, as it
+/// stands, found (§23.7).
+#[derive(Clone, Debug)]
+struct StressProbeResult {
+    scenario: String,
+    loss_fraction: f64,
+}
+
+impl Platform {
+    fn stage_simulate(&mut self, now: Timestamp) -> StageOutcome {
         // Simulation runs against whatever history has accumulated. With too
         // little it says so rather than producing a distribution nobody should
         // read.
@@ -8438,11 +8503,157 @@ impl Platform {
                 format!("{longest} observation(s) is too little history to simulate from"),
             );
         }
-        StageOutcome::ran(
-            Stage::Simulate,
-            longest,
-            format!("{longest} observation(s) available to resample"),
-        )
+        let mut detail = format!("{longest} observation(s) available to resample");
+
+        // `with_agents` was calibrated and tested entirely inside
+        // `qip-simulation-engine`'s own tests and reached no production
+        // caller before this (§15.3). `None` on any refusal along the way —
+        // a last price that is not positive, too few returns to estimate a
+        // volatility from, or a simulator refusal — because a probe is
+        // diagnostic, not a control: a cycle that cannot run one is a quiet
+        // cycle, not a failed one.
+        if let Some(probe) = self.capacity_probe(now) {
+            detail.push_str(&format!(
+                "; capacity probe: {} of {} against agent flow cost {:.1}bps",
+                probe.quantity, probe.subject, probe.adversity_bps
+            ));
+            self.telemetry.metrics.gauge(
+                names::SIMULATION_CAPACITY_ADVERSITY_BPS,
+                labels([("instrument", probe.subject.as_str())]),
+                probe.adversity_bps,
+            );
+        }
+
+        // `StressTester`/`standard_library` were built and scored entirely in
+        // this crate's own tests and reached no production caller before this
+        // (§23.7).
+        if let Some(stress) = self.stress_test_book(now) {
+            detail.push_str(&format!(
+                "; {} stress: {:.1}% of equity",
+                stress.scenario,
+                stress.loss_fraction * 100.0
+            ));
+            self.telemetry.metrics.gauge(
+                names::SIMULATION_STRESS_LOSS_FRACTION,
+                labels([("scenario", stress.scenario.as_str())]),
+                stress.loss_fraction,
+            );
+        }
+
+        StageOutcome::ran(Stage::Simulate, longest, detail)
+    }
+
+    /// One capacity probe against the instrument with the longest price
+    /// history, sized at that market's own typical resting level and priced
+    /// against a small book of ambient counterparty flow rather than an
+    /// empty one.
+    ///
+    /// The book's shape (spread and level spacing) comes from
+    /// `self.liquidity_reference` where the instrument has one — the same
+    /// figure `MinLiquidity`/`MaxDaysToLiquidate` read — and from
+    /// [`InstrumentSpec::liquid`]'s own reviewed defaults otherwise; the
+    /// step volatility and drift are estimated from this instrument's own
+    /// recent price history rather than assumed, because a probe run
+    /// against a canned volatility would answer a question about that
+    /// canned number and not about this book.
+    fn capacity_probe(&self, now: Timestamp) -> Option<CapacityProbeResult> {
+        let (subject, history) = self
+            .price_history
+            .iter()
+            .max_by_key(|(_, series)| series.len())?;
+        let initial = *history.last()?;
+        if initial <= 0.0 {
+            return None;
+        }
+        let returns: Vec<f64> = history
+            .windows(2)
+            .filter(|pair| pair[0] > 0.0)
+            .map(|pair| pair[1] / pair[0] - 1.0)
+            .collect();
+        if returns.len() < 2 {
+            return None;
+        }
+        let drift = qip_numerics::stats::mean(&returns);
+        let volatility = qip_numerics::stats::stddev(&returns).max(1e-6);
+        let mut spec = InstrumentSpec::liquid(subject.clone(), Decimal::from_f64(initial)?);
+        if let Some(reference) = self.liquidity_reference.get(subject) {
+            spec.half_spread_bps = (reference.spread_bps / 2.0).max(0.1);
+            spec.level_spacing_bps = reference.spread_bps.max(0.2);
+        }
+        spec.step_volatility = volatility;
+        spec.step_drift = drift;
+        let quantity = spec.level_size;
+        let market = SyntheticMarket::single(now, Duration::from_mins(1), 3, "XSIM", spec);
+        let run = MarketSimulator::synthetic(market, self.config.seed)
+            .ok()?
+            .with_agents(vec![
+                CounterpartyAgent::passive("ambient-passive", quantity, 0.3).ok()?,
+                CounterpartyAgent::maker(
+                    "ambient-maker",
+                    quantity,
+                    2.0,
+                    0.5,
+                    quantity.checked_mul(Decimal::from_int(5))?,
+                )
+                .ok()?,
+            ])
+            .ok()?;
+        let mut strategy = CapacityProbeStrategy {
+            object_id: subject.clone(),
+            venue: "XSIM".to_string(),
+            quantity,
+            submitted: false,
+        };
+        let outcome = run.run(&mut strategy).ok()?;
+        let adversity_bps = outcome.reports.first()?.adversity_bps();
+        Some(CapacityProbeResult {
+            subject: subject.clone(),
+            quantity,
+            adversity_bps,
+        })
+    }
+
+    /// Apply the first scenario in the standard library to the book as it
+    /// stands.
+    ///
+    /// Every open position is given a full (beta 1.0) exposure to the
+    /// "equity" factor every scenario in the library shocks, because no
+    /// factor model is fitted at this seam — see
+    /// [`names::PORTFOLIO_EFFECTIVE_BETS`] for the same limitation stated
+    /// where it first mattered — and a stress test that credited a
+    /// diversification nobody measured would understate the risk it exists
+    /// to surface, which is the one direction this workspace never rounds a
+    /// control.
+    fn stress_test_book(&self, now: Timestamp) -> Option<StressProbeResult> {
+        if self.capital.positions.is_empty() {
+            return None;
+        }
+        let equity = self.capital.equity().to_f64();
+        if equity <= 0.0 {
+            return None;
+        }
+        let exposures: Vec<FactorExposure> = self
+            .capital
+            .positions
+            .iter()
+            .map(|(object_id, lot)| {
+                let mut betas = BTreeMap::new();
+                betas.insert("equity".to_string(), 1.0);
+                FactorExposure {
+                    object_id: object_id.clone(),
+                    notional: (lot.quantity * lot.average_price).abs(),
+                    betas,
+                }
+            })
+            .collect();
+        let scenario = standard_library().into_iter().next()?;
+        let name = scenario.name.clone();
+        let tester = StressTester::new(10.0);
+        let result = tester.apply(&scenario, &exposures, equity, now).ok()?;
+        Some(StressProbeResult {
+            scenario: name,
+            loss_fraction: result.loss_fraction,
+        })
     }
 
     fn stage_decide(&mut self, now: Timestamp) -> StageOutcome {
@@ -12456,6 +12667,187 @@ mod decide_tests {
             effective_bets > 1.0 && effective_bets <= 2.0,
             "two differently-weighted names produced an effective-bets count of \
              {effective_bets}, which is the single-asset answer or outside the two-asset range"
+        );
+    }
+}
+
+#[cfg(test)]
+mod simulate_tests {
+    //! `SIMULATE` stops being a readiness check with nothing behind it:
+    //! `with_agents` (§15.3) and `StressTester`/`standard_library` (§23.7)
+    //! were each built and scored entirely in `qip-simulation-engine`'s own
+    //! tests, and neither had a caller anywhere else in this workspace.
+
+    use super::*;
+    use qip_financial::universe::Universe;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn platform() -> Platform {
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    /// Alternating closes, so returns have real variance: a flat series has
+    /// zero variance and `capacity_probe` refuses to estimate a volatility
+    /// from one.
+    fn feed_history(platform: &mut Platform, object: &str, closes: usize) {
+        let series = platform
+            .price_history
+            .entry(object.to_string())
+            .or_default();
+        for index in 0..closes {
+            let wiggle = if index % 2 == 0 { 0.7 } else { -0.5 };
+            series.push(100.0 + index as f64 * 0.1 + wiggle);
+        }
+    }
+
+    #[test]
+    fn a_book_with_too_little_history_runs_neither_probe() {
+        let mut platform = platform();
+        feed_history(&mut platform, "AAPL", 10);
+        let outcome = platform.stage_simulate(start());
+        assert!(
+            outcome.detail.contains("too little history"),
+            "the premise failed: {}",
+            outcome.detail
+        );
+        assert!(!outcome.detail.contains("capacity probe"));
+        assert!(!outcome.detail.contains("stress"));
+    }
+
+    #[test]
+    fn enough_history_runs_a_capacity_probe_against_agent_flow() {
+        let mut platform = platform();
+        feed_history(&mut platform, "AAPL", 80);
+
+        let before = platform.telemetry().metrics.snapshot();
+        assert!(
+            before
+                .gauge(
+                    names::SIMULATION_CAPACITY_ADVERSITY_BPS,
+                    &labels([("instrument", "AAPL")])
+                )
+                .is_none(),
+            "the capacity gauge exists before any probe ran"
+        );
+
+        let outcome = platform.stage_simulate(start());
+        assert!(
+            outcome.detail.contains("capacity probe"),
+            "the premise failed: enough history did not run a probe: {}",
+            outcome.detail
+        );
+
+        let after = platform.telemetry().metrics.snapshot();
+        let adversity = after
+            .gauge(
+                names::SIMULATION_CAPACITY_ADVERSITY_BPS,
+                &labels([("instrument", "AAPL")]),
+            )
+            .expect("the capacity gauge was not recorded");
+        assert!(
+            adversity.is_finite() && adversity >= 0.0,
+            "a simulated fill produced a nonsensical adversity of {adversity}bps"
+        );
+    }
+
+    #[test]
+    fn a_book_with_no_open_position_is_not_stress_tested() {
+        // The premise: enough history to run the capacity probe, but nothing
+        // held, so a stress result would be a number about a book that does
+        // not exist.
+        let mut platform = platform();
+        feed_history(&mut platform, "AAPL", 80);
+        assert!(
+            platform.capital.positions.is_empty(),
+            "the premise failed: a fresh platform already holds a position"
+        );
+
+        let outcome = platform.stage_simulate(start());
+        assert!(
+            !outcome.detail.contains("stress"),
+            "an empty book was stress-tested anyway: {}",
+            outcome.detail
+        );
+        let after = platform.telemetry().metrics.snapshot();
+        assert!(
+            after
+                .gauge(
+                    names::SIMULATION_STRESS_LOSS_FRACTION,
+                    &labels([("scenario", "equity-crash-1987")])
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn an_open_position_is_stress_tested_against_the_standard_library() {
+        let mut platform = platform();
+        feed_history(&mut platform, "AAPL", 80);
+        platform.capital.positions.insert(
+            "AAPL".to_string(),
+            PositionLot {
+                quantity: Decimal::from_int(100),
+                average_price: Decimal::from_int(100),
+            },
+        );
+
+        let outcome = platform.stage_simulate(start());
+        assert!(
+            outcome.detail.contains("stress"),
+            "the premise failed: an open position was not stress-tested: {}",
+            outcome.detail
+        );
+
+        // The standard library's own first scenario, named, not assumed:
+        // if the crate ever reorders it this assertion is the one that
+        // notices rather than passing on the wrong series.
+        let scenario = standard_library()
+            .into_iter()
+            .next()
+            .expect("the standard library is not empty");
+        let after = platform.telemetry().metrics.snapshot();
+        let loss_fraction = after
+            .gauge(
+                names::SIMULATION_STRESS_LOSS_FRACTION,
+                &labels([("scenario", scenario.name.as_str())]),
+            )
+            .expect("the stress gauge was not recorded under the scenario's own name");
+
+        // Computed independently of `stress_test_book`, from the scenario's
+        // own published shock and the position seeded above, so this catches
+        // a beta silently dropped to zero — where only the liquidity charge
+        // would remain, forty-five times smaller — and not only "some loss
+        // happened", which a liquidity charge alone would also satisfy.
+        let equity = platform.capital.equity().to_f64();
+        let notional = 100.0 * 100.0;
+        let equity_shock = scenario
+            .shocks
+            .iter()
+            .find(|shock| shock.factor == "equity")
+            .expect("the scenario names an equity shock")
+            .magnitude;
+        let total_pnl = notional * equity_shock;
+        let liquidation_cost = notional * 10.0 * scenario.liquidity_multiplier / 10_000.0;
+        let expected = ((equity - (equity + total_pnl - liquidation_cost)) / equity).max(0.0);
+        assert!(
+            (loss_fraction - expected).abs() < 1e-9,
+            "the recorded loss fraction {loss_fraction} does not match the full-beta \
+             computation {expected}; a beta silently dropped to zero would read {} instead",
+            (liquidation_cost / equity).max(0.0)
         );
     }
 }

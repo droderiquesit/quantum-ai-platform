@@ -705,6 +705,34 @@ pub mod names {
     /// nothing, the same as the gauges above it.
     pub const PORTFOLIO_EFFECTIVE_BETS: &str = "qip_portfolio_effective_bets";
 
+    /// The simulated cost, in basis points, of one order at this book's own
+    /// typical resting level against a small agent-populated market (§15.3):
+    /// `qip_kernel`'s `Platform::capacity_probe`, run every SIMULATE stage on
+    /// the instrument with the longest recorded price history.
+    ///
+    /// `qip_simulation_engine::market::SimulationRun::with_agents` and the
+    /// five calibrated counterparty behaviours it drives were built and
+    /// scored entirely in that crate's own tests and had no caller in this
+    /// workspace before this gauge's recording site: an agent-based market
+    /// that could be built and never was. Labelled `instrument` — bounded by
+    /// the universe, exactly as `qip_edge`'s per-cell series are bounded by
+    /// their own fixed sets.
+    pub const SIMULATION_CAPACITY_ADVERSITY_BPS: &str = "qip_simulation_capacity_adversity_bps";
+    /// Loss as a fraction of equity from applying one scenario in
+    /// `qip_simulation_engine::scenario::standard_library` to the book as it
+    /// stands (§23.7), recorded by `qip_kernel`'s `Platform::stress_test_book`
+    /// every SIMULATE stage that has an open position to stress.
+    ///
+    /// `StressTester` and the standard library were built and scored
+    /// entirely in that crate's own tests and had no caller in this
+    /// workspace before this. Every position is stressed at a full (beta
+    /// 1.0) equity-factor exposure absent a fitted per-name beta — a
+    /// conservative assumption stated once here and in the recording site,
+    /// because crediting a diversification nobody measured is the one
+    /// rounding direction a stress test may never take. Labelled `scenario`,
+    /// bounded by the fixed library the crate ships.
+    pub const SIMULATION_STRESS_LOSS_FRACTION: &str = "qip_simulation_stress_loss_fraction";
+
     // The cycle. One turn of SENSE → … → LEARN, as the kernel runs it.
     pub const CYCLES_RUN: &str = "qip_cycles_total";
     pub const CYCLE_DURATION_MS: &str = "qip_cycle_duration_milliseconds";
