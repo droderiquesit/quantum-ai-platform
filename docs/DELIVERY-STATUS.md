@@ -321,8 +321,8 @@ these four are commands the build runs.
 | 21.3 | Rust for Machine Learning — Honest Assessment | NARRATIVE | An assessment of where Rust is and is not adequate, and the claim that training and inference sharing feature code removes training-serving skew structurally. No deliverable of its own; the shared-feature-code claim is scored under 21.2, where the training and scoring paths are the same `LearningDesk` code. |
 | 22.1 | Retention Classes | PARTIAL | Reached: the irreplaceable-versus-replaceable distinction is enforced, not documented. `grep -n 'requires_permanent_retention' backend/crates/libs/qip-events/src/log.rs` shows the log evicting lossy-tolerable records first, then replaceable ones, and *refusing the append* rather than dropping an audit record when only permanent ones remain; the topic predicate is `grep -n 'fn requires_permanent_retention' backend/crates/libs/qip-events/src/topic.rs`. Absent: the taxonomy itself. No retention-class type covering the ten rows, no three-year fallback OHLCV series, no 90-day event-anchored roll, no per-class size accounting — `grep -rn 'RetentionClass\|fallback_series\|ohlcv' backend/crates --include=*.rs` returns nothing. |
 | 22.2 | Sufficient Statistics | PARTIAL | Reached: exactly one row of the table. `grep -n 'stats::covariance' backend/crates/runtime/qip-kernel/src/platform.rs` computes pairwise covariance in production — but from a retained return series, batch, not the exponentially weighted online update the section names. Built-not-reached: Welford (`grep -rn 'RunningStats' backend/crates --include=*.rs` — no caller) and `grep -n 'pub fn ewma' backend/crates/libs/qip-numerics/src/stats.rs` (`grep -rn 'stats::ewma(' backend/crates --include=*.rs` finds no production caller). Absent: t-digest/KLL quantiles, count-min, HyperLogLog, weighted reservoir sampling, recursive least squares, and streaming PCA — `grep -rn 'digest\|CountMin\|HyperLogLog\|eservoir\|recursive_least\|Oja' backend/crates --include=*.rs` returns nothing. |
-| 22.3 | Data References | PARTIAL | Re-scored 2026-09-12 (ADR 0056). `DataReference` now exists with every pseudo-code field — source (by id, requiring the §7.6.1 category already recorded on the `RegisteredSource`), locator, symbols, a `DataPeriod` range, the `SourceSchema` shape, a content hash, `retrieved_at`, a `Decimal` cost estimate, and an availability fraction: `grep -n 'pub struct DataReference' -A 15 backend/crates/services/qip-data-finder/src/reference.rs`. The content hash is real and reuses the exact mechanism `SourceManifest` uses for §7.2, rather than a second scheme: `grep -n 'qip_core::sha256_hex' backend/crates/services/qip-data-finder/src/reference.rs backend/crates/libs/qip-financial/src/manifest.rs` finds both call sites. `DataReference::verify` re-hashes a re-fetch and reports a `RevisionCheck`, tested and mutation-verified (`grep -c '#\[test\]' backend/crates/services/qip-data-finder/src/reference.rs` — 3). Not `REACHED`: **no non-test caller exists.** `grep -rn 'DataReference' --include=*.rs backend/crates/apps` returns nothing — unlike §7.6.1's `SourceCategory`, which the existing `assess_one` pipeline calls automatically, nothing in this build fetches real bytes for a `DataReference` to describe (no HTTP transport is linked into this build, ADR 0009), so there is no seam yet where a composition root would construct one. That is a structural absence, not an oversight this change could close without adding a network client, which is out of scope. |
-| 22.4 | Fetch-on-Demand for Research | PARTIAL | Re-scored 2026-09-12 (ADR 0056). A named, bounded `FetchCampaign` exists — `grep -n 'pub struct FetchCampaign' -A 10 backend/crates/services/qip-data-finder/src/campaign.rs` — with a TTL- and entry-bounded `ResearchCache` that never exceeds its stated ceiling, a `CampaignManifest` that survives the campaign's close while the cache is deleted, and `assess_concentration`, closing the exact gap this row's last version named: `grep -rn 'two registered\|second source\|concentration risk' backend/crates/services/qip-data-finder/src` now finds `campaign.rs`'s own doc comments and `ConcentrationVerdict::MINIMUM_VIABLE_SOURCES = 2`. **3 of the section's 5 named mitigations are built, 1 is partial, 1 is not built** — read exactly, because rounding this to `REACHED` would overstate it: *source revises history after use* (built, hash verification + manifest flagging), *research is slower than a local copy* (built, the bounded TTL cache), *regulatory demand for data not retained* (built, the manifest), *vendor withdraws historical access* (partial — the two-sources half is `assess_concentration`; the three-year bar-level fallback series is §22.1's retention taxonomy, which that row still records as absent, and building it here would be re-scoping onto a different section's foundation), *sketch or reservoir error affects a model* (not built — §22.2's row records that no sketch exists anywhere in this codebase, so there is nothing to bound). Not `REACHED` for the same structural reason as §22.3: `grep -rn 'FetchCampaign\|assess_concentration' --include=*.rs backend/crates/apps` returns nothing, because a campaign needs real fetched bytes and this build has no transport to fetch them with. Tested and mutation-verified (`grep -c '#\[test\]' backend/crates/services/qip-data-finder/src/campaign.rs` — 5), depends on 22.3 as the blueprint requires, and was built after it in this change (ADR 0056). |
+| 22.3 | Data References | PARTIAL | Re-scored 2026-09-12 (ADR 0056), corrected later the same day. `DataReference` exists with every pseudo-code field — source (by id, requiring the §7.6.1 category already recorded on the `RegisteredSource`), locator, symbols, a `DataPeriod` range, the `SourceSchema` shape, a content hash, `retrieved_at`, a `Decimal` cost estimate, and an availability fraction: `grep -n 'pub struct DataReference' -A 15 backend/crates/services/qip-data-finder/src/reference.rs`. The content hash is real and reuses the exact mechanism `SourceManifest` uses for §7.2: `grep -n 'qip_core::sha256_hex' backend/crates/services/qip-data-finder/src/reference.rs backend/crates/libs/qip-financial/src/manifest.rs` finds both call sites. `DataReference::verify` re-hashes a re-fetch and reports a `RevisionCheck`, tested and mutation-verified (`grep -c '#\[test\]' backend/crates/services/qip-data-finder/src/reference.rs` — 3). Not `REACHED`: **no non-test caller exists, and this row's earlier reason ("no HTTP transport is linked into this build") was wrong.** Checked again the same day: `qip-market-ingestion`'s four production connectors do fetch real bytes over a real transport on every poll — `grep -n 'SOURCE_ID =>' backend/crates/services/qip-market-ingestion/src/connector_feed.rs` names Coinbase, Alpaca, Frankfurter and Kalshi, `ConnectorFeed::open` builds an `HttpSourceTransport` (`grep -n 'HttpSourceTransport::connect' backend/crates/services/qip-market-ingestion/src/connector_feed.rs`), and `qip-api`/`qip-fastbrain` both drive `ConnectorRuntime::poll` every cycle. The real blocker is `DataReference::of`'s own precondition, `&RegisteredSource`, which has exactly one constructor, `pub(crate)`, called from exactly one place: `grep -n 'RegisteredSource::new' backend/crates/services/qip-data-finder/src/finder.rs` lands inside `assess_one`'s register step, reachable only after a candidate has cleared `DataFinder`'s full discover → probe (robots.txt, HEAD, payload sample) → classify → score → route pipeline — the DISCOVER-stage mechanism for vetting a previously-unknown candidate URL (`qip-deepbrain`'s `DiscoveryDesk` via `Platform::assess_sources`, per §7.6.1's row), which is a different question from the one the four SENSE-stage connectors already answered through the separate `qip_data_finder::admission::{admit, StandingAdmission}` gate, whose catalogue returns a `LicensingDecision`, never a `RegisteredSource`. The two are disjoint by construction, not merely unwired: `grep -n 'qip-data-finder' backend/crates/services/qip-market-ingestion/Cargo.toml` finds nothing, because the dependency edge runs the other way (`qip-data-finder` depends on `qip-market-ingestion`), so a `RegisteredSource` cannot even be named at the connector-runtime seam. Building one for a shipped connector would require either running its manifest through discovery for real — and in production today that reaches only `NetworkProbe`, which refuses every call by construction (`grep -n 'impl SourceProbe for NetworkProbe' -A 12 backend/crates/services/qip-data-finder/src/probe.rs` — three `Err(self.unavailable(...))` arms), so no deployed process produces a `RegisteredSource` from real bytes today either — or fabricating the robots/probe/score/routing evidence a discovery pass would have produced for a source that was never run through one, which this correction declines to do rather than misrepresent how an already-licensed vendor feed was vetted. `DataReference::of` reads only `source.category()` and `source.id()` off the `RegisteredSource` it is given, so the honest fix is a reviewed design decision this correction does not make unilaterally: either narrow `DataReference::of`'s precondition to the id and category it actually uses (an amendment to ADR 0056), or give `qip-data-finder` a second, honestly-labelled registration path for a catalogue-admitted connector that claims no probe evidence it never gathered. Either is a change to a type ADR 0056 already treats as settled, not a wiring exercise. |
+| 22.4 | Fetch-on-Demand for Research | PARTIAL | Re-scored 2026-09-12 (ADR 0056), corrected later the same day. A named, bounded `FetchCampaign` exists — `grep -n 'pub struct FetchCampaign' -A 10 backend/crates/services/qip-data-finder/src/campaign.rs` — with a TTL- and entry-bounded `ResearchCache` that never exceeds its stated ceiling, a `CampaignManifest` that survives the campaign's close while the cache is deleted, and `assess_concentration`: `grep -rn 'two registered\|second source\|concentration risk' backend/crates/services/qip-data-finder/src` finds `campaign.rs`'s own doc comments and `ConcentrationVerdict::MINIMUM_VIABLE_SOURCES = 2`. **3 of the section's 5 named mitigations are built, 1 is partial, 1 is not built**: *source revises history after use* (built, hash verification + manifest flagging), *research is slower than a local copy* (built, the bounded TTL cache), *regulatory demand for data not retained* (built, the manifest), *vendor withdraws historical access* (partial — the two-sources half only; the three-year bar-level fallback series is §22.1's still-absent retention taxonomy), *sketch or reservoir error affects a model* (not built — §22.2 records no sketch exists anywhere in this codebase). Not `REACHED`, and not for the reason previously given here ("no HTTP transport"): see §22.3's corrected row — every shipped connector already fetches real bytes, but `FetchCampaign::fetch` takes a `DataReference` and inherits the same `RegisteredSource` blocker. There is a second, independent reason this would not close even if that blocker were lifted: §22.4's own module doc (`backend/crates/services/qip-data-finder/src/campaign.rs:1-59`) describes a bounded, TTL-scoped, closed research run — "campaign starts → resolve references → fetch into TTL cache → verify hashes → … → cache expires and is deleted" — and the four shipped connectors are the opposite shape: continuously running, restart-surviving streams with their own journal and dedup window (`ConnectorFeed::journal_to`), never closed. Forcing one connector-poll per `FetchCampaign::open`/`close` would misrepresent a permanent feed as a bounded research run for no benefit `ResearchCache`'s TTL eviction actually provides here; this correction declines to force that fit, per its own brief. `assess_concentration` is unaffected by any of this — it takes source ids directly, not a `RegisteredSource` or a `DataReference` — and remains reachable only from a test today. Tested and mutation-verified (`grep -c '#\[test\]' backend/crates/services/qip-data-finder/src/campaign.rs` — 5), depends on 22.3 as the blueprint requires. |
 | 23.1 | Allocation Across Ten Thousand Strategies | PARTIAL | LEVEL 1 is REACHED: `grep -n 'FamilyClustering::new' backend/crates/runtime/qip-kernel/src/central/structure.rs` clusters realised returns by stress correlation, and `grep -n 'central.family_structure(' backend/crates/runtime/qip-kernel/src/platform.rs` shows `stage_learn` calling it every cycle. LEVELs 2 and 3 are ABSENT: nothing allocates across the families or distributes a family budget by capacity — the kernel's own comment at that call site says "this measures and allocates nothing: no seam in this platform consumes a family", and `grep -rn 'FamilyId' backend/crates --include=*.rs` finds no consumer outside `qip-optimization-engine` and its tests. Cardinality constraint and effective-breadth objective: not built. |
 | 23.2 | Hardware | NARRATIVE | IBM processor counts, gate depths, fidelities and the Starling roadmap. Facts about somebody else's hardware. The one design claim — every workload sized to ~200 binary variables — has no expression in code: `grep -rn 'max_variables\|MAX_VARIABLES' backend/crates --include=*.rs` returns nothing, so nothing refuses an oversized instance. |
 | 23.3 | Regime-Conditional Allocation | ABSENT | A regime *is* classified in production — `grep -n 'fn market_regime' backend/crates/runtime/qip-kernel/src/platform.rs` — but it feeds the cost router's intelligence rung, not allocation: `grep -rn 'regime' backend/crates/services/qip-portfolio-engine/src backend/crates/services/qip-optimization-engine/src` finds two doc comments and no code, so no family weighting shifts with it and the "when uncertain, concentrate in regime-agnostic arbitrage" rule is nowhere expressed. The six-row regime/favours table has no counterpart in code. |
@@ -972,6 +972,150 @@ qip-acceptance --test compliance_proof --test security --test paper_boundary
 suites; dependency policy `dependency policy: 11 third-party package(s), all
 permitted`; secret scan `secret scan: nothing found`. Terraform gates were not
 run: no Terraform file was touched.
+
+**Corrected 2026-09-12**, the same day the two rows above were re-scored:
+their shared claim that §22.3 and §22.4 have no non-test caller "because no
+HTTP transport is linked into this build" was true only of
+`qip-data-finder`'s own `NetworkProbe` (which refuses every call by
+construction — `grep -n 'impl SourceProbe for NetworkProbe' -A 12
+backend/crates/services/qip-data-finder/src/probe.rs`), not of the platform.
+`qip-market-ingestion`'s four shipped connectors — Coinbase ticker, Alpaca
+bars, Frankfurter rates, Kalshi markets — fetch real bytes over a real,
+tested transport (`qip-transport`'s `HttpSourceTransport`) on every poll,
+driven by both `qip-api` and `qip-fastbrain`. That correction does not move
+either row to `REACHED`: `DataReference::of` requires a `&RegisteredSource`,
+and `RegisteredSource` is producible only through `DataFinder`'s
+discover → probe → classify → score → route → register pipeline — built for
+vetting a previously-unknown candidate URL for the DISCOVER stage, not for a
+connector the platform already fetches from continuously under its own,
+separate `qip_data_finder::admission` catalogue. The two mechanisms are
+disjoint by construction (`qip-market-ingestion` cannot depend on
+`qip-data-finder`; the edge runs the other way), and in production today the
+discovery pipeline's only caller reaches `NetworkProbe`, which answers every
+question with a refusal, so no `RegisteredSource` is produced from real bytes
+by any process that exists today, on either side of this gap. The two honest
+paths to actually closing §22.3 — loosening `DataReference::of`'s precondition
+to the id and category it actually reads, or giving `qip-data-finder` a
+second, honestly-labelled non-discovery registration path for a
+catalogue-admitted source — are both reviewed design changes to a type ADR
+0056 already treats as settled, and this correction makes neither
+unilaterally: it corrects the record rather than forcing a wiring that would
+either fabricate discovery evidence that never happened or misrepresent an
+already-licensed vendor feed as a discovered one. §22.4 carries a second,
+independent reason beyond inheriting §22.3's blocker: `FetchCampaign` is a
+bounded, TTL-scoped, closed research run by its own module doc, and the four
+shipped connectors are continuously running, restart-surviving streams —
+forcing the second shape onto the first was already something this section's
+own brief said not to do if it did not fit, and it does not.
+
+No code changed in this correction. Gate: `cargo fmt --all --check` clean;
+`cargo clippy -p qip-data-finder -p qip-market-ingestion --all-targets` zero
+warnings; `cargo test -p qip-market-ingestion -p qip-data-finder
+--no-fail-fast` **all suites `test result: ok`, summing to 481 passed, 0
+failed** (`qip-data-finder`: lib 25, `legality` 26, `lifecycle` 10,
+`probe_port` 7, `registration` 6, `replacement` 7, `robots_precedence` 9,
+`schema_drift` 8, `scoring_and_routing` 8, `tiers` 16, one doc-test 1;
+`qip-market-ingestion`: lib 39, `alternative_data` 49, `book_depth` 50,
+`connector_contract` 18, `connector_feed_frankfurter` 6, `connector_manifest`
+21, `connector_runtime` 41, `hostile_rate_table` 10, `live_connectors` 6,
+`narrative_feed` 46, `rest_feed` 32, `restart` 8, `sense` 31, `soak` 1);
+dependency policy `dependency policy: 11 third-party package(s), all
+permitted`; secret scan `secret scan: nothing found`. The full-workspace
+suite was not run: a concurrent lane holds `qip-kernel/src/platform.rs`,
+`qip-optimization-engine` and related kernel test files mid-edit for §12.3's
+remaining consequences, which this correction does not touch and did not
+need to build or test against.
+
+**Re-scored 2026-09-12**, no verdict changed: the concurrent lane the entry
+immediately above named its own investigation for. A second, independent pass
+over §12.3 checked whether either of ADR 0055's two remaining consequences —
+"an allocator objective revised" or "a rule recalibrated" — could now be
+closed by carrying attribution through `DeclinedPath`/`DeclinedScore` rather
+than by discounting an instrument's sizing again. It cannot, and the finding
+is structural rather than a plumbing gap either ADR 0055 or this pass declined
+to do.
+
+At the one production site a `DeclinedPath` is built
+(`grep -n 'DeclinedPath::new\|DeclinedPath {' backend/crates/runtime/qip-kernel/src/platform.rs`
+finds the struct and its single push site, inside `capture_submission`), the
+refused order's `hypotheses` never reach that function at all —
+`grep -n 'fn capture_submission' -A 8 backend/crates/runtime/qip-kernel/src/platform.rs`
+shows its parameters are `object_id`, `side`, `quantity`, `arrival`, none of
+them `hypotheses` — so the dropped value was checked at its source rather than
+assumed absent. It is not a family or a strategy id once found: a desk
+proposal's leg carries exactly one hypothesis id, `thesis.hypothesis_id`
+(`grep -n 'hypotheses: vec!\[thesis.hypothesis_id'
+backend/crates/services/qip-portfolio-engine/src/construction.rs`), and that
+id is minted fresh every cycle from the cycle counter and the instrument
+(`grep -n 'HypothesisId::from_string(format!(' -A 4
+backend/crates/runtime/qip-kernel/src/platform.rs` reads
+`"hyp-{cycle}-{subject}"`) — the opposite of a recurring label a sample of ten
+declines could ever accumulate against. `ApprovedThesis`, the type
+construction actually sizes from, carries `hypothesis_id`, `object_id`,
+`conviction`, `expected_return` and `price` and nothing else
+(`grep -n 'pub struct ApprovedThesis' -A 10
+backend/crates/services/qip-portfolio-engine/src/construction.rs`). The
+desk's own doc comment on `DESK_STRATEGY` states the reason in one line,
+unchanged since before ADR 0055: "the desk's own orders implement proposals
+and carry hypotheses; they do not belong to a foundry strategy" (`grep -n
+"own orders implement proposals and carry hypotheses"
+backend/crates/runtime/qip-kernel/src/platform.rs`). A strategy or family
+identity is not dropped on the way into `DeclinedPath` — it does not exist yet
+at the point a proposal's leg becomes an order, for any order the desk itself
+releases.
+
+Separately, and sufficient on its own even had attribution existed: nothing in
+production reads a family-keyed allocation weight to discount. `FamilyId`
+appears nowhere outside `qip-optimization-engine` (`families.rs`,
+`horizons.rs`, `lib.rs`) and `qip-kernel`'s own `central/horizon.rs` (`grep -rn
+'FamilyId' backend/crates --include=*.rs | grep -v '/tests/'`), keyed either
+on a foundry `StrategyId`'s realised-return series (`FamilyClustering`,
+requiring capital actually funded and traded — a different kind of evidence
+from a counterfactual fill, the same distinction ADR 0055 already drew for
+`qip_lifecycle::DemotionMonitor`) or on positional indices over a
+`HorizonPolicy`'s configured subjects, which no environment declares.
+`stage_learn`'s own comment on the family-clustering call site says so
+plainly: "this measures and allocates nothing: no seam in this platform
+consumes a family, and a decision keyed on one would be a gate with no
+subject" (`grep -n 'no seam in this platform consumes a family'
+backend/crates/runtime/qip-kernel/src/platform.rs`). A discount with nothing
+to multiply is not a consequence; it is dead code with a docstring explaining
+why it is dead.
+
+`grep -rln 'DeclinedPath\|DeclinedScore\|declined_scores' backend/crates
+--include=*.rs` still finds only `qip-kernel/src/platform.rs` and its own
+test — no new code was written, because there was no honest place to write
+it. §12.3 stays `PARTIAL` at exactly ADR 0055's count: one of the four named
+consequences built, three open — "no rule is recalibrated" for the reason ADR
+0055's own guardrail states (§12.4 forbids the one automatic direction), "no
+venue is dropped" because a declined order never reaches one, and "no
+allocator objective is revised" because — now checked twice, by two
+independent readings six days apart — the identity an objective would be
+revised *for* does not exist at the point a path is declined, and nothing
+downstream reads a family weight even where one might. Closing it would need,
+at minimum, a foundry strategy or a comparable recurring identity attached to
+a desk proposal before REASON hands it to construction (a change to
+`qip-reasoning-engine`'s and `qip-portfolio-engine`'s output types, not a
+field added to `DeclinedPath`), and a production caller of `HorizonArming`'s
+family-weight allocations that no environment configures today — both outside
+this task's scope crates and neither a small change. No ADR was opened for
+this pass: no new decision was taken, and ADR 0055 already argued the
+rejected alternative in full; this entry exists so the next reader does not
+have to re-derive the same negative result from scratch.
+
+No file under `qip-risk-engine/**`, `qip-execution-engine/**`,
+`qip-capital/**`, `qip-edge/**` or `infrastructure/**` was touched, and no
+Rust source was touched anywhere — this is a documentation-only entry. Gate,
+re-run against the unmodified tree to confirm the baseline this entry reasons
+from: `cargo fmt --all --check` clean; `cargo clippy --workspace
+--all-targets` zero warnings; `cargo test --workspace --no-fail-fast` exit 0,
+**4895 passed, 0 failed** (`grep -c '^test result:'` over 379 binaries summed
+with `awk`, unchanged from the entry ADR 0055 landed with, as expected with no
+source change); `cargo test -p qip-acceptance --test compliance_proof --test
+security --test paper_boundary --no-fail-fast` **7 passed, 5 passed, 24
+passed, 0 failed**, also unchanged; dependency policy `dependency policy: 11
+third-party package(s), all permitted`; secret scan `secret scan: nothing
+found`. Terraform gates were not run: no Terraform file was touched.
 
 To re-score a row: read the section in
 `docs/architecture/algorik-blueprint-v10.1-source.md`, run the row's command,
