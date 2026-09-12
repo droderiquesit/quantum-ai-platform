@@ -63,6 +63,33 @@ process that failed; the ledger and the checkpoint are one value under
 one key now (§costs). The remaining items are wording, one assertion, and
 the deep brain's error exit releasing its connector sessions.
 
+**Amended in place a fifth time, 2026-09-12**, after the fourth round of
+repairs (`672563f..4cb4983`) was re-reviewed by a fresh security-engineer
+and a fresh code-reviewer: no blocking or medium finding; eight low and
+should-fix items, every one fixed in the commits that follow `4cb4983`.
+Nothing this record *decides* changes; two things it *claimed* were
+narrower than their sentences and are corrected below. "One parser, one
+spelling" was true of the three connector-pair gates and not of every
+in-process base URL: the deep brain's hosted language-model listener —
+the one address that carries a bearer token — was still two string
+prefixes admitting `localhost` and a userinfo trick, and the fast brain's
+market-data vendor refused `https` alone. The gate now lives beside the
+parser, `qip_transport::http::require_loopback_egress`, holds every
+credential-bearing address (six seams), requires the explicit port
+Terraform has always required, and redacts userinfo from every refusal it
+writes — because the refusal itself was echoing the credential it refused
+(§7, checks). The one in-process URL that does not go through it,
+`QIP_OPENOBSERVE_URL`, is named as the exception with its reason (ADR
+0032 puts that collector on a private VPC address, not on loopback), so
+the sentence now covers exactly the gates it claims. The inspection's
+cost said an append to an inspected log "reaches memory and never the
+file", and that was a defect described as a shape: the log refuses it by
+name now (§costs). The billing test's mutation note described a mutation
+its own store could not admit; the note now records the one that fired.
+The deep brain's flush exit and its open loop skipped the release the
+error exit had gained. And this record's claim that one inspection test
+was "run unprivileged" is replaced by what the checkout can show.
+
 **Relates to:** blueprint §22.1 (Retention Classes), §22.2 (Sufficient
 Statistics), §22.3 (Data References), §22.4 (Fetch-on-Demand for Research),
 §56.3 rules 30 and 31, §56.4 rules 33 and 35
@@ -425,16 +452,38 @@ and not the only one: the API has one too (ADR 0024), and the third
 amendment's "the one binary with an egress path" was wrong about that.
 `qip_market_ingestion::connector_feed::require_loopback_egress` — an
 absolute `http://` URL, parsed by the transport's own parser, whose host
-is the literal `127.0.0.1` and nothing else — is now called at four
-seams: `ConnectorFeed::open`, the deep brain's parser, the API's, and,
-for parity, the fast brain's. The third amendment admitted `localhost`
+is the literal `127.0.0.1` and nothing else — was, as of the fourth
+amendment, called at four seams: `ConnectorFeed::open`, the deep brain's
+parser, the API's, and, for parity, the fast brain's (the fifth
+amendment moves it and widens it; see below). The third amendment admitted `localhost`
 beside the literal and parsed the address by hand; the fourth review
 found the hand parser read `http://127.0.0.1:9105@evil.example/` as
 loopback (the transport's refusal of userinfo was all that kept the
 socket shut) and that `localhost` is a name the resolver answers rather
 than a verified address, which is why Terraform never admitted it. Both
 are corrected: one parser, one spelling. Terraform catches the committed
-mistake, the process the unreviewed one. Multi-arm `sense`
+mistake, the process the unreviewed one. The fifth review found that
+sentence true of the connector pair and not of the process: the deep
+brain's hosted language-model listener, the one address carrying a
+bearer token, was still gated by two string prefixes that admitted
+`localhost` and read `http://127.0.0.1:9106@evil.example/` as loopback,
+and the fast brain's market-data vendor refused `https` alone — that the
+fast brain has no egress sidecar is a fact about the VPC, not a
+guarantee the process holds. The gate is now
+`qip_transport::http::require_loopback_egress`, beside the parser it
+must agree with, and `qip-market-ingestion`'s copy is gone; it is called
+at six seams — the connector pair in the API's, the deep brain's and the
+fast brain's parsers, `ConnectorFeed::open`, the language-model listener
+and the market-data vendor — and it requires an explicit port, which
+Terraform's `startswith("http://127.0.0.1:")` always did and the process
+until then did not. Every refusal it writes goes through
+`redact_userinfo`, and so does `HttpError::InvalidUrl`, because the
+refusal of `http://svc:TOKEN@127.0.0.1:9105` was itself printing `TOKEN`
+on stderr at start-up. The one in-process URL outside it is
+`QIP_OPENOBSERVE_URL`, on purpose: ADR 0032 decides that collector sits
+on a private VPC address, not on loopback, so "one parser" holds for it
+(it is `Url::parse`) and "one spelling" does not, by decision rather
+than by omission. Multi-arm `sense`
 collected every source's records into one batch and observed it at the
 end, so an arm whose poll refused after an earlier arm had referenced,
 journaled and committed its fetch left that batch neither delivered nor
@@ -489,15 +538,28 @@ mutation-verified.
   refused unless every row sums to its declared total, which is the
   count its error bound is stated against. Each refusal has a test and
   each test was mutated.
-- **The connector base URL is loopback in the process, not only in
-  Terraform, and the process and Terraform mean the same thing by it.**
-  `require_loopback_egress` at `ConnectorFeed::open`, the API's parser and
-  both brains'; the address is parsed by `qip_transport::http::Url::parse`
-  and its host must be the literal `127.0.0.1`. An `https` address, an
+- **Every credential-bearing base URL is loopback in the process, not
+  only in Terraform, and the process and Terraform mean the same thing by
+  it.** `qip_transport::http::require_loopback_egress` at
+  `ConnectorFeed::open`, the connector pair in the API's and both brains'
+  parsers, the deep brain's language-model listener and the fast brain's
+  market-data vendor; the address is parsed by
+  `qip_transport::http::Url::parse`, its host must be the literal
+  `127.0.0.1`, and its port must be written. An `https` address, an
   RFC 1918 host, a vendor host, a `127.0.0.1.evil.example` host, both
-  `localhost` spellings, `[::1]`, both userinfo spellings and a bare
-  authority are each refused by a test; the third amendment said "both
-  spellings of loopback admitted", and that admission is withdrawn.
+  `localhost` spellings, `[::1]`, a port-less address, both userinfo
+  spellings and a bare authority are each refused by a test; the third
+  amendment said "both spellings of loopback admitted", and that admission
+  is withdrawn; the fourth said this of the connector pair alone and
+  called it every gate, and the two gates it did not cover are covered
+  now. A refusal never echoes a credential: the gate's messages and
+  `HttpError::InvalidUrl` carry the address with its userinfo replaced by
+  `…@`, and a test holds the refusal of `http://svc:TOKEN@…` to not
+  contain `TOKEN` at the parser, at the gate and at both brains' parsers.
+  The exception is `QIP_OPENOBSERVE_URL`, which ADR 0032 places on a
+  private VPC address by decision; it parses through the same `Url::parse`
+  and is not held to loopback, and this record says so rather than
+  letting "every" cover it.
 - **One process per log file, and one write per poll.**
   `EventLog::open_with_capacity` takes an exclusive advisory lock
   (`std::fs::File::try_lock`, which is why the workspace's declared MSRV
@@ -702,7 +764,12 @@ append open failed and was reported as "not an event log this platform
 wrote", the lock refusal was relabelled the same way, and a mistyped path
 created an empty file. The inspection is read-only, creates nothing and
 releases its lock with the read; the CLI passes the lock refusal through
-unwrapped. The lock is advisory — it holds against everything that opens
+unwrapped. And an inspected log refuses `append` by name, telling the
+caller which open it came through and which to use to resume the file:
+the fourth amendment's inspection carried a file's records and no path,
+so an append "reached memory and never the file" — a chain the file did
+not hold, with nothing to say so, which its own test asserted as the
+intended shape until the fifth review. The lock is advisory — it holds against everything that opens
 the file through `EventLog` and against nothing that writes the bytes
 another way — and it is proven so on Unix only: the workspace is built
 and deployed on Linux, there is no Windows CI, and what `std` maps the
@@ -778,17 +845,29 @@ applied rather than silenced.
   gap tolerance is safe only because `open_with_capacity` refuses a
   non-contiguous file first; removing that refusal turns a deleted line
   into a silent eviction.
-- **An inspection that creates the file, opens it for append, or takes
-  the exclusive lock.** Each returns `qip replay` to the state the fourth
-  review found: a checker that cannot read an archive, or that reads a
-  node's journal mid-append, or that leaves an empty file at a typo.
-  Three tests hold the three properties, one of them run unprivileged
-  because uid 0 ignores the mode bits.
-- **A second URL parser in front of the transport, or a resolver name
-  admitted as loopback.** The gate's host must be the host the transport
-  connects to, by construction, and the literal is the only spelling
-  Terraform admits; a hand parser or a `localhost` arm re-opens the
-  userinfo case and the hosts-file case.
+- **An inspection that creates the file, opens it for append, takes the
+  exclusive lock, or accepts an append.** Each returns `qip replay` to a
+  state a review found: a checker that cannot read an archive, or that
+  reads a node's journal mid-append, or that leaves an empty file at a
+  typo, or that holds a chain the file does not. Three tests hold the
+  first three properties and the first of them holds the fourth. The
+  read-only-storage half is asserted only where the runner is
+  unprivileged, because uid 0 ignores the mode bits: the test probes
+  whether the mode bits bind it and prints which half it could prove, so
+  on a root build host it proves that the inspection loads and no more,
+  and the whole property is proven on an unprivileged runner such as
+  `ci.yml`'s `ubuntu-latest`. What the checkout shows is the probe and
+  the stderr line; it does not show a run.
+- **A second URL parser in front of the transport, a resolver name
+  admitted as loopback, a gate that one credential-bearing address does
+  not go through, or a refusal that echoes the address unredacted.** The
+  gate's host must be the host the transport connects to, by
+  construction, the literal with a written port is the only spelling
+  Terraform admits, and the gate is only a gate if every address that
+  carries a credential passes it; a hand parser or a `localhost` arm
+  re-opens the userinfo case and the hosts-file case, a prefix check on
+  one variable re-opens both for that variable, and a refusal that prints
+  `http://svc:TOKEN@…` is the leak it exists to prevent.
 - **The journal's ledger and checkpoint written as two values again.**
   Any second `put` between them is the crash gap; the store in the
   billing test refuses exactly the write a split would leave alone.
