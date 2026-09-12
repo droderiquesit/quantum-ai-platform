@@ -128,6 +128,7 @@ use qip_market::snapshot::MarketSnapshot;
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_market_ingestion::connector::manifest::SecretRef;
 use qip_mesh::catalog::Catalog;
+use qip_numerics::matrix::Matrix;
 use qip_observability::Telemetry;
 use qip_observability::metrics::{labels, names};
 use qip_opportunity_engine::catalyst::MarketEvent;
@@ -146,6 +147,7 @@ use qip_quantum::provider::SimulatedProvider;
 use qip_reasoning_engine::engine::{ReasoningEngine, ReasoningOutcome};
 use qip_reasoning_engine::hypothesis::Claim;
 use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
+use qip_risk::factor::FactorRisk;
 use qip_risk::limits::{LimitSet, RiskState};
 use qip_risk_engine::autonomy::{AutonomyController, OperatorIdentity};
 use qip_risk_engine::monitor::RiskMonitor;
@@ -8102,6 +8104,50 @@ impl Platform {
         // on exactly the cycles an operator most wants to read.
         self.cycle_solver_routing = Some(SolverRoutingJournal::of(&outcome.routing));
 
+        // Effective breadth (§19.1), recorded from the same covariance and
+        // target weights the proposal was just sized against — see
+        // `names::PORTFOLIO_EFFECTIVE_BETS` for what the zero-factor scope
+        // does and does not claim. A weight comes from the sized leg where
+        // this cycle touched the instrument, and from the book's existing
+        // weight where it did not, so an instrument left unsized is scored
+        // on the position it actually holds rather than dropped or zeroed.
+        let asset_ids: Vec<String> = theses
+            .iter()
+            .map(|thesis| thesis.object_id.as_str().to_string())
+            .collect();
+        let specific_variance: Vec<f64> = (0..n)
+            .map(|index| covariance[index][index].max(0.0))
+            .collect();
+        let weights: Vec<f64> = asset_ids
+            .iter()
+            .map(|id| {
+                outcome
+                    .proposal
+                    .legs
+                    .iter()
+                    .find(|leg| leg.object_id.as_str() == id)
+                    .map_or_else(
+                        || current.get(id).copied().unwrap_or(0.0),
+                        |leg| leg.target_weight,
+                    )
+            })
+            .collect();
+        if let Ok(model) = FactorRisk::new(
+            asset_ids,
+            Vec::new(),
+            Matrix::zeros(n, 0),
+            Matrix::zeros(0, 0),
+            specific_variance,
+        ) {
+            if let Ok(decomposition) = model.decompose(&weights) {
+                self.telemetry.metrics.gauge(
+                    names::PORTFOLIO_EFFECTIVE_BETS,
+                    labels([]),
+                    decomposition.effective_bets(),
+                );
+            }
+        }
+
         // Hold what the proposal was sized for, keyed by its id, until the
         // act stage commits or releases it. A proposal whose capital cannot
         // be held must not enter the pipeline: refusing here is the control
@@ -12354,6 +12400,62 @@ mod decide_tests {
         assert!(
             help.contains("holds exceeding equity"),
             "the series exports without its description: {help:?}"
+        );
+    }
+
+    #[test]
+    fn a_two_leg_proposal_records_its_effective_bets_from_real_weights_and_variance() {
+        // `qip_risk::factor::RiskDecomposition::effective_bets` (§19.1) was
+        // built and scored entirely in `qip-risk`'s own tests and had no
+        // caller anywhere in this workspace. A book sized across two names
+        // at different convictions is the case that tells a real
+        // computation apart from a stub that always answers one: a
+        // single-asset cycle cannot, because the inverse Herfindahl of one
+        // weight is always one.
+        let mut platform = gridded_small_book_platform(Decimal::from_int(1));
+        feed_history(&mut platform, "AAPL", 30);
+        feed_history(&mut platform, "MSFT", 30);
+        platform.pending_theses.push(thesis("AAPL", 0.6));
+        platform.pending_theses.push(thesis("MSFT", 0.4));
+
+        let before = platform.telemetry().metrics.snapshot();
+        assert!(
+            before
+                .gauge(names::PORTFOLIO_EFFECTIVE_BETS, &labels([]))
+                .is_none(),
+            "the effective-bets gauge exists before any construction ran"
+        );
+
+        let now = Timestamp::from_secs(1_760_000_100);
+        platform.stage_decide(now);
+
+        // Premise: both names were actually sized, non-trivially, so the
+        // decomposition below is over two real weights and not one.
+        let legs = platform
+            .proposals
+            .last()
+            .expect("a proposal is recorded")
+            .legs
+            .clone();
+        assert_eq!(
+            legs.len(),
+            2,
+            "the premise failed: {} leg(s) were sized, not two: {legs:?}",
+            legs.len()
+        );
+        assert!(
+            legs.iter().all(|leg| leg.target_weight.abs() > 1e-9),
+            "a leg sized to zero weight would make this test about one asset: {legs:?}"
+        );
+
+        let after = platform.telemetry().metrics.snapshot();
+        let effective_bets = after
+            .gauge(names::PORTFOLIO_EFFECTIVE_BETS, &labels([]))
+            .expect("the effective-bets gauge was not recorded");
+        assert!(
+            effective_bets > 1.0 && effective_bets <= 2.0,
+            "two differently-weighted names produced an effective-bets count of \
+             {effective_bets}, which is the single-asset answer or outside the two-asset range"
         );
     }
 }

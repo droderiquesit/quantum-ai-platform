@@ -684,6 +684,26 @@ pub mod names {
     /// the whole scrape. The recording site says so and names what is charted
     /// instead.
     pub const PORTFOLIO_LEVERAGE: &str = "qip_portfolio_leverage";
+    /// Effective independent bets in the book DECIDE just sized (§19.1):
+    /// `qip_risk::factor::RiskDecomposition::effective_bets`, the inverse
+    /// Herfindahl of each instrument's risk contribution, computed by
+    /// `qip_kernel`'s `Platform::construct_from` from the same covariance and
+    /// target weights the proposal was sized against.
+    ///
+    /// `effective_bets` was built and scored entirely in `qip-risk`'s own
+    /// tests and had no caller anywhere else — a diversification measure
+    /// that recorded nothing and answered nothing. The decomposition
+    /// recorded here declares no common factors: this platform estimates no
+    /// factor model at this seam, and a decomposition that invented
+    /// loadings to look fuller would be a number nobody computed, which the
+    /// scoring rule this workspace holds everywhere else refuses. Each
+    /// instrument's own historical return variance stands as its entire
+    /// "specific" risk instead, so the gauge answers exactly the question a
+    /// zero-factor model can honestly answer: how concentrated is this
+    /// sizing across the instruments it touched, by contribution to
+    /// variance rather than by position count. Absent on a cycle that sized
+    /// nothing, the same as the gauges above it.
+    pub const PORTFOLIO_EFFECTIVE_BETS: &str = "qip_portfolio_effective_bets";
 
     // The cycle. One turn of SENSE → … → LEARN, as the kernel runs it.
     pub const CYCLES_RUN: &str = "qip_cycles_total";
