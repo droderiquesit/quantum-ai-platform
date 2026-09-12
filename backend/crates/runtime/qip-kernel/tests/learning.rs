@@ -323,6 +323,39 @@ fn bars_after(symbol: &str, from: Timestamp, days: i64) -> Vec<SensedRecord> {
         .collect()
 }
 
+/// A flat, near-silent tape at 100, for a test that needs to know its own
+/// entry price rather than read one off a random walk. `bars`'s jump-and-noise
+/// fixture is right for the tests above, which do not care what the price
+/// is, only that something moved; a test that has to place the twin's
+/// simulated entry on a known side of a known level cannot afford that
+/// uncertainty.
+fn quiet_bars(symbol: &str, count: usize) -> Vec<SensedRecord> {
+    (0..count)
+        .map(|i| {
+            let wiggle = if i % 2 == 0 { 0.3 } else { -0.3 };
+            let price = 100.0 + wiggle;
+            let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+            bar(symbol, at, price, price)
+        })
+        .collect()
+}
+
+/// A flat tape at `level`, every day after `from`.
+///
+/// [`qip_simulation_engine::clock::SimulationClock::fill_price`] marks the
+/// twin's alternative at a bar's *open*, not its close, so what this needs to
+/// fix is one number the twin will actually read — not a trajectory, which a
+/// single day's move would already settle. Flat rather than a one-day spike
+/// so the exact bar the horizon lands on cannot matter either.
+fn flat_bars_after(symbol: &str, from: Timestamp, days: i64, level: f64) -> Vec<SensedRecord> {
+    (1..=days)
+        .map(|day| {
+            let at = from.saturating_add(Duration::from_days(day));
+            bar(symbol, at, level, level)
+        })
+        .collect()
+}
+
 #[test]
 fn a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate() -> Result<()> {
     // The failure this guards: `evaluate_alternatives` priced the paths not
@@ -474,5 +507,103 @@ fn declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next
         0,
         "nothing was refused by the twin, so nothing may be counted as unscorable"
     );
+    Ok(())
+}
+
+// --- ADR 0055: the counterfactual record narrows sizing, never widens it ---
+
+#[test]
+fn a_persistent_pattern_of_unfavourable_declines_on_one_instrument_narrows_only_that_instruments_sizing()
+-> Result<()> {
+    // The failure this guards: blueprint §12.3 named it exactly —
+    // "nothing consumes the findings… no sizing function is adjusted from a
+    // counterfactual result." `score_declined` already prices every refused
+    // path (the test above); this proves the LEARN stage's own findings now
+    // reach the DECIDE stage's sizing at the seam
+    // `docs/DELIVERY-STATUS.md` §11.2 already scores as production —
+    // `Platform::sizing_confidence` — and reach only the instrument the
+    // pattern is actually about.
+    let mut platform = platform()?;
+    platform.observe(quiet_bars("AAA", 90));
+
+    // ADR 0055's `COUNTERFACTUAL_SIZING_MIN_SAMPLE`. Ten refusals on the same
+    // instrument, all declined for lack of a hypothesis (`refuse_one`), which
+    // says nothing yet about whether declining them was right.
+    const SAMPLE: usize = 10;
+    for n in 0..SAMPLE {
+        refuse_one(&mut platform, &format!("prop-refused-{n}"), start())?;
+    }
+    assert_eq!(
+        platform.declined_awaiting_score(),
+        SAMPLE,
+        "the premise failed: not every refusal was captured for the twin"
+    );
+    // Premise: before anything is scored, a fresh platform's counterfactual
+    // record narrows nothing — the mechanism under test has not run yet.
+    assert_eq!(
+        platform.sizing_confidence(object("AAA").as_str(), start())?,
+        Decimal::ONE,
+        "the premise failed: sizing is already narrowed before any path is scored"
+    );
+
+    // Every refusal here is a buy, and `Platform::capture_submission` records
+    // a buy against the ask (`book_side`'s own doc comment: "a buy lifts the
+    // offer"), so `ActualTrade::direction` for it is `-1`
+    // (`qip_twin::counterfactual`'s `Bid => 1, Ask => -1`) and the twin's
+    // gross for the "trade" alternative is `(entry_price - exit_price) *
+    // quantity`: a *rise* after the refusal is what the twin charges the
+    // declined buy a loss for. The tape jumps from the quiet ~100 entry to a
+    // flat 300 immediately after the refusal, so every one of these ten
+    // declined buys should mark as correctly declined — unambiguously,
+    // because the jump is two hundred, not a trajectory nobody computed by
+    // hand.
+    platform.observe(flat_bars_after("AAA", start(), 5, 300.0));
+    let scoring_time = start().saturating_add(Duration::from_days(3));
+    // Two cycles: `COUNTERFACTUALS_PER_CYCLE` caps one LEARN pass at eight,
+    // and ten declines need a second pass to drain — the same two-cycle
+    // shape `declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next_cycle`
+    // above proves the cap by, reused here to reach a full sample.
+    platform.run_cycle(scoring_time);
+    platform.run_cycle(scoring_time);
+    assert_eq!(
+        platform.declined_awaiting_score(),
+        0,
+        "not every declined path was priced across two LEARN passes"
+    );
+
+    let scores = platform.declined_scores();
+    assert_eq!(scores.len(), SAMPLE, "an unrelated path was captured too");
+    let unfavourable = scores.iter().filter(|score| !score.regret).count();
+    assert_eq!(
+        unfavourable,
+        SAMPLE,
+        "the premise failed: a falling price after a declined buy did not score every path as \
+         unfavourable, so the pattern below proves nothing about the discipline — regrets: {:?}",
+        scores.iter().map(|s| s.regret).collect::<Vec<_>>()
+    );
+
+    // The consequence: the instrument this pattern is about is narrowed to
+    // exactly ADR 0055's stated discount, never further and never less.
+    let narrowed = platform.sizing_confidence(object("AAA").as_str(), scoring_time)?;
+    assert_eq!(
+        narrowed,
+        dec!("0.5"),
+        "a clear, sufficient pattern of unfavourable declines did not narrow sizing confidence \
+         to the ADR 0055 discount"
+    );
+    assert!(
+        narrowed < Decimal::ONE,
+        "the discount did not narrow sizing confidence at all"
+    );
+
+    // And the instrument beside it, with no counterfactual record of its
+    // own, is untouched — the finding is about this name's own proposals,
+    // not a global brake on every instrument's sizing.
+    assert_eq!(
+        platform.sizing_confidence(object("BBB").as_str(), scoring_time)?,
+        Decimal::ONE,
+        "an unrelated instrument's sizing was narrowed by another instrument's record"
+    );
+
     Ok(())
 }

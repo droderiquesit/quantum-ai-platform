@@ -87,12 +87,17 @@ moved the code. If a command returns nothing, that absence is the evidence.
 
 | Verdict | Sections | Share |
 |---|---|---|
-| `REACHED` | 20 | 11% |
-| `PARTIAL` | 127 | 70% |
+| `REACHED` | 21 | 12% |
+| `PARTIAL` | 130 | 72% |
 | `UNREACHED` | 1 | 1% |
-| `ABSENT` | 18 | 10% |
+| `ABSENT` | 14 | 8% |
 | `NARRATIVE` | 15 | 8% |
 | **Total** | **181** | |
+
+Recounted 2026-09-12 for both changes landing in this working tree together:
+§12.3's `ABSENT → PARTIAL` (ADR 0055) and §7.6.1's `ABSENT → REACHED` plus
+§22.3's and §22.4's `ABSENT → PARTIAL` (ADR 0056) — four rows off `ABSENT`
+against the prior 18/127/20, not one.
 
 ### Why there is no single percentage here
 
@@ -276,12 +281,12 @@ these four are commands the build runs.
 | 10.2 | What Gets Stored | PARTIAL | One trigger of the five is wired, and it is not one of the five as stated: an episode is written per reasoned opportunity and entered into the index only when its thesis resolves — `grep -n 'fn remember_resolved\|self.remember_resolved(' backend/crates/runtime/qip-kernel/src/platform.rs` (called from `calibrate_resolved`, itself called by `stage_learn`). No fill/quote/transfer trigger, no high-surprise trigger, no regime-transition trigger, no calm sampling, and vetoes go to the counterfactual queue rather than to memory (`grep -n 'self.declined.push' backend/crates/runtime/qip-kernel/src/platform.rs`). |
 | 10.3 | Retrieval and Use | PARTIAL | Two of five queries plus the regional digest are production-reached. "What does now most resemble" and "what followed those situations": `grep -n 'fn recall_precedent\|self.episodes.recall(' backend/crates/runtime/qip-kernel/src/platform.rs` and `grep -n 'PrecedentDigest::of' backend/crates/runtime/qip-kernel/src/platform.rs`, feeding the panel brief via `brief_precedent`. The compact regional digest ships in production: `grep -n 'payload.episodic_digest = \|issue_episodic_digest' backend/crates/apps/qip-api/src/mesh.rs`. Absent: the strategy-filtered query, the surprise-across-analogues query, and the join to counterfactual scores (`grep -rn 'declined_scores()' --include=*.rs backend/crates` finds only a test). |
 | 11.1 | What a Belief Is | PARTIAL | The belief object is `Hypothesis`, production-formed in REASON: `grep -n 'pub struct Hypothesis' backend/crates/services/qip-reasoning-engine/src/hypothesis.rs` and `grep -n 'self.reasoning.reason(SynthesisInput' backend/crates/runtime/qip-kernel/src/platform.rs`. It carries proposition (`statement`/`claim`), causal_path (`CausalChain`), evidence (`EvidenceSet`), confidence, and a TTL (`grep -n 'fn expires_at\|fn is_expired' backend/crates/services/qip-reasoning-engine/src/hypothesis.rs`). It is **not** a distribution: `grep -n 'pub struct BeliefUpdate' -A 8 backend/crates/services/qip-reasoning-engine/src/bayes.rs` shows a scalar prior/posterior. Three of the six proposition classes are expressible — `grep -n 'pub enum Claim' -A 18 .../hypothesis.rs` has no counterparty, capacity or valuation-range arm. |
-| 11.2 | Confidence Drives Size | PARTIAL | Confidence does reach size in production, through three independent narrowings, all inside `construct_from` on the DECIDE path: the hypothesis's own `effective_confidence` becomes the thesis conviction (`grep -n 'conviction: sign \* reasoned.hypothesis.effective_confidence' backend/crates/runtime/qip-kernel/src/platform.rs`), the §6.2 degradation multiplier (`grep -n 'central_sizing_multiplier' .../platform.rs`), and the valuation mark's confidence (`grep -n 'fn sizing_confidence' .../platform.rs`). The sharpest requirement is unmet: nothing distinguishes an absence of evidence from a conflict of evidence — `grep -rn 'conflict' backend/crates/services/qip-reasoning-engine/src/` returns nothing, and `EvidenceSet` exposes only `concentration()`, not a net-stance disagreement measure. |
+| 11.2 | Confidence Drives Size | PARTIAL | Confidence does reach size in production, through four independent narrowings, all inside `construct_from` on the DECIDE path: the hypothesis's own `effective_confidence` becomes the thesis conviction (`grep -n 'conviction: sign \* reasoned.hypothesis.effective_confidence' backend/crates/runtime/qip-kernel/src/platform.rs`), the §6.2 degradation multiplier (`grep -n 'central_sizing_multiplier' .../platform.rs`), the valuation mark's confidence (`grep -n 'fn sizing_confidence' .../platform.rs`), and, since ADR 0055, the instrument's own counterfactual record (`grep -n 'fn counterfactual_sizing_multiplier' .../platform.rs`) — folded into the same `sizing_confidence` call rather than a fifth call site, so a construction reads one number rather than reconciling several; see §12.3 for what that narrowing is and is not. The sharpest requirement is unmet: nothing distinguishes an absence of evidence from a conflict of evidence — `grep -rn 'conflict' backend/crates/services/qip-reasoning-engine/src/` returns nothing, and `EvidenceSet` exposes only `concentration()`, not a net-stance disagreement measure. |
 | 11.3 | Propagation to Regions | PARTIAL | The contract is complete and the consumer half is production code: `belief_priors` is a signed policy slot with a 300s TTL mapping to `Capability::BeliefState`, and a cell that reads it stale falls to the conservative multiplier and reports it (`grep -n 'BeliefPriors\|fn narrowing' backend/crates/libs/qip-contracts/src/policy.rs`, `grep -n 'Capability::BeliefState' backend/crates/edge/qip-edge/src/telemetry.rs`). A cell forming no belief of its own is structural — no belief type is reachable from `qip-edge`. But nothing ever produces the slot: `grep -rn 'belief_priors' --include=*.rs backend/crates \| grep -v policy.rs` returns nothing, so every deployed cell would read it `unproduced` for ever. |
 | 12.1 | What Gets Shadow-Executed | PARTIAL | One of the seven paths-not-taken is captured, in production: a risk-gate veto, recorded with the proposed trade at `grep -n 'self.declined.push(DeclinedPath' backend/crates/runtime/qip-kernel/src/platform.rs` inside `capture_submission`. Against each captured path the twin does evaluate alternative sizing, venue, region, hedge and delay (`grep -n 'pub enum Alternative' -A 14 backend/crates/services/qip-twin/src/counterfactual.rs`), which covers the "alternative sizing" row. Profitability filters, feasibility rejections, un-whitelisted allocations, alternative cycle paths and the strategy that did not fire are never queued — `DeclinedPath` is constructed at exactly one site. |
 | 12.2 | How It Is Scored | REACHED | All six steps run on the LEARN path: `grep -n 'fn score_declined\|self.score_declined(now)' backend/crates/runtime/qip-kernel/src/platform.rs` (called from `stage_learn`), which reconstructs from `bar_history` into a `TwinMarket` with a `CostModel` and `COUNTERFACTUAL_IMPACT_WINDOW`, calls `Platform::evaluate_alternatives`, evaluates over the intended horizon, attributes to the declining gate and accumulates into `declined_scores` plus gate-labelled counters (`grep -n 'names::COUNTERFACTUALS_SCORED\|names::COUNTERFACTUAL_REGRETS' .../platform.rs`). Narrower than stated in one respect: accumulation is per gate only, not also per venue, regime and strategy. |
-| 12.3 | What It Changes | ABSENT | Nothing consumes the findings. The scores accumulate and stop: `grep -rn 'declined_scores()' --include=*.rs backend/crates` returns a single caller, `qip-kernel/tests/learning.rs`. No rule is recalibrated, no venue is dropped, no allocator objective is revised, and no sizing function is adjusted from a counterfactual result — `grep -rn 'recalibrat' --include=*.rs backend/crates \| grep -v '/tests/'` finds nothing on this path. |
-| 12.4 | Guardrails | PARTIAL | Two of four hold. Impact is charged and oversized counterfactuals are refused rather than priced: `grep -n 'Unfillable' backend/crates/services/qip-twin/src/counterfactual.rs` ("more of the day's volume than the impact law is calibrated for"). "Never loosened automatically" holds trivially, because no automatic loosening path exists (§12.3). Missing: fill-simulation error against actual fills on the same venue is not tracked as a metric (`grep -rn 'fill.*error\|simulation_error' backend/crates/libs/qip-observability/src/metrics.rs` returns nothing), and counterfactual findings enter no statistical/trial gate. |
+| 12.3 | What It Changes | PARTIAL | **Corrected 2026-09-12 (ADR 0055).** One of the table's four named consequences is built: a sizing function adjusted from a counterfactual result. `Platform::counterfactual_sizing_multiplier(object_id)` reads the bounded `declined_scores` history directly rather than through the public accessor — `grep -n 'self.declined_scores' backend/crates/runtime/qip-kernel/src/platform.rs` shows the push site inside `score_declined` and this new read beside it, and `grep -rn 'declined_scores()' --include=*.rs backend/crates` (the accessor, with parens) still finds only test callers, which is a fact about which name to grep for and not about whether the finding is consumed — and narrows `Platform::sizing_confidence`, never widens it: below ten scored observations on one instrument it returns `Decimal::ONE` unconditionally, and `grep -n 'COUNTERFACTUAL_SIZING' backend/crates/runtime/qip-kernel/src/platform.rs` shows the function has no branch that returns more than `Decimal::ONE` even above ten. Reached from `sizing_confidence` → `sizeable_theses` → `construct_from` → `stage_decide`, the seam §11.2 already scores as production. The other three consequences are exactly as absent as before: no rule is recalibrated — `grep -rn 'recalibrat' --include=*.rs backend/crates \| grep -v '/tests/'` finds only this change's own comments, and §12.4's guardrail forbids the one automatic direction (loosening) outright — no venue is dropped (a declined order never reaches one; `ActualTrade` for a decline is `UNROUTED_VENUE`), and no allocator objective is revised (no declined path is attributed to a strategy or family anywhere in `DeclinedPath`/`DeclinedScore`). See ADR 0055 for the full argument, the two rejected consequences' missing-attribution reasoning, and what stays open. |
+| 12.4 | Guardrails | PARTIAL | Two of four hold. Impact is charged and oversized counterfactuals are refused rather than priced: `grep -n 'Unfillable' backend/crates/services/qip-twin/src/counterfactual.rs` ("more of the day's volume than the impact law is calibrated for"). **"Never loosened automatically" no longer holds trivially** (corrected 2026-09-12, ADR 0055): §12.3 now has a real automatic consumer of counterfactual evidence, `Platform::counterfactual_sizing_multiplier`, and the guarantee is held structurally rather than by the absence of anything to check — the function has no branch that returns more than `Decimal::ONE`, proved by `platform::counterfactual_sizing_tests::a_pattern_of_wrongly_declined_paths_never_widens_sizing`, which feeds it an overwhelmingly *favourable* pattern (the "rule vetoes mostly profitable paths" case this guardrail names) and asserts sizing confidence stays at one. Missing: fill-simulation error against actual fills on the same venue is not tracked as a metric (`grep -rn 'fill.*error\|simulation_error' backend/crates/libs/qip-observability/src/metrics.rs` returns nothing), and counterfactual findings enter no statistical/trial gate — ADR 0055's own discipline (a minimum sample, an unfavourable-fraction bar) is a fixed threshold rule stated and defended in the record, not the trial accounting this row asks for. |
 | 13.1 | What the Self-Model Tracks | PARTIAL | Two of the seven dimensions are built and production-fed. Estimator reliability and calibration: `grep -n 'pub struct Capability' -A 12 backend/crates/services/qip-learning-engine/src/self_model.rs` (accuracy, hit rate, mean Brier, sample count), absorbed in production at `grep -n 'self.self_model.absorb(evaluation' backend/crates/runtime/qip-kernel/src/platform.rs` inside `learn_from`, reached from `calibrate_resolved` ← `stage_learn`. Model age is readable from `last_updated` and is what `SelfModelFreshness::assess` narrows sizing on. Coverage, capacity, regime experience and blind spots are absent: `grep -rni 'blind_spot\|coverage\|capacity' backend/crates/services/qip-learning-engine/src/` returns only `Vec::with_capacity`. |
 | 13.2 | The Exploration Budget | PARTIAL | The budget is a real line item in the capital engine and is enforced downward through the mandate hierarchy: `grep -n 'exploration_share' backend/crates/services/qip-capital/src/ledger/mandate.rs backend/crates/services/qip-capital/src/ledger/registry.rs`, and it is surfaced to the console (`grep -n 'exploration_share' backend/crates/apps/qip-api/src/ledger_views.rs`). Nothing draws on it: no probe type, no UCB/Thompson selection, no per-probe maximum loss, and no separate accounting of exploration cost — `grep -rn 'exploration_share()' --include=*.rs backend/crates \| grep -v '/tests/'` reaches only the registry check and the view. |
 | 14.1 | What a Hypothesis Is | REACHED | Every field of the blueprint record exists on a type produced in production. `grep -n 'pub struct Hypothesis' -A 50 backend/crates/services/qip-reasoning-engine/src/hypothesis.rs` gives proposition (`claim`/`statement`), mechanism (`CausalChain` of `CausalStep`, each naming a `Mechanism`), evidence, and `falsifiers`; the prediction that follows is the resolution proposition (`grep -n 'ResolutionCriteria' backend/crates/runtime/qip-kernel/src/platform.rs`). Status is the six-state enum `grep -n 'pub enum HypothesisStatus' -A 14 .../hypothesis.rs`. Produced on the REASON path at `grep -n 'self.reasoning.reason(SynthesisInput' backend/crates/runtime/qip-kernel/src/platform.rs`, and a directional finding with no falsifier is refused (`grep -n 'unfalsifiable claim cannot be reviewed' backend/crates/libs/qip-agents/src/finding.rs`). |
@@ -909,6 +914,64 @@ transiently in the same full-workspace run with `error[E0463]: can't find
 crate for qip_api` under a concurrent cargo lock ("Blocking waiting for file
 lock on artifact directory"); re-run individually once the lock cleared, all
 three passed. Terraform gates were not run: no Terraform file was touched.
+
+**Re-scored 2026-09-12**, the §12.3 lane the entry immediately above was left
+waiting on: §12.3 (blueprint's "What It Changes") moves `ABSENT` → `PARTIAL`
+(ADR 0055). `score_declined` (§12.2) already accumulated `DeclinedScore` and
+nothing consumed it; `Platform::counterfactual_sizing_multiplier(object_id)`
+now reads that bounded history and narrows `Platform::sizing_confidence` —
+never widens it, by construction — once an instrument clears both a stated
+minimum sample (ten scored paths) and a stated unfavourable-fraction bar
+(three in four correctly declined). Of the table's four named consequences,
+only "a sizing function adjusted from a counterfactual result" is built; a
+rule recalibrated, a venue dropped and an allocator objective revised all
+stay open, each for a reason ADR 0055 states (the guardrail against automatic
+loosening for the first, and a missing upstream attribution — no venue, no
+strategy or family — on `DeclinedPath`/`DeclinedScore` for the other two).
+§11.2's row is corrected in place from three narrowings to four, naming the
+new one and pointing at §12.3 rather than restating the argument, and §12.4's
+"never loosened automatically" row is corrected from holding trivially (no
+automatic path existed to check) to holding structurally (one now exists, and
+has no branch that can loosen). The shape
+table above is recounted for this change together with ADR 0056's, landing in
+the same working tree — see the note beside it.
+
+Five new tests, all mutation-verified (implementation broken, test confirmed
+to fail for the stated reason, code restored byte-for-byte, test reconfirmed
+passing), each mutation and its result reported in the commit that introduced
+the test: four unit tests in `qip-kernel/src/platform.rs`'s new
+`counterfactual_sizing_tests` module (a thin sample does not narrow; a clear,
+sufficient, unfavourable pattern narrows to exactly the stated discount and
+narrows no other instrument; a sufficient sample below the fraction bar does
+not narrow; an overwhelmingly *favourable* pattern — the rule-too-tight case —
+never raises sizing confidence above one, because the function has no branch
+that can), and one integration test in `qip-kernel/tests/learning.rs` driving
+ten real refusals through `submit_order`, `score_declined` and
+`Platform::run_cycle` to prove the production wiring end to end. The entry two
+above already recorded two of these four unit-test names failing transiently
+mid-mutation in a concurrent run of this same working tree; both pass now that
+every mutation is restored.
+
+The paper-trading boundary and the risk/execution/autonomy paths are
+untouched, confirmed rather than asserted: `grep -rn 'counterfactual_sizing_multiplier\|COUNTERFACTUAL_SIZING'
+backend/crates` finds only `qip-kernel/src/platform.rs` and its own tests, and
+`sizing_confidence`'s only production reader is `sizeable_theses` inside
+`construct_from`, which narrows or removes a thesis before the unmodified
+risk and execution gates ever see an order. No file under
+`qip-risk-engine/**`, `qip-execution-engine/**`, `qip-capital/**`, `qip-edge/**`
+or `infrastructure/**` was touched.
+
+Gate: `cargo fmt --all --check` clean; `cargo clippy --workspace
+--all-targets` zero warnings; `cargo test --workspace --no-fail-fast` exit 0,
+**4895 passed, 0 failed** (summed across every binary's own `test result:`
+line, `grep -oE '[0-9]+ passed; [0-9]+ failed' | awk` over the run's full
+output — up from the concurrent entry's 4893 passed, 2 failed, both of which
+were this lane's own mid-mutation state and not a defect); `cargo test -p
+qip-acceptance --test compliance_proof --test security --test paper_boundary
+--no-fail-fast` **7 passed, 5 passed, 24 passed, 0 failed** across the three
+suites; dependency policy `dependency policy: 11 third-party package(s), all
+permitted`; secret scan `secret scan: nothing found`. Terraform gates were not
+run: no Terraform file was touched.
 
 To re-score a row: read the section in
 `docs/architecture/algorik-blueprint-v10.1-source.md`, run the row's command,

@@ -748,6 +748,46 @@ const COUNTERFACTUALS_PER_CYCLE: usize = 8;
 /// silently choose which veto goes unexamined.
 const DECLINED_HISTORY: usize = 256;
 
+/// Minimum scored, declined paths on the same instrument before
+/// [`Platform::counterfactual_sizing_multiplier`] trusts the pattern enough to
+/// narrow anything.
+///
+/// Below this a persistent-looking run is exactly as likely to be noise as a
+/// finding — three bad-looking declines on one name is a coincidence, not
+/// evidence, and recalibrating on three observations is recalibrating on
+/// noise, the same discipline `qip_world_model::granger`'s significance bar
+/// applies to a causal claim (ADR 0054). Ten rather than a fresh number,
+/// because it is [`qip_learning_engine::self_model::MINIMUM_SAMPLE`] — the
+/// platform already has one answer to "how many observations make an
+/// evidence-weighted estimate trustworthy", and a second, differently-sized
+/// answer for the same question would be a number nobody could reconcile
+/// with the first.
+const COUNTERFACTUAL_SIZING_MIN_SAMPLE: usize = 10;
+
+/// The fraction of an instrument's scored, declined paths that must have been
+/// *correctly* declined — the twin's own `!regret`, meaning the simulated
+/// trade would not have beaten standing aside — before that instrument's
+/// future sizing is narrowed.
+///
+/// Three in four rather than a bare majority: a control earning its place
+/// slightly more often than not is ordinary risk management, blueprint
+/// §12.3's own second row ("a rule vetoes mostly losing paths… earning its
+/// place"), not evidence that whatever proposed these trades on this
+/// instrument is unreliable. See
+/// [`Platform::counterfactual_sizing_multiplier`] for why the opposite
+/// pattern — a rule vetoing mostly *profitable* paths, §12.3's first row —
+/// produces no automatic response here at all.
+const COUNTERFACTUAL_SIZING_UNFAVOURABLE_FRACTION: f64 = 0.75;
+
+/// The one discount [`Platform::counterfactual_sizing_multiplier`] may apply,
+/// once both bars above are cleared.
+///
+/// A single constant rather than a curve keyed on the fraction or the sample
+/// size, so what this changes is one auditable number a person can name —
+/// "this instrument's sizing confidence is halved" — rather than a formula
+/// shaped after the fact to fit whatever the backtest wanted.
+const COUNTERFACTUAL_SIZING_DISCOUNT: Decimal = Decimal::from_raw(500_000_000);
+
 /// The budget holder every desk fill is charged to in the risk aggregate.
 ///
 /// The desk's own orders implement proposals and carry hypotheses; they do
@@ -7912,19 +7952,83 @@ impl Platform {
         (retained, weakest, refusals)
     }
 
+    /// How far `object_id`'s own counterfactual record says future sizing
+    /// should be narrowed, as a fraction in `(0, 1]` — never higher, because
+    /// the opposite finding produces no response at all.
+    ///
+    /// This is blueprint §12.3's "sizing function adjusted" consequence, the
+    /// one the section's own table names last ("alternative sizing
+    /// consistently better… the counterfactual says exactly where"), read
+    /// here as the narrower, honest form the platform's actual data
+    /// supports: nothing captured today ties a declined path to a strategy
+    /// or a family (`grep -n 'struct DeclinedPath' -A 10` and `grep -n
+    /// 'pub struct DeclinedScore' -A 10`, this file, name every field either
+    /// carries — `object_id` and `gate`, nothing else), so the instrument is
+    /// the only grouping this can honestly compute without inventing an
+    /// upstream signal nothing produces yet.
+    ///
+    /// Reads only [`Self::declined_scores`], which already exists, is
+    /// already bounded by [`DECLINED_HISTORY`], and needs no new accumulator:
+    /// this adds no unbounded state, and the finding it can act on is bounded
+    /// by construction.
+    ///
+    /// **Deliberately silent on the opposite pattern.** An instrument whose
+    /// declines were mostly *wrong* — most would have beaten standing aside —
+    /// is §12.3's "a rule vetoes mostly profitable paths" row, and §12.4's
+    /// own guardrail is explicit: "a veto rule may only be loosened through
+    /// the full approval path, never automatically from counterfactual
+    /// evidence." This function has no branch that returns more than
+    /// [`Decimal::ONE`], so there is no automatic loosening for that finding
+    /// to reach — the guardrail holds structurally, not by care not to call
+    /// this method on that branch.
+    ///
+    /// Separate from [`qip_contracts::degradation::Capability::CounterfactualScoring`],
+    /// whose own doc states that counterfactual scoring's *availability* has
+    /// no trading impact. That is a claim about the scoring process being
+    /// stale or absent; this method acts on a score the process already
+    /// finished and put in the record. Refusing to let a completed finding
+    /// narrow anything would leave §12.3 exactly where `docs/DELIVERY-STATUS.md`
+    /// found it: an accumulator with no caller.
+    fn counterfactual_sizing_multiplier(&self, object_id: &str) -> Decimal {
+        let mut total = 0usize;
+        let mut unfavourable = 0usize;
+        for score in &self.declined_scores {
+            if score.object_id.as_str() == object_id {
+                total += 1;
+                if !score.regret {
+                    unfavourable += 1;
+                }
+            }
+        }
+        if total < COUNTERFACTUAL_SIZING_MIN_SAMPLE {
+            return Decimal::ONE;
+        }
+        let fraction = unfavourable as f64 / total as f64;
+        if fraction >= COUNTERFACTUAL_SIZING_UNFAVOURABLE_FRACTION {
+            COUNTERFACTUAL_SIZING_DISCOUNT
+        } else {
+            Decimal::ONE
+        }
+    }
+
     /// How far a position in `object_id` must be narrowed for the quality of
-    /// the mark behind it, as a fraction in `(0, 1]`.
+    /// the mark behind it and its own counterfactual record, as a fraction in
+    /// `(0, 1]`.
     ///
     /// One for an instrument the valuation plane has no view on — a listed
     /// equity is priced by the market and needs no haircut from here. A
     /// refusal for an instrument it declined to mark, and for one whose mark
     /// has passed its review date: sizing at some reduced fraction of a
     /// fabricated or expired mark is still sizing against a number nobody
-    /// observed.
+    /// observed. Both `Ok` branches are further narrowed by
+    /// [`Self::counterfactual_sizing_multiplier`], never widened by it — the
+    /// multiplier's own range is `(0, 1]`, so multiplying can only shrink
+    /// what this method would otherwise have returned.
     ///
     /// Read by [`Self::sizeable_theses`] on every construction, so this is the
     /// production path rather than a query beside it.
     pub fn sizing_confidence(&self, object_id: &str, now: Timestamp) -> Result<Decimal> {
+        let counterfactual = self.counterfactual_sizing_multiplier(object_id);
         if let Some(refusal) = self.illiquid_unmarkable.get(object_id) {
             return Err(Error::invalid(format!(
                 "{object_id} cannot be sized because the valuation plane holds no defensible mark \
@@ -7932,7 +8036,7 @@ impl Platform {
             )));
         }
         let Some(mark) = self.illiquid_marks.get(object_id) else {
-            return Ok(Decimal::ONE);
+            return Ok(counterfactual);
         };
         if mark.is_stale(now) {
             return Err(Error::invalid(format!(
@@ -7947,12 +8051,13 @@ impl Platform {
         // Statistic meets money here: `confidence` is a decayed weight, an
         // `f64`, and it crosses into `Decimal` exactly once so that the budget
         // it narrows stays exact decimal money from this point on.
-        Decimal::from_f64(confidence).ok_or_else(|| {
+        let base = Decimal::from_f64(confidence).ok_or_else(|| {
             Error::numeric(format!(
                 "the decayed mark confidence {confidence} on {object_id} cannot be represented at \
                  decimal scale"
             ))
-        })
+        })?;
+        Ok(base * counterfactual)
     }
 
     /// Arm the blueprint §23.4 pool gate over the lifecycle ledger, on this
@@ -15283,6 +15388,175 @@ mod unsizeable_thesis_tests {
             assert!(!platform.orders.has_live_fills());
             assert!(!platform.is_live_capable());
         }
+    }
+}
+
+#[cfg(test)]
+mod counterfactual_sizing_tests {
+    //! `Platform::declined_scores` had exactly one caller before this
+    //! change — a test — and blueprint §12.3 named the consequence: "nothing
+    //! consumes the findings... no sizing function is adjusted from a
+    //! counterfactual result." These tests drive
+    //! `Platform::sizing_confidence` directly against synthetic,
+    //! already-scored declined paths pushed straight into the private
+    //! `declined_scores` vector, the same way `unsizeable_thesis_tests`
+    //! above drives `pending_theses` and `price_history` directly: building
+    //! enough real refusals through `submit_order` and enough cycles through
+    //! `score_declined`'s cap to clear
+    //! [`COUNTERFACTUAL_SIZING_MIN_SAMPLE`] in production shape is exactly
+    //! what the integration test in `qip-kernel/tests/learning.rs` proves
+    //! once; this module's job is the arithmetic the discipline actually
+    //! runs.
+
+    use super::*;
+    use qip_core::dec;
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    use qip_financial::universe::Universe;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    const OBJECT: &str = "obj-AAA";
+    const OTHER: &str = "obj-BBB";
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn listed(id: &str, symbol: &str) -> FinancialObject {
+        FinancialObject::builder(
+            ObjectId::from_string(id),
+            symbol,
+            InstrumentType::CommonStock,
+            LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+        )
+        .venue("XNYS")
+        .geography("US")
+        .sector(Sector::InformationTechnology)
+        .price(dec!("100"))
+        .provenance(Provenance::synthetic("test", start()))
+        .build(start())
+        .expect("a listed record")
+    }
+
+    /// Two listed names and nothing else, so `sizing_confidence` takes the
+    /// no-illiquid-mark path for both and the only thing that can narrow
+    /// either is the counterfactual record this module pushes by hand.
+    fn platform() -> Platform {
+        let mut universe = Universe::new();
+        universe.insert(listed(OBJECT, "AAA")).expect("insertable");
+        universe.insert(listed(OTHER, "BBB")).expect("insertable");
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            universe,
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    /// One synthetic, already-scored declined path on [`OBJECT`]. `regret`
+    /// carries the only fact this discipline reads — every other field is a
+    /// well-typed placeholder the arithmetic never looks at.
+    fn score(regret: bool) -> DeclinedScore {
+        DeclinedScore {
+            order_id: OrderId::from_string("ord-test"),
+            object_id: ObjectId::from_string(OBJECT),
+            gate: "pre-trade-risk".to_string(),
+            declined_at: start(),
+            scored_at: start(),
+            would_have_earned: Simulated::ZERO,
+            regret,
+            alternatives: 4,
+        }
+    }
+
+    #[test]
+    fn a_thin_sample_of_unfavourable_declines_does_not_narrow_sizing() {
+        // The failure this guards: recalibrating on noise. Every single
+        // scored path here is unfavourable — the fraction is already at the
+        // discipline's own bar — so if this fails to refuse, the sample-size
+        // floor is what failed, not the fraction.
+        let mut platform = platform();
+        assert!(
+            platform.declined_scores.is_empty(),
+            "the premise failed: a fresh platform already holds scored paths"
+        );
+        for _ in 0..COUNTERFACTUAL_SIZING_MIN_SAMPLE - 1 {
+            platform.declined_scores.push(score(false));
+        }
+        assert_eq!(
+            platform.sizing_confidence(OBJECT, start()),
+            Ok(Decimal::ONE),
+            "a sample below the stated floor narrowed sizing anyway"
+        );
+    }
+
+    #[test]
+    fn a_clear_and_sufficient_pattern_of_unfavourable_declines_narrows_sizing_and_only_that_instrument()
+     {
+        let mut platform = platform();
+        for _ in 0..COUNTERFACTUAL_SIZING_MIN_SAMPLE {
+            platform.declined_scores.push(score(false));
+        }
+        assert_eq!(
+            platform.sizing_confidence(OBJECT, start()),
+            Ok(COUNTERFACTUAL_SIZING_DISCOUNT),
+            "a clear, sufficient pattern of declines that would have lost money did not narrow \
+             sizing"
+        );
+        assert!(
+            COUNTERFACTUAL_SIZING_DISCOUNT < Decimal::ONE,
+            "the discount itself is not a narrowing, so the assertion above proves nothing"
+        );
+        // The instrument beside it, with no record at all, is untouched — the
+        // finding is about this name's own proposals, not a global brake.
+        assert_eq!(
+            platform.sizing_confidence(OTHER, start()),
+            Ok(Decimal::ONE),
+            "an unrelated instrument was narrowed by another instrument's record"
+        );
+    }
+
+    #[test]
+    fn a_sufficient_sample_below_the_unfavourable_threshold_does_not_narrow_sizing() {
+        // Half the sample unfavourable: a control earning its place slightly
+        // more often than not, which blueprint §12.3's own second row treats
+        // as ordinary risk management rather than a finding worth acting on.
+        let mut platform = platform();
+        for i in 0..COUNTERFACTUAL_SIZING_MIN_SAMPLE {
+            platform.declined_scores.push(score(i % 2 == 0));
+        }
+        assert_eq!(
+            platform.sizing_confidence(OBJECT, start()),
+            Ok(Decimal::ONE),
+            "a fraction under the stated bar narrowed sizing anyway"
+        );
+    }
+
+    #[test]
+    fn a_pattern_of_wrongly_declined_paths_never_widens_sizing() {
+        // The mirror image of the narrowing test above: every scored path
+        // says the rule was too tight (blueprint §12.3's first row), which
+        // §12.4's own guardrail forbids acting on automatically ("a veto
+        // rule may only be loosened through the full approval path, never
+        // automatically from counterfactual evidence"). The only way this
+        // method can honour that guardrail unconditionally, rather than by
+        // care taken at every call site, is to have no branch that returns
+        // more than `Decimal::ONE` at all.
+        let mut platform = platform();
+        for _ in 0..(COUNTERFACTUAL_SIZING_MIN_SAMPLE * 3) {
+            platform.declined_scores.push(score(true));
+        }
+        assert_eq!(
+            platform.sizing_confidence(OBJECT, start()),
+            Ok(Decimal::ONE),
+            "overwhelming evidence that a rule is too tight raised sizing confidence above one"
+        );
     }
 }
 
