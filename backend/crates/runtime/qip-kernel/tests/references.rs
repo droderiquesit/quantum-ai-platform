@@ -20,7 +20,7 @@ use qip_financial::universe::Universe;
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::platform::Platform;
 use qip_kernel::references::SourceRevisionDetected;
-use qip_market_ingestion::connector::{FetchDigest, RawEvent};
+use qip_market_ingestion::connector::{Cursor, FetchDigest, RawEvent, SourceConnector};
 use qip_market_ingestion::connectors::{CoinbaseTickerConnector, FrankfurterRatesConnector};
 use qip_observability::Telemetry;
 use qip_observability::metrics::{labels, names};
@@ -64,20 +64,40 @@ const TABLE: &str = r#"{"amount":1.0,"base":"EUR","date":"2026-09-04","rates":{"
 /// a published fixing looks like on the wire.
 const REVISED_TABLE: &str = r#"{"amount":1.0,"base":"EUR","date":"2026-09-04","rates":{"GBP":0.85898,"JPY":181.59,"USD":1.1655}}"#;
 
+/// The subject the campaign and the ledger join on for the dollar fixing:
+/// the connector's own series id, not the vendor's row key.
+fn dollar_series() -> String {
+    FrankfurterRatesConnector::series_id("EUR", "USD")
+}
+
 /// The digest `ConnectorRuntime::ingest` would take over `body`, built the
-/// way the runtime builds it — from the manifest, the locator, the bytes and
-/// the decoded events — so the test exercises the same constructor the
-/// production seam does.
+/// way the runtime builds it — the shipped connector's own `decode` for the
+/// events and its own `map` for the subjects — so the keys in the digest are
+/// the connector's and not this test's. An earlier version hand-wrote
+/// `"USD"` as the event key and queried the ledger by it, which passed
+/// while a real poll's reference was keyed on `EUR/USD@2026-09-04` and no
+/// campaign could find it.
 fn frankfurter_digest(body: &str, retrieved_at: Timestamp) -> Result<FetchDigest> {
     let manifest = FrankfurterRatesConnector::shipped_manifest()?;
-    let events: Vec<RawEvent> = ["GBP", "JPY", "USD"]
-        .into_iter()
-        .map(|key| RawEvent::new(key, table_date(), serde_json::Value::Null))
+    let connector = FrankfurterRatesConnector::new(manifest.clone())?;
+    let payload: serde_json::Value = serde_json::from_str(body)?;
+    let events: Vec<RawEvent> = connector.decode(&payload, &Cursor::beginning())?;
+    let subjects: Vec<String> = events
+        .iter()
+        .map(|event| connector.map(event, retrieved_at))
+        .collect::<Result<Vec<_>>>()?
+        .iter()
+        .filter_map(|record| record.subject_id().map(str::to_string))
         .collect();
-    Ok(
-        FetchDigest::of(&manifest, LOCATOR, body.as_bytes(), &events, retrieved_at)?
-            .with_topic(Topic::MacroUpdated),
-    )
+    Ok(FetchDigest::of(
+        &manifest,
+        LOCATOR,
+        body.as_bytes(),
+        &events,
+        subjects,
+        retrieved_at,
+    )?
+    .with_topic(Topic::MacroUpdated))
 }
 
 /// The platform refuses to reference bytes from a source it holds no
@@ -105,6 +125,7 @@ fn a_digest_from_a_source_this_platform_never_admitted_is_refused_and_records_no
         "/products/BTC-USD/ticker",
         br#"{"trade_id":12345,"price":"61000.10"}"#,
         &events,
+        ["BTC-USD".to_string()],
         start(),
     )?;
 
@@ -150,13 +171,31 @@ fn a_source_that_revises_an_extent_after_use_is_flagged_in_the_ledger_the_log_an
     platform.admit_source(admitted_frankfurter()?);
     let period = DataPeriod::instant(table_date());
 
-    let first = platform.reference_fetch(&frankfurter_digest(TABLE, start())?, start())?;
+    let digest = frankfurter_digest(TABLE, start())?;
+    // Premise: the digest's symbols are the connector's row keys and its
+    // subjects are the connector's series ids — two different sets, and the
+    // reference is keyed on the second.
+    assert!(
+        digest.symbols().contains("EUR/USD@2026-09-04"),
+        "the connector's own key is not what this test expected: {:?}",
+        digest.symbols()
+    );
+    assert!(digest.subjects().contains(&dollar_series()));
+    assert!(!digest.subjects().contains("USD"));
+    let first = platform.reference_fetch(&digest, start())?;
     assert_eq!(first.outcome, LedgerOutcome::First);
     assert_eq!(first.reference.origin(), SourceOrigin::CatalogueAdmitted);
     assert_eq!(first.reference.source_id(), SOURCE);
     assert_eq!(first.reference.locator(), LOCATOR);
+    assert_eq!(
+        first.reference.symbols(),
+        digest.subjects(),
+        "the reference names the subjects a campaign asks by, not the vendor's row keys"
+    );
     assert!(
-        platform.revision_covering(SOURCE, "USD", &period).is_none(),
+        platform
+            .revision_covering(SOURCE, &dollar_series(), &period)
+            .is_none(),
         "premise: nothing is flagged before any revision"
     );
     let logged_before = platform
@@ -176,7 +215,11 @@ fn a_source_that_revises_an_extent_after_use_is_flagged_in_the_ledger_the_log_an
         logged_before,
         "an unchanged re-fetch is not a data-quality event"
     );
-    assert!(platform.revision_covering(SOURCE, "USD", &period).is_none());
+    assert!(
+        platform
+            .revision_covering(SOURCE, &dollar_series(), &period)
+            .is_none()
+    );
 
     // The vendor rewrites the dollar fixing for the same date.
     let latest = later.saturating_add(Duration::from_hours(1));
@@ -194,25 +237,45 @@ fn a_source_that_revises_an_extent_after_use_is_flagged_in_the_ledger_the_log_an
         "the extent contradicted is the one last used, an hour after the first fetch"
     );
 
-    // 1. The flag a research run reads: the symbol and period the revised
-    //    extent covered, and not a period it did not.
+    // 1. The flag a research run reads: the subject and period the revised
+    //    extent covered, and not a period it did not — and by the subject a
+    //    campaign asks with, never by the vendor's row key, which is the join
+    //    that silently failed before subjects rode on the digest.
     let flag = platform
-        .revision_covering(SOURCE, "USD", &period)
-        .expect("a revised extent flags the symbol and period it covered");
+        .revision_covering(SOURCE, &dollar_series(), &period)
+        .expect("a revised extent flags the subject and period it covered");
     assert_eq!(flag.now(), record.now());
     assert!(
         platform
             .revision_covering(
                 SOURCE,
-                "USD",
+                &dollar_series(),
                 &DataPeriod::instant(table_date().saturating_add(Duration::from_days(1)))
             )
             .is_none(),
         "the next day's table was never fetched, so it cannot be flagged"
     );
     assert!(
-        platform.revision_covering(SOURCE, "CHF", &period).is_none(),
-        "a symbol the table never carried cannot be flagged"
+        platform
+            .revision_covering(
+                SOURCE,
+                &FrankfurterRatesConnector::series_id("EUR", "CHF"),
+                &period
+            )
+            .is_none(),
+        "a series the table never carried cannot be flagged"
+    );
+    for hand_written in ["USD", "EUR/USD@2026-09-04"] {
+        assert!(
+            platform
+                .revision_covering(SOURCE, hand_written, &period)
+                .is_none(),
+            "{hand_written:?} is a vendor key, not a subject, and must join nothing"
+        );
+    }
+    assert!(
+        platform.sources_backing(&dollar_series()).contains(SOURCE),
+        "the connector must count as backing the series it serves"
     );
 
     // 2. The hash-chained log holds the revision with both hashes, decodable
@@ -229,7 +292,7 @@ fn a_source_that_revises_an_extent_after_use_is_flagged_in_the_ledger_the_log_an
     assert_eq!(logged.revision.was(), record.was());
     assert_eq!(logged.revision.now(), record.now());
     assert_eq!(logged.revision.source_id(), SOURCE);
-    assert!(logged.revision.symbols().contains("USD"));
+    assert!(logged.revision.symbols().contains(&dollar_series()));
     assert!(platform.event_log().verify_chain().is_ok());
 
     // 3. The series moved, labelled by the door and never by the source id.

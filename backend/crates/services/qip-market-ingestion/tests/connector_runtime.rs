@@ -1136,6 +1136,12 @@ fn a_delivered_poll_carries_a_digest_of_exactly_the_bytes_the_source_served() ->
         vec!["EURGBP".to_string(), "EURUSD".to_string()],
         "the symbols are the source's own keys, in a stable order"
     );
+    assert_eq!(
+        digest.subjects().iter().cloned().collect::<Vec<_>>(),
+        vec!["OBJ00000000000000000TEST".to_string()],
+        "the subjects are this platform's ids for the mapped records, which is what a \
+         reference is found by"
+    );
     assert_eq!(digest.topic(), None, "the runtime does not know the topic");
 
     // The source re-serves the same table. Nothing new is admitted — the

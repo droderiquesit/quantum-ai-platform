@@ -196,6 +196,34 @@ impl SensedRecord {
         }
     }
 
+    /// The identifier this platform files the record under — the key a
+    /// research campaign, a feature store or a reference ledger joins on.
+    ///
+    /// This is the platform's own id for the thing the record is about (an
+    /// `ObjectId`, a macro series id, an entity id), and deliberately not the
+    /// source's key for the event: a trade id, `EUR/USD@2026-09-04` or a
+    /// Kalshi ticker names the vendor's row, and nothing downstream ever
+    /// queries by it. A reference ledger keyed on the vendor's keys held
+    /// references no campaign could find, because the campaign asks by
+    /// `ObjectId` — which is how a revision to a connector's extent came to
+    /// flag nothing. `None` for a news item, which is about entities rather
+    /// than one subject and carries none.
+    pub fn subject_id(&self) -> Option<&str> {
+        match self {
+            Self::Tick(t) => Some(t.object_id.as_str()),
+            Self::Quote(q) => Some(q.object_id.as_str()),
+            Self::Trade(t) => Some(t.object_id.as_str()),
+            Self::Book(b) => Some(b.object_id.as_str()),
+            Self::Bar(b) => Some(b.object_id.as_str()),
+            Self::CorporateAction(a) => Some(a.object_id.as_str()),
+            Self::News(_) => None,
+            Self::Fundamental(f) => Some(&f.entity_id),
+            Self::Macro(m) => Some(&m.series_id),
+            Self::AlternativeData(a) => Some(&a.subject_id),
+            Self::ReferenceData(r) => Some(&r.object_id),
+        }
+    }
+
     /// Subject of the record, for logging and metrics.
     pub fn subject(&self) -> String {
         match self {

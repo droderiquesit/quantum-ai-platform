@@ -34,6 +34,7 @@ use super::quarantine::{Quarantine, QuarantineReason};
 use super::ratelimit::{Admission, RateLimiter};
 use super::transport::{SourceResponse, SourceTransport};
 use super::validate::SchemaGuard;
+use crate::adapter::SensedRecord;
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
 use qip_financial::quality::DataQuality;
@@ -554,26 +555,6 @@ impl ConnectorRuntime {
             return report;
         }
 
-        // The digest of exactly what arrived, taken here and nowhere else:
-        // this is the only seam holding the raw body, the locator it was
-        // fetched from and the decoded events' own instants at once, and it
-        // is taken over *every* decoded event — withheld and duplicate ones
-        // included — because the source served them all and a re-fetch of
-        // the same table must hash the same whether or not the dedup window
-        // has seen it. A body that decoded to nothing yields no digest, and
-        // that is recorded as absence rather than treated as a fault: the
-        // poll's outcome, its checkpoint and its admitted records are exactly
-        // what they would be without this line, which is what keeps the
-        // digest an observation of the poll and not a gate on it.
-        report.digest = super::digest::FetchDigest::of(
-            &self.manifest,
-            target,
-            response.body.as_bytes(),
-            &events,
-            at,
-        )
-        .ok();
-
         // The heartbeat is fed from every event the source produced, including
         // the ones withheld and the ones already seen: the source *did* serve
         // them, and a feed judged only on what got past dedup would look stale
@@ -592,9 +573,24 @@ impl ConnectorRuntime {
         // even though it is included in `newest` for the heartbeat above,
         // whose purpose — telling a dead connector from a dead source — is
         // legitimately served by every event the source produced.
+        // Every decoded event is mapped once, here, before the per-event
+        // gates decide whether it is admitted: the digest below names the
+        // subjects the *source served*, withheld and duplicate events
+        // included, so a table the vendor re-serves in full — the ECB rates
+        // are one — names the same subjects on every poll whether or not the
+        // dedup window admitted anything this time. A mapping that fails is
+        // no subject; for an event the gates admit, `admit` quarantines the
+        // failure exactly as it did when it mapped the event itself.
         let mut cursor_newest: Option<Timestamp> = None;
+        let mut subjects: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for event in &events {
-            let withheld = self.admit(connector, event, at, &mut report);
+            let mapped = connector.map(event, at);
+            if let Ok(record) = &mapped
+                && let Some(subject) = record.subject_id()
+            {
+                subjects.insert(subject.to_string());
+            }
+            let withheld = self.admit(connector, event, mapped, at, &mut report);
             if !withheld {
                 cursor_newest = Some(match cursor_newest {
                     Some(previous) if previous > event.event_time => previous,
@@ -602,6 +598,28 @@ impl ConnectorRuntime {
                 });
             }
         }
+
+        // The digest of exactly what arrived, taken here and nowhere else:
+        // this is the only seam holding the raw body, the locator it was
+        // fetched from, the decoded events' own instants and the subjects
+        // they mapped to at once, and it is taken over *every* decoded event
+        // — withheld and duplicate ones included — because the source served
+        // them all and a re-fetch of the same table must hash the same
+        // whether or not the dedup window has seen it. A body that decoded
+        // to nothing, or mapped to no subject, yields no digest, and that is
+        // recorded as absence rather than treated as a fault: the poll's
+        // outcome, its checkpoint and its admitted records are exactly what
+        // they would be without this line, which is what keeps the digest an
+        // observation of the poll and not a gate on it.
+        report.digest = super::digest::FetchDigest::of(
+            &self.manifest,
+            target,
+            response.body.as_bytes(),
+            &events,
+            subjects,
+            at,
+        )
+        .ok();
 
         let position = cursor_newest.map_or_else(
             || self.cursor.position.clone(),
@@ -626,10 +644,17 @@ impl ConnectorRuntime {
     /// Returns whether the event was withheld, which is what the caller uses
     /// to keep a withheld event's time out of the cursor: see
     /// [`Self::ingest`]'s `cursor_newest`.
+    ///
+    /// `mapped` is the connector's mapping of the event, taken by the caller
+    /// before the gates so the digest can name every subject the source
+    /// served; it is consumed here at the point the mapping used to be made,
+    /// after knowability and dedup, so a withheld or duplicate event's
+    /// mapping failure is still nobody's quarantine.
     fn admit(
         &mut self,
         connector: &dyn SourceConnector,
         event: &RawEvent,
+        mapped: Result<SensedRecord>,
         at: Timestamp,
         report: &mut PollReport,
     ) -> bool {
@@ -647,7 +672,7 @@ impl ConnectorRuntime {
             return false;
         }
 
-        let record = match connector.map(event, at) {
+        let record = match mapped {
             Ok(record) => record,
             Err(error) => {
                 self.hold(

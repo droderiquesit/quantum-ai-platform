@@ -291,6 +291,13 @@ impl DataReference {
     /// constructor that hashes a body it was given — so a hash can only reach
     /// this constructor by having been taken over real bytes. Refuses a digest
     /// that names a different source than the admission does.
+    ///
+    /// The reference's symbols are the digest's *subjects* — this platform's
+    /// ids for what the mapped records are about — and not its `symbols`,
+    /// which are the vendor's own row keys. A campaign asks the ledger by
+    /// `ObjectId`; a ledger keyed on `EUR/USD@2026-09-04` answered no
+    /// campaign, and a connector's revision flagged nothing, until this
+    /// distinction was made.
     pub fn from_digest(
         source: &AdmittedSource,
         digest: &FetchDigest,
@@ -311,7 +318,7 @@ impl DataReference {
             SourceOrigin::CatalogueAdmitted,
             Some(source.category()),
             digest.locator().to_string(),
-            digest.symbols().iter().cloned(),
+            digest.subjects().iter().cloned(),
             DataPeriod::new(start, end)?,
             source.schema().clone(),
             digest.sha256().to_string(),
