@@ -16,6 +16,12 @@ qip-financial.workspace = true
 qip-events.workspace = true
 qip-mesh.workspace = true
 qip-market-ingestion.workspace = true
+# The fallback series (§22.1) holds `qip_market::bar::Bar`s, and the
+# campaign manifest attaches a `qip_numerics::sketch::ErrorBound` to a
+# sketched statistic (§22.2). Both are workspace libraries this crate
+# already reached transitively; naming them is what lets the types be spelled.
+qip-market.workspace = true
+qip-numerics.workspace = true
 
 [lints]
 workspace = true

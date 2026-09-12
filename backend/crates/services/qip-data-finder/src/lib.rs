@@ -76,6 +76,7 @@ pub mod quality;
 pub mod reference;
 pub mod registration;
 pub mod replacement;
+pub mod retention;
 pub mod robots;
 pub mod schema;
 pub mod scoring;
@@ -88,7 +89,7 @@ pub use admission::{
 };
 pub use campaign::{
     CacheBound, CampaignManifest, ConcentrationVerdict, FetchCampaign, ManifestEntry,
-    ResearchCache, assess_concentration,
+    ResearchCache, SketchedStatistic, assess_concentration,
 };
 pub use category::{ContentSignal, SourceCategory};
 pub use coverage::{CoverageGap, CoverageMatch, SourceCoverage, SourceRegion, UpdateFrequency};
@@ -117,6 +118,7 @@ pub use registration::{
     RegistrationStanding,
 };
 pub use replacement::{PartialCandidate, RankedReplacement, ReplacementOutcome};
+pub use retention::{FallbackSeries, RetainOutcome, Retention, RetentionClass};
 pub use robots::{PathVerdict, RobotsGroup, RobotsPolicy, RobotsRule};
 pub use schema::{DriftSeverity, FieldRetype, FieldType, SchemaDrift, SourceSchema};
 pub use scoring::{Routing, RoutingClass, SourceScores};

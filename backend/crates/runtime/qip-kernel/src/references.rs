@@ -222,3 +222,81 @@ impl Platform {
         self.references.sources_backing(symbol)
     }
 }
+
+impl Platform {
+    /// §22.1's fallback series, as the platform holds it.
+    pub fn fallback_series(&self) -> &qip_data_finder::retention::FallbackSeries {
+        &self.fallback
+    }
+
+    /// The daily bars retained for `subject`, oldest first — what a research
+    /// campaign assembles from when the subject's own stream has withdrawn
+    /// its history. Empty for a subject no daily bar has ever been observed
+    /// for, which is every subject on a minute-bar feed.
+    pub fn fallback_bars(&self, subject: &str) -> &[qip_market::bar::Bar] {
+        self.fallback.bars(subject)
+    }
+}
+
+/// The event-log record of a research campaign closing: the manifest that
+/// outlives the cache, and what the campaign found while it was open.
+///
+/// §22.4's arrow ends "cache expires and is deleted. What persists: the
+/// manifest and the results", and its table's mitigation for a regulatory
+/// demand is that "the manifest proves what was used at the time". A manifest
+/// returned from `FetchCampaign::close` and dropped by its caller would prove
+/// nothing to anyone; this record is where it goes. Filed under
+/// [`Topic::LearningCompleted`], the LEARN group the event log retains
+/// permanently, because a manifest an audit may demand in three years is not
+/// one the log may evict to make room.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResearchCampaignClosed {
+    pub campaign_id: String,
+    /// The instrument the campaign assembled a research window for.
+    pub subject: String,
+    pub opened_at: Timestamp,
+    pub closed_at: Timestamp,
+    /// Every extent the campaign fetched, the statistics it sketched with
+    /// their declared bounds, and which entries a revision flagged.
+    pub manifest: qip_data_finder::campaign::CampaignManifest,
+    /// Entries a revision flagged — on the ledger before the campaign opened
+    /// or during it. Zero is "clean", not "unchecked": every entry was
+    /// checked against the ledger.
+    pub flagged: usize,
+    /// Whether the subject's data class had enough independent backing to
+    /// be promoted past validation (§22.3, rule 31).
+    pub concentration: qip_data_finder::campaign::ConcentrationVerdict,
+    /// Whether the window came from §22.1's fallback series because the
+    /// subject's own stream no longer held enough history.
+    pub fallback_used: bool,
+}
+
+impl EventBody for ResearchCampaignClosed {
+    const TOPIC: Topic = Topic::LearningCompleted;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+impl Platform {
+    /// Journal a closed campaign's manifest and count the close.
+    ///
+    /// The record is appended before the metric moves, for the reason
+    /// [`Platform::record_reference`] gives; a campaign the log does not hold
+    /// is one whose manifest nobody can later be shown.
+    pub fn journal_campaign(
+        &mut self,
+        closed: ResearchCampaignClosed,
+        now: Timestamp,
+    ) -> Result<()> {
+        let outcome = if closed.flagged > 0 {
+            "flagged"
+        } else {
+            "clean"
+        };
+        self.journal_record(closed, "kernel/campaign", now)?;
+        self.telemetry.metrics.count(
+            names::RESEARCH_CAMPAIGNS_CLOSED,
+            labels([("outcome", outcome)]),
+        );
+        Ok(())
+    }
+}

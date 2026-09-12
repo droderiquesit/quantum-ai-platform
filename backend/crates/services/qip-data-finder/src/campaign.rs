@@ -58,11 +58,85 @@
 //! the same count under §22.4 and the row is `PARTIAL`, not `REACHED`, for
 //! exactly that reason.
 
+use crate::ledger::RevisionRecord;
 use crate::reference::{DataReference, RevisionCheck};
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
+use qip_numerics::sketch::ErrorBound;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// A statistic a campaign estimated with a sketch rather than counted, and
+/// the error the sketch declares for it — §22.4's "bounds are declared and
+/// monitored", made a field on the manifest so the number never travels
+/// without the bound that qualifies it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SketchedStatistic {
+    /// What was estimated, e.g. `bars_per_subject`.
+    name: String,
+    /// What it was estimated for, e.g. the subject.
+    key: String,
+    estimate: u64,
+    /// Everything the sketch counted, which the bound is a fraction of.
+    total: u64,
+    bound: ErrorBound,
+}
+
+impl SketchedStatistic {
+    pub fn new(
+        name: impl Into<String>,
+        key: impl Into<String>,
+        estimate: u64,
+        total: u64,
+        bound: ErrorBound,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            key: key.into(),
+            estimate,
+            total,
+            bound,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub const fn estimate(&self) -> u64 {
+        self.estimate
+    }
+
+    pub const fn total(&self) -> u64 {
+        self.total
+    }
+
+    pub const fn bound(&self) -> ErrorBound {
+        self.bound
+    }
+
+    /// The most the estimate may exceed the truth by, at the volume actually
+    /// counted.
+    pub fn absolute_error(&self) -> f64 {
+        self.bound.absolute_error(self.total)
+    }
+
+    pub fn describe(&self) -> String {
+        format!(
+            "{} for {}: {} (never below the truth, above it by at most {:.1} with probability \
+             {})",
+            self.name,
+            self.key,
+            self.estimate,
+            self.absolute_error(),
+            1.0 - self.bound.delta()
+        )
+    }
+}
 
 /// How long a fetched extract may live in a campaign's cache, and how many
 /// extracts the cache may hold at once.
@@ -227,6 +301,16 @@ impl ManifestEntry {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CampaignManifest {
     entries: Vec<ManifestEntry>,
+    /// Statistics the campaign sketched rather than counted, each with its
+    /// declared bound. Empty for a campaign that sketched nothing.
+    #[serde(default)]
+    statistics: Vec<SketchedStatistic>,
+    /// Subjects whose window came from §22.1's fallback series because the
+    /// subject's own stream no longer held enough history — the "vendor
+    /// withdraws historical access" mitigation, recorded where an audit can
+    /// see that the insurance was drawn on.
+    #[serde(default)]
+    fallbacks: BTreeSet<String>,
 }
 
 impl CampaignManifest {
@@ -236,6 +320,37 @@ impl CampaignManifest {
             fetched_at,
             flagged: None,
         });
+    }
+
+    /// Flag every entry a ledger-detected revision contradicts: same
+    /// source, a symbol in common, overlapping periods. The ledger sees
+    /// across campaigns where [`Self::flag_revision`] sees within one, and a
+    /// campaign that read a window the ledger already knew to be revised
+    /// must say so on its own manifest rather than leave the reader to join
+    /// two records.
+    fn flag_revised(&mut self, revision: &RevisionRecord) {
+        let check = RevisionCheck::Revised {
+            was: revision.was().to_string(),
+            now: revision.now().to_string(),
+        };
+        for entry in self.entries.iter_mut().filter(|entry| {
+            entry.reference.source_id() == revision.source_id()
+                && entry
+                    .reference
+                    .symbols()
+                    .iter()
+                    .any(|symbol| revision.covers(symbol, &entry.reference.range()))
+        }) {
+            entry.flagged = Some(check.clone());
+        }
+    }
+
+    pub fn statistics(&self) -> &[SketchedStatistic] {
+        &self.statistics
+    }
+
+    pub fn fallbacks(&self) -> &BTreeSet<String> {
+        &self.fallbacks
     }
 
     /// Flag every entry fetched for `locator` as revised — a later re-fetch
@@ -353,6 +468,23 @@ impl FetchCampaign {
         }
         self.cache.insert(reference, bytes.to_vec(), now)?;
         Ok(check)
+    }
+
+    /// Flag every manifest entry a revision the ledger detected contradicts.
+    /// See [`CampaignManifest::flag_revised`].
+    pub fn flag_revised(&mut self, revision: &RevisionRecord) {
+        self.manifest.flag_revised(revision);
+    }
+
+    /// Record a statistic this campaign estimated with a sketch, with the
+    /// bound the sketch declares.
+    pub fn attach_statistic(&mut self, statistic: SketchedStatistic) {
+        self.manifest.statistics.push(statistic);
+    }
+
+    /// Record that `subject`'s window was drawn from the fallback series.
+    pub fn record_fallback(&mut self, subject: impl Into<String>) {
+        self.manifest.fallbacks.insert(subject.into());
     }
 
     /// Close the campaign. The cache is dropped here — deleted, per the

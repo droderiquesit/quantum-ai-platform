@@ -14,6 +14,7 @@ pub mod lp;
 pub mod matrix;
 pub mod qp;
 pub mod search;
+pub mod sketch;
 pub mod stats;
 pub mod vector;
 

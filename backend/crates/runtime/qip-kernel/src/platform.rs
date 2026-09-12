@@ -122,7 +122,7 @@ use qip_lifecycle::corridor::{
     CorridorRoute, CorridorStanding as LifecycleCorridorStanding, CorridorSubject,
 };
 use qip_lifecycle::trials::TrialBook;
-use qip_market::bar::Bar;
+use qip_market::bar::{Bar, Interval};
 use qip_market::corporate_action::{CorporateAction, CorporateActionKind};
 use qip_market::snapshot::MarketSnapshot;
 use qip_market_ingestion::adapter::SensedRecord;
@@ -292,6 +292,13 @@ pub struct Platform {
     /// references. The consequence of a revision lives in
     /// `crate::references`.
     pub(crate) references: qip_data_finder::ledger::ReferenceLedger,
+    /// §22.1's fallback series: the daily bars the platform has observed,
+    /// per instrument, under three stated bounds — insurance against a
+    /// source withdrawing its archive, and what the research campaign falls
+    /// back to when a subject's own history is gone. Fed from
+    /// [`Platform::observe`] for daily bars only; every other interval is
+    /// the transient class and is not retained here.
+    pub(crate) fallback: qip_data_finder::retention::FallbackSeries,
     /// What datasets *do* exist. Fed from the finder's own registrations, so
     /// the two answers cannot drift apart.
     catalog: Catalog,
@@ -2911,6 +2918,7 @@ impl Platform {
             data_finder,
             admitted_sources: BTreeMap::new(),
             references: qip_data_finder::ledger::ReferenceLedger::bounded(),
+            fallback: qip_data_finder::retention::FallbackSeries::bounded(),
             catalog: Catalog::new(),
             chain: None,
             confirmations: Confirmations::exactly(config.chain_confirmations),
@@ -5427,6 +5435,19 @@ impl Platform {
                         self.bar_history.entry(key).or_default(),
                         bar.as_ref().clone(),
                     );
+                    // §22.1's fallback series: a daily bar is insurance
+                    // against the source withdrawing its archive and is kept
+                    // under the series' three bounds; any finer interval is
+                    // the transient class and is not. A refusal — the
+                    // instrument bound reached — is a capture problem the
+                    // cycle report carries rather than a silent gap in the
+                    // insurance.
+                    if bar.interval == Interval::Day
+                        && let Err(error) = self.fallback.retain(bar.as_ref().clone())
+                    {
+                        self.capture_problems
+                            .push(format!("fallback series: {}", error.message()));
+                    }
                     // The desk's series, from the same bar at the same
                     // instant. The guard is taken and released before the
                     // rebuild below asks for the write lock again.

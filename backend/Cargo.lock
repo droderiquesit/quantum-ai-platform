@@ -270,8 +270,10 @@ dependencies = [
  "qip-core",
  "qip-events",
  "qip-financial",
+ "qip-market",
  "qip-market-ingestion",
  "qip-mesh",
+ "qip-numerics",
  "serde",
  "serde_json",
 ]
@@ -302,6 +304,7 @@ dependencies = [
  "qip-simulation-engine",
  "qip-storage",
  "qip-strategy",
+ "qip-streaming",
  "qip-training",
  "qip-transport",
  "serde",
