@@ -139,6 +139,36 @@ locals {
         }
       },
     )
+    # The deep brain's two optional files, following the API's three above
+    # rather than a convention of their own: a root variable names a path in
+    # this repository or renders nothing, read with file() so the bytes a
+    # revision mounts are the bytes in the reviewed commit.
+    deepbrain = merge(
+      # The §23.4 horizon policy `load_central_horizons` reads. Unset,
+      # `CentralPlane::arm_horizons` stays unarmed for want of a stated
+      # policy — this desk's state since the loader gained a production
+      # caller, and its state before that for want of a caller at all.
+      var.central_horizons_file == null ? {} : {
+        central-horizons = {
+          content           = file("${path.module}/../../${var.central_horizons_file}")
+          file_name         = "central-horizons.json"
+          content_type      = "application/json"
+          env_file_variable = "QIP_CENTRAL_HORIZONS_PATH"
+        }
+      },
+      # The source-discovery candidate list `load_source_candidates` reads.
+      # Unset, `DiscoveryDesk` runs whatever cadence `deepbrain_discover_every`
+      # names against an empty list, which is what every deployment ran
+      # before this caller existed and what it still runs today.
+      var.source_candidates_file == null ? {} : {
+        source-candidates = {
+          content           = file("${path.module}/../../${var.source_candidates_file}")
+          file_name         = "source-candidates.json"
+          content_type      = "application/json"
+          env_file_variable = "QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH"
+        }
+      },
+    )
   }
 
   cloud_run_catalogue = {
@@ -398,19 +428,40 @@ locals {
       # Scraped, once a collector digest is pinned, for the same series the
       # fast brain records from its own cycle.
       metrics_collector = true
-      env = {
-        QIP_DEEPBRAIN_HEALTH_ADDRESS = "0.0.0.0:8080"
-        QIP_STORAGE_TARGET           = var.storage_target
-        QIP_AUTONOMY_CEILING         = var.autonomy_ceiling
-        QIP_CYCLE_INTERVAL_SECONDS   = var.cycle_interval_seconds
-      }
+      env = merge(
+        {
+          QIP_DEEPBRAIN_HEALTH_ADDRESS = "0.0.0.0:8080"
+          QIP_STORAGE_TARGET           = var.storage_target
+          QIP_AUTONOMY_CEILING         = var.autonomy_ceiling
+          QIP_CYCLE_INTERVAL_SECONDS   = var.cycle_interval_seconds
+        },
+        # The source-discovery cadence `DiscoveryConfig::from_lookup` reads.
+        # Unset, the desk runs its own default of zero — no pass at all,
+        # the state every deployment is in today. A reviewed non-null value
+        # here is an operator's explicit cadence, never a default this
+        # catalogue chooses for them.
+        var.deepbrain_discover_every == null ? {} : {
+          QIP_DEEPBRAIN_DISCOVER_EVERY = var.deepbrain_discover_every
+        },
+      )
+      # The universe every root reads, and whatever optional files the
+      # tfvars named for this workload — the §23.4 horizon policy and the
+      # source-discovery candidate list. A comprehension for the same reason
+      # the API's is one: the block still opens with `config_files = {`, and
+      # `catalogue_optional_config_files` in the acceptance suite reads the
+      # mount out of the lines under that opening.
       config_files = {
-        universe = {
-          content           = local.universe_catalogue
-          file_name         = "universe.json"
-          content_type      = "application/json"
-          env_file_variable = "QIP_UNIVERSE_PATH"
-        }
+        for name, document in merge(
+          {
+            universe = {
+              content           = local.universe_catalogue
+              file_name         = "universe.json"
+              content_type      = "application/json"
+              env_file_variable = "QIP_UNIVERSE_PATH"
+            }
+          },
+          local.optional_config_files.deepbrain,
+        ) : name => document
       }
       secret_mounts = {
         capital-envelope-key = {

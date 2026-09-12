@@ -62,19 +62,28 @@ execution_nodes = {}
 # and see dev/terraform.tfvars for what setting it requires — a digest and a
 # `management` entry in trust_zones above, neither declared here.
 
-# The three optional files the API can be given stay unset here, at their
-# default of null: venue_registrations_file, because nobody has registered
-# with a venue from this environment and a record is a named person's act
-# (docs/operations/registering-a-venue.md); wallet_statement_file, because
-# this environment trades on the in-process simulated venue (ADR 0003), which
-# issues no custodian statement to mount; and capital_fabric_file, because
-# that same simulated venue gives a corridor nowhere to carry capital to, so
-# declaring a destination would journal an act nobody performed. Unset renders
-# no configuration file and therefore no variable, so the API's registry holds
-# nobody, /wallet answers `assembled: false` and /transfer-gate answers
-# `last_assessment: null` — see dev/terraform.tfvars for the whole argument,
-# including why a committed statement is a same-day act and why a fabric
-# declaration is appended to rather than edited.
+# The five optional files the API and the deep brain can be given stay unset
+# here, at their default of null: venue_registrations_file, because nobody
+# has registered with a venue from this environment and a record is a named
+# person's act (docs/operations/registering-a-venue.md); wallet_statement_file,
+# because this environment trades on the in-process simulated venue (ADR
+# 0003), which issues no custodian statement to mount; and capital_fabric_file,
+# because that same simulated venue gives a corridor nowhere to carry capital
+# to, so declaring a destination would journal an act nobody performed. Unset
+# renders no configuration file and therefore no variable, so the API's
+# registry holds nobody, /wallet answers `assembled: false` and
+# /transfer-gate answers `last_assessment: null` — see dev/terraform.tfvars
+# for the whole argument, including why a committed statement is a same-day
+# act and why a fabric declaration is appended to rather than edited.
+#
+# central_horizons_file and source_candidates_file — the deep brain's own
+# pair — stay null for the same reason: no strategy run here has a stated
+# §23.4 horizon to declare, and nobody has curated a source-discovery
+# candidate list for a probe that refuses every call until a TLS-capable
+# transport is authorised (ADR 0009). deepbrain_discover_every stays null
+# alongside them, on purpose: a cadence with no candidate list to assess
+# would run a pass that decides about nothing, so the pair is turned on
+# together or not at all — see dev/terraform.tfvars for the whole argument.
 
 enable_bigquery      = false
 enable_cloud_storage = false

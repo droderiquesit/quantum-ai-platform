@@ -276,13 +276,16 @@ github_repository = "droderiquesit/quantum-ai-platform"
 # same sha256, so the tag had not moved under the reviewed line.
 vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9e105491d58d29ac2739560b3b"
 
-# --- The three optional files the API is given, and why none is named here ---
+# --- The five optional files the API and the deep brain can be given, and
+# --- why none is named here ---
 #
 # `venue_registrations_file`, `wallet_statement_file` and
 # `capital_fabric_file` stay at their default
 # of null, so `catalogue.tf` renders no configuration file for either and the
 # API sees neither QIP_VENUE_REGISTRATIONS_PATH nor QIP_WALLET_STATEMENT_PATH.
-# Absent is a state each variable documents, not an omission:
+# `central_horizons_file` and `source_candidates_file` — the deep brain's own
+# pair, following the same convention — stay null for the same reason, argued
+# below. Absent is a state each variable documents, not an omission:
 #
 # venue_registrations_file = "data/registrations/venue-registrations.json"
 #   would mount the records the API's registry ships with. Nobody has
@@ -323,6 +326,29 @@ vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7ec
 #   What it cannot do, whatever it says: move money. ADR 0021 permits the
 #   deterministic gate and refuses the engine behind it, an admitted verdict
 #   carries no way to execute, and no code in this workspace consumes one.
+#
+# central_horizons_file = "data/horizons/<the desk's §23.4 policy>.json"
+#   would mount how the whole-book risk budget divides across the four
+#   blueprint horizons and which horizon each strategy sits at, arming
+#   `CentralPlane::arm_horizons` — the gate that stays unarmed without one.
+#   No strategy run from this environment has been given a stated horizon, so
+#   there is no claim to declare; setting this without one would arm a gate
+#   against a policy nobody actually holds.
+#
+# source_candidates_file = "data/sources/<curated candidate list>.json"
+#   would mount a list of hosts worth asking the source-discovery desk about
+#   (blueprint §7.4-§7.6.2). Nobody has curated one, and the one production
+#   probe refuses every call by name until a TLS-capable transport is
+#   authorised (ADR 0009) — so naming a list today would ask the desk to
+#   assess candidates nobody reviewed, for a probe that answers every one of
+#   them "refused".
+#
+# deepbrain_discover_every = "<a whole number of cycles, or explicitly "0">"
+#   would turn on the source-discovery pass on its own cadence
+#   (QIP_DEEPBRAIN_DISCOVER_EVERY). Left null, the desk keeps its own default
+#   of zero — no pass — which matches the fact that `source_candidates_file`
+#   above is also null: a cadence with nothing to assess would run and decide
+#   about nothing, so the pair is turned on together or not at all.
 
 # --- Customer identity ------------------------------------------------------
 # Identity Platform for customer sign-in, activated once real hostnames

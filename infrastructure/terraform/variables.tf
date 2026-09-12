@@ -525,6 +525,112 @@ variable "capital_fabric_file" {
   }
 }
 
+variable "central_horizons_file" {
+  description = <<-EOT
+    A committed JSON §23.4 horizon policy the deep brain mounts and reads as
+    `QIP_CENTRAL_HORIZONS_PATH`, or null where the desk has stated no view on
+    how the whole-book risk budget divides across the four blueprint horizons
+    or which horizon each strategy sits at.
+
+    Same convention as the universe, the registrations, the statement and the
+    capital fabric above: a path in this repository, read with `file()`. Null
+    renders no variable, and `CentralPlane::arm_horizons` — the gate this
+    document is the only production input to — stays unarmed for want of a
+    stated policy, exactly the state every deployment has been in since
+    `PlatformConfig::with_central` gained a caller with nothing to overlay.
+
+    What a person setting this must know: the policy is overlaid onto
+    `CentralConfig::default()` rather than replacing it, so a file need only
+    state what this desk actually claims, and a claim naming a strategy the
+    desk has not promoted to a capital-holding rung is refused separately
+    (§23.4). Present but malformed — not valid JSON, or valid JSON that does
+    not hold a `HorizonPolicy` — stops the process at start-up rather than
+    arming the gate on a policy nobody actually stated, the same posture
+    `wallet_statement_file` and `capital_fabric_file` already take.
+
+    Every environment leaves this null today: no strategy here has been given
+    a stated horizon, and a policy naming one would arm a gate against a claim
+    nobody made.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.central_horizons_file == null ? true : can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.central_horizons_file))
+    error_message = "The central horizons file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read."
+  }
+}
+
+variable "source_candidates_file" {
+  description = <<-EOT
+    A committed JSON list of source-discovery candidates (blueprint
+    §7.4-§7.6.2) the deep brain mounts and reads as
+    `QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH`, or null where no candidate has
+    been named.
+
+    Same convention as the universe and the files above: a path in this
+    repository, read with `file()`, deserialised as
+    `Vec<qip_data_finder::source::SourceCandidate>`. Null renders no variable
+    and `DiscoveryDesk` runs its pass, on whatever cadence
+    `deepbrain_discover_every` names, against an empty list — the same
+    outcome as today, before this caller existed at all. Present but
+    malformed stops the process rather than running discovery against half
+    the candidates the desk believed it stated.
+
+    What a person setting this must know: this is a list of hosts worth
+    asking about, not a registration and not a source the catalogue admits.
+    Nothing in this workspace discovers a candidate on its own — the CRAWL
+    stage blueprint §7.4 also asks for stays unbuilt — and the one production
+    probe, `qip_data_finder::probe::NetworkProbe`, refuses every call by name
+    until a TLS-capable transport is authorised (ADR 0009), so naming a
+    candidate here produces a recorded refusal rather than a network call:
+    honest evidence that the wiring runs, not a live fetch.
+
+    Every environment leaves this null today: no candidate list has been
+    curated, and naming one would ask the desk to assess sources nobody has
+    reviewed.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.source_candidates_file == null ? true : can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.source_candidates_file))
+    error_message = "The source-candidates file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read."
+  }
+}
+
+variable "deepbrain_discover_every" {
+  description = <<-EOT
+    How many deep-brain research cycles run between source-discovery passes,
+    read as `QIP_DEEPBRAIN_DISCOVER_EVERY`, or null to leave the desk's own
+    default of zero — no discovery pass at all — in force.
+
+    A string because it is an environment value, the same reason
+    `cycle_interval_seconds` is one; `DiscoveryConfig::from_lookup` parses it
+    as a cycle count and stops the process on anything else, naming the value
+    it was given, rather than silently disabling the pass. Zero is a caller
+    stating "never" rather than "unset" and is accepted here for the same
+    reason: an operator who means it should be able to say so as a reviewed
+    value rather than by deleting the line.
+
+    Null today in every environment, and every environment also leaves
+    `source_candidates_file` null, so a cadence with nothing to assess would
+    run a pass that finds nothing to decide about — turning this on without a
+    candidate list is a knob with no effect, and turning on both together is
+    the reviewed pair.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.deepbrain_discover_every == null ? true : can(regex("^[0-9]+$", var.deepbrain_discover_every))
+    error_message = "The discovery cadence is a whole, non-negative number of cycles; zero disables the pass explicitly rather than by omission."
+  }
+}
+
 variable "notification_channels" {
   description = "Where alerts are sent. An alert with nowhere to go is not an alert."
   type        = list(string)
