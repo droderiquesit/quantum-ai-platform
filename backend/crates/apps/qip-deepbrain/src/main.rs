@@ -396,6 +396,37 @@ fn run() -> Result<()> {
         println!("  tape:             {summary}");
     }
 
+    // Source discovery (§7.4-§7.6.2): `Platform::assess_sources` wraps
+    // `qip_data_finder::DataFinder::assess`, which was built, tested and
+    // reached by nothing outside this crate's own tests and
+    // `qip-acceptance`'s end-to-end suite before this. The candidate list is
+    // stated by an operator, in the same shape the universe and the
+    // capital-fabric declaration already are — this node discovers nothing
+    // on its own — and the probe is `NetworkProbe`, which refuses every
+    // call by name until a TLS-capable transport is authorised (ADR 0009).
+    let discovery_config =
+        qip_deepbrain::discovery::DiscoveryConfig::from_lookup(&|name| std::env::var(name).ok())
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let source_candidates = load_source_candidates()?;
+    println!(
+        "  discovery:        {}",
+        if discovery_config.every_cycles == 0 {
+            "disabled (QIP_DEEPBRAIN_DISCOVER_EVERY=0)".to_string()
+        } else {
+            format!(
+                "every {} cycle(s) against {} declared candidate(s); every probe call refuses \
+                 until a TLS-capable transport is linked in (ADR 0009), so a pass records why \
+                 rather than nothing",
+                discovery_config.every_cycles,
+                source_candidates.len()
+            )
+        }
+    );
+    evolution = evolution.with_discovery(qip_deepbrain::discovery::DiscoveryDesk::new(
+        discovery_config,
+        source_candidates,
+    ));
+
     let summary = node::run(
         &mut platform,
         &archive,
@@ -435,6 +466,15 @@ fn run() -> Result<()> {
                         );
                     }
                 }
+            }
+            if let Some(assessment) = &outcome.discovery {
+                println!(
+                    "  discovery: {} candidate(s) assessed, {} registered, {} catalogue \
+                     problem(s)",
+                    assessment.decisions.len(),
+                    assessment.registered(),
+                    assessment.catalogue_problems.len()
+                );
             }
             println!(
                 "  {:>10} {:>4}  {}s against a {}s cadence{}",
@@ -564,6 +604,47 @@ fn parse_central_horizons(text: &str, path: &str) -> Result<HorizonPolicy> {
     serde_json::from_str(text).map_err(|error| {
         Error::invalid(format!(
             "configuration: {path} does not hold a valid §23.4 horizon policy: {error}"
+        ))
+    })
+}
+
+/// The source-discovery candidate list (§7.4-§7.6.2) `QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH`
+/// names, or none where the variable is unset or empty — every deployment
+/// today.
+///
+/// A candidate the finder has not yet assessed, not a registered source: the
+/// crawl stage §7.4 asks for does not exist, so nothing in this workspace
+/// discovers one on its own, and this file is an operator's list of hosts
+/// worth asking about, in exactly the shape `DataFinder::assess` already
+/// takes. Absent, this changes nothing (an empty list, the same as every
+/// deployment runs on today); present but malformed, it stops the process
+/// rather than running discovery against half the candidates.
+fn load_source_candidates() -> Result<Vec<qip_data_finder::source::SourceCandidate>> {
+    let path = std::env::var("QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        Error::io(format!(
+            "configuration: QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH names {path}, which cannot be \
+             read: {error}"
+        ))
+    })?;
+    parse_source_candidates(&text, &path)
+}
+
+/// The parsing half of [`load_source_candidates`], split out for the same
+/// reason [`parse_central_horizons`] is: no test here may set the
+/// environment variable the caller reads.
+fn parse_source_candidates(
+    text: &str,
+    path: &str,
+) -> Result<Vec<qip_data_finder::source::SourceCandidate>> {
+    serde_json::from_str(text).map_err(|error| {
+        Error::invalid(format!(
+            "configuration: {path} does not hold a valid source-candidate list: {error}"
         ))
     })
 }
@@ -723,6 +804,90 @@ mod tests {
         );
         assert!(
             error.message().contains("§23.4"),
+            "the refusal does not say what kind of document was expected: {}",
+            error.message()
+        );
+    }
+
+    #[test]
+    fn a_document_load_source_candidates_would_parse_reaches_assess_sources() -> Result<()> {
+        use qip_contracts::governance::Usage;
+        use qip_core::Currency;
+        use qip_data_finder::coverage::{SourceCoverage, SourceRegion, UpdateFrequency};
+        use qip_data_finder::endpoint::{AccessMechanism, AuthRequirement, SourceEndpoint};
+        use qip_data_finder::legal::{LicensingPosture, SourceLicense};
+        use qip_data_finder::quality::SourceCost;
+        use qip_data_finder::source::{SourceCandidate, SourceIdentity};
+        use qip_events::Topic;
+        use qip_financial::asset_class::AssetClass;
+
+        // Written through the Rust type and re-serialised, rather than typed
+        // as a JSON literal, so this test cannot drift from `SourceCandidate`'s
+        // own shape the way a hand-copied fixture could.
+        let candidate = SourceCandidate::new(
+            SourceIdentity::new("test-source", "test feed", "Example Data Ltd")?,
+            SourceEndpoint::parse(
+                "https://test-source.example/quotes",
+                AccessMechanism::Rest {
+                    auth: AuthRequirement::None,
+                    incremental_parameter: None,
+                    page_size: 100,
+                },
+            )?,
+            SourceCoverage::new(
+                [AssetClass::Equity],
+                [SourceRegion::Europe],
+                ["EU0001".to_string()],
+                UpdateFrequency::Minutely,
+            )?,
+            LicensingPosture::declared(SourceLicense::new(
+                "qip-discovery-test-terms",
+                [Usage::Derive],
+            )?),
+            SourceCost::free(Currency::USD),
+            SourceRegion::Europe,
+            [Topic::MarketQuote],
+            "test",
+            start(),
+        )?;
+        let text = serde_json::to_string(&vec![candidate]).expect("a candidate list serialises");
+        let parsed = parse_source_candidates(&text, "test-fixture")
+            .expect("the document this test wrote parses");
+        assert_eq!(
+            parsed.len(),
+            1,
+            "one candidate went in; {} came out",
+            parsed.len()
+        );
+
+        // The wiring claim: a parsed list actually reaches
+        // `Platform::assess_sources`, through `DiscoveryDesk`, on its own
+        // cadence -- one decision comes back per candidate even though the
+        // network probe refuses every call, because a refusal is a decision
+        // about the candidate and not the absence of one.
+        let mut platform = platform_with(CentralConfig::default())?;
+        let mut desk = qip_deepbrain::discovery::DiscoveryDesk::new(
+            qip_deepbrain::discovery::DiscoveryConfig { every_cycles: 1 },
+            parsed,
+        );
+        let assessment = desk
+            .maybe_run(&mut platform, 1, start())?
+            .ok_or_else(|| Error::not_found("a pass on its own cadence produced nothing"))?;
+        assert_eq!(assessment.decisions.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn a_source_candidate_document_that_is_not_json_is_refused_by_name() {
+        let error = parse_source_candidates("not json", "/etc/qip/candidates.json")
+            .expect_err("malformed JSON parsed as a candidate list");
+        assert!(
+            error.message().contains("/etc/qip/candidates.json"),
+            "the refusal does not name the file that failed to parse: {}",
+            error.message()
+        );
+        assert!(
+            error.message().contains("source-candidate"),
             "the refusal does not say what kind of document was expected: {}",
             error.message()
         );

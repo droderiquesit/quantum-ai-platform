@@ -43,6 +43,12 @@ qip-quant.workspace = true
 qip-numerics.workspace = true
 qip-lifecycle.workspace = true
 qip-contracts.workspace = true
+# Source discovery (§7.4-§7.6.2): ASSESS, REGISTER and SCORE, all
+# workspace-internal. `Platform::assess_sources` already wraps
+# `DataFinder::assess`; this root is where a candidate list and a probe meet
+# it on a cadence, the same composition-root role this crate already plays
+# for the evolution loop.
+qip-data-finder.workspace = true
 # The drain's HTTP client (ADR 0028). A workspace-internal crate under
 # libs/, so this is an inward edge and not a third-party dependency — but it
 # is a real one: this root now holds an outbound client it did not hold

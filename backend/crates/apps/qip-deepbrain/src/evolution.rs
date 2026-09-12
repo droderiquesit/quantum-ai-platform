@@ -253,6 +253,11 @@ pub struct EvolutionEngine {
     desk: SuccessionDesk,
     learning: LearningDesk,
     stats: EvolutionStats,
+    /// Source discovery (§7.4-§7.6.2), on its own cadence. `None` is the
+    /// default and every deployment today: this engine states no view on
+    /// where a candidate list comes from, and [`Self::with_discovery`] is
+    /// the one door that attaches one.
+    discovery: Option<crate::discovery::DiscoveryDesk>,
 }
 
 impl std::fmt::Debug for EvolutionEngine {
@@ -292,7 +297,28 @@ impl EvolutionEngine {
             desk,
             learning: LearningDesk::new(config_learning, seed),
             stats: EvolutionStats::default(),
+            discovery: None,
         })
+    }
+
+    /// Attach a discovery desk (§7.4-§7.6.2). Replaces one attached before.
+    pub fn with_discovery(mut self, desk: crate::discovery::DiscoveryDesk) -> Self {
+        self.discovery = Some(desk);
+        self
+    }
+
+    /// Run a discovery pass if this cycle is on its cadence and a desk is
+    /// attached; `Ok(None)` otherwise, for either reason.
+    pub fn maybe_discover(
+        &mut self,
+        platform: &mut Platform,
+        cycle: u64,
+        now: Timestamp,
+    ) -> Result<Option<qip_kernel::SourceAssessment>> {
+        match &mut self.discovery {
+            Some(desk) => desk.maybe_run(platform, cycle, now),
+            None => Ok(None),
+        }
     }
 
     /// Build the crank over the synthetic exchange, with the exchange's own

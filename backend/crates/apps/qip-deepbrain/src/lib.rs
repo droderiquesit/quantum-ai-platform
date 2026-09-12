@@ -51,6 +51,7 @@
 
 pub mod attestation;
 pub mod config;
+pub mod discovery;
 pub mod evolution;
 pub mod health;
 pub mod language;

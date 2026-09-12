@@ -114,6 +114,12 @@ pub struct StepOutcome {
     /// searching for a strategy are different questions, and a cycle line that
     /// merged them would not say which one produced nothing.
     pub learning: Option<crate::learning::LearningRound>,
+    /// What a source-discovery pass found, on the cycles where one ran
+    /// (§7.4-§7.6.2). A third cadence beside evolution and learning, for the
+    /// same reason those two are separate: a search, a fit and a discovery
+    /// pass answer different questions and a cycle line that merged them
+    /// would not say which one ran.
+    pub discovery: Option<qip_kernel::SourceAssessment>,
     /// Measured on a monotonic clock, so a wall-clock adjustment mid-cycle
     /// cannot invent or erase an overrun.
     pub elapsed: Duration,
@@ -158,6 +164,7 @@ pub fn step(platform: &mut Platform, now: Timestamp, interval: Duration) -> Step
         observed: 0,
         evolution: None,
         learning: None,
+        discovery: None,
     }
 }
 
@@ -331,6 +338,11 @@ pub fn run(
             // window, which is what makes the two rounds comparable after the
             // fact.
             outcome.learning = engine.maybe_learn(cycles, now)?;
+            // A third, independent cadence: discovery has no dependency on
+            // whether a search or a fit ran this cycle, and gating it behind
+            // either would make "no candidates are configured" and "the
+            // search happened not to run" read alike.
+            outcome.discovery = engine.maybe_discover(platform, cycles, now)?;
         }
         if !outcome.report.traversed_every_stage() {
             failed += 1;

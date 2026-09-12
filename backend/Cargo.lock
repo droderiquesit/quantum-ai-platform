@@ -284,6 +284,7 @@ dependencies = [
  "qip-ai",
  "qip-contracts",
  "qip-core",
+ "qip-data-finder",
  "qip-events",
  "qip-evolution",
  "qip-financial",

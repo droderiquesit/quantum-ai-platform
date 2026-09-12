@@ -1244,6 +1244,21 @@ const THE_TERRAFORM_HALF_OF_THIS_WIRING_IS_A_SEPARATE_CHANGE: &str = "The desk's
      and this line should be deleted the same cycle \
      `capital_fabric_file`-style wiring for it does.";
 
+const SOURCE_DISCOVERY_HAS_THE_SAME_TERRAFORM_GAP: &str = "`Platform::assess_sources` \
+     (blueprint §7.4-§7.6.2) has a real production caller now: \
+     `qip-deepbrain`'s `DiscoveryDesk`, attached to the evolution engine and \
+     run on its own cadence from `node::run`, reading a candidate list \
+     `load_source_candidates` parses and stopping the process on a file \
+     present but malformed rather than running discovery against half the \
+     candidates. `grep -rn assess_sources --include=*.rs backend/crates/apps` \
+     found nothing before this. As with \
+     `QIP_CENTRAL_HORIZONS_PATH` beside this entry, the Terraform half -- a \
+     root variable for each of the two knobs here, left null with a reason in \
+     every tfvars -- is a separate change this one deliberately left \
+     untouched rather than smuggled through a Rust-only diff. Read both \
+     entries as placeholders for that follow-up, not as an argument that \
+     either variable cannot be set.";
+
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     (
         "qip-deepbrain",
@@ -1347,6 +1362,16 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         "qip-deepbrain",
         "QIP_CENTRAL_HORIZONS_PATH",
         THE_TERRAFORM_HALF_OF_THIS_WIRING_IS_A_SEPARATE_CHANGE,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_DISCOVER_EVERY",
+        SOURCE_DISCOVERY_HAS_THE_SAME_TERRAFORM_GAP,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH",
+        SOURCE_DISCOVERY_HAS_THE_SAME_TERRAFORM_GAP,
     ),
     (
         "qip-api",
