@@ -497,17 +497,47 @@ fn run() -> Result<()> {
             // `invalid`, so a proxy that was not listening — `unavailable`,
             // a deployment fact — read as a configuration value nobody
             // could find wrong.
-            let mut arm = qip_deepbrain::connectors::ConnectorArm::open(
+            //
+            // And each failure releases what was opened before it: the
+            // arms already handed to `evolution`, and — for a store or
+            // journal failure — the arm just opened and not yet handed
+            // over. Until 2026-09-12 both `?`s returned past every session
+            // `open` had acquired. What leaks today is process-local, since
+            // every shipped connector's `shutdown` is the trait's no-op;
+            // the invariant is that no exit skips the release, so the first
+            // connector whose `connect` holds a vendor session is not the
+            // one that discovers which exits do.
+            let mut arm = match qip_deepbrain::connectors::ConnectorArm::open(
                 source_id,
                 &settings.base_url,
                 &registrations,
                 platform.config().seed,
                 clock.now(),
-            )
-            .map_err(configuration)?;
-            let resumed = arm
-                .journal_to(config.storage.key_value(StreamJournal::NAMESPACE)?)
-                .map_err(configuration)?;
+            ) {
+                Ok(arm) => arm,
+                Err(error) => {
+                    return Err(with_release(
+                        configuration(error),
+                        evolution.shutdown_connectors(clock.now()),
+                    ));
+                }
+            };
+            let journaled = config
+                .storage
+                .key_value(StreamJournal::NAMESPACE)
+                .and_then(|store| arm.journal_to(store).map_err(configuration));
+            let resumed = match journaled {
+                Ok(resumed) => resumed,
+                Err(error) => {
+                    // Both released, and the first failure reported: the
+                    // arm's own before the earlier arms', so one arm that
+                    // cannot stop does not keep the others open.
+                    let release = arm
+                        .shutdown(clock.now())
+                        .and(evolution.shutdown_connectors(clock.now()));
+                    return Err(with_release(error, release));
+                }
+            };
             connector_banner.push(format!(
                 "  connector:        {}; {}",
                 arm.describe(),
@@ -610,17 +640,10 @@ fn run() -> Result<()> {
     let summary = match run {
         Ok(summary) => summary,
         Err(error) => {
-            return Err(match evolution.shutdown_connectors(clock.now()) {
-                Ok(()) => error,
-                Err(release) => relabel(
-                    &error,
-                    format!(
-                        "{}; and releasing the connector sessions on the way out failed too: {}",
-                        error.message(),
-                        release.message()
-                    ),
-                ),
-            });
+            return Err(with_release(
+                error,
+                evolution.shutdown_connectors(clock.now()),
+            ));
         }
     };
 
@@ -644,13 +667,25 @@ fn run() -> Result<()> {
         summary.archived_while_running
     );
 
-    let flushed = node::flush(
+    // A flush that fails releases the connector sessions too, on the same
+    // terms as the run's error exit: the flush's own failure is reported
+    // and a failed release appended. Until 2026-09-12 this was a `?`, so
+    // the one exit between the run and the release skipped it.
+    let flushed = match node::flush(
         &platform,
         &archive,
         config.storage.is_durable(),
         config.shutdown_budget,
         inherited,
-    )?;
+    ) {
+        Ok(flushed) => flushed,
+        Err(error) => {
+            return Err(with_release(
+                error,
+                evolution.shutdown_connectors(clock.now()),
+            ));
+        }
+    };
     println!("  shutdown:         {}", flushed.describe());
     // The connector arms' sessions, released at an instant this root owns.
     // After the flush rather than before it, so a connector that cannot
@@ -672,10 +707,33 @@ fn configuration(error: Error) -> Error {
     relabel(&error, format!("configuration: {}", error.message()))
 }
 
+/// `error`, with a failed release of the connector sessions appended to it
+/// and its class kept; `error` unchanged when the release succeeded.
+///
+/// The one shape every exit that leaves before the clean release uses —
+/// the run's error, a failed flush, and a connector arm that could not be
+/// opened or journaled after an earlier one was — so that the first
+/// failure is always the one reported, because it is the one an operator
+/// has to diagnose, and a release that fails on top of it is never allowed
+/// to replace it.
+fn with_release(error: Error, release: Result<()>) -> Error {
+    match release {
+        Ok(()) => error,
+        Err(failure) => relabel(
+            &error,
+            format!(
+                "{}; and releasing the connector sessions on the way out failed too: {}",
+                error.message(),
+                failure.message()
+            ),
+        ),
+    }
+}
+
 /// `error` with `message` in place of its own, and its class kept.
 ///
 /// The one place the class-preserving rewrite is written, so that the two
-/// callers — the start-up prefix and the error exit's appended release
+/// callers — the start-up prefix and [`with_release`]'s appended release
 /// failure — cannot drift into relabelling differently.
 fn relabel(error: &Error, message: String) -> Error {
     match error {
