@@ -329,6 +329,106 @@ fn ols_refuses_an_underdetermined_system() {
     assert!(stats::ols(&design, &[1.0, 2.0]).is_err());
 }
 
+// --- Granger causality -------------------------------------------------------
+
+#[test]
+fn granger_causality_finds_nothing_between_two_independent_series() {
+    // The refusal case, and the most important test in this file: two series
+    // built from independent noise share no lead-lag structure, and a test
+    // that reported one anyway would be exactly the false positive the
+    // significance bar in `qip_world_model::granger` exists to keep out of
+    // the causal graph.
+    use qip_core::rng::{Rng, Xoshiro256};
+    let mut cause_rng = Xoshiro256::seeded(101);
+    let mut effect_rng = Xoshiro256::seeded(202);
+    let n = 300;
+    let cause: Vec<f64> = (0..n).map(|_| cause_rng.normal()).collect();
+    let effect: Vec<f64> = (0..n).map(|_| effect_rng.normal()).collect();
+
+    let test = stats::granger_causality(&cause, &effect, 1).unwrap();
+    assert!(
+        test.p_value > 0.01,
+        "an independent pair cleared p < 0.01 by chance: p = {}",
+        test.p_value
+    );
+    assert!(
+        (0.0..=1.0).contains(&test.partial_r_squared),
+        "partial R^2 out of range: {}",
+        test.partial_r_squared
+    );
+}
+
+#[test]
+fn granger_causality_finds_a_real_lag_a_series_was_built_from() {
+    // `effect[t]` is built directly from `cause[t-1]` plus noise, so the
+    // test has a real, known lag-1 relationship to find.
+    use qip_core::rng::{Rng, Xoshiro256};
+    let mut rng = Xoshiro256::seeded(7);
+    let n = 300;
+    let cause: Vec<f64> = (0..n).map(|_| rng.normal()).collect();
+    let mut effect = vec![0.0; n];
+    for t in 1..n {
+        effect[t] = 0.7 * cause[t - 1] + 0.3 * rng.normal();
+    }
+
+    let test = stats::granger_causality(&cause, &effect, 1).unwrap();
+    assert!(
+        test.p_value < 0.001,
+        "a lag-1 coefficient of 0.7 over 300 points must be significant: p = {}",
+        test.p_value
+    );
+    assert!(
+        test.coefficient > 0.0,
+        "the built relationship is positive: coefficient = {}",
+        test.coefficient
+    );
+    assert!(
+        test.partial_r_squared > 0.1,
+        "a 0.7 loading should explain a material share of the residual variance: {}",
+        test.partial_r_squared
+    );
+}
+
+#[test]
+fn granger_causality_reads_an_inverted_relationship_by_its_sign() {
+    use qip_core::rng::{Rng, Xoshiro256};
+    let mut rng = Xoshiro256::seeded(13);
+    let n = 300;
+    let cause: Vec<f64> = (0..n).map(|_| rng.normal()).collect();
+    let mut effect = vec![0.0; n];
+    for t in 1..n {
+        effect[t] = -0.6 * cause[t - 1] + 0.3 * rng.normal();
+    }
+
+    let test = stats::granger_causality(&cause, &effect, 1).unwrap();
+    assert!(test.p_value < 0.001, "p = {}", test.p_value);
+    assert!(
+        test.coefficient < 0.0,
+        "the built relationship is negative: coefficient = {}",
+        test.coefficient
+    );
+}
+
+#[test]
+fn granger_causality_refuses_malformed_input() {
+    assert!(
+        stats::granger_causality(&[1.0, 2.0], &[1.0], 1).is_err(),
+        "length mismatch"
+    );
+    assert!(
+        stats::granger_causality(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0], 0).is_err(),
+        "zero lag"
+    );
+    assert!(
+        stats::granger_causality(&[1.0, f64::NAN, 3.0], &[1.0, 2.0, 3.0], 1).is_err(),
+        "non-finite input"
+    );
+    assert!(
+        stats::granger_causality(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0], 1).is_err(),
+        "three observations cannot fit a lag-1 unrestricted regression's three parameters"
+    );
+}
+
 // --- distributions ----------------------------------------------------------
 
 #[test]
@@ -477,6 +577,44 @@ fn chi_square_cdf_matches_known_quantiles() {
     // With 2 df it is 5.9915.
     assert!(approx_eq(dist::chi_square_cdf(5.991_465, 2.0), 0.95, 1e-6));
     assert_eq!(dist::chi_square_cdf(-1.0, 2.0), 0.0);
+}
+
+#[test]
+fn f_cdf_matches_published_critical_values() {
+    // Standard F-distribution table entries (upper-tail alpha, so the CDF at
+    // the critical value is 1 - alpha).
+    let cases = [
+        (4.964_6, 1.0, 10.0, 0.95),
+        (10.044, 1.0, 10.0, 0.99),
+        (3.325_8, 5.0, 10.0, 0.95),
+        (5.635_8, 5.0, 10.0, 0.99),
+    ];
+    for (x, d1, d2, want) in cases {
+        let got = dist::f_cdf(x, d1, d2);
+        assert!(
+            approx_eq(got, want, 1e-3),
+            "f_cdf({x}, {d1}, {d2}) = {got}, want {want}"
+        );
+    }
+    assert_eq!(dist::f_cdf(-1.0, 3.0, 5.0), 0.0);
+    assert_eq!(dist::f_cdf(0.0, 3.0, 5.0), 0.0);
+}
+
+#[test]
+fn f_cdf_agrees_with_the_square_of_a_student_t_at_one_numerator_degree() {
+    // T ~ t(nu) implies T^2 ~ F(1, nu) — a real identity between the two
+    // distributions this crate already validated separately against
+    // published tables, so this checks the two implementations agree with
+    // each other rather than re-deriving either from scratch.
+    for (t, nu) in [(1.0, 5.0), (2.228, 10.0), (0.5, 30.0), (3.169, 20.0)] {
+        let from_f = dist::f_cdf(t * t, 1.0, nu);
+        let from_t = 2.0 * dist::student_t_cdf(t, nu) - 1.0;
+        assert!(
+            approx_eq(from_f, from_t, 1e-6),
+            "f_cdf({}, 1, {nu}) = {from_f}, 2*t_cdf({t},{nu})-1 = {from_t}",
+            t * t
+        );
+    }
 }
 
 #[test]

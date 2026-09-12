@@ -18,6 +18,7 @@
 
 pub mod causal;
 pub mod features;
+pub mod granger;
 pub mod graph;
 pub mod liquidity;
 pub mod relationship;

@@ -121,6 +121,29 @@ pub fn student_t_cdf(x: f64, nu: f64) -> f64 {
     if x > 0.0 { 1.0 - ib } else { ib }
 }
 
+/// Fisher-Snedecor (F) cumulative distribution with `(d1, d2)` degrees of
+/// freedom, via the standard identity
+/// `F_cdf(x; d1, d2) = I_{d1 x / (d1 x + d2)}(d1/2, d2/2)`.
+///
+/// No new numerical machinery: the same [`regularised_incomplete_beta`]
+/// [`student_t_cdf`] already uses, at a different argument. This is what lets
+/// [`crate::stats::granger_causality`] compute a p-value for a joint
+/// (multi-lag) restriction, which a single t-test cannot — the F-test is the
+/// one this crate needs for a nested-model comparison, and the identity above
+/// means it costs no new proof against published vectors, only a new set of
+/// them (see the F-distribution table cross-checks in
+/// `qip-numerics/tests/statistics.rs`).
+pub fn f_cdf(x: f64, d1: f64, d2: f64) -> f64 {
+    if d1 <= 0.0 || d2 <= 0.0 {
+        return f64::NAN;
+    }
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let t = d1 * x / (d1 * x + d2);
+    regularised_incomplete_beta(d1 / 2.0, d2 / 2.0, t)
+}
+
 /// Inverse Student-t CDF by bisection on [`student_t_cdf`].
 ///
 /// Bisection rather than a closed form: the t quantile is used for confidence

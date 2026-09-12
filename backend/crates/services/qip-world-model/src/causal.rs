@@ -52,6 +52,19 @@ pub enum Mechanism {
     CommonOwnership,
     /// Regulatory action applying across an industry.
     Regulatory,
+    /// Established only by lagged statistical precedence (blueprint §9.2's
+    /// Granger-style method, via [`crate::granger::establish_temporal_precedence`]),
+    /// same direction. No economic channel is proposed — the effect is that
+    /// the cause's past co-moves with the effect's future — which is why
+    /// this and [`Self::InverseTemporalPrecedence`] are the two mechanisms
+    /// [`CausalEdge::confidence`] is capped well below the others' default
+    /// for: precedence is not a mechanism, and §9.4's unaddressed-confounders
+    /// limit applies to every edge either variant produces.
+    TemporalPrecedence,
+    /// The same establishment method as [`Self::TemporalPrecedence`], where
+    /// the cause's past instead co-moves with the *opposite* of the effect's
+    /// future.
+    InverseTemporalPrecedence,
 }
 
 impl Mechanism {
@@ -69,6 +82,8 @@ impl Mechanism {
             Self::IndexFlow => "index_flow",
             Self::CommonOwnership => "common_ownership",
             Self::Regulatory => "regulatory",
+            Self::TemporalPrecedence => "temporal_precedence",
+            Self::InverseTemporalPrecedence => "inverse_temporal_precedence",
         }
     }
 
@@ -87,16 +102,29 @@ impl Mechanism {
             Self::IndexFlow => "index membership forces mechanical buying or selling",
             Self::CommonOwnership => "shared holders liquidate correlated positions",
             Self::Regulatory => "a regulatory action applies across the industry",
+            Self::TemporalPrecedence => {
+                "the cause's past co-moves with the effect's future, established only by a \
+                 lagged statistical test — no mechanism is proposed"
+            }
+            Self::InverseTemporalPrecedence => {
+                "the cause's past co-moves with the opposite of the effect's future, established \
+                 only by a lagged statistical test — no mechanism is proposed"
+            }
         }
     }
 
     /// Whether the effect moves in the same direction as its cause.
     ///
-    /// Competitive substitution is the notable inversion: a rival's loss is a
-    /// gain, and treating it as same-signed would produce theses that are
-    /// exactly backwards.
+    /// Competitive substitution and [`Self::InverseTemporalPrecedence`] are
+    /// the inversions: a rival's loss is a gain, and a statistically negative
+    /// lag coefficient names an opposite move rather than a shared one.
+    /// Treating either as same-signed would produce a thesis pointed exactly
+    /// backwards.
     pub fn preserves_sign(&self) -> bool {
-        !matches!(self, Self::CompetitiveSubstitution)
+        !matches!(
+            self,
+            Self::CompetitiveSubstitution | Self::InverseTemporalPrecedence
+        )
     }
 }
 

@@ -396,6 +396,156 @@ pub fn linear_fit(x: &[f64], y: &[f64]) -> Result<Regression> {
     ols(&design, &y[..n])
 }
 
+/// What a single-lag Granger causality test found.
+///
+/// Single-lag on purpose, not a sweep over several: a joint test over
+/// multiple lags has no one coefficient to read a direction from, and the
+/// causal edge [`crate`]'s caller in `qip-world-model` builds from this needs
+/// an unambiguous sign. See [`granger_causality`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GrangerCausalityTest {
+    pub lag: usize,
+    /// Rows the regression was fit on — `cause.len() - lag`.
+    pub observations: usize,
+    /// From the F-test comparing the restricted (`effect` on its own lag) and
+    /// unrestricted (`effect` on its own lag plus `cause`'s) regressions.
+    pub f_statistic: f64,
+    /// `1 - F_cdf(f_statistic; lag, observations - 2*lag - 1)`. Small means
+    /// `cause`'s lagged value explains `effect` beyond what `effect`'s own
+    /// lag already does.
+    pub p_value: f64,
+    /// `(rss_restricted - rss_unrestricted) / rss_restricted`, in `[0, 1]`:
+    /// the fraction of `effect`'s residual variance the cause's lag newly
+    /// explains. Not a transmission fraction — the only bounded quantity a
+    /// nested F-test itself produces, and named that way rather than dressed
+    /// up as one.
+    pub partial_r_squared: f64,
+    /// The coefficient on `cause`'s lag in the unrestricted regression. Its
+    /// sign is the only directional information a single-lag test gives —
+    /// there is no "strength" here independent of [`Self::partial_r_squared`].
+    pub coefficient: f64,
+}
+
+/// Test whether `cause` Granger-causes `effect` at `lag` steps: does adding
+/// `cause`'s value `lag` steps back to a regression of `effect` on its own
+/// lag reduce the residual sum of squares more than sampling variation would?
+///
+/// Two nested OLS fits — `effect_t ~ effect_{t-lag}` (restricted) and
+/// `effect_t ~ effect_{t-lag} + cause_{t-lag}` (unrestricted) — compared by
+/// the standard F-test for a linear restriction. **This is temporal
+/// precedence, not mechanism.** A significant result says `cause`'s past
+/// carries information about `effect`'s future that `effect`'s own past does
+/// not, and nothing about *why* — blueprint §9.2 calls this method "weak
+/// alone, useful as a filter" for exactly that reason, and ADR-0054 records
+/// why it is nonetheless the one of the six named establishment methods this
+/// platform can compute honestly from data it already ingests, without an
+/// exogeneity assumption (natural experiments, instrumental variables) this
+/// crate has no way to verify.
+///
+/// Refuses (rather than guessing) on a length mismatch, a non-finite input,
+/// `lag == 0` (a zero lag tests contemporaneous association, which
+/// [`correlation`] already answers and which precedence, by definition,
+/// cannot claim), and too few observations to fit the unrestricted
+/// regression's `2*lag + 1` parameters at all.
+pub fn granger_causality(
+    cause: &[f64],
+    effect: &[f64],
+    lag: usize,
+) -> Result<GrangerCausalityTest> {
+    if cause.len() != effect.len() {
+        return Err(Error::invalid(format!(
+            "a Granger test needs two series of equal length; cause has {} observation(s) and \
+             effect has {}",
+            cause.len(),
+            effect.len()
+        )));
+    }
+    if lag == 0 {
+        return Err(Error::invalid(
+            "a Granger test needs a positive lag; a zero lag tests contemporaneous association, \
+             not precedence — use `correlation` for that",
+        ));
+    }
+    if cause.iter().chain(effect.iter()).any(|v| !v.is_finite()) {
+        return Err(Error::invalid(
+            "a Granger test received a non-finite observation; fix the series at its source \
+             rather than filtering it here",
+        ));
+    }
+    let n = cause.len();
+    let rows = n.saturating_sub(lag);
+    // Unrestricted regressors, excluding the intercept `ols` adds itself:
+    // `lag` of effect's own lags plus `lag` of cause's.
+    let unrestricted_regressors = 2 * lag;
+    if rows <= unrestricted_regressors + 1 {
+        return Err(Error::invalid(format!(
+            "{rows} observation(s) after a lag of {lag} cannot fit {} parameters; need more \
+             history or a shorter lag",
+            unrestricted_regressors + 1
+        )));
+    }
+
+    let mut own_lag = Matrix::zeros(rows, lag);
+    let mut both_lags = Matrix::zeros(rows, 2 * lag);
+    let mut y = vec![0.0; rows];
+    for (row, t) in (lag..n).enumerate() {
+        y[row] = effect[t];
+        for l in 1..=lag {
+            let own = effect[t - l];
+            let driver = cause[t - l];
+            own_lag.set(row, l - 1, own);
+            both_lags.set(row, l - 1, own);
+            both_lags.set(row, lag + l - 1, driver);
+        }
+    }
+
+    let restricted = ols(&own_lag, &y)?;
+    let unrestricted = ols(&both_lags, &y)?;
+
+    let df_restricted = (restricted.observations - restricted.coefficients.len()) as f64;
+    let df_unrestricted = (unrestricted.observations - unrestricted.coefficients.len()) as f64;
+    let rss_restricted = restricted.residual_stddev.powi(2) * df_restricted;
+    let rss_unrestricted = unrestricted.residual_stddev.powi(2) * df_unrestricted;
+
+    let partial_r_squared = if rss_restricted > 0.0 {
+        ((rss_restricted - rss_unrestricted) / rss_restricted).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (f_statistic, p_value) = if rss_restricted <= 0.0 || df_unrestricted <= 0.0 {
+        // The restricted model already fits exactly, or there is no residual
+        // left to compare against: there is no evidence of an improvement to
+        // report, not a strong one.
+        (0.0, 1.0)
+    } else {
+        let numerator = (rss_restricted - rss_unrestricted).max(0.0) / lag as f64;
+        let denominator = (rss_unrestricted / df_unrestricted).max(1e-300);
+        let f = numerator / denominator;
+        (
+            f,
+            1.0 - crate::distributions::f_cdf(f, lag as f64, df_unrestricted),
+        )
+    };
+    // The first cause-lag coefficient: index 0 is `ols`'s own intercept,
+    // `lag` own-lag coefficients follow, then cause's — index `1 + lag` is
+    // the shortest, least-noisy horizon and (at `lag == 1`, the only value
+    // this crate's caller currently requests) the only one there is.
+    let coefficient = unrestricted
+        .coefficients
+        .get(1 + lag)
+        .copied()
+        .unwrap_or(0.0);
+
+    Ok(GrangerCausalityTest {
+        lag,
+        observations: rows,
+        f_statistic,
+        p_value,
+        partial_r_squared,
+        coefficient,
+    })
+}
+
 /// Convert prices to simple returns.
 pub fn simple_returns(prices: &[f64]) -> Vec<f64> {
     prices

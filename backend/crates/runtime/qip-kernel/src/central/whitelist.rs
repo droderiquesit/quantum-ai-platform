@@ -142,6 +142,27 @@
 //!   and the cell reads the second as a fresh `CausalGraph` and stops
 //!   narrowing.
 //!
+//!   **Re-verified 2026-09-12, and the opening clause is now false — not the
+//!   conclusion.** ADR 0054 gave `claim_causal` a second, real caller:
+//!   `Platform::discover_temporal_precedence`, run from `stage_understand`
+//!   every cycle against `price_history`, tests instrument pairs for
+//!   Granger-style temporal precedence and writes an edge — narrow,
+//!   mechanism-free, confidence capped at 0.5 — when one clears a strict
+//!   significance and effect-size bar. `grep -rn 'claim_causal'
+//!   --include=*.rs backend/crates | grep -v '/tests/'` now finds that call
+//!   site beside `seed_demo_world`'s. So the graph is no longer empty *by
+//!   construction* in every process; it is empty in *most* cycles, because
+//!   the bar is deliberately strict and most instrument pairs in any given
+//!   universe will not clear it. That does not move this bullet's
+//!   conclusion: nothing in this module or `qip-api/src/mesh.rs` produces
+//!   the `causal_digest` slot, and a producer built today would still be
+//!   shipping "we assert these are the active edges" against a graph that
+//!   is honestly sparse rather than honestly empty — a materially different
+//!   but still-open question, not the one this paragraph answers. What
+//!   would have to exist is unchanged: a digest producer that states its
+//!   own freshness rather than stamping a fresh instant on whatever the
+//!   graph happens to hold.
+//!
 //! The episodic third was true when it was written and is not now. The LEARN
 //! stage moves each resolved thesis's episode into `Platform::episodes`
 //! (`remember_resolved`, reached from `calibrate_resolved` and so from

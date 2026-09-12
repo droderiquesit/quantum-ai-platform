@@ -614,23 +614,53 @@ fn the_macro_arm_feeds_the_macro_analyst_on_the_tape_and_the_review_still_holds_
 const BOOK: i64 = 10_000_000;
 
 /// What `construct_from` hands the optimiser while the self-model has never
-/// absorbed a graded outcome.
+/// absorbed a graded outcome and the causal graph has never absorbed a claim.
 ///
-/// §6.2 as the centre reads it on this tape: the causal graph has absorbed no
-/// claim, so row 2 reads `Unavailable` and takes 0.75; the belief state was
-/// written by this cycle's own REASON stage, so row 4 is fresh and takes
-/// nothing; the self-model has graded nothing, so row 6 reads `Unavailable`
-/// and halves. 10,000,000 x 0.75 x 0.50.
+/// §6.2 as the centre reads it on this tape: row 2 (causal graph) reads
+/// `Unavailable` and takes 0.75; the belief state was written by this cycle's
+/// own REASON stage, so row 4 is fresh and takes nothing; the self-model has
+/// graded nothing, so row 6 reads `Unavailable` and halves.
+/// 10,000,000 x 0.75 x 0.50.
 const BUDGET_BEFORE_LEARNING: i64 = 3_750_000;
 
-/// And once LEARN has scored a claim into a calibration record.
+/// Once LEARN has scored a claim into a calibration record, with the causal
+/// graph still `Unavailable`.
 ///
 /// Row 6 becomes `Stale` rather than `Unavailable` — the self-model has
 /// absorbed an outcome, just not a recent enough one — so it takes 0.75
 /// instead of 0.50. 10,000,000 x 0.75 x 0.75. The three-valued `Freshness`
-/// exists to keep those two apart, and this is the only assertion in the tree
-/// that watches the centre's budget cross between them on a running platform.
+/// exists to keep those two apart.
 const BUDGET_AFTER_LEARNING: i64 = 5_625_000;
+
+/// Once ADR 0054's temporal-precedence pass has written a causal claim on
+/// this tape's own real instrument returns and the self-model has still
+/// graded nothing.
+///
+/// Row 2 becomes `Fresh` and stops narrowing (there is no "fresh"
+/// multiplier — the row simply contributes nothing), so this is
+/// `BUDGET_BEFORE_LEARNING` with the 0.75 causal factor removed:
+/// 10,000,000 x 1.0 x 0.50.
+const BUDGET_BEFORE_LEARNING_CAUSAL_FRESH: i64 = 5_000_000;
+
+/// Both crossings at once: LEARN has calibrated and the causal graph is
+/// `Fresh`. 10,000,000 x 1.0 x 0.75.
+const BUDGET_AFTER_LEARNING_CAUSAL_FRESH: i64 = 7_500_000;
+
+/// The budget `construct_from` should have handed the optimiser, from the
+/// same two independent facts DECIDE reads — never from `central_degradation`'s
+/// own multiplier, which would check the arithmetic against itself and hide
+/// exactly the class of mutation `valuation_seam.rs`'s own comment warns
+/// about. Both flags are *states* (has LEARN calibrated; is the causal graph
+/// within its horizon), not the multiplier values themselves, which stay
+/// hand-computed constants above.
+fn expected_budget(self_model_calibrated: bool, causal_fresh: bool) -> Decimal {
+    Decimal::from_int(match (self_model_calibrated, causal_fresh) {
+        (false, false) => BUDGET_BEFORE_LEARNING,
+        (false, true) => BUDGET_BEFORE_LEARNING_CAUSAL_FRESH,
+        (true, false) => BUDGET_AFTER_LEARNING,
+        (true, true) => BUDGET_AFTER_LEARNING_CAUSAL_FRESH,
+    })
+}
 
 #[test]
 fn the_shipped_review_policy_admits_a_thesis_that_reaches_the_narrowed_sizing_budget() {
@@ -672,15 +702,24 @@ fn the_shipped_review_policy_admits_a_thesis_that_reaches_the_narrowed_sizing_bu
     );
 
     // ----- the run ---------------------------------------------------------
-    // Each cycle that reached the construction, with the budget it was handed
-    // and whether LEARN had already written a calibration *before* that cycle
-    // began. Read before the step, not after: DECIDE runs before LEARN inside
-    // one cycle, so a calibration written by cycle N is not a fact DECIDE had
-    // at cycle N, and partitioning on the value after the step would put one
-    // construction on the wrong side of the boundary for a reason that is
-    // about stage order rather than about sizing.
+    // Each cycle that reached the construction, with the budget it was
+    // handed and the two facts DECIDE read to narrow it: whether LEARN had
+    // already written a calibration, and whether the causal graph was within
+    // its horizon.
+    //
+    // The two facts are read on opposite sides of the step, because the two
+    // writers sit on opposite sides of DECIDE within one `run_cycle`. LEARN
+    // (self-model) runs *after* DECIDE, so a calibration written by cycle N
+    // is not a fact DECIDE had at cycle N — `calibrated_before` is read
+    // before the step, reflecting the previous cycle's LEARN. UNDERSTAND
+    // (the causal graph, including ADR 0054's temporal-precedence pass) runs
+    // *before* DECIDE in the same cycle, so a claim written during this
+    // cycle's own UNDERSTAND *is* a fact this cycle's DECIDE had —
+    // `causal_fresh` is read after the step, and nothing between UNDERSTAND
+    // and DECIDE writes to the causal graph, so the reading is unchanged
+    // from what DECIDE itself saw.
     let wall = qip_core::SystemClock;
-    let mut constructions: Vec<(usize, Decimal, bool)> = Vec::new();
+    let mut constructions: Vec<(usize, Decimal, bool, bool)> = Vec::new();
     let mut cycle = 0usize;
     while !feed.is_exhausted() {
         let now = feed
@@ -692,7 +731,20 @@ fn the_shipped_review_policy_admits_a_thesis_that_reaches_the_narrowed_sizing_bu
         if let Some(proposal) = platform.proposals().last()
             && proposal.rationale.starts_with("expresses ")
         {
-            constructions.push((cycle, proposal.equity.amount, calibrated_before));
+            let causal_fresh = qip_contracts::degradation::CausalGraphFreshness::assess(
+                platform.world().causal().last_updated(),
+                qip_contracts::degradation::CAUSAL_GRAPH_HORIZON,
+                now,
+            )
+            .expect("a valid horizon and a last_updated no later than now")
+            .freshness()
+            .is_fresh();
+            constructions.push((
+                cycle,
+                proposal.equity.amount,
+                calibrated_before,
+                causal_fresh,
+            ));
         }
     }
 
@@ -720,16 +772,30 @@ fn the_shipped_review_policy_admits_a_thesis_that_reaches_the_narrowed_sizing_bu
         "the premise failed: the tracked book is no longer {BOOK}"
     );
 
-    // And by exactly how much, on both sides of the self-model row. Stated as
-    // fractions of a book asserted above, so halving or doubling either §6.2
-    // constant moves the budget and fails here — the mutation class that
-    // survived `valuation_seam.rs`, where every assertion had the platform's
-    // own reading on both sides.
-    let before = Decimal::from_int(BUDGET_BEFORE_LEARNING);
-    let after = Decimal::from_int(BUDGET_AFTER_LEARNING);
-    let uncalibrated: Vec<&(usize, Decimal, bool)> =
+    // And by exactly how much, checked against both rows that can move on
+    // this tape. Stated as fractions of a book asserted above, so moving any
+    // of the four §6.2 constants moves a budget and fails here — the
+    // mutation class that survived `valuation_seam.rs`, where every
+    // assertion had the platform's own reading on both sides.
+    //
+    // The self-model crossing is the tape's original finding and is still
+    // required: at least one construction on each side of it. The
+    // causal-graph crossing is not observed here, and that is itself a
+    // finding worth stating rather than hiding behind a loop that only
+    // checks the side that happens to occur: ADR 0054's temporal-precedence
+    // pass needs 60 return observations before it tests anything, which this
+    // tape's own instruments clear well before cycle 367, the first cycle a
+    // thesis clears the action bar at all — so *every* construction this
+    // test ever observes sees a graph already `Fresh`, and the `Unavailable`
+    // quadrant of the table below is exercised by no committed tape today.
+    // Asserted as a premise, not assumed: if a future tape or a change to
+    // the significance bar ever produced a construction before the graph
+    // went fresh, this line is what would need loosening, in the open, with
+    // the new quadrant added to the per-construction check that already
+    // covers it.
+    let uncalibrated: Vec<&(usize, Decimal, bool, bool)> =
         constructions.iter().filter(|entry| !entry.2).collect();
-    let calibrated: Vec<&(usize, Decimal, bool)> =
+    let calibrated: Vec<&(usize, Decimal, bool, bool)> =
         constructions.iter().filter(|entry| entry.2).collect();
     assert!(
         !uncalibrated.is_empty() && !calibrated.is_empty(),
@@ -737,35 +803,41 @@ fn the_shipped_review_policy_admits_a_thesis_that_reaches_the_narrowed_sizing_bu
          row, so the crossing below is not observed at all",
         constructions.len()
     );
-    for (at, budget, _) in &uncalibrated {
+    assert!(
+        constructions.iter().all(|entry| entry.3),
+        "the premise failed: a construction on this tape was sized against a causal graph that \
+         was not fresh; ADR 0054's writer, the tape, or this premise has changed and the \
+         `Unavailable` quadrant now needs its own coverage rather than this comment's word for it"
+    );
+    for (at, budget, calibrated_before, is_causal_fresh) in &constructions {
+        let want = expected_budget(*calibrated_before, *is_causal_fresh);
         assert_eq!(
-            *budget, before,
-            "cycle {at} sized against {budget} before LEARN had graded anything; §6.2 with the \
-             self-model unavailable is 0.75 x 0.50 of {BOOK}"
-        );
-    }
-    for (at, budget, _) in &calibrated {
-        assert_eq!(
-            *budget, after,
-            "cycle {at} sized against {budget} after LEARN wrote a calibration; §6.2 with the \
-             self-model stale rather than absent is 0.75 x 0.75 of {BOOK}"
+            *budget, want,
+            "cycle {at} sized against {budget}, not {want}, with self-model calibrated = \
+             {calibrated_before} and causal graph fresh = {is_causal_fresh}"
         );
     }
     // The direction, stated separately: a self-model that has absorbed an
-    // outcome must widen the budget, never narrow it. An arithmetic that
-    // swapped the stale and unavailable constants would satisfy neither loop
-    // above, but a future one that made them equal would satisfy both and
-    // erase the distinction `Freshness` is three-valued to keep.
+    // outcome must widen the budget, never narrow it, and a causal graph that
+    // has absorbed a claim must do the same. An arithmetic that swapped either
+    // pair of constants would satisfy no single row above but could still
+    // satisfy the four-way check by accident if two swaps cancelled, which is
+    // exactly the failure mode a direction check independent of the lookup
+    // table catches.
     assert!(
-        before < after,
-        "the self-model row grants no more budget once it has graded an outcome: {before} then \
-         {after}"
+        Decimal::from_int(BUDGET_BEFORE_LEARNING) < Decimal::from_int(BUDGET_AFTER_LEARNING),
+        "the self-model row grants no more budget once it has graded an outcome"
+    );
+    assert!(
+        Decimal::from_int(BUDGET_BEFORE_LEARNING)
+            < Decimal::from_int(BUDGET_BEFORE_LEARNING_CAUSAL_FRESH),
+        "the causal-graph row grants no more budget once it has absorbed a claim"
     );
     // Narrowed at all, against the book rather than against another reading.
     assert!(
-        after < Decimal::from_int(BOOK),
+        Decimal::from_int(BUDGET_AFTER_LEARNING_CAUSAL_FRESH) < Decimal::from_int(BOOK),
         "the widest budget the centre handed the optimiser is the whole book, so §6.2 narrowed \
-         nothing: {after}"
+         nothing"
     );
 
     // ----- what this still does not prove, said out loud -------------------
@@ -784,7 +856,7 @@ fn the_shipped_review_policy_admits_a_thesis_that_reaches_the_narrowed_sizing_bu
     assert!(
         constructions
             .iter()
-            .all(|(_, budget, _)| budget.is_positive()),
+            .all(|(_, budget, _, _)| budget.is_positive()),
         "a construction was handed nothing to size against, so the infeasibility below would be \
          about an empty budget rather than about the mandate"
     );

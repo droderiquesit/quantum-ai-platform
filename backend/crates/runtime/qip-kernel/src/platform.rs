@@ -173,6 +173,7 @@ use qip_twin::counterfactual::{
 use qip_twin::value::Simulated;
 use qip_world_model::WorldModel;
 use qip_world_model::features::{Feature, FeatureValue};
+use qip_world_model::granger;
 use qip_world_model::graph::{Node, NodeKind};
 use qip_world_model::liquidity::{DepthObservation, LiquidityTopology};
 use serde::{Deserialize, Serialize};
@@ -6476,6 +6477,12 @@ impl Platform {
     }
 
     fn stage_understand(&mut self, now: Timestamp) -> StageOutcome {
+        // Before the world model is read back: test whatever real return
+        // history has accumulated for temporal precedence (§9.2) and write
+        // whatever clears the bar, so `state.causal_claim_count` below
+        // reflects it in the same pass rather than a cycle later.
+        let precedence = self.discover_temporal_precedence(now);
+
         // Read back from the world model at this instant in both time
         // dimensions — not the price-history count this line used to quote
         // while the model sat empty. A coverage line that cannot go down when
@@ -6532,13 +6539,26 @@ impl Platform {
         // example of.
         let credit = self.credit.summary();
         let credit_problems = self.credit.problems();
+        // §9.2's own honest framing — the method the blueprint calls "weak
+        // alone, useful as a filter" — means most passes clear no pair at
+        // all, and this says so rather than staying silent about a pass
+        // that ran and found nothing, which reads identically to a pass
+        // that never ran.
+        let precedence_detail = if precedence.tested == 0 {
+            String::new()
+        } else {
+            format!(
+                "; temporal-precedence pass tested {} instrument pair(s), wrote {} causal edge(s)",
+                precedence.tested, precedence.written
+            )
+        };
         let mut outcome = StageOutcome::ran(
             Stage::Understand,
             state.object_count + state.entity_count,
             format!(
                 "world model holds {} instrument(s), {} entity(ies), {} relationship(s), \
                  {} causal claim(s), {} readable feature value(s), {} document(s)\
-                 {liquidity}{events}{chain}{credit}",
+                 {liquidity}{events}{chain}{credit}{precedence_detail}",
                 state.object_count,
                 state.entity_count,
                 state.relationship_count,
@@ -6551,6 +6571,80 @@ impl Platform {
             outcome = outcome.with_problem(problem);
         }
         outcome
+    }
+
+    /// Bound on instrument pairs tested per cycle.
+    ///
+    /// `price_history` is a [`BTreeMap`], so the pairs tested in any one
+    /// cycle are a deterministic prefix of a stable order, and a universe
+    /// larger than this cap is covered over successive cycles rather than
+    /// in one — which is what keeps this pass's cost independent of how many
+    /// instruments the platform ends up tracking, the same bounded-working-set
+    /// discipline every other buffer here follows.
+    const TEMPORAL_PRECEDENCE_MAX_PAIRS_PER_CYCLE: usize = 200;
+
+    /// Test ordered pairs of instruments' return histories for temporal
+    /// precedence (§9.2) and write a causal edge for every pair that clears
+    /// `qip_world_model::granger`'s bar.
+    ///
+    /// The second, real writer of a [`qip_world_model::CausalEdge`] —
+    /// `seed_demo_world`'s hand-written demo claims are the first, and stay
+    /// exactly what they were. This one runs on `self.price_history`, the
+    /// bar closes `Platform::observe` absorbs from whatever feed a
+    /// composition root has wired, at whatever bar cadence
+    /// `self.bar_history` records for it — real ingested data, never the
+    /// demo seed.
+    fn discover_temporal_precedence(&mut self, now: Timestamp) -> TemporalPrecedenceReport {
+        let subjects: Vec<String> = self.price_history.keys().cloned().collect();
+        let mut report = TemporalPrecedenceReport::default();
+        'pairs: for cause_id in &subjects {
+            for effect_id in &subjects {
+                if cause_id == effect_id {
+                    continue;
+                }
+                if report.tested >= Self::TEMPORAL_PRECEDENCE_MAX_PAIRS_PER_CYCLE {
+                    break 'pairs;
+                }
+                report.tested += 1;
+
+                let Some(cause_history) = self.price_history.get(cause_id) else {
+                    continue;
+                };
+                let Some(effect_history) = self.price_history.get(effect_id) else {
+                    continue;
+                };
+                let cause_returns = qip_numerics::stats::log_returns(cause_history);
+                let effect_returns = qip_numerics::stats::log_returns(effect_history);
+                let bar_interval = self
+                    .bar_history
+                    .get(effect_id)
+                    .and_then(|bars| bars.last())
+                    .map(|bar| bar.interval.duration())
+                    .unwrap_or(Duration::from_days(1));
+
+                // `Ok(None)` is the ordinary case this method's own doc
+                // comment names: too little history, or a real test that did
+                // not clear the bar. `Err` is a malformed pair — a
+                // non-finite return, which a corporate action or a bad tick
+                // could in principle produce — and this pass is diagnostic
+                // rather than a control, so both are skipped rather than
+                // allowed to stop the rest of the pairs, the way
+                // `capacity_probe`'s `None` already treats a refusal along
+                // its own path.
+                if let Ok(Some(edge)) = granger::establish_temporal_precedence(
+                    cause_id,
+                    &cause_returns,
+                    effect_id,
+                    &effect_returns,
+                    bar_interval,
+                    now,
+                ) {
+                    self.world.update(|world| world.claim_causal(edge));
+                    report.written += 1;
+                }
+            }
+        }
+        report
     }
 
     fn stage_discover(&mut self, now: Timestamp) -> StageOutcome {
@@ -8431,6 +8525,16 @@ impl Platform {
             self.predictions.drain(..excess);
         }
     }
+}
+
+/// What one UNDERSTAND-stage temporal-precedence pass found (§9.2):
+/// how many instrument pairs were tested against `qip_world_model::granger`
+/// and how many cleared its bar and were written to the world model as a
+/// new [`qip_world_model::CausalEdge`].
+#[derive(Clone, Copy, Debug, Default)]
+struct TemporalPrecedenceReport {
+    tested: usize,
+    written: usize,
 }
 
 /// What one capacity probe against the book's most-observed instrument found,

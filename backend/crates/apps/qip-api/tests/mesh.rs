@@ -1900,8 +1900,10 @@ fn a_shipped_payload_produces_exactly_the_four_slots_the_register_names() -> Res
     );
     assert!(
         payload.causal_digest.value().is_none(),
-        "slot 5 shipped a causal digest; nothing outside tests calls `claim_causal`, so the \
-         only digest available is an empty one asserted as a fact"
+        "slot 5 shipped a causal digest; `qip-api::mesh` has no producer for one — ADR 0054 gave \
+         `claim_causal` a second, real caller (`Platform::discover_temporal_precedence`), so the \
+         graph is no longer empty by construction, but that changes what a digest *could* say, \
+         not whether anything ships one, and nothing does"
     );
     assert!(
         payload.regime_state.value().is_none(),

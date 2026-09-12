@@ -5,11 +5,16 @@
 //!
 //! [`crate::central::whitelist`]'s audit of the nine unproduced slots grouped
 //! belief priors, the episodic digest and the causal digest together as "the
-//! kernel holds no belief engine, no episodic store, and no causal edge". Two
-//! thirds of that sentence still hold and are restated there. The episodic
-//! third does not, and stopped holding when the LEARN stage began moving a
-//! resolved thesis's episode into memory: `Platform::remember_resolved` is
-//! called from `calibrate_resolved`, which `stage_learn` calls, so
+//! kernel holds no belief engine, no episodic store, and no causal edge".
+//! Belief priors still hold. The causal-edge third held until ADR 0054 gave
+//! `WorldModel::claim_causal` a second, real caller
+//! (`Platform::discover_temporal_precedence`) — the kernel can now hold a
+//! causal edge, narrowly and rarely, which `whitelist.rs`'s own bullet
+//! restates and dates; this module is still not that producer, and the
+//! `causal_digest` slot is still unproduced regardless. The episodic third
+//! does not hold either, and stopped holding when the LEARN stage began
+//! moving a resolved thesis's episode into memory: `Platform::remember_resolved`
+//! is called from `calibrate_resolved`, which `stage_learn` calls, so
 //! `Platform::episodes` is written by the production cycle and not only by a
 //! test. The store is real, its contents are the platform's own resolved
 //! reasoning, and this module states what it holds.

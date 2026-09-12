@@ -268,9 +268,9 @@ these four are commands the build runs.
 | 8.1 | What It Holds | PARTIAL | 5 of 6 object types are in the graph: `grep -n 'pub enum NodeKind' -A 10 backend/crates/services/qip-world-model/src/graph.rs` gives Entity, FinancialObject (the instrument link), Event, Factor, Portfolio, Thesis, Evidence; relations are `grep -n 'pub enum RelationshipKind' backend/crates/services/qip-world-model/src/relationship.rs`; attributes are `grep -n 'fn with_attribute' backend/crates/services/qip-world-model/src/graph.rs`. Facts are bitemporal, which is what makes "what did we know then" answerable: `grep -n 'fn holds' backend/crates/services/qip-world-model/src/graph.rs`. REACHED via `run_cycle → stage_understand → world.state_at` (`grep -n 'world.state_at' backend/crates/runtime/qip-kernel/src/platform.rs`). The missing type is **Resolution source** — it exists, but in the prediction crate rather than the world model, so it is not a node anything can traverse to: `grep -n 'pub struct ResolutionSource' backend/crates/services/qip-prediction/src/resolution.rs`, and `grep -rn 'ResolutionSource' --include=*.rs backend/crates/services/qip-world-model` returns nothing. |
 | 8.2 | Why the Graph Structure Earns Its Place | PARTIAL | The traversal primitives every listed query needs are built and tested: `grep -n 'fn paths_between\|fn reachable\|fn neighbours\|fn predecessors\|fn degree' backend/crates/services/qip-world-model/src/graph.rs`, plus causal shock propagation `grep -n 'fn propagate' backend/crates/services/qip-world-model/src/causal.rs`, tested at `ls backend/crates/services/qip-world-model/tests/understanding.rs`. One of the five named queries has a production caller — the shortest causal path from a driver to an instrument, through the panel: `grep -n 'causal.propagate' backend/crates/agents/qip-investment-agents/src/reasoning.rs` reached by `stage_reason → chief → CausalAnalyst` (`grep -n 'CausalAnalyst::new' backend/crates/agents/qip-investment-agents/src/chief.rs`). The other four — two-hop instrument exposure, prediction contracts resolving on an entity's event, hidden concentration across held positions, second-order dependency on unheld entities — are not implemented as queries: `grep -rn 'hidden_concentration\|second_order\|exposed_to' --include=*.rs backend/crates` returns nothing. |
 | 8.3 | Size and Storage | PARTIAL | Two claims, split. **Entity resolution confidence per link, low-confidence links excluded from sizing** is REACHED: `grep -n 'confidence' backend/crates/services/qip-entity-resolution/src/resolver.rs` records it per decision and `grep -n 'fn is_authoritative\|>= 0.9' backend/crates/services/qip-entity-resolution/src/resolver.rs` is the exclusion, tested at `ls backend/crates/services/qip-entity-resolution/tests/resolution.rs`. **Spanner storage and the compact regional digest** are not: Spanner is a declared target with no client — `grep -n 'Spanner' backend/crates/libs/qip-storage/src/provider.rs` and `grep -n 'MeshTarget::SpannerGraph' backend/crates/services/qip-mesh/src/provider.rs` name it, the Terraform resource exists but is switched off in every environment (`grep -n 'google_spanner_instance' infrastructure/terraform/modules/data/main.tf`; `grep -rn 'enable_spanner' infrastructure/environments/*/terraform.tfvars` reads `false` in all four), and no Rust code opens it, so the graph lives in process memory (`grep -n 'world:' backend/crates/runtime/qip-kernel/src/platform.rs`). The relationship digest shipped to regions is the `causal_digest` slot, never produced: `grep -n 'causal_digest' backend/crates/apps/qip-api/src/mesh.rs` returns nothing. An in-tree Spanner client is refused by ADR 0009 (`ls docs/adr/0009-*`), so that half is blocked rather than merely undone. |
-| 9.1 | What Is Modelled | PARTIAL | Three of the five layers are typed: mechanisms, edges (strength, lag, sign via `preserves_sign`, evidence, confidence) and the drivers they name. `grep -n 'pub enum Mechanism\|pub struct CausalEdge' backend/crates/services/qip-world-model/src/causal.rs` shows twelve mechanisms and the edge. The *conditions* layer (the regime under which an edge holds) and the *confounders* layer are absent — `grep -rni 'confounder' --include=*.rs backend/crates` returns nothing, and `CausalEdge` has no regime field. No production writer either: `grep -rn 'claim_causal\|CausalEdge::new' --include=*.rs backend/crates \| grep -v '/tests/'` reaches only `seed_demo_world` and the kernel's own `#[cfg(test)]` module. |
-| 9.2 | How Edges Are Established | PARTIAL | One generic establishment path exists — `SupportingClaim` re-estimated inside `CAUSAL_GRAPH_HORIZON`: `grep -n 'pub fn reestimate\|pub struct SupportingClaim' backend/crates/services/qip-world-model/src/causal.rs` and its wrapper `grep -n 'fn absorb_causal_support' backend/crates/services/qip-world-model/src/world.rs`. None of the six named methods is implemented: `grep -rni 'natural_experiment\|instrumental_variable\|granger' --include=*.rs backend/crates` returns nothing, and the platform's own order flow is never fed back as evidence. Every caller is a test: `grep -rn 'absorb_causal_support' --include=*.rs backend/crates` hits only `qip-world-model/tests/understanding.rs`. |
-| 9.3 | What the Causal Graph Is Used For | PARTIAL | Two of five uses are built with a production read path, and both take the empty arm because nothing writes the graph. Explanation: `grep -n 'let causal = world.causal()' backend/crates/agents/qip-investment-agents/src/reasoning.rs` — the tracing analyst calls `propagate` and otherwise returns `no_data`. Sizing narrowing: `grep -n 'CausalGraphFreshness::assess' backend/crates/runtime/qip-kernel/src/platform.rs` inside `central_degradation`, reached by `run_cycle → stage_decide → construct_from` (`grep -n 'central_degradation(now)?.central_sizing_multiplier\|fn construct_from\|self.construct_from(' backend/crates/runtime/qip-kernel/src/platform.rs`). Hidden concentration, feature validation and regime-break strategy reduction are absent: `grep -rni 'hidden_concentration\|shared_driver\|spurious' --include=*.rs backend/crates \| grep -v '/tests/'` returns nothing. |
+| 9.1 | What Is Modelled | PARTIAL | Three of the five layers are typed: mechanisms, edges (strength, lag, sign via `preserves_sign`, evidence, confidence) and the drivers they name. `grep -n 'pub enum Mechanism\|pub struct CausalEdge' backend/crates/services/qip-world-model/src/causal.rs` shows fourteen mechanisms and the edge — twelve mechanism-backed plus two (`TemporalPrecedence`, `InverseTemporalPrecedence`, since 2026-09-12) that deliberately name no mechanism at all. The *conditions* layer (the regime under which an edge holds) and the *confounders* layer are absent — `grep -rni 'confounder' --include=*.rs backend/crates` returns nothing, and `CausalEdge` has no regime field. **A second production writer now exists (ADR 0054), narrow by design**: `grep -rn 'claim_causal' --include=*.rs backend/crates \| grep -v '/tests/'` reaches `seed_demo_world` and, since this change, `Platform::discover_temporal_precedence` — run from `stage_understand` every cycle against `price_history`, real ingested bars, never the demo seed. It writes only when a pair clears a strict significance (`p < 0.01`) and effect-size (partial R² ≥ 0.02) bar, so most cycles still write nothing; the confidence it assigns is capped at 0.5, below the demo seed's mechanism-backed 0.7. |
+| 9.2 | How Edges Are Established | PARTIAL | Two establishment paths exist now, not zero, and four of the six named methods remain absent. The generic one: `SupportingClaim` re-estimated inside `CAUSAL_GRAPH_HORIZON` — `grep -n 'pub fn reestimate\|pub struct SupportingClaim' backend/crates/services/qip-world-model/src/causal.rs` and its wrapper `grep -n 'fn absorb_causal_support' backend/crates/services/qip-world-model/src/world.rs` — still has only a test caller: `grep -rn 'absorb_causal_support' --include=*.rs backend/crates` hits only `qip-world-model/tests/understanding.rs`. **Granger-style lead-lag, the sixth of the section's named methods, is now built and reached in production (ADR 0054, 2026-09-12)**: `qip_numerics::stats::granger_causality` is the nested-OLS F-test (`grep -n 'pub fn granger_causality' backend/crates/libs/qip-numerics/src/stats.rs`), `qip_world_model::granger::establish_temporal_precedence` is the domain wrapper that turns a significant test into a `CausalEdge` or refuses (`grep -n 'pub fn establish_temporal_precedence' backend/crates/services/qip-world-model/src/granger.rs`), and `grep -n 'granger::establish_temporal_precedence' backend/crates/runtime/qip-kernel/src/platform.rs` is the non-test caller, inside `Platform::discover_temporal_precedence`. Natural experiments, instrumental variables, structural constraints and hypothesis-plus-falsification remain wholly absent — `grep -rni 'natural_experiment\|instrumental_variable' --include=*.rs backend/crates` returns nothing — and the platform's own order flow is still never fed back as evidence, which ADR 0054 names as blocked on `execution_nodes = {}` rather than on a decision. |
+| 9.3 | What the Causal Graph Is Used For | PARTIAL | Two of five uses are built with a production read path. Explanation: `grep -n 'let causal = world.causal()' backend/crates/agents/qip-investment-agents/src/reasoning.rs` — the tracing analyst calls `propagate` and otherwise returns `no_data`. Sizing narrowing: `grep -n 'CausalGraphFreshness::assess' backend/crates/runtime/qip-kernel/src/platform.rs` inside `central_degradation`, reached by `run_cycle → stage_decide → construct_from` (`grep -n 'central_degradation(now)?.central_sizing_multiplier\|fn construct_from\|self.construct_from(' backend/crates/runtime/qip-kernel/src/platform.rs`). **Both no longer take the empty arm on every call as a structural guarantee** — §9.2's new writer means the graph is occasionally non-empty in a production run — but they still take it on almost every call, because the bar that writer clears is deliberately strict and the graph stays sparse by design; this is a narrowing of the claim, not a verdict change. Hidden concentration, feature validation and regime-break strategy reduction are absent: `grep -rni 'hidden_concentration\|shared_driver\|spurious' --include=*.rs backend/crates \| grep -v '/tests/'` returns nothing. |
 | 9.4 | Honest Limits | PARTIAL | Two of four handlings hold structurally. Edges carry a confidence and re-estimation marks rather than drops or attenuates a decayed edge (`grep -n 'decayed_at\|pub struct DecayedEdge' backend/crates/services/qip-world-model/src/causal.rs`), and the graph constrains sizing rather than generating trades — its only production consumer is the degradation multiplier above, and no code path turns an edge into an order (`grep -rn '\.propagate(' --include=*.rs backend/crates \| grep -v '/tests/'` reaches only the read-only analyst). Missing: edges are not conditioned on regime, low-confidence edges do not "inform exploration" (no exploration path exists — see §13.2), and unobserved confounders are not recorded at all (`grep -rni 'confounder' --include=*.rs backend/crates`). |
 | 10.1 | What an Episode Is | PARTIAL | `Episode` is built, validated and production-written: `grep -n 'pub struct Episode' backend/crates/libs/qip-ai/src/memory/episode.rs`, written from REASON via `grep -n 'fn record_precedent\|self.record_precedent(' backend/crates/runtime/qip-kernel/src/platform.rs` (called from `reason_about_the_queue`). Four of the seven blueprint fields are present (regime, beliefs-as-`ClaimRecord`+`stances`, actions-as-`DecisionTaken`, outcome). Absent: `state_vector` — the encoding is 32 dimensions, not "a few hundred" (`grep -n 'EPISODE_DIMENSIONS' backend/crates/libs/qip-ai/src/memory/episode.rs`) — `causal_context`, and `surprise` (`grep -n 'surprise' backend/crates/libs/qip-ai/src/memory/episode.rs` returns nothing). |
 | 10.2 | What Gets Stored | PARTIAL | One trigger of the five is wired, and it is not one of the five as stated: an episode is written per reasoned opportunity and entered into the index only when its thesis resolves — `grep -n 'fn remember_resolved\|self.remember_resolved(' backend/crates/runtime/qip-kernel/src/platform.rs` (called from `calibrate_resolved`, itself called by `stage_learn`). No fill/quote/transfer trigger, no high-surprise trigger, no regime-transition trigger, no calm sampling, and vetoes go to the counterfactual queue rather than to memory (`grep -n 'self.declined.push' backend/crates/runtime/qip-kernel/src/platform.rs`). |
@@ -286,7 +286,7 @@ these four are commands the build runs.
 | 13.2 | The Exploration Budget | PARTIAL | The budget is a real line item in the capital engine and is enforced downward through the mandate hierarchy: `grep -n 'exploration_share' backend/crates/services/qip-capital/src/ledger/mandate.rs backend/crates/services/qip-capital/src/ledger/registry.rs`, and it is surfaced to the console (`grep -n 'exploration_share' backend/crates/apps/qip-api/src/ledger_views.rs`). Nothing draws on it: no probe type, no UCB/Thompson selection, no per-probe maximum loss, and no separate accounting of exploration cost — `grep -rn 'exploration_share()' --include=*.rs backend/crates \| grep -v '/tests/'` reaches only the registry check and the view. |
 | 14.1 | What a Hypothesis Is | REACHED | Every field of the blueprint record exists on a type produced in production. `grep -n 'pub struct Hypothesis' -A 50 backend/crates/services/qip-reasoning-engine/src/hypothesis.rs` gives proposition (`claim`/`statement`), mechanism (`CausalChain` of `CausalStep`, each naming a `Mechanism`), evidence, and `falsifiers`; the prediction that follows is the resolution proposition (`grep -n 'ResolutionCriteria' backend/crates/runtime/qip-kernel/src/platform.rs`). Status is the six-state enum `grep -n 'pub enum HypothesisStatus' -A 14 .../hypothesis.rs`. Produced on the REASON path at `grep -n 'self.reasoning.reason(SynthesisInput' backend/crates/runtime/qip-kernel/src/platform.rs`, and a directional finding with no falsifier is refused (`grep -n 'unfalsifiable claim cannot be reviewed' backend/crates/libs/qip-agents/src/finding.rs`). |
 | 14.2 | Sources | PARTIAL | Exactly one source is wired, and it is not on the blueprint's list: a DISCOVER-stage anomaly becomes the hypothesis's single causal step — `grep -n 'fn synthesise' -A 40 backend/crates/runtime/qip-kernel/src/platform.rs` (the chain is built from `anomaly.detector`). Of the six named sources, none exists: gaps in the causal graph cannot be walked (the graph is empty, §9.1); high-surprise episodes are not stored (§10.1, no surprise field); counterfactual anomalies feed nothing (§12.3); no world-model traversal proposes exposures; and the language model deliberately does not propose — `grep -n 'No analyst asks a language model' backend/crates/agents/qip-investment-agents/src/analysts.rs`. |
-| 14.3 | The Path from Hypothesis to Capital | PARTIAL | The spine exists in production: proposed → red-team review → approved → expressed as a thesis → sized. `grep -n 'fn clears_action_bar\|fn meets_action_bar' backend/crates/services/qip-reasoning-engine/src/{engine,hypothesis}.rs` and the thesis construction at `grep -n 'fn construct_from' backend/crates/runtime/qip-kernel/src/platform.rs`. Two gates are missing and one is inert. The falsifier is recorded but never evaluated against held-out data — `grep -n 'falsifiers_triggered' backend/crates/runtime/qip-kernel/src/platform.rs` shows it constructed only as `Vec::new()`. A supported hypothesis never becomes a candidate causal edge (§9.1 has no writer). And there is no canary: `grep -rni 'canary' --include=*.rs backend/crates \| grep -v '/tests/'` returns nothing. The family trial budget that does exist (`grep -n 'TrialBook' backend/crates/runtime/qip-kernel/src/central/factory.rs`) counts strategy sweeps, not hypotheses. |
+| 14.3 | The Path from Hypothesis to Capital | PARTIAL | The spine exists in production: proposed → red-team review → approved → expressed as a thesis → sized. `grep -n 'fn clears_action_bar\|fn meets_action_bar' backend/crates/services/qip-reasoning-engine/src/{engine,hypothesis}.rs` and the thesis construction at `grep -n 'fn construct_from' backend/crates/runtime/qip-kernel/src/platform.rs`. Two gates are missing and one is inert. The falsifier is recorded but never evaluated against held-out data — `grep -n 'falsifiers_triggered' backend/crates/runtime/qip-kernel/src/platform.rs` shows it constructed only as `Vec::new()`. A supported hypothesis never becomes a candidate causal edge — the hypothesis-plus-falsification method §9.2 names is still unbuilt, and is unrelated to the temporal-precedence writer §9.2 gained on 2026-09-12 (ADR 0054), which reads return history, not hypotheses. And there is no canary: `grep -rni 'canary' --include=*.rs backend/crates \| grep -v '/tests/'` returns nothing. The family trial budget that does exist (`grep -n 'TrialBook' backend/crates/runtime/qip-kernel/src/central/factory.rs`) counts strategy sweeps, not hypotheses. |
 | 15.1 | Meta-Learning | PARTIAL | The regime-keyed scoreboard is built, tested and now consulted: `grep -n 'pub struct Scoreboard\|pub enum ScoreDomain' backend/crates/services/qip-evolution/src/scoring.rs` scores strategies, models and regimes by context with an evidence-weighted shrink toward a prior, and `qip-deepbrain`'s `SuccessionDesk::judge` keeps its own board, reading a subject-regime pairing's precedent before recording this comparison's outcome into it and refusing to crown a win the deterministic test just returned when that precedent is *established* (the board's own bar for enough evidence) and below the prior: `grep -rn 'Scoreboard' --include=*.rs backend/crates \| grep -v 'qip-evolution/src\|qip-evolution/tests'` now finds the desk's field, its accessor and three tests exercising the consultation. Bootstrapping a fresh regime is unaffected — a pairing with no evidence, or too little to be established, changes nothing. Of the other four capabilities — feature generality, warm starts, cross-asset transfer, hyperparameter learning — none is built; `grep -rni 'warm_start\|cross_asset' --include=*.rs backend/crates` returns nothing, which is why this row is `PARTIAL` and not `REACHED`. |
 | 15.2 | Adversarial Modelling | ABSENT | None of the five questions is answered and none of the four responses is implemented. There is no flow classification, no counterparty adaptation detection, no crowding correlation, no fingerprint randomisation and no toxic-flow widening: `grep -rni 'toxic\|crowding\|informed flow\|fingerprint' --include=*.rs backend/crates/edge backend/crates/services/qip-execution-engine \| grep -v '/tests/'` returns nothing. What exists is the symptom the section says version 8.0 already had — an adverse-move estimate in `grep -n 'expected adverse move' backend/crates/edge/qip-arbitrage/src/netedge.rs` — plus an empty transport shell: the `AdversaryProfiles` policy slot is declared (`grep -n 'AdversaryProfiles' backend/crates/libs/qip-contracts/src/policy.rs`) and never produced by anything. |
 | 15.3 | Market Simulation | PARTIAL | All five agent types are built, calibrated and tested: `grep -n 'pub fn passive\|pub fn informed\|pub fn momentum\|pub fn competitor\|pub fn maker' backend/crates/services/qip-simulation-engine/src/agents.rs`, driven through a reactive market by `grep -n 'pub fn with_agents' backend/crates/services/qip-simulation-engine/src/market.rs`. **A production caller now exists.** `qip-kernel`'s `Platform::capacity_probe`, called from `stage_simulate` every cycle with enough price history, drives one of the five stated uses — capacity discovery, chosen because it needs no learning loop, no factor-crowding model and no fault-injection harness, only the market this crate already builds and one plausible order against it: `grep -rn 'with_agents(' --include=*.rs backend/crates` now finds the call in `qip-kernel/src/platform.rs` beside the crate's own tests. The other four stated uses — tactic learning, crowding stress, failure rehearsal, and the continuous predicted-vs-actual impact calibration the section separately asks for — still do not run, which is why this is `PARTIAL` and not `REACHED`. |
@@ -441,10 +441,31 @@ the ones that change what a row means.
   reached a rung to be signed for, and the retirement machinery still observes
   nothing. `set_baseline` remains uncalled; it is the deliberate re-baselining
   door, not this path.
-- **The causal graph is empty in every process.** `seed_demo_world` is the only
-  writer of a causal claim and has no production caller, which is why §9.x,
-  §10.3 and §11.3 read as they do, and why the `causal_digest` payload slot is
-  refused rather than shipped empty with a fresh timestamp.
+- **The causal graph is no longer empty by construction, and this bullet was
+  wrong in that specific way until 2026-09-12.** It read "`seed_demo_world`
+  is the only writer of a causal claim and has no production caller", which
+  was true when written and is not now: ADR 0054 gave
+  `qip_world_model::granger::establish_temporal_precedence` — a Granger-style
+  temporal-precedence test over real `price_history` returns, one of the six
+  methods §9.2 names — a real, non-test caller in
+  `Platform::discover_temporal_precedence`, run from `stage_understand` every
+  cycle. What has not changed: the bar is deliberately strict (`p < 0.01`,
+  partial R² ≥ 0.02) and the confidence it can assign is capped at 0.5, so a
+  production run's graph is *sparse and narrow*, not populated — most
+  cycles, most instrument pairs, and every one of the other five
+  establishment methods still write nothing. §9.1 and §9.2's rows are
+  corrected directly; §9.3's "both take the empty arm because nothing writes
+  the graph" is narrowed to "almost always", not deleted. §10.3 and §11.3 are
+  untouched — neither's own stated gap (the strategy-filtered episodic query,
+  the join to counterfactual scores; nothing yet producing `belief_priors`)
+  is about the causal graph's population, and re-reading both against this
+  change found no sentence of either that this writer makes false. The
+  `causal_digest` payload slot is still refused rather than shipped: nothing
+  in `qip-api::mesh` produces it, which is a distinct, still-open question
+  from whether the graph the digest would summarise ever holds anything —
+  `backend/crates/runtime/qip-kernel/src/central/whitelist.rs`'s own causal-digest
+  bullet is corrected in the same change, in place, dated, for the same
+  reason this one is rather than by deleting what it said before.
 - **The transfer gate's seven vetoes and three bound attestations are built,
   and a producer for `FabricCommand::Gate` now exists — this bullet was
   itself stale until 2026-09-12.** It read "nothing issues a `Gate` command"
@@ -710,6 +731,87 @@ touches (`infrastructure/**` and one `qip-acceptance` test file only), and
 `qip-kernel/src/platform.rs` and `qip-world-model` (a temporal-precedence
 capability, unrelated to this pass) landing concurrently in the same shared
 checkout. Left for whoever lands that change to verify against a clean tree.
+
+**Re-scored 2026-09-12**, the change the entry immediately above was left
+waiting on: the causal graph, deliberately untouched by the 2026-09-12 Phase
+2 pass above ("it needs real causal-edge extraction, not a wiring fix, and
+remains for a later phase"), gets its first real extraction. §9.1 and §9.2
+are corrected in place — not moved off `PARTIAL`, since five of the six
+named establishment methods and both of §9.1's missing layers (conditions,
+confounders) stay exactly as absent as before — and §9.3's "both take the
+empty arm because nothing writes the graph" is narrowed to "almost always",
+per ADR 0054. §14.3's parenthetical citing "§9.1 has no writer" is corrected
+to name which method the new writer is (temporal precedence) and which it
+is not (hypothesis-plus-falsification, still absent), so the row's own
+finding — a supported hypothesis never becomes a candidate edge — is not
+read as closed by a writer that cannot produce that kind of edge at all.
+The causal-graph interlock bullet is rewritten in place, dated, the same way
+this document's own history says a stale claim should be corrected rather
+than silently deleted.
+
+The failure the previous entry flagged is now explained rather than merely
+excused: `qip-fastbrain`'s `the_shipped_review_policy_admits_a_thesis_that_
+reaches_the_narrowed_sizing_budget` failed because it is exactly the kind of
+production caller ADR 0054 describes — a real cycle, over a committed tape's
+real instrument returns — and this tape's own two instruments clear the new
+writer's bar well before the first thesis ever reaches the construction seam,
+so every construction the test observes sees a causal graph already `Fresh`
+rather than permanently `Unavailable`. The test's fixed one-dimensional
+expectation (self-model calibrated or not) is corrected to the two
+independent facts DECIDE actually reads (self-model calibrated; causal graph
+fresh), with four hand-computed constants replacing two and a lookup
+function rather than two blind loops — never derived from
+`central_degradation`'s own multiplier, which `valuation_seam.rs`'s own
+comment already warns would check the arithmetic against itself. Both new
+lines were mutation-verified the same way: swapping one lookup-table entry
+made the per-construction check fail naming the wrong cycle and the wrong
+expected value, and forcing the freshness read to `false` failed the new
+premise assertion naming the reason, each restored byte-for-byte and
+reverified green.
+
+Two `Mechanism` variants are added (`TemporalPrecedence`,
+`InverseTemporalPrecedence`), each documented as proposing no economic
+channel — the honest cost of a method that establishes precedence rather
+than a mechanism. `qip_numerics::stats::granger_causality` and
+`qip_numerics::distributions::f_cdf` are new, general-purpose statistical
+primitives (a nested-OLS F-test and the F-distribution CDF via the same
+incomplete-beta machinery `student_t_cdf` already proves), not specific to
+the causal graph, and are tested against published F-table critical values
+and against the identity `F(1, ν) = t(ν)²` independently of either. No
+dependency was added: both live in `qip-numerics`, which this workspace
+already treats as the shared home for statistics services and the runtime
+both use.
+
+Fourteen new tests: `qip-numerics/tests/statistics.rs` (six — two for
+`f_cdf`, four for `granger_causality`, including the refusal case and the
+malformed-input case), `qip-world-model/tests/granger.rs` (six — the
+refusal case, the dependent-pair case, the inverted-sign case, the
+too-little-history case, the self-causation refusal and the non-finite
+refusal), and `qip-kernel/tests/causal_precedence.rs` (two — a real lagged
+pair through `Platform::observe` and `run_cycle` writes an edge, and an
+independent pair does not). Every one was mutation-verified: broken,
+confirmed to fail for the stated reason, restored byte-for-byte, confirmed
+to pass again — the refusal tests each got two mutations (disabling the
+significance bar alone, and the effect-size floor alone, to show neither
+guard is redundant with the other), and each mutation and its result is
+recorded in the commit that introduced the test.
+
+The paper-trading boundary is unaffected, confirmed rather than asserted:
+`grep -rn 'order\|Order\|capital\|Capital\|autonomy\|Autonomy\|placer\|Placer\|submit' backend/crates/services/qip-world-model/src/granger.rs`
+finds only prose ("order of magnitude", "ordered pairs"), and the same
+search over `Platform::discover_temporal_precedence` in `platform.rs` finds
+only "ordered pairs" and "a deterministic prefix of a stable order" — no
+interaction with an order, a capital envelope, or an autonomy ceiling
+anywhere in this change. This is a read/inference addition to the
+UNDERSTAND stage; nothing here sizes a position or reaches a venue.
+
+Gate: `cargo fmt --all --check` clean; `cargo clippy --workspace
+--all-targets` zero warnings; `cargo test --workspace --no-fail-fast` exit
+0, **4878 passed, 0 failed** (up from 4875, the figure the previous entry's
+concurrent snapshot reported with one failure that is now explained and
+fixed); dependency policy `dependency policy: 11 third-party package(s), all
+permitted`; secret scan `secret scan: nothing found`. Terraform gates were
+not run: no Terraform file was touched.
 
 To re-score a row: read the section in
 `docs/architecture/algorik-blueprint-v10.1-source.md`, run the row's command,
