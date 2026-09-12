@@ -1226,6 +1226,24 @@ const NO_TERMS_HAVE_BEEN_READ_SO_THERE_IS_NOTHING_TO_ATTEST: &str = "The deep \
      it unset is not a capability withheld from an operator but the absence of \
      a claim nobody is yet entitled to make.";
 
+const THE_TERRAFORM_HALF_OF_THIS_WIRING_IS_A_SEPARATE_CHANGE: &str = "The desk's \
+     §23.4 horizon policy has a real reader now -- `Platform::arm_horizon_gate`, \
+     called from `stage_learn` every cycle -- and a real parser in \
+     `qip-deepbrain`'s own composition root, `load_central_horizons`, which \
+     stops the process on a file present but malformed rather than arming the \
+     gate on a policy nobody stated. That closed the kernel-side half of the \
+     gap `grep -rn with_central backend/crates/apps -r` used to describe: no \
+     production caller anywhere. It deliberately did not touch \
+     `infrastructure/`, which is a different change with a different review -- \
+     the same one `QIP_WALLET_STATEMENT_PATH` and `QIP_CAPITAL_FABRIC_PATH` \
+     both went through, a root variable an operator can set and every tfvars \
+     leaving null with the reason written beside it, and this comment is what \
+     names the same treatment as owed here rather than assumed finished. \
+     Read this entry as a placeholder for that follow-up, not as an argument \
+     that the variable cannot be set: it can, once the Terraform half lands, \
+     and this line should be deleted the same cycle \
+     `capital_fabric_file`-style wiring for it does.";
+
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     (
         "qip-deepbrain",
@@ -1324,6 +1342,11 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         "qip-deepbrain",
         "QIP_OPENOBSERVE_AUTHORIZATION",
         NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_CENTRAL_HORIZONS_PATH",
+        THE_TERRAFORM_HALF_OF_THIS_WIRING_IS_A_SEPARATE_CHANGE,
     ),
     (
         "qip-api",

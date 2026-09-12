@@ -47,6 +47,7 @@ use qip_core::{Clock, SystemClock};
 use qip_deepbrain::config::DeepBrainConfig;
 use qip_deepbrain::{health, node, roster};
 use qip_financial::universe::Universe;
+use qip_kernel::central::{CentralConfig, HorizonPolicy};
 use qip_kernel::{Platform, PlatformConfig};
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
@@ -140,8 +141,26 @@ fn run() -> Result<()> {
     // qip-fastbrain: `deepbrain.yaml` set QIP_AUTONOMY_CEILING and this binary
     // never read it, so the ConfigMap presented a control that did nothing.
     // `deployable` refuses a live level rather than quietly lowering it.
+    //
+    // The §23.4 horizon policy, read here for the same reason: nothing in
+    // this workspace ever called `PlatformConfig::with_central` outside a
+    // test (`grep -n 'with_central' backend/crates/apps -r` found only
+    // `qip-api/tests/mesh.rs`), so `CentralPlane::arm_horizons` refused to
+    // arm on every deployed cycle for want of a policy rather than for want
+    // of a claim. Overlaid onto `CentralConfig::default()` rather than
+    // replacing it — this node states no view on the whole-book budget or
+    // the drawdown schedule, and a file that had to restate every field of
+    // `CentralConfig` to change one of them would be an invitation to drift
+    // the two apart. Absent, this changes nothing; malformed, it stops the
+    // process rather than arming the gate on a policy nobody actually
+    // stated.
+    let central = CentralConfig {
+        horizons: load_central_horizons()?,
+        ..CentralConfig::default()
+    };
     let platform_config = PlatformConfig::default()
         .with_event_log(config.event_log.clone())
+        .with_central(central)
         .with_live_ceiling(AutonomyLevel::deployable(
             std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref(),
         )?);
@@ -509,6 +528,46 @@ fn load_universe(
     Ok(catalogue)
 }
 
+/// The desk's §23.4 horizon policy — how the whole-book risk budget divides
+/// across the four blueprint horizons, and which horizon each strategy sits
+/// at — from the file `QIP_CENTRAL_HORIZONS_PATH` names.
+///
+/// `None` where the variable is unset or empty, which is every deployment
+/// today (`grep -rn QIP_CENTRAL_HORIZONS_PATH infrastructure/environments` —
+/// wired nowhere) and is `CentralPlane::arm_horizons`'s own honest answer for
+/// no policy stated: it refuses to arm rather than arming an empty one. A
+/// file that is present but cannot be read or does not parse as a
+/// [`HorizonPolicy`] stops the process instead — the same posture
+/// `load_universe` takes, because a desk that believed a policy was armed
+/// and was silently running on none would find out from a cycle report, at
+/// the moment the gap costs something to have missed, rather than at start-up.
+fn load_central_horizons() -> Result<Option<HorizonPolicy>> {
+    let path = std::env::var("QIP_CENTRAL_HORIZONS_PATH")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        Error::io(format!(
+            "configuration: QIP_CENTRAL_HORIZONS_PATH names {path}, which cannot be read: {error}"
+        ))
+    })?;
+    parse_central_horizons(&text, &path).map(Some)
+}
+
+/// The parsing half of [`load_central_horizons`], split out so it is
+/// testable without an environment variable or a file on disk — this
+/// workspace forbids `unsafe`, and Rust 2024 made `std::env::set_var` unsafe,
+/// so a test cannot set the variable this function's caller reads.
+fn parse_central_horizons(text: &str, path: &str) -> Result<HorizonPolicy> {
+    serde_json::from_str(text).map_err(|error| {
+        Error::invalid(format!(
+            "configuration: {path} does not hold a valid §23.4 horizon policy: {error}"
+        ))
+    })
+}
+
 fn banner(
     provenance: qip_deepbrain::trust::KeyProvenance,
     config: &DeepBrainConfig,
@@ -573,5 +632,99 @@ fn banner(
     println!("  event chain:      {}", archive.describe());
     if let Some(note) = config.durability_note() {
         println!("  note:             {note}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! `load_central_horizons` is the parser and the file read; this proves
+    //! the field it fills actually changes what `Platform::arm_horizon_gate`
+    //! does, not only that a document parses. Before this composition root
+    //! read the variable, `grep -n with_central backend/crates/apps -r`
+    //! found only `qip-api/tests/mesh.rs` — no production caller anywhere —
+    //! so `CentralPlane::arm_horizons` refused to arm on every deployed
+    //! cycle for want of a policy, which is the state `unconfigured` below
+    //! reproduces as the premise the rest of the test contrasts against.
+
+    // The workspace denies `panic_in_result_fn` for production code; in a
+    // test the assertion is the deliverable and `?` keeps the setup readable.
+    #![allow(clippy::panic_in_result_fn)]
+
+    use super::*;
+    use qip_core::Context;
+    use qip_financial::universe::Universe;
+    use qip_risk::limits::LimitSet;
+
+    fn start() -> qip_core::Timestamp {
+        qip_core::Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn platform_with(central: CentralConfig) -> Result<Platform> {
+        let config = PlatformConfig::default().with_central(central);
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+    }
+
+    #[test]
+    fn a_document_load_central_horizons_would_parse_arms_the_pool_gate() -> Result<()> {
+        let mut unconfigured = platform_with(CentralConfig::default())?;
+        assert!(
+            unconfigured.arm_horizon_gate(start())?.is_none(),
+            "the premise failed: an unconfigured platform already had a horizon policy"
+        );
+
+        // The document `load_central_horizons` reads and parses, written as
+        // an operator would write it rather than built through the Rust
+        // type — one bucket holding the whole default budget, and one claim,
+        // because a policy naming no strategy is refused separately (§23.4:
+        // every promotion to a capital-holding rung needs a claim to check
+        // against). Decimals as bare JSON integers, matching the shape
+        // `Decimal`'s own `Deserialize` accepts and `refuse_inexact_numbers`
+        // polices elsewhere in this same declaration family.
+        let text = r#"{
+            "available_inventory": 10000000,
+            "deployable_capital": 0,
+            "capital_not_reserved_for_calls": 0,
+            "reserved_capital": 0,
+            "claims": [
+                { "strategy": "strat-test", "source": "test", "horizon": "hours_to_days" }
+            ],
+            "despite": null
+        }"#;
+        let parsed = parse_central_horizons(text, "test-fixture")
+            .expect("the document this test wrote parses");
+
+        let mut configured = platform_with(CentralConfig {
+            horizons: Some(parsed),
+            ..CentralConfig::default()
+        })?;
+        assert!(
+            configured.arm_horizon_gate(start())?.is_some(),
+            "a stated horizon policy did not arm the gate"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_horizon_document_that_is_not_json_is_refused_by_name_rather_than_silently_leaving_the_gate_unarmed()
+     {
+        let error = parse_central_horizons("not json", "/etc/qip/horizons.json")
+            .expect_err("malformed JSON parsed as a horizon policy");
+        assert!(
+            error.message().contains("/etc/qip/horizons.json"),
+            "the refusal does not name the file that failed to parse: {}",
+            error.message()
+        );
+        assert!(
+            error.message().contains("§23.4"),
+            "the refusal does not say what kind of document was expected: {}",
+            error.message()
+        );
     }
 }
