@@ -492,6 +492,11 @@ fn run() -> Result<()> {
             .registration_registry()
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
         for source_id in &settings.source_ids {
+            // The prefix names the seam; the class stays the connector's
+            // own. Until 2026-09-12 both failures below were relabelled
+            // `invalid`, so a proxy that was not listening — `unavailable`,
+            // a deployment fact — read as a configuration value nobody
+            // could find wrong.
             let mut arm = qip_deepbrain::connectors::ConnectorArm::open(
                 source_id,
                 &settings.base_url,
@@ -499,10 +504,10 @@ fn run() -> Result<()> {
                 platform.config().seed,
                 clock.now(),
             )
-            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+            .map_err(configuration)?;
             let resumed = arm
                 .journal_to(config.storage.key_value(StreamJournal::NAMESPACE)?)
-                .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+                .map_err(configuration)?;
             connector_banner.push(format!(
                 "  connector:        {}; {}",
                 arm.describe(),
@@ -621,7 +626,35 @@ fn run() -> Result<()> {
         inherited,
     )?;
     println!("  shutdown:         {}", flushed.describe());
+    // The connector arms' sessions, released at an instant this root owns.
+    // After the flush rather than before it, so a connector that cannot
+    // stop cleanly does not leave the log unsealed; and not skipped, which
+    // is what every exit did until 2026-09-12 — `ConnectorArm::shutdown`
+    // had no caller.
+    evolution.shutdown_connectors(clock.now())?;
     Ok(())
+}
+
+/// Prefix a start-up failure with the seam it came from, keeping its class.
+///
+/// `Error::invalid(format!("configuration: {}", error.message()))` was the
+/// pattern, and it relabelled an `unavailable` open — the egress proxy not
+/// listening, a deployment fact — as `invalid`, the class of a value that
+/// is wrong, so an operator reading the code looked for a variable to fix
+/// rather than a service to start.
+fn configuration(error: Error) -> Error {
+    let message = format!("configuration: {}", error.message());
+    match error {
+        Error::Invalid(_) => Error::Invalid(message),
+        Error::NotFound(_) => Error::NotFound(message),
+        Error::Denied(_) => Error::Denied(message),
+        Error::Numeric(_) => Error::Numeric(message),
+        Error::Schema(_) => Error::Schema(message),
+        Error::Io(_) => Error::Io(message),
+        Error::Unavailable(_) => Error::Unavailable(message),
+        Error::Guard(_) => Error::Guard(message),
+        Error::Timeout(_) => Error::Timeout(message),
+    }
 }
 
 /// What this process will do, before it does any of it.

@@ -637,6 +637,15 @@ impl Platform {
     /// then, not a vendor standing behind the subject now. Such a reference
     /// is left out rather than re-labelled: the origin is what happened, and
     /// the count is what is true of this process.
+    ///
+    /// A `Discovered` reference has no live gate here, and that is stated
+    /// rather than hidden: the discovery path's registration
+    /// (`DataFinder::assess` → `RegisteredSource`) has no production caller
+    /// that reaches real bytes — `NetworkProbe` refuses every call — so no
+    /// deployed process puts one on the ledger, and this filter has nothing
+    /// to intersect it with. The day one does, it needs the same treatment
+    /// as the catalogue door: a live registration table to intersect
+    /// against, not a count of what a previous process discovered.
     pub fn sources_backing(&self, symbol: &str) -> BTreeMap<String, SourceOrigin> {
         self.references
             .sources_backing(symbol)

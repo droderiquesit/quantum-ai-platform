@@ -150,18 +150,20 @@ pub struct CampaignSummary {
     pub fallback_used: bool,
     pub concentration: ConcentrationVerdict,
     pub statistic: SketchedStatistic,
-    /// What `Platform::journal_campaign` returned: whether the manifest was
-    /// written to the log by this close. Reported rather than assumed —
-    /// `describe` hard-coded "manifest journaled" until 2026-09-12, while
-    /// every manifest after a restart was being suppressed as a duplicate.
-    pub journaled: bool,
 }
 
 impl CampaignSummary {
+    /// One line for the round. "manifest journaled" is stated because a
+    /// summary exists only for a campaign whose manifest the log took:
+    /// `assemble` turns `Platform::journal_campaign`'s `false` into an error
+    /// for an id it has just minted, so a summary carrying `journaled:
+    /// false` could never be built, and the field that said so — added
+    /// 2026-09-12 when `describe` hard-coded the phrase while manifests
+    /// were being suppressed — was a bool with one value.
     pub fn describe(&self) -> String {
         format!(
             "campaign {}: {} bar(s) of {} from {} ({}), {} to {}, ledger {}, {} flagged{}, \
-             {}; {}{}",
+             {}; {}; manifest journaled",
             self.id,
             self.bars,
             self.subject,
@@ -178,11 +180,6 @@ impl CampaignSummary {
             },
             self.concentration.describe(),
             self.statistic.describe(),
-            if self.journaled {
-                "; manifest journaled"
-            } else {
-                "; manifest NOT journaled: the log already held this campaign id"
-            }
         )
     }
 }
@@ -245,20 +242,17 @@ enum Door {
     Generated,
 }
 
-/// Where the engine's own stream's bytes come from, as the engine knows it
-/// and the descriptor does not: a descriptor names a source and a class, and
-/// a replay given a connector's name carries that connector's descriptor.
-/// The engine holds the adapter and knows whether it is a file, so it says.
-/// Until 2026-09-12 `assemble` could not tell, and a replay under a
-/// connector's admission was referenced as if this process had fetched the
-/// bytes from the vendor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StreamProvenance {
-    /// This process produced or fetched the bytes itself.
-    Live,
-    /// The bytes were read back from a recording somebody made.
-    Replayed,
-}
+/// Where the engine's own stream's bytes come from, as the adapter that
+/// holds them knows it and the descriptor does not: a descriptor names a
+/// source and a class, and a replay given a connector's name carries that
+/// connector's descriptor. Until 2026-09-12 `assemble` could not tell, and
+/// a replay under a connector's admission was referenced as if this process
+/// had fetched the bytes from the vendor; and until later the same day the
+/// engine *inferred* it from whether a standing admission was attached,
+/// which nothing pinned. It is now the adapter's own answer,
+/// `DataAdapter::provenance`, re-exported here so the campaign's callers
+/// name one type.
+pub use qip_market_ingestion::adapter::StreamProvenance;
 
 /// What assembling a subject's window produced.
 #[derive(Debug)]
@@ -469,9 +463,9 @@ pub fn assemble(
     // The id was minted an instant ago, so a log that already holds it is a
     // collision with a campaign some other process closed — and a manifest
     // that is not on the log is a fit nobody can later be shown the inputs
-    // of. An error, never a silent `false`.
-    let journaled = platform.journal_campaign(closed, now)?;
-    if !journaled {
+    // of. An error, never a silent `false` — which is why the summary below
+    // carries no `journaled` flag: a summary exists only past this line.
+    if !platform.journal_campaign(closed, now)? {
         return Err(Error::invalid(format!(
             "the log already holds a closed campaign under `{id}`, which this round has just \
              minted; the manifest for this fit is therefore not on the log. Campaign ids carry \
@@ -495,7 +489,6 @@ pub fn assemble(
             fallback_used,
             concentration,
             statistic,
-            journaled,
         },
     })))
 }
@@ -704,9 +697,10 @@ mod tests {
             "the id carries the subject, the cycle and the log's sequence: {}",
             summary.id
         );
-        assert!(
-            summary.journaled,
-            "the summary must report what the log said"
+        assert_eq!(
+            closed_campaigns(&platform)?.len(),
+            1,
+            "the manifest must be on the log, which is the only place it goes"
         );
         assert_eq!(summary.origin, SourceOrigin::Generated);
         assert_eq!(summary.source_id, "synthetic-exchange");
@@ -979,7 +973,6 @@ mod tests {
             first.id, second.id,
             "two campaigns, two ids across a restart"
         );
-        assert!(first.journaled && second.journaled);
 
         let platform_config = PlatformConfig::default().with_event_log_file(&path);
         let (context, _clock) = Context::deterministic(

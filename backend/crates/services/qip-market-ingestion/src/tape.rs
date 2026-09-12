@@ -787,6 +787,12 @@ impl DataAdapter for TapeFeed {
     fn owns_time(&self) -> bool {
         true
     }
+
+    /// A tape is a committed recording replayed on its own clock: read
+    /// back, not produced by this process's run.
+    fn provenance(&self) -> crate::adapter::StreamProvenance {
+        crate::adapter::StreamProvenance::Replayed
+    }
 }
 
 #[cfg(test)]

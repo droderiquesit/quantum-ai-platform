@@ -341,4 +341,10 @@ impl DataAdapter for ReplayAdapter {
         }
         Ok(out)
     }
+
+    /// A replay is a recording whatever its header says, and whether or not
+    /// anything admitted the source it names.
+    fn provenance(&self) -> crate::adapter::StreamProvenance {
+        crate::adapter::StreamProvenance::Replayed
+    }
 }

@@ -404,6 +404,39 @@ pub trait DataAdapter: std::fmt::Debug {
     fn owns_time(&self) -> bool {
         false
     }
+
+    /// Where this adapter's bytes come from: produced or fetched by this
+    /// process, or read back from a recording somebody made.
+    ///
+    /// A property of the adapter, because only the adapter knows whether it
+    /// is a file. The descriptor cannot say — a replay given a connector's
+    /// name carries that connector's descriptor — and until 2026-09-12 the
+    /// deep brain inferred it from whether a standing admission was
+    /// attached, which was a fact about the configuration and not about the
+    /// bytes: nothing pinned the inference, a replay with no admission read
+    /// as live, and a mutation to "always live" was caught by no test. The
+    /// default is `Live` because every adapter that opens a socket or
+    /// generates its own records is; the two that read a file override it.
+    fn provenance(&self) -> StreamProvenance {
+        StreamProvenance::Live
+    }
+}
+
+/// Where a stream's bytes come from, as the adapter that holds them knows
+/// it. See [`DataAdapter::provenance`].
+///
+/// Replayed bytes are never a vendor's: a file's header names a source, and
+/// the licensing gate may admit that source, but the bytes are the file's
+/// author's word, and a reference ledger that could not tell a replay from
+/// a fetch would credit a hand-written file with a vendor's standing. The
+/// research campaign resolves a `Replayed` stream to its own door for that
+/// reason (ADR 0057).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamProvenance {
+    /// This process produced or fetched the bytes itself.
+    Live,
+    /// The bytes were read back from a recording somebody made.
+    Replayed,
 }
 
 /// Marker for adapters producing market data.

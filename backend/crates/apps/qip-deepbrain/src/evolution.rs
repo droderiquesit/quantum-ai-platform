@@ -522,16 +522,14 @@ impl EvolutionEngine {
         Ok(Some(round))
     }
 
-    /// Where this engine's own stream's bytes come from. A standing
-    /// admission is attached only for a replay recorded from a connector —
-    /// the one way the root gives a file a connector's name — so holding one
-    /// is what makes the stream a replay.
+    /// Where this engine's own stream's bytes come from — the adapter's own
+    /// answer, `DataAdapter::provenance`. Until 2026-09-12 this was inferred
+    /// from whether a standing admission was attached, a fact about the
+    /// configuration rather than the bytes: an undeclared replay read as
+    /// live, and nothing pinned the inference at this level, so a mutation
+    /// to "always live" was caught by no test.
     fn provenance(&self) -> StreamProvenance {
-        if self.admission.is_some() {
-            StreamProvenance::Replayed
-        } else {
-            StreamProvenance::Live
-        }
+        self.adapter.provenance()
     }
 
     /// The distinct sources backing `subject`, each with its door: this
@@ -581,29 +579,74 @@ impl EvolutionEngine {
     /// bars. Returns how many records the platform absorbed, for the cycle
     /// line.
     ///
-    /// The arms are polled after the own stream and each is referenced on
-    /// the platform's ledger between its poll and its checkpoint commit; a
-    /// gate that has stopped granting withdraws its source and stops the
-    /// node here, as it stops the fast brain (see [`crate::connectors`]).
+    /// Each source is observed — and its bars teed — immediately after its
+    /// own poll succeeds, and the counts are summed; nothing accumulates
+    /// across the loop. The arms are polled after the own stream and each is
+    /// referenced on the platform's ledger between its poll and its
+    /// checkpoint commit, and a gate that has stopped granting withdraws its
+    /// source and stops the node here, as it stops the fast brain (see
+    /// [`crate::connectors`]). Until 2026-09-12 every poll's records were
+    /// collected into one batch and observed at the end, so an arm whose
+    /// poll refused after an earlier arm had already referenced, journaled
+    /// and committed its fetch left that earlier batch neither delivered
+    /// nor re-fetchable — the loss `ConnectorFeed::poll_referencing` closes
+    /// inside one poll, re-opened one seam up.
     pub fn sense(&mut self, platform: &mut Platform, until: Timestamp) -> Result<usize> {
-        let mut records = self.adapter.poll(until)?;
+        let own = self.adapter.poll(until)?;
+        let mut absorbed = Self::absorb(&mut self.history, self.config.history_cap, platform, own);
         for arm in &mut self.connectors {
-            records.extend(arm.poll(platform, until)?);
+            let records = arm.poll(platform, until)?;
+            absorbed += Self::absorb(
+                &mut self.history,
+                self.config.history_cap,
+                platform,
+                records,
+            );
         }
+        Ok(absorbed)
+    }
+
+    /// Tee one source's bars into the per-subject history and hand the
+    /// records to the platform. An associated function over the fields it
+    /// needs rather than a method, so `sense` can call it while it still
+    /// holds the connector arms mutably.
+    fn absorb(
+        history: &mut BTreeMap<String, Vec<Bar>>,
+        history_cap: usize,
+        platform: &mut Platform,
+        records: Vec<SensedRecord>,
+    ) -> usize {
         for record in &records {
             if let SensedRecord::Bar(bar) = record {
-                let bars = self
-                    .history
+                let bars = history
                     .entry(bar.object_id.as_str().to_string())
                     .or_default();
                 bars.push((**bar).clone());
-                if bars.len() > self.config.history_cap {
-                    let excess = bars.len() - self.config.history_cap;
+                if bars.len() > history_cap {
+                    let excess = bars.len() - history_cap;
                     bars.drain(..excess);
                 }
             }
         }
-        Ok(platform.observe(records))
+        platform.observe(records)
+    }
+
+    /// Release every connector arm's session at `at`, the instant the root
+    /// owns. `ConnectorArm::shutdown` existed with no caller until
+    /// 2026-09-12, so a node that stopped cleanly released its connectors'
+    /// sessions not at all; the root calls this after the node loop
+    /// returns. The first failure is returned after every arm has been
+    /// asked, so one arm that cannot stop does not keep the others open.
+    pub fn shutdown_connectors(&mut self, at: Timestamp) -> Result<()> {
+        let mut first_failure = None;
+        for arm in &mut self.connectors {
+            if let Err(failure) = arm.shutdown(at)
+                && first_failure.is_none()
+            {
+                first_failure = Some(failure);
+            }
+        }
+        first_failure.map_or(Ok(()), Err)
     }
 
     /// Run one round if the cadence says so and any subject has enough
@@ -2242,6 +2285,29 @@ mod tests {
             .collect())
     }
 
+    /// The synthetic exchange's bars for one subject — the first it barred
+    /// — as a history a test can hand an engine whose own stream carries
+    /// none.
+    fn recorded_bars_of_one_subject(minutes: i64) -> Result<(String, Vec<Bar>)> {
+        let market = recorded_market(minutes)?;
+        let subject = market
+            .iter()
+            .find_map(|record| match record {
+                SensedRecord::Bar(bar) => Some(bar.object_id.as_str().to_string()),
+                _ => None,
+            })
+            .ok_or_else(|| Error::not_found("a bar in the recorded market"))?;
+        let bars: Vec<Bar> = market
+            .into_iter()
+            .filter_map(|record| match record {
+                SensedRecord::Bar(bar) if bar.object_id.as_str() == subject => Some(*bar),
+                _ => None,
+            })
+            .collect();
+        assert!(!bars.is_empty(), "premise: the subject barred");
+        Ok((subject, bars))
+    }
+
     /// An engine over a replay that says it was recorded from `source`,
     /// admitted through `admission` — the shape the composition root builds
     /// for a replay with a `# recorded-from:` header — with the search and
@@ -2306,10 +2372,24 @@ mod tests {
     /// licence each catalogue entry names — rather than as two string
     /// literals that would match whatever the test wrote.
     ///
-    /// Mutated by making `recorded_ticks` return the whole market, bars
-    /// included — confirmed `as_recorded_from` then refuses the file at the
-    /// topic check and this fails before the premise, which is the adapter
-    /// half of the same finding, then restored. And, at the campaign level,
+    /// Until later the same day the closing check was vacuous: it looped
+    /// over `history`, and a tick replay has none, so it ran zero times
+    /// while this test was cited as the proof. Now the premise is asserted
+    /// and `sources_backing` is asked directly over a subject given bars by
+    /// hand, with a second vendor's reference on the ledger through the
+    /// replayed door: both doors read `ReplayedAdmitted`, the verdict
+    /// counts zero vendors, and the hold stands.
+    ///
+    /// Mutated three ways. `recorded_ticks` made to return the whole market,
+    /// bars included — confirmed `as_recorded_from` then refuses the file at
+    /// the topic check and this fails before the premise, which is the
+    /// adapter half of the same finding, then restored. `is_independent_vendor`
+    /// widened to `ReplayedAdmitted` — confirmed the verdict then counts two
+    /// vendors and the hold lifts, failing this, then restored. The
+    /// `StreamProvenance::Replayed` arm of `sources_backing` deleted (both
+    /// arms mapped to `CatalogueAdmitted`) — confirmed the own stream then
+    /// reads `CatalogueAdmitted` and this fails, then restored. At the
+    /// campaign level,
     /// `a_replay_under_admission_is_referenced_through_the_replayed_door_and_backs_no_vendor`
     /// holds the door itself.
     #[test]
@@ -2369,14 +2449,69 @@ mod tests {
             both.admitted_source(coinbase).is_some(),
             "premise: the gate admitted the replay's source to the platform"
         );
-        for subject in first.history.keys() {
-            let backing = first.sources_backing(&both, subject);
-            assert!(
-                !assess_concentration(backing.iter().map(|(id, origin)| (id.as_str(), *origin)))
-                    .is_sufficient(),
-                "a replay lifted the hold on {subject}"
-            );
+        // A tick replay holds no bar history, so a loop over `history` here
+        // ran zero times — which is what this test did until 2026-09-12,
+        // while being cited as the proof that replays never lift the hold.
+        // The premise is asserted, and the door is then asked directly over
+        // a subject given history by hand.
+        assert!(
+            first.history.is_empty(),
+            "premise: a tick replay carries no bars, so nothing below may depend on iterating \
+             its history"
+        );
+        let (subject, bars) = recorded_bars_of_one_subject(64)?;
+        first.history.insert(subject.clone(), bars);
+        // A second vendor's admission, and a reference through the *replayed*
+        // door under it, on the ledger — the two-header restart, stated at
+        // the ledger: two replays under two vendors' admissions.
+        {
+            use qip_data_finder::admission;
+            use qip_data_finder::reference::{DataPeriod, DataReference};
+            let manifest = qip_market_ingestion::connector_feed::shipped_manifest(frankfurter)?;
+            let decision = admission::admit(frankfurter, manifest.licensing, horizon)?;
+            let admitted = AdmittedSource::from_decision(&decision, &manifest)?;
+            both.admit_source(admitted.clone());
+            both.record_reference(
+                DataReference::of_admitted_replayed(
+                    &admitted,
+                    format!("bars://{frankfurter}/{subject}?interval=1m"),
+                    [subject.clone()],
+                    DataPeriod::instant(horizon),
+                    b"[{\"close\":\"100\"}]",
+                    horizon,
+                    Decimal::ZERO,
+                    1.0,
+                )?,
+                horizon,
+            )?;
         }
+        let backing: BTreeMap<String, SourceOrigin> =
+            first.sources_backing(&both, &subject).into_iter().collect();
+        assert_eq!(
+            backing.get(coinbase),
+            Some(&SourceOrigin::ReplayedAdmitted),
+            "the own stream is a replay under an admission and must come through the replayed \
+             door: {backing:?}"
+        );
+        assert_eq!(
+            backing.get(frankfurter),
+            Some(&SourceOrigin::ReplayedAdmitted),
+            "premise: the second vendor's reference is on the ledger through the replayed door"
+        );
+        assert_eq!(backing.len(), 2, "premise: two sources, two vendors' names");
+        let verdict =
+            assess_concentration(backing.iter().map(|(id, origin)| (id.as_str(), *origin)));
+        assert!(
+            !verdict.is_sufficient(),
+            "two replays under two vendors' admissions lifted the hold: {}",
+            verdict.describe()
+        );
+        assert_eq!(
+            verdict.viable_sources(),
+            0,
+            "a replayed door counts for no vendor: {}",
+            verdict.describe()
+        );
 
         // A replay that names no source: refused at the door, per subject,
         // and it backs nothing.
@@ -2801,6 +2936,164 @@ mod tests {
                 .sources_backing(subject.as_str())
                 .contains_key("coinbase-spot-ticker"),
             "a lapsed licence still backs the subject"
+        );
+        Ok(())
+    }
+
+    /// Provenance is the adapter's answer, not an inference from the
+    /// configuration: a replay-backed engine reports `Replayed` whether or
+    /// not a standing admission is attached, and the synthetic exchange
+    /// reports `Live`. Until 2026-09-12 the engine read `Replayed` off the
+    /// presence of an admission, so an undeclared replay read as live and
+    /// nothing at this level pinned the answer — both engine-level replay
+    /// tests fed ticks, so no window ever reached `assemble` as replayed.
+    ///
+    /// Mutated by making `EvolutionEngine::provenance` return `Live`
+    /// unconditionally — confirmed both replay halves then fail, then
+    /// restored.
+    #[test]
+    fn a_replay_backed_engine_reports_replayed_provenance_with_and_without_an_admission()
+    -> Result<()> {
+        use qip_market_ingestion::replay::ReplayAdapter;
+        let ticks = recorded_ticks(4)?;
+        assert!(!ticks.is_empty(), "premise: the exchange ticked");
+
+        // No admission attached: an undeclared replay.
+        let undeclared = EvolutionEngine::new(
+            EvolutionConfig::default(),
+            Box::new(ReplayAdapter::from_records("replay", ticks.clone())),
+            7,
+            recorded_universe()?,
+        )?;
+        assert!(undeclared.admission.is_none(), "premise: no admission");
+        assert_eq!(
+            undeclared.provenance(),
+            StreamProvenance::Replayed,
+            "a replay with no admission is still a recording"
+        );
+
+        // The same file under a connector's admission.
+        let admitted = engine_over_replay_admitted_by_the_catalogue("coinbase-spot-ticker", ticks)?;
+        assert!(
+            admitted.admission.is_some(),
+            "premise: an admission is attached"
+        );
+        assert_eq!(admitted.provenance(), StreamProvenance::Replayed);
+
+        // And the other side, or the two assertions above would hold of
+        // every engine.
+        assert_eq!(
+            engine(1).provenance(),
+            StreamProvenance::Live,
+            "the synthetic exchange produces its bytes in this process"
+        );
+        Ok(())
+    }
+
+    /// An arm whose poll refuses does not lose what an earlier arm already
+    /// delivered in the same pass. The first arm — the ECB source mapped
+    /// onto the subject by the stand-in — polls, references, journals and
+    /// commits; the second arm's licence has lapsed and its poll refuses,
+    /// which stops the pass with an error as it should. The first arm's
+    /// records must already be in the platform: until 2026-09-12 `sense`
+    /// collected every arm's records into one batch and observed it at the
+    /// end, so the `?` on the second arm exited before `Platform::observe`
+    /// and the first arm's batch — cursor committed past it — was neither
+    /// delivered nor re-fetchable. The same loss the bridge closes inside
+    /// one poll, one seam up.
+    ///
+    /// The proof is the feature store: the subject is not in the synthetic
+    /// universe, so the only `close` it can hold is the stand-in's print.
+    /// Mutated by restoring the accumulate-then-observe body of `sense` —
+    /// confirmed the subject then holds no `close` after the refused pass
+    /// and this fails, then restored.
+    #[test]
+    fn an_arm_that_refuses_does_not_lose_the_records_an_earlier_arm_delivered() -> Result<()> {
+        use qip_contracts::governance::Usage;
+        use qip_data_finder::admission::CatalogueEntry;
+        use qip_data_finder::legal::{LicensingPosture, SourceLicense};
+        use qip_data_finder::registration::RegistrationRegistry;
+        use qip_market_ingestion::connector::emulator::SourceEmulator;
+        use qip_market_ingestion::connectors::CoinbaseTickerConnector;
+        let subject = ObjectId::from_string("OBJ0000000000000000BTCUSD");
+        let opened = start();
+        let expiry = opened.saturating_add(Duration::from_days(1));
+
+        // The second arm: the Coinbase ticker under a licence that ends at
+        // `expiry`, so a pass at `expiry` is refused at its gate before any
+        // socket.
+        let mut manifest = CoinbaseTickerConnector::shipped_manifest()?;
+        manifest.endpoint.base_url = Some("http://127.0.0.1:1".to_string());
+        let connector = CoinbaseTickerConnector::new(
+            manifest.clone(),
+            "BTC-USD",
+            subject.clone(),
+            CoinbaseTickerConnector::VENUE,
+        )?;
+        let body = format!(
+            r#"{{"ask":"1","bid":"1","volume":"1","trade_id":1,"price":"1","size":"1","time":"{}"}}"#,
+            opened.to_rfc3339()
+        );
+        let lapsing = ConnectorArm::over_transport_admitted_by(
+            &[CatalogueEntry {
+                source_id: "coinbase-spot-ticker",
+                expected_class: manifest.licensing,
+                posture: LicensingPosture::declared(
+                    SourceLicense::new("terms-with-an-end-date", [Usage::Derive, Usage::Trade])?
+                        .expiring_at(expiry),
+                ),
+            }],
+            Box::new(connector),
+            manifest.clone(),
+            Box::new(SourceEmulator::serving(
+                manifest.endpoint.path.clone(),
+                body,
+            )),
+            &RegistrationRegistry::shipped(),
+            7,
+            opened,
+        )?;
+
+        let mut platform = platform()?;
+        let mut engine = engine(1)
+            .with_connector(frankfurter_arm(&subject, opened)?)
+            .with_connector(lapsing);
+        assert!(
+            platform
+                .world()
+                .features()
+                .current("close", subject.as_str(), expiry)
+                .is_none(),
+            "premise: the subject is outside the synthetic universe and holds nothing yet"
+        );
+
+        let refusal = engine
+            .sense(&mut platform, expiry)
+            .expect_err("a pass with a lapsed arm completed");
+        assert!(
+            refusal.message().contains("expired"),
+            "the refusal is not the second arm's gate: {refusal}"
+        );
+        assert!(
+            platform
+                .sources_backing(subject.as_str())
+                .contains_key("frankfurter-ecb-reference-rates"),
+            "premise: the first arm's fetch was referenced before the second refused"
+        );
+        let close = platform
+            .world()
+            .features()
+            .current("close", subject.as_str(), expiry)
+            .map(|value| value.value)
+            .ok_or_else(|| {
+                Error::not_found(
+                    "the first arm's print never reached the platform: its records were lost \
+                     behind the second arm's refusal",
+                )
+            })?;
+        assert!(
+            (close - 100.0).abs() < f64::EPSILON,
+            "the stand-in prints 100, not {close}"
         );
         Ok(())
     }
