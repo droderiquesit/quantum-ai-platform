@@ -1765,14 +1765,23 @@ fn a_log_another_handle_holds_is_refused_until_the_handle_is_released() {
 /// An inspection of a log a writer holds is refused by a message naming the
 /// holder, succeeds once the writer is gone, and holds nothing afterwards:
 /// the writer's open is not refused behind it, and an append to the
-/// inspected log never reaches the file. Until 2026-09-12 the only open was
-/// the writer's, so `qip replay` on a running node's journal got the lock
-/// refusal relabelled as "not an event log this platform wrote" — an
-/// operator sent to look for corruption in a file that was merely in use.
+/// inspected log is refused by name and reaches neither memory nor the
+/// file. Until 2026-09-12 the only open was the writer's, so `qip replay`
+/// on a running node's journal got the lock refusal relabelled as "not an
+/// event log this platform wrote" — an operator sent to look for corruption
+/// in a file that was merely in use. And until later the same day an
+/// inspected log accepted `append` silently: the record reached memory,
+/// minted the next sequence over the file's chain and put nothing on disk,
+/// which this test then asserted as the intended shape. A chain the file
+/// does not hold, with no error to say so, is the thing a read-only open
+/// exists to make impossible.
 ///
-/// Mutated by deleting the `try_lock_shared` match in
+/// Mutated two ways. Deleting the `try_lock_shared` match in
 /// `inspect_with_capacity` — confirmed the inspection then succeeds while
-/// the writer holds the file and the first assertion fails, then restored.
+/// the writer holds the file and the first assertion fails. Deleting the
+/// `inspected` refusal at the top of `append` — confirmed the append then
+/// succeeds, the log reads four records, and the refusal assertion fails.
+/// Each restored.
 #[test]
 fn an_inspection_of_a_held_log_names_the_holder_and_once_released_holds_nothing_itself() {
     let dir = std::env::temp_dir().join(format!("qip-log-inspect-held-{}", std::process::id()));
@@ -1801,13 +1810,28 @@ fn an_inspection_of_a_held_log_names_the_holder_and_once_released_holds_nothing_
     );
     assert_eq!(inspected.verify_chain(), Ok(()));
     // The inspection released its lock with the read: a writer opens the
-    // file afterwards, and the inspected log's own append reaches memory
-    // only, so the file still holds exactly what the writer wrote.
+    // file afterwards. And the inspected log's own append is refused by
+    // name — the refusal says which open it came through and which to use
+    // instead — so it reaches neither memory nor the file, and the file
+    // still holds exactly what the writer wrote.
     let reopened = EventLog::open(&path).expect("an inspection must not hold the file");
     assert_eq!(reopened.len(), 3);
     drop(reopened);
-    inspected.append(&erased(&ctx, now, tick("T4"))).unwrap();
-    assert_eq!(inspected.len(), 4, "premise: the append reached memory");
+    let refused = inspected
+        .append(&erased(&ctx, now, tick("T4")))
+        .expect_err("an inspected log accepted an append");
+    assert_eq!(refused.code(), "denied", "got {refused:?}");
+    assert!(
+        refused.message().contains("EventLog::inspect")
+            && refused.message().contains("EventLog::open"),
+        "the refusal does not name the open it came through and the one to use: {refused}"
+    );
+    assert_eq!(
+        inspected.len(),
+        3,
+        "a refused append to an inspected log reached memory"
+    );
+    assert_eq!(inspected.verify_chain(), Ok(()));
     let on_disk = std::fs::read_to_string(&path).unwrap();
     assert_eq!(
         on_disk

@@ -105,6 +105,15 @@ pub struct EventLog {
     /// question nobody asks of them would be memory spent on nothing.
     by_idempotency: BTreeSet<String>,
     path: Option<PathBuf>,
+    /// Whether this log was opened by [`Self::inspect`], and so refuses
+    /// `append`. An inspected log carries a file's records and no path, and
+    /// until 2026-09-12 that was all that distinguished it from an in-memory
+    /// log: an append reached memory silently, minted the next sequence
+    /// over the file's chain and put nothing on disk, so a tool that
+    /// inspected a journal and then, by mistake, wrote to it held a chain
+    /// the file did not, with no error to say so. The marker makes the
+    /// read-only intent a refusal rather than a convention.
+    inspected: bool,
     /// Cap on retained records. Always set: an unbounded default is how this
     /// grew without limit in every production construction.
     capacity: usize,
@@ -199,6 +208,7 @@ impl EventLog {
             by_event_id: BTreeMap::new(),
             by_idempotency: BTreeSet::new(),
             path: None,
+            inspected: false,
             capacity: DEFAULT_CAPACITY,
             durability: Durability::Synchronous,
             evicted_replaceable: 0,
@@ -283,11 +293,13 @@ impl EventLog {
     /// refused while a writer holds the file.
     ///
     /// The returned log is *not* file-backed. It carries the records the
-    /// file held at the instant it was read and no path, so an append to it
-    /// reaches memory and never the file — it is the shape for a tool that
-    /// checks a journal, not one that resumes it. Three things distinguish
-    /// it from [`Self::open_with_capacity`], each of which the CLI's replay
-    /// needed and the writer's open could not give it until 2026-09-12:
+    /// file held at the instant it was read and no path, and it refuses
+    /// [`Self::append`] by name — it is the shape for a tool that checks a
+    /// journal, not one that resumes it, and until 2026-09-12 an append to
+    /// it reached memory silently, which is a chain the file does not hold
+    /// with nothing to say so. Three things distinguish it from
+    /// [`Self::open_with_capacity`], each of which the CLI's replay needed
+    /// and the writer's open could not give it until 2026-09-12:
     ///
     /// * **It never creates the file.** The writer's open creates an absent
     ///   path and returns an empty log, and a checker pointed at a mistyped
@@ -314,6 +326,7 @@ impl EventLog {
     pub fn inspect_with_capacity(path: impl AsRef<Path>, capacity: usize) -> Result<Self> {
         let path = path.as_ref();
         let mut log = Self::in_memory().with_capacity(capacity)?;
+        log.inspected = true;
         let file = match std::fs::File::open(path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -480,6 +493,15 @@ impl EventLog {
     /// memory, nothing on disk, and a caller that knows its event was not
     /// recorded.
     pub fn append(&mut self, event: &AnyEvent) -> Result<u64> {
+        // Before any other check, so a refused append to an inspected log
+        // leaves it exactly as read: nothing indexed, no sequence minted.
+        if self.inspected {
+            return Err(Error::denied(
+                "this event log was opened by EventLog::inspect, which is read-only; open it \
+                 with EventLog::open to resume it. An append here would reach memory and never \
+                 the file, and a chain the file does not hold is not a record of anything",
+            ));
+        }
         self.reject_duplicate_event_id(event.event_id.as_str())?;
         self.make_room(event.topic)?;
         let sequence = self.next_sequence();
