@@ -529,12 +529,19 @@ fn run() -> Result<()> {
             let resumed = match journaled {
                 Ok(resumed) => resumed,
                 Err(error) => {
-                    // Both released, and the first failure reported: the
-                    // arm's own before the earlier arms', so one arm that
-                    // cannot stop does not keep the others open.
-                    let release = arm
-                        .shutdown(clock.now())
-                        .and(evolution.shutdown_connectors(clock.now()));
+                    // Both released, and both failures named if both fail:
+                    // the arm's own before the earlier arms', so one arm
+                    // that cannot stop does not keep the others open, and
+                    // an operator reading a double-failure exit is not told
+                    // about only one of the two dead sessions. Until
+                    // 2026-09-12 this was `.and()`, which runs both releases
+                    // (its argument is evaluated regardless) but reports
+                    // only the earlier one's error when the earlier one
+                    // fails — `fold_releases` keeps both texts instead.
+                    let release = fold_releases(
+                        arm.shutdown(clock.now()),
+                        evolution.shutdown_connectors(clock.now()),
+                    );
                     return Err(with_release(error, release));
                 }
             };
@@ -705,6 +712,33 @@ fn run() -> Result<()> {
 /// rather than a service to start.
 fn configuration(error: Error) -> Error {
     relabel(&error, format!("configuration: {}", error.message()))
+}
+
+/// Two releases that must both run, folded into one `Result` that names
+/// both failures rather than only the first.
+///
+/// `arm.shutdown(...).and(evolution.shutdown_connectors(...))` was the
+/// pattern until 2026-09-12: `Result::and`'s argument is evaluated
+/// regardless of `self`, so both releases did run, but `.and()` still
+/// returns only `self`'s `Err` when `self` fails, discarding whatever
+/// `evolution.shutdown_connectors` reported. An operator reading the exit
+/// message after both a connector arm and the evolution's other connectors
+/// failed to release saw one dead session named and had no way to know a
+/// second was left open too. Mirrors [`relabel`]'s class-preserving rewrite:
+/// the first failure's class is kept, its message gains the second's.
+fn fold_releases(first: Result<()>, second: Result<()>) -> Result<()> {
+    match (first, second) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(only), Ok(())) | (Ok(()), Err(only)) => Err(only),
+        (Err(first), Err(second)) => Err(relabel(
+            &first,
+            format!(
+                "{}; and a second connector session also failed to release: {}",
+                first.message(),
+                second.message()
+            ),
+        )),
+    }
 }
 
 /// `error`, with a failed release of the connector sessions appended to it
@@ -1034,6 +1068,46 @@ mod tests {
             "the refusal does not say what kind of document was expected: {}",
             error.message()
         );
+    }
+
+    /// A double release failure names both failures, not only the first.
+    ///
+    /// Until 2026-09-12 the release at the connector-journal failure arm was
+    /// composed with `arm.shutdown(...).and(evolution.shutdown_connectors(...))`:
+    /// `Result::and`'s argument is a value, so both releases still ran, but
+    /// `.and()` discards the second failure whenever the first side is
+    /// already an `Err`. An operator reading a double-failure exit saw one
+    /// dead session named and had no way to know a second was left open.
+    ///
+    /// Mutated by reverting `fold_releases` to `first.and(second)` —
+    /// confirmed the double-failure case then reports only `"arm failed"`
+    /// and the assertion for `"evolution failed"` fails; restored.
+    #[test]
+    fn a_double_release_failure_names_both_failures() {
+        let first = Err(Error::io("arm failed"));
+        let second = Err(Error::io("evolution failed"));
+        let folded = fold_releases(first, second).expect_err("two failed releases folded to Ok");
+        assert!(
+            folded.message().contains("arm failed"),
+            "the folded release dropped the first failure: {}",
+            folded.message()
+        );
+        assert!(
+            folded.message().contains("evolution failed"),
+            "the folded release dropped the second failure: {}",
+            folded.message()
+        );
+
+        // A single failure on either side is reported as itself, not padded
+        // with a claim that a second release also failed.
+        let single = fold_releases(Err(Error::io("arm failed")), Ok(()))
+            .expect_err("a single failed release folded to Ok");
+        assert_eq!(single.message(), "arm failed");
+        let single = fold_releases(Ok(()), Err(Error::io("evolution failed")))
+            .expect_err("a single failed release folded to Ok");
+        assert_eq!(single.message(), "evolution failed");
+
+        fold_releases(Ok(()), Ok(())).expect("two successful releases must fold to Ok");
     }
 
     #[test]
