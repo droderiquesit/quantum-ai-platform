@@ -11,5 +11,11 @@ repository.workspace = true
 serde.workspace = true
 qip-core.workspace = true
 
+[dev-dependencies]
+# The sketch's wire-side refusal is proven by deserialising a bound the
+# constructor refuses; the library that reads JSON is the one to prove it
+# with. A dev-dependency: the numerics crate itself parses nothing.
+serde_json.workspace = true
+
 [lints]
 workspace = true

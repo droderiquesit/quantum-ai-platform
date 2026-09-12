@@ -49,16 +49,50 @@
 use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
+/// The most counters a sketch may hold: 65,536 `u64`s, half a megabyte.
+///
+/// The module doc promises kilobytes and the promise has to be a number
+/// somewhere, because `w·d` is `⌈e/ε⌉ · ⌈ln 1/δ⌉` and both factors grow
+/// without limit as their fraction shrinks: `ε = 10⁻⁹` alone asks for 2.7
+/// billion counters per row, and a bound small enough for its product to
+/// overflow `usize` would, without this ceiling, either abort the process in
+/// `vec!` or wrap to a sketch far smaller than the bound it claims. The
+/// campaign's own bound (`ε = 0.001, δ = 0.01`) is 13,595 counters, so the
+/// ceiling is roughly four times what the one production consumer asks for.
+pub const MAX_COUNTERS: usize = 65_536;
+
 /// The `(ε, δ)` a sketch is built from and answers to.
 ///
 /// `ε` is the overestimate, as a fraction of everything counted; `δ` is the
 /// probability of exceeding it. Both are open-interval fractions, refused at
 /// zero (a sketch with no error is not a sketch, it is a hash map) and at one
-/// (a bound that permits any answer bounds nothing).
+/// (a bound that permits any answer bounds nothing), and the pair is refused
+/// when the counters it implies exceed [`MAX_COUNTERS`].
+///
+/// [`ErrorBound::new`] is the only way in, on the wire as well as in code:
+/// deserialisation goes through the same constructor, so a manifest edited
+/// by hand to declare `epsilon: 0` is refused at the read rather than
+/// producing a sketch that abides by no bound at all.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "ErrorBoundWire")]
 pub struct ErrorBound {
     epsilon: f64,
     delta: f64,
+}
+
+/// The wire shape, validated through [`ErrorBound::new`] on the way in.
+#[derive(Deserialize)]
+struct ErrorBoundWire {
+    epsilon: f64,
+    delta: f64,
+}
+
+impl TryFrom<ErrorBoundWire> for ErrorBound {
+    type Error = Error;
+
+    fn try_from(wire: ErrorBoundWire) -> Result<Self> {
+        Self::new(wire.epsilon, wire.delta)
+    }
 }
 
 impl ErrorBound {
@@ -72,7 +106,22 @@ impl ErrorBound {
                 )));
             }
         }
-        Ok(Self { epsilon, delta })
+        let bound = Self { epsilon, delta };
+        // The product is checked rather than computed: a pair small enough
+        // to overflow `usize` is refused here for the same reason as one
+        // that merely exceeds the ceiling, and neither reaches `vec!`.
+        match bound.width().checked_mul(bound.depth()) {
+            Some(counters) if counters <= MAX_COUNTERS => Ok(bound),
+            counters => Err(Error::invalid(format!(
+                "a sketch with epsilon {epsilon} and delta {delta} needs {} counters — {} per \
+                 row across {} rows — and this platform bounds a sketch at {MAX_COUNTERS}; a \
+                 bound that tight is a hash map wearing a sketch's name, and it is refused \
+                 rather than allocated",
+                counters.map_or_else(|| "more than usize::MAX".to_string(), |n| n.to_string()),
+                bound.width(),
+                bound.depth()
+            ))),
+        }
     }
 
     pub const fn epsilon(&self) -> f64 {
@@ -83,14 +132,24 @@ impl ErrorBound {
         self.delta
     }
 
-    /// Counters per row: `⌈e/ε⌉`.
+    /// Counters per row: `⌈e/ε⌉`. The cast saturates for an `ε` too small to
+    /// represent, which is what lets [`Self::new`] refuse it by arithmetic.
     pub fn width(&self) -> usize {
         (std::f64::consts::E / self.epsilon).ceil() as usize
     }
 
-    /// Rows: `⌈ln(1/δ)⌉`, and never fewer than one.
+    /// Rows: `⌈ln(1/δ)⌉`. At least one without a floor being written down:
+    /// `δ` is strictly below one, so `1/δ` is strictly above one and its
+    /// logarithm strictly positive, and the ceiling of a positive number is
+    /// at least one. A `.max(1)` used to sit here and could never fire.
     pub fn depth(&self) -> usize {
-        ((1.0 / self.delta).ln().ceil() as usize).max(1)
+        (1.0 / self.delta).ln().ceil() as usize
+    }
+
+    /// The counters a sketch built from this bound holds: `width × depth`,
+    /// which [`Self::new`] has already checked against [`MAX_COUNTERS`].
+    pub fn counters(&self) -> usize {
+        self.width().saturating_mul(self.depth())
     }
 
     /// The most an estimate may exceed the truth by, after `total`
@@ -137,6 +196,11 @@ pub struct CountMinSketch {
 }
 
 impl CountMinSketch {
+    /// A sketch under `bound`. Infallible on purpose: an [`ErrorBound`] can
+    /// only be built through [`ErrorBound::new`], which has already refused
+    /// a pair whose counters exceed [`MAX_COUNTERS`] or overflow, so the
+    /// allocation below is bounded by the type and not by a check repeated
+    /// here.
     pub fn new(bound: ErrorBound) -> Self {
         let width = bound.width();
         let depth = bound.depth();
@@ -149,7 +213,7 @@ impl CountMinSketch {
             bound,
             width,
             depth,
-            counts: vec![0; width * depth],
+            counts: vec![0; bound.counters()],
             multipliers,
             total: 0,
         }
@@ -247,6 +311,17 @@ mod tests {
     /// `estimate` — confirmed the overcount assertion then fails on the tail
     /// keys, then restored. Also mutated by halving `width()` — confirmed
     /// the bound is then exceeded, then restored.
+    ///
+    /// A note for whoever changes a hash constant. The `(ε, δ)` guarantee is
+    /// probabilistic — it holds with probability `1 − δ`, here 99% — and
+    /// this test is one draw from that distribution: the 600 keys, the
+    /// FNV-1a seed, the splitmix multipliers and the row count together fix
+    /// which keys collide with which. Changing any hash constant is a fresh
+    /// draw, and a fresh draw can land in the 1% and fail the overcount
+    /// assertion below without the sketch being wrong. If that happens,
+    /// the honest responses are to widen the stream and re-check the
+    /// failure rate against `δ`, or to change the constant back; the
+    /// dishonest one is to loosen `allowed`.
     #[test]
     fn an_estimate_never_undercounts_and_stays_within_the_declared_bound_on_a_skewed_stream()
     -> Result<()> {
@@ -311,6 +386,57 @@ mod tests {
                 .expect_err(&format!("({epsilon}, {delta}) was accepted as a bound"));
             assert_eq!(error.code(), "invalid", "got {error:?}");
         }
+    }
+
+    /// The memory bound, and the overflow behind it. A bound whose counters
+    /// would exceed [`MAX_COUNTERS`] is refused by name; a bound so tight
+    /// that `width × depth` overflows `usize` is refused the same way rather
+    /// than wrapping to a small sketch or aborting in `vec!`; and the same
+    /// refusal reaches the wire, so a serialised bound cannot smuggle in a
+    /// pair the constructor would have refused.
+    ///
+    /// Mutated by replacing the `checked_mul` match with `Ok(bound)` —
+    /// confirmed every refusal below then admits, and the wire half too,
+    /// then restored.
+    #[test]
+    fn a_bound_whose_counters_exceed_the_ceiling_or_overflow_is_refused() -> Result<()> {
+        // Premise: the ceiling admits the campaign's own bound with room.
+        let campaign = ErrorBound::new(0.001, 0.01)?;
+        assert_eq!(campaign.counters(), 2719 * 5);
+        assert!(campaign.counters() < MAX_COUNTERS);
+
+        // Past the ceiling by arithmetic alone: 2.7 billion counters per
+        // row, one row.
+        let too_tight =
+            ErrorBound::new(1e-9, 0.5).expect_err("a billion-counter row was allocated");
+        assert_eq!(too_tight.code(), "invalid", "got {too_tight:?}");
+        assert!(
+            too_tight.message().contains(&MAX_COUNTERS.to_string()),
+            "the refusal does not name the ceiling: {too_tight}"
+        );
+
+        // The overflow edge: an epsilon so small the width saturates to
+        // `usize::MAX`, and a delta small enough that the depth is above one,
+        // so the product overflows rather than merely exceeding.
+        let saturated = ErrorBound::new(f64::MIN_POSITIVE, 1e-6)
+            .expect_err("an overflowing counter product was accepted");
+        assert!(
+            saturated.message().contains("more than usize::MAX"),
+            "the refusal does not say the product overflowed: {saturated}"
+        );
+
+        // And the wire is gated the same way: the pair `new` refuses is
+        // refused by `serde_json` too, because deserialisation goes through
+        // `new`.
+        let smuggled: std::result::Result<ErrorBound, _> =
+            serde_json::from_str(r#"{"epsilon":1e-9,"delta":0.5}"#);
+        assert!(
+            smuggled.is_err(),
+            "a bound the constructor refuses was accepted off the wire"
+        );
+        let round_trip: ErrorBound = serde_json::from_str(&serde_json::to_string(&campaign)?)?;
+        assert_eq!(round_trip, campaign);
+        Ok(())
     }
 
     /// The consumer's refusal: the same sketch is usable for a coarse

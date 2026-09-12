@@ -71,6 +71,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// monitored", made a field on the manifest so the number never travels
 /// without the bound that qualifies it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "SketchedStatisticWire")]
 pub struct SketchedStatistic {
     /// What was estimated, e.g. `bars_per_subject`.
     name: String,
@@ -82,21 +83,52 @@ pub struct SketchedStatistic {
     bound: ErrorBound,
 }
 
+/// The wire shape, validated through [`SketchedStatistic::new`] on the way
+/// in, so a manifest read back off the log cannot carry a statistic the
+/// constructor would have refused.
+#[derive(Deserialize)]
+struct SketchedStatisticWire {
+    name: String,
+    key: String,
+    estimate: u64,
+    total: u64,
+    bound: ErrorBound,
+}
+
+impl TryFrom<SketchedStatisticWire> for SketchedStatistic {
+    type Error = Error;
+
+    fn try_from(wire: SketchedStatisticWire) -> Result<Self> {
+        Self::new(wire.name, wire.key, wire.estimate, wire.total, wire.bound)
+    }
+}
+
 impl SketchedStatistic {
+    /// Refuses an estimate above the total: a count-min estimate is a
+    /// minimum over counters that each saw at most every increment, so an
+    /// estimate larger than everything counted is not a loose estimate but
+    /// a number no sketch produced.
     pub fn new(
         name: impl Into<String>,
         key: impl Into<String>,
         estimate: u64,
         total: u64,
         bound: ErrorBound,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        if estimate > total {
+            return Err(Error::invalid(format!(
+                "a sketched estimate of {estimate} exceeds the {total} the sketch counted in \
+                 all; no count-min sketch produces that number, so it is refused rather than \
+                 recorded beside a bound it cannot have come from"
+            )));
+        }
+        Ok(Self {
             name: name.into(),
             key: key.into(),
             estimate,
             total,
             bound,
-        }
+        })
     }
 
     pub fn name(&self) -> &str {
@@ -794,6 +826,36 @@ mod tests {
 
         let manifest = campaign.close();
         assert_eq!(manifest.entries().len(), 2);
+        Ok(())
+    }
+
+    /// A sketched statistic whose estimate exceeds its total is a number no
+    /// sketch produced, and it is refused in code and on the wire alike.
+    ///
+    /// Mutated by deleting the `estimate > total` refusal in
+    /// `SketchedStatistic::new` — confirmed both halves then accept, then
+    /// restored.
+    #[test]
+    fn a_sketched_estimate_above_its_total_is_refused_in_code_and_on_the_wire() -> Result<()> {
+        let bound = ErrorBound::new(0.01, 0.01)?;
+        // Premise: a possible statistic builds and round-trips.
+        let honest = SketchedStatistic::new("bars_per_subject", "AAA", 300, 300, bound)?;
+        let text = serde_json::to_string(&honest)?;
+        let back: SketchedStatistic = serde_json::from_str(&text)?;
+        assert_eq!(back, honest);
+
+        let refused = SketchedStatistic::new("bars_per_subject", "AAA", 301, 300, bound)
+            .expect_err("an estimate above everything counted was recorded");
+        assert_eq!(refused.code(), "invalid", "got {refused:?}");
+
+        // The same statistic hand-written onto the wire is refused at the
+        // read, because the read goes through `new`.
+        let forged = text.replace("\"estimate\":300", "\"estimate\":301");
+        assert_ne!(forged, text, "premise: the forgery changed the text");
+        assert!(
+            serde_json::from_str::<SketchedStatistic>(&forged).is_err(),
+            "a statistic the constructor refuses was accepted off the wire"
+        );
         Ok(())
     }
 

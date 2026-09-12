@@ -306,7 +306,7 @@ pub fn assemble(
         sketch.estimate(subject.as_str()),
         sketch.total(),
         config.sketch,
-    );
+    )?;
     let tolerance = config.tolerance_fraction * minimum_bars as f64;
     if !config.sketch.tolerable_for(sketch.total(), tolerance) {
         return Err(Error::denied(format!(
