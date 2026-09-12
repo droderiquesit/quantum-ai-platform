@@ -337,7 +337,7 @@ pub fn run(
             // cycle's bars and a strategy searched over them describe the same
             // window, which is what makes the two rounds comparable after the
             // fact.
-            outcome.learning = engine.maybe_learn(cycles, now)?;
+            outcome.learning = engine.maybe_learn(platform, cycles, now)?;
             // A third, independent cadence: discovery has no dependency on
             // whether a search or a fit ran this cycle, and gating it behind
             // either would make "no candidates are configured" and "the

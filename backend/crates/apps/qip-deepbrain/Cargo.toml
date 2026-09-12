@@ -60,5 +60,12 @@ qip-transport.workspace = true
 # API serves what the brains recorded. In-tree; not a third-party dependency.
 qip-reasoning-engine.workspace = true
 
+[dev-dependencies]
+# The campaign tests decode the closed-manifest record straight off the
+# platform's event log, which is a stream frame; the library that seals
+# frames is the one that reads them back. A dev-dependency and not a
+# dependency: the node never decodes its own log.
+qip-streaming.workspace = true
+
 [lints]
 workspace = true

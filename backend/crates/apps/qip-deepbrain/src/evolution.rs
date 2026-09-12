@@ -56,6 +56,11 @@ use qip_simulation_engine::validation::PurgedSplit;
 use qip_strategy::compile::StrategyCompiler;
 use std::collections::BTreeMap;
 
+use crate::campaign::{self, CampaignConfig};
+use qip_core::kv::KeyValueStore;
+use qip_data_finder::campaign::{ConcentrationVerdict, assess_concentration};
+use std::sync::Arc;
+
 /// How the evolution loop is tuned. Every knob is a policy with a reason,
 /// not a magic number discovered in a constructor.
 #[derive(Clone, Debug)]
@@ -198,6 +203,14 @@ pub struct RoundSummary {
     /// is refused is a search that found nothing worth funding — which is a
     /// result, and one nothing recorded before this counted it.
     pub gate_refused: usize,
+    /// Candidates registered and *not* put in front of the holdout gate,
+    /// because the subject's data class is backed by fewer independent
+    /// sources than §22.3 requires for promotion past validation (rule 31).
+    /// They stay `Candidate`; nothing about them was judged, and the count
+    /// says so rather than folding them into `gate_refused`.
+    pub held_back: usize,
+    /// The concentration verdict the round applied, where a round ran.
+    pub concentration: Option<ConcentrationVerdict>,
     /// The search's cumulative trial count after this round — the number
     /// every holdout is deflated by.
     pub trials: usize,
@@ -209,7 +222,7 @@ impl RoundSummary {
     pub fn describe(&self) -> String {
         format!(
             "evolution: {} proposed {} on {}, {} admitted, {} registered, {} discarded, \
-             {} promoted, {} refused at the gate, {} trial(s) on the ledger",
+             {} promoted, {} refused at the gate, {} held back ({}), {} trial(s) on the ledger",
             self.proposed,
             if self.proposed == 1 {
                 "candidate"
@@ -222,6 +235,10 @@ impl RoundSummary {
             self.discarded,
             self.promoted,
             self.gate_refused,
+            self.held_back,
+            self.concentration
+                .as_ref()
+                .map_or_else(|| "no concentration verdict".to_string(), |v| v.describe()),
             self.trials
         )
     }
@@ -258,6 +275,12 @@ pub struct EvolutionEngine {
     /// where a candidate list comes from, and [`Self::with_discovery`] is
     /// the one door that attaches one.
     discovery: Option<crate::discovery::DiscoveryDesk>,
+    /// Where a closed campaign's manifest is written, when the node has a
+    /// store — `None` journals it to the platform's event log only, which
+    /// every campaign does regardless.
+    campaign_store: Option<Arc<dyn KeyValueStore>>,
+    /// The bounds every learning round's campaign runs under (§22.4).
+    campaign_config: CampaignConfig,
 }
 
 impl std::fmt::Debug for EvolutionEngine {
@@ -298,12 +321,30 @@ impl EvolutionEngine {
             learning: LearningDesk::new(config_learning, seed),
             stats: EvolutionStats::default(),
             discovery: None,
+            campaign_store: None,
+            campaign_config: CampaignConfig::standard()?,
         })
     }
 
     /// Attach a discovery desk (§7.4-§7.6.2). Replaces one attached before.
     pub fn with_discovery(mut self, desk: crate::discovery::DiscoveryDesk) -> Self {
         self.discovery = Some(desk);
+        self
+    }
+
+    /// Write every closed campaign's manifest to `store`, under the campaign
+    /// id, beside the event-log record every campaign gets anyway (§22.4:
+    /// "the manifest proves what was used at the time").
+    pub fn with_campaign_store(mut self, store: Arc<dyn KeyValueStore>) -> Self {
+        self.campaign_store = Some(store);
+        self
+    }
+
+    /// Run every learning round's campaign under `config` instead of the
+    /// standard bounds. For a test that wants to hold the sketch's declared
+    /// error against the fit's tolerance and watch the refusal fire.
+    pub fn with_campaign_config(mut self, config: CampaignConfig) -> Self {
+        self.campaign_config = config;
         self
     }
 
@@ -360,7 +401,24 @@ impl EvolutionEngine {
     /// questions at different rates. They share a subject: the one the node can
     /// most readily trade is also the one whose bars carry the most signal to
     /// learn from.
-    pub fn maybe_learn(&mut self, cycle: u64, now: Timestamp) -> Result<Option<LearningRound>> {
+    ///
+    /// The window is assembled through a fetch campaign (§22.4) — see
+    /// [`crate::campaign`] — so the bars the desk fits on have been
+    /// referenced on the platform's ledger, checked against the last
+    /// reference to the same extent, read back out of a bounded cache, and
+    /// recorded on a manifest the platform journals. A subject whose own
+    /// stream no longer holds enough history is assembled from the fallback
+    /// series. `None` is the cadence not being due, or no subject having
+    /// enough history anywhere.
+    pub fn maybe_learn(
+        &mut self,
+        platform: &mut Platform,
+        cycle: u64,
+        now: Timestamp,
+    ) -> Result<Option<LearningRound>> {
+        if !self.learning.due(cycle) {
+            return Ok(None);
+        }
         let Some((subject, bars)) = self
             .history
             .iter()
@@ -370,7 +428,33 @@ impl EvolutionEngine {
         else {
             return Ok(None);
         };
-        self.learning.maybe_learn(&subject, &bars, cycle, now)
+        let descriptor = self.adapter.descriptor();
+        let Some(window) = campaign::assemble(
+            platform,
+            &descriptor,
+            &subject,
+            &bars,
+            self.learning.minimum_bars(),
+            cycle,
+            now,
+            self.campaign_store.as_deref(),
+            &self.campaign_config,
+        )?
+        else {
+            return Ok(None);
+        };
+        let mut round = self.learning.learn_window(&subject, &window.bars, now)?;
+        round.campaign = Some(window.summary);
+        Ok(Some(round))
+    }
+
+    /// The distinct sources backing `subject`: this engine's own stream plus
+    /// every source the platform's reference ledger holds a reference from
+    /// naming it. What `assess_concentration` is asked about.
+    fn sources_backing(&self, platform: &Platform, subject: &str) -> Vec<String> {
+        let mut backing = platform.sources_backing(subject);
+        backing.insert(self.adapter.descriptor().name);
+        backing.into_iter().collect()
     }
 
     pub const fn stats(&self) -> EvolutionStats {
@@ -464,6 +548,19 @@ impl EvolutionEngine {
         now: Timestamp,
     ) -> Result<RoundSummary> {
         let object = ObjectId::from_string(subject);
+        // §22.3's table, and §56.3's rule 31: "a data class with only one
+        // viable source is a concentration risk, and a universe with fewer
+        // than two cannot be promoted past validation." The verdict is taken
+        // once per round, before any candidate is judged, and applied at the
+        // promotion step below: a candidate on a single-source subject is
+        // registered — the search happened and the trial is charged — and
+        // held at `Candidate`, unjudged, rather than put in front of a gate
+        // whose admission it could not be allowed to keep. In the shipped
+        // deployment the deep brain's one stream is the synthetic exchange,
+        // so every round is held back until a second source backs the
+        // subject; that is the rule working, and the round line says so.
+        let backing = self.sources_backing(platform, subject);
+        let concentration = assess_concentration(backing.iter().map(String::as_str));
         let foundry = match self.foundries.entry(subject.to_string()) {
             std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::btree_map::Entry::Vacant(entry) => {
@@ -493,6 +590,7 @@ impl EvolutionEngine {
             proposed: round.requested,
             admitted: round.accepted,
             trials: round.trials,
+            concentration: Some(concentration.clone()),
             ..RoundSummary::default()
         };
 
@@ -552,12 +650,25 @@ impl EvolutionEngine {
                             // `Pilot` and `Scaled` only, which are the rungs
                             // where capital is at stake, and neither is
                             // reachable from here.
-                            match platform.central_mut().factory_mut().promote(
-                                &id,
-                                None,
-                                "the holdout gate read the search's own evidence",
-                                now,
-                            ) {
+                            //
+                            // Unless the subject's data class is backed by
+                            // too few sources to be promoted past validation
+                            // at all — see the verdict taken above — in
+                            // which case the candidate is held where it is
+                            // and counted as held, not judged.
+                            let verdict = if concentration.is_sufficient() {
+                                platform.central_mut().factory_mut().promote(
+                                    &id,
+                                    None,
+                                    "the holdout gate read the search's own evidence",
+                                    now,
+                                )
+                            } else {
+                                summary.held_back += 1;
+                                admitted.push(candidate);
+                                continue;
+                            };
+                            match verdict {
                                 Ok(_) => summary.promoted += 1,
                                 // A refused gate is an outcome, not an error,
                                 // and it must not leave this loop: `?` here
@@ -1621,7 +1732,7 @@ mod tests {
 
         let mut round = None;
         for cycle in 1..=16u64 {
-            if let Some(produced) = engine.maybe_learn(cycle, now)? {
+            if let Some(produced) = engine.maybe_learn(&mut platform, cycle, now)? {
                 round = Some(produced);
                 break;
             }
@@ -1637,6 +1748,22 @@ mod tests {
         assert!(
             engine.learning_stats().registered + engine.learning_stats().without_skill >= 1,
             "a model was registered without the desk counting it"
+        );
+        // And the window was assembled through a campaign the platform
+        // journaled: the production round is §22.4's caller, not a test.
+        let campaign = round
+            .campaign
+            .as_ref()
+            .ok_or_else(|| Error::not_found("the campaign the round was assembled through"))?;
+        assert_eq!(campaign.subject, round.subject);
+        assert_eq!(campaign.ledger, "first");
+        assert_eq!(
+            platform
+                .event_log()
+                .by_topic(qip_events::Topic::LearningCompleted)
+                .len(),
+            1,
+            "one campaign closed, one manifest journaled"
         );
         Ok(())
     }
@@ -1763,6 +1890,12 @@ mod tests {
         // depends on the grammar and the synthetic tape, and a test demanding
         // a pass would break for a reason that is not a defect. What must
         // never happen again is a registered candidate nobody asked about.
+        //
+        // The subject is backed by a second source first, because since
+        // §22.3's concentration rule reached this loop a single-source
+        // subject's candidates are held back from the gate rather than put in
+        // front of it — which is the rule working, and is pinned by its own
+        // test below rather than allowed to make this one vacuous.
         let mut platform = platform()?;
         let mut engine = engine(1);
 
@@ -1771,6 +1904,9 @@ mod tests {
         for _ in 0..minutes {
             now = now.saturating_add(Duration::from_mins(1));
             engine.sense(&mut platform, now)?;
+        }
+        for subject in engine.history.keys().cloned().collect::<Vec<_>>() {
+            back_with_a_second_source(&mut platform, &subject, now)?;
         }
         let summary = engine
             .maybe_turn(&mut platform, 1, now)?
@@ -1783,12 +1919,16 @@ mod tests {
             "nothing was registered, so this test cannot show anything was judged: {summary:?}"
         );
         assert_eq!(
-            summary.promoted + summary.gate_refused,
+            summary.held_back, 0,
+            "a two-source subject must not be held back: {summary:?}"
+        );
+        assert_eq!(
+            summary.promoted + summary.gate_refused + summary.held_back,
             summary.registered,
-            "{} candidate(s) were registered and {} were put in front of the gate; the \
+            "{} candidate(s) were registered and {} were put in front of the gate or held; the \
              difference is evidence gathered and never judged: {summary:?}",
             summary.registered,
-            summary.promoted + summary.gate_refused
+            summary.promoted + summary.gate_refused + summary.held_back
         );
 
         // Whatever the gate decided, the ladder agrees with the count: a
@@ -1821,6 +1961,114 @@ mod tests {
                 candidate.strategy()
             );
         }
+        Ok(())
+    }
+
+    /// Record, on the platform's ledger, a reference from a second generated
+    /// source naming `subject` — the premise "two independent sources back
+    /// this data class", stated the way the ledger states it.
+    fn back_with_a_second_source(
+        platform: &mut Platform,
+        subject: &str,
+        now: Timestamp,
+    ) -> Result<()> {
+        use qip_data_finder::reference::{DataPeriod, DataReference};
+        use qip_data_finder::schema::{FieldType, SourceSchema};
+        use qip_market_ingestion::adapter::SourceDescriptor;
+        let second = SourceDescriptor {
+            name: "second-generated-source".to_string(),
+            provider: "this test".to_string(),
+            licensing: qip_financial::quality::LicensingClass::Synthetic,
+            topics: vec![qip_events::Topic::MarketBar],
+            expected_latency: Duration::ZERO,
+            production_requirement: None,
+        };
+        let reference = DataReference::of_generated(
+            &second,
+            format!("bars://second-generated-source/{subject}"),
+            [subject.to_string()],
+            DataPeriod::instant(now),
+            SourceSchema::from_fields([("close".to_string(), FieldType::Number)]),
+            b"[]",
+            now,
+        )?;
+        platform.record_reference(reference, now)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_universe_backed_by_one_source_is_held_back_from_promotion_past_validation() -> Result<()> {
+        // §22.3's table and §56.3's rule 31, at the one seam where "promoted
+        // past validation" is a thing this node does: the holdout gate's
+        // promotion to the ladder's first rung. The shipped deep brain has
+        // exactly one stream, so this is the state every deployment starts
+        // in, and it must be visible as held back rather than read as a gate
+        // that happens to have refused everything.
+        //
+        // Mutated by replacing `concentration.is_sufficient()` at the
+        // promotion step with `true` — confirmed the held-back half then
+        // fails because candidates reach the gate, then restored.
+        let mut platform = platform()?;
+        let mut engine = engine(1);
+        let mut now = start();
+        let minutes = (engine.config.minimum_bars as i64 + 30) * 2;
+        for _ in 0..minutes {
+            now = now.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, now)?;
+        }
+        let summary = engine
+            .maybe_turn(&mut platform, 1, now)?
+            .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
+        assert!(
+            summary.registered >= 1,
+            "nothing was registered, so nothing could be held back: {summary:?}"
+        );
+        let verdict = summary
+            .concentration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a concentration verdict on the round"))?;
+        assert!(
+            !verdict.is_sufficient(),
+            "one stream was read as sufficient backing: {}",
+            verdict.describe()
+        );
+        assert_eq!(verdict.viable_sources(), 1);
+        assert_eq!(
+            summary.held_back, summary.registered,
+            "every registered candidate on a single-source subject is held back: {summary:?}"
+        );
+        assert_eq!(summary.promoted, 0);
+        assert_eq!(summary.gate_refused, 0, "a held-back candidate was judged");
+        let moved = platform
+            .central()
+            .factory()
+            .candidates()
+            .filter(|candidate| {
+                platform.central().factory().stage_of(candidate.strategy())
+                    != qip_contracts::gate::GateStage::Candidate
+            })
+            .count();
+        assert_eq!(moved, 0, "a held-back candidate left Candidate");
+        assert!(
+            summary.describe().contains("concentration risk"),
+            "the round line does not say why: {}",
+            summary.describe()
+        );
+
+        // With a second source on the ledger the same engine's next round
+        // is not held back — the verdict is about the backing, not a switch.
+        for subject in engine.history.keys().cloned().collect::<Vec<_>>() {
+            back_with_a_second_source(&mut platform, &subject, now)?;
+        }
+        let next = engine
+            .maybe_turn(&mut platform, 2, now)?
+            .ok_or_else(|| Error::not_found("a second round"))?;
+        assert_eq!(next.held_back, 0, "{next:?}");
+        assert!(
+            next.concentration
+                .as_ref()
+                .is_some_and(ConcentrationVerdict::is_sufficient)
+        );
         Ok(())
     }
 
@@ -1875,6 +2123,11 @@ mod tests {
         for _ in 0..minutes {
             now = now.saturating_add(Duration::from_mins(1));
             engine.sense(&mut platform, now)?;
+        }
+        // A second source, so the concentration rule lets the gate speak at
+        // all — see `every_candidate_the_round_registers_is_put_in_front_of_the_holdout_gate`.
+        for subject in engine.history.keys().cloned().collect::<Vec<_>>() {
+            back_with_a_second_source(&mut platform, &subject, now)?;
         }
         let summary = engine
             .maybe_turn(&mut platform, 1, now)?

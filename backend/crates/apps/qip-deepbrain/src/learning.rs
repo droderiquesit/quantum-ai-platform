@@ -144,6 +144,10 @@ pub struct LearningRound {
     /// caller need not guess whether nothing was attempted or something
     /// failed.
     pub distillation_refusal: Option<String>,
+    /// The campaign the window was assembled through (§22.4), when the
+    /// engine assembled it through one — every production round does; a
+    /// desk driven directly by a test may not have.
+    pub campaign: Option<crate::campaign::CampaignSummary>,
 }
 
 impl LearningRound {
@@ -166,8 +170,13 @@ impl LearningRound {
                 None => String::new(),
             },
         };
+        let campaign = match &self.campaign {
+            Some(campaign) => format!("; {}", campaign.describe()),
+            None => String::new(),
+        };
         format!(
-            "learning: {registered}; {} model(s) measured for drift, {} ineligible{distilled}",
+            "learning: {registered}; {} model(s) measured for drift, {} ineligible{distilled}\
+             {campaign}",
             self.drift.len(),
             self.ineligible.len()
         )
@@ -284,13 +293,42 @@ impl LearningDesk {
         cycle: u64,
         now: Timestamp,
     ) -> Result<Option<LearningRound>> {
-        if self.config.every_cycles == 0 || cycle % self.config.every_cycles != 0 {
-            return Ok(None);
-        }
-        if bars.len() < self.config.minimum_bars {
+        if !self.due(cycle) || bars.len() < self.config.minimum_bars {
             return Ok(None);
         }
         Ok(Some(self.learn(subject, bars, now)?))
+    }
+
+    /// Whether the cadence says a round runs this cycle. Split from
+    /// [`Self::maybe_learn`] so the engine can assemble the window through a
+    /// campaign only on the cycles a fit will actually use it.
+    pub const fn due(&self, cycle: u64) -> bool {
+        self.config.every_cycles != 0 && cycle % self.config.every_cycles == 0
+    }
+
+    /// Bars a subject needs before a fit is worth attempting.
+    pub const fn minimum_bars(&self) -> usize {
+        self.config.minimum_bars
+    }
+
+    /// Fit on a window the caller has already assembled — through a
+    /// campaign, in production — refusing one shorter than the minimum
+    /// rather than fitting on it.
+    pub fn learn_window(
+        &mut self,
+        subject: &ObjectId,
+        bars: &[Bar],
+        now: Timestamp,
+    ) -> Result<LearningRound> {
+        if bars.len() < self.config.minimum_bars {
+            return Err(Error::invalid(format!(
+                "a window of {} bar(s) is below the {} the desk fits on; the campaign that \
+                 assembled it should not have",
+                bars.len(),
+                self.config.minimum_bars
+            )));
+        }
+        self.learn(subject, bars, now)
     }
 
     fn learn(&mut self, subject: &ObjectId, bars: &[Bar], now: Timestamp) -> Result<LearningRound> {
@@ -352,6 +390,7 @@ impl LearningDesk {
                         ineligible: vec![error.message().to_string()],
                         distillation: None,
                         distillation_refusal: None,
+                        campaign: None,
                     });
                 }
             };
@@ -370,6 +409,7 @@ impl LearningDesk {
             ineligible,
             distillation,
             distillation_refusal,
+            campaign: None,
         })
     }
 
