@@ -409,10 +409,10 @@ mod yaml {
             };
             return (key, rest.trim().to_string());
         }
-        if let Some(key) = text.strip_suffix(':') {
-            if !key.contains(": ") {
-                return (key.trim().to_string(), String::new());
-            }
+        if let Some(key) = text.strip_suffix(':')
+            && !key.contains(": ")
+        {
+            return (key.trim().to_string(), String::new());
         }
         let Some((key, rest)) = text.split_once(": ") else {
             unsupported(
@@ -476,10 +476,9 @@ mod yaml {
         if !text.is_empty()
             && text.chars().all(|c| c.is_ascii_digit())
             && (text.len() == 1 || !text.starts_with('0'))
+            && let Ok(number) = text.parse::<u64>()
         {
-            if let Ok(number) = text.parse::<u64>() {
-                return Value::Number(number.into());
-            }
+            return Value::Number(number.into());
         }
         Value::String(text.to_string())
     }
@@ -884,11 +883,9 @@ fn upstream_documents() -> Vec<UpstreamDocument> {
                 if in_metadata && !line.starts_with("  ") && !line.trim().is_empty() {
                     in_metadata = false;
                 }
-                if in_metadata {
-                    if let Some(value) = line.strip_prefix("  name: ") {
-                        name = value.trim().trim_matches('"').to_string();
-                        break;
-                    }
+                if in_metadata && let Some(value) = line.strip_prefix("  name: ") {
+                    name = value.trim().trim_matches('"').to_string();
+                    break;
                 }
             }
             documents.push(UpstreamDocument {
@@ -1278,12 +1275,10 @@ fn catalogue_conditional_env_names(body: &str) -> BTreeSet<String> {
             inside = false;
             continue;
         }
-        if inside {
-            if let Some((key, _)) = line.split_once('=') {
-                let key = key.trim();
-                if key.starts_with("QIP_") {
-                    names.insert(key.to_string());
-                }
+        if inside && let Some((key, _)) = line.split_once('=') {
+            let key = key.trim();
+            if key.starts_with("QIP_") {
+                names.insert(key.to_string());
             }
         }
     }
@@ -1593,10 +1588,10 @@ fn the_app_project_admits_this_repository_and_the_controllers_namespaces_and_no_
             }
             // The kustomization's `namespace:` is where these manifests get
             // theirs, so it is the destination the project has to admit.
-            if manifest.kind() == "Kustomization" {
-                if let Some(namespace) = text_at(&manifest.value, &["namespace"]) {
-                    permitted.insert(namespace);
-                }
+            if manifest.kind() == "Kustomization"
+                && let Some(namespace) = text_at(&manifest.value, &["namespace"])
+            {
+                permitted.insert(namespace);
             }
         }
     }

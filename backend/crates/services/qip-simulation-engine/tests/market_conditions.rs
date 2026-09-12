@@ -110,7 +110,7 @@ impl SimStrategy for MetronomeBuyer {
 
     fn on_step(&mut self, view: &MarketView<'_>) -> Vec<SimOrder> {
         self.seen += 1;
-        if self.seen % self.every != 0 {
+        if !self.seen.is_multiple_of(self.every) {
             return Vec::new();
         }
         // Reads the mark it will trade against, so a delayed or malformed feed

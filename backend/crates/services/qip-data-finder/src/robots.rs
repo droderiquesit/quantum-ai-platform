@@ -153,11 +153,9 @@ impl RobotsPolicy {
                     if agent.is_empty() {
                         continue;
                     }
-                    if open_for_agents {
-                        if let Some(group) = groups.last_mut() {
-                            group.agents.push(agent);
-                            continue;
-                        }
+                    if open_for_agents && let Some(group) = groups.last_mut() {
+                        group.agents.push(agent);
+                        continue;
                     }
                     groups.push(RobotsGroup {
                         agents: vec![agent],

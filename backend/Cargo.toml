@@ -84,7 +84,12 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# 1.89 is where `std::fs::File::try_lock` stabilised; `qip-events` takes an
+# exclusive lock on a file-backed log with it so two processes cannot append
+# to one file. The pinned toolchain (`rust-toolchain.toml`) is well past this;
+# the declaration is raised so the lint that checks the MSRV against the code
+# states a true floor rather than being silenced.
+rust-version = "1.89"
 license = "Apache-2.0"
 repository = "https://github.com/droderiquesit/quantum-ai-platform"
 authors = ["Quantum AI Platform Engineering"]

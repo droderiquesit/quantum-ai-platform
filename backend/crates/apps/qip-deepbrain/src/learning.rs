@@ -335,7 +335,7 @@ impl LearningDesk {
     /// [`Self::maybe_learn`] so the engine can assemble the window through a
     /// campaign only on the cycles a fit will actually use it.
     pub const fn due(&self, cycle: u64) -> bool {
-        self.config.every_cycles != 0 && cycle % self.config.every_cycles == 0
+        self.config.every_cycles != 0 && cycle.is_multiple_of(self.config.every_cycles)
     }
 
     /// Bars a subject needs before a fit is worth attempting.

@@ -689,21 +689,21 @@ impl<H: Handler> StatementRefresh<H> {
 
 impl<H: Handler> Handler for StatementRefresh<H> {
     fn handle(&self, request: &Request) -> Response {
-        if self.is_admitted_cycle(request) {
-            if let Err(error) = self.refresh() {
-                eprintln!(
-                    "qip-api: the wallet statement did not read: {}",
-                    error.message()
-                );
-                return Response::json(
-                    503,
-                    format!(
-                        r#"{{"error":{},"source":{}}}"#,
-                        json::string(error.message()),
-                        json::string(STATEMENT_PATH_VARIABLE)
-                    ),
-                );
-            }
+        if self.is_admitted_cycle(request)
+            && let Err(error) = self.refresh()
+        {
+            eprintln!(
+                "qip-api: the wallet statement did not read: {}",
+                error.message()
+            );
+            return Response::json(
+                503,
+                format!(
+                    r#"{{"error":{},"source":{}}}"#,
+                    json::string(error.message()),
+                    json::string(STATEMENT_PATH_VARIABLE)
+                ),
+            );
         }
         self.inner.handle(request)
     }

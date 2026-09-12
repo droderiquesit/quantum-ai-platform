@@ -191,12 +191,12 @@ impl AlternativeMenu {
                 factor: self.smaller,
             },
         ];
-        if let Some(option) = &self.venue {
-            if option.venue != actual.venue {
-                alternatives.push(Alternative::DifferentVenue {
-                    venue: option.venue.clone(),
-                });
-            }
+        if let Some(option) = &self.venue
+            && option.venue != actual.venue
+        {
+            alternatives.push(Alternative::DifferentVenue {
+                venue: option.venue.clone(),
+            });
         }
         if let Some((region, proxy)) = &self.region {
             alternatives.push(Alternative::DifferentRegion {

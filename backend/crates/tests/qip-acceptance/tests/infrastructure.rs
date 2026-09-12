@@ -6240,10 +6240,9 @@ fn pod_images(content: &str) -> Vec<(String, String)> {
             .trim_start()
             .strip_prefix("- image: ")
             .or_else(|| line.trim_start().strip_prefix("image: "))
+            && POD_BEARING_KINDS.contains(&kind.as_str())
         {
-            if POD_BEARING_KINDS.contains(&kind.as_str()) {
-                found.push((kind.clone(), value.trim().trim_matches('"').to_string()));
-            }
+            found.push((kind.clone(), value.trim().trim_matches('"').to_string()));
         }
     }
     found

@@ -169,7 +169,11 @@ impl HashingEmbedder {
         let digest = hasher.finish();
         let index = u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]]) as usize
             % self.dimensions;
-        let sign = if digest[4] % 2 == 0 { 1.0 } else { -1.0 };
+        let sign = if digest[4].is_multiple_of(2) {
+            1.0
+        } else {
+            -1.0
+        };
         (index, sign)
     }
 

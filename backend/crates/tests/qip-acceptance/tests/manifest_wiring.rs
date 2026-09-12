@@ -284,11 +284,11 @@ fn catalogue_optional_config_files() -> BTreeMap<String, BTreeSet<String>> {
         if !line.trim().is_empty() && indent <= 2 {
             break;
         }
-        if indent == 4 {
-            if let Some((key, _)) = line.split_once('=') {
-                workload = Some(key.trim().to_string());
-                conditional = false;
-            }
+        if indent == 4
+            && let Some((key, _)) = line.split_once('=')
+        {
+            workload = Some(key.trim().to_string());
+            conditional = false;
         }
         if line.contains("== null ? {} : {") {
             conditional = true;
@@ -517,12 +517,11 @@ fn catalogue_conditional_variables() -> BTreeMap<String, BTreeSet<String>> {
                 inside = false;
                 continue;
             }
-            if inside {
-                if let Some((key, _)) = line.split_once('=') {
-                    if key.trim().starts_with("QIP_") {
-                        names.insert(key.trim().to_string());
-                    }
-                }
+            if inside
+                && let Some((key, _)) = line.split_once('=')
+                && key.trim().starts_with("QIP_")
+            {
+                names.insert(key.trim().to_string());
             }
         }
         // And the optional configuration files, which are conditional in the
@@ -873,14 +872,13 @@ fn every_variable_a_deployment_sets_is_one_the_binary_it_runs_actually_reads() {
             }
             // A mounted credential arrives as `<NAME>_FILE`, so the base name
             // is what the manifest rule has to have supplied.
-            if let Some(base) = variable.strip_suffix("_FILE") {
-                if !literal.contains(base)
-                    && !read.by_constant.contains(base)
-                    && !read.by_delegation.contains(base)
-                    && read.by_connector.contains(base)
-                {
-                    resolved_by_connector_manifest += 1;
-                }
+            if let Some(base) = variable.strip_suffix("_FILE")
+                && !literal.contains(base)
+                && !read.by_constant.contains(base)
+                && !read.by_delegation.contains(base)
+                && read.by_connector.contains(base)
+            {
+                resolved_by_connector_manifest += 1;
             }
             checked += 1;
         }

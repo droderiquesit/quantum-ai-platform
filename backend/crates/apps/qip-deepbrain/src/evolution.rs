@@ -659,7 +659,7 @@ impl EvolutionEngine {
         cycle: u64,
         now: Timestamp,
     ) -> Result<Option<RoundSummary>> {
-        if self.config.every_cycles == 0 || cycle % self.config.every_cycles != 0 {
+        if self.config.every_cycles == 0 || !cycle.is_multiple_of(self.config.every_cycles) {
             return Ok(None);
         }
         let Some((subject, bars)) = self

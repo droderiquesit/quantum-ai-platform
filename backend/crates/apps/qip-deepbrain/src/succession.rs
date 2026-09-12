@@ -343,19 +343,20 @@ impl SuccessionDesk {
         // "enough evidence to act on without corroboration", so a pairing
         // that has not reached it is left to the deterministic test alone,
         // exactly as before this change.
-        if let Some(precedent) = precedent {
-            if precedent.is_confident() && precedent.score() < self.scoreboard.prior() {
-                return Err(Error::guard(format!(
-                    "{} beat {} on this round's test, but {} in {} has an established record of \
+        if let Some(precedent) = precedent
+            && precedent.is_confident()
+            && precedent.score() < self.scoreboard.prior()
+        {
+            return Err(Error::guard(format!(
+                "{} beat {} on this round's test, but {} in {} has an established record of \
                      challenges going the other way ({}); a second win is required before this \
                      one crowns",
-                    challenger.id(),
-                    reigning.id(),
-                    subject.as_str(),
-                    regime,
-                    precedent.summarise()
-                )));
-            }
+                challenger.id(),
+                reigning.id(),
+                subject.as_str(),
+                regime,
+                precedent.summarise()
+            )));
         }
 
         let succession = self

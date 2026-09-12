@@ -300,7 +300,7 @@ impl SyntheticEnvironment {
         // The regime is re-drawn roughly daily rather than every step.
         let steps_per_day =
             (Duration::from_days(1).as_nanos() / self.config.step.as_nanos().max(1)).max(1) as u64;
-        if self.step_index % steps_per_day == 0 {
+        if self.step_index.is_multiple_of(steps_per_day) {
             self.regime = self.regime.step(&mut self.rng);
         }
 
@@ -408,7 +408,11 @@ impl SyntheticEnvironment {
         if let Some(quote) = book.to_quote() {
             records.push(SensedRecord::Quote(quote));
         }
-        if self.config.book_every > 0 && self.step_index % u64::from(self.config.book_every) == 0 {
+        if self.config.book_every > 0
+            && self
+                .step_index
+                .is_multiple_of(u64::from(self.config.book_every))
+        {
             records.push(SensedRecord::Book(Box::new(book)));
         }
 

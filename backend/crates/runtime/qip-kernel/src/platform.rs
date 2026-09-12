@@ -8392,14 +8392,13 @@ impl Platform {
             Matrix::zeros(n, 0),
             Matrix::zeros(0, 0),
             specific_variance,
-        ) {
-            if let Ok(decomposition) = model.decompose(&weights) {
-                self.telemetry.metrics.gauge(
-                    names::PORTFOLIO_EFFECTIVE_BETS,
-                    labels([]),
-                    decomposition.effective_bets(),
-                );
-            }
+        ) && let Ok(decomposition) = model.decompose(&weights)
+        {
+            self.telemetry.metrics.gauge(
+                names::PORTFOLIO_EFFECTIVE_BETS,
+                labels([]),
+                decomposition.effective_bets(),
+            );
         }
 
         // Hold what the proposal was sized for, keyed by its id, until the
@@ -9472,14 +9471,14 @@ impl Platform {
             }
         }
         for proposal in &mut self.proposals {
-            if offered.contains(&proposal.proposal_id.as_str().to_string()) {
-                if let Err(error) = proposal.release(now) {
-                    problems.push(format!(
-                        "{} was released but its status could not be advanced: {}",
-                        proposal.proposal_id.as_str(),
-                        error.message()
-                    ));
-                }
+            if offered.contains(&proposal.proposal_id.as_str().to_string())
+                && let Err(error) = proposal.release(now)
+            {
+                problems.push(format!(
+                    "{} was released but its status could not be advanced: {}",
+                    proposal.proposal_id.as_str(),
+                    error.message()
+                ));
             }
         }
 

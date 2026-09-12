@@ -780,13 +780,13 @@ fn route_table() -> Vec<(String, String)> {
         let line = raw.trim();
         if let Some(rest) = line.strip_prefix("method: Method::") {
             method = Some(rest.trim_end_matches(',').to_string());
-        } else if let Some(rest) = line.strip_prefix("pattern: ") {
-            if let Some(method) = method.take() {
-                routes.push((
-                    method,
-                    rest.trim_end_matches(',').trim_matches('"').to_string(),
-                ));
-            }
+        } else if let Some(rest) = line.strip_prefix("pattern: ")
+            && let Some(method) = method.take()
+        {
+            routes.push((
+                method,
+                rest.trim_end_matches(',').trim_matches('"').to_string(),
+            ));
         }
     }
     routes
