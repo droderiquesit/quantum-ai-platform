@@ -1353,6 +1353,17 @@ fn every_registry_the_platform_acts_on_rebuilds_from_the_event_log_alone_and_one
     );
     assert_eq!(&replayed_registrations, platform.registrations());
 
+    // What the first process acted on, held after it is gone. A file-backed
+    // log is one process's — `EventLog::open_with_capacity` takes an
+    // exclusive lock and refuses a second holder — so the "second process"
+    // below opens the log the way a restart does: after the first has
+    // released it. Until 2026-09-12 both were alive at once, which is the
+    // two-writers shape the lock exists to refuse.
+    let first_fabric = platform.fabric_state().clone();
+    let first_eligibility = platform.user_ledger().eligibility().clone();
+    let first_registrations = platform.registrations().clone();
+    drop(platform);
+
     // --- path 3: the fabric, through a second process's resume ----------
     // Assembly is the replay: `resume_fabric` decides the log's commands
     // again into a fresh journal and refuses if it does not arrive where the
@@ -1360,7 +1371,7 @@ fn every_registry_the_platform_acts_on_rebuilds_from_the_event_log_alone_and_one
     let resumed = assemble(replay_config(&path)?)?;
     assert_eq!(
         resumed.fabric_state(),
-        platform.fabric_state(),
+        &first_fabric,
         "a second process over the same log rebuilt a different fabric state"
     );
 
@@ -1376,11 +1387,11 @@ fn every_registry_the_platform_acts_on_rebuilds_from_the_event_log_alone_and_one
         resumed.registrations().record(ACCOUNT_SOURCE).is_none(),
         "the second process was configured with the registration, so its rebuild proves nothing"
     );
-    assert_eq!(
-        &resumed.replay_eligibility()?,
-        platform.user_ledger().eligibility()
-    );
-    assert_eq!(&resumed.replay_registrations()?, platform.registrations());
+    assert_eq!(&resumed.replay_eligibility()?, &first_eligibility);
+    assert_eq!(&resumed.replay_registrations()?, &first_registrations);
+    // Released before the file is edited under it: the refusals below must
+    // be the chain's, not the lock's.
+    drop(resumed);
 
     // --- one flipped byte -----------------------------------------------
     // A rebuild is evidence only if a log that was altered is refused. One
@@ -1440,15 +1451,12 @@ fn every_registry_the_platform_acts_on_rebuilds_from_the_event_log_alone_and_one
     let restored = assemble(replay_config(&path)?)?;
     assert_eq!(
         restored.fabric_state(),
-        platform.fabric_state(),
+        &first_fabric,
         "the restored log no longer rebuilds the state, so the refusal above was not the \
          flipped {was} → {now} byte's doing"
     );
-    assert_eq!(
-        &restored.replay_eligibility()?,
-        platform.user_ledger().eligibility()
-    );
-    assert_eq!(&restored.replay_registrations()?, platform.registrations());
+    assert_eq!(&restored.replay_eligibility()?, &first_eligibility);
+    assert_eq!(&restored.replay_registrations()?, &first_registrations);
 
     let _ = std::fs::remove_dir_all(&directory);
     Ok(())

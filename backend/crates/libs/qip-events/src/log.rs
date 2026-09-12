@@ -120,6 +120,14 @@ pub struct EventLog {
     /// two different records share a sequence number and the break invisible.
     last_sequence: u64,
     last_hash: String,
+    /// The handle holding the exclusive advisory lock on the file, for a
+    /// file-backed log; released when the log is dropped. Two processes
+    /// appending to one file would each mint the next sequence from the
+    /// tail they loaded and write two records under it, and a campaign id
+    /// minted from that tail in each would collide — a claim of uniqueness
+    /// across restarts that was silently false across concurrent writers
+    /// until 2026-09-12. `None` for an in-memory log.
+    lock: Option<std::fs::File>,
 }
 
 /// Records retained by default.
@@ -181,6 +189,7 @@ impl EventLog {
             appends_refused: 0,
             last_sequence: 0,
             last_hash: GENESIS_HASH.to_string(),
+            lock: None,
         }
     }
 
@@ -196,11 +205,51 @@ impl EventLog {
     /// holding more audit records than the default retains cannot be loaded at
     /// the default at all, and `EventLog::open(p)?.with_capacity(n)` would have
     /// refused before the caller's larger ceiling was ever applied.
+    ///
+    /// # One process per file
+    ///
+    /// The file is taken under an exclusive advisory lock before a line of
+    /// it is read, and a log another handle still holds — in another
+    /// process, or elsewhere in this one — is refused rather than loaded.
+    /// Two writers on one file would each load the same tail, each mint
+    /// the next sequence from it and each append a record under that
+    /// sequence; the file would then hold two records with one number, and
+    /// every fact derived from the tail — a campaign id, a chain link —
+    /// would be minted twice. The lock is held for the life of the log and
+    /// released when it is dropped, so a crashed process releases it with
+    /// its descriptors. It is advisory: it holds against anything that
+    /// opens the file through this type, and against nothing that writes
+    /// the bytes some other way. A reader that only wants to inspect a log
+    /// a running node holds is refused too — copy the file first — because
+    /// a reader of a file mid-append reads a partial record and this type
+    /// has no read-only open that could promise otherwise.
     pub fn open_with_capacity(path: impl AsRef<Path>, capacity: usize) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let mut log = Self::in_memory().with_capacity(capacity)?;
         log.path = Some(path.clone());
-        if path.exists() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let handle = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        match handle.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(Error::denied(format!(
+                    "the event log at {} is held by another process (or another handle in \
+                     this one); a second writer would mint the same sequences from the same \
+                     tail and the file would hold two records under one number. Stop the \
+                     process that holds it, or point this one at its own log; to inspect a \
+                     log a running node holds, copy the file first",
+                    path.display()
+                )));
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+        }
+        log.lock = Some(handle);
+        {
             let file = std::fs::File::open(&path)?;
             let mut expected_sequence: u64 = 1;
             for (line_number, line) in BufReader::new(file).lines().enumerate() {
@@ -246,8 +295,6 @@ impl EventLog {
                 log.make_room(record.event.topic)?;
                 log.index(record);
             }
-        } else if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
         }
         Ok(log)
     }

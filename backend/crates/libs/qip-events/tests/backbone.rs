@@ -1703,7 +1703,9 @@ fn the_retained_chain_verifies_after_eviction_and_catches_an_edited_record() {
     );
 
     // Edit the payload of the fourth record on disk, leaving its hashes as
-    // they were: the edited record no longer hashes to what it claims.
+    // they were: the edited record no longer hashes to what it claims. The
+    // first holder is released first: a log another handle holds is refused.
+    drop(capped);
     let text = std::fs::read_to_string(&path).unwrap();
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     let mut record: serde_json::Value = serde_json::from_str(&lines[3]).unwrap();
@@ -1717,6 +1719,46 @@ fn the_retained_chain_verifies_after_eviction_and_catches_an_edited_record() {
         Err(4),
         "the edited record must be named by its sequence"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A file-backed log is one process's: a second open of the same path while
+/// the first handle lives is refused, and admitted once the first is
+/// dropped. Two writers on one file would each mint the next sequence from
+/// the same tail — two records under one number, and every id minted from
+/// that tail (a campaign id carries it) minted twice; until 2026-09-12
+/// nothing refused the second writer, and the uniqueness the campaign id
+/// claimed across restarts was silently false across concurrent writers.
+///
+/// Mutated by deleting the `try_lock` match in `open_with_capacity` —
+/// confirmed the second open then succeeds and this fails, then restored.
+#[test]
+fn a_log_another_handle_holds_is_refused_until_the_handle_is_released() {
+    let dir = std::env::temp_dir().join(format!("qip-log-lock-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("events.jsonl");
+    let (ctx, now) = context();
+
+    let mut first = EventLog::open(&path).unwrap();
+    first.append(&erased(&ctx, now, tick("T1"))).unwrap();
+    let refused = EventLog::open(&path).expect_err("a log another handle holds was opened");
+    assert_eq!(refused.code(), "denied", "got {refused:?}");
+    assert!(
+        refused.message().contains("held by another process"),
+        "the refusal does not say who holds it: {refused}"
+    );
+    // The first holder is unaffected by the refused attempt.
+    first.append(&erased(&ctx, now, tick("T2"))).unwrap();
+    assert_eq!(first.len(), 2);
+
+    drop(first);
+    let second = EventLog::open(&path).expect("the lock is released with the handle");
+    assert_eq!(
+        second.len(),
+        2,
+        "the second holder loads what the first wrote, and nothing was written twice"
+    );
+    assert_eq!(second.verify_chain(), Ok(()));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1790,7 +1832,9 @@ fn the_retained_chain_verifies_across_an_interior_eviction_and_still_names_an_ed
     );
 
     // Edit the payload of the sixth record — after the gap — leaving its
-    // hashes as written: the edit must still be named by its sequence.
+    // hashes as written: the edit must still be named by its sequence. The
+    // holder above is released first: a log another handle holds is refused.
+    drop(reopened);
     let text = std::fs::read_to_string(&path).unwrap();
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     let mut record: serde_json::Value = serde_json::from_str(&lines[5]).unwrap();
@@ -1806,6 +1850,7 @@ fn the_retained_chain_verifies_across_an_interior_eviction_and_still_names_an_ed
 
     // A line removed from the file is not an eviction and must not be read
     // as one: the load refuses the file before any chain question is asked.
+    drop(tampered);
     let mut without_fourth: Vec<String> = text.lines().map(str::to_string).collect();
     without_fourth.remove(3);
     std::fs::write(&path, format!("{}\n", without_fourth.join("\n"))).unwrap();

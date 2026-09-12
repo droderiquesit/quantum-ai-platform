@@ -148,8 +148,15 @@ impl TryFrom<RevisionRecordWire> for RevisionRecord {
 }
 
 impl RevisionRecord {
-    /// The one place a revision record's invariants are checked, for the
-    /// ledger's own finding and for a record read off the wire alike.
+    /// Where a revision record read off the wire is checked. The ledger's
+    /// own finding, in [`ReferenceLedger::assess`], is built as a literal
+    /// and does not pass through here — deliberately, because `assess`
+    /// returns a verdict and not a `Result`, and the three refusals below
+    /// are about shape a literal built from two already-gated references
+    /// cannot violate: the locator and symbols are the held reference's,
+    /// and `RevisionCheck::Revised` carries two hashes only when they
+    /// differ. This comment said "the one place" until 2026-09-12, which
+    /// was true of the wire and not of the literal.
     #[allow(clippy::too_many_arguments)]
     fn build(
         source_id: String,

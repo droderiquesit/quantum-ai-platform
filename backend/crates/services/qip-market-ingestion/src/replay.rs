@@ -110,6 +110,12 @@ impl ReplayAdapter {
         let mut records: Vec<SensedRecord> = Vec::new();
         let mut skipped = Vec::new();
         let mut recorded_from: Option<String> = None;
+        // Non-blank, non-comment lines seen so far — parsed *or* skipped. The
+        // header must precede the first of them: keying on `records` alone
+        // admitted a header after a line that failed to parse, so a file
+        // whose first record was malformed could be told its provenance
+        // half-way through.
+        let mut content_lines = 0usize;
         for (number, line) in BufReader::new(file).lines().enumerate() {
             let line = line?;
             if let Some(source) = line.trim_start().strip_prefix(RECORDED_FROM_HEADER) {
@@ -130,14 +136,16 @@ impl ReplayAdapter {
                         number + 1
                     )));
                 }
-                if !records.is_empty() {
+                if content_lines > 0 {
                     return Err(Error::invalid(format!(
                         "replay file {} names `{source}` as its source on line {}, after {} \
-                         record(s) it would apply to; the `{RECORDED_FROM_HEADER}` header goes \
-                         before the first record, so a reader cannot be told half-way through a \
-                         file whose bytes it has been reading",
+                         line(s) it would apply to ({} parsed as records); the \
+                         `{RECORDED_FROM_HEADER}` header goes before the first record, so a \
+                         reader cannot be told half-way through a file whose bytes it has been \
+                         reading",
                         path.display(),
                         number + 1,
+                        content_lines,
                         records.len()
                     )));
                 }
@@ -147,6 +155,7 @@ impl ReplayAdapter {
             if line.trim().is_empty() || line.trim_start().starts_with('#') {
                 continue;
             }
+            content_lines += 1;
             match serde_json::from_str::<SensedRecord>(&line) {
                 Ok(record) => records.push(record),
                 Err(e) => skipped.push(format!("line {}: {e}", number + 1)),

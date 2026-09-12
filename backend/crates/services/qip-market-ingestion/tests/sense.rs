@@ -888,6 +888,37 @@ fn a_replay_headed_with_a_source_that_never_shipped_its_records_is_refused() {
         "{}",
         refusal.message()
     );
+    // And after a line that failed to parse: the rule is the first
+    // non-blank, non-comment line, not the first record. Keyed on records
+    // alone, a file whose first record was malformed could be told its
+    // provenance half-way through, until 2026-09-12.
+    let path = dir.join("header-after-garbage.jsonl");
+    std::fs::write(
+        &path,
+        format!("not a record\n{header} coinbase-spot-ticker\n{body}"),
+    )
+    .unwrap();
+    let refusal = ReplayAdapter::open("capture", &path)
+        .expect_err("a file naming its source after a malformed line was opened");
+    assert!(
+        refusal.message().contains("after 1 line(s)") && refusal.message().contains("0 parsed"),
+        "the refusal does not count the skipped line: {}",
+        refusal.message()
+    );
+    // Blank and comment lines before the header cost nothing, or the rule
+    // above refuses every commented file.
+    let path = dir.join("header-after-comment.jsonl");
+    std::fs::write(
+        &path,
+        format!("\n# a comment\n{header} coinbase-spot-ticker\n{body}"),
+    )
+    .unwrap();
+    assert_eq!(
+        ReplayAdapter::open("capture", &path)
+            .expect("a header after blank and comment lines is the first content line")
+            .recorded_from(),
+        Some("coinbase-spot-ticker")
+    );
 
     // The in-memory road is held to the same check, and the honest case
     // through it still passes — or the check refuses everything.

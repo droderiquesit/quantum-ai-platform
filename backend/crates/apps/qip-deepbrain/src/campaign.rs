@@ -195,6 +195,16 @@ impl CampaignSummary {
 /// with the cycle counted from one in every process, so after any restart
 /// the first campaign for a subject collided with the previous run's and
 /// the idempotent log silently kept the old manifest.
+///
+/// "Across a restart" is the whole of the claim. Two processes writing one
+/// log at once would each read the same tail and mint the same id; that
+/// shape is refused one layer down — `EventLog::open_with_capacity` takes
+/// an exclusive lock on the file, so a second process cannot open a log
+/// the first still holds — and not by anything here. What the lock does
+/// not cover is a log truncated and re-grown, or restored from a copy
+/// taken before the previous campaign closed: a tail that has gone
+/// backwards mints an id the log once held, and `assemble` turns the log's
+/// refusal of it into an error rather than a round.
 pub fn campaign_id(subject: &ObjectId, cycle: u64, log_sequence: u64) -> String {
     format!("learn-{}-c{cycle}-s{log_sequence}", subject.as_str())
 }
@@ -469,9 +479,10 @@ pub fn assemble(
         return Err(Error::invalid(format!(
             "the log already holds a closed campaign under `{id}`, which this round has just \
              minted; the manifest for this fit is therefore not on the log. Campaign ids carry \
-             the log's own sequence so this cannot happen across restarts of one log; two \
-             processes writing one log, or a log truncated and re-grown, can make it happen, \
-             and either is a fault to find rather than a round to report as journaled"
+             the log's own sequence so this cannot happen across restarts of one log, and a \
+             second process cannot open a log the first still holds; a log truncated and \
+             re-grown, or restored from an older copy, can make it happen, and either is a \
+             fault to find rather than a round to report as journaled"
         )));
     }
 

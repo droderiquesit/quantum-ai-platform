@@ -242,6 +242,15 @@ pub struct DataReference {
     availability: f64,
 }
 
+/// Whether `hash` has the shape `qip_core::sha256_hex` writes: sixty-four
+/// ASCII characters, each a digit or a lowercase `a`–`f`.
+fn is_sha256_hex(hash: &str) -> bool {
+    hash.len() == 64
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 /// The wire shape of a [`DataReference`], validated through
 /// [`DataReference::build_hashed`] on the way in.
 #[derive(Deserialize)]
@@ -581,6 +590,35 @@ impl DataReference {
             return Err(Error::invalid(format!(
                 "the data reference for `{source_id}` names no symbols; a reference covering \
                  nothing identifiable cannot be checked for concentration risk against anything"
+            )));
+        }
+        // The replayed door and the `replay://` locator are one fact stated
+        // twice, and the two must agree: an auditor reads the locator, the
+        // concentration rule reads the origin, and a frame on the wire that
+        // carried one without the other would tell the two of them different
+        // stories about the same bytes. Until 2026-09-12 the wire gate held
+        // neither, so a `catalogue_admitted` origin over a `replay://`
+        // locator — or the reverse — restored into the ledger unrefused.
+        let replay_locator = locator.starts_with(REPLAY_LOCATOR_SCHEME);
+        if replay_locator != (origin == SourceOrigin::ReplayedAdmitted) {
+            return Err(Error::invalid(format!(
+                "the data reference for `{source_id}` came through the `{}` door and its \
+                 locator is `{locator}`; a `{REPLAY_LOCATOR_SCHEME}` locator and the \
+                 replayed door go together and nowhere else, so a reference carrying one \
+                 without the other is refused",
+                origin.as_str()
+            )));
+        }
+        // The hash is SHA-256 as `qip_core::sha256_hex` writes it — sixty-four
+        // lowercase hex digits — and nothing else compares equal to one: an
+        // uppercase copy of the same digest would read as a revision of the
+        // extent, and a value of any other shape is a hash nothing computed.
+        if !is_sha256_hex(&content_hash) {
+            return Err(Error::invalid(format!(
+                "the data reference for `{source_id}` carries a content hash of {} character(s) \
+                 that is not sixty-four lowercase hex digits; a hash of any other shape was not \
+                 taken by this platform over any bytes, and is refused",
+                content_hash.chars().count()
             )));
         }
         if bytes == 0 {
@@ -1183,6 +1221,12 @@ mod tests {
         let back: DataReference = serde_json::from_value(honest.clone())?;
         assert_eq!(back, reference);
 
+        let digest = qip_core::sha256_hex(b"{\"served\":true}");
+        assert_eq!(
+            digest.len(),
+            64,
+            "premise: a SHA-256 is sixty-four hex digits"
+        );
         for (field, forged) in [
             ("symbols", serde_json::json!([])),
             ("locator", serde_json::json!("  ")),
@@ -1190,6 +1234,22 @@ mod tests {
             ("availability", serde_json::json!(1.5)),
             ("content_hash", serde_json::json!("")),
             ("category", serde_json::Value::Null),
+            // The replayed door and the `replay://` locator go together:
+            // a catalogue-admitted reference under a replay locator, and a
+            // replayed origin over a fetch locator, are each refused.
+            ("locator", serde_json::json!("replay://bars://x")),
+            ("origin", serde_json::json!("replayed_admitted")),
+            // The hash's shape: the same digest uppercased, one digit short,
+            // and a non-hex character — none was taken by this platform.
+            (
+                "content_hash",
+                serde_json::json!(digest.to_ascii_uppercase()),
+            ),
+            ("content_hash", serde_json::json!(&digest[..63])),
+            (
+                "content_hash",
+                serde_json::json!(format!("{}g", &digest[..63])),
+            ),
         ] {
             let mut wire = honest.clone();
             wire[field] = forged;
@@ -1240,6 +1300,10 @@ mod tests {
         // Premise on the other side, or the assertion above would hold of
         // every door.
         assert!(SourceOrigin::CatalogueAdmitted.is_independent_vendor());
+        // And the honest pair round-trips on the wire, or the origin-locator
+        // gate refuses every replayed reference rather than the forged ones.
+        let back: DataReference = serde_json::from_value(serde_json::to_value(&replayed)?)?;
+        assert_eq!(back, replayed);
         Ok(())
     }
 

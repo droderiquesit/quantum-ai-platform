@@ -248,6 +248,27 @@ impl TryFrom<CountMinSketchWire> for CountMinSketch {
                 expected.depth
             )));
         }
+        // Every increment adds `by` to exactly one counter in every row and
+        // `by` to `total`, so each row sums to `total` — the invariant the
+        // error bound is stated against: `absolute_error` is `ε·total`, and a
+        // `total` smaller than what a row holds understates the error every
+        // consumer refuses on. Checked with overflow refused rather than
+        // wrapped; a row whose counters do not add up is a sketch that was
+        // edited, and until 2026-09-12 the wire accepted it.
+        for (row, counts) in wire.counts.chunks(wire.width).enumerate() {
+            let sum = counts
+                .iter()
+                .try_fold(0u64, |sum, count| sum.checked_add(*count));
+            if sum != Some(wire.total) {
+                return Err(Error::invalid(format!(
+                    "a serialised sketch declares a total of {} and its row {row} sums to {}; \
+                     every row of a count-min sketch sums to the total, so its declared error \
+                     bound would be stated against a count it never took, and it is refused",
+                    wire.total,
+                    sum.map_or_else(|| "more than u64 holds".to_string(), |sum| sum.to_string())
+                )));
+            }
+        }
         Ok(Self {
             bound: wire.bound,
             width: wire.width,
@@ -541,11 +562,31 @@ mod tests {
             bound.width()
         );
 
-        let mut foreign = honest;
+        let mut foreign = honest.clone();
         foreign["multipliers"] = serde_json::json!(vec![1u64; bound.depth()]);
         assert!(
             serde_json::from_value::<CountMinSketch>(foreign).is_err(),
             "a sketch with multipliers its rows do not derive was accepted"
+        );
+
+        // The counts and the total must agree row by row: a total understated
+        // by one, and a counter overstated by one, are each refused. Until
+        // 2026-09-12 both deserialised, and the declared error — `ε·total` —
+        // was then stated against a count the rows never took.
+        let mut understated = honest.clone();
+        understated["total"] = serde_json::json!(6);
+        assert!(
+            serde_json::from_value::<CountMinSketch>(understated).is_err(),
+            "a sketch whose rows sum to seven under a declared total of six was accepted"
+        );
+        let mut overstated = honest;
+        let first_counter = overstated["counts"][0]
+            .as_u64()
+            .expect("premise: the counts are integers");
+        overstated["counts"][0] = serde_json::json!(first_counter + 1);
+        assert!(
+            serde_json::from_value::<CountMinSketch>(overstated).is_err(),
+            "a sketch with a counter its total does not account for was accepted"
         );
         Ok(())
     }
