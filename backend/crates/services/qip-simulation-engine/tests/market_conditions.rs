@@ -95,6 +95,17 @@ struct MetronomeBuyer {
 
 impl MetronomeBuyer {
     fn new(clip: Decimal, every: usize) -> Self {
+        // A test-only type, so an assertion rather than a refusal. The
+        // cadence test below is `seen.is_multiple_of(every)`, and
+        // `is_multiple_of(0)` answers `seen == 0` — false on every step after
+        // the first — so a zero stride would be a buyer that silently never
+        // buys and a run that proves nothing about fills. Under the `%` this
+        // replaced (`a7c03ff`) a zero stride panicked on the first step; the
+        // assertion keeps that misuse loud.
+        debug_assert!(
+            every > 0,
+            "a metronome buyer needs a stride of at least one step"
+        );
         Self {
             clip,
             every,

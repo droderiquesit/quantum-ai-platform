@@ -534,7 +534,7 @@ fn run() -> Result<()> {
     // log the archive below seals — and nowhere else. A second copy in the
     // node's key-value store was two claims about one fact.
 
-    let summary = node::run(
+    let run = node::run(
         &mut platform,
         &archive,
         &config,
@@ -596,7 +596,33 @@ fn run() -> Result<()> {
                 }
             );
         },
-    )?;
+    );
+    // The error exit releases the connector arms' sessions too. Until
+    // 2026-09-12 only the clean exit did, and the error exit is the one a
+    // connector arm itself produces — a poll refused, a licence lapsed —
+    // so the process that most needed to let go of a vendor's session was
+    // the one that never did. The run's own error is what is reported; a
+    // release that fails on top of it is appended rather than allowed to
+    // replace it, because the first failure is the one an operator has to
+    // diagnose. No flush on this path: the archive's hand-over is a clean
+    // exit's, and a node that failed mid-cycle must not seal a log it did
+    // not finish writing.
+    let summary = match run {
+        Ok(summary) => summary,
+        Err(error) => {
+            return Err(match evolution.shutdown_connectors(clock.now()) {
+                Ok(()) => error,
+                Err(release) => relabel(
+                    &error,
+                    format!(
+                        "{}; and releasing the connector sessions on the way out failed too: {}",
+                        error.message(),
+                        release.message()
+                    ),
+                ),
+            });
+        }
+    };
 
     println!();
     println!(
@@ -643,7 +669,15 @@ fn run() -> Result<()> {
 /// is wrong, so an operator reading the code looked for a variable to fix
 /// rather than a service to start.
 fn configuration(error: Error) -> Error {
-    let message = format!("configuration: {}", error.message());
+    relabel(&error, format!("configuration: {}", error.message()))
+}
+
+/// `error` with `message` in place of its own, and its class kept.
+///
+/// The one place the class-preserving rewrite is written, so that the two
+/// callers — the start-up prefix and the error exit's appended release
+/// failure — cannot drift into relabelling differently.
+fn relabel(error: &Error, message: String) -> Error {
     match error {
         Error::Invalid(_) => Error::Invalid(message),
         Error::NotFound(_) => Error::NotFound(message),

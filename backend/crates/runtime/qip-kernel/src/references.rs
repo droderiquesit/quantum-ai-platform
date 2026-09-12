@@ -578,7 +578,7 @@ impl Platform {
                  hashes to what was written would attribute a licence to bytes nobody fetched. \
                  Archive the log and start a new one, or restore the file the chain was \
                  written over. (The chain is unkeyed SHA-256, so this detects an edit, not a \
-                 rewrite that recomputed every hash after it — ADR 0043.)"
+                 rewrite that recomputed the hash — ADR 0043.)"
             )));
         }
         for record in log.records() {
