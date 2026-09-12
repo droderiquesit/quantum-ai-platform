@@ -482,7 +482,11 @@ impl Feed {
     /// cannot read it can only believe the claim.
     pub fn licensing_standing(&self) -> Option<String> {
         match self {
-            Self::Connector { admission, .. } => Some(admission.describe()),
+            Self::Connector {
+                admission,
+                admitted,
+                ..
+            } => Some(format!("{}; {}", admission.describe(), admitted.describe())),
             Self::Synthetic(_) | Self::Replay(_) | Self::Tape(_) | Self::Live(_) => None,
         }
     }

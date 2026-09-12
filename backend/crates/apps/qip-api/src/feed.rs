@@ -637,8 +637,13 @@ impl ApiFeed {
                     tape.periods()
                 )
             }
-            Self::Connector { feed, decision, .. } => format!(
-                "connector {} ({}), {}; licensing: {}",
+            Self::Connector {
+                feed,
+                decision,
+                admitted,
+                ..
+            } => format!(
+                "connector {} ({}), {}; licensing: {}; {}",
                 feed.descriptor().name,
                 feed.descriptor().provider,
                 if feed.descriptor().is_production_grade() {
@@ -646,7 +651,8 @@ impl ApiFeed {
                 } else {
                     "NOT production-grade"
                 },
-                decision.describe()
+                decision.describe(),
+                admitted.describe()
             ),
         }
     }

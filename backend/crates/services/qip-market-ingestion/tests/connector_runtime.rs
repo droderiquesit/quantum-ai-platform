@@ -1164,25 +1164,52 @@ fn a_delivered_poll_carries_a_digest_of_exactly_the_bytes_the_source_served() ->
     Ok(())
 }
 
-/// A poll whose body decodes to no events delivers exactly as it did before
-/// digests existed — outcome, admitted count, checkpoint — and simply
-/// carries no digest. The digest is an observation of the poll, never a gate
-/// on it.
+/// A body that decodes to no events is a delivery, not a fault, and
+/// carries no digest — while the same runtime, one poll earlier, carried one
+/// for a body that did decode. The first poll is the premise: without it,
+/// "no digest" is true of a runtime that never digests anything, and this
+/// test read green over exactly that until 2026-09-12.
 ///
-/// Mutated by replacing the `.ok()` on `FetchDigest::of` in
-/// `ConnectorRuntime::ingest` with a branch that sets
-/// `report.outcome = PollOutcome::Refused` when the digest cannot be formed —
-/// confirmed this test then fails on the outcome, then restored.
+/// Mutated by making `FetchDigest::of` accept an empty event list (returning
+/// a digest with a zero period) — confirmed the second poll then carries a
+/// digest and this fails, then restored; and by deleting the
+/// `report.digest = ...` assignment — confirmed the premise half then
+/// fails, then restored.
 #[test]
 fn a_poll_that_decodes_no_events_still_delivers_and_carries_no_digest() -> Result<()> {
     let manifest = manifest();
     let (mut runtime, _sleeper) = runtime_with(manifest.clone())?;
-    let mut transport = emulator_serving(&body(&[]));
+    let populated = body(&[("EURUSD", "2026-08-24T14:00:00Z", "1.0812")]);
+    let mut transport = SourceEmulator::new(vec![
+        RecordedExchange::always("/v1/health", RecordedAnswer::json(200, "{}")),
+        RecordedExchange::new(
+            "/v1/events",
+            vec![
+                RecordedAnswer::json(200, &populated),
+                RecordedAnswer::json(200, body(&[])),
+            ],
+        ),
+    ]);
     let mut connector = TestConnector::new(manifest);
     runtime.connect(&mut connector, &mut transport, now())?;
+
+    // The premise: this runtime digests a delivery that decoded to something.
+    let first = runtime.poll(&mut connector, &mut transport, now())?;
+    assert_eq!(
+        first.admitted.len(),
+        1,
+        "premise: the first body delivered an event"
+    );
+    let digest = first
+        .digest
+        .as_ref()
+        .expect("premise: a delivery with a decoded event carries a digest");
+    assert_eq!(digest.sha256(), qip_core::sha256_hex(populated.as_bytes()));
     let before = runtime.checkpoint(now());
 
-    let report = runtime.poll(&mut connector, &mut transport, now())?;
+    // Then the empty table.
+    let later = now().saturating_add(Duration::from_secs(60));
+    let report = runtime.poll(&mut connector, &mut transport, later)?;
     assert!(
         report.outcome.delivered(),
         "an empty table is a delivery, not a fault: {:?}",
@@ -1197,7 +1224,7 @@ fn a_poll_that_decodes_no_events_still_delivers_and_carries_no_digest() -> Resul
         report.digest.is_none(),
         "a body with no events describes no extent, so there is nothing to digest"
     );
-    let after = runtime.checkpoint(now());
+    let after = runtime.checkpoint(later);
     assert_eq!(
         after.cursor.position, before.cursor.position,
         "an empty delivery moves the cursor exactly as far as it did before digests existed"

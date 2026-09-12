@@ -75,23 +75,6 @@ pub struct RecordedReference {
     pub outcome: LedgerOutcome,
 }
 
-impl RecordedReference {
-    /// One line for a cycle summary.
-    pub fn describe(&self) -> String {
-        match &self.outcome {
-            LedgerOutcome::Revised(revision) => revision.describe(),
-            outcome => format!(
-                "{} referenced {} covering {} to {}: {}",
-                self.reference.source_id(),
-                self.reference.locator(),
-                self.reference.range().start().to_rfc3339(),
-                self.reference.range().end().to_rfc3339(),
-                outcome.as_str()
-            ),
-        }
-    }
-}
-
 /// The cost a reference from a shipped connector records.
 ///
 /// Every source this build can open is a free tier — the public Coinbase
@@ -125,11 +108,6 @@ impl Platform {
     /// The admission the platform holds for `source_id`, if any.
     pub fn admitted_source(&self, source_id: &str) -> Option<&AdmittedSource> {
         self.admitted_sources.get(source_id)
-    }
-
-    /// Every source the platform holds an admission for, in id order.
-    pub fn admitted_sources(&self) -> impl Iterator<Item = &AdmittedSource> {
-        self.admitted_sources.values()
     }
 
     /// Reference what a connector poll fetched, and act on a revision.
@@ -200,7 +178,9 @@ impl Platform {
         Ok(RecordedReference { reference, outcome })
     }
 
-    /// The ledger itself, for health surfaces and tests.
+    /// The ledger itself, for the research campaign and the tests that
+    /// drive it. No health surface reads it yet, and this line used to say
+    /// one did.
     pub fn reference_ledger(&self) -> &ReferenceLedger {
         &self.references
     }

@@ -7,9 +7,9 @@
 //! this platform knows is kept because it cannot be recovered, what the
 //! world already knows is not kept because it can — was enforced in the
 //! event log's eviction order and stated nowhere as a vocabulary. A retention
-//! class that exists only as a paragraph cannot be named by a health surface,
-//! asserted by a test, or written beside a series to say why it is still
-//! there.
+//! class that exists only as a paragraph cannot be asserted by a test against
+//! the table it claims to be, or written beside a series to say why it is
+//! still there.
 //!
 //! [`RetentionClass`] is the table. Nine variants, not ten: the row count
 //! `docs/DELIVERY-STATUS.md` once gave for this section was a miscount, and
@@ -137,7 +137,9 @@ impl RetentionClass {
             Self::Episodic => "compressed state with outcome, indexed for retrieval",
             Self::Semantic => "entities, relations, causal edges, beliefs, extracted facts",
             Self::EventAnchored => "book state at each own order, fill, quote, veto, unwind",
-            Self::FallbackSeries => "bars for instruments in an active class or universe",
+            Self::FallbackSeries => {
+                "one-minute OHLCV for instruments in an active class or universe"
+            }
             Self::Referenced => "external market history, filings, registries",
         }
     }
@@ -154,15 +156,6 @@ impl RetentionClass {
             Self::FallbackSeries => Retention::For(FALLBACK_RETENTION),
             Self::Referenced => Retention::ManifestOnly,
         }
-    }
-
-    /// Whether the row is kept because only this platform has it — the
-    /// distinction §22.1 says does the work.
-    pub const fn is_only_ours(&self) -> bool {
-        matches!(
-            self,
-            Self::Irreplaceable | Self::CompactDerived | Self::Episodic | Self::Semantic
-        )
     }
 }
 
@@ -190,7 +183,11 @@ pub enum RetainOutcome {
 
 /// The bounded daily-bar series a research campaign falls back to when a
 /// vendor withdraws history. See the module doc for the three bounds.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// Serialises and does not deserialise: [`FallbackSeries::new`] refuses a
+/// zero on every axis, and a `Deserialize` derive would have been a second
+/// constructor that did not.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct FallbackSeries {
     retention: Duration,
     per_instrument: usize,
@@ -246,10 +243,6 @@ impl FallbackSeries {
         self.per_instrument
     }
 
-    pub const fn instrument_bound(&self) -> usize {
-        self.instruments
-    }
-
     pub const fn evicted(&self) -> u64 {
         self.evicted
     }
@@ -257,11 +250,6 @@ impl FallbackSeries {
     /// Instruments currently held.
     pub fn instruments(&self) -> usize {
         self.series.len()
-    }
-
-    /// Bars currently held across every instrument.
-    pub fn total_bars(&self) -> usize {
-        self.series.values().map(Vec::len).sum()
     }
 
     /// Keep a daily bar, evicting whatever the bounds no longer admit.
@@ -327,11 +315,6 @@ impl FallbackSeries {
         self.series.get(subject).map_or(&[], Vec::as_slice)
     }
 
-    /// Every subject held, in id order.
-    pub fn subjects(&self) -> impl Iterator<Item = &str> {
-        self.series.keys().map(String::as_str)
-    }
-
     /// The span the held bars for `subject` cover, oldest open to newest
     /// open.
     pub fn span(&self, subject: &str) -> Option<(Timestamp, Timestamp)> {
@@ -372,34 +355,107 @@ mod tests {
         }
     }
 
-    /// Every row answers with its own policy, the labels are distinct, and
-    /// the count is nine — the number the status document once got wrong.
+    /// The nine rows of §22.1's table, read from the blueprint itself.
+    ///
+    /// The blueprint's table is four lines per row — class, what, retained,
+    /// size — between the section heading and the paragraph that follows
+    /// the table. Each row's class must be a variant, each variant's `what()`
+    /// must be the row's own words, and each variant's `retention()` must be
+    /// the policy the row's "retained" column states. The count is not
+    /// asserted as a literal: it is whatever the blueprint holds, which is
+    /// what makes this fail when a row is deleted from either side.
+    ///
+    /// An earlier version of this test asserted nine distinct labels and
+    /// five hand-picked policies, all read from the enum it was testing; it
+    /// would have passed a variant renamed to a row the blueprint does not
+    /// have, and it did pass a fallback-series `what()` that said "bars" where
+    /// the row says "one-minute OHLCV". Mutated by changing the fallback
+    /// row's `what()` back to "bars for instruments…" — confirmed this fails
+    /// naming the row, then restored; and by deleting `Self::Referenced`
+    /// from `ALL` — confirmed this fails on the missing variant, then
+    /// restored.
     #[test]
     fn the_nine_retention_classes_each_state_their_own_policy() {
-        let labels: std::collections::BTreeSet<&str> = RetentionClass::ALL
+        let blueprint = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../../docs/architecture/algorik-blueprint-v10.1-source.md"
+        ))
+        .expect("the blueprint source is checked in beside this workspace");
+        let lines: Vec<&str> = blueprint.lines().collect();
+        let heading = lines
             .iter()
-            .map(RetentionClass::as_str)
-            .collect();
-        assert_eq!(labels.len(), 9);
-        assert_eq!(RetentionClass::Transient.retention(), Retention::Never);
+            .position(|line| line.trim() == "22.1 Retention Classes")
+            .expect("§22.1 has its heading");
+        // The four column names, then rows of four until the closing
+        // paragraph, which is the first line longer than a cell.
+        let mut rows: Vec<[&str; 4]> = Vec::new();
+        let mut cursor = heading + 5;
+        while cursor + 3 < lines.len() && lines[cursor].trim().len() < 120 {
+            rows.push([
+                lines[cursor].trim(),
+                lines[cursor + 1].trim(),
+                lines[cursor + 2].trim(),
+                lines[cursor + 3].trim(),
+            ]);
+            cursor += 4;
+        }
+        // Premise: the table was read, and it is the table this enum claims
+        // to be — nine rows, the first of them transient.
+        assert!(rows.len() >= 5, "the §22.1 table was not read: {rows:?}");
+        assert_eq!(rows[0][0], "Transient");
         assert_eq!(
-            RetentionClass::Irreplaceable.retention(),
-            Retention::Permanent
+            rows.len(),
+            RetentionClass::ALL.len(),
+            "the blueprint's table and `RetentionClass::ALL` disagree about how many rows \
+             §22.1 has: {:?}",
+            rows.iter().map(|row| row[0]).collect::<Vec<_>>()
         );
-        assert_eq!(
-            RetentionClass::EventAnchored.retention(),
-            Retention::Rolling(Duration::from_days(90))
-        );
-        assert_eq!(
-            RetentionClass::FallbackSeries.retention(),
-            Retention::For(FALLBACK_RETENTION)
-        );
-        assert_eq!(
-            RetentionClass::Referenced.retention(),
-            Retention::ManifestOnly
-        );
-        assert!(RetentionClass::Irreplaceable.is_only_ours());
-        assert!(!RetentionClass::Referenced.is_only_ours());
+
+        for (row, class) in rows.iter().zip(RetentionClass::ALL) {
+            let label = row[0].to_lowercase().replace([' ', '-'], "_");
+            assert_eq!(class.as_str(), label, "the variant is not the row: {row:?}");
+            // Compared without case: the table capitalises its cells and an
+            // acronym keeps its capitals either side.
+            assert_eq!(
+                class.what().to_lowercase(),
+                row[1].to_lowercase(),
+                "{}'s `what()` is not the row's own words",
+                class.as_str()
+            );
+            let retained = row[2];
+            let expected = match class {
+                RetentionClass::Transient => Retention::Never,
+                RetentionClass::DerivedState => Retention::InMemoryFixed,
+                RetentionClass::Irreplaceable => Retention::Permanent,
+                RetentionClass::CompactDerived => Retention::Series,
+                RetentionClass::Episodic | RetentionClass::Semantic => Retention::Indefinite,
+                RetentionClass::EventAnchored => Retention::Rolling(Duration::from_days(90)),
+                RetentionClass::FallbackSeries => Retention::For(FALLBACK_RETENTION),
+                RetentionClass::Referenced => Retention::ManifestOnly,
+            };
+            assert_eq!(class.retention(), expected, "{}", class.as_str());
+            // And the policy is the row's column, not a value chosen beside
+            // it: each arm names a phrase that column carries. Semantic's
+            // column says "Yes. The world model" and nothing about a span,
+            // which the enum reads as indefinite — the one reading here that
+            // is an interpretation rather than a quotation, and named as such.
+            let phrase = match (class, expected) {
+                (RetentionClass::Semantic, Retention::Indefinite) => "Yes. The world model",
+                (_, Retention::Never) => "No. Bounded ring",
+                (_, Retention::InMemoryFixed) => "in memory. Fixed size",
+                (_, Retention::Permanent) => "permanently",
+                (_, Retention::Series) => "Series, not observations",
+                (_, Retention::Indefinite) => "indefinitely",
+                (_, Retention::Rolling(_)) => "90 days rolling",
+                (_, Retention::For(_)) => "three years",
+                (_, Retention::ManifestOnly) => "manifest with source, range and content hash",
+            };
+            assert!(
+                retained.contains(phrase),
+                "{}: the row says {retained:?}, the enum answers {expected:?}",
+                class.as_str()
+            );
+        }
     }
 
     /// The series never holds a bar older than the retention ceiling behind

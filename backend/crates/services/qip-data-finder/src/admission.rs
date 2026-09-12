@@ -58,7 +58,7 @@ use qip_core::error::{Error, Result};
 use qip_financial::quality::LicensingClass;
 use qip_market_ingestion::connector::{FieldKind, SchemaContract, SourceManifest};
 use qip_market_ingestion::connector_feed::KNOWN_SOURCES;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::category::SourceCategory;
 use crate::legal::{LicensingPosture, SourceLicense};
@@ -391,11 +391,38 @@ pub fn admit_from_registered(
 /// minted by [`admit_from_registered`] after every usage question has been
 /// answered `permitted` — see [`GatePassed`]. There is no path from a
 /// catalogue entry whose posture is ambiguous, or from a manifest alone, to a
-/// value of this type.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// value of this type — and none from the wire either. The type serialises,
+/// so a banner or a record can carry it, and deliberately does not
+/// deserialise: a `Deserialize` derive is a second constructor that takes
+/// any caller's word for the licence, which is exactly the gateless door
+/// the private `GatePassed` field exists to close. This does not compile:
+///
+/// ```compile_fail
+/// use qip_data_finder::admission::AdmittedSource;
+/// let smuggled: AdmittedSource =
+///     serde_json::from_str("{}").expect("there is no deserialiser to run");
+/// ```
+///
+/// while the same type, reached through the gate, serialises as it should
+/// — the companion that proves the refusal above is about `Deserialize` and
+/// not about a path that does not resolve:
+///
+/// ```
+/// use qip_data_finder::admission::{self, AdmittedSource};
+/// use qip_market_ingestion::connectors::FrankfurterRatesConnector;
+/// # fn main() -> qip_core::error::Result<()> {
+/// let manifest = FrankfurterRatesConnector::shipped_manifest()?;
+/// let now = qip_core::Timestamp::from_secs(1_760_000_000);
+/// let decision = admission::admit(&manifest.source_id, manifest.licensing, now)?;
+/// let admitted = AdmittedSource::from_decision(&decision, &manifest)?;
+/// let text = serde_json::to_string(&admitted)?;
+/// assert!(text.contains("frankfurter-ecb-reference-rates"));
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct AdmittedSource {
     source_id: String,
-    provider: String,
     category: SourceCategory,
     licence: String,
     class: LicensingClass,
@@ -458,7 +485,6 @@ impl AdmittedSource {
         })?;
         Ok(Self {
             source_id: manifest.source_id.clone(),
-            provider: manifest.provider.clone(),
             category,
             licence: decision.licence.clone(),
             class: manifest.licensing,
@@ -472,20 +498,8 @@ impl AdmittedSource {
         &self.source_id
     }
 
-    pub fn provider(&self) -> &str {
-        &self.provider
-    }
-
     pub fn category(&self) -> SourceCategory {
         self.category
-    }
-
-    pub fn licence(&self) -> &str {
-        &self.licence
-    }
-
-    pub fn class(&self) -> LicensingClass {
-        self.class
     }
 
     pub fn schema(&self) -> &SourceSchema {
@@ -496,16 +510,18 @@ impl AdmittedSource {
         &self.endpoint
     }
 
-    pub fn admitted_at(&self) -> Timestamp {
-        self.admitted_at
-    }
-
-    /// One line for a banner.
+    /// One line for a banner: the licence, the class and the category the
+    /// reference ledger will name for every digest from this source, and the
+    /// instant the decision was taken. Printed by both composition roots
+    /// beside the standing gate's own line, so an operator can read what the
+    /// ledger believes about a source rather than infer it from the feed's.
     pub fn describe(&self) -> String {
         format!(
-            "{} admitted through the catalogue under `{}` as a {} source at {}",
+            "{} admitted to the reference ledger under `{}` (class {:?}) as a {} source, \
+             decided at {}",
             self.source_id,
             self.licence,
+            self.class,
             self.category.as_str(),
             self.admitted_at.to_rfc3339()
         )

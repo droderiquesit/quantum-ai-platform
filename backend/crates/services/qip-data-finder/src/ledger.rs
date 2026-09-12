@@ -194,7 +194,11 @@ impl LedgerOutcome {
 }
 
 /// See the module doc.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// Serialises and does not deserialise: [`ReferenceLedger::new`] refuses a
+/// zero bound on either axis, and a `Deserialize` derive would have been a
+/// second constructor that did not.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ReferenceLedger {
     bound: usize,
     revision_bound: usize,
@@ -205,8 +209,8 @@ pub struct ReferenceLedger {
     /// Revisions caught, oldest first, bounded by `revision_bound`.
     revisions: VecDeque<RevisionRecord>,
     /// References evicted to stay within `bound`, over the ledger's life.
-    /// A number, so "the ledger is full" is a fact a health surface can show
-    /// rather than one inferred from a count that stopped rising.
+    /// A number, so "the ledger is full" is a fact a test or a cycle line can
+    /// state rather than one inferred from a count that stopped rising.
     evicted: u64,
 }
 
@@ -337,24 +341,9 @@ impl ReferenceLedger {
         })
     }
 
-    /// Every reference held, oldest extent first.
-    pub fn references(&self) -> impl Iterator<Item = &DataReference> {
-        self.order.iter().filter_map(|key| self.entries.get(key))
-    }
-
     /// Every revision caught, oldest first.
     pub fn revisions(&self) -> impl Iterator<Item = &RevisionRecord> {
         self.revisions.iter()
-    }
-
-    /// The revisions caught on one source.
-    pub fn revisions_of<'a>(
-        &'a self,
-        source_id: &'a str,
-    ) -> impl Iterator<Item = &'a RevisionRecord> + 'a {
-        self.revisions
-            .iter()
-            .filter(move |revision| revision.source_id == source_id)
     }
 
     /// The most recently detected revision, if any, of an extent from

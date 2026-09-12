@@ -33,11 +33,17 @@ use super::manifest::{SchemaVersion, SourceManifest};
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_events::Topic;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::BTreeSet;
 
 /// The content-hashed record of one delivered fetch.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// Serialises, so a cycle line or a record can carry it, and deliberately
+/// does not deserialise: [`FetchDigest::of`] is the one constructor, and it
+/// hashes a body it was given, which is what lets a reference built from a
+/// digest claim its hash was taken over real bytes. A `Deserialize` derive
+/// would be a second constructor that takes any caller's word for the hash.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct FetchDigest {
     source_id: String,
     /// The path and query the fetch was made against, as the transport put
@@ -152,10 +158,6 @@ impl FetchDigest {
 
     pub fn symbols(&self) -> &BTreeSet<String> {
         &self.symbols
-    }
-
-    pub const fn schema_version(&self) -> SchemaVersion {
-        self.schema_version
     }
 
     pub const fn topic(&self) -> Option<Topic> {
