@@ -429,7 +429,78 @@ impl StreamJournal {
     }
 
     /// Persist the resume position, and note how much of the window it carries.
+    ///
+    /// The ledger is written before the checkpoint, here and in
+    /// [`Self::record_and_commit`], and the order is the point: the two
+    /// keys are two writes and no store here makes them one, so a failure
+    /// between them leaves one moved and one not. Ledger first means the
+    /// durable checkpoint is never ahead of the durable ledger — a
+    /// checkpoint on disk past records the ledger never counted was, until
+    /// 2026-09-12, what a failure in the old order left, and a process
+    /// killed before its next poll then resumed past records nobody had
+    /// received. A ledger ahead of its checkpoint by one carry count is
+    /// the harmless side of the same gap.
     pub fn commit(&mut self, checkpoint: &Checkpoint) -> Result<()> {
+        self.refuse_foreign(checkpoint)?;
+        // Refuse a carry past the bound here too, so nothing unbounded is
+        // written rather than only refused on the way back in. A store that
+        // already holds an oversized carry is a restart that has to be repaired
+        // by hand.
+        let carried = checkpoint.carried()?;
+        let mut next = self.ledger.clone();
+        next.carried_fingerprints = carried.len();
+        self.store
+            .put_as(&Self::ledger_key(&self.source_id), &next)?;
+        self.store
+            .put_as(&Self::checkpoint_key(&self.source_id), checkpoint)?;
+        self.ledger = next;
+        Ok(())
+    }
+
+    /// Record one poll and persist the resume position it produced, as one
+    /// step with one scratch copy: the ledger absorbs the poll and the carry
+    /// count, the ledger is written, then the checkpoint, and the in-memory
+    /// ledger adopts the scratch copy only once both writes have succeeded.
+    ///
+    /// This is the seam the connector bridge writes through, and it exists
+    /// because [`Self::record`] followed by [`Self::commit`] was two seams
+    /// with a gap between them. Until 2026-09-12 the bridge recorded the
+    /// poll, then committed; a commit that failed left the in-memory ledger
+    /// already counting the poll while the bridge unwound the runtime to
+    /// re-fetch it, so the re-fetch was billed a second time — polls,
+    /// delivered and admitted each counted twice for one delivery — and,
+    /// in the old commit order, could leave the durable checkpoint ahead of
+    /// what was delivered. Now a failure at either write leaves the
+    /// in-memory ledger where the last successful poll put it, and the
+    /// durable checkpoint likewise.
+    ///
+    /// What a failure *can* leave is stated rather than hidden: the ledger
+    /// write may succeed and the checkpoint write fail, and the durable
+    /// ledger then counts a poll the process does not, until the next
+    /// successful write overwrites it whole — every write here is the whole
+    /// ledger, so the disagreement lasts one poll and heals itself. The
+    /// two keys are not one write, and this crate does not pretend they
+    /// are.
+    pub fn record_and_commit(
+        &mut self,
+        report: &PollReport,
+        at: Timestamp,
+        checkpoint: &Checkpoint,
+    ) -> Result<()> {
+        self.refuse_foreign(checkpoint)?;
+        let carried = checkpoint.carried()?;
+        let mut next = self.ledger.clone();
+        next.absorb(report, at);
+        next.carried_fingerprints = carried.len();
+        self.store
+            .put_as(&Self::ledger_key(&self.source_id), &next)?;
+        self.store
+            .put_as(&Self::checkpoint_key(&self.source_id), checkpoint)?;
+        self.ledger = next;
+        Ok(())
+    }
+
+    fn refuse_foreign(&self, checkpoint: &Checkpoint) -> Result<()> {
         if checkpoint.source_id != self.source_id {
             return Err(Error::invalid(format!(
                 "this journal is for `{}` and the checkpoint belongs to `{}`. Storing it would \
@@ -438,15 +509,7 @@ impl StreamJournal {
                 self.source_id, checkpoint.source_id
             )));
         }
-        // Refuse a carry past the bound here too, so nothing unbounded is
-        // written rather than only refused on the way back in. A store that
-        // already holds an oversized carry is a restart that has to be repaired
-        // by hand.
-        let carried = checkpoint.carried()?;
-        self.store
-            .put_as(&Self::checkpoint_key(&self.source_id), checkpoint)?;
-        self.ledger.carried_fingerprints = carried.len();
-        self.write_ledger()
+        Ok(())
     }
 
     fn write_ledger(&self) -> Result<()> {
