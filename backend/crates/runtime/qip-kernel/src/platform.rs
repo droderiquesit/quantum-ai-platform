@@ -7445,6 +7445,21 @@ impl Platform {
         }
     }
 
+    /// The regime `subject` is in right now, as one stable key a meta-learning
+    /// consumer can score against.
+    ///
+    /// Market and volatility travel together because every existing reader of
+    /// [`Self::regime_label`] reads both at once; a caller that only cares
+    /// about one axis can split the string on `/`. This is the public half of
+    /// `regime_label` — the private method stays private because its
+    /// `RegimeLabel` type lives in `qip-ai` for the episodic memory's own
+    /// reasons, and a caller outside this crate needs only the key, not the
+    /// struct.
+    pub fn regime_context(&self, subject: &str) -> String {
+        let label = self.regime_label(subject);
+        format!("{}/{}", label.market, label.volatility)
+    }
+
     /// The situation as REASON sees it before the panel reports — the
     /// instrument, the regime, the claim the anomaly implies and the
     /// horizon — and the precedent memory holds for it at `now`.

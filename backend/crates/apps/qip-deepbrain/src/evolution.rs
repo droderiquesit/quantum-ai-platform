@@ -692,6 +692,12 @@ impl EvolutionEngine {
         }
 
         let ledger = platform.central().factory().ledger();
+        // Read once, off the live platform, and handed to every judgement in
+        // this round rather than recomputed per challenger: two challengers
+        // scored in the same round are scored in the same regime, and a
+        // recomputed read could disagree with itself mid-round if a sensed
+        // observation landed between them.
+        let regime = platform.regime_context(subject);
         let Self {
             desk, foundries, ..
         } = self;
@@ -710,6 +716,7 @@ impl EvolutionEngine {
                 net,
                 PERIODS_PER_YEAR,
                 foundry,
+                &regime,
                 now,
             ) {
                 Ok(Some(succession)) => {
@@ -1549,6 +1556,7 @@ mod tests {
             NetReturns::flat_bps(&returns, 5.0)?,
             PERIODS_PER_YEAR,
             &foundry,
+            "trending/normal",
             start(),
         ) {
             Err(error) => error,
