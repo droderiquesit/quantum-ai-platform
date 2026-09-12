@@ -946,16 +946,26 @@ mod tests {
     /// deep brain exits on it, and the restart loaded a ledger already
     /// counting the poll, resumed from the older checkpoint, re-fetched the
     /// same table and billed it a second time — permanently one high. The
-    /// store here refuses exactly the write a two-key layout would have
-    /// split, so the second phase reads `polls == 2` under that layout and
-    /// `polls == 1` under one key.
+    /// store here refuses any value carrying a position and adopts one
+    /// carrying none, which is exactly the write a two-key layout would
+    /// have split: under that layout the durable ledger reads `polls == 2`
+    /// after the failure, under one key it reads `polls == 1`, and a
+    /// restart over the two-key store would then have billed a third.
     ///
     /// Mutated by writing the value twice in `record_and_commit` — first
-    /// with the ledger and the *previous* position, then whole — which is
-    /// the two-key layout's failure shape under one key: confirmed the
-    /// durable ledger then counts the failed poll and the restart bills the
-    /// re-fetch again (`polls == 2`), failing the first assertion after the
-    /// failure, then restored.
+    /// `StoredJournalRef { ledger: &next, checkpoint: None }`, then whole —
+    /// which is the two-key layout's failure shape under one key: the
+    /// ledger-only write carries no position, so the store adopts it and
+    /// refuses the whole one. Confirmed the durable ledger then counts the
+    /// failed poll — `durable.polls` reads `2` against the `1` asserted at
+    /// the first assertion that reads the store after the failure — and
+    /// the test fails there, before the restart is reached; restored. A
+    /// note here used to describe a first write carrying the *previous*
+    /// position; that write carries a position, this store refuses it, and
+    /// the mutation cannot fire — the note was wrong, not the assertion.
+    /// The mutation must land in `record_and_commit` and not in `open`,
+    /// whose session write has the same two-line shape and is not what
+    /// the failed poll goes through.
     #[test]
     fn a_journal_write_that_fails_after_the_poll_bills_the_refetch_once_even_across_a_restart() {
         let opened = instant("2026-08-27T00:00:00Z");
@@ -978,8 +988,10 @@ mod tests {
         let position = position.expect("premise: the healthy write carried a position");
         assert_eq!(position.cursor, feed.checkpoint(opened).cursor);
 
-        // The disk fills. The next poll — a second table, a second delivery
-        // — is fetched, referenced and then cannot be journaled.
+        // The disk fills. The next poll — the emulator serves the one fixed
+        // body again, so it is the same table re-served, every row a
+        // duplicate of the first delivery — is fetched, referenced and
+        // then cannot be journaled.
         refusing.store(true, std::sync::atomic::Ordering::SeqCst);
         let later = opened.saturating_add(qip_core::Duration::from_hours(1));
         let failure = feed

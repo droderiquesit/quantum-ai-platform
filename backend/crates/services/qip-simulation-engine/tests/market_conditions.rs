@@ -101,8 +101,10 @@ impl MetronomeBuyer {
         // the first — so a zero stride would be a buyer that silently never
         // buys and a run that proves nothing about fills. Under the `%` this
         // replaced (`a7c03ff`) a zero stride panicked on the first step; the
-        // assertion keeps that misuse loud.
-        debug_assert!(
+        // assertion keeps that misuse loud — `assert!` and not
+        // `debug_assert!`, so it is loud in every profile a test can be
+        // built in, `--release` included.
+        assert!(
             every > 0,
             "a metronome buyer needs a stride of at least one step"
         );
