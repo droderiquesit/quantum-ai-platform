@@ -36,8 +36,9 @@
 //!
 //! # What is bounded, and what that costs
 //!
-//! One key per source, holding one fixed-shape record: nine counters, four
-//! optional instants and two sizes. Nothing here grows with the number of
+//! One key per source, holding one fixed-shape record — nine counters, four
+//! optional instants and two sizes — beside the resume position, whose carry
+//! [`Checkpoint::carried`] bounds. Nothing here grows with the number of
 //! records, the number of polls, or the number of days — a ledger after seven
 //! days is byte-for-byte the same size as a ledger after one poll. That is a
 //! deliberate refusal of the more useful thing: there is no per-day series
@@ -327,6 +328,40 @@ impl StreamLedger {
     }
 }
 
+/// What the store holds for one source, under one key: the ledger, and the
+/// resume position it was written beside.
+///
+/// One value and not two, and the shape is the whole of the atomicity
+/// argument. Until 2026-09-12 the ledger and the checkpoint lived under two
+/// keys and were two `put`s, ledger first, and the gap between them was
+/// stated as healing itself on the next successful write. It did — in the
+/// process that failed. Across a crash it did not: `poll_referencing`
+/// returned the failed checkpoint write, the deep brain exited on it, and the
+/// restart loaded a ledger already counting the poll, resumed from the
+/// *older* checkpoint, re-fetched the same extent and billed it again —
+/// permanently one high, on the one figure the seven-day bar is scored on.
+/// One key under one `put` makes the two move together or not at all, on
+/// the store's own terms: the memory store's `put` is one map insert, the
+/// file store's is one atomic rename with an `fsync` behind it, and the
+/// Redis store's is one `SET`. No store here offers a multi-key transaction,
+/// and this crate no longer needs one.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredJournal {
+    ledger: StreamLedger,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checkpoint: Option<Checkpoint>,
+}
+
+/// The same value borrowed, for writing without cloning a checkpoint whose
+/// carry can hold two hundred and fifty-six fingerprints.
+#[derive(Debug, Serialize)]
+struct StoredJournalRef<'a> {
+    ledger: &'a StreamLedger,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checkpoint: Option<&'a Checkpoint>,
+}
+
 /// A stream's durable record and its resume position, on a key-value store.
 ///
 /// Through the [`KeyValueStore`] port rather than the filesystem, for the
@@ -338,18 +373,31 @@ pub struct StreamJournal {
     store: Arc<dyn KeyValueStore>,
     source_id: String,
     ledger: StreamLedger,
+    /// The resume position the store holds beside the ledger, carried
+    /// forward by every write so that a write which only moves the ledger —
+    /// the session count at open — never drops it.
+    checkpoint: Option<Checkpoint>,
 }
 
 impl StreamJournal {
     /// The key prefix every entry lives under.
     pub const NAMESPACE: &'static str = "ingestion-stream";
 
-    fn ledger_key(source_id: &str) -> String {
-        format!("{}/{source_id}/ledger", Self::NAMESPACE)
+    /// The one key a source's journal lives under.
+    fn key(source_id: &str) -> String {
+        format!("{}/{source_id}/journal", Self::NAMESPACE)
     }
 
-    fn checkpoint_key(source_id: &str) -> String {
-        format!("{}/{source_id}/checkpoint", Self::NAMESPACE)
+    /// The two keys the journal wrote until 2026-09-12, kept only so that a
+    /// store still holding them is refused by name rather than read as a
+    /// stream that never ran. Nothing is deployed and no migration is
+    /// written; a store that holds them is a session's artefact, and the
+    /// refusal says what to do with it.
+    fn legacy_keys(source_id: &str) -> [String; 2] {
+        [
+            format!("{}/{source_id}/ledger", Self::NAMESPACE),
+            format!("{}/{source_id}/checkpoint", Self::NAMESPACE),
+        ]
     }
 
     /// Open the journal for one source, counting this process as a session.
@@ -363,7 +411,8 @@ impl StreamJournal {
     /// The session count is written **at open**, before any poll. A process
     /// that starts, restores a window and then dies has still been a session,
     /// and a count written at shutdown would miss exactly the sessions an
-    /// operator most needs to see.
+    /// operator most needs to see. The write carries the stored checkpoint
+    /// forward unchanged, because the two are one value.
     pub fn open(
         store: Arc<dyn KeyValueStore>,
         source_id: &str,
@@ -374,28 +423,55 @@ impl StreamJournal {
                  record under one key and make the ledger the sum of feeds nobody could separate",
             ));
         }
-        let mut ledger: StreamLedger = store
-            .get_as(&Self::ledger_key(source_id))?
-            .unwrap_or_else(|| StreamLedger::new(source_id));
+        for legacy in Self::legacy_keys(source_id) {
+            if store.get(&legacy)?.is_some() {
+                return Err(Error::invalid(format!(
+                    "the store holds `{legacy}`, a key this journal wrote until 2026-09-12 when \
+                     the ledger and the checkpoint were two values. They are one value under `{}` \
+                     now, and a ledger read from the old layout could be one poll ahead of its \
+                     checkpoint, which is the defect the new layout closes. Nothing is deployed \
+                     and no migration is written: clear the two old keys, or point this process \
+                     at a fresh store",
+                    Self::key(source_id)
+                )));
+            }
+        }
+        let stored: Option<StoredJournal> = store.get_as(&Self::key(source_id))?;
+        let (mut ledger, checkpoint) = match stored {
+            Some(stored) => (stored.ledger, stored.checkpoint),
+            None => (StreamLedger::new(source_id), None),
+        };
         if ledger.source_id != source_id {
             return Err(Error::invalid(format!(
                 "the ledger under `{}` records source `{}` and this journal was opened for `{}`. \
                  Two streams sharing a key would sum into one record neither could be read out \
                  of; the store namespace is wrong, not the ledger",
-                Self::ledger_key(source_id),
+                Self::key(source_id),
                 ledger.source_id,
                 source_id
             )));
         }
+        if let Some(stored) = &checkpoint
+            && stored.source_id != source_id
+        {
+            return Err(Error::invalid(format!(
+                "the checkpoint under `{}` belongs to `{}` and this journal was opened for `{}`; \
+                 resuming from it would give one source another's position",
+                Self::key(source_id),
+                stored.source_id,
+                source_id
+            )));
+        }
         ledger.sessions = ledger.sessions.saturating_add(1);
-        let checkpoint: Option<Checkpoint> = store.get_as(&Self::checkpoint_key(source_id))?;
         let journal = Self {
             store,
             source_id: source_id.to_string(),
             ledger,
+            checkpoint,
         };
-        journal.write_ledger()?;
-        Ok((journal, checkpoint))
+        journal.write(&journal.ledger, journal.checkpoint.as_ref())?;
+        let resumed = journal.checkpoint.clone();
+        Ok((journal, resumed))
     }
 
     pub const fn ledger(&self) -> &StreamLedger {
@@ -406,40 +482,15 @@ impl StreamJournal {
         &self.source_id
     }
 
-    /// Record one poll and persist the ledger.
+    /// Persist the resume position without recording a poll, and note how
+    /// much of the window it carries.
     ///
-    /// Persisted on every poll rather than on a timer or at shutdown. The
-    /// process this is measuring is one whose failure modes include being
-    /// killed without notice, and a ledger flushed at shutdown records nothing
-    /// about the runs worth recording.
-    ///
-    /// Absorbed into a scratch copy and adopted only once the store has
-    /// taken it: a write that fails must leave the in-memory ledger where
-    /// the durable one is, or the two disagree by one poll for the rest of
-    /// the process and the bridge's unwind of a failed poll — which puts the
-    /// runtime back — would leave the ledger counting a poll nobody
-    /// delivered.
-    pub fn record(&mut self, report: &PollReport, at: Timestamp) -> Result<()> {
-        let mut next = self.ledger.clone();
-        next.absorb(report, at);
-        self.store
-            .put_as(&Self::ledger_key(&self.source_id), &next)?;
-        self.ledger = next;
-        Ok(())
-    }
-
-    /// Persist the resume position, and note how much of the window it carries.
-    ///
-    /// The ledger is written before the checkpoint, here and in
-    /// [`Self::record_and_commit`], and the order is the point: the two
-    /// keys are two writes and no store here makes them one, so a failure
-    /// between them leaves one moved and one not. Ledger first means the
-    /// durable checkpoint is never ahead of the durable ledger — a
-    /// checkpoint on disk past records the ledger never counted was, until
-    /// 2026-09-12, what a failure in the old order left, and a process
-    /// killed before its next poll then resumed past records nobody had
-    /// received. A ledger ahead of its checkpoint by one carry count is
-    /// the harmless side of the same gap.
+    /// For a position taken outside a poll — a shutdown checkpoint, should a
+    /// root ever want one; no production caller writes one today, because
+    /// [`Self::record_and_commit`] commits on every poll and a second commit
+    /// at shutdown would write the identical position. One write of the
+    /// whole value, so the ledger the store holds is the ledger this process
+    /// holds, with the new position beside it.
     pub fn commit(&mut self, checkpoint: &Checkpoint) -> Result<()> {
         self.refuse_foreign(checkpoint)?;
         // Refuse a carry past the bound here too, so nothing unbounded is
@@ -449,38 +500,41 @@ impl StreamJournal {
         let carried = checkpoint.carried()?;
         let mut next = self.ledger.clone();
         next.carried_fingerprints = carried.len();
-        self.store
-            .put_as(&Self::ledger_key(&self.source_id), &next)?;
-        self.store
-            .put_as(&Self::checkpoint_key(&self.source_id), checkpoint)?;
+        self.write(&next, Some(checkpoint))?;
         self.ledger = next;
+        self.checkpoint = Some(checkpoint.clone());
         Ok(())
     }
 
     /// Record one poll and persist the resume position it produced, as one
-    /// step with one scratch copy: the ledger absorbs the poll and the carry
-    /// count, the ledger is written, then the checkpoint, and the in-memory
-    /// ledger adopts the scratch copy only once both writes have succeeded.
+    /// value under one key: the ledger absorbs the poll and the carry count,
+    /// the ledger and the checkpoint are written together in one `put`, and
+    /// the in-memory copies adopt the scratch copy only once the store has
+    /// taken it.
     ///
-    /// This is the seam the connector bridge writes through, and it exists
-    /// because [`Self::record`] followed by [`Self::commit`] was two seams
-    /// with a gap between them. Until 2026-09-12 the bridge recorded the
-    /// poll, then committed; a commit that failed left the in-memory ledger
-    /// already counting the poll while the bridge unwound the runtime to
-    /// re-fetch it, so the re-fetch was billed a second time — polls,
-    /// delivered and admitted each counted twice for one delivery — and,
-    /// in the old commit order, could leave the durable checkpoint ahead of
-    /// what was delivered. Now a failure at either write leaves the
-    /// in-memory ledger where the last successful poll put it, and the
-    /// durable checkpoint likewise.
+    /// Persisted on every poll rather than on a timer or at shutdown. The
+    /// process this is measuring is one whose failure modes include being
+    /// killed without notice, and a ledger flushed at shutdown records
+    /// nothing about the runs worth recording.
     ///
-    /// What a failure *can* leave is stated rather than hidden: the ledger
-    /// write may succeed and the checkpoint write fail, and the durable
-    /// ledger then counts a poll the process does not, until the next
-    /// successful write overwrites it whole — every write here is the whole
-    /// ledger, so the disagreement lasts one poll and heals itself. The
-    /// two keys are not one write, and this crate does not pretend they
-    /// are.
+    /// This is the seam the connector bridge writes through, and it is the
+    /// only way a poll reaches the store: the separate `record` that once
+    /// wrote a poll without its position — the first half of a double bill,
+    /// with no production caller — is gone. Two defects, in order. Until
+    /// 2026-09-12 the bridge recorded, then committed, and a commit that
+    /// failed left the in-memory ledger counting a poll the bridge then
+    /// unwound and re-fetched, so one delivery was billed twice in the same
+    /// process. The repair adopted the ledger only on success and wrote the
+    /// checkpoint last, and stated that the one remaining gap — a ledger
+    /// write that succeeded before a checkpoint write that failed — lasted
+    /// one poll and healed itself. That was true only if the process
+    /// survived: the failure propagates out of `poll_referencing` and the
+    /// deep brain exits on it, and the restart loaded the durable ledger
+    /// already counting the poll, resumed from the older checkpoint,
+    /// re-fetched and billed the poll again — one high for the life of the
+    /// stream. Now there is nothing between the two writes because there is
+    /// one write, and a failure leaves the store, this process and the next
+    /// process all at the last poll that succeeded.
     pub fn record_and_commit(
         &mut self,
         report: &PollReport,
@@ -492,11 +546,9 @@ impl StreamJournal {
         let mut next = self.ledger.clone();
         next.absorb(report, at);
         next.carried_fingerprints = carried.len();
-        self.store
-            .put_as(&Self::ledger_key(&self.source_id), &next)?;
-        self.store
-            .put_as(&Self::checkpoint_key(&self.source_id), checkpoint)?;
+        self.write(&next, Some(checkpoint))?;
         self.ledger = next;
+        self.checkpoint = Some(checkpoint.clone());
         Ok(())
     }
 
@@ -512,8 +564,11 @@ impl StreamJournal {
         Ok(())
     }
 
-    fn write_ledger(&self) -> Result<()> {
-        self.store
-            .put_as(&Self::ledger_key(&self.source_id), &self.ledger)
+    /// The one write: ledger and checkpoint together, under the one key.
+    fn write(&self, ledger: &StreamLedger, checkpoint: Option<&Checkpoint>) -> Result<()> {
+        self.store.put_as(
+            &Self::key(&self.source_id),
+            &StoredJournalRef { ledger, checkpoint },
+        )
     }
 }

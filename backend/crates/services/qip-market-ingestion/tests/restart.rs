@@ -208,7 +208,6 @@ fn a_restarted_connector_recognises_the_table_its_predecessor_absorbed_and_witho
     );
 
     let report = poll_once(&mut runtime, &mut connector, &path, &body, first_poll)?;
-    journal.record(&report, first_poll)?;
     // Premise: the source really did deliver a whole table, so the suppression
     // asserted further down is a suppression of something rather than a poll
     // that happened to be empty.
@@ -220,7 +219,7 @@ fn a_restarted_connector_recognises_the_table_its_predecessor_absorbed_and_witho
     );
 
     let checkpoint = runtime.checkpoint(second_poll);
-    journal.commit(&checkpoint)?;
+    journal.record_and_commit(&report, first_poll, &checkpoint)?;
     assert_eq!(
         checkpoint.recent_fingerprints.len() as u64,
         RATES_PER_TABLE,
@@ -285,7 +284,7 @@ fn a_restarted_connector_recognises_the_table_its_predecessor_absorbed_and_witho
     );
 
     let report = poll_once(&mut runtime, &mut connector, &path, &body, second_poll)?;
-    journal.record(&report, second_poll)?;
+    journal.record_and_commit(&report, second_poll, &runtime.checkpoint(second_poll))?;
     assert!(
         report.admitted.is_empty(),
         "the identical table after a restart must be recognised, not republished; {} record(s) \
@@ -506,7 +505,9 @@ fn seven_simulated_days_across_eight_processes_leave_one_ledger_with_both_time_a
 
         let report = poll_once(&mut runtime, &mut connector, &path, &body, now)?;
         served_events = served_events.saturating_add(RATES_PER_TABLE);
-        journal.record(&report, now)?;
+        // As the bridge writes it: the poll and the position it produced,
+        // one value under one key, on every poll.
+        journal.record_and_commit(&report, now, &runtime.checkpoint(now))?;
 
         // The poll immediately after a restart is the one this file exists for:
         // it is served a table the previous process already absorbed, and it

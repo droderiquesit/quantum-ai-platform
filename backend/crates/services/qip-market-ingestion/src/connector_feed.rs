@@ -492,13 +492,17 @@ impl ConnectorFeed {
         // two steps: a commit that failed after a successful record left the
         // in-memory ledger counting a poll the unwind was about to re-fetch,
         // so the re-fetch was billed twice, and the old commit order could
-        // leave the durable checkpoint ahead of what was delivered.
-        // `record_and_commit` adopts the ledger only once both writes have
-        // succeeded and writes the checkpoint last, so on any failure the
-        // ledger and the durable checkpoint both stand where the last
-        // delivered poll left them; the one thing it can leave is a durable
-        // ledger one poll ahead of the process until the next write, which
-        // its doc states. Re-fetching is safe: `DataReferenceRecorded` is
+        // leave the durable checkpoint ahead of what was delivered. The
+        // first repair made them one step over two keys, and stated that a
+        // ledger write succeeding before a checkpoint write failed left the
+        // durable ledger one poll ahead "until the next write". It did not
+        // survive a crash: this failure propagates, the deep brain exits on
+        // it, and the restart loaded that ledger, resumed from the older
+        // checkpoint and billed the re-fetch again. `record_and_commit` now
+        // writes ledger and checkpoint as one value under one key — one
+        // `put`, atomic on the store's terms — so on any failure the store,
+        // this process and the next process all stand at the last poll
+        // that succeeded. Re-fetching is safe: `DataReferenceRecorded` is
         // idempotent on the extent and its hash, so the reference the
         // platform already holds is the same fact when it arrives again.
         let checkpoint = self.runtime.checkpoint(until);
@@ -884,9 +888,9 @@ mod tests {
     /// next poll re-fetches and delivers the same table.
     ///
     /// Mutated by deleting the `self.runtime.unwind(before)` call in the
-    /// `journal.record` failure arm — confirmed the cursor then moves on the
-    /// failure and the re-fetch delivers nothing, failing both halves, then
-    /// restored.
+    /// `record_and_commit` failure arm — confirmed the cursor then moves on
+    /// the failure and the re-fetch delivers nothing, failing both halves,
+    /// then restored.
     #[test]
     fn a_journal_that_cannot_be_written_leaves_the_checkpoint_where_it_was_and_the_next_poll_refetches()
      {
@@ -945,35 +949,26 @@ mod tests {
         assert_eq!(feed.ledger().map(|ledger| ledger.polls), Some(1));
     }
 
-    /// A store that refuses writes to any key containing `refuse` — the
-    /// shape of a failure that lands between the journal's two writes.
+    /// A store that refuses any write whose value carries a resume position
+    /// — the shape of a failure that lands on the journal's one write, and
+    /// the shape that tells one write from two: under a two-key layout the
+    /// ledger's own value carries no position, so its write goes through and
+    /// only the checkpoint's is refused, which is exactly the partial state
+    /// the single key exists to make impossible.
     #[derive(Debug)]
-    struct KeyFailingStore {
+    struct PositionRefusingStore {
         inner: qip_storage::MemoryKeyValueStore,
-        refuse: Arc<Mutex<Option<&'static str>>>,
+        refusing: Arc<std::sync::atomic::AtomicBool>,
     }
 
-    impl KeyFailingStore {
-        fn refuse(&self, key: Option<&'static str>) {
-            *self
-                .refuse
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = key;
-        }
-    }
-
-    impl qip_core::kv::KeyValueStore for KeyFailingStore {
+    impl qip_core::kv::KeyValueStore for PositionRefusingStore {
         fn get(&self, key: &str) -> Result<Option<serde_json::Value>> {
             self.inner.get(key)
         }
 
         fn put(&self, key: &str, value: serde_json::Value) -> Result<()> {
-            let refused = self
-                .refuse
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .is_some_and(|fragment| key.contains(fragment));
-            if refused {
+            let carries_position = value.to_string().contains("\"cursor\"");
+            if carries_position && self.refusing.load(std::sync::atomic::Ordering::SeqCst) {
                 return Err(Error::io(format!("no space left on device for {key}")));
             }
             self.inner.put(key, value)
@@ -992,140 +987,174 @@ mod tests {
         }
     }
 
-    /// A journal write that fails *after* the poll — at the checkpoint, or
-    /// at the ledger — leaves the cursor where it was, bills the re-fetch
-    /// once rather than twice, and never leaves the durable checkpoint ahead
-    /// of the durable ledger. Until 2026-09-12 the bridge recorded the poll
-    /// and then committed as two steps: a commit that failed left the
-    /// in-memory ledger counting a poll the unwind was about to re-fetch,
-    /// so `polls`, `delivered` and `admitted` each counted the one delivery
-    /// twice, and the commit wrote the checkpoint before the ledger, so a
-    /// failure between the two left a checkpoint on disk past records
-    /// nobody had received. The one gap that remains is asserted rather than
-    /// hidden: the durable ledger runs one poll ahead of the process until
-    /// the next successful write overwrites it whole.
-    ///
-    /// Mutated twice. Adopting the scratch ledger before the writes
-    /// (`self.ledger = next` moved above the two `put_as`) — confirmed the
-    /// healed poll then reads `polls == 2` and the first phase fails, then
-    /// restored. Writing the checkpoint before the ledger — confirmed a
-    /// ledger-write failure then leaves the durable checkpoint moved and
-    /// the second phase fails, then restored.
-    #[test]
-    fn a_journal_write_that_fails_after_the_poll_bills_once_and_never_leaves_the_checkpoint_ahead()
-    {
+    /// The durable record for one source, read back the way the journal
+    /// stores it: the ledger and the position beside it, under one key.
+    fn stored(
+        store: &Arc<dyn qip_core::kv::KeyValueStore>,
+        source: &str,
+    ) -> Option<(StreamLedger, Option<Checkpoint>)> {
         use qip_core::kv::KeyValueStoreExt;
+        #[derive(serde::Deserialize)]
+        struct Stored {
+            ledger: StreamLedger,
+            #[serde(default)]
+            checkpoint: Option<Checkpoint>,
+        }
+        store
+            .get_as::<Stored>(&format!("{}/{source}/journal", StreamJournal::NAMESPACE))
+            .expect("the store reads")
+            .map(|stored| (stored.ledger, stored.checkpoint))
+    }
+
+    /// A journal write that fails after the poll leaves the store where the
+    /// last successful poll put it — ledger and position together — and a
+    /// process restarted over that store bills the re-fetch once. Until
+    /// 2026-09-12 the ledger and the checkpoint were two keys and two
+    /// writes, ledger first, and the gap between them was documented as
+    /// lasting one poll and healing on the next write. It healed only if the
+    /// process lived: the failure propagates out of `poll_referencing`, the
+    /// deep brain exits on it, and the restart loaded a ledger already
+    /// counting the poll, resumed from the older checkpoint, re-fetched the
+    /// same table and billed it a second time — permanently one high. The
+    /// store here refuses exactly the write a two-key layout would have
+    /// split, so the second phase reads `polls == 2` under that layout and
+    /// `polls == 1` under one key.
+    ///
+    /// Mutated by writing the value twice in `record_and_commit` — first
+    /// with the ledger and the *previous* position, then whole — which is
+    /// the two-key layout's failure shape under one key: confirmed the
+    /// durable ledger then counts the failed poll and the restart bills the
+    /// re-fetch again (`polls == 2`), failing the first assertion after the
+    /// failure, then restored.
+    #[test]
+    fn a_journal_write_that_fails_after_the_poll_bills_the_refetch_once_even_across_a_restart() {
         let opened = instant("2026-08-27T00:00:00Z");
-        let refuse = Arc::new(Mutex::new(None));
-        let failing = Arc::new(KeyFailingStore {
+        let refusing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let store: Arc<dyn qip_core::kv::KeyValueStore> = Arc::new(PositionRefusingStore {
             inner: qip_storage::MemoryKeyValueStore::default(),
-            refuse: refuse.clone(),
+            refusing: refusing.clone(),
         });
-        let store: Arc<dyn qip_core::kv::KeyValueStore> = failing.clone();
         let mut feed = journaled_frankfurter(store.clone(), opened);
         let source = feed.descriptor().name;
-        let ledger_key = format!("{}/{source}/ledger", StreamJournal::NAMESPACE);
-        let checkpoint_key = format!("{}/{source}/checkpoint", StreamJournal::NAMESPACE);
-        let before = feed.checkpoint(opened);
-        assert_eq!(
-            store
-                .get_as::<Checkpoint>(&checkpoint_key)
-                .expect("the store reads"),
-            None,
-            "premise: a first session has no durable checkpoint yet"
-        );
 
-        // Phase one: the ledger writes and the checkpoint does not.
-        failing.refuse(Some("checkpoint"));
-        let failure = feed
+        // Premise: a healthy poll writes the ledger and the position as one
+        // value, and the position is what the store below will refuse.
+        let records = feed
             .poll_referencing(opened, &mut |_| Ok(()))
-            .expect_err("a poll whose checkpoint could not be written released its records");
+            .expect("the first poll delivers");
+        assert_eq!(records.len(), 3, "the three rates were delivered");
+        let (ledger, position) = stored(&store, &source).expect("the first poll was journaled");
+        assert_eq!((ledger.sessions, ledger.polls), (1, 1));
+        let position = position.expect("premise: the healthy write carried a position");
+        assert_eq!(position.cursor, feed.checkpoint(opened).cursor);
+
+        // The disk fills. The next poll — a second table, a second delivery
+        // — is fetched, referenced and then cannot be journaled.
+        refusing.store(true, std::sync::atomic::Ordering::SeqCst);
+        let later = opened.saturating_add(qip_core::Duration::from_hours(1));
+        let failure = feed
+            .poll_referencing(later, &mut |_| Ok(()))
+            .expect_err("a poll whose journal could not be written released its records");
         assert!(
             failure.message().contains("no space left"),
             "the failure returned is not the store's: {failure}"
         );
         assert_eq!(
-            feed.checkpoint(opened).cursor,
-            before.cursor,
-            "the cursor moved"
-        );
-        assert!(feed.runtime.dedup().is_empty(), "the dedup window moved");
-        assert_eq!(
-            feed.ledger().map(|ledger| ledger.polls),
-            Some(0),
-            "the in-memory ledger counted a poll that was unwound"
-        );
-        assert_eq!(
-            store
-                .get_as::<Checkpoint>(&checkpoint_key)
-                .expect("the store reads"),
-            None,
-            "a failed checkpoint write left a checkpoint on disk"
-        );
-        // The stated gap: the durable ledger is one poll ahead of the
-        // process until the next successful write.
-        let durable: StreamLedger = store
-            .get_as(&ledger_key)
-            .expect("the store reads")
-            .expect("the ledger was written before the checkpoint failed");
-        assert_eq!(durable.polls, 1, "the ledger write is the first of the two");
-
-        // The store writes again: the re-fetch delivers, is billed once, and
-        // the two durable records agree with the process.
-        failing.refuse(None);
-        let later = opened.saturating_add(qip_core::Duration::from_secs(1));
-        let records = feed
-            .poll_referencing(later, &mut |_| Ok(()))
-            .expect("the re-fetch delivers");
-        assert_eq!(records.len(), 3, "the three rates were delivered");
-        let ledger = feed.ledger().expect("journaled").clone();
-        assert_eq!(
-            (ledger.polls, ledger.delivered, ledger.admitted),
-            (1, 1, 3),
-            "one delivery must be billed once: {ledger:?}"
-        );
-        assert_eq!(
-            store
-                .get_as::<StreamLedger>(&ledger_key)
-                .expect("the store reads"),
-            Some(ledger),
-            "the durable ledger must be overwritten whole by the next successful write"
-        );
-        let committed = store
-            .get_as::<Checkpoint>(&checkpoint_key)
-            .expect("the store reads")
-            .expect("the healed poll committed its checkpoint");
-        assert_eq!(committed.cursor, feed.checkpoint(later).cursor);
-        assert_ne!(
-            committed.cursor, before.cursor,
-            "premise: the cursor advanced"
-        );
-
-        // Phase two: the ledger write fails, so nothing after it runs. The
-        // durable checkpoint must be the one the healed poll wrote, not one
-        // for a poll the ledger never counted.
-        failing.refuse(Some("ledger"));
-        let again = later.saturating_add(qip_core::Duration::from_secs(1));
-        feed.poll_referencing(again, &mut |_| Ok(()))
-            .expect_err("a poll whose ledger could not be written released its records");
-        assert_eq!(
             feed.ledger().map(|ledger| ledger.polls),
             Some(1),
             "the in-memory ledger counted a poll that was unwound"
         );
-        let still = store
-            .get_as::<Checkpoint>(&checkpoint_key)
-            .expect("the store reads")
-            .expect("the earlier checkpoint is still there");
+        let (durable, durable_position) =
+            stored(&store, &source).expect("the earlier value is still there");
         assert_eq!(
-            still, committed,
-            "a failed ledger write must not leave a newer checkpoint on disk"
+            durable.polls, 1,
+            "a failed write left the durable ledger counting a poll the position does not \
+             cover — the two-key layout's gap"
         );
         assert_eq!(
-            feed.checkpoint(again).cursor,
-            committed.cursor,
-            "the cursor moved"
+            durable_position
+                .as_ref()
+                .map(|checkpoint| &checkpoint.cursor),
+            Some(&position.cursor),
+            "a failed write moved the durable position"
         );
+
+        // The process exits on the failure and a new one starts over the
+        // same store once it writes again: the restart resumes the position
+        // the last successful poll wrote and re-fetches. The emulator serves
+        // the same table, so the re-fetch is three redeliveries; what is
+        // billed is one more poll, not two.
+        drop(feed);
+        refusing.store(false, std::sync::atomic::Ordering::SeqCst);
+        let mut restarted = journaled_frankfurter(store.clone(), later);
+        let (_, resumed) = stored(&store, &source).expect("the restart wrote its session");
+        assert_eq!(
+            resumed.map(|checkpoint| checkpoint.cursor),
+            Some(position.cursor),
+            "the restart must carry the last committed position forward at open"
+        );
+        let redelivered = restarted
+            .poll_referencing(later, &mut |_| Ok(()))
+            .expect("the re-fetch after the restart delivers");
+        assert!(
+            redelivered.is_empty(),
+            "premise: the restart resumed the window, so the same table is all redeliveries"
+        );
+        let (after, _) = stored(&store, &source).expect("the re-fetch was journaled");
+        assert_eq!(
+            (
+                after.sessions,
+                after.polls,
+                after.delivered,
+                after.admitted,
+                after.duplicates
+            ),
+            (2, 2, 2, 3, 3),
+            "one restart, two successful polls, one table admitted once and recognised once: \
+             {after:?}"
+        );
+        assert_eq!(restarted.ledger().map(|ledger| ledger.polls), Some(2));
+    }
+
+    /// A store still holding the two-key layout is refused at open, by the
+    /// key's name, rather than read as a stream that never ran. A journal
+    /// that opened over it would start at session one with no position,
+    /// republish the source's whole window, and report a fresh stream where
+    /// an operator had a week of one; and a migration that read the old
+    /// ledger could take a ledger one poll ahead of its checkpoint — the
+    /// defect the new layout closes — into the new one. Nothing is deployed,
+    /// so the refusal names the remedy and no migration is written.
+    ///
+    /// Mutated by deleting the `legacy_keys` loop in `StreamJournal::open` —
+    /// confirmed the open then succeeds over the old keys and this fails,
+    /// then restored.
+    #[test]
+    fn a_store_holding_the_two_key_layout_is_refused_at_open_rather_than_read_as_a_fresh_stream() {
+        use qip_core::kv::KeyValueStoreExt;
+        let store: Arc<dyn qip_core::kv::KeyValueStore> =
+            Arc::new(qip_storage::MemoryKeyValueStore::default());
+        let source = "frankfurter-ecb-reference-rates";
+        // Premise: an empty store opens, so the refusal below is the key's.
+        StreamJournal::open(store.clone(), source).expect("an empty store opens");
+        for legacy in ["ledger", "checkpoint"] {
+            let store: Arc<dyn qip_core::kv::KeyValueStore> =
+                Arc::new(qip_storage::MemoryKeyValueStore::default());
+            let key = format!("{}/{source}/{legacy}", StreamJournal::NAMESPACE);
+            store
+                .put_as(
+                    &key,
+                    &serde_json::json!({"left": "by a session before 2026-09-12"}),
+                )
+                .expect("the store writes");
+            let refusal = StreamJournal::open(store, source)
+                .err()
+                .unwrap_or_else(|| panic!("a store holding `{key}` was opened as fresh"));
+            assert!(
+                refusal.message().contains(&key) && refusal.message().contains("clear"),
+                "the refusal does not name the key and the remedy: {}",
+                refusal.message()
+            );
+        }
     }
 
     /// The adapter contract's `poll` refuses on a connector, naming the seam
