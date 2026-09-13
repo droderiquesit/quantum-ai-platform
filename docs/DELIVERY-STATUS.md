@@ -2220,6 +2220,40 @@ secret scan `nothing found`. Terraform gates were not run: no Terraform
 file was touched. Frontend gates were not run: no frontend file was
 touched.
 
+**Infrastructure register, 2026-09-13 — every destroy in the dev plan, named
+before the dispatch.** ADR 0040 decision 10 requires this list to exist
+*before* an `up`, not as a report afterwards, because the thing being checked
+is whether anybody can say why each resource goes — and an agent that writes
+the reasons down after the apply is writing them with the answer in hand.
+
+`infra.yml` `plan` / `dev`, run 39 (id `34753700174`), ref
+`claude/autonomous-investment-platform-76gt4y`, **succeeded**, reading
+`Plan: 10 to add, 0 to change, 6 to destroy.` State held 237 resources;
+project `algorik-dev`. **This run is superseded and is not the plan any
+dispatch is made on** — decision 9 requires a plan on the dispatched commit,
+and this branch is 67 commits ahead of that ref
+(`git rev-list --left-right --count origin/claude/autonomous-investment-platform-76gt4y...HEAD`
+prints `0 67`). It is recorded because it is what the six destroys were first
+read from.
+
+| Resource | Destroyed because | Attributed to |
+|---|---|---|
+| `module.secrets.google_secret_manager_secret.platform["qip-token-approver"]` | Removed from `secret_names`: a bearer token for a role no `qip-api` route required, whose holder could do exactly what the analyst token could do | The comment above `"qip-token-operator"` in `terraform/main.tf`, which argues it at length — `grep -n 'qip-token-approver' infrastructure/terraform/main.tf` |
+| `module.cloud_run["api"].google_secret_manager_secret_iam_member.mounted["token-approver"]` | The mount grant for that secret | "There is no token-approver mount" — `grep -n 'token-approver' infrastructure/terraform/catalogue.tf` |
+| `google_storage_bucket_object.config_files["universe"]` × 3 (api, deepbrain, fastbrain) | Replaced, not removed: the object's content changed | The universe file's own diff |
+| `module.gitops_control_plane[0].google_container_cluster.control_plane` | Tainted by run 37, whose create waited forty minutes for a node that could not register; replaced so it is created with the firewall rule that fixes it | The `depends_on` comment on `google_container_cluster.control_plane`, and `the_control_plane_nodes_may_reach_their_endpoint_and_the_cluster_waits_for_that_rule` in `infrastructure.rs` |
+
+Ten creates, of which the two that matter are `nodes_reach_control_plane`
+and `nodes_reach_each_other` — the rules whose absence tainted the cluster —
+and the two `qip-alpaca-api-*` secret containers, created empty and seeded by
+nobody — the comment above them in `terraform/main.tf` says why an empty
+container is the point (`grep -n 'qip-alpaca-api-key-id' infrastructure/terraform/main.tf`).
+
+Nothing on this list is unattributed, so decision 10's test is met. The
+cluster's replacement is blocked by `deletion_protection = true`, which the
+owner has decided to clear; ADR 0040 decision 11 records that it is cleared
+by flipping the literal and restoring it, never by making it an input.
+
 To re-score a row: read the section in
 `docs/architecture/algorik-blueprint-v10.1-source.md`, run the row's command,
 and change the verdict. To re-score everything:

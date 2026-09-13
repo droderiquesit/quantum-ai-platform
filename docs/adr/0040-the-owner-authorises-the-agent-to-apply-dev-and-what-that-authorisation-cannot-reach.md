@@ -106,6 +106,80 @@ should not, and the record widens by exactly this much:
    document read and the date; for the GitHub App keys and the hosted
    model's token, a `gcloud secrets versions add` the owner runs.
 
+## Amendment of 2026-09-13: the authorisation is standing, and a destroy a commit explains is covered
+
+The owner said the agent may always deploy, and asked for the restriction to
+come out of the repository. Two separate things are being asked for, and only
+one of them is a thing a record can do.
+
+The first is real and is granted below: decision 1 conditioned each dispatch
+on "this instruction", so an agent reading it literally had to stop and ask
+before every apply, which is not what an owner who has now said it four times
+is asking for. The second — deleting the guards — is refused here for the
+same reason the original record refused the literal reading of "deliver the
+entire thing": the workflow's refusal of `prod`, the owner's sole custody of
+seeded key material, and the guard hook are not conveniences this record may
+spend. `.claude/rules/00-enterprise-governance.md` puts them above any task
+instruction, and an agent's ADR deleting them would be the artefact those
+sentences exist to refuse. The restriction that is removed is the one on
+*asking again*; the restrictions on *what* and *where* stand.
+
+9. **Dev applies are standing, not per-instruction.** Decision 1's phrase
+   "on this instruction" is spent: the agent may dispatch `infra.yml`
+   `environment: dev` with `action: plan`, `up` or `down` without asking
+   again, on the same terms decisions 1 and 6 already set — a `plan` run on
+   the commit being dispatched, read first, and every run's URL and terminal
+   status recorded in `docs/DELIVERY-STATUS.md`. Nothing else about decision
+   1 moves. A `plan` that did not run on the dispatched commit is not a plan
+   for that dispatch, and reasoning from a diff is not a substitute for it.
+
+10. **A destroy a committed change visibly intends is covered.** Decision 1's
+    test — "no resource destroyed except an IAM binding being replaced by its
+    successor" — was written for the ADR 0036 migration and is too narrow for
+    ordinary work. It stops the agent on two shapes that are the *point* of
+    a reviewed commit rather than an accident of one:
+
+    - **A resource the diff removes on purpose.** `plan` run 39 destroys
+      `qip-token-approver`, the secret and its binding, because
+      `terraform/main.tf` removed it from `secret_names` with nine lines
+      saying why: it held a bearer token for a role no route in `qip-api`
+      required, whose holder "could do exactly what the analyst token could
+      do", and "recreating the container here without a role to match
+      reintroduces a credential that authorises nothing". A record that makes
+      the agent stop on that makes it stop on every retirement.
+    - **A tainted resource's replacement.** Run 37 left the control-plane
+      cluster tainted when its create waited forty minutes for a node that
+      could not register, and the firewall rule that fixes it is in the same
+      plan's creates. Replacing it is the repair, not a loss.
+
+    So the test becomes: **the agent names every destroy in the plan and the
+    commit that intends it, in the register, before dispatching.** A destroy
+    it cannot attribute to a change in the diff still stops it, and that is
+    the half of decision 1 worth keeping — it was never the count that
+    mattered, it was whether anybody could say why.
+
+11. **Clearing `deletion_protection` is an act, not a setting.** The
+    control-plane module holds `deletion_protection = true` as a literal and
+    says four lines above it that clearing it is "a person's decision to
+    clear, not a second `up`". The owner has now made that decision for the
+    tainted cluster. It is cleared by flipping the literal in one commit,
+    applying, and restoring it in the next — **never by making it a module
+    input**. An input is a switch a later tfvars can throw with nobody
+    deciding anything, which is precisely what
+    `a_cloud_run_service_cannot_be_deleted_by_a_plan_nobody_read` refuses in
+    the sibling module: "deletion protection has become an input, so a tfvars
+    value can turn it off". That test is scoped to `modules/cloudrun`, so an
+    input here would pass the suite — which is the argument for writing the
+    rule down rather than relying on one.
+
+12. **`test`, `stage` and `prod` are untouched by this amendment.**
+    Decision 4 and decision 7's second half stand verbatim. So does
+    everything in "What this record cannot reach" below: the paper-trading
+    boundary, capital movement, and the owner's reading of a vendor's terms.
+    Saying an instruction a fourth time changes how often the agent asks
+    before applying dev. It does not move an environment, a ceiling, or a
+    line in a rules file.
+
 ## What this record cannot reach
 
 - **The paper-trading boundary.** Terraform's refusal of the three live
@@ -141,7 +215,12 @@ should not, and the record widens by exactly this much:
 ## What would make this wrong
 
 - The plan the agent reads before dispatching showing a destroy this
-  record did not describe. Then the dispatch is not made.
+  record did not describe. Then the dispatch is not made. Under decision 10
+  that reads: a destroy the agent cannot attribute to a change in the diff,
+  which is a narrower trigger than the original count but the same refusal —
+  and the agent still writes each destroy and its cause down before
+  dispatching, so "I could not attribute it" is a thing a reader can check
+  rather than a thing the agent asserts about itself.
 - Any later reading of this record as authorising an apply outside dev, a
   live ceiling, or a capital-movement path. It authorises one workflow
   action in one environment on one instruction, and says so.
