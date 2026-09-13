@@ -692,6 +692,11 @@ pub struct CentralPlane {
     /// traffic. Keyed cell then strategy, in that order, because a replay
     /// that reviews strategies in a different order is not a replay.
     realised: BTreeMap<(String, StrategyId), RealisedSeries>,
+    /// Venues withdrawn on feasibility evidence, omitted from every cycle
+    /// whitelist this plane issues. Written only by the kernel after it has
+    /// journaled the decision; read only by [`Self::cycle_whitelist_for`],
+    /// to `retain`. A cache of the event log, and a subtraction.
+    withdrawn_venues: BTreeSet<String>,
 }
 
 impl CentralPlane {
@@ -803,6 +808,7 @@ impl CentralPlane {
             sent: BTreeMap::new(),
             incidents_raised: 0,
             realised: BTreeMap::new(),
+            withdrawn_venues: BTreeSet::new(),
         })
     }
 
@@ -848,16 +854,57 @@ impl CentralPlane {
                 strategy: policy.strategy.clone(),
             }));
         };
-        let whitelist = policy.whitelist_for(envelope)?;
+        let mut whitelist = policy.whitelist_for(envelope)?;
+        // Omission, and only omission. A venue withdrawn on feasibility
+        // evidence has its conversions dropped from what the policy already
+        // produced; nothing here constructs a conversion, so the most the
+        // withdrawn set can do to a whitelist is shrink it. Parsed venue,
+        // never substring: `WhitelistedConversion.venue` is the id the
+        // policy's map is keyed on. `CycleWhitelist.cycles` is not filtered
+        // because nothing produces it — `whitelist_for` leaves it empty and
+        // no cell reads it.
+        let withdrawn: Vec<String> = policy
+            .venues
+            .keys()
+            .filter(|venue| self.withdrawn_venues.contains(*venue))
+            .cloned()
+            .collect();
+        whitelist
+            .conversions
+            .retain(|conversion| !self.withdrawn_venues.contains(conversion.venue.as_str()));
+        let outcome = if whitelist.conversions.is_empty() && !withdrawn.is_empty() {
+            WhitelistOutcome::AllWithdrawn { venues: withdrawn }
+        } else {
+            WhitelistOutcome::Emitted {
+                edges: whitelist.conversions.len(),
+                sized_against: envelope.signature().to_string(),
+                withdrawn,
+            }
+        };
         Ok(WhitelistIssue {
             cell: cell.to_string(),
             issued_at: now,
-            outcome: WhitelistOutcome::Emitted {
-                edges: whitelist.conversions.len(),
-                sized_against: envelope.signature().to_string(),
-            },
+            outcome,
             whitelist,
         })
+    }
+
+    /// Omit `venue` from every whitelist this plane issues until it is
+    /// reinstated. Idempotent; a subtraction, and the plane has no path that
+    /// reads the set to add a conversion.
+    pub fn withdraw_venue(&mut self, venue: impl Into<String>) {
+        self.withdrawn_venues.insert(venue.into());
+    }
+
+    /// Stop omitting `venue`. `true` if it was withdrawn. What comes back is
+    /// only what the policy and the grant already permitted.
+    pub fn reinstate_venue(&mut self, venue: &str) -> bool {
+        self.withdrawn_venues.remove(venue)
+    }
+
+    /// The venues this plane omits from every whitelist, in name order.
+    pub fn withdrawn_venues(&self) -> &BTreeSet<String> {
+        &self.withdrawn_venues
     }
 
     /// Count every strategy move the plane's ledger records, and every
@@ -2417,6 +2464,153 @@ mod tests {
         Ok(())
     }
 
+    /// A plane with a two-venue policy and a grant permitting both, so a
+    /// withdrawal of one venue has a survivor to keep.
+    fn two_venue_plane() -> (CentralPlane, StrategyId, Vec<VenueId>) {
+        use super::super::whitelist::{ArbitragePolicy, WhitelistedMarket, WhitelistedVenue};
+        use qip_contracts::venue::VenueClass;
+
+        let desk = StrategyId::new("arb-desk");
+        let venue = |cost| WhitelistedVenue {
+            class: VenueClass::Exchange,
+            taker_cost: cost,
+        };
+        let market = |venue: &str| WhitelistedMarket {
+            venue: venue.to_string(),
+            market: format!("AAA-USD@{venue}"),
+            base: "AAA".to_string(),
+            quote: "USD".to_string(),
+        };
+        let config = CentralConfig {
+            arbitrage: Some(ArbitragePolicy {
+                strategy: desk.clone(),
+                funding_instrument: "USD".to_string(),
+                venues: BTreeMap::from([
+                    ("XNYS".to_string(), venue(dec!("0.0005"))),
+                    ("XLON".to_string(), venue(dec!("0.001"))),
+                ]),
+                markets: vec![market("XNYS"), market("XLON")],
+                start_sizes: BTreeMap::from([("AAA".to_string(), dec!("100"))]),
+            }),
+            ..CentralConfig::default()
+        };
+        let mut plane = CentralPlane::new(&[7u8; 32], config).expect("the policy is valid");
+        let cell_venues = vec![VenueId::new("XNYS"), VenueId::new("XLON")];
+        let envelope = CapitalEnvelope::new(
+            desk.clone(),
+            CELL,
+            dec!("500000"),
+            dec!("25000"),
+            dec!("50000"),
+            cell_venues.clone(),
+            now(),
+            now().saturating_add(Duration::from_hours(8)),
+            "alice.chen",
+            "sig-arb-desk",
+        )
+        .expect("a well-formed grant");
+        plane
+            .envelopes
+            .insert((CELL.to_string(), desk.clone()), envelope);
+        (plane, desk, cell_venues)
+    }
+
+    #[test]
+    fn a_withdrawn_venue_is_omitted_from_the_whitelist_and_the_omission_is_on_the_record() {
+        // Blueprint §12.3's fourth row at the edge seam. A withdrawal is an
+        // omission from what the policy already produced — the conversions
+        // naming the venue are dropped, the survivor's are kept, and the
+        // journaled outcome names what was omitted so an operator reading
+        // "two edges" does not have to infer a withdrawal from an edge count.
+        // When nothing survives the outcome says so in words: the cell's
+        // installer refuses "no conversion" and installs nothing, which is
+        // the fail-closed answer.
+        let (mut plane, _desk, cell_venues) = two_venue_plane();
+        // Premise: both venues emit, nothing withdrawn.
+        let before = plane
+            .cycle_whitelist_for(CELL, now())
+            .expect("two permitted venues emit");
+        assert!(matches!(
+            &before.outcome,
+            WhitelistOutcome::Emitted { edges: 4, withdrawn, .. } if withdrawn.is_empty()
+        ));
+        assert!(
+            before
+                .whitelist
+                .conversions
+                .iter()
+                .any(|conversion| conversion.venue == "XLON")
+        );
+
+        plane.withdraw_venue("XLON");
+        let one = plane
+            .cycle_whitelist_for(CELL, now())
+            .expect("a whitelist with a survivor emits");
+        assert_eq!(
+            one.outcome,
+            WhitelistOutcome::Emitted {
+                edges: 2,
+                sized_against: "sig-arb-desk".to_string(),
+                withdrawn: vec!["XLON".to_string()],
+            },
+            "{}",
+            one.describe()
+        );
+        assert!(
+            one.whitelist
+                .conversions
+                .iter()
+                .all(|conversion| conversion.venue == "XNYS"),
+            "a conversion still names the withdrawn venue: {:?}",
+            one.whitelist.conversions
+        );
+        assert_eq!(one.whitelist.conversions.len(), 2);
+        if let Err(reason) = cell_would_accept(&one.whitelist, &cell_venues) {
+            panic!("the cell would refuse the narrowed whitelist: {reason}");
+        }
+        assert!(
+            one.describe().contains("omitted as withdrawn (XLON)"),
+            "{}",
+            one.describe()
+        );
+
+        plane.withdraw_venue("XNYS");
+        let none = plane
+            .cycle_whitelist_for(CELL, now())
+            .expect("an all-withdrawn policy is an empty whitelist, not an error");
+        assert_eq!(
+            none.outcome,
+            WhitelistOutcome::AllWithdrawn {
+                venues: vec!["XLON".to_string(), "XNYS".to_string()],
+            },
+            "{}",
+            none.describe()
+        );
+        assert!(none.is_empty());
+        assert_eq!(
+            cell_would_accept(&none.whitelist, &cell_venues),
+            Err("no conversion".to_string()),
+            "the cell would install something from an all-withdrawn whitelist"
+        );
+
+        // Reinstating restores only what the policy and the grant already
+        // permitted: XLON comes back with its own cost and nothing else.
+        assert!(plane.reinstate_venue("XLON"));
+        let back = plane
+            .cycle_whitelist_for(CELL, now())
+            .expect("a reinstated venue emits");
+        assert!(matches!(
+            &back.outcome,
+            WhitelistOutcome::Emitted { edges: 2, withdrawn, .. } if withdrawn == &["XNYS".to_string()]
+        ));
+        assert!(
+            back.whitelist
+                .conversions
+                .iter()
+                .all(|conversion| conversion.venue == "XLON")
+        );
+    }
+
     /// Slot 8 shipped unproduced from every payload because nothing in the
     /// centre produced it, so the desk the edge node could install from it
     /// installed never. The plane now derives it from the operator's policy
@@ -2484,7 +2678,8 @@ mod tests {
             issue.outcome,
             WhitelistOutcome::Emitted {
                 edges: 4,
-                sized_against: "sig-arb-desk".to_string()
+                sized_against: "sig-arb-desk".to_string(),
+                withdrawn: Vec::new(),
             },
             "{}",
             issue.describe()

@@ -23,9 +23,17 @@
 //!    named, which is the same reading the edge crate gives its own vetoes.
 //! 3. The kill switch must not be tripped for its scope.
 //! 4. The autonomy level must permit execution at all.
-//! 5. A live venue additionally requires a live autonomy level *and* an
+//! 5. The venue must not have been withdrawn on feasibility evidence
+//!    through [`OrderManager::withdraw_venue`] — blueprint §12.3's fourth
+//!    row. Checked against the broker's name whether or not the broker is
+//!    simulated, because the simulated broker is the only one the kernel
+//!    constructs and its `is_available` is always true; a withdrawal that
+//!    lived inside the live-venue arm below would be a control that could
+//!    never fire on this platform. After the kill switch and the autonomy
+//!    gate on purpose, so a halted platform still reports the halt.
+//! 6. A live venue additionally requires a live autonomy level *and* an
 //!    available venue. Neither implies the other.
-//! 6. Pre-trade risk must approve it, against the state it would produce.
+//! 7. Pre-trade risk must approve it, against the state it would produce.
 //!
 //! Every one of those is a refusal path, and each records why. A rejected
 //! order that left no trace is indistinguishable from one that was never sent,
@@ -260,6 +268,14 @@ pub struct OrderManager {
     /// them; a venue-wide grid is the coarser statement for a venue whose
     /// instruments all share one.
     instrument_feasibility: BTreeMap<String, VenueFeasibility>,
+    /// Venues withdrawn on feasibility evidence, keyed on [`Broker::name`].
+    /// A subtractive set: a name here is refused at step 5 of
+    /// [`Self::submit`], and nothing in this manager reads it to admit
+    /// anything. Written only through [`Self::withdraw_venue`] and
+    /// [`Self::reinstate_venue`], which the kernel calls after it has
+    /// journaled the decision; the set is a cache of the event log, not a
+    /// second source of truth.
+    withdrawn_venues: BTreeSet<String>,
     sequence: u64,
 }
 
@@ -272,8 +288,37 @@ impl OrderManager {
             reconciliation_breaks: Vec::new(),
             feasibility: BTreeMap::new(),
             instrument_feasibility: BTreeMap::new(),
+            withdrawn_venues: BTreeSet::new(),
             sequence: 0,
         }
+    }
+
+    /// Refuse every further order bound for `venue`, until it is reinstated.
+    ///
+    /// Idempotent: withdrawing a withdrawn venue changes nothing, so a
+    /// resumed set and a fresh finding cannot disagree about the state.
+    pub fn withdraw_venue(&mut self, venue: impl Into<String>) {
+        self.withdrawn_venues.insert(venue.into());
+    }
+
+    /// Admit orders to `venue` again. `true` if it was withdrawn.
+    ///
+    /// The most this can do is remove a name from a subtractive set: an
+    /// order to the reinstated venue still walks every other gate in
+    /// [`Self::submit`], and a venue the broker is not configured for is
+    /// not made reachable by not being withdrawn.
+    pub fn reinstate_venue(&mut self, venue: &str) -> bool {
+        self.withdrawn_venues.remove(venue)
+    }
+
+    /// Whether `venue` is currently withdrawn.
+    pub fn is_withdrawn(&self, venue: &str) -> bool {
+        self.withdrawn_venues.contains(venue)
+    }
+
+    /// The venues currently withdrawn, in name order.
+    pub fn withdrawn_venues(&self) -> &BTreeSet<String> {
+        &self.withdrawn_venues
     }
 
     /// Install the lot/tick/minimum grid for one instrument, keyed on the
@@ -474,7 +519,29 @@ impl OrderManager {
             return result;
         }
 
-        // 5. A live venue needs a live level *and* an available venue. Neither
+        // 5. A venue withdrawn on feasibility evidence refuses every order,
+        //    simulated or not — see the module doc for why this cannot live
+        //    in the live-venue arm below. Reported through the same
+        //    `VenueUnavailable` reason an unreachable live venue uses, so
+        //    the kernel's `gate_of` charts both under `venue-availability`
+        //    and no new label value appears. Feasibility ran at step 2, so a
+        //    withdrawn venue's further infeasible orders still reach the
+        //    kernel's window, which keeps its denominator honest.
+        if self.withdrawn_venues.contains(broker.name()) {
+            let result = refuse(
+                &order,
+                RefusalReason::VenueUnavailable {
+                    venue: broker.name().to_string(),
+                    detail: "withdrawn on feasibility evidence; reinstatement needs two \
+                             operator signatures"
+                        .to_string(),
+                },
+            );
+            self.record_refusal(order, at, result.clone());
+            return result;
+        }
+
+        // 6. A live venue needs a live level *and* an available venue. Neither
         //    implies the other, and treating either as sufficient is how an
         //    order reaches a market nobody intended it to reach.
         if !broker.is_simulated() {
@@ -502,7 +569,7 @@ impl OrderManager {
             }
         }
 
-        // 6. Pre-trade risk, against the state the order would produce.
+        // 7. Pre-trade risk, against the state the order would produce.
         if let Some(counterparty) = counterparty {
             axes.insert(
                 qip_risk::limits::COUNTERPARTY_AXIS.to_string(),

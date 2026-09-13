@@ -765,6 +765,65 @@ fn the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue() -
     Ok(())
 }
 
+#[test]
+fn a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue() -> Result<()> {
+    // The "diagnostic only" guarantee of ADR 0062. `qip_venue_fill_error_bps`
+    // measures the twin against the venue; a venue is withdrawn on
+    // feasibility evidence and on nothing else. Twelve fills the twin
+    // misprices by a thousand basis points each — the tape opens its last
+    // bar before the fills at 90 against an arrival of 100 — and after LEARN
+    // has priced every one of them, no venue is withdrawn, no withdrawal is
+    // on the record, and the feasibility window is empty because nothing
+    // was infeasible. A review that read the fill error would fail here.
+    let mut platform = platform()?;
+    let mut tape = quiet_bars("AAA", 90);
+    let last = tape.pop().expect("ninety bars");
+    let last_at = match &last {
+        SensedRecord::Bar(bar) => bar.open_time,
+        _ => unreachable!("quiet_bars produces bars"),
+    };
+    tape.push(bar("AAA", last_at, 90.0, 90.0));
+    platform.observe(tape);
+    const FILLS: usize = 12;
+    for n in 0..FILLS {
+        fill_one(&mut platform, &format!("prop-filled-{n}"), start())?;
+    }
+    assert_eq!(platform.filled_awaiting_score(), FILLS);
+
+    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
+    let scoring_time = start().saturating_add(Duration::from_days(3));
+    platform.run_cycle(scoring_time);
+    platform.run_cycle(scoring_time);
+    let scores = platform.fill_scores();
+    assert_eq!(scores.len(), FILLS, "not every fill was priced");
+    assert!(
+        scores
+            .iter()
+            .all(|score| score.trade_error_bps.is_some_and(|bps| bps < -500.0)),
+        "the premise failed: the twin was not wildly wrong on every fill: {:?}",
+        scores
+            .iter()
+            .map(|score| score.trade_error_bps)
+            .collect::<Vec<_>>()
+    );
+
+    assert!(
+        platform.withdrawn_venues().is_empty(),
+        "a venue was withdrawn on fill-error evidence: {:?}",
+        platform.withdrawn_venues()
+    );
+    assert!(
+        platform.feasibility_refusals().is_empty(),
+        "a fill error reached the feasibility window"
+    );
+    let withdrawn = platform
+        .replay_journal(&qip_events::EventFilter::new().topic(qip_events::Topic::VenueWithdrawn))?;
+    assert!(withdrawn.is_empty(), "a withdrawal was journaled");
+    // And the venue still fills.
+    fill_one(&mut platform, "prop-filled-after", scoring_time)?;
+    Ok(())
+}
+
 // --- ADR 0055: the counterfactual record narrows sizing, never widens it ---
 
 #[test]

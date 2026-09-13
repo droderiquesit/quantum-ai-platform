@@ -134,6 +134,20 @@ pub enum Topic {
     /// enactment is an artefact two people signed for, never a mutation of
     /// the running set. See ADR 0061.
     RiskRuleRecalibration,
+    /// The platform withdrew a venue on feasibility evidence (blueprint
+    /// §12.3, fourth row): a cluster of feasibility refusals at one venue,
+    /// and the venue omitted from the desk's order path and the cells'
+    /// whitelist. A decision about what the platform may do, so Decide and
+    /// retained permanently; a subtraction and never an addition, and the
+    /// record is what a restarted process resumes the set from. See ADR
+    /// 0062.
+    VenueWithdrawn,
+    /// An operator signed to reinstate a withdrawn venue — a first
+    /// signature awaiting its countersignature, the reinstatement itself,
+    /// or a refusal. Two people, as a promotion needs, because putting a
+    /// venue back is a person widening what the platform may do. See ADR
+    /// 0062.
+    VenueReinstated,
 
     // --- ACT ---
     OrderProposed,
@@ -196,7 +210,7 @@ pub enum Topic {
 impl Topic {
     /// Every topic, in declaration order. Used by the registry, the
     /// documentation-drift test and the observability bootstrap.
-    pub const ALL: [Self; 73] = [
+    pub const ALL: [Self; 75] = [
         Self::MarketTick,
         Self::MarketQuote,
         Self::MarketTrade,
@@ -242,6 +256,8 @@ impl Topic {
         Self::RiskRejected,
         Self::ComplianceEvaluated,
         Self::RiskRuleRecalibration,
+        Self::VenueWithdrawn,
+        Self::VenueReinstated,
         Self::OrderProposed,
         Self::OrderApproved,
         Self::OrderSubmitted,
@@ -321,6 +337,8 @@ impl Topic {
             Self::RiskRejected => "risk.rejected",
             Self::ComplianceEvaluated => "compliance.evaluated",
             Self::RiskRuleRecalibration => "risk.rule_recalibration",
+            Self::VenueWithdrawn => "venue.withdrawn",
+            Self::VenueReinstated => "venue.reinstated",
             Self::OrderProposed => "order.proposed",
             Self::OrderApproved => "order.approved",
             Self::OrderSubmitted => "order.submitted",
@@ -408,7 +426,9 @@ impl Topic {
             | Self::PolicyDistributed
             | Self::RiskRejected
             | Self::ComplianceEvaluated
-            | Self::RiskRuleRecalibration => TopicGroup::Decide,
+            | Self::RiskRuleRecalibration
+            | Self::VenueWithdrawn
+            | Self::VenueReinstated => TopicGroup::Decide,
 
             Self::OrderProposed
             | Self::OrderApproved

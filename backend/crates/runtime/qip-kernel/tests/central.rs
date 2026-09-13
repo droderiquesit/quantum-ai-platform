@@ -1473,6 +1473,246 @@ fn feasibility_refusals_under(platform: &Platform, venue: &str, constraint: &str
     )
 }
 
+/// A traceable off-lot buy on `AAA`, which the desk's lot gate refuses
+/// before any other control — one feasibility refusal at the desk's venue.
+fn refuse_off_lot(platform: &mut Platform, n: usize) -> Result<()> {
+    let order = platform.order_from(
+        ObjectId::from_string("obj-AAA"),
+        qip_execution_engine::order::Side::Buy,
+        dec!("10.5"),
+        dec!("100"),
+        &format!("prop-off-lot-{n}"),
+        vec![format!("hyp-off-lot-{n}")],
+        start(),
+    );
+    let error = platform
+        .submit_order(order, start())
+        .expect_err("ten and a half shares of a one-lot listing reached the venue");
+    assert!(
+        error.message().contains("infeasible (feasibility_lot):"),
+        "the premise failed: refused for another reason than the lot grid: {}",
+        error.message()
+    );
+    Ok(())
+}
+
+fn withdrawals(platform: &Platform) -> Result<Vec<qip_kernel::venue_review::VenueWithdrawal>> {
+    use qip_events::{EventFilter, Topic};
+    platform
+        .replay_journal(&EventFilter::new().topic(Topic::VenueWithdrawn))?
+        .iter()
+        .map(|envelope| {
+            Ok(envelope
+                .decode::<qip_kernel::venue_review::VenueWithdrawal>()?
+                .body)
+        })
+        .collect()
+}
+
+#[test]
+fn ten_feasibility_refusals_of_which_eight_are_on_one_venue_withdraw_it_and_the_next_order_there_is_refused()
+-> Result<()> {
+    // Blueprint §12.3's fourth row, end to end on the desk seam. Eight desk
+    // refusals at the desk's one broker and two cell refusals at the policy
+    // venue share one window; LEARN finds the desk venue at eight of ten,
+    // journals the withdrawal *before* withdrawing, and the next on-grid
+    // order — one the premise proves is otherwise accepted — is refused
+    // under `venue-availability` with the reinstatement path named. The
+    // cell venue, at two of ten, is untouched.
+    let mut platform = platform_with_arbitrage(&[VENUE])?;
+    // Premise: an on-grid order is accepted, so the refusal at the end is
+    // the withdrawal and not some control that refuses every order.
+    let on_grid = platform.order_from(
+        ObjectId::from_string("obj-AAA"),
+        qip_execution_engine::order::Side::Buy,
+        dec!("1000"),
+        dec!("100"),
+        "prop-on-grid-before",
+        vec!["hyp-on-grid".to_string()],
+        start(),
+    );
+    platform.submit_order(on_grid, start())?;
+    assert!(platform.withdrawn_venues().is_empty());
+    assert!(withdrawals(&platform)?.is_empty());
+
+    for n in 0..8 {
+        refuse_off_lot(&mut platform, n)?;
+    }
+    for _ in 0..2 {
+        platform.ingest_cell_report(report_with_lot_refusal(VENUE), start())?;
+    }
+    let window = platform.feasibility_refusals();
+    assert_eq!(window.len(), 10, "the premise is a window of ten");
+    assert_eq!(
+        window
+            .iter()
+            .filter(|refusal| refusal.venue == "simulated-venue")
+            .count(),
+        8
+    );
+
+    let cycle = platform.run_cycle(start());
+    let learn = cycle.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        learn
+            .detail
+            .contains("venue simulated-venue withdrawn on feasibility evidence (8 of 10"),
+        "LEARN did not report the withdrawal: {}",
+        learn.detail
+    );
+    let records = withdrawals(&platform)?;
+    assert_eq!(records.len(), 1, "the withdrawal is not on the record");
+    assert_eq!(records[0].venue, "simulated-venue");
+    assert_eq!(records[0].constraint, "feasibility_lot");
+    assert_eq!((records[0].sample, records[0].count), (10, 8));
+    assert!((records[0].share - 0.8).abs() < f64::EPSILON);
+    assert_eq!(
+        records[0].seams,
+        vec![qip_kernel::venue_review::FeasibilitySeam::Desk]
+    );
+    assert_eq!(
+        platform.withdrawn_venues().iter().collect::<Vec<_>>(),
+        vec!["simulated-venue"]
+    );
+
+    // The consequence at the desk seam.
+    let after = platform.order_from(
+        ObjectId::from_string("obj-AAA"),
+        qip_execution_engine::order::Side::Buy,
+        dec!("1000"),
+        dec!("100"),
+        "prop-on-grid-after",
+        vec!["hyp-on-grid".to_string()],
+        start(),
+    );
+    let error = platform
+        .submit_order(after, start())
+        .expect_err("an on-grid order reached a withdrawn venue");
+    assert!(
+        error
+            .message()
+            .contains("withdrawn on feasibility evidence")
+            && error.message().contains("two operator signatures"),
+        "the refusal does not name the withdrawal or the way back: {}",
+        error.message()
+    );
+    assert_eq!(
+        platform.telemetry().metrics.snapshot().counter(
+            names::ORDERS_REFUSED,
+            &labels([("control", "venue-availability")])
+        ),
+        1,
+        "the refusal is not charted under the venue-availability control"
+    );
+
+    // Reviewed again on the next cycle, the same window withdraws nothing
+    // more: the desk venue is already withdrawn and the cell venue is two
+    // of ten. One record, not one per cycle.
+    platform.run_cycle(start());
+    assert_eq!(withdrawals(&platform)?.len(), 1);
+    assert_eq!(platform.withdrawn_venues().len(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_window_dominated_by_a_venue_the_policy_does_not_name_changes_no_whitelist() -> Result<()> {
+    // Why evidence can never add a venue, shown from the other side: the
+    // desk's broker is not a policy venue, so a cluster on it withdraws the
+    // desk's broker and leaves the cells' whitelist exactly as the policy
+    // and the grant produced it — nothing omitted, nothing added, and the
+    // journaled issue names no withdrawal. The withdrawn set is read only
+    // to `retain`; a venue it names that the policy does not is a venue the
+    // whitelist never carried.
+    let now = start();
+    let id = strategy();
+    let mut platform = platform_with_arbitrage(&[VENUE])?;
+    register(platform.central_mut(), &id, CELL)?;
+    walk_to(platform.central_mut(), &id, GateStage::Pilot)?;
+    issue(platform.central_mut(), &id, CELL, now)?;
+    let before = platform.issue_cycle_whitelist(CELL, now)?;
+    let WhitelistOutcome::Emitted {
+        edges: 2,
+        withdrawn,
+        ..
+    } = &before.outcome
+    else {
+        panic!("the premise failed: {}", before.describe());
+    };
+    assert!(withdrawn.is_empty());
+
+    for n in 0..10 {
+        refuse_off_lot(&mut platform, n)?;
+    }
+    platform.run_cycle(now);
+    assert_eq!(
+        platform.withdrawn_venues().iter().collect::<Vec<_>>(),
+        vec!["simulated-venue"],
+        "the premise failed: the desk venue was not withdrawn"
+    );
+
+    let after = platform.issue_cycle_whitelist(CELL, now)?;
+    assert_eq!(
+        after.outcome,
+        before.outcome,
+        "a withdrawal of a venue the policy does not name changed the whitelist's outcome: {}",
+        after.describe()
+    );
+    assert_eq!(after.whitelist.conversions, before.whitelist.conversions);
+    assert!(
+        after
+            .whitelist
+            .conversions
+            .iter()
+            .all(|conversion| conversion.venue == VENUE),
+        "a conversion names a venue the policy does not"
+    );
+    Ok(())
+}
+
+#[test]
+fn ten_cell_refusals_at_the_only_policy_venue_withdraw_it_and_the_whitelist_says_so() -> Result<()>
+{
+    // The edge seam end to end: the cells' refusals at the one policy venue
+    // withdraw it, and the next whitelist the centre issues for the cell is
+    // empty and says why — `AllWithdrawn`, on the journaled issue — so the
+    // installer installs nothing. Reviewed once: the venue is withdrawn on
+    // the first cycle and the second finds nothing new.
+    let now = start();
+    let id = strategy();
+    let mut platform = platform_with_arbitrage(&[VENUE])?;
+    register(platform.central_mut(), &id, CELL)?;
+    walk_to(platform.central_mut(), &id, GateStage::Pilot)?;
+    issue(platform.central_mut(), &id, CELL, now)?;
+    assert!(
+        !platform.issue_cycle_whitelist(CELL, now)?.is_empty(),
+        "the premise failed: the grant emits no whitelist"
+    );
+
+    for _ in 0..10 {
+        platform.ingest_cell_report(report_with_lot_refusal(VENUE), now)?;
+    }
+    platform.run_cycle(now);
+    let records = withdrawals(&platform)?;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].venue, VENUE);
+    assert_eq!(
+        records[0].seams,
+        vec![qip_kernel::venue_review::FeasibilitySeam::Edge]
+    );
+
+    let issue = platform.issue_cycle_whitelist(CELL, now)?;
+    assert_eq!(
+        issue.outcome,
+        WhitelistOutcome::AllWithdrawn {
+            venues: vec![VENUE.to_string()]
+        },
+        "{}",
+        issue.describe()
+    );
+    assert!(issue.is_empty(), "a conversion survived the withdrawal");
+    Ok(())
+}
+
 #[test]
 fn a_refusal_naming_a_venue_no_grant_permits_is_counted_unknown_and_kept_out_of_the_window()
 -> Result<()> {
@@ -1627,7 +1867,8 @@ fn a_policy_venue_the_grant_does_not_permit_is_refused_at_production_not_at_the_
         accepted.outcome,
         WhitelistOutcome::Emitted {
             edges: 2,
-            sized_against: issued.envelope().signature().to_string()
+            sized_against: issued.envelope().signature().to_string(),
+            withdrawn: Vec::new(),
         },
         "{}",
         accepted.describe()

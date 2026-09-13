@@ -368,6 +368,118 @@ fn a_global_halt_stops_every_scope() {
     }
 }
 
+// --- a venue withdrawn on feasibility evidence ----------------------------
+
+#[test]
+fn an_order_to_a_withdrawn_venue_is_refused_as_unavailable_even_though_the_venue_is_simulated() {
+    // The failure this guards: `is_available()` is consulted only inside the
+    // live-venue arm, and the only broker the kernel constructs is the
+    // simulated one, whose `is_available()` is hard-coded true. A withdrawal
+    // read through that path would be a control that could never fire on
+    // this platform — blueprint §12.3's "venue withdrawn" reading as
+    // protection and being none. The check is its own step, before the
+    // live-venue arm, and it refuses a simulated venue.
+    let mut manager = manager();
+    let mut broker = simulator();
+    let controller = AutonomyController::new();
+    assert!(broker.is_simulated(), "the premise is a simulated venue");
+    assert!(
+        broker.is_available(),
+        "the premise failed: the simulated venue reports unavailable, so the refusal below \
+         could be the live-venue arm's"
+    );
+
+    // Premise: before the withdrawal the same order is accepted.
+    let before = submit(
+        &mut manager,
+        order("AAA", Side::Buy, "1000"),
+        &mut broker,
+        &controller,
+    );
+    assert!(before.accepted, "{:?}", before.refusal);
+
+    manager.withdraw_venue(broker.name());
+    assert!(manager.is_withdrawn("simulated-venue"));
+    let mut again = order("AAA", Side::Buy, "1000");
+    again.order_id = OrderId::from_string("ord-AAA-2");
+    let refused = submit(&mut manager, again, &mut broker, &controller);
+    assert!(
+        !refused.accepted,
+        "an order to a withdrawn venue reached the venue"
+    );
+    let Some(RefusalReason::VenueUnavailable { venue, detail }) = refused.refusal.as_ref() else {
+        panic!("refused for another reason: {:?}", refused.refusal);
+    };
+    assert_eq!(venue, "simulated-venue");
+    assert!(
+        detail.contains("withdrawn") && detail.contains("two operator signatures"),
+        "the refusal does not say what to do instead: {detail}"
+    );
+    assert!(
+        refused.venue.is_none(),
+        "a refused order reported a venue, which would route it into the accepted arm"
+    );
+
+    // Reinstated, the venue admits the order again — the set is subtractive
+    // and removing the name restores only what every other gate permits.
+    assert!(manager.reinstate_venue("simulated-venue"));
+    assert!(
+        !manager.reinstate_venue("simulated-venue"),
+        "reinstating twice claimed a change"
+    );
+    let mut third = order("AAA", Side::Buy, "1000");
+    third.order_id = OrderId::from_string("ord-AAA-3");
+    let restored = submit(&mut manager, third, &mut broker, &controller);
+    assert!(restored.accepted, "{:?}", restored.refusal);
+}
+
+#[test]
+fn a_withdrawn_venue_is_refused_after_the_kill_switch_so_a_halt_still_reads_as_a_halt() {
+    // A halted platform whose venue is also withdrawn must report the halt:
+    // the kill switch is the loudest control the platform has, and an
+    // operator reading `venue-availability` climbing during an incident
+    // would look for a venue problem while the platform was stopped for a
+    // different reason entirely. The withdrawal check sits after the kill
+    // switch and the autonomy gate on purpose.
+    let mut manager = manager();
+    let mut broker = simulator();
+    let mut controller = AutonomyController::new();
+    manager.withdraw_venue(broker.name());
+    controller.kill_switch_mut().trip_scope(
+        "momentum",
+        now(),
+        "risk-monitor",
+        "position limit breached",
+    );
+
+    let refused = submit(
+        &mut manager,
+        order("AAA", Side::Buy, "1000"),
+        &mut broker,
+        &controller,
+    );
+    assert!(!refused.accepted);
+    assert!(
+        matches!(refused.refusal, Some(RefusalReason::Halted { .. })),
+        "a halted, withdrawn venue did not report the halt: {:?}",
+        refused.refusal
+    );
+
+    // And the withdrawal is still there once the halt clears: the order in
+    // another scope is refused as unavailable, not accepted.
+    let mut other = order("BBB", Side::Buy, "1000");
+    other.scope = "carry".to_string();
+    let still_withdrawn = submit(&mut manager, other, &mut broker, &controller);
+    assert!(
+        matches!(
+            still_withdrawn.refusal,
+            Some(RefusalReason::VenueUnavailable { .. })
+        ),
+        "the withdrawal did not survive the halt: {:?}",
+        still_withdrawn.refusal
+    );
+}
+
 #[test]
 fn observation_level_permits_no_execution_at_all() {
     let mut manager = manager();

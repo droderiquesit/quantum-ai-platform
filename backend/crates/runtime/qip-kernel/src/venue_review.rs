@@ -26,6 +26,7 @@
 //! number nobody could reconcile with the first.
 
 use qip_core::time::Timestamp;
+use qip_events::{EventBody, Topic};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -103,7 +104,9 @@ pub struct VenueCluster {
     pub constraint: String,
     /// Refusals in the window, all venues — the denominator.
     pub sample: usize,
-    /// This venue's refusals over the sample.
+    /// This venue's refusals in the window — the numerator.
+    pub count: usize,
+    /// `count` over `sample`.
     pub share: f64,
     /// The seams whose refusals of this venue are in the window, in order.
     pub seams: Vec<FeasibilitySeam>,
@@ -163,9 +166,64 @@ pub fn assess(window: &[FeasibilityRefusal], withdrawn: &BTreeSet<String>) -> Op
         venue: venue.to_string(),
         constraint,
         sample,
+        count,
         share,
         seams,
     })
+}
+
+/// The record of a venue withdrawn on feasibility evidence — blueprint
+/// §12.3's fourth-row consequence, journaled under `venue.withdrawn`
+/// *before* the venue is withdrawn at either seam, so a withdrawal the log
+/// refused is a withdrawal that did not happen.
+///
+/// A subtraction on the record: the venue is added to the set the desk's
+/// order manager refuses against and the cells' whitelist omits, and
+/// nothing reads this record to admit a venue anywhere. Putting the venue
+/// back is two operators' signatures under `venue.reinstated` (ADR 0062).
+/// The idempotency key is the venue and the cycle, so one review that
+/// journals and then fails to withdraw cannot journal twice on retry, and a
+/// later cycle that finds the same cluster after a reinstatement is a new
+/// withdrawal with its own record.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VenueWithdrawal {
+    pub venue: String,
+    /// The gate the venue was most often refused under.
+    pub constraint: String,
+    /// Refusals in the window, all venues.
+    pub sample: usize,
+    /// This venue's refusals in the window.
+    pub count: usize,
+    /// `count` over `sample`.
+    pub share: f64,
+    /// The seams whose refusals contributed.
+    pub seams: Vec<FeasibilitySeam>,
+    pub cycle: u64,
+    pub at: Timestamp,
+}
+
+impl VenueWithdrawal {
+    pub fn of(cluster: &VenueCluster, cycle: u64, at: Timestamp) -> Self {
+        Self {
+            venue: cluster.venue.clone(),
+            constraint: cluster.constraint.clone(),
+            sample: cluster.sample,
+            count: cluster.count,
+            share: cluster.share,
+            seams: cluster.seams.clone(),
+            cycle,
+            at,
+        }
+    }
+}
+
+impl EventBody for VenueWithdrawal {
+    const TOPIC: Topic = Topic::VenueWithdrawn;
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn idempotency_key(&self) -> Option<String> {
+        Some(format!("venue-withdrawal:{}:{}", self.venue, self.cycle))
+    }
 }
 
 #[cfg(test)]
@@ -262,5 +320,59 @@ mod tests {
         let found = assess(&at_bar, &BTreeSet::new()).expect("nine of twelve is the bar");
         assert_eq!(found.venue, "alpha");
         assert!((found.share - 0.75).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn withdrawing_one_venue_does_not_make_the_runner_up_a_cluster_of_the_remainder() {
+        // The cascade this refuses: ten refusals, eight at alpha and two at
+        // beta. Alpha is withdrawn. If the next review excluded alpha's
+        // entries from the denominator, beta would be "two of two" — a
+        // share of one on a sample the bar was never applied to — and be
+        // withdrawn on the next cycle, and the desk's last venue after
+        // that. The share is over the whole window, so beta is two of ten
+        // and stays.
+        let mut window = refusals("alpha", 8);
+        window.extend(refusals("beta", 2));
+        let first = assess(&window, &BTreeSet::new()).expect("alpha dominates");
+        assert_eq!(first.venue, "alpha", "the premise failed");
+        assert!((first.share - 0.8).abs() < f64::EPSILON);
+
+        let withdrawn = BTreeSet::from(["alpha".to_string()]);
+        assert_eq!(
+            assess(&window, &withdrawn),
+            None,
+            "the runner-up was read as a cluster of what remained"
+        );
+
+        // And beta genuinely dominating the whole window is still found,
+        // so the guard above is the denominator and not a refusal of every
+        // second venue.
+        window.extend(refusals("beta", 30));
+        let second = assess(&window, &withdrawn).expect("beta dominates the whole window");
+        assert_eq!(second.venue, "beta");
+        assert_eq!(second.sample, 40);
+        assert!((second.share - 0.8).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn an_already_withdrawn_venue_is_not_withdrawn_twice() {
+        // A withdrawn venue's later refusals keep landing in the window —
+        // the desk's feasibility gate runs before its withdrawal check, on
+        // purpose, so the denominator stays honest — and every review would
+        // find the same cluster again. Without the exclusion each cycle
+        // would journal a fresh withdrawal of a venue already withdrawn, and
+        // a reinstatement's two signatures would be undone by the very next
+        // LEARN pass.
+        let window = refusals("alpha", 12);
+        assert!(
+            assess(&window, &BTreeSet::new()).is_some(),
+            "the premise failed: alpha does not dominate"
+        );
+        let withdrawn = BTreeSet::from(["alpha".to_string()]);
+        assert_eq!(
+            assess(&window, &withdrawn),
+            None,
+            "a venue already withdrawn was found again"
+        );
     }
 }

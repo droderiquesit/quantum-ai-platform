@@ -44,7 +44,9 @@ use crate::rule_review::{
     PROPOSAL_ENACTED, PROPOSAL_WITHDRAWN, RecalibrationProposal, RegretEvidence, RuleActivity,
     RuleDefence, RuleDormant, RuleRegret, RuleReviewJournal, regret_by_rule,
 };
-use crate::venue_review::{FEASIBILITY_WINDOW, FeasibilityRefusal, FeasibilitySeam};
+use crate::venue_review::{
+    FEASIBILITY_WINDOW, FeasibilityRefusal, FeasibilitySeam, VenueWithdrawal,
+};
 use qip_agents::memory::ResearchMemory;
 use qip_agents::runtime::{Reading, Upstream};
 use qip_agents::{Budget, RunStatus};
@@ -394,6 +396,14 @@ pub struct Platform {
     /// so the oldest *is* evicted here (see the constant for why that is
     /// right here and wrong for the two queues above).
     feasibility_refusals: Vec<FeasibilityRefusal>,
+    /// Venues withdrawn on feasibility evidence — blueprint §12.3's fourth
+    /// row, ADR 0062. The one writer is [`Self::withdraw_venue`], reached
+    /// from [`Self::review_venues`] after the `venue.withdrawn` record is
+    /// in the log, and it forwards to the two seams that enforce it: the
+    /// order manager refuses and the central plane omits. Resumed from the
+    /// log at assembly, so a restarted process still refuses what it
+    /// withdrew; a caller cannot put a name here.
+    withdrawn_venues: BTreeSet<String>,
     /// What the LEARN stage priced this cycle, for the journal. Cleared as
     /// each cycle's LEARN begins.
     cycle_counterfactuals: Option<CounterfactualJournal>,
@@ -935,6 +945,10 @@ const RULE_REVIEW_ORIGIN: &str = "kernel/rule-review";
 /// promotion, registration and eligibility records that share its topic.
 /// See [`PROMOTION_APPROVAL_ORIGIN`].
 const RECALIBRATION_APPROVAL_ORIGIN: &str = "kernel/recalibration-approval";
+
+/// The producer on every venue withdrawal the LEARN stage's venue review
+/// writes, and the one [`Platform::resume_withdrawn_venues`] selects on.
+const VENUE_REVIEW_ORIGIN: &str = "kernel/venue-review";
 
 /// How recently an operator must have authenticated to sign a promotion to a
 /// capital-holding rung.
@@ -3247,6 +3261,7 @@ impl Platform {
             filled: Vec::new(),
             fill_scores: Vec::new(),
             feasibility_refusals: Vec::new(),
+            withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
             cycle_counterfactuals: None,
             cycle_rule_review: None,
             rule_activity,
@@ -3409,6 +3424,15 @@ impl Platform {
         // on a record the platform then does not hold.
         for committed in platform.config.venue_registrations.clone() {
             platform.apply_registration(committed, RegistrationSource::Configuration, now)?;
+        }
+        // What the log says was withdrawn and not reinstated, forwarded to
+        // the two seams that enforce it. Resumed rather than trusted to the
+        // set alone: a restarted process whose order manager and plane came
+        // up empty would admit a venue the last process had stopped using,
+        // and nothing would say so until the next cluster.
+        for venue in platform.withdrawn_venues.clone() {
+            platform.orders.withdraw_venue(venue.as_str());
+            platform.central.withdraw_venue(venue.as_str());
         }
         Ok(platform)
     }
@@ -3844,6 +3868,12 @@ impl Platform {
             .cloned()
         {
             central.factory_mut().attach_trial_book(book);
+        }
+        // And the venues withdrawn on feasibility evidence: a plane swapped
+        // in after a withdrawal would otherwise whitelist a venue the log
+        // says the platform stopped using.
+        for venue in &self.withdrawn_venues {
+            central.withdraw_venue(venue.as_str());
         }
         self.central = central;
     }
@@ -10131,6 +10161,19 @@ impl Platform {
         for problem in problems {
             outcome = outcome.with_problem(problem);
         }
+        // Read what the feasibility window says about each venue. Blueprint
+        // §12.3's fourth row: until this call a venue every gate refused at
+        // was counted and never withdrawn, and the row's consequence had no
+        // caller. What this can do is subtract a venue at both seams; it
+        // cannot add one anywhere.
+        let (reviewed, problems) = self.review_venues(now);
+        if let Some(reviewed) = reviewed {
+            let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
         // Judge every strategy on what its cells have realised since it was
         // promoted. Blueprint §20.3: retirement is as automated as promotion,
         // and until this call existed it was not — the review seam and the
@@ -12277,6 +12320,87 @@ impl Platform {
     /// The recent feasibility refusals from both seams, oldest first.
     pub fn feasibility_refusals(&self) -> &[FeasibilityRefusal] {
         &self.feasibility_refusals
+    }
+
+    /// The venues withdrawn on feasibility evidence, in name order.
+    /// Read-only; the one writer is the LEARN stage's review, and putting a
+    /// venue back takes two operators' signatures (ADR 0062).
+    pub fn withdrawn_venues(&self) -> &BTreeSet<String> {
+        &self.withdrawn_venues
+    }
+
+    /// The LEARN stage's venue review: blueprint §12.3's fourth row, read
+    /// from the feasibility window.
+    ///
+    /// One finding per cycle at most — the venue that dominates the window
+    /// and is not already withdrawn, per [`crate::venue_review::assess`] —
+    /// and the order of the two effects is the control: the
+    /// `venue.withdrawn` record is journaled *first*, and the venue is
+    /// withdrawn at both seams only once the log has it. A journal failure
+    /// therefore leaves the venue in use and reports a problem on the
+    /// cycle, matching `apply_registration`'s "journal, then adopt": a
+    /// withdrawal the log does not hold is one a restarted process would
+    /// silently undo, which is worse than one more cycle of refusals.
+    ///
+    /// Same `(summary, problems)` shape as [`Self::review_rules`], for the
+    /// same reason.
+    fn review_venues(&mut self, now: Timestamp) -> (Option<String>, Vec<String>) {
+        let Some(cluster) =
+            crate::venue_review::assess(&self.feasibility_refusals, &self.withdrawn_venues)
+        else {
+            return (None, Vec::new());
+        };
+        let record = VenueWithdrawal::of(&cluster, self.cycle, now);
+        match self.journal_once(record, VENUE_REVIEW_ORIGIN, now) {
+            Ok(_) => {
+                self.withdraw_venue(&cluster.venue);
+                (
+                    Some(format!(
+                        "venue {} withdrawn on feasibility evidence ({} of {} recent refusals, \
+                         mostly {})",
+                        cluster.venue, cluster.count, cluster.sample, cluster.constraint
+                    )),
+                    Vec::new(),
+                )
+            }
+            Err(error) => (
+                None,
+                vec![format!(
+                    "venue {} clusters {} of {} recent feasibility refusals and was not \
+                     withdrawn because the record could not be journaled: {}",
+                    cluster.venue,
+                    cluster.count,
+                    cluster.sample,
+                    error.message()
+                )],
+            ),
+        }
+    }
+
+    /// Withdraw `venue` at both seams. The one writer of the withdrawn set,
+    /// called only after the record is in the log; the order manager
+    /// refuses and the plane omits from the next call on.
+    fn withdraw_venue(&mut self, venue: &str) {
+        self.withdrawn_venues.insert(venue.to_string());
+        self.orders.withdraw_venue(venue);
+        self.central.withdraw_venue(venue);
+    }
+
+    /// The venues the log says were withdrawn and not since reinstated,
+    /// selected by producer so the records of other kinds on these topics
+    /// are passed over. Called from assembly.
+    fn resume_withdrawn_venues(log: &EventLog) -> Result<BTreeSet<String>> {
+        let mut withdrawn = BTreeSet::new();
+        for event in log.by_topic(VenueWithdrawal::TOPIC) {
+            if event.lineage.producer != VENUE_REVIEW_ORIGIN {
+                continue;
+            }
+            let record = StreamEnvelope::from_frame(event)
+                .and_then(|envelope| envelope.decode::<VenueWithdrawal>())?
+                .body;
+            withdrawn.insert(record.venue);
+        }
+        Ok(withdrawn)
     }
 
     /// The LEARN stage's rule review: blueprint §12.3's three rule rows,

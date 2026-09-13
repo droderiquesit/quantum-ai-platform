@@ -564,8 +564,23 @@ pub enum WhitelistOutcome {
     /// installer would decline with no envelope regardless.
     NoLiveGrant { strategy: StrategyId },
     /// Emitted, with this many trade edges, sized against the grant whose
-    /// signature this is.
-    Emitted { edges: usize, sized_against: String },
+    /// signature this is. `withdrawn` names the policy venues whose
+    /// conversions were omitted because the venue stands withdrawn on
+    /// feasibility evidence (ADR 0062) — on the journaled issue, so the
+    /// omission is on the record and not inferred from an edge count.
+    /// Defaulted so an issue journaled before the field replays as having
+    /// withdrawn nothing, which is what it did.
+    Emitted {
+        edges: usize,
+        sized_against: String,
+        #[serde(default)]
+        withdrawn: Vec<String>,
+    },
+    /// Every policy venue stands withdrawn, so the whitelist carries no
+    /// conversion and the cell's installer installs nothing — the
+    /// fail-closed outcome, said in words rather than as an empty list a
+    /// reader would take for an unset policy.
+    AllWithdrawn { venues: Vec<String> },
 }
 
 /// One cell's slot 8, and why — the record the journal keeps.
@@ -597,16 +612,33 @@ impl WhitelistIssue {
             WhitelistOutcome::Emitted {
                 edges,
                 sized_against,
-            } => format!(
-                "cycle whitelist for {}: {edges} trade edge(s) across {} venue(s), sized \
-                 against grant {sized_against}",
+                withdrawn,
+            } => {
+                let mut line = format!(
+                    "cycle whitelist for {}: {edges} trade edge(s) across {} venue(s), sized \
+                     against grant {sized_against}",
+                    self.cell,
+                    self.whitelist
+                        .conversions
+                        .iter()
+                        .map(|conversion| conversion.venue.as_str())
+                        .collect::<BTreeSet<_>>()
+                        .len()
+                );
+                if !withdrawn.is_empty() {
+                    line.push_str(&format!(
+                        "; {} venue(s) omitted as withdrawn ({})",
+                        withdrawn.len(),
+                        withdrawn.join(", ")
+                    ));
+                }
+                line
+            }
+            WhitelistOutcome::AllWithdrawn { venues } => format!(
+                "cycle whitelist for {}: empty, every policy venue is withdrawn on feasibility \
+                 evidence ({})",
                 self.cell,
-                self.whitelist
-                    .conversions
-                    .iter()
-                    .map(|conversion| conversion.venue.as_str())
-                    .collect::<BTreeSet<_>>()
-                    .len()
+                venues.join(", ")
             ),
         }
     }
