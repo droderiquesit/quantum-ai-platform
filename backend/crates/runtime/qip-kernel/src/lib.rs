@@ -37,6 +37,7 @@ pub mod cycle;
 pub mod fabric_declaration;
 pub mod platform;
 pub mod references;
+pub mod rule_review;
 pub mod valuation;
 
 pub use central::{CellReport, CentralPlane, StrategyDna, StrategyFactory};

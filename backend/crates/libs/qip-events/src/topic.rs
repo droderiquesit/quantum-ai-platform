@@ -126,6 +126,14 @@ pub enum Topic {
     PolicyDistributed,
     RiskRejected,
     ComplianceEvaluated,
+    /// The platform proposed, withdrew, enacted or refused a loosening of
+    /// one risk limit's bound on counterfactual regret evidence (blueprint
+    /// §12.3, first row). A decision about what a control may permit, so it
+    /// sits in the Decide group and is retained permanently: the proposal
+    /// is generated from evidence and can be supplied by nobody, and an
+    /// enactment is an artefact two people signed for, never a mutation of
+    /// the running set. See ADR 0061.
+    RiskRuleRecalibration,
 
     // --- ACT ---
     OrderProposed,
@@ -162,6 +170,18 @@ pub enum Topic {
     /// the source has since revised — §22.3's "the backtest that used the
     /// original is flagged", as a record naming the campaign.
     ResearchCampaignFlagged,
+    /// A rule whose declined paths were mostly correctly declined, with the
+    /// simulated loss it avoided (§12.3, second row). A finding about a
+    /// control earning its place, and the mirror of a recalibration
+    /// proposal: it changes nothing and exists so that a rule's record can
+    /// say more than "fired".
+    RiskRuleDefended,
+    /// A rule that has not fired for a stated number of cycles while a
+    /// stated number of orders were submitted (§12.3, third row). A finding,
+    /// not a removal: a control that reads as protection and never binds is
+    /// the defect this repository records under `MaxExpectedShortfall`, and
+    /// the record is what lets a person ask whether it can still fire.
+    RiskRuleDormant,
 
     // --- SYSTEM ---
     ServiceStarted,
@@ -176,7 +196,7 @@ pub enum Topic {
 impl Topic {
     /// Every topic, in declaration order. Used by the registry, the
     /// documentation-drift test and the observability bootstrap.
-    pub const ALL: [Self; 70] = [
+    pub const ALL: [Self; 73] = [
         Self::MarketTick,
         Self::MarketQuote,
         Self::MarketTrade,
@@ -221,6 +241,7 @@ impl Topic {
         Self::PolicyDistributed,
         Self::RiskRejected,
         Self::ComplianceEvaluated,
+        Self::RiskRuleRecalibration,
         Self::OrderProposed,
         Self::OrderApproved,
         Self::OrderSubmitted,
@@ -240,6 +261,8 @@ impl Topic {
         Self::SourceRevisionDetected,
         Self::ResearchCampaignClosed,
         Self::ResearchCampaignFlagged,
+        Self::RiskRuleDefended,
+        Self::RiskRuleDormant,
         Self::ServiceStarted,
         Self::ServiceStopped,
         Self::KillSwitchEngaged,
@@ -297,6 +320,7 @@ impl Topic {
             Self::PolicyDistributed => "policy.distributed",
             Self::RiskRejected => "risk.rejected",
             Self::ComplianceEvaluated => "compliance.evaluated",
+            Self::RiskRuleRecalibration => "risk.rule_recalibration",
             Self::OrderProposed => "order.proposed",
             Self::OrderApproved => "order.approved",
             Self::OrderSubmitted => "order.submitted",
@@ -316,6 +340,8 @@ impl Topic {
             Self::SourceRevisionDetected => "learning.source_revised",
             Self::ResearchCampaignClosed => "learning.campaign_closed",
             Self::ResearchCampaignFlagged => "learning.campaign_flagged",
+            Self::RiskRuleDefended => "risk.rule_defended",
+            Self::RiskRuleDormant => "risk.rule_dormant",
             Self::ServiceStarted => "system.service_started",
             Self::ServiceStopped => "system.service_stopped",
             Self::KillSwitchEngaged => "system.kill_switch_engaged",
@@ -381,7 +407,8 @@ impl Topic {
             | Self::RiskApproved
             | Self::PolicyDistributed
             | Self::RiskRejected
-            | Self::ComplianceEvaluated => TopicGroup::Decide,
+            | Self::ComplianceEvaluated
+            | Self::RiskRuleRecalibration => TopicGroup::Decide,
 
             Self::OrderProposed
             | Self::OrderApproved
@@ -402,7 +429,9 @@ impl Topic {
             | Self::LessonRecorded
             | Self::SourceRevisionDetected
             | Self::ResearchCampaignClosed
-            | Self::ResearchCampaignFlagged => TopicGroup::Learn,
+            | Self::ResearchCampaignFlagged
+            | Self::RiskRuleDefended
+            | Self::RiskRuleDormant => TopicGroup::Learn,
 
             Self::ServiceStarted
             | Self::ServiceStopped

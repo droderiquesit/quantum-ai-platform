@@ -972,6 +972,17 @@ pub mod names {
     /// `qip_orders_refused_total{control}`, which says *that* pre-trade risk
     /// refused and could not say which rule.
     pub const RULE_FIRED: &str = "qip_rule_fired_total";
+    /// Defence records the LEARN stage wrote, by `rule` — blueprint §12.3's
+    /// second row, a rule whose declined paths were mostly correctly declined.
+    /// Counted only when the log accepted the record, so a defence re-derived
+    /// from the same evidence on the next cycle charts nothing.
+    pub const RULE_DEFENDED: &str = "qip_rule_defended_total";
+    /// One while a rule stands recorded dormant — no fire for
+    /// `RULE_DORMANCY_CYCLES` cycles across `RULE_DORMANCY_MIN_ORDERS`
+    /// submitted orders — and zero otherwise, by `rule`. Written to zero for
+    /// every limit at assembly and on every fire, so a rule that has never
+    /// fired reads as a zero and not as an absent series.
+    pub const RULE_DORMANT: &str = "qip_rule_dormant";
 
     /// Orders a cell reported *sent* — accepted by the venue, not filled —
     /// counted as the centre registers them against later fills. Kept beside

@@ -40,6 +40,9 @@ use crate::central::{
 };
 use crate::config::PlatformConfig;
 use crate::cycle::{CycleReport, Stage, StageOutcome};
+use crate::rule_review::{
+    RuleActivity, RuleDefence, RuleDormant, RuleReviewJournal, regret_by_rule,
+};
 use qip_agents::memory::ResearchMemory;
 use qip_agents::runtime::{Reading, Upstream};
 use qip_agents::{Budget, RunStatus};
@@ -377,6 +380,20 @@ pub struct Platform {
     /// What the LEARN stage priced this cycle, for the journal. Cleared as
     /// each cycle's LEARN begins.
     cycle_counterfactuals: Option<CounterfactualJournal>,
+    /// What the LEARN stage's rule review found this cycle, for the journal
+    /// entry; cleared at the top of LEARN like its siblings.
+    cycle_rule_review: Option<RuleReviewJournal>,
+    /// Each limit's firing history, keyed by the limit's configured name and
+    /// seeded with every name in the boot set at assembly — a rule that never
+    /// fires must still have a row for its silence to be measured against.
+    /// Only limit names are here: a feasibility gate is counted by
+    /// `qip_rule_fired_total` but has no bound to recalibrate and is not
+    /// judged dormant (blueprint §12.3's rule rows are about the limit set).
+    rule_activity: BTreeMap<String, RuleActivity>,
+    /// Orders a venue accepted since assembly — the denominator the dormancy
+    /// finding needs, counted at the same site as `qip_orders_submitted_total`
+    /// so the two cannot disagree.
+    orders_submitted: u64,
     /// What the LEARN stage's strategy review did this cycle, for the
     /// journal. Cleared as each cycle's LEARN begins.
     cycle_strategy_review: Option<StrategyReviewJournal>,
@@ -808,7 +825,7 @@ const DECLINED_HISTORY: usize = 256;
 /// evidence-weighted estimate trustworthy", and a second, differently-sized
 /// answer for the same question would be a number nobody could reconcile
 /// with the first.
-const COUNTERFACTUAL_SIZING_MIN_SAMPLE: usize = 10;
+pub(crate) const COUNTERFACTUAL_SIZING_MIN_SAMPLE: usize = 10;
 
 /// The fraction of an instrument's scored, declined paths that must have been
 /// *correctly* declined — the twin's own `!regret`, meaning the simulated
@@ -823,7 +840,7 @@ const COUNTERFACTUAL_SIZING_MIN_SAMPLE: usize = 10;
 /// [`Platform::counterfactual_sizing_multiplier`] for why the opposite
 /// pattern — a rule vetoing mostly *profitable* paths, §12.3's first row —
 /// produces no automatic response here at all.
-const COUNTERFACTUAL_SIZING_UNFAVOURABLE_FRACTION: f64 = 0.75;
+pub(crate) const COUNTERFACTUAL_SIZING_UNFAVOURABLE_FRACTION: f64 = 0.75;
 
 /// The one discount [`Platform::counterfactual_sizing_multiplier`] may apply,
 /// once both bars above are cleared.
@@ -880,6 +897,11 @@ const REGISTRATION_CREDENTIAL_AGE: Duration = ELIGIBILITY_CREDENTIAL_AGE;
 /// selecting these passes over the registration and eligibility records that
 /// share their topic.
 const PROMOTION_APPROVAL_ORIGIN: &str = "kernel/promotion-approval";
+
+/// The producer on every record the LEARN stage's rule review writes —
+/// defences, dormancy findings and recalibration proposals — so a replay can
+/// pick them out by origin the way [`Platform::replay_registrations`] does.
+const RULE_REVIEW_ORIGIN: &str = "kernel/rule-review";
 
 /// How recently an operator must have authenticated to sign a promotion to a
 /// capital-holding rung.
@@ -1771,6 +1793,11 @@ pub struct CycleJournalEntry {
     /// nothing. Defaulted so an older journal replays.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub counterfactuals: Option<CounterfactualJournal>,
+    /// What LEARN's rule review found this cycle: the rules it defended and
+    /// the rules it recorded dormant, by name. Absent on a cycle that found
+    /// nothing. Defaulted so an older journal replays.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rule_review: Option<RuleReviewJournal>,
     /// The strategies LEARN reviewed this cycle on the sessions their cells
     /// realised, and what became of them. Absent on a cycle in which no cell
     /// had closed a session since its strategy's baseline. Defaulted so an
@@ -3031,6 +3058,15 @@ impl Platform {
             )?;
         }
         let fabric = Self::resume_fabric(&event_log, config.seed)?;
+        // One activity row per limit, before the set moves into the checker
+        // and the monitor: the dormancy finding is about the rules that
+        // never fire, and a table that gained rows on the first fire would
+        // be silent about exactly those.
+        let rule_activity: BTreeMap<String, RuleActivity> = limits
+            .limits
+            .iter()
+            .map(|limit| (limit.name.clone(), RuleActivity::new()))
+            .collect();
 
         let mut platform = Self {
             central,
@@ -3053,6 +3089,9 @@ impl Platform {
             declined: Vec::new(),
             declined_scores: Vec::new(),
             cycle_counterfactuals: None,
+            cycle_rule_review: None,
+            rule_activity,
+            orders_submitted: 0,
             cycle_strategy_review: None,
             cycle_family_structure: None,
             cycle_horizon_arming: None,
@@ -3152,6 +3191,16 @@ impl Platform {
             corporate_actions_applied: BTreeSet::new(),
         };
         platform.describe_metrics();
+        // Every rule reads as not dormant from assembly, so the series exists
+        // for a rule that has never fired rather than appearing on the day
+        // it is found dormant.
+        for rule in platform.rule_activity.keys() {
+            platform.telemetry.metrics.gauge(
+                names::RULE_DORMANT,
+                labels([("rule", rule.as_str())]),
+                0.0,
+            );
+        }
         // Written once, at assembly, because the universe does not change
         // under a running platform. A count and not a per-instrument series:
         // the instrument list is unbounded and the reasons are for the
@@ -3426,6 +3475,14 @@ impl Platform {
         metrics.describe(
             names::RULE_FIRED,
             "refusals charged to the configured rule that made them, by rule name",
+        );
+        metrics.describe(
+            names::RULE_DEFENDED,
+            "defence records written for a rule whose declines were mostly correct, by rule",
+        );
+        metrics.describe(
+            names::RULE_DORMANT,
+            "one while a rule stands recorded dormant, zero otherwise, by rule",
         );
         metrics.describe(
             names::COUNTERFACTUALS_DEFERRED,
@@ -6318,6 +6375,7 @@ impl Platform {
             summary: report.summarise(),
             calibration: self.cycle_calibration.clone(),
             counterfactuals: self.cycle_counterfactuals.clone(),
+            rule_review: self.cycle_rule_review.clone(),
             strategy_review: self.cycle_strategy_review.clone(),
             family_structure: self.cycle_family_structure,
             horizon_arming: self.cycle_horizon_arming.clone(),
@@ -9790,6 +9848,7 @@ impl Platform {
     fn stage_learn(&mut self, now: Timestamp) -> StageOutcome {
         self.cycle_calibration = None;
         self.cycle_counterfactuals = None;
+        self.cycle_rule_review = None;
         self.cycle_family_structure = None;
         self.cycle_horizon_arming = None;
         // The wallet, against the book ACT left. A refusal by the control is
@@ -9843,6 +9902,18 @@ impl Platform {
         let (priced, problems) = self.score_declined(now);
         if let Some(priced) = priced {
             let detail = format!("{}; {priced}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
+        // Read what the scores say about each rule. Blueprint §12.3's three
+        // rule rows: until this call the twin's findings were accumulated per
+        // instrument and consumed by sizing alone, and no rule was ever
+        // defended, proposed for recalibration, or found dormant.
+        let (reviewed, problems) = self.review_rules(now);
+        if let Some(reviewed) = reviewed {
+            let detail = format!("{}; {reviewed}", outcome.detail);
             outcome = StageOutcome { detail, ..outcome };
         }
         for problem in problems {
@@ -10824,6 +10895,18 @@ impl Platform {
                 self.telemetry
                     .metrics
                     .count(names::RULE_FIRED, labels([("rule", rule.as_str())]));
+                // A limit's row, if it has one — feasibility gates have none
+                // and are deliberately not judged dormant. A fire ends a
+                // standing dormancy episode: the finding was that the rule
+                // was not binding, and it just did.
+                if let Some(activity) = self.rule_activity.get_mut(rule) {
+                    activity.fired(self.cycle, self.orders_submitted);
+                    self.telemetry.metrics.gauge(
+                        names::RULE_DORMANT,
+                        labels([("rule", rule.as_str())]),
+                        0.0,
+                    );
+                }
             }
             let refused = self.capture(
                 now,
@@ -10878,6 +10961,7 @@ impl Platform {
         self.telemetry
             .metrics
             .count(names::ORDERS_SUBMITTED, labels([("venue", venue.as_str())]));
+        self.orders_submitted += 1;
 
         for fill in &result.fills {
             self.telemetry
@@ -11698,6 +11782,114 @@ impl Platform {
             summary.push_str(&format!(", {deferred} deferred by the per-cycle cap"));
         }
         (Some(summary), problems)
+    }
+
+    /// The LEARN stage's rule review: blueprint §12.3's three rule rows,
+    /// read from the twin's scores and the activity table.
+    ///
+    /// A **defence** is written for a rule whose scored refusals clear the
+    /// same two bars sizing uses — at least
+    /// [`COUNTERFACTUAL_SIZING_MIN_SAMPLE`] scores, of which at least
+    /// [`COUNTERFACTUAL_SIZING_UNFAVOURABLE_FRACTION`] were correctly
+    /// declined — carrying the simulated loss the rule avoided. Keyed on the
+    /// newest scored order, so the same evidence reviewed again is the same
+    /// record, and counted only when the log took it. A **dormancy** finding
+    /// is written for a rule whose row says it has not fired for
+    /// [`crate::rule_review::RULE_DORMANCY_CYCLES`] cycles across
+    /// [`crate::rule_review::RULE_DORMANCY_MIN_ORDERS`] accepted orders, and
+    /// the gauge is raised with it.
+    ///
+    /// Neither finding changes the running limit set, and this method has no
+    /// way to: it holds `&mut self` for the journal, the activity table and
+    /// the metrics, and `self.orders`, `self.monitor` and the desk's view are
+    /// not written here. Same `(summary, problems)` shape as
+    /// [`Self::score_declined`], for the same reason: the cycle has happened,
+    /// and a review that could not be journaled is a problem on its record
+    /// rather than a reason to stop the stage.
+    fn review_rules(&mut self, now: Timestamp) -> (Option<String>, Vec<String>) {
+        let mut journal = RuleReviewJournal::default();
+        let mut problems = Vec::new();
+
+        for (rule, regret) in regret_by_rule(&self.declined_scores) {
+            if !regret.earns_its_place() {
+                continue;
+            }
+            let defence = RuleDefence {
+                rule: rule.clone(),
+                sample: regret.sample,
+                correctly_declined: regret.sample - regret.regrets,
+                would_have_lost: regret.would_have_lost,
+                window: regret.window,
+                newest: regret.newest.clone(),
+                at: now,
+            };
+            match self.journal_once(defence, RULE_REVIEW_ORIGIN, now) {
+                Ok(true) => {
+                    self.telemetry
+                        .metrics
+                        .count(names::RULE_DEFENDED, labels([("rule", rule.as_str())]));
+                    journal.defended.push(rule);
+                }
+                Ok(false) => {}
+                Err(error) => problems.push(format!(
+                    "the defence of {rule} could not be journaled: {}",
+                    error.message()
+                )),
+            }
+        }
+
+        let cycle = self.cycle;
+        let orders_submitted = self.orders_submitted;
+        let newly_dormant: Vec<(String, crate::rule_review::Dormancy)> = self
+            .rule_activity
+            .iter()
+            .filter_map(|(rule, activity)| {
+                activity
+                    .dormancy(cycle, orders_submitted)
+                    .map(|dormancy| (rule.clone(), dormancy))
+            })
+            .collect();
+        for (rule, dormancy) in newly_dormant {
+            let record = RuleDormant {
+                rule: rule.clone(),
+                idle_cycles: dormancy.idle_cycles,
+                orders_submitted_meanwhile: dormancy.idle_orders,
+                since: dormancy.since,
+                at: now,
+            };
+            match self.journal_once(record, RULE_REVIEW_ORIGIN, now) {
+                Ok(_) => {
+                    if let Some(activity) = self.rule_activity.get_mut(&rule) {
+                        activity.dormant_since = Some(dormancy.since);
+                    }
+                    self.telemetry.metrics.gauge(
+                        names::RULE_DORMANT,
+                        labels([("rule", rule.as_str())]),
+                        1.0,
+                    );
+                    journal.dormant.push(rule);
+                }
+                Err(error) => problems.push(format!(
+                    "the dormancy of {rule} could not be journaled: {}",
+                    error.message()
+                )),
+            }
+        }
+
+        if journal.is_empty() {
+            return (None, problems);
+        }
+        let summary = journal.describe();
+        self.cycle_rule_review = Some(journal);
+        (Some(summary), problems)
+    }
+
+    /// The limit set this platform booted with and runs under — the one
+    /// the pre-trade checker and the monitor hold. Read-only, and there is
+    /// no setter anywhere on this type: a bound moves only through the file
+    /// the composition root reads at boot (ADR 0061).
+    pub fn limits(&self) -> &LimitSet {
+        self.monitor.limits()
     }
 
     // --- the capital fabric -------------------------------------------------
@@ -16178,6 +16370,311 @@ mod rule_attribution_tests {
             ),
             1,
             "the control-level count moved differently from the rule-level one"
+        );
+    }
+}
+
+#[cfg(test)]
+mod rule_review_tests {
+    //! Blueprint §12.3's second and third rule rows, driven the way
+    //! `counterfactual_sizing_tests` drives the first consumer: synthetic,
+    //! already-scored declined paths pushed straight into `declined_scores`,
+    //! and the cycle and order counters set directly, because building a
+    //! hundred cycles of real refusals is what `tests/learning.rs` proves
+    //! once and this module's job is the arithmetic of the review.
+
+    use super::*;
+    use crate::rule_review::{RULE_DORMANCY_CYCLES, RULE_DORMANCY_MIN_ORDERS};
+    use qip_core::dec;
+    use qip_financial::universe::Universe;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    const RULE: &str = "order-notional";
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn platform() -> Platform {
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    /// One synthetic scored path charged to [`RULE`], with a distinct order
+    /// id so the defence's idempotency key moves with the sample.
+    fn score(index: usize, regret: bool, earned: Decimal) -> DeclinedScore {
+        DeclinedScore {
+            order_id: OrderId::from_string(format!("ord-review-{index}")),
+            object_id: ObjectId::from_string("obj-AAA"),
+            gate: "pre-trade-risk".to_string(),
+            declined_at: start(),
+            scored_at: start().saturating_add(Duration::from_secs(index as i64)),
+            would_have_earned: Simulated::of(earned),
+            regret,
+            alternatives: 4,
+            rules: vec![RULE.to_string()],
+            readings: vec![RuleReading {
+                rule: RULE.to_string(),
+                observed: 300_000.0,
+                bound: 250_000.0,
+            }],
+        }
+    }
+
+    fn defences(platform: &Platform) -> Vec<RuleDefence> {
+        platform
+            .event_log
+            .by_topic(Topic::RiskRuleDefended)
+            .into_iter()
+            .map(|event| {
+                StreamEnvelope::from_frame(event)
+                    .expect("a rule-review frame")
+                    .decode::<RuleDefence>()
+                    .expect("a defence decodes")
+                    .body
+            })
+            .collect()
+    }
+
+    fn dormancies(platform: &Platform, rule: &str) -> Vec<RuleDormant> {
+        platform
+            .event_log
+            .by_topic(Topic::RiskRuleDormant)
+            .into_iter()
+            .map(|event| {
+                StreamEnvelope::from_frame(event)
+                    .expect("a rule-review frame")
+                    .decode::<RuleDormant>()
+                    .expect("a dormancy decodes")
+                    .body
+            })
+            .filter(|record| record.rule == rule)
+            .collect()
+    }
+
+    fn refuse_one_over_the_notional_cap(platform: &mut Platform) {
+        let order = platform.order_from(
+            ObjectId::from_string("obj-AAA"),
+            Side::Buy,
+            dec!("3000"),
+            dec!("100"),
+            "prop-review",
+            vec!["hyp-review".to_string()],
+            start(),
+        );
+        let refusal = platform
+            .submit_order(order, start())
+            .expect_err("an order over the notional cap is refused");
+        assert!(
+            refusal.message().contains(RULE),
+            "the premise failed: the refusal was not the notional cap: {}",
+            refusal.message()
+        );
+    }
+
+    #[test]
+    fn every_limit_in_the_boot_set_has_an_activity_row_before_it_ever_fires() {
+        // The failure this guards: a table that gains a row on the first fire
+        // is silent about exactly the rules the dormancy finding exists for —
+        // the ones that never fire.
+        let platform = platform();
+        let boot = LimitSet::conservative_default();
+        assert!(
+            !boot.is_empty(),
+            "the premise failed: the boot set is empty"
+        );
+        for limit in &boot.limits {
+            let row = platform.rule_activity.get(&limit.name).unwrap_or_else(|| {
+                panic!(
+                    "{} has no activity row; the table holds {:?}",
+                    limit.name,
+                    platform.rule_activity.keys().collect::<Vec<_>>()
+                )
+            });
+            assert_eq!(row.fires, 0, "{} has fired on a fresh platform", limit.name);
+            assert_eq!(
+                platform.telemetry.metrics.snapshot().gauge(
+                    names::RULE_DORMANT,
+                    &labels([("rule", limit.name.as_str())])
+                ),
+                Some(0.0),
+                "{} does not read as not-dormant from assembly",
+                limit.name
+            );
+        }
+        assert_eq!(platform.rule_activity.len(), boot.len());
+    }
+
+    #[test]
+    fn a_rule_whose_declines_were_mostly_correct_is_defended_with_the_loss_it_avoided() {
+        let mut platform = platform();
+        assert!(
+            defences(&platform).is_empty(),
+            "the premise failed: a fresh platform already holds a defence"
+        );
+        // Ten correctly declined paths, each of which would have lost a
+        // hundred: the sample bar exactly, and every one of them a loss.
+        for index in 0..COUNTERFACTUAL_SIZING_MIN_SAMPLE {
+            platform
+                .declined_scores
+                .push(score(index, false, dec!("-100")));
+        }
+
+        let (summary, problems) = platform.review_rules(start());
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(
+            summary.as_deref().is_some_and(|s| s.contains("defended")),
+            "the review did not report the defence: {summary:?}"
+        );
+        let written = defences(&platform);
+        assert_eq!(written.len(), 1, "{written:?}");
+        let defence = &written[0];
+        assert_eq!(defence.rule, RULE);
+        assert_eq!(defence.sample, COUNTERFACTUAL_SIZING_MIN_SAMPLE);
+        assert_eq!(defence.correctly_declined, COUNTERFACTUAL_SIZING_MIN_SAMPLE);
+        assert_eq!(
+            defence.would_have_lost,
+            Simulated::of(dec!("1000")),
+            "the loss avoided is not the sum of the losses"
+        );
+        let counted = labels([("rule", RULE)]);
+        assert_eq!(
+            platform
+                .telemetry
+                .metrics
+                .snapshot()
+                .counter(names::RULE_DEFENDED, &counted),
+            1
+        );
+
+        // The same evidence reviewed again is the same finding: one record
+        // and one count, not one per cycle.
+        let (again, problems) = platform.review_rules(start());
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(again, None, "the same sample was reported as a new defence");
+        assert_eq!(defences(&platform).len(), 1);
+        assert_eq!(
+            platform
+                .telemetry
+                .metrics
+                .snapshot()
+                .counter(names::RULE_DEFENDED, &counted),
+            1,
+            "a defence the log deduplicated was counted twice"
+        );
+    }
+
+    #[test]
+    fn a_rule_idle_for_n_cycles_while_m_orders_were_submitted_is_recorded_dormant() {
+        let mut platform = platform();
+        // The premise half: the cycles alone are not a finding. A rule
+        // nothing asked is not a rule that cannot fire.
+        platform.cycle = RULE_DORMANCY_CYCLES;
+        platform.orders_submitted = 0;
+        let (summary, problems) = platform.review_rules(start());
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(
+            summary, None,
+            "idle cycles with no orders submitted read as dormancy"
+        );
+        assert!(dormancies(&platform, RULE).is_empty());
+
+        platform.orders_submitted = RULE_DORMANCY_MIN_ORDERS;
+        let (summary, problems) = platform.review_rules(start());
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(
+            summary.as_deref().is_some_and(|s| s.contains("dormant")),
+            "the review did not report the dormancy: {summary:?}"
+        );
+        let written = dormancies(&platform, RULE);
+        assert_eq!(written.len(), 1, "{written:?}");
+        assert_eq!(written[0].idle_cycles, RULE_DORMANCY_CYCLES);
+        assert_eq!(
+            written[0].orders_submitted_meanwhile,
+            RULE_DORMANCY_MIN_ORDERS
+        );
+        assert_eq!(
+            written[0].since, 0,
+            "a never-fired rule is idle since assembly"
+        );
+        // Every rule in the set was equally silent, and each is its own row.
+        assert_eq!(
+            platform.event_log.by_topic(Topic::RiskRuleDormant).len(),
+            LimitSet::conservative_default().len()
+        );
+        assert_eq!(
+            platform
+                .telemetry
+                .metrics
+                .snapshot()
+                .gauge(names::RULE_DORMANT, &labels([("rule", RULE)])),
+            Some(1.0)
+        );
+        assert_eq!(
+            platform.rule_activity[RULE].dormant_since,
+            Some(0),
+            "the row does not remember the episode it is in"
+        );
+    }
+
+    #[test]
+    fn one_fire_resets_a_dormant_rule_and_a_second_episode_is_a_second_record() {
+        let mut platform = platform();
+        platform.cycle = RULE_DORMANCY_CYCLES;
+        platform.orders_submitted = RULE_DORMANCY_MIN_ORDERS;
+        platform.review_rules(start());
+        assert_eq!(
+            dormancies(&platform, RULE).len(),
+            1,
+            "the premise failed: the first episode was not recorded"
+        );
+
+        // The rule fires on cycle 100: the finding that it was not binding
+        // is over, the gauge drops, and the row measures from here.
+        refuse_one_over_the_notional_cap(&mut platform);
+        let row = &platform.rule_activity[RULE];
+        assert_eq!(row.fires, 1);
+        assert_eq!(row.last_fired_cycle, Some(RULE_DORMANCY_CYCLES));
+        assert_eq!(row.dormant_since, None, "a fire did not end the episode");
+        assert_eq!(
+            platform
+                .telemetry
+                .metrics
+                .snapshot()
+                .gauge(names::RULE_DORMANT, &labels([("rule", RULE)])),
+            Some(0.0)
+        );
+
+        // Not yet dormant again: fewer than the bar's cycles since the fire.
+        platform.cycle = RULE_DORMANCY_CYCLES * 2 - 1;
+        platform.orders_submitted = RULE_DORMANCY_MIN_ORDERS * 2;
+        platform.review_rules(start());
+        assert_eq!(
+            dormancies(&platform, RULE).len(),
+            1,
+            "a rule that fired within the window was recorded dormant again"
+        );
+
+        // And once both bars are crossed again, a second record with a
+        // different `since`, so the log holds two episodes and not one.
+        platform.cycle = RULE_DORMANCY_CYCLES * 2;
+        platform.review_rules(start());
+        let written = dormancies(&platform, RULE);
+        assert_eq!(written.len(), 2, "{written:?}");
+        assert_eq!(written[1].since, RULE_DORMANCY_CYCLES);
+        assert_eq!(written[1].idle_cycles, RULE_DORMANCY_CYCLES);
+        assert_eq!(
+            written[1].orders_submitted_meanwhile,
+            RULE_DORMANCY_MIN_ORDERS
         );
     }
 }
