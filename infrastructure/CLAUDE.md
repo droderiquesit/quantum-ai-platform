@@ -57,16 +57,25 @@ refusing a `qip-*` image in any Pod spec. Terraform's provider set is still
 - **Never apply without showing the plan.** The guard hook refuses an
   unreviewed apply and a teardown outright. This file used to say nothing
   here had ever been applied; that stopped being true and the sentence
-  outlived it. `dev` has been applied by `infra.yml`'s `up`, dispatched by
+  outlived it. `dev` was applied by `infra.yml`'s `up`, dispatched by
   a person — the workflow's own comments record the runs that found each
   missing permission — and `deploy.yml` run 33891084271 moved the three
   catalogue services to the digests `gitops/envs/dev/kustomization.yaml`
-  now names (they were `environments/dev/images.tfvars` until ADR 0036
+  names (they were `environments/dev/images.tfvars` until ADR 0036
   moved the record). Observed from outside the project on 2026-09-04, without a
   credential: `qip-dev-api`, `qip-dev-fastbrain` and `qip-dev-deepbrain`
-  answer Google Frontend's internal-ingress 404 (a hostname with no
+  answered Google Frontend's internal-ingress 404 (a hostname with no
   service answers a different page, with no `server` header), and
-  `qip-dev-openobserve` answers `308 -> /web/` anonymously. What is still
+  `qip-dev-openobserve` answered `308 -> /web/` anonymously.
+  **Torn down 2026-09-13 on the owner's instruction** (ADR 0040 decision
+  13): `infra.yml`'s `teardown` action, in three dispatches, deleted the
+  four Cloud Run services, the control-plane cluster and 166
+  Terraform-managed resources; 55 free entries remain — API enablement,
+  the workflow's own identity, an empty VPC and two subnets Google's
+  `serverless-ipv4-*` addresses still hold — and nine KMS keys, five
+  `force_destroy = false` buckets and the state bucket stand outside state.
+  The register in `docs/DELIVERY-STATUS.md` lists them. Nothing is deployed
+  anywhere now. What is still
   true is the rule: an agent shows the plan and a person applies, and
   `docs/DELIVERY-STATUS.md` records what each plan and each observation
   found. It absorbed the missing-infrastructure register on 2026-09-07,

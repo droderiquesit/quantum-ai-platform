@@ -228,6 +228,25 @@ the one on *asking again*; the restrictions on *what* and *where* stand.
     of what remained; the register carries the run URL and terminal status.
     Nothing this action deletes is recoverable.
 
+    *Applied, 2026-09-13, three dispatches:* run 41
+    (<https://github.com/droderiquesit/quantum-ai-platform/actions/runs/34781641680>)
+    deleted the four Cloud Run services and the control-plane cluster by
+    `gcloud` and refused the destroy on the evidence bucket's
+    `prevent_destroy`; run 42
+    (<https://github.com/droderiquesit/quantum-ai-platform/actions/runs/34784153948>),
+    after the state removal was derived from the sources, destroyed 146;
+    run 43
+    (<https://github.com/droderiquesit/quantum-ai-platform/actions/runs/34785998589>),
+    after the bucket objects left state with their buckets, destroyed 20.
+    **55 entries remain**, all free: `module.services` and `module.cicd`
+    by this decision's design, the VPC and two subnets held by Google's
+    own `serverless-ipv4-*` egress addresses until it releases them, and
+    two `terraform_data` markers. The register in
+    `docs/DELIVERY-STATUS.md` lists them verbatim with what is out of
+    state but still in the project. Nothing that bills while idle is
+    left; the project, the state bucket, nine keys and five buckets are
+    the owner's, and `gcloud projects delete algorik-dev` takes the rest.
+
 Where this amendment supersedes earlier text, the earlier text is marked
 rather than silently left standing: decision 1's "on this instruction" and
 its destroy test are superseded by 9 and 10; decision 6's "under decision

@@ -125,7 +125,7 @@ These are not backlog. No amount of engineering in this container closes them.
 
 | Blocker | What it holds | To clear it |
 |---|---|---|
-| No deployment | Every ingestion claim, all runtime observability, the entire cloud plane | One authenticated `terraform apply` a person dispatches through `infra.yml` |
+| No deployment | Every ingestion claim, all runtime observability, the entire cloud plane | One authenticated `terraform apply` a person dispatches through `infra.yml`. **`dev` was applied (runs 34–38) and then torn down on 2026-09-13 on the owner's instruction** — the Cloud Run services, the control-plane cluster and 166 Terraform-managed resources are gone; 55 free entries remain (API enablement, the workflow's identity, an empty VPC and two subnets Google's egress addresses still hold). The "Infrastructure register" entry in Provenance has the three run URLs and the remainder verbatim. Nothing is deployed anywhere. |
 | Metrics collector | Cloud Run scrape ingestion | Google publishing a sidecar that passes the Trivy gate. Do **not** clear with a scanner exception |
 | Option-quote licensing | The volatility surface's caller (ADR 0050) | An owner-side vendor licensing evaluation |
 | ADR 0038 unaccepted | Passkeys | Four checks only the owner can run against `algorik-dev` |
@@ -2482,6 +2482,83 @@ long as GitHub retains the objects: `git fetch origin <sha>` and
 | `wip/wave23-inflight-51661d6` | `51661d66ecb7` |
 
 </details>
+
+**Infrastructure register, 2026-09-13 (evening) — dev torn down on the
+owner's instruction.** The owner said "Stop and delete all google cloud
+resources immediately" and, told this session holds no Google credential,
+"Perform the delete command for me, I give you authority." ADR 0040
+decision 13 records the instruction and the shape of the act: a `teardown`
+action in `infra.yml`, dispatched under the workflow's own identity, because
+the agent may not run `terraform destroy` or `gcloud … delete` from its own
+shell and `down` targets execution nodes of which there were none. Three
+dispatches, each read from its log rather than its conclusion:
+
+- **Run 41**, <https://github.com/droderiquesit/quantum-ai-platform/actions/runs/34781641680>,
+  on `00e357f`, job "success". By `gcloud`: deleted Cloud Run
+  `qip-dev-api`, `qip-dev-deepbrain`, `qip-dev-fastbrain`,
+  `qip-dev-openobserve` and the control-plane cluster
+  `qip-dev-control-plane` (`deleted cluster …` at 20:45:47Z) — everything
+  that billed while idle. Out of state: the cluster and five KMS keys. The
+  targeted destroy planned 175 and refused at plan time on
+  `module.evidence.google_storage_bucket.evidence` (`prevent_destroy`; the
+  step had removed keys only). Destroyed by Terraform: 0. Remaining: 231.
+- **Run 42**, <https://github.com/droderiquesit/quantum-ai-platform/actions/runs/34784153948>,
+  on `a872809` (state removal derived from every `prevent_destroy` and
+  `force_destroy = false` declaration; five buckets left state), job
+  "success". Planned 172, **destroyed 146**, stopped on two causes:
+  `storage.objects.delete` denied to `qip-infra-dev@…` on the three
+  `universe.json` config objects, and subnetworks `qip-dev-tz-intelligence`
+  / `qip-dev-tz-cognition` "already being used by
+  `addresses/serverless-ipv4-…`" — Cloud Run's direct-VPC-egress addresses,
+  Google-managed and released on Google's schedule. Remaining: 78.
+- **Run 43**, <https://github.com/droderiquesit/quantum-ai-platform/actions/runs/34785998589>,
+  on `be1cd74` (bucket objects leave state with their buckets; the step
+  prints the remaining addresses), job "success". Three objects left
+  state; planned 23, **destroyed 20**, stopped again on
+  `qip-dev-tz-cognition` held by `serverless-ipv4-1788775195068440944`.
+  **Remaining: 55**, verbatim from the run's `what exists now`:
+
+  ```
+  terraform_data.gitops_is_placed[0]
+  terraform_data.openobserve_is_placed[0]
+  module.cicd.google_iam_workload_identity_pool.github
+  module.cicd.google_iam_workload_identity_pool_provider.github
+  module.cicd.google_project_iam_custom_role.deploy_nodes
+  module.cicd.google_project_iam_custom_role.infra_storage
+  module.cicd.google_project_iam_member.deploy
+  module.cicd.google_project_iam_member.deploy_nodes
+  module.cicd.google_project_iam_member.infra_roles[…]   (17 role bindings)
+  module.cicd.google_project_iam_member.infra_storage
+  module.cicd.google_project_iam_member.read_deployment_logs
+  module.cicd.google_service_account.ci
+  module.cicd.google_service_account.infra
+  module.cicd.google_service_account_iam_member.github_impersonation
+  module.cicd.google_service_account_iam_member.infra_impersonation
+  module.network.google_compute_network.vpc
+  module.services.google_project_service.platform[…]     (20 API enablements)
+  module.trust_zones.google_compute_subnetwork.zone["cognition"]
+  module.trust_zones.google_compute_subnetwork.zone["intelligence"]
+  ```
+
+What remains and why each is not a meter: `module.services` is API
+enablement (free; left by design so a disable mid-destroy could not fail
+the rest); `module.cicd` is the pool, provider, two accounts and their
+bindings (free; the identity running the job — destroying it mid-run
+revokes the token); the VPC and two subnets are free and are held only by
+Google-managed addresses that release after service deletion — a later
+`teardown` dispatch is idempotent and takes them; the two `terraform_data`
+entries are markers with no cloud object. **Out of state and still in the
+project, not deleted:** nine KMS keys (undeletable by design; only
+schedulable), five buckets declared `force_destroy = false`
+(`qip-config-dev-{api,fastbrain,deepbrain}`, the egress bootstrap bucket,
+the evidence bucket, the image-bake payload bucket — each holding a few
+files; the identity holds no `storage.objects.delete` and this record
+widened nothing), the three `universe.json` objects in them, and the
+bootstrap-created state bucket `algorik-dev-qip-tfstate`, which holds the
+55-entry state. The project itself is untouched: the identity holds no
+`resourcemanager.projects.delete`. `gcloud projects delete algorik-dev`
+(recoverable for thirty days) remains the owner's one command for the
+rest.
 
 To re-score a row: read the section in
 `docs/architecture/algorik-blueprint-v10.1-source.md`, run the row's command,
