@@ -696,6 +696,103 @@ fn a_licence_that_has_not_taken_effect_yet_does_not_retroactively_permit_an_earl
     Ok(())
 }
 
+/// The same smuggling, through the door the parser does not guard.
+///
+/// The test below proves `SourceEndpoint::parse` refuses a host no denylist
+/// rule can match. It did not prove the *type* refuses one, and until
+/// 2026-09-13 the type did not: `SourceEndpoint` derived `Deserialize`, a
+/// second constructor that ran none of the parser's guards. That door is
+/// reachable in production — `qip-deepbrain`'s `load_source_candidates`
+/// reads a source-candidate file at start-up and builds each endpoint field
+/// by field, and `DataFinder` then keys the denylist on
+/// `candidate.endpoint().host()` — so a candidate file could name a host no
+/// rule covers. Every `SourceEndpoint::parse` caller in the tree is a test,
+/// which is why looking at the parser's callers said the defect was
+/// unreachable and looking at the type said it was not.
+///
+/// Driven through `serde_json` against a wire form taken from a real parsed
+/// endpoint rather than one this test wrote by hand, because a hand-written
+/// document that fails to deserialise for some unrelated reason would pass
+/// this test while proving nothing — the first draft did exactly that,
+/// refusing all four rows on a mechanism field it had guessed wrong.
+///
+/// Mutated by removing `#[serde(try_from = "SourceEndpointWire")]` — the
+/// four refused rows are then all admitted, the credential row yielding
+/// `url()` of `https://user:SECRETVALUE@evil.example/x` and the path row
+/// yielding `https://good.examplev1/data`, whose origin is not the host
+/// `host()` reports. Restored; all four rows pass again.
+#[test]
+fn a_denylisted_host_cannot_be_smuggled_past_the_rules_through_a_candidate_file() -> Result<()> {
+    use qip_data_finder::endpoint::SourceEndpoint;
+
+    let good = endpoint("https://good.example/v1")?;
+    let wire = serde_json::to_string(&good)
+        .map_err(|error| Error::schema(format!("the endpoint does not serialise: {error}")))?;
+    // Premise: the wire form is the real one and round-trips, so a refusal
+    // below is this test's guard firing and not a malformed document.
+    assert!(
+        serde_json::from_str::<SourceEndpoint>(&wire).is_ok(),
+        "premise: a parsed endpoint must survive its own round trip: {wire}"
+    );
+
+    for (why, host, path, expected) in [
+        (
+            "a host the denylist cannot key on, which is the smuggled form the test below \
+             refuses at the parser",
+            "collector.example@denied.example",
+            "/x",
+            "user information",
+        ),
+        (
+            "a host carrying a credential — refused for the same reason, and the refusal must \
+             not echo the credential back into a start-up error",
+            "user:SECRETVALUE@evil.example",
+            "/x",
+            "user information",
+        ),
+        (
+            "a path with no leading slash: `url()` joins it straight onto the host, so the \
+             origin it names is not the host every legality check was keyed on",
+            "good.example",
+            "v1/data",
+            "does not start with `/`",
+        ),
+        (
+            "a path carrying a line break: `url()` puts it into a request target, and the \
+             transport speaks plaintext HTTP/1.1, so it splits the request — the same origin \
+             confusion one character class over",
+            "good.example",
+            "/x\r\nHost: evil.example",
+            "control character",
+        ),
+    ] {
+        let forged = wire
+            .replace("\"good.example\"", &format!("{host:?}"))
+            .replace("\"/v1\"", &format!("{path:?}"));
+        let error = serde_json::from_str::<SourceEndpoint>(&forged)
+            .err()
+            .unwrap_or_else(|| panic!("{why}: the document was admitted: {forged}"));
+        let message = error.to_string();
+        assert!(
+            message.contains(expected),
+            "{why}: the refusal does not say `{expected}`: {message}"
+        );
+        assert!(
+            !message.contains("SECRETVALUE"),
+            "the refusal of a credential-bearing host echoed the credential: {message}"
+        );
+    }
+
+    // And a legitimate document still deserialises, with its host normalised
+    // the way the parser normalises one — withholding every candidate file
+    // would be the over-correction.
+    let mixed_case = wire.replace("\"good.example\"", "\"Good.Example\"");
+    let parsed: SourceEndpoint = serde_json::from_str(&mixed_case)
+        .map_err(|error| Error::schema(format!("a legitimate document was refused: {error}")))?;
+    assert_eq!(parsed.host(), "good.example");
+    Ok(())
+}
+
 #[test]
 fn a_denylisted_host_cannot_be_smuggled_past_the_rules_as_userinfo_in_the_url() -> Result<()> {
     // Premise: the rule fires on the host the parser produces for the plain

@@ -317,7 +317,29 @@ pub struct PollPlan {
 }
 
 /// A reachable address plus the mechanism that reads it.
+///
+/// **Deserialisation is routed through [`Self::checked`] by
+/// `serde(try_from)`, because the derive was a second constructor that ran
+/// none of [`Self::parse`]'s guards.** The guard that matters is
+/// `unkeyable_host_reason`: it refuses a host no denylist rule could match,
+/// and it exists because `https://collector.example@denied.example/x` once
+/// parsed into a host a denylist entry for `denied.example` did not cover —
+/// the character before it is `@`, not `.` — so the request the denylist
+/// exists to prevent was made. That failed open, in the one direction a
+/// denylist has.
+///
+/// The derive reopened exactly that door for anything holding a
+/// `SourceEndpoint`, and one production path holds one: the deep brain reads
+/// a source-candidate file at start-up
+/// (`qip-deepbrain`'s `load_source_candidates`, whose
+/// `serde_json::from_str` builds `Vec<SourceCandidate>` field by field), and
+/// `DataFinder` keys the denylist on `candidate.endpoint().host()`. A
+/// candidate file could therefore name a host no rule could match. Every
+/// `SourceEndpoint::parse` caller in the tree is a test — which is why this
+/// was not found by looking at `parse`'s callers, and is the reason the
+/// check belongs on the type rather than on one of its constructors.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "SourceEndpointWire")]
 pub struct SourceEndpoint {
     scheme: Scheme,
     host: String,
@@ -358,27 +380,76 @@ impl SourceEndpoint {
             }
             None => (authority, None),
         };
-        // A host this crate cannot key a rule on is refused rather than
-        // guessed at. `https://collector.example@denied.example/x` parsed into
-        // the host `collector.example@denied.example`, which a denylist entry
-        // for `denied.example` does not cover — the character before it is
-        // `@`, not `.` — so the request the denylist exists to prevent was
-        // made. It failed open, in the one direction a denylist has.
-        let host = host.to_ascii_lowercase();
-        if let Some(reason) = crate::legal::unkeyable_host_reason(&host) {
-            return Err(Error::invalid(format!(
-                "`{url}` names the host `{host}`, which every legality check has to be keyed \
-                 on, and {reason}. Write `scheme://host[:port]/path` with a bare host and \
-                 supply any credential through the access mechanism"
-            )));
-        }
-        Ok(Self {
+        // The host guard lives in `checked`, not here, so that the
+        // deserialiser cannot reach a `SourceEndpoint` this constructor
+        // would have refused. Two copies of that check is the shape that
+        // lets one of them drift; one validator with two entry points is
+        // not.
+        Self {
             scheme,
-            host,
+            host: host.to_string(),
             port,
             path,
             mechanism,
-        })
+        }
+        .checked()
+    }
+
+    /// The endpoint with its host normalised, or a refusal naming what makes
+    /// it unusable.
+    ///
+    /// Consumed rather than borrowed so a caller cannot keep the unchecked
+    /// value it handed in. Both ways into this type end here: [`Self::parse`]
+    /// after it has split the text, and `TryFrom<SourceEndpointWire>` after
+    /// serde has filled the fields.
+    ///
+    /// **The refusal names the reason and not the host.** Every reason
+    /// `unkeyable_host_reason` returns is a fixed literal, so echoing one is
+    /// safe; the host is caller text, and the hosts this refuses are exactly
+    /// the malformed ones that can carry a credential — `user:SECRET@h` is
+    /// refused for its `:` and printing it would put `SECRET` into a
+    /// start-up error, which is the defect nine rounds of `qip-transport`'s
+    /// `redact_for_echo` exist to prevent. There is no second copy of that
+    /// redaction here: the address is withheld until that function moves to
+    /// `qip-core`, where both crates can call the one implementation.
+    fn checked(self) -> Result<Self> {
+        let host = self.host.to_ascii_lowercase();
+        if let Some(reason) = crate::legal::unkeyable_host_reason(&host) {
+            return Err(Error::invalid(format!(
+                "this endpoint's host is not one every legality check can be keyed on, because \
+                 {reason}. The host is withheld from this message because a host malformed in \
+                 that way can carry a credential. Write `scheme://host[:port]/path` with a \
+                 bare host and supply any credential through the access mechanism"
+            )));
+        }
+        // A control character in the path is the same defect one character
+        // class over. `url()` puts this straight into a request target, and
+        // this platform's HTTP client speaks plaintext HTTP/1.1 (ADR 0009):
+        // a `\r\n` there splits the request, so the origin a legality check
+        // was keyed on and the origin the bytes reach are different again.
+        // Latent rather than live — `NetworkProbe` refuses every call and no
+        // environment mounts a candidate file — and refused here anyway,
+        // because the guard is cheap and the door is the one this function
+        // exists to hold. The position is named, never the character: the
+        // path is caller text.
+        if let Some(at) = self.path.find(char::is_control) {
+            return Err(Error::invalid(format!(
+                "this endpoint's path carries a control character at byte {at}, which `url()` \
+                 would put into a request target; a path is refused rather than escaped \
+                 because the transport speaks plaintext HTTP/1.1 and a line break there \
+                 splits the request"
+            )));
+        }
+        if !self.path.starts_with('/') {
+            return Err(Error::invalid(format!(
+                "this endpoint's path does not start with `/`, so `url()` would join it \
+                 straight onto the host and name a different origin than `host()` reports \
+                 — the {} path was {} characters long",
+                self.scheme.as_str(),
+                self.path.chars().count()
+            )));
+        }
+        Ok(Self { host, ..self })
     }
 
     pub fn scheme(&self) -> Scheme {
@@ -421,5 +492,35 @@ impl SourceEndpoint {
             Some(port) => format!("{}://{}:{port}/robots.txt", self.scheme.as_str(), self.host),
             None => format!("{}://{}/robots.txt", self.scheme.as_str(), self.host),
         }
+    }
+}
+
+/// The fields of a [`SourceEndpoint`] as a document holds them.
+///
+/// Exists only so `serde(try_from)` has something to deserialise into before
+/// [`SourceEndpoint::checked`] runs. Private, so a caller cannot build one
+/// and skip the conversion — which would be the same door this shim closes,
+/// one type further out.
+#[derive(Deserialize)]
+struct SourceEndpointWire {
+    scheme: Scheme,
+    host: String,
+    port: Option<u16>,
+    path: String,
+    mechanism: AccessMechanism,
+}
+
+impl TryFrom<SourceEndpointWire> for SourceEndpoint {
+    type Error = Error;
+
+    fn try_from(wire: SourceEndpointWire) -> Result<Self> {
+        Self {
+            scheme: wire.scheme,
+            host: wire.host,
+            port: wire.port,
+            path: wire.path,
+            mechanism: wire.mechanism,
+        }
+        .checked()
     }
 }
