@@ -154,6 +154,100 @@ before — every shipped `SourceConnector::shutdown` is a no-op default — and
 the fix costs nothing disproportionate, so the code fix was preferred over
 amending the claim alone.
 
+**Amended in place a seventh time, 2026-09-13**, after a fresh adversarial
+security review of the sixth amendment's own commit (`06d2718`, landed
+inside `41f25ad`) found that fix was *also* incomplete — the third
+consecutive round in which a "complete" redaction fix left a real leak.
+State this plainly, as the sixth amendment stated its own predecessor's
+failure plainly, because the pattern is the finding: rounds one and two
+each repaired the one input that had been reproduced against them and left
+the underlying method — search the string for a marker, trust whatever
+precedes it — in place for the next adversarial input to exploit.
+`redact_userinfo` and `Url::parse` both located the scheme boundary with
+`raw.split_once("://")`, and `split_once` finds the *first* occurrence of
+`"://"` **anywhere in the string**, not the one at its start. A
+scheme-less credential whose path or query contains the ordinary substring
+`"://"` — any `?redirect=`, `?callback=` or `?fallback=` parameter naming
+another URL, not a contrived shape — supplies exactly such a later
+occurrence:
+`redact_userinfo("svc:TOKEN@127.0.0.1:9106/callback?redirect=http://evil.example/x")`
+came back **unchanged, `TOKEN` in the clear**, because `split_once` matched
+the query's `"://"` instead of finding no scheme at all, and everything up
+to that match — the real credential included — was read as "the scheme",
+which the authority search then had no reason to look inside for an `@`.
+The sixth amendment's claim that `redact_userinfo` "treats everything up
+to the first `/`, `?` or `#` as the candidate authority whether or not
+`"://"` was found" was true only when the string's *one* `"://"`, if any,
+was the leading one; it did not hold for a string whose only `"://"` was
+buried in a query parameter, which is an unremarkable shape and not an
+edge case.
+
+A second, structurally separate finding rode the identical defect:
+`HttpError::UnsupportedScheme { scheme }` stores and prints whatever
+`Url::parse` computed as "the scheme", with no call to `redact_userinfo`
+at all, because a value that can only ever be a clean RFC 3986 scheme
+token needs none. With the unbounded search, the same adversarial input
+made `Url::parse` compute the entire credential-bearing prefix as "the
+scheme" — `Url::parse` on the input above returned
+`UnsupportedScheme { scheme: "svc:token@127.0.0.1:9106/callback?redirect=http" }`
+— and that variant's `Display` printed it outright. Fixing
+`redact_userinfo` alone, as the sixth amendment did, would have left this
+arm printing the identical credential by a different path; the two are
+named as separate findings because they are two separate call sites that
+happened to share one root cause, not one finding with two symptoms.
+
+Both are fixed by replacing the unbounded search with `split_scheme`, one
+function both `Url::parse` and `redact_userinfo` now call: it checks
+whether `raw` **starts with** a token matching the RFC 3986 scheme grammar
+(`ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`) immediately followed by
+`"://"`, rather than searching for `"://"` anywhere in the string. This is
+the structural distinction the first two rounds missed: RFC 3986 makes a
+scheme the literal prefix of a URI, never something a parser is entitled
+to find by scanning the tail, so anchoring the check to position zero is
+not a tighter version of the same method — it is the correct grammar in
+place of an approximation that happened to work on every input reproduced
+against it so far. Because `UnsupportedScheme.scheme` can now only ever be
+produced by `split_scheme`'s bounded scan, it structurally cannot contain
+`@`, `:` or `/`; this is reinforced with a `debug_assert` at the
+variant's one construction site and proven with adversarial inputs
+designed to try to break it
+(`unsupported_scheme_never_carries_unbounded_content`,
+`qip-transport/tests/http_client.rs`). The full fourteen-case matrix the
+review specified is table-driven in
+`redact_userinfo_handles_the_full_adversarial_matrix` and two dedicated
+`Url::parse` tests, and the two cases that matter most are
+mutation-verified: reverting `redact_userinfo` to the sixth amendment's
+`split_once("://")` shape reproduces `TOKEN` unredacted on the exact input
+above, and reverting `Url::parse`'s detection (with the new `debug_assert`
+also removed, since it would otherwise catch a bare regression before the
+test's own assertions ran) reproduces the `UnsupportedScheme` finding
+byte-for-byte. Both restored and re-verified passing.
+
+Why this should not recur a fourth time, stated as the reason rather than
+asserted as a hope: the first two rounds each had one detector doing its
+own ad hoc string search, so a fix to one detector's search left the other
+— or, this round, a second call site reachable through the same search —
+unrepaired. There is now exactly one function that decides where a scheme
+ends, it is anchored to grammar rather than to a marker's position in the
+string, and both call sites (three, counting `UnsupportedScheme`'s
+implicit reliance on it) are proven, by the field's construction, to be
+downstream of it rather than each free to disagree about what a scheme is.
+
+Also addressed, from the same review, three should-fix items left open by
+the sixth amendment's own commit: `let _ = feed.shutdown(at);` at all four
+connector-release sites (`qip-deepbrain::connectors`'s two constructors,
+`qip-fastbrain::feed`'s and `qip-api::feed`'s) discarded a real shutdown
+failure rather than folding it into the returned error, now fixed with
+`qip_core::error::Error::and_release` — the `with_release`/`fold_releases`
+pattern this file already described, generalised into `qip-core` so three
+crates that had no such machinery share one implementation rather than
+each writing their own; `relabel`'s doc comment claimed "two callers" when
+`fold_releases` had been a third since it was added, corrected; and the
+scheme-less-path-`@` permutation flagged as untested turned out **not** to
+be subsumed by the existing scheme-plus-query-`@` case (which branch of
+`redact_userinfo` runs depends on whether a scheme was found at all), so it
+is now its own row in the test matrix rather than an unverified claim.
+
 **Relates to:** blueprint §22.1 (Retention Classes), §22.2 (Sufficient
 Statistics), §22.3 (Data References), §22.4 (Fetch-on-Demand for Research),
 §56.3 rules 30 and 31, §56.4 rules 33 and 35

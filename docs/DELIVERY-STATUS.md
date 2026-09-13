@@ -1477,6 +1477,116 @@ dependency policy `11 third-party package(s), all permitted`; secret scan
 `nothing found`. Terraform gates were not run: no Terraform file was
 touched. Frontend gates were not run: no frontend file was touched.
 
+**Reviewed and repaired a seventh time, 2026-09-13**, no verdict changed.
+This is the **third** consecutive round in which a "complete" redaction
+fix left a real credential leak: round one (`717cd81` and earlier) required
+`"://"` to find userinfo at all; round two (`06d2718`, inside `41f25ad`)
+fixed that but located the scheme with `raw.split_once("://")`, which
+finds the *first* occurrence of `"://"` anywhere in the string rather than
+one anchored at its start. A fresh adversarial security review of round
+two's own fix found the credential leak that made a third round necessary.
+Say plainly what makes this round different rather than assert it: the
+first two rounds each repaired the one input reproduced against them and
+left the underlying method — search for a marker, trust what precedes it —
+in place; this round replaces that method with a check anchored to RFC
+3986's grammar, which the marker-search approach can never accidentally
+satisfy on a future adversarial input the way "handle one more special
+case" cannot rule out. Neither §22.3, §22.4 nor §56.3 above is otherwise
+affected: none of the three findings touches a statistic, a promotion
+rule, a data reference or the concentration count.
+
+- **Blocking** — `redact_userinfo("svc:TOKEN@127.0.0.1:9106/callback?redirect=http://evil.example/x")`
+  returned the input **unchanged, `TOKEN` in the clear**. The query's
+  `"://"` (an ordinary shape — any `?redirect=`, `?callback=` or
+  `?fallback=` parameter naming another URL, not a contrived one) is the
+  *first* `"://"` in the whole string when no scheme is present, so
+  `split_once("://")` matched there instead of finding no scheme, and
+  everything up to that match — credential included — was misread as "the
+  scheme", leaving the real `@` inside a segment the authority search
+  never looked at. A second, structurally separate finding rode the
+  identical defect: `HttpError::UnsupportedScheme { scheme }` stores and
+  prints whatever `Url::parse` computed as the scheme with no call to
+  `redact_userinfo` at all — a value that can only be a clean scheme token
+  needs none — and the same adversarial input made `Url::parse` compute
+  the whole credential-bearing prefix as "the scheme"; `Url::parse` on it
+  returned
+  `UnsupportedScheme { scheme: "svc:token@127.0.0.1:9106/callback?redirect=http" }`,
+  printed outright. Fixing `redact_userinfo` alone, as round two did for
+  round one's finding, would have left this arm printing the identical
+  credential by a different path. Both are fixed by one function,
+  `split_scheme`, that both `Url::parse` and `redact_userinfo` now call:
+  it checks whether `raw` *starts with* a token matching the RFC 3986
+  scheme grammar (`ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`) immediately
+  followed by `"://"`, rather than searching the string for that marker —
+  a scheme can only be a URI's literal prefix, never something scanned for
+  in the tail. Because `UnsupportedScheme.scheme` can now only ever be
+  produced by `split_scheme`'s bounded scan, it structurally cannot hold
+  `@`, `:` or `/`, reinforced with a `debug_assert` at its one construction
+  site (`qip-transport/src/http.rs`). Fourteen cases across
+  `redact_userinfo` and `Url::parse`/`UnsupportedScheme`, table-driven
+  where the property repeats
+  (`redact_userinfo_handles_the_full_adversarial_matrix`,
+  `a_scheme_less_credential_with_a_later_marker_falls_through_to_invalid_url_not_unsupported_scheme`,
+  `a_genuinely_unsupported_scheme_is_still_reported_with_a_clean_token`,
+  `unsupported_scheme_never_carries_unbounded_content`,
+  `qip-transport/tests/http_client.rs`). Mutation-verified the two that
+  matter most: reverting `redact_userinfo` to round two's
+  `split_once("://")` shape reproduces `TOKEN` unredacted on the exact
+  input above; reverting `Url::parse`'s detection (with the new
+  `debug_assert` also removed, since it would otherwise catch a bare
+  regression before the test's own assertions ran) reproduces
+  `UnsupportedScheme { scheme: "svc:token@127.0.0.1:9106/callback?redirect=http" }`
+  byte-for-byte. Both restored and re-verified passing. Audited every
+  `split_once("://")`, `redact_userinfo` and `UnsupportedScheme` reference
+  in the workspace: the only other `split_once("://")` is
+  `qip-data-finder`'s `SourceEndpoint::parse`, not a residual copy of this
+  defect because it matches the resulting token against a closed
+  eight-item scheme enum rather than accepting any prefix, so a hijacked
+  later `"://"` can only be silently accepted if the entire string up to
+  that point is already exactly one of those eight tokens — which requires
+  the string to start with that scheme, i.e. to be the legitimate leading
+  occurrence `split_once` would have found anyway.
+- **Should-fix** — `let _ = feed.shutdown(at);` at all four
+  connector-release sites (`qip-deepbrain::connectors`'s two constructors,
+  `qip-fastbrain::feed`'s and `qip-api::feed`'s) discarded a real shutdown
+  failure rather than folding it into the returned error. Fixed with
+  `qip_core::error::Error::and_release`, generalising the
+  `with_release`/`fold_releases` pattern this document already described
+  out of `qip-deepbrain::main` and into `qip-core` so the three other call
+  sites, which had no such machinery of their own, share one
+  implementation.
+- **Should-fix** — `relabel`'s doc comment in `qip-deepbrain::main` claimed
+  "two callers" when `fold_releases` had been a third since it was added.
+  Corrected.
+- **Should-fix** — the scheme-less-path-`@` permutation flagged as
+  untested by the round-six review is **not** subsumed by the existing
+  scheme-plus-query-`@` case: which branch of `redact_userinfo` runs
+  depends on whether a scheme was found at all, so it is now its own row
+  in the test matrix rather than an unverified claim.
+
+Commits, in order: `9c2d651` (the anchored scheme-detection fix and its
+test matrix), `88e23f0` (the four connector-release folds, the doc-comment
+correction, the added test row), and this entry's commit. Four mutations
+across the two code commits, each recorded in the commit that introduced
+the test it fires. `git diff --name-only 717cd81..HEAD` names no file
+under `qip-risk-engine`, `qip-execution-engine`, `qip-capital`, `qip-edge`,
+`qip-brokers`, `qip-routing`, `qip-compliance` or `infrastructure/`. No
+dependency edge was added.
+
+Gate, run on the tree as committed: `cargo fmt --all --check` clean;
+`cargo clippy --workspace --all-targets` zero warnings; `cargo test
+--workspace --no-fail-fast` exit 0, **4973 passed, 0 failed**, summed
+across 382 `test result:` lines (seven more than the sixth round's 4966:
+four new tests in `qip-transport`, three new tests in `qip-core`); `cargo
+test -p qip-acceptance --no-fail-fast` 23 `test result:` lines, **348
+passed, 0 failed**, unchanged because nothing in this round touches
+acceptance-suite territory; `cargo test -p qip-transport --no-fail-fast`
+7 `test result:` lines, **85 passed, 0 failed** (four more than the sixth
+round's 81); dependency policy `11 third-party package(s), all permitted`;
+secret scan `nothing found`. Terraform gates were not run: no Terraform
+file was touched. Frontend gates were not run: no frontend file was
+touched.
+
 **Reviewed and repaired a sixth time, 2026-09-12/13**, no verdict changed.
 The fifth round's repairs (`4cb4983..717cd81`) were pushed to origin
 **before** review — the working agreement this round was given says so
