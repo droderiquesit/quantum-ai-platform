@@ -1477,6 +1477,98 @@ dependency policy `11 third-party package(s), all permitted`; secret scan
 `nothing found`. Terraform gates were not run: no Terraform file was
 touched. Frontend gates were not run: no frontend file was touched.
 
+**Reviewed and repaired a sixth time, 2026-09-12/13**, no verdict changed.
+The fifth round's repairs (`4cb4983..717cd81`) were pushed to origin
+**before** review — the working agreement this round was given says so
+plainly — and a fresh security-engineer then found one blocking defect
+in them, plus two should-fix items from a fresh code-reviewer pass.
+Every one is fixed in the commits that follow `717cd81`, ADR 0057
+carries a sixth amendment, and this row and §22.3/§22.4 above are
+unaffected: none of the three findings touches a statistic, a
+promotion rule, a data reference or the concentration count. The
+findings and their resolutions:
+
+- **Blocking** — the fifth round's own redaction fix
+  (`9189f95`/`b13e52a`, credited above) was itself incomplete.
+  `redact_userinfo` required `"://"` before it would mask anything, so
+  a base URL with the scheme dropped by mistake —
+  `svc:TOKEN@127.0.0.1:9106`, the `http://` missing — came back
+  unchanged from both `require_loopback_egress`'s own `shown` and
+  `Url::parse`'s `invalid` closure (which calls `redact_userinfo` a
+  second time on the same raw string once the scheme-less parse
+  fails), printing `TOKEN` in the clear, twice, into the fatal
+  start-up error every one of the six egress call sites wraps. Fixed
+  by no longer requiring a scheme to find the candidate authority
+  (`qip-transport/src/http.rs`); the existing
+  `redact_userinfo("no scheme@here")` assertion, which pinned the old
+  wrong behaviour, now asserts the corrected redaction, and
+  `a_scheme_less_credential_bearing_egress_address_is_still_redacted`
+  drives the exact scenario above through `require_loopback_egress`
+  and checks both `Display` and `Debug` of the resulting error
+  (`qip-transport/tests/http_client.rs`).
+- **Should-fix** — `qip-deepbrain`'s `with_release` composed a double
+  release as `arm.shutdown(...).and(evolution.shutdown_connectors(...))`;
+  both releases ran, but `.and()` reports only the first `Err`,
+  dropping the second failure's text. `fold_releases` now folds both
+  messages under the first failure's class, mirroring the existing
+  `relabel` construction
+  (`a_double_release_failure_names_both_failures`).
+- **Should-fix** — the admission-check failure arm inside
+  `ConnectorArm::open` (`qip-deepbrain`), `Feed::admitted_connector`
+  (`qip-fastbrain`) and `ApiFeed::connector_admitted_by_registered`
+  (`qip-api`) all left a feed whose transport was already open to be
+  released only by its plain `Drop`, never by
+  `ConnectorFeed::shutdown` — contradicting the fifth round's own claim
+  that every exit past these constructors released its connectors,
+  which was true only of the two exits inside each root's `main.rs`.
+  Inert today, as before (every shipped `SourceConnector::shutdown` is
+  a no-op default), and the fix is small, so all three constructors —
+  plus `ConnectorArm::over_transport_admitted_by`, the fourth site
+  sharing the shape — now call `shutdown()` on that one arm before
+  returning the admission error. Only `over_transport_admitted_by` can
+  be driven without a real socket, and it is what
+  `an_admission_refusal_after_the_feed_opens_still_releases_it` proves,
+  through a manifest with no §7.6.1 category and a spy connector
+  recording whether `shutdown` ran; the other three are proven by code
+  inspection and by the unchanged clippy and fmt gates, which this
+  entry states rather than leaves implied.
+
+Commits, in order: `06d2718` (the blocking redaction fix), `b241d2e`
+(the release fold), `3dbb9d1` (the connector-release fix, all four
+sites), and this entry's commit. Three mutations across them, each
+recorded in the commit that introduced the test it fires: reverting
+`redact_userinfo` to require a scheme; reverting `fold_releases` to
+`first.and(second)`; reverting `over_transport_admitted_by`'s `match`
+to plain `?`-propagation. `git diff --name-only 4cb4983..HEAD` names no
+file under `qip-risk-engine`, `qip-execution-engine`, `qip-capital`,
+`qip-edge`, `qip-brokers`, `qip-routing`, `qip-compliance` or
+`infrastructure/`. No dependency edge was added.
+
+Gate, run on the tree as committed: `cargo fmt --all --check` clean;
+`cargo clippy --workspace --all-targets` zero warnings; `cargo test
+--workspace --no-fail-fast` exit 0, **4966 passed, 0 failed**, summed
+across 382 `test result:` lines (three more than the fifth round's
+4963, one per new test); `cargo test -p qip-acceptance --no-fail-fast`
+23 `test result:` lines, **348 passed, 0 failed**, unchanged from the
+fifth round because nothing in this round touches acceptance-suite
+territory; `cargo test -p qip-transport --no-fail-fast` (the redaction
+fix's own crate) 7 `test result:` lines, **81 passed, 0 failed**;
+dependency policy `11 third-party package(s), all permitted`; secret
+scan `nothing found`. Terraform gates were not run: no Terraform file
+was touched. Frontend gates were not run: no frontend file was
+touched.
+
+On the evidence-rule item the working agreement raised: the fifth
+round's own gate paragraph immediately below quotes a real `cargo test
+--workspace --no-fail-fast` run at `2ba1ee0` with its numbers, so
+"the tests this row cites are unchanged and were re-run green in the
+fifth round's workspace gate" is backed by that quoted run rather than
+by an unrun claim — a full `--workspace` run re-executes every test
+this row cites along with everything else, so the sentence does not
+assert more than the quoted command shows. No change to that sentence
+was needed; this paragraph records that it was checked rather than
+leaving the check unstated.
+
 **Reviewed and repaired a fifth time, 2026-09-12**, no verdict changed.
 The fourth round's repairs (`672563f..4cb4983`) were re-reviewed by a
 fresh security-engineer pass and a fresh code-reviewer pass: no blocking

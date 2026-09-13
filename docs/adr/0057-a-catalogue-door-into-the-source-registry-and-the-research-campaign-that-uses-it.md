@@ -90,6 +90,70 @@ The deep brain's flush exit and its open loop skipped the release the
 error exit had gained. And this record's claim that one inspection test
 was "run unprivileged" is replaced by what the checkout can show.
 
+**Amended in place a sixth time, 2026-09-12**, after the fifth round's
+commits (`4cb4983..717cd81`) were pushed to origin **before** review and a
+fresh security-engineer then found one blocking defect in them: the fifth
+amendment's own redaction was incomplete. State this plainly, because it is
+the reason this round exists — a real credential-leak defect shipped to
+origin. `redact_userinfo` found the userinfo it was written to mask by first
+requiring `"://"`; a base URL with the scheme dropped by a configuration
+mistake — `QIP_LANGUAGE_MODEL_BASE_URL=svc:TOKEN@127.0.0.1:9106`, the `http://`
+missing — has no `"://"`, so the function returned it unchanged, and both of
+`require_loopback_egress`'s own `shown` and `Url::parse`'s `invalid` closure
+(which calls `redact_userinfo` a second time on the same raw string once the
+parse fails for having no scheme) printed `TOKEN` in the clear, twice, to the
+fatal start-up error every one of the six egress call sites wraps. The fifth
+amendment's claim that the gate "redacts userinfo from every refusal it
+writes" was true of every credential-bearing string that carried a scheme and
+false of the one shape a missing `http://` produces — the exact operator
+mistake the gate exists to catch. `redact_userinfo` no longer requires a
+scheme to find the authority: it treats everything up to the first `/`, `?`
+or `#` as the candidate authority whether or not `"://"` was found, and
+redacts an `@` inside it either way (`qip-transport/src/http.rs`). Fixed in
+the commit that opens this round, ahead of the two should-fix items below, and
+pinned by `a_scheme_less_credential_bearing_egress_address_is_still_redacted`
+in `qip-transport/tests/http_client.rs`, which drives the exact scenario
+above through `require_loopback_egress` and checks both `Display` and
+`Debug` of the resulting error for the token. The existing
+`redact_userinfo("no scheme@here")` assertion pinned the old, wrong
+behaviour (pass-through); it now asserts `"…@here"`, with a note that the old
+expectation was the defect, not a premise worth keeping.
+
+Two should-fix items from the same review, neither a leak: `qip-deepbrain`'s
+`with_release` composed the arm's and the evolution connectors' shutdowns
+with `.and()`, which keeps only the first `Err` — an operator reading a
+double-failure exit sees one dead session named and not two. It now folds
+both messages, mirroring the `relabel` construction already used in this
+file, so a double release failure names both. And the admission-check
+failure arm inside `ConnectorArm::open` (`qip-deepbrain/src/connectors.rs`)
+— the point where a feed has already opened its socket but the licensing
+decision then refuses it — dropped the feed via its plain `Drop` rather than
+calling `shutdown()`, and the identical shape exists, also untouched, in
+`qip-api/src/feed.rs` and `qip-fastbrain/src/feed.rs`. The prior round's
+commit message claimed "every exit that leaves before the clean one" releases
+its connectors; that was true only of the two exits inside each root's
+`main.rs`, not of this third exit inside the constructor itself, which none
+of those roots ever sees. All three constructors now call `shutdown()` on
+that one failure arm before returning the admission error, narrow-scoped to
+exactly that arm, so the claim is true rather than corrected to a narrower
+one. `ConnectorArm::over_transport_admitted_by`, the fourth site sharing the
+identical shape, is fixed the same way; it is also the only one of the four
+a unit test can drive without a real socket, and it is what
+`an_admission_refusal_after_the_feed_opens_still_releases_it` exercises — a
+manifest with no §7.6.1 category, refused by `AdmittedSource::from_decision`
+after a real Coinbase manifest's connector has been wrapped in a spy that
+records whether `shutdown` ran. The other three open a real socket through a
+shipped connector, whose manifest declares a consistent class and category
+by construction, so there is no test-only way to make the admission check
+fail after one of them has opened without fabricating a defect in a shipped
+connector's own manifest; those three are proven by code inspection and by
+the unchanged clippy and fmt gates rather than by an executed failure case,
+and that is stated plainly rather than left to be inferred from a passing
+test suite that never reaches the arm. This is inert today, as it was
+before — every shipped `SourceConnector::shutdown` is a no-op default — and
+the fix costs nothing disproportionate, so the code fix was preferred over
+amending the claim alone.
+
 **Relates to:** blueprint §22.1 (Retention Classes), §22.2 (Sufficient
 Statistics), §22.3 (Data References), §22.4 (Fetch-on-Demand for Research),
 §56.3 rules 30 and 31, §56.4 rules 33 and 35
