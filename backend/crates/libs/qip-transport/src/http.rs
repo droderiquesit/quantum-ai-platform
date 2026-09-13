@@ -429,8 +429,12 @@ fn split_scheme(raw: &str) -> (Option<&str>, &str) {
 ///   to copy — is invisible to an `@` search, and every arm of
 ///   [`require_loopback_egress`] printed it in full until 2026-09-13.
 ///   Everything from the first `?` or `#` is therefore replaced by `?…` or
-///   `#…`. This is structural, like the `@` rule: a region boundary, not a
-///   judgement about which parameter looks secret.
+///   `#…` — except where that delimiter is itself inside the credential
+///   (the last `@` falls past it), in which case the marker is a constant
+///   `?…` whichever byte was found, because printing the real one leaks one
+///   character of the password and which of the two it was. This is
+///   structural, like the `@` rule: a region boundary, not a judgement
+///   about which parameter looks secret.
 /// * **An address with no `@` before the cut and no `?` or `#` at all — NOT
 ///   covered, deliberately.** It is returned whole. `hf_LIVEKEY_SECRET`,
 ///   pasted into the base-URL variable instead of the key variable next to
@@ -664,16 +668,14 @@ pub const LOOPBACK_HOST: &str = "127.0.0.1";
 /// carry a credential — the connector pair in the API's, the deep brain's
 /// and the fast brain's parsers and at `ConnectorFeed::open`; the deep
 /// brain's hosted language-model listener; the fast brain's market-data
-/// vendor — so the refusal names the variable there and the type here.
-/// **At five of those six, not all six.** `ConnectorFeed::open`
-/// (`qip-market-ingestion/src/connector_feed.rs`) calls this with a bare
-/// `?` and adds no variable name, which `qip-api/src/feed.rs` already says
-/// out loud where it works around the same gap. It matters more since the
-/// host arm began withholding a host the redaction masked: on that one
-/// path a refusal can name neither the host nor the variable. Said here
-/// because the claim "every caller names the variable" was written into
-/// this file and into a test comment as the justification for withholding,
-/// and it was not true when it was written.
+/// vendor. **Five of those six wrap the refusal with the name of the
+/// variable they read; `ConnectorFeed::open` does not** — it calls this
+/// with a bare `?`, which `qip-api/src/feed.rs` already says out loud
+/// where it works around the same gap. That matters since the host arm
+/// began withholding a host the redaction masked: on that one path a
+/// refusal can name neither the host nor the variable, which is this
+/// change's cost and is fixed by a wrapper there rather than by relaxing
+/// the arm here.
 /// Refuses rather than rewriting: an address that is nearly right is a
 /// deployment mistake somebody should see.
 pub fn require_loopback_egress(base_url: &str) -> qip_core::Result<()> {

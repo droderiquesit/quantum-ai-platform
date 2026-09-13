@@ -231,12 +231,17 @@ fn an_egress_address_is_loopback_with_a_port_and_a_refusal_never_echoes_a_creden
     // one refusal.
     //
     // So the host is named only when the redaction kept it, and the floor
-    // moves to where it always really was: every caller wraps this refusal
-    // with the name of the configuration variable (`qip-fastbrain`'s
-    // `config.rs`, `qip-deepbrain`'s, `qip-api`'s `feed.rs`), and a variable
-    // name cannot itself be a secret. The refusal has to say *why* the host
-    // is missing, so an operator does not read the masking as the gate
-    // failing to parse their address.
+    // moves to the wrapper the caller adds: five of the six call sites name
+    // the configuration variable they read (`qip-fastbrain`'s `config.rs`
+    // twice, `qip-deepbrain`'s twice, `qip-api`'s `feed.rs`), and a variable
+    // name cannot itself be a secret. The sixth, `ConnectorFeed::open` in
+    // `qip-market-ingestion`, calls the gate with a bare `?` and names
+    // nothing — so on that path a withheld host leaves a refusal naming
+    // neither. This comment enumerated three of the six and called it
+    // "every caller", which is how the justification for withholding came
+    // to rest on a claim that was false when it was written. The refusal
+    // also has to say *why* the host is missing, so an operator does not
+    // read the masking as the gate failing to parse their address.
     let error = require_loopback_egress("http://someservice/API_SECRET_VALUE@upstream.example")
         .expect_err("premise: an off-loopback host is refused");
     assert!(
