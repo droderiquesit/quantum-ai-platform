@@ -95,18 +95,18 @@ commits (`4cb4983..717cd81`) were pushed to origin **before** review and a
 fresh security-engineer then found one blocking defect in them: the fifth
 amendment's own redaction was incomplete. State this plainly, because it is
 the reason this round exists — a real credential-leak defect shipped to
-origin. `redact_userinfo` found the userinfo it was written to mask by first
+origin. `redact_for_echo` found the userinfo it was written to mask by first
 requiring `"://"`; a base URL with the scheme dropped by a configuration
 mistake — `QIP_LANGUAGE_MODEL_BASE_URL=svc:TOKEN@127.0.0.1:9106`, the `http://`
 missing — has no `"://"`, so the function returned it unchanged, and both of
 `require_loopback_egress`'s own `shown` and `Url::parse`'s `invalid` closure
-(which calls `redact_userinfo` a second time on the same raw string once the
+(which calls `redact_for_echo` a second time on the same raw string once the
 parse fails for having no scheme) printed `TOKEN` in the clear, twice, to the
 fatal start-up error every one of the six egress call sites wraps. The fifth
 amendment's claim that the gate "redacts userinfo from every refusal it
 writes" was true of every credential-bearing string that carried a scheme and
 false of the one shape a missing `http://` produces — the exact operator
-mistake the gate exists to catch. `redact_userinfo` no longer requires a
+mistake the gate exists to catch. `redact_for_echo` no longer requires a
 scheme to find the authority: it treats everything up to the first `/`, `?`
 or `#` as the candidate authority whether or not `"://"` was found, and
 redacts an `@` inside it either way (`qip-transport/src/http.rs`). Fixed in
@@ -115,7 +115,7 @@ pinned by `a_scheme_less_credential_bearing_egress_address_is_still_redacted`
 in `qip-transport/tests/http_client.rs`, which drives the exact scenario
 above through `require_loopback_egress` and checks both `Display` and
 `Debug` of the resulting error for the token. The existing
-`redact_userinfo("no scheme@here")` assertion pinned the old, wrong
+`redact_for_echo("no scheme@here")` assertion pinned the old, wrong
 behaviour (pass-through); it now asserts `"…@here"`, with a note that the old
 expectation was the defect, not a premise worth keeping.
 
@@ -163,19 +163,19 @@ failure plainly, because the pattern is the finding: rounds one and two
 each repaired the one input that had been reproduced against them and left
 the underlying method — search the string for a marker, trust whatever
 precedes it — in place for the next adversarial input to exploit.
-`redact_userinfo` and `Url::parse` both located the scheme boundary with
+`redact_for_echo` and `Url::parse` both located the scheme boundary with
 `raw.split_once("://")`, and `split_once` finds the *first* occurrence of
 `"://"` **anywhere in the string**, not the one at its start. A
 scheme-less credential whose path or query contains the ordinary substring
 `"://"` — any `?redirect=`, `?callback=` or `?fallback=` parameter naming
 another URL, not a contrived shape — supplies exactly such a later
 occurrence:
-`redact_userinfo("svc:TOKEN@127.0.0.1:9106/callback?redirect=http://evil.example/x")`
+`redact_for_echo("svc:TOKEN@127.0.0.1:9106/callback?redirect=http://evil.example/x")`
 came back **unchanged, `TOKEN` in the clear**, because `split_once` matched
 the query's `"://"` instead of finding no scheme at all, and everything up
 to that match — the real credential included — was read as "the scheme",
 which the authority search then had no reason to look inside for an `@`.
-The sixth amendment's claim that `redact_userinfo` "treats everything up
+The sixth amendment's claim that `redact_for_echo` "treats everything up
 to the first `/`, `?` or `#` as the candidate authority whether or not
 `"://"` was found" was true only when the string's *one* `"://"`, if any,
 was the leading one; it did not hold for a string whose only `"://"` was
@@ -184,20 +184,20 @@ edge case.
 
 A second, structurally separate finding rode the identical defect:
 `HttpError::UnsupportedScheme { scheme }` stores and prints whatever
-`Url::parse` computed as "the scheme", with no call to `redact_userinfo`
+`Url::parse` computed as "the scheme", with no call to `redact_for_echo`
 at all, because a value that can only ever be a clean RFC 3986 scheme
 token needs none. With the unbounded search, the same adversarial input
 made `Url::parse` compute the entire credential-bearing prefix as "the
 scheme" — `Url::parse` on the input above returned
 `UnsupportedScheme { scheme: "svc:token@127.0.0.1:9106/callback?redirect=http" }`
 — and that variant's `Display` printed it outright. Fixing
-`redact_userinfo` alone, as the sixth amendment did, would have left this
+`redact_for_echo` alone, as the sixth amendment did, would have left this
 arm printing the identical credential by a different path; the two are
 named as separate findings because they are two separate call sites that
 happened to share one root cause, not one finding with two symptoms.
 
 Both are fixed by replacing the unbounded search with `split_scheme`, one
-function both `Url::parse` and `redact_userinfo` now call: it checks
+function both `Url::parse` and `redact_for_echo` now call: it checks
 whether `raw` **starts with** a token matching the RFC 3986 scheme grammar
 (`ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`) immediately followed by
 `"://"`, rather than searching for `"://"` anywhere in the string. This is
@@ -212,11 +212,12 @@ produced by `split_scheme`'s bounded scan, it structurally cannot contain
 variant's one construction site and proven with adversarial inputs
 designed to try to break it
 (`unsupported_scheme_never_carries_unbounded_content`,
-`qip-transport/tests/http_client.rs`). The full fourteen-case matrix the
-review specified is table-driven in
-`redact_userinfo_handles_the_full_adversarial_matrix` and two dedicated
+`qip-transport/tests/http_client.rs`). The full matrix the review
+specified was fourteen cases when this amendment was written and is
+twenty-eight at `e691804`, three rounds later; it is table-driven in
+`redact_for_echo_handles_the_full_adversarial_matrix` and two dedicated
 `Url::parse` tests, and the two cases that matter most are
-mutation-verified: reverting `redact_userinfo` to the sixth amendment's
+mutation-verified: reverting `redact_for_echo` to the sixth amendment's
 `split_once("://")` shape reproduces `TOKEN` unredacted on the exact input
 above, and reverting `Url::parse`'s detection (with the new `debug_assert`
 also removed, since it would otherwise catch a bare regression before the
@@ -224,14 +225,21 @@ test's own assertions ran) reproduces the `UnsupportedScheme` finding
 byte-for-byte. Both restored and re-verified passing.
 
 Why this should not recur a fourth time, stated as the reason rather than
-asserted as a hope: the first two rounds each had one detector doing its
+asserted as a hope — **and it recurred twice more; the eighth amendment
+below says what this paragraph got wrong, and it is left standing rather
+than deleted because a prediction quietly removed once it failed teaches
+nobody anything**: the first two rounds each had one detector doing its
 own ad hoc string search, so a fix to one detector's search left the other
 — or, this round, a second call site reachable through the same search —
-unrepaired. There is now exactly one function that decides where a scheme
-ends, it is anchored to grammar rather than to a marker's position in the
+unrepaired. There was now exactly one function that decided where a scheme
+ended, it was anchored to grammar rather than to a marker's position in the
 string, and both call sites (three, counting `UnsupportedScheme`'s
-implicit reliance on it) are proven, by the field's construction, to be
+implicit reliance on it) were proven, by the field's construction, to be
 downstream of it rather than each free to disagree about what a scheme is.
+All of that was true and none of it was sufficient: the scheme boundary
+was only the *first* judgement this function made about the string, and
+the two that followed it — which prefix could be a host, and therefore
+whether an `@` past it was a credential — were the ones that leaked next.
 
 Also addressed, from the same review, three should-fix items left open by
 the sixth amendment's own commit: `let _ = feed.shutdown(at);` at all four
@@ -245,8 +253,127 @@ each writing their own; `relabel`'s doc comment claimed "two callers" when
 `fold_releases` had been a third since it was added, corrected; and the
 scheme-less-path-`@` permutation flagged as untested turned out **not** to
 be subsumed by the existing scheme-plus-query-`@` case (which branch of
-`redact_userinfo` runs depends on whether a scheme was found at all), so it
+`redact_for_echo` runs depends on whether a scheme was found at all), so it
 is now its own row in the test matrix rather than an unverified claim.
+
+**Amended in place an eighth time, 2026-09-13**, after three further
+rounds against the same function: a fresh security review of the seventh
+amendment's own fix (`e26c8cf`), a fresh review of *that* fix
+(`ca3d581`), and two independent reviews of the result (`e691804`, the
+current head; none of the three has been pushed). The seventh amendment
+predicted that the defect would not recur and gave its reason. It
+recurred twice. That paragraph is kept above, recast in the past tense,
+rather than quietly deleted, because a prediction removed once it failed
+teaches nobody anything — and because what it got wrong is the whole of
+this amendment's finding. Anchoring the scheme boundary to RFC 3986's
+grammar was correct, and it was never the only judgement the function
+made about the string.
+
+**Round four (`e26c8cf`) — the authority that could not be one.** With no
+scheme found, the code read everything up to the first `/`, `?` or `#` as
+the candidate authority and took "no `@` in it" for "no credential". When
+the string's first character is already one of those delimiters — an
+operator's `://` typo'd down to `//`, `/`, `?` or `#` — that authority is
+empty, or, for a bare `://`, the single character `:`. An authority that
+cannot be a host proves nothing about an `@` sitting one character
+further in, and six inputs came back raw, every one of them reachable
+through `QIP_LANGUAGE_MODEL_BASE_URL`. The fix added a
+`split_authority`-based `authority_could_be_a_host` check and widened the
+search past the delimiter only where the candidate could not be a host.
+One shape was left standing on purpose and written down as an accepted
+residual — `svc/TOKEN@127.0.0.1:9106`, on the argument that a bare
+single-label hostname is indistinguishable from a scheme-typo'd
+credential — rather than left to be found later as a fifth surprise.
+
+**Round five (`ca3d581`) — the predicate itself.** A further security
+review found that check trusted far more than bare hostnames: any
+`word:validport` pair (`abc:80`) and any run of digits (`123`) satisfied
+it, and because it ran identically whether or not a scheme was present,
+`http://svc/TOKEN@127.0.0.1:9106` leaked too. The worst input was not a
+contrived one. An operator who means
+`http://someservice:SECRET@upstream.example` and mistypes a single
+character, `:` for `/`, produces an address `Url::parse` accepts as
+valid, which then fails only `require_loopback_egress`'s later
+loopback-host check — and that refusal message, built by this function,
+printed the secret. Five rounds, five leaks, each one the next hole in a
+heuristic that had just been made one input narrower.
+
+**What this amendment decides**, and it is a decision about method rather
+than about an input: **no predicate over the string's own shape can
+distinguish a scheme-typo'd credential from a legitimate bare hostname,
+because nothing in the string says which it is.** Every round had
+narrowed the guess and every review had found where the narrower guess
+was still wrong, which is what a sequence of five looks like from the
+outside and what it should have looked like from the inside by round
+three. So the predicate was deleted rather than narrowed a fifth time.
+The function redacts through the last `@` past the scheme,
+unconditionally, with no remaining step whose wrong answer is "conclude
+there is no credential". The three tests that pinned the narrower
+behaviour as intentional were rewritten rather than deleted, each saying
+what changed and why. The cost is accepted permanently and stated here
+rather than left to be discovered: the function over-redacts, masking a
+benign `@` in a path, and on an address a caller is *refusing* that
+detail is worth less than not being the subject of a sixth report.
+
+**Round six (`e691804`) — the claim narrowed to what is proven, and the
+gap that claim was covering.** Two independent reviews of round five
+converged. Neither could break the userinfo guarantee, and one proved it
+structurally rather than by example: an `@` cannot fall inside a consumed
+scheme, because the scheme grammar `ALPHA *( ALPHA / DIGIT / "+" / "-" /
+"." )` contains no `@`, so "no `@` in the remainder" and "no `@` in the
+input" are the same statement — confirmed against three million generated
+inputs with no violation. Both reviews then objected to the same thing,
+and the objection was the finding: the prose claimed more than the proof
+supports. "It can never under-redact" is true of *userinfo* and false of
+*credentials*. A `?api_key=SECRET` query — the shape a vendor console
+hands an operator to copy — carries no `@` at all, and every arm of
+`require_loopback_egress` printed it in full. So the claim is narrowed to
+userinfo, which is what is proven, and the gap it had been papering over
+is closed rather than described: the parameter region, everything from
+the first `?` or `#`, is masked whole, a region boundary rather than a
+judgement about which parameter looks secret.
+
+**Ordering is load-bearing**, and this round nearly shipped it backwards.
+Masking the parameter region *after* the `@` search lets an `@` inside
+the query end that search, so everything past it prints: on
+`?a=1@2&api_key=SECRETVALUE` that prints the secret. Cutting the region
+off first makes those bytes unreachable rather than merely unsearched,
+and a row of the matrix pins it. A credential inside a *path segment* is
+still printed, and that is now a stated limit with its own row rather
+than a gap: masking it would mean guessing which segment is secret, and
+guessing which part of a string is sensitive is precisely the activity
+that produced five consecutive leaks. Control characters are escaped, so
+a `\r\n` in a rejected address can no longer end the log line and begin
+one the operator did not write. The function is renamed `redact_for_echo`
+— both reviews noted it was named for userinfo while its callers used it
+as "make this safe to print", and that gap between a name and its job is
+where the next report comes from; every mention of the old name in the
+amendments above is updated to the new one, so that a search for the
+function finds its whole history rather than the last three days of it.
+The refusal messages in `require_loopback_egress` now lead with the
+parsed host rather than the redacted address, because they could
+contradict themselves: one announced that an address "names no port"
+beside a displayed `:9105`, and another refused an address it displayed
+as exactly the loopback form it says is required. The parsed host is safe
+to print there because `Url::parse` refuses userinfo before any of those
+arms run. A refusal whose first clause argues with its second teaches an
+operator to distrust the gate rather than fix the address.
+
+One correction of this record's own method, from the same round. The
+adversarial table now collects its mismatches and asserts once, where it
+used to `assert_eq!` per row. That is a correction and not a tidy-up:
+round five's mutation report named five failing rows, and an `assert_eq!`
+inside a loop stops at the first, so four of the five were inferred and
+reported as read — a reporting defect under this repository's own
+evidence rule, in a report written to satisfy it. The corrected report in
+that test's comment quotes two runs that were actually made: deleting the
+parameter-region cut gives `9 of 28 redaction rows are wrong`, and
+reversing the ordering gives `4 of 28`, including
+`http://127.0.0.1:9105/x?a=1@2&api_key=SECRETVALUE` coming back as
+`http://…@2&api_key=SECRETVALUE`. The gate figures for all three rounds
+are recorded once, with their attribution, in this round's entry in
+`docs/DELIVERY-STATUS.md`, rather than a second time here where the two
+copies could drift apart.
 
 **Relates to:** blueprint §22.1 (Retention Classes), §22.2 (Sufficient
 Statistics), §22.3 (Data References), §22.4 (Fetch-on-Demand for Research),
@@ -635,7 +762,7 @@ fast brain's parsers, `ConnectorFeed::open`, the language-model listener
 and the market-data vendor — and it requires an explicit port, which
 Terraform's `startswith("http://127.0.0.1:")` always did and the process
 until then did not. Every refusal it writes goes through
-`redact_userinfo`, and so does `HttpError::InvalidUrl`, because the
+`redact_for_echo`, and so does `HttpError::InvalidUrl`, because the
 refusal of `http://svc:TOKEN@127.0.0.1:9105` was itself printing `TOKEN`
 on stderr at start-up. The one in-process URL outside it is
 `QIP_OPENOBSERVE_URL`, on purpose: ADR 0032 decides that collector sits
