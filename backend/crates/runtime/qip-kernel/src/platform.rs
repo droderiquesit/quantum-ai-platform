@@ -134,7 +134,7 @@ use qip_market_ingestion::connector::manifest::SecretRef;
 use qip_mesh::catalog::Catalog;
 use qip_numerics::matrix::Matrix;
 use qip_observability::Telemetry;
-use qip_observability::metrics::{labels, names};
+use qip_observability::metrics::{Histogram, labels, names};
 use qip_opportunity_engine::catalyst::MarketEvent;
 use qip_opportunity_engine::detector::{DetectionContext, DetectorRegistry};
 use qip_opportunity_engine::engine::{EngineConfig, OpportunityEngine};
@@ -378,6 +378,15 @@ pub struct Platform {
     /// What each priced refusal would have earned, most recent last, bounded
     /// by [`DECLINED_HISTORY`].
     declined_scores: Vec<DeclinedScore>,
+    /// Orders a venue filled and the twin has not yet priced the sizes not
+    /// taken for, oldest first, bounded by [`DECLINED_HISTORY`] under the
+    /// same counted-not-evicted discipline as `declined`.
+    filled: Vec<FilledPath>,
+    /// What the twin found about each priced fill — whether a smaller or a
+    /// larger size would have done better, and how far its own entry price
+    /// was from the venue's — most recent last, bounded by
+    /// [`DECLINED_HISTORY`].
+    fill_scores: Vec<FillScore>,
     /// What the LEARN stage priced this cycle, for the journal. Cleared as
     /// each cycle's LEARN begins.
     cycle_counterfactuals: Option<CounterfactualJournal>,
@@ -1861,6 +1870,15 @@ pub struct CounterfactualJournal {
     pub regrets: usize,
     /// Declined paths due for pricing and left for a later cycle by the cap.
     pub deferred: usize,
+    /// Filled orders priced this cycle for the sizes not taken. Defaulted so
+    /// an entry journaled before the filled arm ran replays as having priced
+    /// no fill, which is what it did.
+    #[serde(default)]
+    pub fills_scored: usize,
+    /// Filled orders due for pricing and left for a later cycle by the same
+    /// cap the declined paths share.
+    #[serde(default)]
+    pub fills_deferred: usize,
 }
 
 /// Which solver sized the cycle's proposal, and what the classical baseline
@@ -2050,6 +2068,66 @@ pub struct DeclinedScore {
     /// What each rule in `rules` measured against what bound, on this order.
     #[serde(default)]
     pub readings: Vec<RuleReading>,
+}
+
+/// One order a venue filled, kept until the twin can price the sizes that
+/// were not taken.
+///
+/// The counterpart of [`DeclinedPath`] for the other half of blueprint
+/// §12.3's last row: a declined path asks what the veto cost, and a filled
+/// one asks whether the size was right. The twin already evaluates a placed
+/// order through the `OrderPlaced` entry in the outcome capture; what this
+/// carries is only what that entry does not — the price the venue actually
+/// filled at, which is what the twin's own entry price is measured against.
+#[derive(Clone, Debug, PartialEq)]
+struct FilledPath {
+    order_id: OrderId,
+    object_id: ObjectId,
+    venue: VenueId,
+    /// The venue's price, quantity-weighted over every fill it reported on
+    /// the order. Money, and exact.
+    fill_price: Decimal,
+    /// The side as the twin records it — a buy against the ask — so the sign
+    /// of the fill error can say which way the twin was wrong.
+    side: BookSide,
+    decided_at: Timestamp,
+}
+
+/// What the twin found about one fill, once it has priced the sizes not
+/// taken.
+///
+/// No money figure is carried here at all: the two findings are bits and
+/// the error is a ratio, so nothing on this record can reach a realised
+/// line. `smaller_favoured` and `larger_favoured` compare the twin's
+/// `smaller_size` and `larger_size` alternatives with its own `trade`
+/// alternative — the same order re-priced on the same tape at the size
+/// actually taken — rather than with the realised outcome, because an
+/// opening fill realises nothing (`capture_submission` books it at zero
+/// P&L) and a comparison against zero would call every profitable direction
+/// "smaller favoured" and "larger favoured" at once. A size alternative that
+/// did not fill in simulation favours nothing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FillScore {
+    pub order_id: OrderId,
+    pub object_id: ObjectId,
+    /// The venue that filled it — the label the fill error is charted under.
+    pub venue: String,
+    pub filled_at: Timestamp,
+    pub scored_at: Timestamp,
+    /// The same trade at the twin's smaller size would have earned more than
+    /// at the size taken.
+    pub smaller_favoured: bool,
+    /// The same trade at the twin's larger size would have earned more than
+    /// at the size taken. A finding and never a number: blueprint §12.4
+    /// forbids loosening anything from counterfactual evidence, and no
+    /// reader of this bit produces a multiplier above one.
+    pub larger_favoured: bool,
+    /// How far the twin's entry price was from the venue's, in signed basis
+    /// points on the side taken — negative meaning the twin filled *better*
+    /// than reality, the direction that flatters every counterfactual it
+    /// prices. `None` where the twin's own `trade` alternative did not fill,
+    /// so there was no simulated entry to compare. A statistic, not money.
+    pub trade_error_bps: Option<f64>,
 }
 
 /// What the LEARN stage's calibration pass left in the journal.
@@ -3149,6 +3227,8 @@ impl Platform {
             bar_history: BTreeMap::new(),
             declined: Vec::new(),
             declined_scores: Vec::new(),
+            filled: Vec::new(),
+            fill_scores: Vec::new(),
             cycle_counterfactuals: None,
             cycle_rule_review: None,
             rule_activity,
@@ -3558,7 +3638,12 @@ impl Platform {
         );
         metrics.describe(
             names::COUNTERFACTUALS_UNSCORED,
-            "declined paths that will never be priced, by reason",
+            "declined and filled paths that will never be priced, by reason",
+        );
+        metrics.describe(
+            names::VENUE_FILL_ERROR_BPS,
+            "the twin's simulated entry price against the venue's actual fill, in signed basis \
+             points by venue; negative flatters the twin; diagnostic, read by nothing that decides",
         );
         metrics.describe(
             names::CENTRAL_FILLS_ATTRIBUTED,
@@ -9967,7 +10052,21 @@ impl Platform {
         // would have happened. Blueprint §12: a platform that learns only
         // from the trades it took is learning from a heavily selected
         // sample, and every veto is a data point until something scores it.
-        let (priced, problems) = self.score_declined(now);
+        let (priced, problems, attempted) = self.score_declined(now);
+        if let Some(priced) = priced {
+            let detail = format!("{}; {priced}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
+        // And what the venue filled, for the size not taken, under what the
+        // declined pass left of the one cap. Blueprint §12.3's last row has
+        // two halves and until this call the platform read only the declined
+        // one: a fill was captured, attributed and never asked whether half
+        // or twice the size would have done better.
+        let (priced, problems) =
+            self.score_filled(now, COUNTERFACTUALS_PER_CYCLE.saturating_sub(attempted));
         if let Some(priced) = priced {
             let detail = format!("{}; {priced}", outcome.detail);
             outcome = StageOutcome { detail, ..outcome };
@@ -11118,6 +11217,42 @@ impl Platform {
             );
             self.aggregate_fill(object_id.as_str(), moved);
         }
+
+        // Kept for the twin, as a declined path is. The placement above is
+        // what the twin evaluates against; what it cannot read from the
+        // capture is the price the venue actually filled at, and that is
+        // the one number blueprint §12.4's fill error needs. Same discipline
+        // as the declined queue: a full window is a refusal to queue,
+        // counted under its own reason, never an eviction.
+        if placed.is_some() && !result.fills.is_empty() {
+            if self.filled.len() >= DECLINED_HISTORY {
+                self.telemetry.metrics.count(
+                    names::COUNTERFACTUALS_UNSCORED,
+                    labels([("reason", "fill_capacity")]),
+                );
+                self.capture_problems.push(format!(
+                    "filled order {} will not be priced for its size: {DECLINED_HISTORY} filled \
+                     paths are already waiting to be",
+                    result.order_id
+                ));
+            } else {
+                match weighted_fill_price(&result.fills) {
+                    Some(fill_price) => self.filled.push(FilledPath {
+                        order_id: result.order_id.clone(),
+                        object_id: object_id.clone(),
+                        venue,
+                        fill_price,
+                        side: book_side(side),
+                        decided_at: now,
+                    }),
+                    None => self.capture_problems.push(format!(
+                        "filled order {} will not be priced for its size: its fills do not \
+                         average to a representable price",
+                        result.order_id
+                    )),
+                }
+            }
+        }
     }
 
     /// Carry one desk fill into the running risk counters.
@@ -11724,8 +11859,10 @@ impl Platform {
     /// Bounded by [`COUNTERFACTUALS_PER_CYCLE`]. What the cap leaves is
     /// counted, journaled and priced on a later cycle: the count is what
     /// makes "the twin is falling behind the gates" a number rather than a
-    /// silence.
-    fn score_declined(&mut self, now: Timestamp) -> (Option<String>, Vec<String>) {
+    /// silence. The third element is how many evaluations this pass used of
+    /// the cap, so [`Self::score_filled`] can price the venue's fills under
+    /// the remainder rather than under a second cap of its own.
+    fn score_declined(&mut self, now: Timestamp) -> (Option<String>, Vec<String>, usize) {
         let horizon = self.counterfactuals.horizon();
         let due: Vec<OrderId> = self
             .declined
@@ -11742,9 +11879,10 @@ impl Platform {
             .map(|declined| declined.order_id.clone())
             .collect();
         if due.is_empty() {
-            return (None, Vec::new());
+            return (None, Vec::new(), 0);
         }
 
+        let attempted = due.len().min(COUNTERFACTUALS_PER_CYCLE);
         let deferred = due.len().saturating_sub(COUNTERFACTUALS_PER_CYCLE);
         if deferred > 0 {
             self.telemetry.metrics.increment(
@@ -11844,12 +11982,192 @@ impl Platform {
             scored,
             regrets,
             deferred,
+            fills_scored: 0,
+            fills_deferred: 0,
         });
         let mut summary = format!("{scored} declined path(s) priced, {regrets} regret(s)");
         if deferred > 0 {
             summary.push_str(&format!(", {deferred} deferred by the per-cycle cap"));
         }
+        (Some(summary), problems, attempted)
+    }
+
+    /// Price the sizes not taken on the orders a venue filled, under what the
+    /// declined pass left of the cap.
+    ///
+    /// The other half of blueprint §12.3's last row, and the production
+    /// caller of [`Platform::evaluate_alternatives`] for its *placed* arm:
+    /// `score_declined` asks what each veto cost, and this asks whether each
+    /// fill was the right size. Same due rule — the twin's horizon has
+    /// elapsed and a bar has closed after it — and the same refusal
+    /// handling: a fill the twin cannot price leaves the queue counted under
+    /// `unscored{reason="refused"}`, because it will refuse it every cycle.
+    ///
+    /// `budget` is [`COUNTERFACTUALS_PER_CYCLE`] less what the declined pass
+    /// used, so the cap is one number for both passes and the declined path
+    /// — the one whose scoring is a control on a control — goes first. What
+    /// the budget leaves is counted under the same
+    /// `qip_counterfactuals_deferred_total` and priced later.
+    ///
+    /// Two things are read off each set and nothing else. Whether the
+    /// `smaller_size` or `larger_size` alternative beat the twin's own
+    /// `trade` alternative, as bits on the [`FillScore`]; and how far the
+    /// `trade` alternative's entry price was from the venue's fill, charted
+    /// under `qip_venue_fill_error_bps{venue}`. The error is a diagnostic
+    /// of the twin and is read by nothing that decides — a venue is
+    /// withdrawn on feasibility evidence alone, and a size is narrowed on the
+    /// bits, never on the error.
+    fn score_filled(&mut self, now: Timestamp, budget: usize) -> (Option<String>, Vec<String>) {
+        let horizon = self.counterfactuals.horizon();
+        let due: Vec<OrderId> = self
+            .filled
+            .iter()
+            .filter(|filled| {
+                let marks_at = filled.decided_at.saturating_add(horizon);
+                marks_at <= now
+                    && self
+                        .bar_history
+                        .get(filled.object_id.as_str())
+                        .and_then(|bars| bars.iter().map(Bar::close_time).max())
+                        .is_some_and(|last_close| last_close >= marks_at)
+            })
+            .map(|filled| filled.order_id.clone())
+            .collect();
+        if due.is_empty() {
+            return (None, Vec::new());
+        }
+
+        let deferred = due.len().saturating_sub(budget);
+        if deferred > 0 {
+            self.telemetry.metrics.increment(
+                names::COUNTERFACTUALS_DEFERRED,
+                labels([]),
+                deferred as u64,
+            );
+        }
+
+        let mut scored = 0usize;
+        let mut problems = Vec::new();
+        for order_id in due.into_iter().take(budget) {
+            let Some(index) = self
+                .filled
+                .iter()
+                .position(|filled| filled.order_id == order_id)
+            else {
+                continue;
+            };
+            let path = self.filled[index].clone();
+            let priced = self
+                .bar_history
+                .get(path.object_id.as_str())
+                .cloned()
+                .ok_or_else(|| Error::not_found(format!("no bars are held for {}", path.object_id)))
+                .and_then(|bars| {
+                    TwinMarket::new(
+                        bars,
+                        CostModel::liquid_equity(),
+                        COUNTERFACTUAL_IMPACT_WINDOW,
+                    )
+                })
+                .and_then(|mut market| self.evaluate_alternatives(&order_id, &mut market));
+            // Priced or refused, the path leaves the queue, as a declined
+            // path does.
+            self.filled.remove(index);
+            match priced {
+                Ok(set) => {
+                    let trade = set.by_kind("trade");
+                    // The size alternatives are judged against the twin's
+                    // own re-pricing of the order as taken, on the same tape
+                    // with the same costs — see `FillScore` for why not
+                    // against the realised outcome. An alternative that did
+                    // not fill in simulation is not a better size; it is no
+                    // size at all.
+                    let trade_pnl = trade
+                        .filter(|entry| entry.counterfactual_outcome.fill().traded())
+                        .map(|entry| entry.counterfactual_outcome.simulated_pnl());
+                    let beats_trade = |kind: &str| {
+                        set.by_kind(kind)
+                            .filter(|entry| entry.counterfactual_outcome.fill().traded())
+                            .zip(trade_pnl)
+                            .is_some_and(|(entry, trade_pnl)| {
+                                (entry.counterfactual_outcome.simulated_pnl() - trade_pnl)
+                                    .is_positive()
+                            })
+                    };
+                    let smaller_favoured = beats_trade("smaller_size");
+                    let larger_favoured = beats_trade("larger_size");
+                    let trade_error_bps = trade
+                        .and_then(|entry| entry.counterfactual_outcome.simulated_entry_price())
+                        .and_then(|simulated| {
+                            fill_error_bps(simulated, path.fill_price, path.side)
+                        });
+                    if let Some(error_bps) = trade_error_bps {
+                        self.telemetry.metrics.observe_with(
+                            names::VENUE_FILL_ERROR_BPS,
+                            labels([("venue", path.venue.as_str())]),
+                            error_bps,
+                            Histogram::signed_basis_points,
+                        );
+                    }
+                    scored += 1;
+                    self.fill_scores.push(FillScore {
+                        order_id,
+                        object_id: path.object_id,
+                        venue: path.venue.as_str().to_string(),
+                        filled_at: path.decided_at,
+                        scored_at: now,
+                        smaller_favoured,
+                        larger_favoured,
+                        trade_error_bps,
+                    });
+                    if self.fill_scores.len() > DECLINED_HISTORY {
+                        let excess = self.fill_scores.len() - DECLINED_HISTORY;
+                        self.fill_scores.drain(..excess);
+                    }
+                }
+                Err(error) => {
+                    self.telemetry.metrics.count(
+                        names::COUNTERFACTUALS_UNSCORED,
+                        labels([("reason", "refused")]),
+                    );
+                    problems.push(format!(
+                        "filled order {order_id} could not be priced for its size: {}",
+                        error.message()
+                    ));
+                }
+            }
+        }
+
+        match self.cycle_counterfactuals.as_mut() {
+            Some(journal) => {
+                journal.fills_scored = scored;
+                journal.fills_deferred = deferred;
+            }
+            None => {
+                self.cycle_counterfactuals = Some(CounterfactualJournal {
+                    scored: 0,
+                    regrets: 0,
+                    deferred: 0,
+                    fills_scored: scored,
+                    fills_deferred: deferred,
+                });
+            }
+        }
+        let mut summary = format!("{scored} filled path(s) priced for size");
+        if deferred > 0 {
+            summary.push_str(&format!(", {deferred} deferred by the per-cycle cap"));
+        }
         (Some(summary), problems)
+    }
+
+    /// What the twin found about each priced fill, most recent last.
+    pub fn fill_scores(&self) -> &[FillScore] {
+        &self.fill_scores
+    }
+
+    /// How many filled orders are waiting for their horizon or their bars.
+    pub fn filled_awaiting_score(&self) -> usize {
+        self.filled.len()
     }
 
     /// The LEARN stage's rule review: blueprint §12.3's three rule rows,
@@ -12370,6 +12688,57 @@ fn gate_of(refusal: &RefusalReason) -> String {
         RefusalReason::VenueRejected { .. } => "venue",
     }
     .to_string()
+}
+
+/// The price a venue filled an order at, quantity-weighted over its fills.
+///
+/// `None` for no fills, for fills that sum to no quantity, or for a product
+/// the fixed-point range cannot hold — each is a price nobody computed, and
+/// the caller records the order as unpriceable rather than at a guess.
+fn weighted_fill_price(fills: &[qip_execution_engine::order::Fill]) -> Option<Decimal> {
+    let mut notional = Decimal::ZERO;
+    let mut quantity = Decimal::ZERO;
+    for fill in fills {
+        notional = notional.checked_add(fill.price.checked_mul(fill.quantity)?)?;
+        quantity = quantity.checked_add(fill.quantity)?;
+    }
+    if !quantity.is_positive() {
+        return None;
+    }
+    notional.checked_div(quantity)
+}
+
+/// Blueprint §12.4's fill error: how far the twin's simulated entry was from
+/// the venue's, in signed basis points on the side taken.
+///
+/// `(simulated − actual) / actual × 10⁴`, negated for a sell, so that a
+/// negative value always means the twin filled *better* than reality — cheaper
+/// on a buy, dearer on a sell — which is the direction that flatters every
+/// counterfactual it prices, and the one an operator reading this series is
+/// looking for. Positive is the twin being pessimistic about its own fills.
+///
+/// This is the one `Decimal → f64` crossing on the fill-error path, and it
+/// is here deliberately: two exact prices go in, and what comes out is a
+/// ratio of them in the statistics lane. Nothing downstream of this function
+/// is money, and the simulated price arrives wrapped so it cannot have been
+/// booked on the way. `None` where the venue's price is not positive or the
+/// ratio is not finite — an error nobody can chart is not charted as zero.
+fn fill_error_bps(simulated: Simulated<Decimal>, actual: Decimal, side: BookSide) -> Option<f64> {
+    if !actual.is_positive() {
+        return None;
+    }
+    let simulated = simulated.as_f64_for_statistics();
+    let actual = actual.to_f64();
+    let raw = (simulated - actual) / actual * 10_000.0;
+    let signed = match side {
+        // A buy is recorded against the ask (`book_side`), and a cheaper
+        // simulated buy is the flattering direction, so the raw sign stands.
+        BookSide::Ask => raw,
+        // A sell against the bid: a *dearer* simulated sell flatters, so the
+        // sign is flipped to keep "negative means flattering".
+        BookSide::Bid => -raw,
+    };
+    signed.is_finite().then_some(signed)
 }
 
 /// The execution engine's side, in the vocabulary the twin's record uses.

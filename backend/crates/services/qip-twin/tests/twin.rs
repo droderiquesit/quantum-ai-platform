@@ -332,6 +332,60 @@ fn the_counterfactual_fill_uses_the_simulators_cost_model_exactly() -> Result<()
 }
 
 #[test]
+fn a_simulated_outcome_reports_the_entry_price_it_was_settled_at() -> Result<()> {
+    // The failure this guards: the kernel measures its fill model against
+    // reality by comparing the price the twin would have entered at with the
+    // price the venue actually filled at (blueprint §12.4's "fill error"),
+    // and an accessor that handed back the exit price, or a zero for an
+    // alternative that never traded, would chart the twin as wrong by the
+    // whole horizon's move — or as exactly right — on every fill.
+    //
+    // The premise is stated as a number rather than read back from the fill:
+    // the plain `trade` alternative enters with no delay, so it enters at the
+    // decision instant, and the simulator's clock marks a fill at the open
+    // of the bar covering that instant — on `rising`, the bar that opened on
+    // day four, at 108. The horizon lands on a different bar of a tape that
+    // rises two a day, so the mutation that returns the exit price fails
+    // here rather than passing on a flat tape; the premise below says so.
+    let subject = object("obj-alpha");
+    let set = evaluate(rising(&subject), dec!("95000"), 5, "dec-1")?;
+    let traded = set.by_kind("trade").expect("the trade alternative");
+    let SimulatedFill::Filled {
+        entry_price,
+        exit_price,
+        ..
+    } = traded.counterfactual_outcome.fill()
+    else {
+        panic!("the premise failed: the plain trade alternative did not fill");
+    };
+    assert_ne!(
+        entry_price, exit_price,
+        "the premise failed: entry and exit printed the same, so an accessor returning the \
+         wrong one would pass"
+    );
+    assert_eq!(
+        traded.counterfactual_outcome.simulated_entry_price(),
+        Some(Simulated::of(dec!("108"))),
+        "the entry price is not the open of the bar the alternative entered on"
+    );
+
+    // And an alternative that stood aside has no entry, not a zero one.
+    let aside = set
+        .by_kind("do_not_trade")
+        .expect("the stand-aside alternative");
+    assert!(
+        !aside.counterfactual_outcome.fill().traded(),
+        "the premise failed: standing aside traded"
+    );
+    assert_eq!(
+        aside.counterfactual_outcome.simulated_entry_price(),
+        None,
+        "an alternative that never traded reported an entry price"
+    );
+    Ok(())
+}
+
+#[test]
 fn an_alternative_beyond_the_calibrated_participation_is_unfillable_not_profitable() -> Result<()> {
     // The reason "we should have traded three times the size" does not win by
     // default. The impact law is calibrated to twenty percent of a day's

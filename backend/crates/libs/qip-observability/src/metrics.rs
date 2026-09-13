@@ -57,6 +57,23 @@ impl Histogram {
         ])
     }
 
+    /// Buckets for a signed basis-point error, symmetric about zero.
+    ///
+    /// For a series whose sign is the finding — a fill model that prices
+    /// entries below the venue on buys is flattering itself, and the same
+    /// magnitude the other way is conservative — so the bounds straddle zero
+    /// rather than starting at it, and a histogram that folded the sign into
+    /// an absolute value would chart a flattering model and a pessimistic
+    /// one as the same bar. Diagnostic only: nothing reads a histogram built
+    /// on these bounds to withdraw a venue or narrow a size, and the series
+    /// recorded on it says so in its own documentation.
+    pub fn signed_basis_points() -> Self {
+        Self::with_bounds(vec![
+            -500.0, -200.0, -100.0, -50.0, -20.0, -10.0, -5.0, 0.0, 5.0, 10.0, 20.0, 50.0, 100.0,
+            200.0, 500.0,
+        ])
+    }
+
     pub fn with_bounds(bounds: Vec<f64>) -> Self {
         let counts = vec![0; bounds.len() + 1];
         Self {
@@ -959,8 +976,23 @@ pub mod names {
     /// the per-cycle cap was reached. Counted rather than silently truncated.
     pub const COUNTERFACTUALS_DEFERRED: &str = "qip_counterfactuals_deferred_total";
     /// Declined paths that will never be priced, by `reason` — the working set was
-    /// full, or the twin refused the evaluation.
+    /// full, or the twin refused the evaluation. Since the LEARN stage also
+    /// prices the orders a venue *filled*, `reason="fill_capacity"` counts a
+    /// fill that arrived while that queue was full, beside `capacity` for a
+    /// refusal that did.
     pub const COUNTERFACTUALS_UNSCORED: &str = "qip_counterfactuals_unscored_total";
+    /// How far the twin's simulated entry price was from the price the venue
+    /// actually filled at, in signed basis points, by `venue` — blueprint
+    /// §12.4's "fill error", measured on every filled order the LEARN stage
+    /// prices. `(simulated − actual) / actual × 10⁴`, so on a buy a negative
+    /// value means the twin filled cheaper than reality: the direction that
+    /// flatters every counterfactual it prices. A histogram on
+    /// `Histogram::signed_basis_points`, because the sign is the finding.
+    /// Diagnostic and nothing else: no seam reads this series to withdraw a
+    /// venue, narrow a size or move a bound, and the kernel's tests hold a
+    /// venue's withdrawal to feasibility evidence alone. `venue` is bounded to
+    /// the desk's one broker name — only desk fills are captured for the twin.
+    pub const VENUE_FILL_ERROR_BPS: &str = "qip_venue_fill_error_bps";
 
     /// Refusals charged to the rule that made them, by `rule` — the limit's
     /// configured *name* (`order-notional`, `expected-shortfall`), never its

@@ -396,6 +396,26 @@ impl SimulatedOutcome {
         self.costs
     }
 
+    /// The price the alternative would have entered at, where it traded.
+    ///
+    /// `None` for an alternative that stood aside, went unfilled or was
+    /// refused as unfillable: those have no entry, and a zero here would be
+    /// a price nobody computed. The number itself printed on the tape and
+    /// [`SimulatedFill::Filled`] carries it bare for that reason; it is
+    /// handed out wrapped because *this alternative entering at it* is a
+    /// fact about the alternative world, and the one thing a reader does
+    /// with it — compare it with the price a venue actually filled at, to
+    /// measure how far the twin's fill model is from reality — must not be
+    /// able to book it as a fill. There is no accessor returning it bare.
+    pub fn simulated_entry_price(&self) -> Option<Simulated<Decimal>> {
+        match &self.fill {
+            SimulatedFill::Filled { entry_price, .. } => Some(Simulated::of(*entry_price)),
+            SimulatedFill::NotTraded
+            | SimulatedFill::Unfillable { .. }
+            | SimulatedFill::Unfilled { .. } => None,
+        }
+    }
+
     pub const fn entry_at(&self) -> Timestamp {
         self.entry_at
     }

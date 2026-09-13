@@ -510,6 +510,261 @@ fn declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next
     Ok(())
 }
 
+// --- counterfactual scoring of filled orders ---------------------------------
+
+/// Offer a traceable buy the controls accept and the simulated venue fills,
+/// and hand back its id. The fill is the premise of every test below.
+fn fill_one(platform: &mut Platform, proposal: &str, at: Timestamp) -> Result<OrderId> {
+    let fills_before = platform.orders().fills().len();
+    let order = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("1000"),
+        dec!("100"),
+        proposal,
+        vec![format!("hyp-{proposal}")],
+        at,
+    );
+    let order_id = order.order_id.clone();
+    platform.submit_order(order, at)?;
+    assert!(
+        platform.orders().fills().len() > fills_before,
+        "the accepted order did not fill; the fixture is not a fill"
+    );
+    Ok(order_id)
+}
+
+#[test]
+fn a_filled_order_whose_twin_refuses_to_price_it_is_counted_unscored_and_leaves_the_queue()
+-> Result<()> {
+    // The refusal case first. A fill on an instrument with one closed bar
+    // of history is one the twin cannot estimate liquidity for, and it says
+    // so. What must not happen is the path staying in the queue to be
+    // refused again every cycle for ever: the twin's answer will not change,
+    // and a queue that fills with permanently unpriceable fills is one
+    // that, at `DECLINED_HISTORY`, stops taking the fills it could price.
+    let mut platform = platform()?;
+    platform.observe(quiet_bars("AAA", 1));
+    fill_one(&mut platform, "prop-thin", start())?;
+    assert_eq!(
+        platform.filled_awaiting_score(),
+        1,
+        "the premise failed: the fill was not captured for the twin"
+    );
+    assert_eq!(
+        recorded(&platform).counter(
+            names::COUNTERFACTUALS_UNSCORED,
+            &labels([("reason", "refused")])
+        ),
+        0
+    );
+
+    platform.observe(bars_after("AAA", start(), 5));
+    let cycle = platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let learn = cycle.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        learn
+            .problems
+            .iter()
+            .any(|problem| problem.contains("could not be priced for its size")),
+        "the refusal was not reported on the cycle: {:?}",
+        learn.problems
+    );
+    assert_eq!(
+        recorded(&platform).counter(
+            names::COUNTERFACTUALS_UNSCORED,
+            &labels([("reason", "refused")])
+        ),
+        1,
+        "the twin's refusal was not counted"
+    );
+    assert_eq!(
+        platform.filled_awaiting_score(),
+        0,
+        "a fill the twin refused to price stayed queued"
+    );
+    assert!(platform.fill_scores().is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_filled_order_is_priced_once_its_horizon_has_passed_and_its_size_regrets_are_recorded()
+-> Result<()> {
+    // The failure this guards: blueprint §12.3's last row has two halves
+    // and the platform read only one. `evaluate_alternatives` could price a
+    // *placed* order — the twin's `smaller_size` and `larger_size` arms exist
+    // for exactly that — and nothing in production called it for one, so
+    // every fill was attributed and never asked whether its size was right.
+    let mut platform = platform()?;
+    platform.observe(quiet_bars("AAA", 90));
+    let order_id = fill_one(&mut platform, "prop-filled", start())?;
+
+    // Premise: one fill waiting, nothing declined, nothing priced.
+    assert_eq!(platform.filled_awaiting_score(), 1);
+    assert_eq!(
+        platform.declined_awaiting_score(),
+        0,
+        "the premise failed: an accepted order was captured as declined"
+    );
+    assert!(platform.fill_scores().is_empty());
+
+    // Before the horizon, nothing: the twin marks at the horizon.
+    platform.run_cycle(start());
+    assert_eq!(platform.filled_awaiting_score(), 1);
+    assert!(platform.fill_scores().is_empty());
+
+    // The tape after the fill is what decides which size wins. Every order
+    // here is a buy, recorded against the ask, and the twin's gross for a
+    // buy is `(entry − exit) × quantity` (see the ADR 0055 test below for
+    // the direction convention), so a jump to a flat 300 is a loss on the
+    // `trade` arm: the same trade at half the size loses half as much, and
+    // at twice the size twice as much. Smaller wins, larger does not.
+    platform.observe(flat_bars_after("AAA", start(), 5, 300.0));
+    let later = platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let learn = later.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        learn.detail.contains("filled path(s) priced for size"),
+        "LEARN did not report pricing the fill: {}",
+        learn.detail
+    );
+    assert_eq!(platform.filled_awaiting_score(), 0);
+    let scores = platform.fill_scores();
+    assert_eq!(scores.len(), 1);
+    assert_eq!(scores[0].order_id, order_id);
+    assert_eq!(scores[0].venue, "simulated-venue");
+    assert!(
+        scores[0].smaller_favoured,
+        "a losing fill did not favour the smaller size"
+    );
+    assert!(
+        !scores[0].larger_favoured,
+        "a losing fill favoured the larger size"
+    );
+    // The declined record is untouched: the two halves are scored apart.
+    assert!(platform.declined_scores().is_empty());
+    // And nothing simulated reached the realised line.
+    assert_eq!(platform.outcomes().realised_pnl(), Decimal::ZERO);
+
+    let entries = platform.journal_entries()?;
+    assert_eq!(entries.len(), 2);
+    let journaled = entries[1]
+        .counterfactuals
+        .as_ref()
+        .expect("the cycle that priced a fill journals it");
+    assert_eq!((journaled.fills_scored, journaled.fills_deferred), (1, 0));
+    assert_eq!(journaled.scored, 0, "no declined path existed to price");
+    Ok(())
+}
+
+#[test]
+fn declined_and_filled_paths_share_one_per_cycle_counterfactual_cap() -> Result<()> {
+    // Eight declines and one fill due together. The cap is eight
+    // evaluations per cycle for both passes — one number, not one each —
+    // and the declined pass goes first, so the first cycle prices the eight
+    // declines and counts the fill as deferred, and the second cycle prices
+    // the fill. A second cap of eight for fills would price nine in cycle
+    // one, and the stage's latency budget would be a claim about half of
+    // what runs in it.
+    let mut platform = platform()?;
+    platform.observe(quiet_bars("AAA", 90));
+    for n in 0..8 {
+        refuse_one(&mut platform, &format!("prop-refused-{n}"), start())?;
+    }
+    fill_one(&mut platform, "prop-filled", start())?;
+    assert_eq!(platform.declined_awaiting_score(), 8);
+    assert_eq!(platform.filled_awaiting_score(), 1);
+
+    platform.observe(flat_bars_after("AAA", start(), 5, 300.0));
+    let first = platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let snapshot = recorded(&platform);
+    assert_eq!(snapshot.counter_total(names::COUNTERFACTUALS_SCORED), 8);
+    assert_eq!(
+        platform.fill_scores().len(),
+        0,
+        "the fill was priced in the same cycle as eight declines:\n{}",
+        first.summarise()
+    );
+    assert_eq!(
+        snapshot.counter_total(names::COUNTERFACTUALS_DEFERRED),
+        1,
+        "the fill was not counted as deferred"
+    );
+    assert_eq!(platform.filled_awaiting_score(), 1);
+    let journaled = platform.journal_entries()?[0]
+        .counterfactuals
+        .clone()
+        .expect("journaled");
+    assert_eq!(
+        (
+            journaled.scored,
+            journaled.deferred,
+            journaled.fills_scored,
+            journaled.fills_deferred
+        ),
+        (8, 0, 0, 1)
+    );
+
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    assert_eq!(platform.fill_scores().len(), 1);
+    assert_eq!(platform.filled_awaiting_score(), 0);
+    assert_eq!(
+        recorded(&platform).counter_total(names::COUNTERFACTUALS_DEFERRED),
+        1
+    );
+    Ok(())
+}
+
+#[test]
+fn the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue() -> Result<()> {
+    // Blueprint §12.4's "fill error", which `docs/DELIVERY-STATUS.md`
+    // scored as untracked. The twin marks its entry at the open of the bar
+    // covering the decision instant; the venue fills a buy at the arrival
+    // price plus its modelled cost. The tape here opens its last bar before
+    // the fill at 90 against an arrival of 100, so the twin enters ten
+    // percent below where the venue actually filled — the flattering
+    // direction, which the series must chart as negative.
+    let mut platform = platform()?;
+    let mut tape = quiet_bars("AAA", 90);
+    let last = tape.pop().expect("ninety bars");
+    let last_at = match &last {
+        SensedRecord::Bar(bar) => bar.open_time,
+        _ => unreachable!("quiet_bars produces bars"),
+    };
+    tape.push(bar("AAA", last_at, 90.0, 90.0));
+    platform.observe(tape);
+    fill_one(&mut platform, "prop-filled", start())?;
+    let venue = labels([("venue", "simulated-venue")]);
+    assert!(
+        recorded(&platform)
+            .histogram(names::VENUE_FILL_ERROR_BPS, &venue)
+            .is_none(),
+        "the premise failed: a fill error was recorded before anything was priced"
+    );
+
+    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let scores = platform.fill_scores();
+    assert_eq!(scores.len(), 1, "the fill was not priced");
+    let error = scores[0]
+        .trade_error_bps
+        .expect("a fill the twin priced carries its entry error");
+    assert!(
+        error < -500.0,
+        "the twin entered ten percent below the venue's fill and the error reads {error} bps"
+    );
+    let snapshot = recorded(&platform);
+    let histogram = snapshot
+        .histogram(names::VENUE_FILL_ERROR_BPS, &venue)
+        .expect("the fill error is charted by venue");
+    assert_eq!(histogram.count, 1);
+    assert!(
+        (histogram.sum - error).abs() < 1e-9,
+        "the histogram holds {} where the score says {error}",
+        histogram.sum
+    );
+    Ok(())
+}
+
 // --- ADR 0055: the counterfactual record narrows sizing, never widens it ---
 
 #[test]
