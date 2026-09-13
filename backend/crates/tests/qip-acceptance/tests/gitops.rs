@@ -1503,7 +1503,11 @@ fn every_argo_cd_application_points_at_this_repository_and_at_one_environment_di
             application.describe()
         );
         // A targetRevision naming a branch other than the default, or a tag,
-        // is a reconciler reading a line nobody promoted to.
+        // is a reconciler reading a line nobody promoted to. Until 2026-09-13
+        // the default branch was a `claude/...` branch and this admitted any
+        // `claude/` prefix — which, once the default was `main`, would have
+        // let an Application quietly reconcile some other working branch.
+        // The default is `main` now and the matcher says exactly that.
         let revision = text_at(&application.value, &["spec", "source", "targetRevision"])
             .unwrap_or_else(|| {
                 panic!(
@@ -1512,9 +1516,10 @@ fn every_argo_cd_application_points_at_this_repository_and_at_one_environment_di
                 )
             });
         assert!(
-            revision == "HEAD" || revision == "main" || revision.starts_with("claude/"),
-            "{} reconciles targetRevision `{revision}`, which is neither the default branch nor \
-             HEAD; the promotion commits land on the default branch and nothing else",
+            revision == "HEAD" || revision == "main",
+            "{} reconciles targetRevision `{revision}`, which is neither the default branch \
+             (`main`) nor HEAD; the promotion commits land on the default branch and nothing \
+             else",
             application.describe()
         );
         checked += 1;

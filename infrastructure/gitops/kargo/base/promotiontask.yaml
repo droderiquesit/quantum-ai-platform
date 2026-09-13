@@ -28,7 +28,7 @@ spec:
     - name: gitRepo
       value: https://github.com/droderiquesit/quantum-ai-platform.git
     - name: branch
-      value: claude/autonomous-investment-platform-76gt4y
+      value: main
     # The registry the stage's kustomization names — its own environment's.
     - name: registry
       value: ""

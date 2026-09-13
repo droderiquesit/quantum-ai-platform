@@ -50,7 +50,9 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   # a pull request from anywhere reaches this pool, and `refs/tags/<t>`, which
   # anyone who can push a tag controls.
   #
-  # It deliberately does not pin `main` and the default branch. deploy.yml's
+  # It deliberately does not pin the default branch (`main` since
+  # 2026-09-13; before that a `claude/...` branch, which is why this once
+  # said "`main` and the default branch" as two things). deploy.yml's
   # automatic path is a `workflow_run`, whose token carries the default
   # branch, and would survive that — but infra.yml is `workflow_dispatch`,
   # dispatched against whatever branch the change being applied lives on, and a

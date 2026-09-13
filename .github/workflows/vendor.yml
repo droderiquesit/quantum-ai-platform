@@ -32,7 +32,6 @@ on:
   push:
     branches:
       - "main"
-      - "claude/autonomous-investment-platform-76gt4y"
     paths:
       - "infrastructure/egress/vendored-images.txt"
       - ".github/workflows/vendor.yml"

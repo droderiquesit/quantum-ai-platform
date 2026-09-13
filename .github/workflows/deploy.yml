@@ -44,15 +44,17 @@ on:
   workflow_run:
     workflows: ["ci"]
     types: [completed]
-    # The repository's default branch. It is not named `main`: the platform
-    # was built on this branch and it became the default, so a filter on
-    # `main` matched nothing and the automatic path could never fire — a
-    # pipeline that looked complete and was unreachable. `main` stays listed
-    # so a later rename to the conventional name does not silently re-break
-    # this trigger in the other direction.
+    # The repository's default branch, by name. It was not `main` until
+    # 2026-09-13: the platform was built on a `claude/...` branch that became
+    # the default, and for a while this filter listed both names, because a
+    # filter on `main` alone matched nothing and the automatic path could
+    # never fire — a pipeline that looked complete and was unreachable. The
+    # rename to `main` retired the second entry. If the default branch is
+    # ever renamed again, this list is the first thing that silently stops
+    # matching, and `deploy_workflow_run_branches` in the acceptance suite
+    # reads it — so change it here, not only in the repository settings.
     branches:
       - "main"
-      - "claude/autonomous-investment-platform-76gt4y"
   workflow_dispatch:
     inputs:
       environment:
