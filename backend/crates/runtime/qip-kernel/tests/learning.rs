@@ -596,7 +596,26 @@ fn a_filled_order_is_priced_once_its_horizon_has_passed_and_its_size_regrets_are
     // for exactly that — and nothing in production called it for one, so
     // every fill was attributed and never asked whether its size was right.
     let mut platform = platform()?;
-    platform.observe(quiet_bars("AAA", 90));
+    // A tape flat at the same level before and after the fill, rather than
+    // a jump to a different level. This is deliberate, not merely quiet: a
+    // jump would make the `trade` arm's loss purely directional (a bigger
+    // fill loses proportionally more simply because it was more exposed to
+    // an adverse move that had nothing to do with its size), and that shape
+    // is exactly the code-review finding this test now guards against —
+    // `smaller_favoured` used to fire on *any* such loss, however small the
+    // transaction cost, because a smaller loss is trivially closer to zero.
+    // With the entry and exit price identical, the twin's gross
+    // `(entry − exit) × quantity` is exactly zero for every size arm, so the
+    // only thing separating `smaller_size`, `trade` and `larger_size` is the
+    // commission, spread and tax each pays on its own notional — a genuine,
+    // isolated cost-driven regret, which is what `smaller_favoured` must
+    // still catch after the fix.
+    platform.observe(flat_bars_after(
+        "AAA",
+        start().saturating_sub(Duration::from_days(91)),
+        90,
+        100.0,
+    ));
     let order_id = fill_one(&mut platform, "prop-filled", start())?;
 
     // Premise: one fill waiting, nothing declined, nothing priced.
@@ -613,13 +632,9 @@ fn a_filled_order_is_priced_once_its_horizon_has_passed_and_its_size_regrets_are
     assert_eq!(platform.filled_awaiting_score(), 1);
     assert!(platform.fill_scores().is_empty());
 
-    // The tape after the fill is what decides which size wins. Every order
-    // here is a buy, recorded against the ask, and the twin's gross for a
-    // buy is `(entry − exit) × quantity` (see the ADR 0055 test below for
-    // the direction convention), so a jump to a flat 300 is a loss on the
-    // `trade` arm: the same trade at half the size loses half as much, and
-    // at twice the size twice as much. Smaller wins, larger does not.
-    platform.observe(flat_bars_after("AAA", start(), 5, 300.0));
+    // The tape after the fill stays at the same level, so the fill's only
+    // regret is the transaction cost paid on the size actually taken.
+    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
     let later = platform.run_cycle(start().saturating_add(Duration::from_days(3)));
     let learn = later.stage(Stage::Learn).expect("learn ran");
     assert!(
@@ -653,6 +668,53 @@ fn a_filled_order_is_priced_once_its_horizon_has_passed_and_its_size_regrets_are
         .expect("the cycle that priced a fill journals it");
     assert_eq!((journaled.fills_scored, journaled.fills_deferred), (1, 0));
     assert_eq!(journaled.scored, 0, "no declined path existed to price");
+    Ok(())
+}
+
+#[test]
+fn a_fill_that_lost_purely_to_an_adverse_price_move_does_not_favour_the_smaller_size() -> Result<()>
+{
+    // The code-review finding this guards: comparing the smaller-size
+    // alternative's simulated P&L against the trade's used to mark
+    // `smaller_favoured` on *every* fill that lost money before costs at
+    // all, regardless of whether the size itself was the problem — a
+    // smaller loss is trivially closer to zero than a larger one of the
+    // same shape. This is the exact fixture the test above used before the
+    // fix: every order here is a buy, and (as that test's own comment
+    // states) the twin's book-side convention charges a buy a loss when the
+    // tape *rises* after it, so a jump from ~100 to a flat 300 is a large
+    // *directional* loss with a transaction cost that is a rounding error
+    // beside it — the desk's default cost model charges a few basis points
+    // of round-trip commission, spread and tax against a two-hundred-percent
+    // adverse move. Before the fix this fixture is exactly what armed
+    // `smaller_favoured` on pure direction; after it, this fixture is the
+    // mutation the fix is for, made a premise instead of an accident. If the
+    // fix regresses to comparing raw simulated P&L, this fill will (wrongly)
+    // favour the smaller size, exactly like every other loss.
+    let mut platform = platform()?;
+    platform.observe(quiet_bars("AAA", 90));
+    let order_id = fill_one(&mut platform, "prop-adverse", start())?;
+
+    platform.observe(flat_bars_after("AAA", start(), 5, 300.0));
+    let later = platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let learn = later.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        learn.detail.contains("filled path(s) priced for size"),
+        "LEARN did not report pricing the fill: {}",
+        learn.detail
+    );
+    let scores = platform.fill_scores();
+    assert_eq!(scores.len(), 1);
+    assert_eq!(scores[0].order_id, order_id);
+    assert!(
+        !scores[0].smaller_favoured,
+        "an adverse price move — not a mis-sized fill — armed the smaller-favoured bit, which \
+         is the exact bug this fix closes"
+    );
+    assert!(
+        !scores[0].larger_favoured,
+        "an adverse price move favoured the larger size"
+    );
     Ok(())
 }
 
@@ -1198,15 +1260,25 @@ fn a_persistent_pattern_of_unfavourable_declines_on_one_instrument_narrows_only_
     );
     assert!(platform.fill_scores().is_empty());
 
-    // Ten filled buys on `AAA` at the same instant, before the jump to 300:
-    // on the twin's tape every one loses on the `trade` arm and loses half as
-    // much at half the size, so `smaller_size` wins on every fill.
+    // Ten filled buys on `AAA`, submitted two days in — once the tape has
+    // already settled onto the flat 300 plateau, not during the jump that
+    // produced it. This is deliberate: a fill whose entry and exit both sit
+    // on the plateau has an *identical* twin entry and exit price, so its
+    // `trade` arm's gross is exactly zero and its only regret is the
+    // transaction cost the size actually taken paid — a genuine, isolated
+    // cost-driven case, not the pure-adverse-price-move shape that used to
+    // make `smaller_favoured` fire on any loss regardless of size (the
+    // code-review finding the fix above addresses). Scored on its own,
+    // later cycle so its horizon — anchored to its own later decision
+    // instant — has genuinely passed.
+    let fill_time = start().saturating_add(Duration::from_days(2));
+    let fill_scoring_time = start().saturating_add(Duration::from_days(4));
     for n in 0..SAMPLE {
-        fill_one(&mut platform, &format!("prop-filled-{n}"), start())?;
+        fill_one(&mut platform, &format!("prop-filled-{n}"), fill_time)?;
     }
     assert_eq!(platform.filled_awaiting_score(), SAMPLE);
-    platform.run_cycle(scoring_time);
-    platform.run_cycle(scoring_time);
+    platform.run_cycle(fill_scoring_time);
+    platform.run_cycle(fill_scoring_time);
     assert_eq!(
         platform.filled_awaiting_score(),
         0,
@@ -1217,7 +1289,7 @@ fn a_persistent_pattern_of_unfavourable_declines_on_one_instrument_narrows_only_
     assert_eq!(
         fills.iter().filter(|score| score.smaller_favoured).count(),
         SAMPLE,
-        "the premise failed: a losing fill did not favour the smaller size: {:?}",
+        "the premise failed: a cost-driven fill did not favour the smaller size: {:?}",
         fills
             .iter()
             .map(|score| (score.smaller_favoured, score.larger_favoured))

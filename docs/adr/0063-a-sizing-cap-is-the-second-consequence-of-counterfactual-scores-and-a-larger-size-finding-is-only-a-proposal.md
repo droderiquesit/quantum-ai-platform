@@ -161,12 +161,61 @@ path, as ADR 0061 holds it for the rule rows.
   half rather than a curve so that the damage a wrong bit can do is one
   bounded, named number.
 - **The bars.** Ten and three in four by reference to ADR 0055; a desk
-  whose fills are few will wait a long time for either finding, and a desk
-  whose tape is trending will see the smaller side arm on every buy in a
-  rising market, which is the twin's direction convention at work rather
-  than a sizing insight. That convention is documented in the learning
-  tests and is the same one ADR 0055 rests on; if it is ever changed, both
-  records must be re-read.
+  whose fills are few will wait a long time for either finding. That
+  convention is documented in the learning tests and is the same one ADR
+  0055 rests on; if it is ever changed, both records must be re-read.
+- **`smaller_favoured` used to be, and to a lesser extent still is, a
+  win/loss signal rather than a sizing-efficiency one.** An independent
+  code review found that comparing the smaller-size alternative's raw
+  simulated P&L against the trade's armed the cap on *every* fill that
+  lost money before costs at all, however small the cost paid — a smaller
+  loss is trivially closer to zero than a larger one of the same shape,
+  regardless of whether the size itself was the problem. A market that
+  merely trended against every buy (the risk this section named before the
+  fix) would arm the cap on direction, not on sizing.
+
+  The fix: `Platform::score_filled` now also requires that the alternative's
+  cost advantage over the trade — recovered from the twin's own cost-model
+  breakdown, `gross = simulated_pnl() + simulated_costs()`, per
+  `counterfactual.rs`'s own arithmetic, not a separately fitted estimate —
+  is at least as large in magnitude as its directional disadvantage before
+  `smaller_favoured` counts it. This closes the concrete defect: a pure
+  directional loss, with cost a rounding error beside it, no longer arms
+  the cap (`a_fill_that_lost_purely_to_an_adverse_price_move_does_not_
+  favour_the_smaller_size`).
+
+  What it does **not** do, stated plainly rather than implied by the fix's
+  existence: it is not a marginal-cost analysis (it compares the *average*
+  cost and gross the twin already computed for each arm, not the derivative
+  of cost with respect to size), and it says nothing about whether either
+  quantity was *material* — a fill whose cost and directional swing are
+  both negligible can still clear the gate on noise the size of a rounding
+  error in either direction. It is the minimum fix that removes the
+  demonstrated bias, not a rebuilt, unbiased estimator of "was this size
+  right for its edge."
+
+  **The fix is asymmetric, and that is deliberate, not an oversight.**
+  `larger_favoured` keeps the plain P&L comparison. Applying the identical
+  gate to it is mathematically impossible to satisfy except at an exact
+  equality: the *larger* alternative's extra cost is always a cost, never a
+  saving, so "favoured" (the edge exceeded the extra cost) and "cost
+  advantage at least matches the directional disadvantage" (the extra cost
+  is at least as large as the edge that beat it) contradict each other for
+  every value but one. Gating `larger_favoured` the same way would not
+  reduce its bias; it would make the loosening-direction finding
+  permanently unreachable — this repository's own standing example of what
+  that looks like is `MaxExpectedShortfall`, a limit that could never fire
+  and read as protection while being none. `larger_favoured` therefore
+  still leans on win/loss more than `smaller_favoured` now does: a fill
+  whose edge merely and heavily exceeded its cost will still read as
+  "should have been larger," whether or not the size specifically was
+  underweight. Two things bound the consequence of that residual bias
+  rather than eliminate it: `larger_size_finding` returns a record with no
+  multiplier (§12.4's guardrail, held structurally — see "Why the loosening
+  direction cannot reach a bound" above), and every consequence of it is a
+  proposal a person reads, never an automatic bound. If a future
+  change makes `larger_favoured` a production input to anything but a
+  proposal, this asymmetry must be resolved first, not inherited quietly.
 - **Any code path that reads `larger_favoured` into a number above one.**
   There is none; the day one appears this record is void.
 

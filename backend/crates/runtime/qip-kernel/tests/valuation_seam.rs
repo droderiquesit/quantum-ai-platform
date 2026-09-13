@@ -787,14 +787,16 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
     let declined_before = platform.declined_awaiting_score();
     let filled_before = platform.filled_awaiting_score();
 
-    // The evidence: ten buys a control refused and ten buys the venue
-    // filled, all at the reference instant, then a flat tape ten percent
-    // higher. A rise after a declined buy is what the twin charges it a loss
-    // for (the direction convention `qip-kernel/tests/learning.rs` states),
-    // so every decline scores as correctly declined and ADR 0055's bar is
-    // cleared; the same rise makes every filled buy lose on the twin's
-    // `trade` arm and lose half as much at half the size, so every fill
-    // favours the smaller size and ADR 0063's bar is cleared.
+    // Observed before either loop below submits anything, so a fill decided
+    // two days in (see `fill_time`) has a price to execute against.
+    platform.observe(flat_after("AAA", start(), 7, 110.0));
+
+    // The evidence: ten buys a control refused at the reference instant,
+    // against a flat tape ten percent higher. A rise after a declined buy is
+    // what the twin charges it a loss for (the direction convention
+    // `qip-kernel/tests/learning.rs` states), so every decline scores as
+    // correctly declined and ADR 0055's bar is cleared.
+    let fill_time = start().saturating_add(Duration::from_days(2));
     for n in 0..10 {
         let declined = platform.order_from(
             object("AAA"),
@@ -813,6 +815,20 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
         // cost and their mark on the higher tape — is under a thousandth of
         // it and the budget below can be stated on the book rather than read
         // back; ten thousand-share fills moved it by three percent.
+        //
+        // Decided two days after the declines, once the tape has already
+        // settled onto the flat 110 plateau rather than during the move
+        // that produced it — deliberately, not incidentally. A fill whose
+        // entry and exit both sit on the plateau has a twin `trade` arm
+        // with an *identical* entry and exit price, so its gross is exactly
+        // zero and its only regret is the transaction cost the size taken
+        // paid: a genuine, isolated cost-driven case. Scoring these against
+        // the same move the declines are scored against — as an earlier
+        // version of this fixture did — made every fill favour the smaller
+        // size for the same reason every decline scored correctly: the
+        // *directional* move dominated, not the size. That is the exact
+        // code-review finding the sizing-cap fix in `platform.rs` closes,
+        // and this fixture was the one it broke.
         let filled = platform.order_from(
             object("AAA"),
             Side::Buy,
@@ -820,16 +836,17 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
             dec!("100"),
             &format!("prop-filled-{n}"),
             vec![format!("hyp-filled-{n}")],
-            start(),
+            fill_time,
         );
-        platform.submit_order(filled, start())?;
+        platform.submit_order(filled, fill_time)?;
     }
     assert_eq!(platform.declined_awaiting_score(), declined_before + 10);
     assert_eq!(platform.filled_awaiting_score(), filled_before + 10);
-    platform.observe(flat_after("AAA", start(), 5, 110.0));
     // At least twenty evaluations under a cap of eight per cycle: three
     // LEARN passes, and a fourth in case the reference cycle queued more.
-    let scoring = start().saturating_add(Duration::from_days(3));
+    // One day later than the declines' own horizon needs, so the fills'
+    // later-decided horizon (from `fill_time`) has passed too.
+    let scoring = start().saturating_add(Duration::from_days(4));
     for _ in 0..4 {
         platform.run_cycle(scoring);
     }

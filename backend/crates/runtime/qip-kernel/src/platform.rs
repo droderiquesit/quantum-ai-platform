@@ -12283,9 +12283,32 @@ impl Platform {
                     // against the realised outcome. An alternative that did
                     // not fill in simulation is not a better size; it is no
                     // size at all.
-                    let trade_pnl = trade
-                        .filter(|entry| entry.counterfactual_outcome.fill().traded())
-                        .map(|entry| entry.counterfactual_outcome.simulated_pnl());
+                    let trade_priced =
+                        trade.filter(|entry| entry.counterfactual_outcome.fill().traded());
+                    let trade_pnl =
+                        trade_priced.map(|entry| entry.counterfactual_outcome.simulated_pnl());
+                    let trade_costs =
+                        trade_priced.map(|entry| entry.counterfactual_outcome.simulated_costs());
+                    // A code-review finding on ADR 0063: comparing raw
+                    // simulated P&L marks the *smaller* arm "favoured" on
+                    // *every* fill that lost money before costs at all,
+                    // whatever the size — a smaller loss is closer to zero
+                    // than a larger one of the same shape regardless of
+                    // whether the size itself was the problem, so a losing
+                    // streak driven purely by adverse price movement armed
+                    // the cap (a real weight bound, ADR 0063's `cap_
+                    // multiplier`) exactly as a genuinely oversized fill
+                    // would. `simulated_pnl() = gross − simulated_costs()`
+                    // (`qip-twin`'s own arithmetic in `counterfactual.rs`),
+                    // so `gross = pnl + costs` recovers the directional
+                    // component the twin already netted against costs, and
+                    // `smaller_size` now counts as favoured only when it is
+                    // *also* true that its cost advantage over the trade —
+                    // the twin's own cost-model breakdown, not a derived
+                    // estimate — is at least as large in magnitude as its
+                    // directional disadvantage: cost, not price direction,
+                    // must be the larger contributor to why it would have
+                    // done better.
                     let beats_trade = |kind: &str| {
                         set.by_kind(kind)
                             .filter(|entry| entry.counterfactual_outcome.fill().traded())
@@ -12295,7 +12318,47 @@ impl Platform {
                                     .is_positive()
                             })
                     };
-                    let smaller_favoured = beats_trade("smaller_size");
+                    let smaller_favoured =
+                        trade_pnl
+                            .zip(trade_costs)
+                            .is_some_and(|(trade_pnl, trade_costs)| {
+                                let trade_gross = trade_pnl + trade_costs;
+                                set.by_kind("smaller_size")
+                                    .filter(|entry| entry.counterfactual_outcome.fill().traded())
+                                    .is_some_and(|entry| {
+                                        let alt_pnl = entry.counterfactual_outcome.simulated_pnl();
+                                        let alt_costs =
+                                            entry.counterfactual_outcome.simulated_costs();
+                                        let alt_gross = alt_pnl + alt_costs;
+                                        let cost_advantage = (trade_costs - alt_costs).abs();
+                                        let directional_disadvantage =
+                                            (alt_gross - trade_gross).abs();
+                                        (alt_pnl - trade_pnl).is_positive()
+                                            && !(cost_advantage - directional_disadvantage)
+                                                .is_negative()
+                                    })
+                            });
+                    // `larger_size` keeps the plain P&L comparison rather
+                    // than the same cost-dominance gate, and this is a
+                    // deliberate asymmetry, not an oversight: for the
+                    // *larger* arm, the extra cost of trading more is a
+                    // strict cost to the alternative (never a saving), so
+                    // "favoured" already implies the directional edge
+                    // exceeded that extra cost. Requiring the extra cost to
+                    // *also* dominate the edge (the same gate applied to
+                    // `smaller_size`) is then self-contradictory — it would
+                    // demand the cost be both larger than, and smaller than,
+                    // the edge that beat it — making `larger_favoured`
+                    // unreachable except at an exact equality, which is a
+                    // dead control (this repository's own standing example
+                    // of what not to ship is `MaxExpectedShortfall`, a limit
+                    // that could never fire) rather than a fix. `larger_
+                    // favoured` therefore still leans on win/loss more than
+                    // `smaller_favoured` now does; ADR 0063's "what would
+                    // make this wrong" names that residual honestly. It
+                    // cannot arm anything automatically regardless — see
+                    // `larger_size_finding`'s type, which carries no
+                    // multiplier.
                     let larger_favoured = beats_trade("larger_size");
                     let trade_error_bps = trade
                         .and_then(|entry| entry.counterfactual_outcome.simulated_entry_price())
