@@ -427,8 +427,9 @@ impl SourceEndpoint {
         // this platform's HTTP client speaks plaintext HTTP/1.1 (ADR 0009):
         // a `\r\n` there splits the request, so the origin a legality check
         // was keyed on and the origin the bytes reach are different again.
-        // Latent rather than live — `NetworkProbe` refuses every call and no
-        // environment mounts a candidate file — and refused here anyway,
+        // Latent rather than live — `NetworkProbe` reaches only a reviewed
+        // egress route (ADR 0060) and no environment mounts a candidate
+        // catalogue — and refused here anyway,
         // because the guard is cheap and the door is the one this function
         // exists to hold. The position is named, never the character: the
         // path is caller text.

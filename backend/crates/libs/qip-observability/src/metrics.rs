@@ -748,19 +748,21 @@ pub mod names {
     /// the universe, exactly as `qip_edge`'s per-cell series are bounded by
     /// their own fixed sets.
     pub const SIMULATION_CAPACITY_ADVERSITY_BPS: &str = "qip_simulation_capacity_adversity_bps";
-    /// Loss as a fraction of equity from applying one scenario in
+    /// Loss as a fraction of equity from applying each scenario in
     /// `qip_simulation_engine::scenario::standard_library` to the book as it
-    /// stands (§23.7), recorded by `qip_kernel`'s `Platform::stress_test_book`
+    /// stands (§23.7), recorded from `qip_kernel`'s `Platform::stress_the_book`
     /// every SIMULATE stage that has an open position to stress.
     ///
     /// `StressTester` and the standard library were built and scored
     /// entirely in that crate's own tests and had no caller in this
-    /// workspace before this. Every position is stressed at a full (beta
-    /// 1.0) equity-factor exposure absent a fitted per-name beta — a
-    /// conservative assumption stated once here and in the recording site,
-    /// because crediting a diversification nobody measured is the one
-    /// rounding direction a stress test may never take. Labelled `scenario`,
-    /// bounded by the fixed library the crate ships.
+    /// workspace before this. Each position is stressed at the beta the
+    /// market factor (ADR 0058) measured for it from the platform's own
+    /// tape; a position the factor cannot measure — too short an overlap —
+    /// is counted as unmodelled on `Platform::stress_report` and contributes
+    /// nothing here, rather than being credited as immune, because crediting
+    /// a diversification nobody measured is the one rounding direction a
+    /// stress test may never take. Labelled `scenario`, bounded by the fixed
+    /// library the crate ships.
     pub const SIMULATION_STRESS_LOSS_FRACTION: &str = "qip_simulation_stress_loss_fraction";
 
     // The cycle. One turn of SENSE → … → LEARN, as the kernel runs it.

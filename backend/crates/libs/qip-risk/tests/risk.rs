@@ -1264,3 +1264,226 @@ fn a_return_series_carrying_a_value_that_is_not_a_number_refuses_the_tail_figure
         );
     }
 }
+
+// --- the market factor (ADR 0058) --------------------------------------------
+
+use qip_risk::market_factor::{MARKET_FACTOR, MINIMUM_OVERLAP, MarketFactor};
+
+/// A close series that rises by `step` each period from `start`.
+fn ramp(start: f64, step: f64, periods: usize) -> Vec<f64> {
+    (0..periods).map(|i| start + step * i as f64).collect()
+}
+
+/// A close series whose *returns* vary, scaled by `amplitude`.
+///
+/// A constant growth rate is the trap here: every return is then identical,
+/// the factor's variance is nil, and `beta` divides by nothing and answers
+/// zero. Two of these tests were written that way first and reported a
+/// confident beta of 0 for an instrument that was the entire factor, which is
+/// what sent the module its variance floor.
+fn wobble(start: f64, periods: usize, amplitude: f64) -> Vec<f64> {
+    let mut closes = Vec::with_capacity(periods);
+    let mut price = start;
+    for i in 0..periods {
+        closes.push(price);
+        let swing = ((i as f64) * 0.7).sin() * 0.01 * amplitude;
+        price *= 1.0 + swing;
+    }
+    closes
+}
+
+#[test]
+fn an_instrument_with_too_short_an_overlap_carries_no_beta_rather_than_a_zero() {
+    // The distinction the whole module is arranged around. A position nobody
+    // could model and a position genuinely insensitive to a shock are
+    // different facts, and reporting the first as zero understates a stressed
+    // book by exactly the positions nobody measured.
+    let mut tape = BTreeMap::new();
+    tape.insert("LONG".to_string(), ramp(100.0, 1.0, MINIMUM_OVERLAP + 40));
+    tape.insert("SHORT".to_string(), ramp(50.0, 0.5, 4));
+    let factor = MarketFactor::estimate(&tape);
+
+    // Premise: the factor was estimated at all, and the long instrument does
+    // carry a beta — without that this test passes over a factor that models
+    // nothing and proves only that nothing was modelled.
+    assert!(!factor.is_empty(), "the factor was estimated from nothing");
+    assert!(
+        factor.beta_of("LONG").is_some(),
+        "the instrument with a full history carries no beta, so the absence \
+         below is not about the overlap"
+    );
+
+    assert_eq!(
+        factor.beta_of("SHORT"),
+        None,
+        "an instrument with 3 return observations was given a beta; below \
+         {MINIMUM_OVERLAP} the estimate swings on a single point and must be \
+         absent rather than small"
+    );
+    assert_eq!(
+        factor.modelled_count(),
+        1,
+        "modelled() must hold only what was actually modelled"
+    );
+}
+
+#[test]
+fn an_instrument_that_is_the_whole_factor_has_a_beta_of_one() {
+    // With one instrument the equal-weighted mean of returns *is* that
+    // instrument's return, so its beta against the factor is exactly one. The
+    // arithmetic has a known answer here, which is what makes it a check
+    // rather than a snapshot of whatever the code happened to produce.
+    let mut tape = BTreeMap::new();
+    tape.insert("ONLY".to_string(), wobble(100.0, MINIMUM_OVERLAP + 10, 1.0));
+    let factor = MarketFactor::estimate(&tape);
+
+    let beta = factor
+        .beta_of("ONLY")
+        .expect("the only instrument has a full overlap");
+    assert!(
+        (beta - 1.0).abs() < 1e-9,
+        "an instrument that constitutes the entire factor has beta 1, not {beta}"
+    );
+}
+
+#[test]
+fn an_instrument_that_moves_twice_as_hard_as_the_factor_has_the_higher_beta() {
+    // Two instruments, one twice as volatile as the other in the same
+    // direction. Their betas must straddle one, and the leveraged one must be
+    // the larger — a sign error or a swapped argument to `beta` inverts this.
+    let periods = MINIMUM_OVERLAP + 60;
+    let mut tape = BTreeMap::new();
+    tape.insert("CALM".to_string(), wobble(100.0, periods, 0.5));
+    tape.insert("WILD".to_string(), wobble(100.0, periods, 2.0));
+    let factor = MarketFactor::estimate(&tape);
+
+    let calm = factor.beta_of("CALM").expect("CALM has a full overlap");
+    let wild = factor.beta_of("WILD").expect("WILD has a full overlap");
+    assert!(
+        wild > calm,
+        "the instrument moving twice as hard has the lower beta ({wild} against {calm}); \
+         the estimate's arguments are the wrong way round"
+    );
+    assert!(
+        calm < 1.0 && wild > 1.0,
+        "two instruments either side of their own mean must straddle a beta of one; \
+         got {calm} and {wild}"
+    );
+}
+
+#[test]
+fn an_empty_tape_yields_a_factor_that_models_nothing_and_says_so() {
+    let factor = MarketFactor::estimate(&BTreeMap::new());
+    assert!(factor.is_empty());
+    assert_eq!(factor.latest_return(), None);
+    assert_eq!(factor.modelled_count(), 0);
+    assert_eq!(factor.beta_of("ANYTHING"), None);
+    // The name is the contract with the scenario library's shocks: a factor
+    // published under another name is a factor no shock finds.
+    assert_eq!(MARKET_FACTOR, "market");
+}
+
+#[test]
+fn a_factor_that_never_moved_models_nothing_rather_than_reporting_zero_betas() {
+    // `metrics::beta` divides by the benchmark's variance and answers 0.0
+    // rather than dividing by zero, and 0.0 is indistinguishable downstream
+    // from a genuine zero beta — a position reported immune to a market that
+    // simply never moved. Every instrument stays unmodelled instead.
+    let mut tape = BTreeMap::new();
+    // A constant growth rate: every return identical, so the factor is flat.
+    let flat: Vec<f64> = (0..MINIMUM_OVERLAP + 30)
+        .map(|i| 100.0 * 1.01_f64.powi(i as i32))
+        .collect();
+    tape.insert("A".to_string(), flat.clone());
+    tape.insert("B".to_string(), flat);
+    let factor = MarketFactor::estimate(&tape);
+
+    // Premise: the factor has a return series — it is flat, not absent, and
+    // this test is about a factor that moved uniformly rather than one that
+    // was never estimated.
+    assert!(
+        !factor.is_empty(),
+        "the factor has no returns at all, so this proves nothing about variance"
+    );
+    assert_eq!(
+        factor.modelled_count(),
+        0,
+        "a factor with no variance produced betas; every one of them is the \
+         `0.0` that `beta` returns when it cannot divide, and downstream that \
+         reads as immunity"
+    );
+}
+
+#[test]
+fn a_residual_variance_is_reported_exactly_where_a_beta_is_and_never_otherwise() {
+    // The two halves of the single-factor model must arrive together. A caller
+    // building a `FactorRisk` needs one exposure and one specific variance per
+    // asset, and an instrument that carried a beta but no residual — or a
+    // residual but no beta — would produce a model whose rows do not line up
+    // with its assets. `FactorRisk::new` refuses a length mismatch; it cannot
+    // see a *misalignment*, which would attribute one name's risk to another.
+    let mut tape = BTreeMap::new();
+    tape.insert("LONG".to_string(), wobble(100.0, MINIMUM_OVERLAP + 40, 1.0));
+    tape.insert("ALSO".to_string(), wobble(100.0, MINIMUM_OVERLAP + 40, 2.3));
+    // Too short to estimate anything from: this is what a newly listed name
+    // looks like, and it is the reason the two maps could ever disagree.
+    tape.insert("SHORT".to_string(), wobble(100.0, 4, 1.0));
+    let factor = MarketFactor::estimate(&tape);
+
+    // Premise: something was modelled, or the agreement below is vacuous.
+    assert_eq!(
+        factor.modelled_count(),
+        2,
+        "the two long series must both carry a beta for this to prove anything"
+    );
+    for instrument in ["LONG", "ALSO", "SHORT"] {
+        assert_eq!(
+            factor.beta_of(instrument).is_some(),
+            factor.specific_variance_of(instrument).is_some(),
+            "{instrument} has a beta and a residual that disagree about whether \
+             it was modelled"
+        );
+    }
+    // And the residual is a variance: never negative, whatever the sampling
+    // noise in the subtraction did.
+    for instrument in ["LONG", "ALSO"] {
+        let residual = factor
+            .specific_variance_of(instrument)
+            .expect("modelled above");
+        assert!(
+            residual >= 0.0,
+            "{instrument} has a negative residual variance ({residual}), which \
+             `FactorRisk::new` refuses outright"
+        );
+    }
+}
+
+#[test]
+fn the_factors_variance_is_the_variance_of_the_series_it_reports() {
+    // `variance` is what a caller hands to a one-by-one factor covariance
+    // matrix. If it were computed over anything but the series `returns`
+    // exposes, the decomposition would be measured against a benchmark the
+    // betas were not estimated against, and every contribution would be off by
+    // a ratio nobody could see.
+    let mut tape = BTreeMap::new();
+    tape.insert("A".to_string(), wobble(100.0, MINIMUM_OVERLAP + 20, 1.0));
+    tape.insert("B".to_string(), wobble(100.0, MINIMUM_OVERLAP + 20, 1.7));
+    let factor = MarketFactor::estimate(&tape);
+
+    // Premise: a factor that never moved would satisfy any claim about its
+    // variance being some number, including zero.
+    assert!(
+        factor.returns().len() > MINIMUM_OVERLAP,
+        "the factor must have a series for its variance to be a claim about one"
+    );
+    assert!(
+        factor.variance() > 0.0,
+        "a factor estimated from two wobbling series has variance"
+    );
+    let expected = qip_numerics::stats::variance(factor.returns());
+    assert!(
+        (factor.variance() - expected).abs() < 1e-18,
+        "the reported variance {} is not the variance of the reported series {expected}",
+        factor.variance()
+    );
+}

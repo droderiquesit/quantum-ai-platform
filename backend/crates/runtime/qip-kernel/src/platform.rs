@@ -158,7 +158,9 @@ use qip_simulation_engine::execution::SimOrder;
 use qip_simulation_engine::market::{
     InstrumentSpec, MarketSimulator, MarketView as SimMarketView, SimStrategy, SyntheticMarket,
 };
-use qip_simulation_engine::scenario::{FactorExposure, StressTester, standard_library};
+use qip_simulation_engine::scenario::{
+    FactorExposure, ScenarioResult, StressTester, standard_library,
+};
 use qip_streaming::durable::DurableLogTransport;
 use qip_streaming::envelope::{EventFacts, StreamEnvelope};
 use qip_streaming::ports::Publisher;
@@ -618,6 +620,22 @@ pub struct Platform {
     observations_absorbed: u64,
     /// Price history per instrument, for the detectors.
     price_history: BTreeMap<String, Vec<f64>>,
+    /// What the last SIMULATE stage found when it stressed the book.
+    ///
+    /// Held rather than only reported so an operator can read the scenario
+    /// that hurt most without replaying the cycle, and cleared whenever the
+    /// stage could not run: a stale stress report beside a book that has since
+    /// changed is a risk number about a portfolio nobody owns.
+    stress: Option<StressReport>,
+    /// How often each class of claim held, in which regime.
+    ///
+    /// The §15.1 meta-learning board. Bounded by construction — claim classes
+    /// are the anomaly kinds the detectors raise and contexts are the product
+    /// of two regime enums — so it does not grow with uptime, and it is
+    /// deliberately not replayed: a score is a summary of resolutions the
+    /// event log already holds, and a second durable copy of a derived fact is
+    /// a second source of truth for it.
+    claim_scores: qip_evolution::scoring::Scoreboard,
     volume_history: BTreeMap<String, Vec<f64>>,
     /// Quoted spread history per instrument, in basis points — the series the
     /// liquidity-deterioration detector reads. A statistic, so `f64`.
@@ -900,6 +918,69 @@ const REGISTRATION_ORIGIN: &str = "kernel/registration";
 /// eligibility, registration and fabric producers on the topic the four
 /// share, for the reason each of the others gives.
 const PRODUCT_ORIGIN: &str = "kernel/product";
+
+/// The scenario loss, as a fraction of equity, above which SIMULATE raises a
+/// problem rather than filing a number.
+///
+/// A fifth of the book is chosen because it is the point at which the standard
+/// library's mildest historical episode — the 1987 gap, at a 22% equity shock
+/// — starts to matter for a book carrying a beta near one, so a tolerance
+/// above it would be a control that the library's own scenarios cannot trip.
+/// It is not a limit: nothing is refused, the cycle continues, and the stage
+/// says what would happen. A control that halted on a hypothetical would halt
+/// the platform on somebody's choice of magnitude.
+const STRESS_LOSS_TOLERANCE: f64 = 0.20;
+
+/// What the SIMULATE stage found when it stressed the open book.
+///
+/// Carries the position counts beside the losses on purpose. A scenario result
+/// alone reports a loss fraction over the positions it could model, and a book
+/// where nine of ten positions are unmodelled produces a small, calm number
+/// that describes almost nothing. The two counts are what let a reader tell
+/// a book that survives a crisis from a book the model cannot see.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StressReport {
+    /// When the book was stressed.
+    pub at: Timestamp,
+    /// Every scenario in the standard library, worst loss first.
+    pub scenarios: Vec<ScenarioResult>,
+    /// Positions carrying a beta, and so actually stressed.
+    pub modelled_positions: usize,
+    /// Positions the factor could not be measured for. Stressed by nothing.
+    pub unmodelled_positions: usize,
+    /// The single-factor decomposition of the modelled book, where the model
+    /// could be built. `None` is a refusal, never a zero decomposition.
+    pub decomposition: Option<qip_risk::factor::RiskDecomposition>,
+}
+
+impl StressReport {
+    /// The scenario that cost the most.
+    pub fn worst(&self) -> Option<&ScenarioResult> {
+        self.scenarios.first()
+    }
+
+    /// The stage's one-line detail.
+    fn summarise(&self) -> String {
+        let worst = match self.worst() {
+            Some(worst) => worst.summarise(),
+            None => "no scenario applied".to_string(),
+        };
+        let breadth = match &self.decomposition {
+            Some(decomposition) => format!(
+                ", {:.2} effective bet(s) over {:.0}% factor risk",
+                decomposition.effective_bets(),
+                decomposition.factor_share * 100.0
+            ),
+            None => String::new(),
+        };
+        format!(
+            "{} scenario(s) applied, {} position(s) modelled and {} unmodelled; worst {worst}{breadth}",
+            self.scenarios.len(),
+            self.modelled_positions,
+            self.unmodelled_positions
+        )
+    }
+}
 
 /// The most venue-assets the platform keeps a statement about.
 ///
@@ -3017,6 +3098,11 @@ impl Platform {
             reasoned_through: now,
             observations_absorbed: 0,
             price_history: BTreeMap::new(),
+            stress: None,
+            // Strategies rather than models: the subject is the class of claim
+            // a detector raised, and "how often its signals were right, by
+            // regime" is exactly what that domain names.
+            claim_scores: qip_evolution::scoring::Scoreboard::strategies(),
             volume_history: BTreeMap::new(),
             spread_history: BTreeMap::new(),
             observation_history: BTreeMap::new(),
@@ -8739,14 +8825,6 @@ impl SimStrategy for CapacityProbeStrategy {
     }
 }
 
-/// What applying one scenario from the standard library to the book, as it
-/// stands, found (§23.7).
-#[derive(Clone, Debug)]
-struct StressProbeResult {
-    scenario: String,
-    loss_fraction: f64,
-}
-
 impl Platform {
     fn stage_simulate(&mut self, now: Timestamp) -> StageOutcome {
         // Simulation runs against whatever history has accumulated. With too
@@ -8754,6 +8832,7 @@ impl Platform {
         // read.
         let longest = self.price_history.values().map(Vec::len).max().unwrap_or(0);
         if longest < 60 {
+            self.stress = None;
             return StageOutcome::ran(
                 Stage::Simulate,
                 0,
@@ -8781,23 +8860,53 @@ impl Platform {
             );
         }
 
-        // `StressTester`/`standard_library` were built and scored entirely in
-        // this crate's own tests and reached no production caller before this
-        // (§23.7).
-        if let Some(stress) = self.stress_test_book(now) {
-            detail.push_str(&format!(
-                "; {} stress: {:.1}% of equity",
-                stress.scenario,
-                stress.loss_fraction * 100.0
-            ));
-            self.telemetry.metrics.gauge(
-                names::SIMULATION_STRESS_LOSS_FRACTION,
-                labels([("scenario", stress.scenario.as_str())]),
-                stress.loss_fraction,
-            );
+        // Until this call existed the stage counted its own history and did
+        // nothing with it: `StressTester`, `standard_library`,
+        // `ScenarioResult::breaches` and `RiskDecomposition::effective_bets`
+        // were built, tested, and reached by nothing outside tests. This is
+        // the stage whose name is the question they answer.
+        let (report, problems) = self.stress_the_book(now);
+        match &report {
+            Some(report) => {
+                detail.push_str(&format!("; stress: {}", report.summarise()));
+                // One gauge per scenario, under the scenario's own name and
+                // from the same report the platform holds, so the chart and
+                // `Platform::stress_report` cannot tell two different
+                // stories about one pass. Before the factor model existed
+                // this series carried a single scenario at a full (beta 1.0)
+                // exposure; it now carries the library at the measured beta,
+                // and a position the factor cannot measure contributes
+                // nothing to it rather than being counted immune.
+                for result in &report.scenarios {
+                    self.telemetry.metrics.gauge(
+                        names::SIMULATION_STRESS_LOSS_FRACTION,
+                        labels([("scenario", result.scenario.as_str())]),
+                        result.loss_fraction,
+                    );
+                }
+            }
+            // Not "nothing to stress": the word is what a reader greps for,
+            // and a book with no open position has no scenario to apply, which
+            // is a different fact from a stress that found nothing.
+            None => detail.push_str("; no open position to apply a scenario to"),
         }
-
-        StageOutcome::ran(Stage::Simulate, longest, detail)
+        // What the stage did, which is now two things: the history it made
+        // available to resample and the scenarios it applied to the book. Both
+        // are counted because `charge_cycle` bills a stage by what it produced
+        // (principle 6: bill what ran), and a cycle that also stressed six
+        // scenarios did more work than one that only had a tape.
+        //
+        // Narrowing this to the scenario count alone was a real regression,
+        // caught by `a_busier_cycle_costs_more_than_a_quiet_one` and by
+        // `resilience.rs`'s legibility check: a platform with a long tape and
+        // no open position reported producing nothing, so a blind cycle and a
+        // fully sighted one were billed the same.
+        let produced = longest + report.as_ref().map(|r| r.scenarios.len()).unwrap_or(0);
+        self.stress = report;
+        problems.into_iter().fold(
+            StageOutcome::ran(Stage::Simulate, produced, detail),
+            StageOutcome::with_problem,
+        )
     }
 
     /// One capacity probe against the instrument with the longest price
@@ -8870,47 +8979,157 @@ impl Platform {
         })
     }
 
-    /// Apply the first scenario in the standard library to the book as it
-    /// stands.
+    /// Stress the open book against the standard scenario library.
     ///
-    /// Every open position is given a full (beta 1.0) exposure to the
-    /// "equity" factor every scenario in the library shocks, because no
-    /// factor model is fitted at this seam — see
-    /// [`names::PORTFOLIO_EFFECTIVE_BETS`] for the same limitation stated
-    /// where it first mattered — and a stress test that credited a
-    /// diversification nobody measured would understate the risk it exists
-    /// to surface, which is the one direction this workspace never rounds a
-    /// control.
-    fn stress_test_book(&self, now: Timestamp) -> Option<StressProbeResult> {
-        if self.capital.positions.is_empty() {
-            return None;
+    /// Returns the report and whatever the stage should raise as a problem.
+    /// Kept separate from [`Self::stage_simulate`] so the arithmetic is one
+    /// unit and the stage is the wiring.
+    ///
+    /// **A position with no beta is stressed by nothing and is counted, not
+    /// dropped.** `StressTester` already reports it on `unmodelled`; the count
+    /// is carried up because a loss figure over three of a book's ten
+    /// positions and the same figure over all ten are different facts, and
+    /// only one of them is a risk number.
+    fn stress_the_book(&self, now: Timestamp) -> (Option<StressReport>, Vec<String>) {
+        let mut problems = Vec::new();
+        let equity = self.capital.equity();
+        if !equity.is_positive() {
+            return (None, problems);
         }
-        let equity = self.capital.equity().to_f64();
-        if equity <= 0.0 {
-            return None;
-        }
-        let exposures: Vec<FactorExposure> = self
-            .capital
-            .positions
-            .iter()
-            .map(|(object_id, lot)| {
-                let mut betas = BTreeMap::new();
-                betas.insert("equity".to_string(), 1.0);
-                FactorExposure {
-                    object_id: object_id.clone(),
-                    notional: (lot.quantity * lot.average_price).abs(),
-                    betas,
+        let market = qip_risk::market_factor::MarketFactor::estimate(&self.price_history);
+
+        let mut exposures = Vec::new();
+        // The three vectors below are the single-factor model's rows, and they
+        // are appended together so they stay index-aligned: `FactorRisk::new`
+        // refuses a mismatch, but a silent misalignment of equal lengths would
+        // attribute one instrument's risk to another's name.
+        let mut assets: Vec<String> = Vec::new();
+        let mut betas: Vec<f64> = Vec::new();
+        let mut specific: Vec<f64> = Vec::new();
+        let mut unmodelled = 0usize;
+        for (object, lot) in &self.capital.positions {
+            let mut position_betas = BTreeMap::new();
+            match (market.beta_of(object), market.specific_variance_of(object)) {
+                (Some(beta), Some(residual)) => {
+                    // Filed under the scenario library's own name for the
+                    // shock, not under the platform's name for the factor.
+                    // The two differ and the mapping is one constant.
+                    position_betas.insert(qip_risk::market_factor::EQUITY_SHOCK.to_string(), beta);
+                    assets.push(object.clone());
+                    betas.push(beta);
+                    specific.push(residual);
                 }
-            })
+                _ => unmodelled += 1,
+            }
+            exposures.push(FactorExposure {
+                object_id: object.clone(),
+                notional: lot.quantity * lot.average_price,
+                betas: position_betas,
+            });
+        }
+        if exposures.is_empty() {
+            return (None, problems);
+        }
+
+        // The exit is priced off the platform's own cost model rather than a
+        // figure written here: commission, half-spread and tax are the
+        // frictions that do not depend on participation, and impact is left
+        // out because the stress tester prices a whole-book exit without a
+        // volume to size participation against. A number invented at this
+        // seam would be a second claim about the cost of trading.
+        let costs = CostModel::liquid_equity();
+        let tester =
+            StressTester::new(costs.commission_bps + costs.half_spread_bps + costs.tax_bps);
+        let scenarios = standard_library();
+        let results = match tester.apply_all(&scenarios, &exposures, equity.to_f64(), now) {
+            Ok(results) => results,
+            Err(error) => {
+                problems.push(format!("stress test refused: {}", error.message()));
+                return (None, problems);
+            }
+        };
+
+        // A scenario that would take more than the tolerance out of the book
+        // is the stage's problem, not a line in a report nobody reads. This is
+        // the first production caller of `ScenarioResult::breaches`.
+        for result in &results {
+            if result.breaches(STRESS_LOSS_TOLERANCE) {
+                problems.push(format!(
+                    "scenario {} loses {:.1}% of equity, above the {:.0}% tolerance",
+                    result.scenario,
+                    result.loss_fraction * 100.0,
+                    STRESS_LOSS_TOLERANCE * 100.0
+                ));
+            }
+        }
+
+        let decomposition = self.decompose_risk(&market, &assets, &betas, &specific, &mut problems);
+        (
+            Some(StressReport {
+                at: now,
+                scenarios: results,
+                modelled_positions: assets.len(),
+                unmodelled_positions: unmodelled,
+                decomposition,
+            }),
+            problems,
+        )
+    }
+
+    /// Decompose the modelled book's risk over the single market factor.
+    ///
+    /// The exposures and residuals come from the same estimate the stress test
+    /// used, so the two halves of the report describe one model rather than
+    /// two fits of the same data that could disagree.
+    fn decompose_risk(
+        &self,
+        market: &qip_risk::market_factor::MarketFactor,
+        assets: &[String],
+        betas: &[f64],
+        specific: &[f64],
+        problems: &mut Vec<String>,
+    ) -> Option<qip_risk::factor::RiskDecomposition> {
+        if assets.is_empty() {
+            return None;
+        }
+        let mut exposures = qip_numerics::matrix::Matrix::zeros(assets.len(), 1);
+        for (row, beta) in betas.iter().enumerate() {
+            exposures.set(row, 0, *beta);
+        }
+        let covariance =
+            qip_numerics::matrix::Matrix::from_vec(1, 1, vec![market.variance()]).ok()?;
+        let model = match qip_risk::factor::FactorRisk::new(
+            assets.to_vec(),
+            vec![qip_risk::market_factor::MARKET_FACTOR.to_string()],
+            exposures,
+            covariance,
+            specific.to_vec(),
+        ) {
+            Ok(model) => model,
+            Err(error) => {
+                problems.push(format!("risk decomposition refused: {}", error.message()));
+                return None;
+            }
+        };
+        // Weights against the same equity the stress test used, taken from the
+        // book rather than recomputed: the decomposition and the loss figure
+        // must describe one portfolio.
+        let held: BTreeMap<String, f64> = self
+            .capital
+            .position_weights(self.capital.equity())
+            .into_iter()
             .collect();
-        let scenario = standard_library().into_iter().next()?;
-        let name = scenario.name.clone();
-        let tester = StressTester::new(10.0);
-        let result = tester.apply(&scenario, &exposures, equity, now).ok()?;
-        Some(StressProbeResult {
-            scenario: name,
-            loss_fraction: result.loss_fraction,
-        })
+        let weights: Vec<f64> = assets
+            .iter()
+            .map(|asset| held.get(asset).copied().unwrap_or(0.0))
+            .collect();
+        match model.decompose(&weights) {
+            Ok(decomposition) => Some(decomposition),
+            Err(error) => {
+                problems.push(format!("risk decomposition refused: {}", error.message()));
+                None
+            }
+        }
     }
 
     fn stage_decide(&mut self, now: Timestamp) -> StageOutcome {
@@ -9871,6 +10090,13 @@ impl Platform {
             claims.push(claim);
         }
 
+        // Meta-learning, at the one instant the platform knows whether a claim
+        // held: which *class* of claim was right, in which regime. Until this
+        // existed `qip_evolution::scoring::Scoreboard` had no caller anywhere
+        // outside its own crate — the platform scored every thesis and never
+        // asked which kinds of thesis worked when.
+        let scored_by_regime = self.score_claims_by_regime(&claims, &outcomes);
+
         let learned = self.learn_from(&claims, &outcomes, now)?;
         // A thesis graded but charged to nobody is a stage problem, not a
         // stage failure: the pass went on without it, and the outcome says so
@@ -9907,7 +10133,77 @@ impl Platform {
         if remembered > 0 {
             summary.push_str(&format!("; {remembered} episode(s) remembered"));
         }
+        if scored_by_regime > 0 {
+            summary.push_str(&format!(
+                "; {scored_by_regime} claim(s) scored by regime over {} class/regime cell(s)",
+                self.claim_scores.len()
+            ));
+        }
         Ok(Some(summary))
+    }
+
+    /// Record which class of claim held, in which regime.
+    ///
+    /// Returns how many claims were scored. A claim whose stated direction is
+    /// zero is not scored at all: "went well" is whether the move came out on
+    /// the side the claim named, and a claim that named no side cannot be
+    /// right or wrong. Counting it as a failure would charge the board for the
+    /// platform's own silence.
+    ///
+    /// The subject is the claim's **class**, not its hypothesis id. A
+    /// hypothesis resolves once and never recurs, so a board keyed on it would
+    /// hold one observation per cell for ever — every score pinned at its
+    /// prior, every band `Unproven`, and a meta-learner that learns nothing.
+    /// The class is what recurs, and it is what §15.1 means by asking which
+    /// approach works where.
+    ///
+    /// Cardinality is bounded by construction and that is deliberate: classes
+    /// come from the anomaly kinds the detectors raise, and contexts are the
+    /// product of two regime enums, so the board cannot grow with uptime the
+    /// way one keyed on instruments or hypothesis ids would.
+    fn score_claims_by_regime(
+        &mut self,
+        claims: &[ThesisClaim],
+        outcomes: &[ThesisOutcome],
+    ) -> usize {
+        let mut scored = 0usize;
+        for claim in claims {
+            let Some(outcome) = outcomes
+                .iter()
+                .find(|outcome| outcome.hypothesis_id == claim.hypothesis_id)
+            else {
+                continue;
+            };
+            if claim.direction == 0.0 {
+                continue;
+            }
+            let regime = self.regime_label(&claim.subject);
+            // The regime as one context string, market and volatility
+            // together: a claim that works in a trending calm market and fails
+            // in a trending volatile one is exactly the conditional fact the
+            // board exists to keep, and scoring the two axes separately would
+            // average it away.
+            let context = format!("{}/{}", regime.market, regime.volatility);
+            let held = claim.direction.signum() == outcome.realised_move_bps.signum();
+            self.claim_scores
+                .observe(qip_evolution::scoring::Outcome::binary(
+                    claim.class.clone(),
+                    context,
+                    held,
+                ));
+            scored += 1;
+        }
+        scored
+    }
+
+    /// How often each class of claim held, by regime.
+    ///
+    /// Read by an operator rather than by the platform: nothing here yet sizes
+    /// or gates on a score, and doing so would be a behavioural change this
+    /// wire is not entitled to make on its own. What it ends is the platform
+    /// grading every thesis and never asking which kinds of thesis work when.
+    pub fn claim_scores(&self) -> &qip_evolution::scoring::Scoreboard {
+        &self.claim_scores
     }
 
     /// What the platform's own series say, for the metrics named.
@@ -9975,6 +10271,34 @@ impl Platform {
             );
         }
 
+        // The market factor, estimated from the platform's own tape (ADR
+        // 0058). Computed once for the whole attribution rather than per
+        // position: it is one series, and estimating it inside the loop would
+        // let two positions in the same decomposition be measured against
+        // benchmarks that differ by rounding.
+        //
+        // Until this existed, `factor_betas` and `factor_returns` below were
+        // built empty at every site, so the factor half of the decomposition
+        // was structurally silent — and so were `effective_bets` and the
+        // stress tester downstream of it. An instrument whose overlap with the
+        // factor is too short still carries no beta: `beta_of` answers `None`,
+        // the maps stay empty for that position, and it is *unmodelled* rather
+        // than modelled as immune.
+        let market = qip_risk::market_factor::MarketFactor::estimate(&self.price_history);
+        let factor_return = market.latest_return();
+        // Resolved before the loop, so the closure below borrows a finished
+        // map rather than the order book. A fill whose order the book no
+        // longer holds, or whose instrument has too short an overlap, is
+        // simply absent here — which is what makes it unmodelled downstream.
+        let betas_by_order: BTreeMap<String, f64> = fills
+            .iter()
+            .filter_map(|fill| {
+                let order = self.orders.order(&fill.order_id)?;
+                let beta = market.beta_of(order.object_id.as_str())?;
+                Some((fill.order_id.as_str().to_string(), beta))
+            })
+            .collect();
+
         // Attribute what the fills cost. The decomposition must close, and a
         // failure here is loud rather than absorbed: unexplained P&L is
         // exactly where whatever nobody understood is hiding.
@@ -10010,8 +10334,32 @@ impl Platform {
                 income: Decimal::ZERO,
                 financing: Decimal::ZERO,
                 realised_pnl: Decimal::ZERO,
-                factor_returns: BTreeMap::new(),
-                factor_betas: BTreeMap::new(),
+                // Both maps carry the market factor where the instrument
+                // has a beta, and neither carries it otherwise. They move
+                // together on purpose: a beta with no return to multiply, or a
+                // return with no beta, is a decomposition term nobody can
+                // evaluate.
+                factor_returns: betas_by_order
+                    .get(fill.order_id.as_str())
+                    .and(factor_return)
+                    .map(|value| {
+                        BTreeMap::from([(
+                            qip_risk::market_factor::MARKET_FACTOR.to_string(),
+                            value,
+                        )])
+                    })
+                    .unwrap_or_default(),
+                factor_betas: betas_by_order
+                    .get(fill.order_id.as_str())
+                    .copied()
+                    .filter(|_| factor_return.is_some())
+                    .map(|value| {
+                        BTreeMap::from([(
+                            qip_risk::market_factor::MARKET_FACTOR.to_string(),
+                            value,
+                        )])
+                    })
+                    .unwrap_or_default(),
                 contract_multiplier: Decimal::from_int(1),
             })
             .collect();
@@ -10949,6 +11297,15 @@ impl Platform {
     /// against this process rather than against a copy it kept itself.
     pub fn price_history(&self) -> &BTreeMap<String, Vec<f64>> {
         &self.price_history
+    }
+
+    /// What the last SIMULATE stage found when it stressed the book.
+    ///
+    /// `None` where the stage could not stress anything — too little history,
+    /// no equity, or no open position — rather than an empty report, which
+    /// would read as a book that survives everything.
+    pub fn stress_report(&self) -> Option<&StressReport> {
+        self.stress.as_ref()
     }
 
     /// Score the predictions whose horizon has passed against what was
@@ -13084,21 +13441,29 @@ mod simulate_tests {
             )
             .expect("the stress gauge was not recorded under the scenario's own name");
 
-        // Computed independently of `stress_test_book`, from the scenario's
+        // Computed independently of `stress_the_book`, from the scenario's
         // own published shock and the position seeded above, so this catches
         // a beta silently dropped to zero — where only the liquidity charge
-        // would remain, forty-five times smaller — and not only "some loss
-        // happened", which a liquidity charge alone would also satisfy.
+        // would remain, a few basis points against a shock of thousands —
+        // and not only "some loss happened", which a liquidity charge alone
+        // would also satisfy. With one instrument on the tape the market factor *is*
+        // that instrument's return, so its measured beta is exactly one and
+        // the expectation below is the full-beta loss. The exit charge reads
+        // the same cost model the stage prices it off — the frictions that
+        // do not depend on participation — rather than a figure written
+        // here, which would be a second claim about the cost of trading.
         let equity = platform.capital.equity().to_f64();
         let notional = 100.0 * 100.0;
         let equity_shock = scenario
             .shocks
             .iter()
-            .find(|shock| shock.factor == "equity")
+            .find(|shock| shock.factor == qip_risk::market_factor::EQUITY_SHOCK)
             .expect("the scenario names an equity shock")
             .magnitude;
         let total_pnl = notional * equity_shock;
-        let liquidation_cost = notional * 10.0 * scenario.liquidity_multiplier / 10_000.0;
+        let costs = CostModel::liquid_equity();
+        let exit_bps = costs.commission_bps + costs.half_spread_bps + costs.tax_bps;
+        let liquidation_cost = notional * exit_bps * scenario.liquidity_multiplier / 10_000.0;
         let expected = ((equity - (equity + total_pnl - liquidation_cost)) / equity).max(0.0);
         assert!(
             (loss_fraction - expected).abs() < 1e-9,

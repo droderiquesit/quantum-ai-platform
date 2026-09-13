@@ -156,7 +156,11 @@ locals {
           env_file_variable = "QIP_CENTRAL_HORIZONS_PATH"
         }
       },
-      # The source-discovery candidate list `load_source_candidates` reads.
+      # The source-discovery candidate catalogue `load_source_candidates`
+      # reads: each candidate beside the reviewed egress route it is probed
+      # through (ADR 0060), which is why this is a per-environment choice
+      # rather than a constant — a catalogue whose routes this environment's
+      # proxy does not serve is a list the node can load and not reach.
       # Unset, `DiscoveryDesk` runs whatever cadence `deepbrain_discover_every`
       # names against an empty list, which is what every deployment ran
       # before this caller existed and what it still runs today.

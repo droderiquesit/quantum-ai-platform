@@ -78,9 +78,13 @@ execution_nodes = {}
 #
 # central_horizons_file and source_candidates_file — the deep brain's own
 # pair — stay null for the same reason: no strategy run here has a stated
-# §23.4 horizon to declare, and nobody has curated a source-discovery
-# candidate list for a probe that refuses every call until a TLS-capable
-# transport is authorised (ADR 0009). deepbrain_discover_every stays null
+# §23.4 horizon to declare, and the committed candidate catalogue, though
+# it names a source on a route the bootstrap does serve (under ADR 0060 a
+# source is probed only where a reviewed egress route already exists), has
+# not yet been observed making that call from a deployed process, so
+# mounting it would put a claim in the banner no run has earned. Unset, the
+# node assesses nothing and says so — which starves no control, unlike an
+# absent universe. deepbrain_discover_every stays null
 # alongside them, on purpose: a cadence with no candidate list to assess
 # would run a pass that decides about nothing, so the pair is turned on
 # together or not at all — see dev/terraform.tfvars for the whole argument.

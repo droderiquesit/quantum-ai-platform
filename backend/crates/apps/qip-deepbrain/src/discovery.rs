@@ -28,21 +28,35 @@
 //!
 //! # The probe
 //!
-//! [`qip_data_finder::probe::NetworkProbe`] is the one production
-//! implementation of [`qip_data_finder::probe::SourceProbe`], and it refuses
-//! every call by name: `NetworkProbe::TRANSPORT_REQUIREMENT` states that no
-//! HTTP/1.1-with-TLS client is linked into this build (ADR 0009). Attaching
-//! it here is therefore honest about what runs today — every candidate is
-//! refused as unavailable, precisely and legibly, rather than the crate
-//! having no production probe to attach at all. The day a TLS-capable
-//! transport is authorised, this caller starts assessing real candidates
-//! without a line here changing.
+//! [`qip_data_finder::probe::NetworkProbe`] reaches one source through one
+//! reviewed egress route (ADR 0060). The egress proxy is a reverse proxy: a
+//! process picks a destination by picking a loopback port and cannot name a
+//! host, because the request carries no field in which a host could be
+//! named. So the candidate catalogue carries a route beside every candidate
+//! ([`qip_data_finder::catalogue::CandidateEntry`]), refuses an entry
+//! without one at load, and this desk builds **one probe per entry** at pass
+//! time rather than one probe for the list — a probe is bound to a single
+//! route and a batch would have to pick one of them.
+//!
+//! Until the merge that joined this desk to that probe, the desk attached a
+//! `NetworkProbe` that refused every call by name, on the belief that the
+//! missing piece was a TLS-capable transport (ADR 0009). It was not: the
+//! proxy originates TLS upstream, and what was missing was the route. The
+//! earlier claim is recorded here so it is not read back into the code.
 
 use qip_core::Timestamp;
 use qip_core::error::Result;
+use qip_data_finder::catalogue::CandidateEntry;
 use qip_data_finder::probe::{NetworkProbe, SourceProbe};
-use qip_data_finder::source::SourceCandidate;
 use qip_kernel::{Platform, SourceAssessment};
+
+/// How this platform identifies itself to a publisher it probes.
+///
+/// A publisher's only means of asking this platform to stop is to block a user
+/// agent, so the name is stated here, in the composition root, rather than
+/// defaulted inside the probe — a default would be a name nobody chose
+/// appearing in somebody else's access log.
+pub const DISCOVERY_USER_AGENT: &str = "qip-deepbrain-source-probe/1.0";
 
 /// How the discovery pass is tuned.
 ///
@@ -73,43 +87,46 @@ impl DiscoveryConfig {
 }
 
 /// Runs [`Platform::assess_sources`] on its own cadence, against a fixed
-/// candidate list and a real (if today universally-refusing) probe.
+/// candidate catalogue, each entry probed through its own reviewed route.
 pub struct DiscoveryDesk {
     config: DiscoveryConfig,
-    candidates: Vec<SourceCandidate>,
-    probe: Box<dyn SourceProbe>,
+    entries: Vec<CandidateEntry>,
+    /// A scripted probe answering for every entry, or `None` for the
+    /// production shape: one [`NetworkProbe`] per entry, through its route.
+    probe: Option<Box<dyn SourceProbe>>,
 }
 
 impl std::fmt::Debug for DiscoveryDesk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DiscoveryDesk")
             .field("every_cycles", &self.config.every_cycles)
-            .field("candidates", &self.candidates.len())
+            .field("candidates", &self.entries.len())
             .finish_non_exhaustive()
     }
 }
 
 impl DiscoveryDesk {
-    pub fn new(config: DiscoveryConfig, candidates: Vec<SourceCandidate>) -> Self {
-        Self::with_probe(
+    /// The production desk: every entry is probed through the route it names.
+    pub fn new(config: DiscoveryConfig, entries: Vec<CandidateEntry>) -> Self {
+        Self {
             config,
-            candidates,
-            Box::new(NetworkProbe::unconfigured().identified_as("qip-deepbrain-discovery")),
-        )
+            entries,
+            probe: None,
+        }
     }
 
-    /// As [`Self::new`], with an explicit probe — the seam a test replaces
-    /// with a scripted one, since [`NetworkProbe`] refuses every call by
-    /// construction and a test against it would prove only that refusal.
+    /// As [`Self::new`], with one explicit probe answering for every entry —
+    /// the seam a test replaces with a scripted one, so a pass can be proven
+    /// to reach the platform without a socket.
     pub fn with_probe(
         config: DiscoveryConfig,
-        candidates: Vec<SourceCandidate>,
+        entries: Vec<CandidateEntry>,
         probe: Box<dyn SourceProbe>,
     ) -> Self {
         Self {
             config,
-            candidates,
-            probe,
+            entries,
+            probe: Some(probe),
         }
     }
 
@@ -117,12 +134,12 @@ impl DiscoveryDesk {
         self.config.every_cycles
     }
 
-    pub fn candidates(&self) -> &[SourceCandidate] {
-        &self.candidates
+    pub fn entries(&self) -> &[CandidateEntry] {
+        &self.entries
     }
 
-    /// Run a pass if this cycle is on the cadence, cloning the candidate
-    /// list into it every time.
+    /// Run a pass if this cycle is on the cadence, cloning each candidate
+    /// into it every time.
     ///
     /// Cloned rather than drained: a candidate this pass could not register
     /// (a robots refusal, an unreachable host) is not spent — the same host
@@ -130,6 +147,12 @@ impl DiscoveryDesk {
     /// consumed by a cycle that sizes against it. `assess_one` re-derives
     /// every decision from the probe's fresh evidence each time, so a
     /// repeated candidate costs a repeated fetch and never a stale verdict.
+    ///
+    /// One `assess_sources` call per entry rather than one for the list,
+    /// because a probe is bound to a single route (ADR 0060). The per-entry
+    /// assessments are merged into one so the caller reads one pass, and the
+    /// decisions are restored to the identifier order
+    /// [`SourceAssessment::decisions`] documents.
     pub fn maybe_run(
         &mut self,
         platform: &mut Platform,
@@ -139,9 +162,36 @@ impl DiscoveryDesk {
         if self.config.every_cycles == 0 || !cycle.is_multiple_of(self.config.every_cycles) {
             return Ok(None);
         }
-        let candidates = self.candidates.clone();
-        let assessment = platform.assess_sources(candidates, self.probe.as_mut(), now)?;
-        Ok(Some(assessment))
+        let mut merged = SourceAssessment {
+            decisions: Vec::new(),
+            catalogued: Vec::new(),
+            catalogue_problems: Vec::new(),
+        };
+        for entry in &self.entries {
+            let candidates = vec![entry.candidate.clone()];
+            let assessment = match self.probe.as_mut() {
+                Some(probe) => platform.assess_sources(candidates, probe.as_mut(), now)?,
+                None => {
+                    // The catalogue refused a malformed route at load, so a
+                    // refusal here is a route that changed shape between
+                    // load and pass. That is a bug, and it stops the pass by
+                    // name rather than filing the source as unreachable for
+                    // a reason that would read as the publisher's fault.
+                    let mut probe =
+                        NetworkProbe::through(&entry.egress_route, DISCOVERY_USER_AGENT)?;
+                    platform.assess_sources(candidates, &mut probe, now)?
+                }
+            };
+            merged.decisions.extend(assessment.decisions);
+            merged.catalogued.extend(assessment.catalogued);
+            merged
+                .catalogue_problems
+                .extend(assessment.catalogue_problems);
+        }
+        merged
+            .decisions
+            .sort_by(|left, right| left.source_id().cmp(right.source_id()));
+        Ok(Some(merged))
     }
 }
 
@@ -158,7 +208,7 @@ mod tests {
     use qip_data_finder::legal::{LicensingPosture, SourceLicense};
     use qip_data_finder::probe::{HeadResponse, PayloadSample, RobotsFetch};
     use qip_data_finder::quality::SourceCost;
-    use qip_data_finder::source::SourceIdentity;
+    use qip_data_finder::source::{SourceCandidate, SourceIdentity};
     use qip_events::Topic;
     use qip_financial::asset_class::AssetClass;
     use qip_financial::universe::Universe;
@@ -183,7 +233,11 @@ mod tests {
         .expect("the platform assembles")
     }
 
-    fn candidate(id: &str) -> Result<SourceCandidate> {
+    fn candidate(id: &str) -> Result<CandidateEntry> {
+        entry(id, "http://127.0.0.1:9")
+    }
+
+    fn entry(id: &str, route: &str) -> Result<CandidateEntry> {
         let coverage = SourceCoverage::new(
             [AssetClass::Equity],
             [SourceRegion::Europe],
@@ -195,7 +249,7 @@ mod tests {
             "qip-discovery-test-terms",
             [Usage::Derive],
         )?);
-        SourceCandidate::new(
+        let candidate = SourceCandidate::new(
             SourceIdentity::new(id, format!("{id} feed"), "Example Data Ltd")?,
             SourceEndpoint::parse(
                 &format!("https://{id}.example/quotes"),
@@ -212,7 +266,11 @@ mod tests {
             [Topic::MarketQuote],
             "test",
             start(),
-        )
+        )?;
+        Ok(CandidateEntry {
+            candidate,
+            egress_route: route.to_string(),
+        })
     }
 
     /// A probe that answers every call the same refusing way
@@ -281,6 +339,44 @@ mod tests {
             2,
             "two candidates went in; {} decision(s) came out",
             assessment.decisions.len()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_production_desk_probes_each_entry_through_the_route_it_names() -> Result<()> {
+        // The seam `with_probe` bypasses. A desk built by `new` has to build a
+        // `NetworkProbe` from the entry's own route and reach the platform
+        // through it, and a desk that quietly skipped the entries whose
+        // route it could not use would report a pass that assessed nothing
+        // as a pass that found nothing. The route is a loopback port this
+        // test just released, so the probe's connection is refused at once —
+        // a decision about the candidate ("unreachable"), not an error.
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")
+                .map_err(|error| Error::io(format!("no loopback port: {error}")))?;
+            listener
+                .local_addr()
+                .map_err(|error| Error::io(format!("no local address: {error}")))?
+                .port()
+        };
+        let mut platform = platform();
+        let mut desk = DiscoveryDesk::new(
+            DiscoveryConfig { every_cycles: 1 },
+            vec![entry("a", &format!("http://127.0.0.1:{port}"))?],
+        );
+        let assessment = desk
+            .maybe_run(&mut platform, 1, start())?
+            .ok_or_else(|| Error::not_found("a pass on its own cadence produced nothing"))?;
+        assert_eq!(
+            assessment.decisions.len(),
+            1,
+            "one entry went in; {} decision(s) came out",
+            assessment.decisions.len()
+        );
+        assert!(
+            !assessment.decisions[0].is_registered(),
+            "a source nothing answered for was registered"
         );
         Ok(())
     }

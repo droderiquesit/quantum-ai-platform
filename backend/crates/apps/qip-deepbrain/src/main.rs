@@ -452,24 +452,31 @@ fn run() -> Result<()> {
     // Source discovery (§7.4-§7.6.2): `Platform::assess_sources` wraps
     // `qip_data_finder::DataFinder::assess`, which was built, tested and
     // reached by nothing outside this crate's own tests and
-    // `qip-acceptance`'s end-to-end suite before this. The candidate list is
-    // stated by an operator, in the same shape the universe and the
-    // capital-fabric declaration already are — this node discovers nothing
-    // on its own — and the probe is `NetworkProbe`, which refuses every
-    // call by name until a TLS-capable transport is authorised (ADR 0009).
+    // `qip-acceptance`'s end-to-end suite before this. The candidate
+    // catalogue is stated by an operator, in the same shape the universe and
+    // the capital-fabric declaration already are — this node discovers
+    // nothing on its own — and each entry names the reviewed egress route
+    // its source is probed through (ADR 0060): the proxy is a reverse proxy,
+    // so a candidate without a route is one the node cannot reach, and the
+    // catalogue refuses such an entry at load rather than filing the source
+    // as unreachable for a reason that reads as the publisher's fault.
+    // Absent configuration means this process assesses nothing, which is the
+    // honest state for a deployment that has not been given a catalogue —
+    // unlike the universe above, an empty source catalogue starves no
+    // control, and refusing to start over it would stop a node that has
+    // every other input it needs.
     let discovery_config =
         qip_deepbrain::discovery::DiscoveryConfig::from_lookup(&|name| std::env::var(name).ok())
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
-    let source_candidates = load_source_candidates()?;
+    let source_candidates = load_source_candidates(started)?;
     println!(
         "  discovery:        {}",
         if discovery_config.every_cycles == 0 {
             "disabled (QIP_DEEPBRAIN_DISCOVER_EVERY=0)".to_string()
         } else {
             format!(
-                "every {} cycle(s) against {} declared candidate(s); every probe call refuses \
-                 until a TLS-capable transport is linked in (ADR 0009), so a pass records why \
-                 rather than nothing",
+                "every {} cycle(s) against {} catalogued candidate(s), each probed through \
+                 the egress route its entry names (ADR 0060)",
                 discovery_config.every_cycles,
                 source_candidates.len()
             )
@@ -874,18 +881,23 @@ fn parse_central_horizons(text: &str, path: &str) -> Result<HorizonPolicy> {
     })
 }
 
-/// The source-discovery candidate list (§7.4-§7.6.2) `QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH`
-/// names, or none where the variable is unset or empty — every deployment
-/// today.
+/// The source-discovery candidate catalogue (§7.4-§7.6.2)
+/// `QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH` names, or none where the variable
+/// is unset or empty — every deployment today.
 ///
-/// A candidate the finder has not yet assessed, not a registered source: the
+/// Candidates the finder has not yet assessed, not registered sources: the
 /// crawl stage §7.4 asks for does not exist, so nothing in this workspace
 /// discovers one on its own, and this file is an operator's list of hosts
-/// worth asking about, in exactly the shape `DataFinder::assess` already
-/// takes. Absent, this changes nothing (an empty list, the same as every
-/// deployment runs on today); present but malformed, it stops the process
-/// rather than running discovery against half the candidates.
-fn load_source_candidates() -> Result<Vec<qip_data_finder::source::SourceCandidate>> {
+/// worth asking about, each beside the reviewed egress route it is probed
+/// through (ADR 0060). Absent, this changes nothing (an empty list, the same
+/// as every deployment runs on today); present but malformed — including an
+/// entry naming no route, an `https` route, or a discovery instant after
+/// `now` — it stops the process rather than running discovery against half
+/// the candidates. An empty catalogue is refused too, because it and a
+/// catalogue nobody mounted produce the same silent run.
+fn load_source_candidates(
+    now: qip_core::Timestamp,
+) -> Result<Vec<qip_data_finder::catalogue::CandidateEntry>> {
     let path = std::env::var("QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH")
         .ok()
         .filter(|value| !value.trim().is_empty());
@@ -898,7 +910,7 @@ fn load_source_candidates() -> Result<Vec<qip_data_finder::source::SourceCandida
              read: {error}"
         ))
     })?;
-    parse_source_candidates(&text, &path)
+    parse_source_candidates(&text, &path, now)
 }
 
 /// The parsing half of [`load_source_candidates`], split out for the same
@@ -907,12 +919,16 @@ fn load_source_candidates() -> Result<Vec<qip_data_finder::source::SourceCandida
 fn parse_source_candidates(
     text: &str,
     path: &str,
-) -> Result<Vec<qip_data_finder::source::SourceCandidate>> {
-    serde_json::from_str(text).map_err(|error| {
-        Error::invalid(format!(
-            "configuration: {path} does not hold a valid source-candidate list: {error}"
-        ))
-    })
+    now: qip_core::Timestamp,
+) -> Result<Vec<qip_data_finder::catalogue::CandidateEntry>> {
+    qip_data_finder::catalogue::load(text, now)
+        .map(|loaded| loaded.entries)
+        .map_err(|error| {
+            Error::invalid(format!(
+                "configuration: {path} does not hold a valid source-candidate catalogue: {}",
+                error.message()
+            ))
+        })
 }
 
 fn banner(
@@ -1156,8 +1172,12 @@ mod tests {
             "test",
             start(),
         )?;
-        let text = serde_json::to_string(&vec![candidate]).expect("a candidate list serialises");
-        let parsed = parse_source_candidates(&text, "test-fixture")
+        let entry = qip_data_finder::catalogue::CandidateEntry {
+            candidate,
+            egress_route: "http://127.0.0.1:9105".to_string(),
+        };
+        let text = serde_json::to_string(&vec![entry]).expect("a candidate catalogue serialises");
+        let parsed = parse_source_candidates(&text, "test-fixture", start())
             .expect("the document this test wrote parses");
         assert_eq!(
             parsed.len(),
@@ -1166,15 +1186,18 @@ mod tests {
             parsed.len()
         );
 
-        // The wiring claim: a parsed list actually reaches
+        // The wiring claim: a parsed catalogue actually reaches
         // `Platform::assess_sources`, through `DiscoveryDesk`, on its own
         // cadence -- one decision comes back per candidate even though the
-        // network probe refuses every call, because a refusal is a decision
-        // about the candidate and not the absence of one.
+        // scripted probe answers nothing, because a refusal is a decision
+        // about the candidate and not the absence of one. Scripted rather
+        // than the desk's own `NetworkProbe`, which `discovery.rs` proves on
+        // its own: this test is about the document, not the socket.
         let mut platform = platform_with(CentralConfig::default())?;
-        let mut desk = qip_deepbrain::discovery::DiscoveryDesk::new(
+        let mut desk = qip_deepbrain::discovery::DiscoveryDesk::with_probe(
             qip_deepbrain::discovery::DiscoveryConfig { every_cycles: 1 },
             parsed,
+            Box::new(qip_data_finder::probe::InMemoryProbe::new()),
         );
         let assessment = desk
             .maybe_run(&mut platform, 1, start())?
@@ -1185,8 +1208,8 @@ mod tests {
 
     #[test]
     fn a_source_candidate_document_that_is_not_json_is_refused_by_name() {
-        let error = parse_source_candidates("not json", "/etc/qip/candidates.json")
-            .expect_err("malformed JSON parsed as a candidate list");
+        let error = parse_source_candidates("not json", "/etc/qip/candidates.json", start())
+            .expect_err("malformed JSON parsed as a candidate catalogue");
         assert!(
             error.message().contains("/etc/qip/candidates.json"),
             "the refusal does not name the file that failed to parse: {}",

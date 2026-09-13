@@ -335,13 +335,28 @@ vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7ec
 #   there is no claim to declare; setting this without one would arm a gate
 #   against a policy nobody actually holds.
 #
-# source_candidates_file = "data/sources/<curated candidate list>.json"
-#   would mount a list of hosts worth asking the source-discovery desk about
-#   (blueprint §7.4-§7.6.2). Nobody has curated one, and the one production
-#   probe refuses every call by name until a TLS-capable transport is
-#   authorised (ADR 0009) — so naming a list today would ask the desk to
-#   assess candidates nobody reviewed, for a probe that answers every one of
-#   them "refused".
+# source_candidates_file = "data/datasets/source-candidates.json"
+#   would mount the candidate data sources the deep brain's discovery desk
+#   assesses on its cadence (blueprint §7.4-§7.6.2) — the one production
+#   caller `DataFinder::assess` has, and with it the licensing evaluation, the
+#   dark-tier hard line, the robots check and the schema fingerprint that ran
+#   only in tests before it.
+#
+#   It is the *second* step and not the first. Every entry names the egress
+#   route its source is reached through, and under ADR 0060 a source is probed
+#   only where a reviewed route already exists — an Envoy cluster and a
+#   listener in egress/envoy.yaml, because the proxy is a reverse proxy and a
+#   process cannot name a destination in a request that has no field for one.
+#   The committed catalogue names `api.frankfurter.dev` on 127.0.0.1:9105,
+#   which this environment's bootstrap does serve; it stays unset because
+#   nothing has yet been observed making that call from a deployed process,
+#   and mounting it would put a claim in the banner that no run has earned.
+#
+#   Unset, the deep brain assesses nothing and its banner says so. That is not
+#   a degraded state: no control reads the source catalogue, so an absent one
+#   starves nothing — unlike an absent universe, which feeds no exposure
+#   bucket and leaves two limits unable to fire, and is refused at start-up
+#   for exactly that reason.
 #
 # deepbrain_connector = { sources = ["frankfurter-ecb-reference-rates"], base_url = "http://127.0.0.1:9105" }
 #   would have the deep brain poll the named catalogued connectors beside its

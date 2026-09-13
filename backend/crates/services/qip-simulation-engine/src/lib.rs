@@ -61,6 +61,7 @@ pub mod baseline;
 pub mod clock;
 pub mod conditions;
 pub mod costs;
+pub mod crowding;
 pub mod execution;
 pub mod harness;
 pub mod market;

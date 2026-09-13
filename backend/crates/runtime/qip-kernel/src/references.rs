@@ -640,8 +640,9 @@ impl Platform {
     ///
     /// A `Discovered` reference has no live gate here, and that is stated
     /// rather than hidden: the discovery path's registration
-    /// (`DataFinder::assess` → `RegisteredSource`) has no production caller
-    /// that reaches real bytes — `NetworkProbe` refuses every call — so no
+    /// (`DataFinder::assess` → `RegisteredSource`) reaches real bytes only
+    /// through `qip-deepbrain`'s discovery desk, on a cadence no environment
+    /// sets and over a catalogue no environment mounts (ADR 0060), so no
     /// deployed process puts one on the ledger, and this filter has nothing
     /// to intersect it with. The day one does, it needs the same treatment
     /// as the catalogue door: a live registration table to intersect

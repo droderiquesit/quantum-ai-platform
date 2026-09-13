@@ -607,32 +607,43 @@ variable "central_horizons_file" {
 
 variable "source_candidates_file" {
   description = <<-EOT
-    A committed JSON list of source-discovery candidates (blueprint
+    A committed JSON catalogue of source-discovery candidates (blueprint
     §7.4-§7.6.2) the deep brain mounts and reads as
     `QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH`, or null where no candidate has
     been named.
 
     Same convention as the universe and the files above: a path in this
-    repository, read with `file()`, deserialised as
-    `Vec<qip_data_finder::source::SourceCandidate>`. Null renders no variable
-    and `DiscoveryDesk` runs its pass, on whatever cadence
-    `deepbrain_discover_every` names, against an empty list — the same
-    outcome as today, before this caller existed at all. Present but
-    malformed stops the process rather than running discovery against half
-    the candidates the desk believed it stated.
+    repository, read with `file()`, deserialised as a list of
+    `qip_data_finder::catalogue::CandidateEntry` — each a candidate beside
+    the loopback base URL of the reviewed egress route it is probed through.
+    Null renders no variable and `DiscoveryDesk` runs its pass, on whatever
+    cadence `deepbrain_discover_every` names, against an empty list — the
+    same outcome as today, before this caller existed at all. Present but
+    malformed — including an entry naming no route, an `https` route, or a
+    discovery instant after the load — stops the process rather than running
+    discovery against half the candidates the desk believed it stated.
+
+    **Setting this is the second step, not the first.** Every entry names the
+    egress route its source is reached through, and under ADR 0060 a source is
+    probed only where a reviewed route already exists — an Envoy cluster and a
+    listener in `egress/envoy.yaml`, because the proxy is a reverse proxy and
+    a process cannot name a destination in a request that has no field for one.
+    Mounting a catalogue whose routes this environment's proxy does not serve
+    gives the node a list it can load and cannot reach.
 
     What a person setting this must know: this is a list of hosts worth
     asking about, not a registration and not a source the catalogue admits.
     Nothing in this workspace discovers a candidate on its own — the CRAWL
-    stage blueprint §7.4 also asks for stays unbuilt — and the one production
-    probe, `qip_data_finder::probe::NetworkProbe`, refuses every call by name
-    until a TLS-capable transport is authorised (ADR 0009), so naming a
-    candidate here produces a recorded refusal rather than a network call:
-    honest evidence that the wiring runs, not a live fetch.
+    stage blueprint §7.4 also asks for stays unbuilt, and cannot be built
+    behind a reverse proxy — so setting this cannot widen what the platform
+    may reach. The routes are the boundary; this file selects among them and
+    adds none.
 
-    Every environment leaves this null today: no candidate list has been
-    curated, and naming one would ask the desk to assess sources nobody has
-    reviewed.
+    Every environment leaves this null today: the committed catalogue at
+    `data/datasets/source-candidates.json` names one source on a route the
+    bootstrap does serve, and nothing has yet been observed making that call
+    from a deployed process, so mounting it would put a claim in the banner
+    no run has earned.
   EOT
 
   type    = string

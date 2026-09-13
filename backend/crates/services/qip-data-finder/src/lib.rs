@@ -62,6 +62,7 @@
 
 pub mod admission;
 pub mod campaign;
+pub mod catalogue;
 pub mod category;
 pub mod coverage;
 pub mod decision;

@@ -45,9 +45,13 @@ qip-lifecycle.workspace = true
 qip-contracts.workspace = true
 # Source discovery (§7.4-§7.6.2): ASSESS, REGISTER and SCORE, all
 # workspace-internal. `Platform::assess_sources` already wraps
-# `DataFinder::assess`; this root is where a candidate list and a probe meet
-# it on a cadence, the same composition-root role this crate already plays
-# for the evolution loop.
+# `DataFinder::assess`; this root is where the candidate catalogue and the
+# probe that reaches a reviewed egress route (ADR 0060) meet it on a cadence,
+# the same composition-root role this crate already plays for the evolution
+# loop. The only place a candidate list is read from disk and the only place
+# a probe is built, for the same reason it is the only place the universe is
+# read: a service that reached for either could not be deployed twice with
+# different sources.
 qip-data-finder.workspace = true
 # The drain's HTTP client (ADR 0028). A workspace-internal crate under
 # libs/, so this is an inward edge and not a third-party dependency — but it
