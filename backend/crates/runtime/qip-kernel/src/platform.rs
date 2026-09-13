@@ -447,6 +447,16 @@ pub struct Platform {
     /// the log at assembly, so a restarted process still knows what it
     /// proposed; a caller cannot put one here.
     open_proposals: BTreeMap<String, RecalibrationProposal>,
+    /// Per rule, the newest scored order (`RegretEvidence::newest`) the last
+    /// *closed* proposal — withdrawn or enacted — rested on. Consulted by
+    /// [`Self::review_rules`] before it builds a new proposal: evidence whose
+    /// `newest` has not moved past this is the evidence a closed proposal
+    /// already answered, and proposing it again is the code review's HIGH —
+    /// a phantom proposal `journal_once`'s idempotent dedup would otherwise
+    /// let `review_rules` re-open in memory with nothing new written to the
+    /// log. Resumed from the log at assembly alongside [`Self::open_proposals`]
+    /// and updated at every withdrawal and every enactment.
+    closed_proposals: BTreeMap<String, OrderId>,
     /// First signatures on a recalibration waiting for a countersignature,
     /// by rule. In memory and not replayed, for exactly the reason
     /// [`Self::pending_promotions`] gives.
@@ -3255,6 +3265,10 @@ impl Platform {
             )?;
         }
         let fabric = Self::resume_fabric(&event_log, config.seed)?;
+        // Resumed against `limits` — the set this boot actually runs
+        // under — while it is still borrowed rather than moved, so a
+        // resumed proposal is re-validated against the real rule it names.
+        let (open_proposals, closed_proposals) = Self::resume_open_proposals(&event_log, &limits)?;
         // One activity row per limit, before the set moves into the checker
         // and the monitor: the dormancy finding is about the rules that
         // never fire, and a table that gained rows on the first fire would
@@ -3296,7 +3310,8 @@ impl Platform {
             cycle_rule_review: None,
             rule_activity,
             orders_submitted: 0,
-            open_proposals: Self::resume_open_proposals(&event_log)?,
+            open_proposals,
+            closed_proposals,
             pending_recalibrations: BTreeMap::new(),
             cycle_strategy_review: None,
             cycle_family_structure: None,
@@ -12788,6 +12803,19 @@ impl Platform {
             if !regret.is_too_tight() || self.open_proposals.contains_key(rule) {
                 continue;
             }
+            // Evidence that has not moved past the last *closed* outcome
+            // for this rule is evidence a proposal already answered —
+            // enacted or withdrawn. Proposing it again would journal under
+            // the same idempotency key (`rule:proposed:newest`) and dedupe,
+            // which is harmless on its own, but building and refusing it
+            // every cycle is work with no purpose the evidence has not
+            // already had. `!=` rather than "is newer than": `OrderId` is
+            // not ordered by time, only by its own string, so the one fact
+            // this can check is whether the newest scored order has changed
+            // at all.
+            if self.closed_proposals.get(rule) == Some(&regret.newest) {
+                continue;
+            }
             // A feasibility gate is counted but has no bound in the set to
             // move, so it can be too tight in the twin's eyes and still be
             // nothing this row can propose about.
@@ -12825,15 +12853,29 @@ impl Platform {
                 }
             };
             match self.journal_once(proposal.clone(), RULE_REVIEW_ORIGIN, now) {
-                Ok(written) => {
+                Ok(true) => {
                     self.open_proposals.insert(rule.clone(), proposal);
-                    if written {
-                        self.telemetry.metrics.count(
-                            names::RULE_RECALIBRATION_PROPOSED,
-                            labels([("rule", rule.as_str())]),
-                        );
-                        journal.proposed.push(rule.clone());
-                    }
+                    self.telemetry.metrics.count(
+                        names::RULE_RECALIBRATION_PROPOSED,
+                        labels([("rule", rule.as_str())]),
+                    );
+                    journal.proposed.push(rule.clone());
+                }
+                Ok(false) => {
+                    // The log already holds this exact rule/outcome/evidence
+                    // key. `self.open_proposals.contains_key(rule)` was false
+                    // at the top of this loop and `self.closed_proposals`
+                    // did not name this evidence either, so the only record
+                    // this key can be is a *closed* one this process has not
+                    // yet learned about — the code review's HIGH: without
+                    // this arm, the proposal below was inserted into
+                    // `open_proposals` as standing regardless, reopening in
+                    // memory an outcome the log already closed and making it
+                    // signable a second time. Record it as closed instead of
+                    // opening it, so this same evidence is not attempted
+                    // again next cycle either.
+                    self.closed_proposals
+                        .insert(rule.clone(), proposal.evidence.newest.clone());
                 }
                 Err(error) => problems.push(format!(
                     "the recalibration proposal for {rule} could not be journaled: {}",
@@ -12857,6 +12899,11 @@ impl Platform {
                 Ok(_) => {
                     self.open_proposals.remove(&rule);
                     self.pending_recalibrations.remove(&rule);
+                    // Closed as of the evidence this withdrawn proposal
+                    // rested on, so the same evidence clearing the bar again
+                    // with nothing new scored is not re-proposed.
+                    self.closed_proposals
+                        .insert(rule.clone(), proposal.evidence.newest.clone());
                     journal.withdrawn.push(rule);
                 }
                 Err(error) => problems.push(format!(
@@ -12973,17 +13020,92 @@ impl Platform {
             .collect()
     }
 
-    /// The proposals still open when the log was last written: the last
-    /// record per rule, kept where its outcome is `proposed`. Called from
-    /// assembly, so a restarted process resumes the proposals it made and a
-    /// signature given after a restart lands on the same evidence.
-    fn resume_open_proposals(log: &EventLog) -> Result<BTreeMap<String, RecalibrationProposal>> {
+    /// The proposals still open when the log was last written, and the
+    /// evidence the last *closed* proposal answered for every other rule.
+    /// The last record per rule is kept; an open one is resumed only if it
+    /// is still one [`RecalibrationProposal::new`] would produce today, and
+    /// a closed one contributes its `evidence.newest` to the second map.
+    /// Called from assembly, so a restarted process resumes the proposals it
+    /// made and a signature given after a restart lands on the same
+    /// evidence.
+    ///
+    /// **A resumed record used to be trusted outright** (security review
+    /// MEDIUM-2): `approve_recalibration` feeds `proposal.proposed_bound`
+    /// straight to `LimitSet::rebound`, whose only checks are finite and
+    /// positive, so a crafted or merely stale `proposed` record — one whose
+    /// rule no longer names the kind or the bound it did when the record was
+    /// written, because a reviewed commit moved the limits file in between —
+    /// was signable into an artefact without the evidence bar or the
+    /// loosening check in `RecalibrationProposal::new` running again. Every
+    /// resumed `proposed` record is now rebuilt through that constructor
+    /// against `limits`, the set this boot actually runs under, and dropped
+    /// — not resumed — if the constructor refuses it, if the rule no longer
+    /// exists in `limits`, if its kind label has changed, or if its current
+    /// bound is no longer the one the record was written against. A dropped
+    /// resume leaves no trace of having stood open; the next `review_rules`
+    /// call proposes afresh from current evidence, or does not, on its own
+    /// terms.
+    fn resume_open_proposals(
+        log: &EventLog,
+        limits: &LimitSet,
+    ) -> Result<(
+        BTreeMap<String, RecalibrationProposal>,
+        BTreeMap<String, OrderId>,
+    )> {
         let mut last: BTreeMap<String, RecalibrationProposal> = BTreeMap::new();
         for proposal in Self::recalibration_records(log)? {
             last.insert(proposal.rule.clone(), proposal);
         }
-        last.retain(|_, proposal| proposal.is_open());
-        Ok(last)
+        let mut open: BTreeMap<String, RecalibrationProposal> = BTreeMap::new();
+        let mut closed: BTreeMap<String, OrderId> = BTreeMap::new();
+        for (rule, proposal) in last {
+            if !proposal.is_open() {
+                closed.insert(rule, proposal.evidence.newest.clone());
+                continue;
+            }
+            let Some(kind) = limits
+                .limits
+                .iter()
+                .find(|limit| limit.name == rule)
+                .map(|limit| limit.kind.clone())
+            else {
+                // The boot set no longer carries this rule at all — nothing
+                // left to recalibrate, and nothing a signature could apply to.
+                continue;
+            };
+            if kind.label() != proposal.kind {
+                // The rule's kind changed under its own name since the
+                // record was written — exactly the shape `LimitSet::validate`
+                // now refuses in a *file* (commit for HIGH-1), but the running
+                // set that produced this record could predate that fix, or
+                // the record could simply be older than a reviewed change to
+                // the shipped kind. Either way `current_bound` no longer
+                // describes the same control.
+                continue;
+            }
+            // Exact equality is deliberate: `current_bound` is `kind.bound()`
+            // copied verbatim when the proposal was built and carried through
+            // JSON with no arithmetic in between, so an unmoved bound round-trips
+            // exactly; any difference at all means the bound has moved since.
+            #[allow(clippy::float_cmp)]
+            let bound_unmoved = kind.bound() == proposal.current_bound;
+            if !bound_unmoved {
+                continue;
+            }
+            if RecalibrationProposal::new(
+                &rule,
+                &kind,
+                proposal.proposed_bound,
+                proposal.evidence.clone(),
+                proposal.at,
+            )
+            .is_err()
+            {
+                continue;
+            }
+            open.insert(rule, proposal);
+        }
+        Ok((open, closed))
     }
 
     /// Sign a recalibration proposal, and emit the artefact once two people
@@ -13095,6 +13217,13 @@ impl Platform {
                             now,
                         )?;
                         self.open_proposals.remove(rule);
+                        // Closed as of the evidence just enacted, so
+                        // `review_rules` does not propose the same evidence
+                        // again the next time it clears the bar with nothing
+                        // new scored — the phantom-reopen the code review
+                        // named as its HIGH.
+                        self.closed_proposals
+                            .insert(rule.to_string(), proposal.evidence.newest.clone());
                         entry.artefact = Some(set.clone());
                     }
                     Err(error) => {
@@ -18118,6 +18247,185 @@ mod rule_review_tests {
         assert_eq!(
             outcomes,
             vec!["proposed".to_string(), "enacted".to_string()]
+        );
+    }
+
+    #[test]
+    fn review_rules_does_not_reopen_an_enacted_proposal_on_unchanged_evidence() {
+        // Code review HIGH / security review MEDIUM-2's root cause: the
+        // proposal arm used to insert into `open_proposals` on any `Ok(_)`
+        // from `journal_once`, including the `Ok(false)` a dedup produces.
+        // `declined_scores` is not replayed and not cleared by enactment, so
+        // the identical twelve regretted paths still clear the bar on the
+        // very next `review_rules` call, `journal_once` correctly declines
+        // to write a second `proposed:ord-review-11` record, and the old
+        // code opened it in memory anyway — a phantom proposal `GET
+        // /risk/recalibrations` would list as open, signable a second time,
+        // with the log silent about ever having reopened.
+        let mut platform = platform();
+        regret_twelve(&mut platform);
+        platform.review_rules(start());
+        assert!(
+            platform.open_recalibrations().contains_key(RULE),
+            "the premise failed: no proposal stands"
+        );
+
+        platform
+            .approve_recalibration(RULE, &operator("ops-dana", start()), WHY, start())
+            .expect("a first signature");
+        platform
+            .approve_recalibration(RULE, &operator("ops-ravi", start()), WHY, start())
+            .expect("a second, different signer enacts");
+        assert!(
+            platform.open_recalibrations().is_empty(),
+            "premise failed: enactment did not close the proposal"
+        );
+
+        // `declined_scores` is untouched — the same evidence that was just
+        // enacted on is still sitting there and still clears the bar.
+        let (summary, problems) = platform.review_rules(start());
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(
+            platform.open_recalibrations().is_empty(),
+            "an enacted proposal re-opened on unchanged evidence: {:?}",
+            platform.open_recalibrations()
+        );
+        assert_eq!(
+            summary, None,
+            "a cycle that proposed, withdrew or newly dormanted something reported one, but \
+             nothing here should have moved: {summary:?}"
+        );
+        let outcomes: Vec<String> = proposals(&platform)
+            .into_iter()
+            .map(|p| p.outcome)
+            .collect();
+        assert_eq!(
+            outcomes,
+            vec!["proposed".to_string(), "enacted".to_string()],
+            "a phantom second proposal record was journaled for the same evidence"
+        );
+    }
+
+    #[test]
+    fn review_rules_does_not_reopen_a_withdrawn_proposal_on_the_same_evidence_recurring() {
+        // The other closed outcome the same defect reaches: a proposal
+        // withdrawn because the window rolled to correct declines, and then
+        // the window rolling back to the exact evidence that was withdrawn —
+        // same order ids, same `newest`. Nothing new was scored; the
+        // withdrawal already said what this evidence is worth.
+        let mut platform = platform();
+        regret_twelve(&mut platform);
+        platform.review_rules(start());
+        assert!(
+            platform.open_recalibrations().contains_key(RULE),
+            "the premise failed: no proposal stands"
+        );
+
+        platform.declined_scores.clear();
+        for index in 0..12 {
+            platform
+                .declined_scores
+                .push(score(index + 100, false, dec!("-100")));
+        }
+        let (withdrawal, problems) = platform.review_rules(start());
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(
+            withdrawal
+                .as_deref()
+                .is_some_and(|s| s.contains("withdrawn")),
+            "premise failed: the review did not report a withdrawal: {withdrawal:?}"
+        );
+        assert!(
+            platform.open_recalibrations().is_empty(),
+            "premise failed: withdrawal did not close the proposal"
+        );
+
+        // The exact same twelve paths that were originally proposed on —
+        // same order ids, so the same `newest` the withdrawal was keyed by.
+        regret_twelve(&mut platform);
+        let (summary, problems) = platform.review_rules(start());
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(
+            platform.open_recalibrations().is_empty(),
+            "a withdrawn proposal re-opened on the evidence it was withdrawn on: {:?}",
+            platform.open_recalibrations()
+        );
+        assert_eq!(
+            summary, None,
+            "recurring, already-withdrawn evidence was reported as a new finding: {summary:?}"
+        );
+        let outcomes: Vec<String> = proposals(&platform)
+            .into_iter()
+            .map(|p| p.outcome)
+            .collect();
+        assert_eq!(
+            outcomes,
+            vec!["proposed".to_string(), "withdrawn".to_string()],
+            "a phantom second proposal record was journaled for the withdrawn evidence"
+        );
+    }
+
+    #[test]
+    fn a_resumed_proposal_is_dropped_rather_than_trusted_when_the_boot_bound_has_since_moved() {
+        // Security review MEDIUM-2: `resume_open_proposals` used to keep any
+        // `proposed` record whose *outcome* was still open, with no check
+        // that the rule it names still means what it meant when the record
+        // was written. `approve_recalibration` feeds `proposal.proposed_bound`
+        // straight to `LimitSet::rebound`, whose only checks are finite and
+        // positive — so a record resumed on a boot whose limits file had
+        // since moved that bound (a reviewed commit, in the ordinary case;
+        // a crafted log record, in the review's exploit) was still signable
+        // into an artefact built on a stale `current_bound`. The fix rebuilds
+        // every resumed record through `RecalibrationProposal::new` against
+        // the boot's *actual* kind and drops it, rather than resuming it, on
+        // any mismatch.
+        let mut platform = platform();
+        regret_twelve(&mut platform);
+        platform.review_rules(start());
+        assert!(
+            platform.open_recalibrations().contains_key(RULE),
+            "the premise failed: no proposal stands"
+        );
+
+        // The set a second boot would actually run under, if a reviewed
+        // commit had moved `order-notional`'s bound in the meantime — to
+        // 260,000 rather than something past the proposal's own 300,000,
+        // so that `RecalibrationProposal::new` would still call this a
+        // loosening on its own and the explicit bound check below is what
+        // this test actually isolates, not the constructor's loosening rule.
+        let moved_boot = LimitSet::conservative_default()
+            .rebound(RULE, 260_000.0)
+            .expect("a known limit rebounds");
+        assert_ne!(
+            moved_boot
+                .limits
+                .iter()
+                .find(|limit| limit.name == RULE)
+                .map(|limit| limit.kind.bound()),
+            Some(250_000.0),
+            "premise failed: the boot bound did not move"
+        );
+
+        let (resumed, _closed) = Platform::resume_open_proposals(platform.event_log(), &moved_boot)
+            .expect("the log reads back");
+        assert!(
+            !resumed.contains_key(RULE),
+            "a proposal whose current_bound no longer matches the boot set was resumed anyway: \
+             {:?}",
+            resumed.get(RULE)
+        );
+
+        // The admitting half, so the drop above is a choice and not a parser
+        // that resumes nothing: resuming against the *unmoved* boot set
+        // keeps it.
+        let (still_open, _closed) = Platform::resume_open_proposals(
+            platform.event_log(),
+            &LimitSet::conservative_default(),
+        )
+        .expect("the log reads back");
+        assert!(
+            still_open.contains_key(RULE),
+            "a proposal resumed against the boot set it was written under was dropped anyway"
         );
     }
 
