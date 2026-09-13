@@ -1939,6 +1939,21 @@ pub struct StrategyReviewJournal {
     pub skipped: usize,
 }
 
+/// One limit's reading on the order it refused: what was measured against
+/// what bound, in the limit's own units.
+///
+/// Statistics, not money — copied from the `f64` fields of
+/// `qip_risk::limits::LimitBreach`, which already crossed out of `Decimal`
+/// where the limit engine compares. Kept so a regret finding can say which
+/// bound would have admitted the paths it regrets, rather than only that the
+/// rule was too tight by some amount nobody wrote down.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RuleReading {
+    pub rule: String,
+    pub observed: f64,
+    pub bound: f64,
+}
+
 /// One refused order, kept until the twin can price what refusing it cost.
 #[derive(Clone, Debug, PartialEq)]
 struct DeclinedPath {
@@ -1950,6 +1965,13 @@ struct DeclinedPath {
     quantity: Decimal,
     /// The control that refused, in the vocabulary `gate_of` gives.
     gate: String,
+    /// The rules that refused, by configured name — from
+    /// `RefusalReason::rule_names`, so the breach the checker wrote is the
+    /// source and never the sentence. Empty where the refusal was a posture
+    /// rather than a rule, or where risk refused on an unevaluated figure.
+    rules: Vec<String>,
+    /// The reading behind each pre-trade rule in `rules`.
+    readings: Vec<RuleReading>,
 }
 
 /// What a refused order would have done, once the twin has priced it.
@@ -1974,6 +1996,16 @@ pub struct DeclinedScore {
     pub regret: bool,
     /// How many alternatives the twin priced.
     pub alternatives: usize,
+    /// The rules the refusal is charged to, by configured name — the key
+    /// §12.3's per-rule accumulation is actually keyed on, where `gate` says
+    /// only that pre-trade risk was the control. Defaulted so a score
+    /// journalled before the field existed reads back as attributed to no
+    /// rule rather than refusing to load.
+    #[serde(default)]
+    pub rules: Vec<String>,
+    /// What each rule in `rules` measured against what bound, on this order.
+    #[serde(default)]
+    pub readings: Vec<RuleReading>,
 }
 
 /// What the LEARN stage's calibration pass left in the journal.
@@ -3390,6 +3422,10 @@ impl Platform {
         metrics.describe(
             names::COUNTERFACTUAL_REGRETS,
             "declined paths that, priced, would have beaten standing aside, by gate",
+        );
+        metrics.describe(
+            names::RULE_FIRED,
+            "refusals charged to the configured rule that made them, by rule name",
         );
         metrics.describe(
             names::COUNTERFACTUALS_DEFERRED,
@@ -10761,6 +10797,34 @@ impl Platform {
             self.telemetry
                 .metrics
                 .count(names::ORDERS_REFUSED, labels([("control", gate.as_str())]));
+            // And by rule, from the breach the checker wrote rather than from
+            // the sentence above it. `ORDERS_REFUSED{control="pre-trade-risk"}`
+            // was the finest grain the platform had, so blueprint §12.3's
+            // per-rule rows — too tight, earning its place, never fires —
+            // had no key to accumulate on: every limit was one bar. Computed
+            // once here and carried on the declined path, so the twin's score
+            // and this count cannot name different rules for one refusal.
+            let rules = result
+                .refusal
+                .as_ref()
+                .map(RefusalReason::rule_names)
+                .unwrap_or_default();
+            let readings: Vec<RuleReading> = match result.refusal.as_ref() {
+                Some(RefusalReason::RiskRejected { breaches, .. }) => breaches
+                    .iter()
+                    .map(|breach| RuleReading {
+                        rule: breach.limit_name.clone(),
+                        observed: breach.observed,
+                        bound: breach.bound,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            for rule in &rules {
+                self.telemetry
+                    .metrics
+                    .count(names::RULE_FIRED, labels([("rule", rule.as_str())]));
+            }
             let refused = self.capture(
                 now,
                 &correlation,
@@ -10797,6 +10861,8 @@ impl Platform {
                         side: book_side(side),
                         quantity,
                         gate,
+                        rules,
+                        readings,
                     });
                 }
             }
@@ -11547,12 +11613,14 @@ impl Platform {
             else {
                 continue;
             };
-            let (object_id, gate, declined_at) = {
+            let (object_id, gate, declined_at, rules, readings) = {
                 let declined = &self.declined[index];
                 (
                     declined.object_id.clone(),
                     declined.gate.clone(),
                     declined.decision.at,
+                    declined.rules.clone(),
+                    declined.readings.clone(),
                 )
             };
             let priced = self
@@ -11599,6 +11667,8 @@ impl Platform {
                         would_have_earned,
                         regret,
                         alternatives: set.len(),
+                        rules,
+                        readings,
                     });
                     if self.declined_scores.len() > DECLINED_HISTORY {
                         let excess = self.declined_scores.len() - DECLINED_HISTORY;
@@ -15885,6 +15955,8 @@ mod counterfactual_sizing_tests {
             would_have_earned: Simulated::ZERO,
             regret,
             alternatives: 4,
+            rules: Vec::new(),
+            readings: Vec::new(),
         }
     }
 
@@ -15969,6 +16041,143 @@ mod counterfactual_sizing_tests {
             platform.sizing_confidence(OBJECT, start()),
             Ok(Decimal::ONE),
             "overwhelming evidence that a rule is too tight raised sizing confidence above one"
+        );
+    }
+}
+
+#[cfg(test)]
+mod rule_attribution_tests {
+    //! Blueprint §12.3 accumulates per *rule*, and until this lane the
+    //! platform's finest grain was the control: `ORDERS_REFUSED{control=
+    //! "pre-trade-risk"}` and a `DeclinedPath.gate` of the same word, so
+    //! every limit in the set was one bar and one key. These tests drive a
+    //! real refusal through `submit_order` and read what the declined path
+    //! and the counter say about which rule made it.
+
+    use super::*;
+    use qip_core::dec;
+    use qip_financial::universe::Universe;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn platform() -> Platform {
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    /// Three thousand shares at a hundred: 300,000 of notional against the
+    /// shipped `order-notional` cap of 250,000, and 3% of the default
+    /// ten-million book, so no other limit in the set binds.
+    fn refuse_one_over_the_notional_cap(platform: &mut Platform) -> Error {
+        let order = platform.order_from(
+            ObjectId::from_string("obj-AAA"),
+            Side::Buy,
+            dec!("3000"),
+            dec!("100"),
+            "prop-attribution",
+            vec!["hyp-attribution".to_string()],
+            start(),
+        );
+        platform
+            .submit_order(order, start())
+            .expect_err("an order over the notional cap is refused")
+    }
+
+    #[test]
+    fn a_declined_path_carries_its_rules_from_the_breach_and_not_from_the_reason_text() {
+        let mut platform = platform();
+        assert!(
+            platform.declined.is_empty(),
+            "the premise failed: a fresh platform already holds a declined path"
+        );
+        let refusal = refuse_one_over_the_notional_cap(&mut platform);
+        assert!(
+            refusal.message().contains("order-notional"),
+            "the premise failed: the refusal was not the notional cap: {}",
+            refusal.message()
+        );
+
+        let declined = platform
+            .declined
+            .last()
+            .expect("the refusal was kept for the twin");
+        assert_eq!(
+            declined.gate, "pre-trade-risk",
+            "the control label is unchanged; the rule is a second, finer key"
+        );
+        assert_eq!(
+            declined.rules,
+            vec!["order-notional".to_string()],
+            "the declined path does not name the rule that refused it"
+        );
+        assert_eq!(declined.readings.len(), 1, "{:?}", declined.readings);
+        let reading = &declined.readings[0];
+        assert_eq!(reading.rule, "order-notional");
+        // Statistics copied from the breach: the bound the shipped set
+        // configures and the notional the order would have put on.
+        assert!(
+            (reading.bound - 250_000.0).abs() < 1e-9,
+            "the reading's bound is {}, not the configured 250,000",
+            reading.bound
+        );
+        assert!(
+            (reading.observed - 300_000.0).abs() < 1e-9,
+            "the reading's observation is {}, not the order's 300,000",
+            reading.observed
+        );
+    }
+
+    #[test]
+    fn a_rule_that_refuses_an_order_is_counted_under_its_own_name() {
+        let mut platform = platform();
+        let by_rule = labels([("rule", "order-notional")]);
+        let by_control = labels([("rule", "pre-trade-risk")]);
+        assert_eq!(
+            platform
+                .telemetry
+                .metrics
+                .snapshot()
+                .counter(names::RULE_FIRED, &by_rule),
+            0,
+            "the premise failed: the rule counted before anything was refused"
+        );
+
+        refuse_one_over_the_notional_cap(&mut platform);
+
+        let snapshot = platform.telemetry.metrics.snapshot();
+        assert_eq!(
+            snapshot.counter(names::RULE_FIRED, &by_rule),
+            1,
+            "the refusal was not charged to the rule by name; series: {:?}",
+            snapshot.series.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        // And not under the control's word: that is what `ORDERS_REFUSED`
+        // already says, and a second series saying it again would be the
+        // same one bar this series exists to split.
+        assert_eq!(
+            snapshot.counter(names::RULE_FIRED, &by_control),
+            0,
+            "the rule series carries the control label instead of the rule name"
+        );
+        assert_eq!(
+            snapshot.counter(
+                names::ORDERS_REFUSED,
+                &labels([("control", "pre-trade-risk")])
+            ),
+            1,
+            "the control-level count moved differently from the rule-level one"
         );
     }
 }

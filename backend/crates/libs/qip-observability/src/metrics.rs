@@ -962,6 +962,17 @@ pub mod names {
     /// full, or the twin refused the evaluation.
     pub const COUNTERFACTUALS_UNSCORED: &str = "qip_counterfactuals_unscored_total";
 
+    /// Refusals charged to the rule that made them, by `rule` — the limit's
+    /// configured *name* (`order-notional`, `expected-shortfall`), never its
+    /// kind, because two limits share a kind and a tally that merged them
+    /// would propose loosening a bound that refused nothing. A refusal by two
+    /// rules counts once under each. The label is bounded by the names in
+    /// the boot-frozen `LimitSet` plus the four `feasibility::GATE_*`
+    /// constants; nothing an order carries can mint a value. Beside
+    /// `qip_orders_refused_total{control}`, which says *that* pre-trade risk
+    /// refused and could not say which rule.
+    pub const RULE_FIRED: &str = "qip_rule_fired_total";
+
     /// Orders a cell reported *sent* — accepted by the venue, not filled —
     /// counted as the centre registers them against later fills. Kept beside
     /// [`CENTRAL_FILLS_ATTRIBUTED`] so the two can be read against each

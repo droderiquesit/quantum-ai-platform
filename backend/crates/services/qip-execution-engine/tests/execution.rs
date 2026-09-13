@@ -1230,3 +1230,137 @@ fn a_zero_or_negative_participation_is_refused_rather_than_clamped_to_the_market
         OrderType::Market
     ));
 }
+
+// --- attribution: which rule refused ------------------------------------------
+
+#[test]
+fn a_pre_trade_refusal_names_the_limits_that_refused_it_and_not_a_word_of_the_sentence() {
+    // The failure this prevents: `RiskRejected` used to carry only the
+    // sentence pre-trade risk wrote, so the kernel could count that risk
+    // refused an order and never which rule did — every limit was one bar on
+    // one chart, and blueprint §12.3's per-rule rows had nothing to key on.
+    // Parsing the rule back out of the sentence would have worked until the
+    // sentence was reworded, so the breach the checker wrote is carried
+    // beside it and the name is read from there.
+    let mut manager = manager();
+    let mut broker = simulator();
+    let controller = AutonomyController::new();
+
+    // 20,000 shares at 100 is 2m against 10m of equity: 20% in one name
+    // against a 10% cap, and inside the 2x leverage cap.
+    let result = submit(
+        &mut manager,
+        order("AAA", Side::Buy, "20000"),
+        &mut broker,
+        &controller,
+    );
+    let refusal = result
+        .refusal
+        .as_ref()
+        .expect("an order over the position cap is refused");
+    let RefusalReason::RiskRejected { reasons, breaches } = refusal else {
+        panic!("expected a risk refusal, got {refusal:?}");
+    };
+    // The premise: the sentence and the breach are both present, so the
+    // assertion below is choosing between two sources and not reading the
+    // only one there is.
+    assert!(!reasons.is_empty(), "the refusal carries no sentence");
+    assert_eq!(
+        breaches.len(),
+        1,
+        "exactly one limit bound; the fixture's leverage cap must not have fired too: {breaches:?}"
+    );
+    assert_eq!(breaches[0].limit_name, "max-position-weight");
+    assert!(
+        approx_eq(breaches[0].bound, 0.10, 1e-12),
+        "{}",
+        breaches[0].bound
+    );
+    assert!(
+        approx_eq(breaches[0].observed, 0.20, 1e-12),
+        "{}",
+        breaches[0].observed
+    );
+    assert_eq!(
+        refusal.rule_names(),
+        vec!["max-position-weight".to_string()]
+    );
+
+    // And the name comes from the breach, not the sentence: a refusal whose
+    // sentence names one rule and whose breaches name another attributes to
+    // the breach. A refusal that carries no breach — the checker's own
+    // "unevaluated figure" rejection — attributes to no rule at all rather
+    // than to whatever word its sentence begins with.
+    let breach_named_differently = RefusalReason::RiskRejected {
+        reasons: vec!["leverage: gross exposure is 3x against a limit of 2x".to_string()],
+        breaches: vec![qip_risk::limits::LimitBreach {
+            limit_name: "cash-buffer".to_string(),
+            limit_kind: "min_cash_buffer".to_string(),
+            severity: qip_risk::limits::Severity::Breach,
+            observed: 0.01,
+            bound: 0.02,
+            utilisation: 0.5,
+            subject: None,
+            detail: "cash is below the buffer".to_string(),
+            forces_reduction: false,
+        }],
+    };
+    assert_eq!(
+        breach_named_differently.rule_names(),
+        vec!["cash-buffer".to_string()],
+        "the rule was read out of the sentence rather than the breach"
+    );
+    let unevaluated = RefusalReason::RiskRejected {
+        reasons: vec![
+            "liquidity could not be evaluated, so no limit reading it ran: no ladder".to_string(),
+        ],
+        breaches: Vec::new(),
+    };
+    assert!(
+        unevaluated.rule_names().is_empty(),
+        "a refusal on an unevaluated figure was charged to a rule: {:?}",
+        unevaluated.rule_names()
+    );
+}
+
+#[test]
+fn a_feasibility_veto_is_attributed_to_its_gate_constant() {
+    // A feasibility veto is carried as `Malformed` and the gate is named in
+    // the detail text — see the module comment on why there is no variant —
+    // so attribution has to read the prefix and match it against the four
+    // constants exactly. Any other malformation attributes to nothing: an
+    // order tracing to no hypothesis is not a rule that fired.
+    let mut manager = manager().with_venue_feasibility(
+        "simulated-venue",
+        feasibility::VenueFeasibility::new(dec!("2"), None, dec!("0"), dec!("0"))
+            .expect("a valid model"),
+    );
+    let mut broker = simulator();
+    let autonomy = AutonomyController::new();
+    let result = submit(
+        &mut manager,
+        order("AAA", Side::Buy, "3"),
+        &mut broker,
+        &autonomy,
+    );
+    let refusal = result
+        .refusal
+        .as_ref()
+        .expect("an off-lot order is refused");
+    assert!(
+        matches!(refusal, RefusalReason::Malformed { .. }),
+        "premise: the veto is carried as Malformed, got {refusal:?}"
+    );
+    assert_eq!(
+        refusal.rule_names(),
+        vec![feasibility::GATE_LOT.to_string()]
+    );
+
+    let other_malformation = RefusalReason::Malformed {
+        detail: "order traces to no hypothesis".to_string(),
+    };
+    assert!(
+        other_malformation.rule_names().is_empty(),
+        "a malformation that is not a feasibility veto was charged to a rule"
+    );
+}

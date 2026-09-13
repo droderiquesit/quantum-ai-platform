@@ -46,11 +46,11 @@ use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::OrderId;
 use qip_core::time::Timestamp;
-use qip_risk::limits::RiskState;
+use qip_risk::limits::{LimitBreach, RiskState};
 use qip_risk_engine::autonomy::{AutonomyController, AutonomyLevel};
 use qip_risk_engine::pretrade::{PreTradeChecker, PreTradeDecision, ProposedOrder};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Why an order was refused.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -74,7 +74,25 @@ pub enum RefusalReason {
     /// The venue cannot be reached.
     VenueUnavailable { venue: String, detail: String },
     /// Pre-trade risk refused it.
-    RiskRejected { reasons: Vec<String> },
+    RiskRejected {
+        reasons: Vec<String>,
+        /// The blocking breaches exactly as `LimitSet::check` produced them,
+        /// so the rule that refused is a name the checker wrote and never a
+        /// word parsed back out of `reasons`. `reasons` is a sentence for a
+        /// person; a rule tally keyed on it would fragment the moment the
+        /// sentence was reworded, which is the same failure `gate_of` in
+        /// `qip-kernel` already guards against one level up.
+        ///
+        /// Empty for a refusal that attributes to no rule: the checker
+        /// rejects a state naming an unevaluated figure before any limit is
+        /// weighed, and `blocking()` is then empty. Such a refusal must not
+        /// be charged to a rule, and the blueprint §12.3 rows that count by
+        /// rule leave it out rather than file it under a name nobody wrote.
+        /// Defaulted so a record serialised before the field existed reads
+        /// back.
+        #[serde(default)]
+        breaches: Vec<LimitBreach>,
+    },
     /// The venue refused it.
     VenueRejected { detail: String },
 }
@@ -95,8 +113,48 @@ impl RefusalReason {
             Self::VenueUnavailable { venue, detail } => {
                 format!("{venue} is unavailable: {detail}")
             }
-            Self::RiskRejected { reasons } => format!("risk refused: {}", reasons.join("; ")),
+            Self::RiskRejected { reasons, .. } => {
+                format!("risk refused: {}", reasons.join("; "))
+            }
             Self::VenueRejected { detail } => format!("the venue refused: {detail}"),
+        }
+    }
+
+    /// The rules this refusal is attributed to, by the name each rule was
+    /// configured under — `order-notional`, `expected-shortfall` — and never
+    /// by a word read out of the refusal's sentence.
+    ///
+    /// The name rather than the kind, because two limits can share a kind
+    /// (`MaxAxisWeight` on `sector` and on `country`) and a regret tally that
+    /// merged them would propose loosening a bound that did not refuse
+    /// anything. The set is bounded: a `RiskRejected` name comes from the
+    /// boot-frozen `LimitSet` through the breach the checker wrote, and a
+    /// feasibility veto names one of the four `feasibility::GATE_*` constants
+    /// through [`Self::feasibility_gate`]. A structured field on `Malformed`
+    /// is the eventual fix for the second half; until then the prefix match
+    /// is exact against the constants, so a reworded reason cannot mint a
+    /// rule.
+    ///
+    /// Two rules on one refusal are two names, sorted and deduplicated, so a
+    /// path refused by both counts for each. Every other refusal — halted,
+    /// autonomy, venue — is a posture and not a rule, and attributes to none.
+    pub fn rule_names(&self) -> Vec<String> {
+        match self {
+            Self::RiskRejected { breaches, .. } => breaches
+                .iter()
+                .map(|breach| breach.limit_name.clone())
+                .collect::<BTreeSet<String>>()
+                .into_iter()
+                .collect(),
+            Self::Malformed { .. } => self
+                .feasibility_gate()
+                .map(|gate| vec![gate.to_string()])
+                .unwrap_or_default(),
+            Self::Halted { .. }
+            | Self::AutonomyTooLow { .. }
+            | Self::LiveVenueBelowLiveAutonomy { .. }
+            | Self::VenueUnavailable { .. }
+            | Self::VenueRejected { .. } => Vec::new(),
         }
     }
 
@@ -475,10 +533,21 @@ impl OrderManager {
         let mut reduced_to = None;
         match &check.decision {
             PreTradeDecision::Rejected { reasons } => {
+                // The breaches are carried beside the sentence, not derived
+                // from it: `post_trade_check` is the checker's own record of
+                // which limits bound, and it used to be dropped here — so the
+                // kernel could count that pre-trade risk refused, but not
+                // which rule did.
                 let result = refuse(
                     &order,
                     RefusalReason::RiskRejected {
                         reasons: reasons.clone(),
+                        breaches: check
+                            .post_trade_check
+                            .blocking()
+                            .into_iter()
+                            .cloned()
+                            .collect(),
                     },
                 );
                 self.record_refusal(order, at, result.clone());
