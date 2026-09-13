@@ -201,6 +201,37 @@ impl RefusalReason {
         )
     }
 
+    /// Whether this refusal is a judgment about the order — its shape or
+    /// its risk — rather than about the platform's or a venue's posture.
+    ///
+    /// A code-review finding on ADR 0062: `Platform::capture_submission`
+    /// queued *every* refusal, including [`Self::VenueUnavailable`], for the
+    /// twin to price, and ADR 0055's `counterfactual_sizing_multiplier`
+    /// groups what the twin priced by instrument alone, with no gate filter.
+    /// Once a venue is withdrawn, every further order routed there is
+    /// refused this way, every cycle, for as long as it stays withdrawn —
+    /// and each one is a refusal the venue's own reachability made, not one
+    /// a control decided by judging the order. Ten such refusals, easily
+    /// reached within a cycle or two of a withdrawal, would flood that
+    /// instrument's declined-score sample with evidence that has nothing to
+    /// do with whether the order was well sized, and could halve its sizing
+    /// confidence for a reason no rule found.
+    ///
+    /// [`Self::Malformed`] (the order's own shape — off its lot or tick
+    /// grid, or traced to no hypothesis) and [`Self::RiskRejected`] (a
+    /// control weighed the book and said no) are judgments about *this*
+    /// order and stay evidence. [`Self::Halted`], [`Self::AutonomyTooLow`],
+    /// [`Self::LiveVenueBelowLiveAutonomy`], [`Self::VenueUnavailable`] and
+    /// [`Self::VenueRejected`] are about the platform's posture or a
+    /// venue's state — the same order submitted a moment earlier or later,
+    /// or to a different venue, could have drawn any of the five for
+    /// reasons that have nothing to do with its size — and none of them
+    /// reach the queue [`Self::rule_names`]'s doc comment already calls
+    /// "not a rule": a posture is not sizing evidence either.
+    pub const fn is_sizing_evidence(&self) -> bool {
+        matches!(self, Self::Malformed { .. } | Self::RiskRejected { .. })
+    }
+
     /// The `feasibility_*` gate literal this refusal names, if it is a
     /// feasibility veto rather than any other malformation.
     ///

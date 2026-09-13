@@ -11285,13 +11285,30 @@ impl Platform {
                 RealisedOutcome::nothing_happened(now),
                 reason,
             );
-            // Kept for the twin. The refusal record above carries no side and
-            // no size — it says which control said no — and pricing what the
-            // veto cost needs the trade that was proposed. A full window is a
-            // refusal to queue, counted, not an eviction: dropping the oldest
-            // waiting path would silently choose which veto goes unexamined.
+            // Kept for the twin, and only when the refusal is evidence about
+            // the order rather than about posture (code review MEDIUM,
+            // ADR 0062 × ADR 0055). `is_sizing_evidence` excludes
+            // `VenueUnavailable` and its administrative siblings: a refusal
+            // the venue's own reachability produced would otherwise flood
+            // an instrument's declined-score sample for as long as the
+            // venue stayed withdrawn, narrowing its sizing confidence for a
+            // reason no rule found. The refusal record above still carries
+            // it — an operator can see every rejection — only the queue
+            // ADR 0055's discount reads from it is narrower. What is kept
+            // carries no side and no size — it says which control said no —
+            // and pricing what the veto cost needs the trade that was
+            // proposed. A full window is a refusal to queue, counted, not
+            // an eviction: dropping the oldest waiting path would silently
+            // choose which veto goes unexamined.
             if let Some(decision) = refused {
-                if self.declined.len() >= DECLINED_HISTORY {
+                if !result
+                    .refusal
+                    .as_ref()
+                    .is_some_and(RefusalReason::is_sizing_evidence)
+                {
+                    // A posture or venue-state refusal: on the record above,
+                    // never queued for the twin.
+                } else if self.declined.len() >= DECLINED_HISTORY {
                     self.telemetry.metrics.count(
                         names::COUNTERFACTUALS_UNSCORED,
                         labels([("reason", "capacity")]),

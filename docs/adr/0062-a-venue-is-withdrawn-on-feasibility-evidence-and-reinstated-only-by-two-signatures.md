@@ -234,6 +234,21 @@ reinstatement on the next pass.
 - The desk's window and the cells' share one sample, so a busy desk can
   drown a quiet cell's cluster and a busy cell the desk's. That is the
   choice: the row asks whether refusals cluster on a venue, not on a plane.
+- **Every subsequent order to a withdrawn venue is a fresh refusal, and a
+  code review found it was landing on the wrong ledger.** `OrderManager::
+  submit`'s step 5 refuses each one under `RefusalReason::VenueUnavailable`,
+  and `Platform::capture_submission` used to queue every refusal for the
+  twin's counterfactual pricing regardless of kind — feeding ADR 0055's
+  declined-path sizing discount with evidence that is administrative (the
+  venue's own reachability), not a judgment about whether the order was
+  well sized. Ten such refusals to one instrument, easily reached within a
+  cycle or two of a withdrawal, would have halved that instrument's sizing
+  confidence for a reason no rule found. Fixed at `RefusalReason::
+  is_sizing_evidence` (`qip-execution-engine`): only `Malformed` and
+  `RiskRejected` — judgments about the order — reach the declined queue;
+  `VenueUnavailable` and the platform's other posture refusals are still
+  recorded (an operator can see every rejection) but do not narrow sizing
+  confidence.
 
 ## What would make this wrong
 

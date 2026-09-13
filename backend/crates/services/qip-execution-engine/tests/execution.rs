@@ -759,6 +759,58 @@ fn a_safety_refusal_is_distinguishable_from_a_transient_fault() -> Result<()> {
 }
 
 #[test]
+fn only_a_judgment_about_the_order_itself_is_sizing_evidence() {
+    // The code-review finding this guards: `Platform::capture_submission`
+    // used to queue *every* refusal for the twin's counterfactual pricing,
+    // including an administrative one — a withdrawn venue, a halt, an
+    // autonomy gate — that says nothing about whether the order itself was
+    // well sized. `Malformed` (the order's own shape) and `RiskRejected` (a
+    // control weighed the book and said no) are judgments about the order;
+    // the other five name the platform's posture or a venue's state, and a
+    // future ninth variant landing in the wrong arm below is a compile
+    // error here, not a silent gap, because the match is exhaustive.
+    let sizing_evidence = RefusalReason::Malformed {
+        detail: "infeasible (feasibility_lot): 10.5 is not a whole number of lots".to_string(),
+    };
+    assert!(sizing_evidence.is_sizing_evidence());
+
+    let risk_rejected = RefusalReason::RiskRejected {
+        reasons: vec!["over the position cap".to_string()],
+        breaches: Vec::new(),
+    };
+    assert!(risk_rejected.is_sizing_evidence());
+
+    let not_evidence = [
+        RefusalReason::Halted {
+            scope: "global".to_string(),
+            detail: "risk-monitor".to_string(),
+        },
+        RefusalReason::AutonomyTooLow {
+            level: AutonomyLevel::Observation,
+            required: AutonomyLevel::PaperTrading,
+        },
+        RefusalReason::LiveVenueBelowLiveAutonomy {
+            level: AutonomyLevel::PaperTrading,
+            venue: "XNYS".to_string(),
+        },
+        RefusalReason::VenueUnavailable {
+            venue: "simulated-venue".to_string(),
+            detail: "withdrawn on feasibility evidence".to_string(),
+        },
+        RefusalReason::VenueRejected {
+            detail: "the venue declined the order".to_string(),
+        },
+    ];
+    for refusal in &not_evidence {
+        assert!(
+            !refusal.is_sizing_evidence(),
+            "{refusal:?} is a posture or venue-state refusal and must not feed ADR 0055's \
+             declined-path sizing discount"
+        );
+    }
+}
+
+#[test]
 fn every_refusal_is_recorded_so_a_missing_position_can_be_explained() -> Result<()> {
     let mut manager = manager();
     let mut broker = simulator();

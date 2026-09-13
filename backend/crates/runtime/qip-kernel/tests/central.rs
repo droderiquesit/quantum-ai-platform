@@ -1622,6 +1622,82 @@ fn ten_feasibility_refusals_of_which_eight_are_on_one_venue_withdraw_it_and_the_
 }
 
 #[test]
+fn ten_refusals_purely_for_a_venue_withdrawal_do_not_move_the_instruments_sizing_confidence()
+-> Result<()> {
+    // A code-review finding on ADR 0062 crossing ADR 0055: `capture_
+    // submission` pushed every refusal onto the declined queue
+    // unconditionally, including `RefusalReason::VenueUnavailable`, and
+    // `counterfactual_sizing_multiplier` groups what the twin priced by
+    // instrument alone, with no gate filter. Once a venue is withdrawn,
+    // every further order routed there is refused this way, every cycle,
+    // for as long as it stays withdrawn — an administrative fact about the
+    // venue's reachability, not a judgment about whether the order was
+    // well sized — and ten such refusals, easily reached within a cycle or
+    // two of a withdrawal, would otherwise flood the instrument's
+    // declined-score sample and could halve its sizing confidence for a
+    // reason no rule found.
+    let mut platform = platform_with_arbitrage(&[VENUE])?;
+
+    // Withdraw the desk's one broker on ten off-lot refusals — legitimate,
+    // single-source evidence ADR 0062 accepts alone, and untouched by this
+    // fix (`Malformed` stays sizing evidence; only the withdrawal refusals
+    // that follow are the ones under test).
+    for n in 0..10 {
+        refuse_off_lot(&mut platform, n)?;
+    }
+    platform.run_cycle(start());
+    assert_eq!(
+        platform.withdrawn_venues().iter().collect::<Vec<_>>(),
+        vec!["simulated-venue"],
+        "the premise failed: the desk's venue was not withdrawn"
+    );
+    let declined_before = platform.declined_awaiting_score();
+
+    // A different instrument from the one the off-lot refusals used, so its
+    // declined-score sample starts genuinely empty and cannot be confused
+    // with the evidence that triggered the withdrawal above.
+    let object_id = ObjectId::from_string("obj-BBB");
+    assert_eq!(
+        platform.sizing_confidence(object_id.as_str(), start())?,
+        Decimal::ONE,
+        "the premise failed: sizing was already narrowed before any refusal on this instrument"
+    );
+
+    for n in 0..10 {
+        let order = platform.order_from(
+            object_id.clone(),
+            qip_execution_engine::order::Side::Buy,
+            dec!("1000"),
+            dec!("100"),
+            &format!("prop-withdrawn-{n}"),
+            vec![format!("hyp-withdrawn-{n}")],
+            start(),
+        );
+        let error = platform
+            .submit_order(order, start())
+            .expect_err("an order to a withdrawn venue was accepted");
+        assert!(
+            error
+                .message()
+                .contains("withdrawn on feasibility evidence"),
+            "the refusal is not the venue withdrawal: {}",
+            error.message()
+        );
+    }
+    assert_eq!(
+        platform.declined_awaiting_score(),
+        declined_before,
+        "a venue-withdrawal refusal was queued for the twin"
+    );
+    assert_eq!(
+        platform.sizing_confidence(object_id.as_str(), start())?,
+        Decimal::ONE,
+        "ten refusals for venue withdrawal alone narrowed the instrument's sizing confidence"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_window_dominated_by_a_venue_the_policy_does_not_name_changes_no_whitelist() -> Result<()> {
     // Why evidence can never add a venue, shown from the other side: the
     // desk's broker is not a policy venue, so a cluster on it withdraws the
