@@ -156,16 +156,24 @@ fn an_egress_address_is_loopback_with_a_port_and_a_refusal_never_echoes_a_creden
     }
 
     // The redaction itself, on text the parser refuses: everything through
-    // the last `@` of the authority goes, the host stays, and an address
-    // with no userinfo is returned as it was.
+    // the last `@` past the scheme goes, the host after it stays, and an
+    // address with no userinfo is returned as it was.
     assert_eq!(
         redact_userinfo("http://svc:TOK@EN@127.0.0.1:9106/v1?x=1"),
         "http://…@127.0.0.1:9106/v1?x=1"
     );
+    // Corrected 2026-09-13 (round 5): this used to assert an `@` past a
+    // real, delimiter-bounded authority was kept verbatim. Two rounds of
+    // trying to tell "an `@` that ends a real authority" apart from "an `@`
+    // that is the credential a scheme-typo hid past a delimiter" each left
+    // a fifth bypass standing — see `redact_userinfo`'s doc comment. This
+    // input no longer gets special treatment for having a real host in
+    // front of its query `@`.
     assert_eq!(
         redact_userinfo("http://127.0.0.1:9106/v1?to=a@b"),
-        "http://127.0.0.1:9106/v1?to=a@b",
-        "an `@` past the authority is not userinfo and must be kept"
+        "http://…@b",
+        "every `@` past the scheme is a possible credential boundary now, even one whose \
+         query happens to contain an ordinary `a@b`"
     );
     // Corrected 2026-09-12: this used to assert the scheme-less string was
     // passed through unchanged, on the premise that every credential-bearing
@@ -216,18 +224,35 @@ fn a_scheme_less_credential_bearing_egress_address_is_still_redacted() {
 /// "scheme" and leaving the real credential outside anything the function
 /// checked for `'@'`.
 ///
-/// The fourth round's finding is here too, five new rows in: a scheme-less
-/// string whose first character is already one of the three delimiters
-/// (`://`, `//`, `/`, `?`, `#` with the scheme dropped) makes the naive
-/// authority-candidate empty, or — for a bare `://` with nothing before it
-/// — the single character `:`; neither is a real host, so the old code's
-/// "no `@` in the candidate, therefore no credential" read as true of a
-/// string whose credential sat one character later. See
-/// [`qip_transport::http::redact_userinfo`]'s doc comment for the fix and
-/// its documented residual (the `svc/TOKEN@…` row, kept unredacted on
-/// purpose because it cannot be told apart from the legitimate
-/// `127.0.0.1:9105/path@notacredential` row two above it without reopening
-/// that one).
+/// The fourth round's finding is here too: a scheme-less string whose first
+/// character is already one of the three delimiters (`://`, `//`, `/`, `?`,
+/// `#` with the scheme dropped) made the naive authority-candidate empty,
+/// or — for a bare `://` with nothing before it — the single character
+/// `:`; neither is a real host, so the old code's "no `@` in the candidate,
+/// therefore no credential" read as true of a string whose credential sat
+/// one character later. That round's fix widened the search only when a
+/// `split_authority`-based check said the candidate could not be a real
+/// host, and left one shape — `svc/TOKEN@127.0.0.1:9106` — as a documented,
+/// deliberately-accepted residual, on the premise that a bare single-label
+/// hostname is indistinguishable from a scheme-typo'd credential.
+///
+/// **The fifth round found that premise didn't hold either.** A fresh
+/// security review of the fourth round's fix found the same "could this be
+/// a host" check trusted far more than bare single-label words: any
+/// `word:validport` shape (`abc:80`), and pure digits (`123`), passed it
+/// too — and, because the check ran the same way whether or not a scheme
+/// was present, `http://svc/TOKEN@127.0.0.1:9106` and a one-character
+/// `:`→`/` typo on an ordinary `http://someservice:TOKEN@host` address
+/// both leaked through `require_loopback_egress`'s real refusal message,
+/// not just a synthetic string. Four rounds, four leaks, each one the next
+/// hole in a heuristic that had just been made one input narrower. See
+/// [`qip_transport::http::redact_userinfo`]'s doc comment for why round
+/// five drops the heuristic rather than narrowing it again: it now redacts
+/// through the *last* `@` anywhere past the scheme unconditionally, which
+/// means three rows below that used to assert an `@` past a real-looking
+/// host was kept now assert it is redacted too — over-redaction, on
+/// purpose, in exchange for there being no more "is this a host" judgment
+/// left to be wrong about.
 ///
 /// Table-driven over the full matrix the security review asked for,
 /// because every row is the same property — does this string get the
@@ -235,17 +260,16 @@ fn a_scheme_less_credential_bearing_egress_address_is_still_redacted() {
 /// rather than restated fourteen times with fourteen slightly different
 /// names.
 ///
-/// Mutated by reverting `redact_userinfo` to its round-2 shape (`let
-/// (scheme, rest) = match raw.split_once("://") { Some((scheme, rest)) =>
-/// (Some(scheme), rest), None => (None, raw) };` in place of the
-/// `split_scheme` call) — confirmed row 1 (the exact case above) then
-/// returns the input unchanged, `TOKEN` and `svc` both present, and this
-/// test fails on that row precisely; restored, confirmed every row passes
-/// again. Mutated a second way for round 4: replacing `None if
-/// authority_could_be_a_host(authority) => raw.to_string()` with a bare
-/// `None => raw.to_string()` (round 3's shape) — confirmed the four new
-/// empty-authority rows and the `:`-authority row all fail, each returning
-/// the token unredacted; restored, confirmed every row passes again.
+/// Mutated by reverting `redact_userinfo` to its round-4 shape (the
+/// `split_scheme`-plus-`authority_could_be_a_host`-guarded version, in
+/// place of the unconditional `rest.rfind('@')`) — confirmed the
+/// `abc:80`/`123`/`http://svc/…`/`http://123//…`/`someservice` rows below
+/// all fail, each with its token or `someservice`/`svc` present in the
+/// output; restored, confirmed every row passes again. Mutated a second
+/// way, reverting further to round-2's `raw.split_once("://")` shape —
+/// confirmed row 1 (the later-`://`-in-the-query case) then returns the
+/// input unchanged, `TOKEN` and `svc` both present; restored, confirmed
+/// every row passes again.
 #[test]
 fn redact_userinfo_handles_the_full_adversarial_matrix() {
     use qip_transport::http::redact_userinfo;
@@ -268,14 +292,17 @@ fn redact_userinfo_handles_the_full_adversarial_matrix() {
             "http://…@127.0.0.1:9105/path",
         ),
         (
-            "an `@` only in the path is not a credential",
+            "round 5 correction: an `@` in the path used to be kept, on the premise that a \
+             real host in front of it proved there was no credential. Two narrower rounds each \
+             found a shape that premise didn't cover; this now redacts unconditionally, and the \
+             cost is this ordinary-looking path text being masked too",
             "http://127.0.0.1:9105/path@notacredential",
-            "http://127.0.0.1:9105/path@notacredential",
+            "http://…@notacredential",
         ),
         (
-            "an `@` only in the query is not a credential",
+            "round 5 correction: same reasoning, for a query `@` instead of a path one",
             "http://127.0.0.1:9105/x?y=a@b",
-            "http://127.0.0.1:9105/x?y=a@b",
+            "http://…@b",
         ),
         (
             "two `@` in the authority mask down to the rightmost split",
@@ -306,12 +333,12 @@ fn redact_userinfo_handles_the_full_adversarial_matrix() {
         ),
         (
             "the permutation the round-2 code review flagged as untested: no scheme at all, \
-             and the `@` sits in the path rather than the authority — the row above already \
-             covers a scheme plus a query `@`, this covers no scheme plus a path `@`, and \
-             neither reduces to the other since the scheme's presence is what selects which \
-             branch of `redact_userinfo` runs",
+             and the `@` sits in the path rather than the authority. Round 5 correction: this \
+             used to be the row proving a scheme-less real host protects a path `@` from \
+             redaction; that protection is what let `svc/TOKEN@…` and `abc:80/TOKEN@…` hide \
+             behind the same reasoning, so it no longer applies here either",
             "127.0.0.1:9105/path@notacredential",
-            "127.0.0.1:9105/path@notacredential",
+            "…@notacredential",
         ),
         (
             "round 4's finding: a `://` typo'd down to `//`, with the scheme dropped \
@@ -346,15 +373,58 @@ fn redact_userinfo_handles_the_full_adversarial_matrix() {
             "…@127.0.0.1:9106",
         ),
         (
-            "round 4's residual: `svc` before the `/` is a syntactically legal single-label \
-             hostname — indistinguishable, by the grammar `authority_could_be_a_host` \
-             enforces, from the `127.0.0.1:9105/path@notacredential` row above, which this \
-             same test pins as *not* a credential. Closing this one row would reopen that \
-             one; documented as an accepted residual rather than fixed silently, and its \
-             `@` must still not reach `Url::parse`'s `UnsupportedScheme` or `InvalidUrl` \
-             unredacted if it should ever be judged worth closing later",
+            "round 4's documented residual, now actually closed rather than merely \
+             documented: round 4 left this unredacted because `svc` parses as a legal \
+             single-label hostname, indistinguishable from the row above. Round 5 does not \
+             need to distinguish them — both redact now",
             "svc/TOKEN@127.0.0.1:9106",
-            "svc/TOKEN@127.0.0.1:9106",
+            "…@127.0.0.1:9106",
+        ),
+        (
+            "round 5's finding: a `word:port` authority-candidate — round 4's fix trusted \
+             this unconditionally as `split_authority` parses it to a non-empty host with an \
+             explicit port, exactly like a real `127.0.0.1:9105`, with nothing in the string \
+             itself to say `abc` is not a real hostname",
+            "abc:80/TOKEN@127.0.0.1:9106",
+            "…@127.0.0.1:9106",
+        ),
+        (
+            "round 5's finding: pure digits with no scheme, no colon, no dot — round 4's fix \
+             trusted this too, since `split_authority` accepts any non-empty string with no \
+             colon as a bare host",
+            "123//TOKEN@127.0.0.1:9106",
+            "…@127.0.0.1:9106",
+        ),
+        (
+            "round 5's finding, and the one that matters most: this leak survives even with \
+             an ordinary `http://` scheme present, because round 4's authority check ran the \
+             same way whether or not a scheme was found",
+            "http://svc/TOKEN@127.0.0.1:9106",
+            "http://…@127.0.0.1:9106",
+        ),
+        (
+            "round 5's finding: the scheme'd sibling of the pure-digits row above",
+            "http://123//TOKEN@127.0.0.1:9106",
+            "http://…@127.0.0.1:9106",
+        ),
+        (
+            "round 5's finding, the realistic one: an operator meant \
+             `http://someservice:API_SECRET_VALUE@upstream.example` and mistyped a single \
+             character, `:` to `/`. `Url::parse` accepts the result as a syntactically valid \
+             URL (host `someservice`, path `/API_SECRET_VALUE@upstream.example`) and only the \
+             *later* loopback-host check in `require_loopback_egress` refuses it — through a \
+             message built from this function",
+            "http://someservice/API_SECRET_VALUE@upstream.example",
+            "http://…@upstream.example",
+        ),
+        (
+            "a pre-existing, informational observation from the round-5 security review, fixed \
+             as a side effect rather than left standing: two `@` past a real authority used to \
+             redact only through the first one, leaving a second credential-shaped chunk past \
+             a later delimiter untouched. The unconditional last-`@` search redacts through \
+             the last one regardless of how many real-looking authorities came before it",
+            "http://127.0.0.1:9105@evil/TOKEN@127.0.0.1:9106",
+            "http://…@127.0.0.1:9106",
         ),
     ];
 

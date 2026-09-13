@@ -451,60 +451,52 @@ fn split_scheme(raw: &str) -> (Option<&str>, &str) {
 /// grammar, so "no `@` in it" said nothing about the credential sitting
 /// one character later, past the delimiter, and this function returned
 /// `raw` untouched — six such inputs, all reachable through
-/// `QIP_LANGUAGE_MODEL_BASE_URL`, all still leaking their token.
+/// `QIP_LANGUAGE_MODEL_BASE_URL`, all still leaking their token. The first
+/// attempt at a fix widened the search only when a `split_authority`-based
+/// `authority_could_be_a_host` check said the candidate could not be a real
+/// host — narrower than searching the whole remainder unconditionally,
+/// because that would also have caught `127.0.0.1:9105/path@notacredential`
+/// below, which a test pinned as intentional. **That attempt itself did not
+/// close the class.** A fresh security review found it still trusted any
+/// non-empty `word` or `word:validport` shape as "a host" — `abc:80`,
+/// `123`, and the bare `svc` this file used to call out by name — which
+/// let `http://svc/TOKEN@127.0.0.1:9106` and, through
+/// [`require_loopback_egress`]'s own real error path, a one-character
+/// `:`→`/` typo on an otherwise ordinary `http://someservice:TOKEN@host`
+/// address (`http://someservice/TOKEN@host`) print the credential
+/// unredacted. Four fix rounds against this function had each closed the
+/// one reported shape and left an adjacent one standing; a fifth review of
+/// the fourth attempt closed on the same result. That pattern — narrow the
+/// heuristic, find the next gap in it — is itself the finding: no `host`
+/// heuristic drawn from this string's own shape can distinguish a
+/// scheme-typo'd credential from a legitimate bare hostname, because
+/// nothing about the string says which one it is.
 ///
-/// The fix is narrower than "search the whole remainder for `@`": that
-/// would also catch `127.0.0.1:9105/path@notacredential`, whose authority
-/// candidate (`127.0.0.1:9105`) *is* a real, complete host — a case
-/// [`redact_userinfo_handles_the_full_adversarial_matrix`] pins as
-/// intentional, because a scheme-less host that already looks like a
-/// legitimate `host[:port]` followed by a `/path` containing an ordinary
-/// `@` is not a credential and must not be over-redacted. `authority` is
-/// widened past only when [`split_authority`] cannot read it as a
-/// non-empty host at all — which is true of `""` and `":"`, and false of
-/// both `127.0.0.1:9105` and, deliberately, the bare word `svc` (a
-/// single-label hostname is legal, so `svc/TOKEN@127.0.0.1:9106` is
-/// indistinguishable, by this function's own grammar, from a host named
-/// `svc` followed by a path — this is a documented residual, not a silent
-/// one; see [`redact_userinfo_handles_the_full_adversarial_matrix`]'s own
-/// case for it).
+/// **So this function no longer tries.** It redacts everything through the
+/// *last* `@` anywhere past the scheme, unconditionally, whether or not
+/// what precedes that `@` looks like it could have been a host. This can
+/// only ever over-redact — mask a benign `@` that happens to sit in a path
+/// or query, as `127.0.0.1:9105/path@notacredential` now does, rather than
+/// print it — and it can never under-redact, because there is no longer a
+/// heuristic step whose failure mode is "conclude there is no credential."
+/// The three tests that used to pin the narrower behavior as intentional
+/// (an `@` in a path or query being kept, with a real host in front of it)
+/// were rewritten for this: over-redaction is the accepted, permanent cost
+/// of a function whose one job is to never be the fifth report.
 pub fn redact_userinfo(raw: &str) -> String {
     let (scheme, rest) = split_scheme(raw);
-    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let (authority, remainder) = rest.split_at(end);
-    match authority.rsplit_once('@') {
-        Some((_, host)) => match scheme {
-            Some(scheme) => format!("{scheme}://…@{host}{remainder}"),
-            None => format!("…@{host}{remainder}"),
-        },
-        None if authority_could_be_a_host(authority) => raw.to_string(),
-        None => match rest.rfind('@') {
-            None => raw.to_string(),
-            Some(at) => {
-                let after = &rest[at + 1..];
-                let host_end = after.find(['/', '?', '#']).unwrap_or(after.len());
-                let (host, tail) = after.split_at(host_end);
-                match scheme {
-                    Some(scheme) => format!("{scheme}://…@{host}{tail}"),
-                    None => format!("…@{host}{tail}"),
-                }
+    match rest.rfind('@') {
+        None => raw.to_string(),
+        Some(at) => {
+            let after = &rest[at + 1..];
+            let host_end = after.find(['/', '?', '#']).unwrap_or(after.len());
+            let (host, remainder) = after.split_at(host_end);
+            match scheme {
+                Some(scheme) => format!("{scheme}://…@{host}{remainder}"),
+                None => format!("…@{host}{remainder}"),
             }
-        },
+        }
     }
-}
-
-/// Whether `candidate` could be a real authority's host on its own — the
-/// same `host[:port]` grammar [`Url::parse`] parses with, via
-/// [`split_authority`], requiring a non-empty host. Not a judgement about
-/// how *likely* a string is to be a scheme typo: `"svc"` passes, same as
-/// `"127.0.0.1:9105"`, because a bare single-label hostname is a legal
-/// authority and this function is a display helper, not the parser — it
-/// exists only to tell an authority-candidate that cannot be a host at all
-/// (`""`, or anything [`split_authority`] refuses, such as `":"`) from one
-/// that already is a complete host, so [`redact_userinfo`] knows which of
-/// the two it is looking at before deciding whether to search further.
-fn authority_could_be_a_host(candidate: &str) -> bool {
-    matches!(split_authority(candidate), Some((host, _)) if !host.is_empty())
 }
 
 /// The one host an egress address may name: the proxy's loopback listener,
