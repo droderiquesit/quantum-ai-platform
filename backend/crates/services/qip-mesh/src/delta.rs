@@ -92,6 +92,11 @@ pub struct StrategyStanding {
 pub struct DeltaRefusal {
     pub gate: String,
     pub reason: String,
+    /// The venue a feasibility refusal was about; absent for every other
+    /// gate and for a delta written before the field existed. Mirrors the
+    /// edge's serde attributes exactly, for the reason `WireDelta` gives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub venue: Option<String>,
 }
 
 /// The wire shape of a cell's state delta, private to the decode.

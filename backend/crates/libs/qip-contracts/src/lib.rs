@@ -30,6 +30,7 @@
 pub mod capital;
 pub mod degradation;
 pub mod edge;
+pub mod feasibility;
 pub mod feature;
 pub mod gate;
 pub mod governance;

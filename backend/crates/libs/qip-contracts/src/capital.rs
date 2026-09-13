@@ -121,6 +121,12 @@ impl CapitalEnvelope {
         self.venues.iter().any(|v| v == venue)
     }
 
+    /// Every venue this grant is good at. Read-only: the list is part of the
+    /// signed payload, and widening it means asking for a new grant.
+    pub fn venues(&self) -> &[VenueId] {
+        &self.venues
+    }
+
     /// The bytes a signature is taken over.
     ///
     /// Every field that bounds what the cell may do. A signature that does not

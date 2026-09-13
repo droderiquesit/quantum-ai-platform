@@ -1376,10 +1376,15 @@ impl CellDeltaSink for IngestSink<'_> {
         // them renders every strategy book flat however much the cell traded.
         // The orders travel as what was sent and the fills as what traded;
         // the plane bills from the second and only registers the first.
+        // And the refusals, so a feasibility refusal that names a venue
+        // reaches the window the centre withdraws a venue on: until this
+        // line the sink counted them and carried none, and the fourth row
+        // of blueprint §12.3 could see the desk's refusals and no cell's.
         let report = report_from(&decoded.standing)
             .with_orders(decoded.interval.orders.clone())
             .with_fills(decoded.interval.fills.clone())
-            .with_crosses(decoded.interval.crosses.clone());
+            .with_crosses(decoded.interval.crosses.clone())
+            .with_refusals(decoded.interval.refusals.clone());
         // Recorded before the ingest so `/regions` knows the cell spoke even
         // when the plane goes on to halt it — a halted cell that looked
         // silent would be the worst possible rendering of the loudest fact.

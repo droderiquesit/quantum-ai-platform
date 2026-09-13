@@ -72,15 +72,19 @@ use qip_core::{Decimal, ObjectId};
 use std::collections::BTreeMap;
 
 /// The gate literal each rule refuses under. Literals, so the refusal series
-/// stays bounded by the source and never by the market.
-pub const GATE_MINIMUM_QUANTITY: &str = "feasibility_minimum_quantity";
-pub const GATE_MINIMUM_NOTIONAL: &str = "feasibility_minimum_notional";
-pub const GATE_LOT: &str = "feasibility_lot";
-pub const GATE_TICK: &str = "feasibility_tick";
-pub const GATE_DEPTH: &str = "feasibility_depth";
-pub const GATE_FEE_FLOOR: &str = "feasibility_fee_floor";
-pub const GATE_GAS_FLOOR: &str = "feasibility_gas_floor";
-pub const GATE_CONSTRAINT: &str = "feasibility_constraint";
+/// stays bounded by the source and never by the market — and declared once,
+/// in `qip_contracts::feasibility`, because the desk refuses under the same
+/// names and the centre now admits a carried refusal by them; three copies
+/// held identical by care is how a reworded gate becomes a refusal the
+/// centre files under `other`.
+pub const GATE_MINIMUM_QUANTITY: &str = qip_contracts::feasibility::GATE_MINIMUM_QUANTITY;
+pub const GATE_MINIMUM_NOTIONAL: &str = qip_contracts::feasibility::GATE_MINIMUM_NOTIONAL;
+pub const GATE_LOT: &str = qip_contracts::feasibility::GATE_LOT;
+pub const GATE_TICK: &str = qip_contracts::feasibility::GATE_TICK;
+pub const GATE_DEPTH: &str = qip_contracts::feasibility::GATE_DEPTH;
+pub const GATE_FEE_FLOOR: &str = qip_contracts::feasibility::GATE_FEE_FLOOR;
+pub const GATE_GAS_FLOOR: &str = qip_contracts::feasibility::GATE_GAS_FLOOR;
+pub const GATE_CONSTRAINT: &str = qip_contracts::feasibility::GATE_CONSTRAINT;
 
 /// The grids an instrument's order must sit on, and the least it may be.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

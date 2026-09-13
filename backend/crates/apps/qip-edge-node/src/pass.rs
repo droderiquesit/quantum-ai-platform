@@ -84,7 +84,10 @@ pub enum PassOutcome {
     /// The pass ran.
     Ran {
         feed: FeedTick,
-        report: WorkReport,
+        /// Boxed because a `WorkReport` is several vectors wide and the
+        /// halted arm is two, and an enum sized for its widest arm on every
+        /// pass — including the halted ones — is what the lint refuses.
+        report: Box<WorkReport>,
         /// What the requoter did to each resting order it did not leave
         /// alone, before the cell decided. Empty with no requoter.
         requotes: Vec<Requote>,
@@ -192,7 +195,7 @@ pub fn run_pass(
 
     Ok(PassOutcome::Ran {
         feed: tick,
-        report,
+        report: Box::new(report),
         requotes,
         breaks,
     })

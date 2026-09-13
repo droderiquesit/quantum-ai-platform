@@ -268,6 +268,14 @@ pub struct WorkReport {
     /// Every gate that said no, and why. A cell must answer "why did nothing
     /// trade" as precisely as "why did this trade".
     pub refusals: Vec<(String, String)>,
+    /// The venue each *feasibility* refusal in `refusals` was about, keyed
+    /// by that entry's index. Only `admit_feasible` pushes here, at the
+    /// instant it refuses, so the index is exact and the join in
+    /// [`Cell::state_delta`] cannot attach a venue to the wrong refusal. A
+    /// side table rather than a third element on `refusals`, because the
+    /// pair is read by every test and by `refused_under`, and a posture
+    /// refusal has no venue to carry.
+    pub feasibility_venues: Vec<(usize, VenueId)>,
     /// Every internal cross booked this pass (§27.1). A cross is a trade
     /// between two of the platform's own strategies; it is reported rather
     /// than merely journaled so a caller can see it without replaying the
@@ -4064,6 +4072,12 @@ impl Cell {
             Ok(()) => true,
             Err(infeasible) => {
                 self.refuse(report, infeasible.gate, &infeasible.reason, now);
+                // The one refusal that is about a venue carries it, keyed
+                // on the entry `refuse` just pushed, so the centre's window
+                // can say where the lot gate fired and not only that it did.
+                report
+                    .feasibility_venues
+                    .push((report.refusals.len() - 1, intent.venue.clone()));
                 false
             }
         }
@@ -4314,9 +4328,18 @@ impl Cell {
             refusals: report
                 .refusals
                 .iter()
-                .map(|(gate, reason)| DeltaRefusal {
+                .enumerate()
+                .map(|(index, (gate, reason))| DeltaRefusal {
                     gate: gate.clone(),
                     reason: reason.clone(),
+                    // Joined by the index `admit_feasible` recorded, so a
+                    // feasibility refusal carries its venue and nothing
+                    // else does.
+                    venue: report
+                        .feasibility_venues
+                        .iter()
+                        .find(|(at, _)| *at == index)
+                        .map(|(_, venue)| venue.as_str().to_string()),
                 })
                 .collect(),
             // Set by `bound_refusals` below; the caller does not get to claim

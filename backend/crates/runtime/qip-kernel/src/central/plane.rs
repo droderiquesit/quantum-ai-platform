@@ -27,6 +27,7 @@ use super::learning::CellOutcome;
 use super::realised::{RealisedCalendar, RealisedSeries};
 use super::regions::{GrantManifests, RegionMembership, RegionShares, partition};
 use super::whitelist::{ArbitragePolicy, WhitelistIssue, WhitelistOutcome};
+use crate::venue_review::{FeasibilityRefusal, FeasibilitySeam};
 use qip_capital::allocation::{
     Allocation, AllocationLimits, AllocationPlan, CapitalAllocator, DrawdownSchedule,
     StrategyProposal,
@@ -40,6 +41,7 @@ use qip_compliance::approval::{ApprovedCapital, CapitalRequest, OperatorCredenti
 use qip_compliance::incident::{HaltScope, Incident, ResponsePolicy};
 use qip_compliance::plane::{CompliancePlane, ComplianceReport};
 use qip_compliance::signing::SigningKey;
+use qip_contracts::feasibility::EDGE_GATES;
 use qip_contracts::governance::{Approval, Severity};
 use qip_contracts::message::BookSide;
 use qip_contracts::policy::CycleWhitelist;
@@ -50,7 +52,7 @@ use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
 use qip_learning_engine::attribution::{Attribution, Attributor, PositionPeriod};
 use qip_lifecycle::horizon::HorizonAssurance;
-use qip_mesh::delta::DeltaOrder;
+use qip_mesh::delta::{DeltaOrder, DeltaRefusal};
 use qip_observability::metrics::{Metrics, labels, names};
 use qip_risk_engine::autonomy::KillSwitch;
 use serde::{Deserialize, Serialize};
@@ -63,6 +65,16 @@ use std::sync::Arc;
 /// so that when asymmetric signing arrives, existing records say which key they
 /// were made under. See `qip_compliance::signing` for what this scheme is not.
 const CENTRAL_KEY_ID: &str = "central-plane-key";
+
+/// The `venue` label a carried refusal is counted under when it names a
+/// venue neither the arbitrage policy nor any live grant permits. One
+/// literal, so a cell cannot mint a series by naming a venue.
+pub const UNKNOWN_VENUE: &str = "unknown";
+
+/// The `constraint` label a carried refusal is counted under when its gate
+/// is outside `qip_contracts::feasibility::EDGE_GATES`. One literal, for the
+/// same reason.
+pub const OTHER_CONSTRAINT: &str = "other";
 
 /// The subject an [`Approval`] must name to authorise capital for a strategy
 /// at a cell.
@@ -308,6 +320,14 @@ pub struct CellReport {
     /// Incremental for the same reason.
     #[serde(default)]
     pub crosses: Vec<CrossRecord>,
+    /// Every gate that refused at the cell since its previous report, as the
+    /// delta carried them. The centre reads only the feasibility ones that
+    /// name a venue it knows, into the window blueprint §12.3's fourth row
+    /// is judged over; the rest were counted at the cell and are not
+    /// re-counted here. Defaulted so a report written before the field
+    /// replays as having carried no refusal, which is what it did.
+    #[serde(default)]
+    pub refusals: Vec<DeltaRefusal>,
 }
 
 impl CellReport {
@@ -321,7 +341,13 @@ impl CellReport {
             orders: Vec::new(),
             fills: Vec::new(),
             crosses: Vec::new(),
+            refusals: Vec::new(),
         }
+    }
+
+    pub fn with_refusals(mut self, refusals: Vec<DeltaRefusal>) -> Self {
+        self.refusals = refusals;
+        self
     }
 
     pub fn with_positions(mut self, positions: Vec<CellPosition>) -> Self {
@@ -374,6 +400,19 @@ pub struct CellIngestion {
     pub recalls: Vec<RecallOrder>,
     /// What the report's orders and crosses did to the strategy books.
     pub settlement: Settlement,
+    /// The report's feasibility refusals the centre admitted: each names a
+    /// feasibility gate and a venue the configuration or a live grant
+    /// permits, stamped with the report's instant. The platform puts these
+    /// in the window a venue is withdrawn on.
+    pub feasibility_refusals: Vec<FeasibilityRefusal>,
+    /// The report's venue-bearing refusals the centre could *not* attribute
+    /// — a gate outside the feasibility vocabulary, or a venue no
+    /// configuration and no grant names — as the `(venue, constraint)`
+    /// label pair each is counted under, with `unknown` and `other` in
+    /// place of whichever half could not be established. Counted, never
+    /// admitted: a window entry under a cause nobody established would be
+    /// a withdrawal nobody could explain.
+    pub feasibility_refusals_unattributed: Vec<(String, String)>,
 }
 
 /// What settling one report's interval to the strategy books produced.
@@ -1625,6 +1664,8 @@ impl CentralPlane {
             .exposure
             .crowded(self.config.minimum_cells_for_crowding);
         let recalls = self.recall_for(&concentrations, now)?;
+        let (feasibility_refusals, feasibility_refusals_unattributed) =
+            self.attribute_refusals(&report, now);
 
         Ok(CellIngestion {
             cell: report.cell,
@@ -1634,7 +1675,90 @@ impl CentralPlane {
             crowded,
             recalls,
             settlement,
+            feasibility_refusals,
+            feasibility_refusals_unattributed,
         })
+    }
+
+    /// Admit the report's venue-bearing refusals to the feasibility window,
+    /// or say why each could not be.
+    ///
+    /// A refusal is admitted when its gate is one of the eight
+    /// `qip_contracts::feasibility::EDGE_GATES` **and** its venue is one
+    /// the centre knows — a key of the arbitrage policy's venue map, or a
+    /// venue on a grant live at `now`. Both are checked against the source
+    /// the cell would itself have been configured from, so the `venue`
+    /// label on the series stays bounded by configuration however a delta
+    /// is worded. A refusal that names no venue at all is not looked at:
+    /// only `admit_feasible` at the cell names one, and a posture refusal
+    /// was counted at the cell under its own gate.
+    ///
+    /// What cannot be attributed is returned as the label pair it is
+    /// counted under and kept out of the window. `unknown` for a venue
+    /// nothing permits and `other` for a gate outside the vocabulary: two
+    /// literals, so a cell that ships a venue nobody configured cannot mint
+    /// a series, and a cluster that would have withdrawn it is charted
+    /// under a name an operator can search for rather than acted on.
+    fn attribute_refusals(
+        &self,
+        report: &CellReport,
+        now: Timestamp,
+    ) -> (Vec<FeasibilityRefusal>, Vec<(String, String)>) {
+        let known = self.known_venues(now);
+        let mut admitted = Vec::new();
+        let mut unattributed = Vec::new();
+        for refusal in &report.refusals {
+            let Some(venue) = &refusal.venue else {
+                continue;
+            };
+            let gate_known = EDGE_GATES.contains(&refusal.gate.as_str());
+            let venue_known = known.contains(venue);
+            if gate_known && venue_known {
+                admitted.push(FeasibilityRefusal {
+                    venue: venue.clone(),
+                    constraint: refusal.gate.clone(),
+                    seam: FeasibilitySeam::Edge,
+                    at: report.at,
+                });
+            } else {
+                unattributed.push((
+                    if venue_known {
+                        venue.clone()
+                    } else {
+                        UNKNOWN_VENUE.to_string()
+                    },
+                    if gate_known {
+                        refusal.gate.clone()
+                    } else {
+                        OTHER_CONSTRAINT.to_string()
+                    },
+                ));
+            }
+        }
+        (admitted, unattributed)
+    }
+
+    /// Every venue the centre has told a cell it may trade at: the arbitrage
+    /// policy's venues and every venue on a grant live at `now`. The bound
+    /// on the `venue` label of a carried refusal.
+    fn known_venues(&self, now: Timestamp) -> BTreeSet<String> {
+        let mut known: BTreeSet<String> = self
+            .config
+            .arbitrage
+            .as_ref()
+            .map(|policy| policy.venues.keys().cloned().collect())
+            .unwrap_or_default();
+        for envelope in self.envelopes.values() {
+            if envelope.is_live(now) {
+                known.extend(
+                    envelope
+                        .venues()
+                        .iter()
+                        .map(|venue| venue.as_str().to_string()),
+                );
+            }
+        }
+        known
     }
 
     /// Register the interval's orders as sent, bill its fills to their

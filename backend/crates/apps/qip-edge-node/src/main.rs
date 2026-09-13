@@ -799,7 +799,7 @@ fn serve(
                             for detail in &breaks {
                                 eprintln!("qip-edge-node: reconciliation break: {detail}");
                             }
-                            last_report = report;
+                            last_report = *report;
                         }
                         Ok(PassOutcome::Halted { .. }) => {
                             last_report = WorkReport::default();

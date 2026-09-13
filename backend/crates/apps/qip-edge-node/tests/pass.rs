@@ -1261,7 +1261,7 @@ fn one_pass(
     now: Timestamp,
 ) -> Result<WorkReport> {
     match run_pass(&mut node.cell, gateway, feed, None, stats, now)? {
-        PassOutcome::Ran { report, .. } => Ok(report),
+        PassOutcome::Ran { report, .. } => Ok(*report),
         outcome => panic!("a running node reported its pass as halted: {outcome:?}"),
     }
 }

@@ -154,6 +154,14 @@ pub struct StrategyUtilisation {
 pub struct DeltaRefusal {
     pub gate: String,
     pub reason: String,
+    /// The venue the refused intent was bound for, carried only for a
+    /// feasibility refusal — the one kind of refusal that is *about* a venue
+    /// — so the centre can keep the window blueprint §12.3's fourth row is
+    /// judged over. Absent for every other gate, and absent on the wire
+    /// rather than `null`, so a delta written before the field existed and
+    /// one written by a gate that names no venue read the same.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub venue: Option<String>,
 }
 
 /// What one cell tells the centre about itself.
@@ -1269,6 +1277,7 @@ mod tests {
                 .map(|index| DeltaRefusal {
                     gate: format!("gate-{index}"),
                     reason: "no".to_string(),
+                    venue: None,
                 })
                 .collect(),
             refusals_omitted: 0,

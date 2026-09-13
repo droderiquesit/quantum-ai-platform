@@ -3936,6 +3936,28 @@ impl Platform {
         let ingestion = central.ingest(report, autonomy.kill_switch_mut(), now)?;
         self.charge_cell_fills(&ingestion.cell, &ingestion.settlement.absorbed);
         self.book_settlement(&ingestion.settlement, now);
+        // The cell's feasibility refusals, into the same window the desk's
+        // land in, through the same recording site. What the plane could
+        // not attribute is counted under its fallback labels and admitted
+        // to nothing: this is the second and last site that records
+        // `qip_feasibility_refusals_total`, and it never writes the window.
+        for refusal in &ingestion.feasibility_refusals {
+            self.record_feasibility_refusal(
+                &refusal.venue,
+                &refusal.constraint,
+                refusal.seam,
+                refusal.at,
+            );
+        }
+        for (venue, constraint) in &ingestion.feasibility_refusals_unattributed {
+            self.telemetry.metrics.count(
+                names::FEASIBILITY_REFUSALS,
+                labels([
+                    ("venue", venue.as_str()),
+                    ("constraint", constraint.as_str()),
+                ]),
+            );
+        }
         Ok(ingestion)
     }
 
@@ -12216,16 +12238,19 @@ impl Platform {
     /// Put one feasibility refusal in the window and count it by venue and
     /// constraint.
     ///
-    /// The one recording site for `qip_feasibility_refusals_total`, fed from
-    /// two seams: the desk's refusal arm in `capture_submission`, where the
-    /// venue is the broker's name and the constraint the gate literal the
-    /// refusal carries, and the cells' reports through
-    /// [`Self::ingest_cell_report`], where both are what the central plane
-    /// admitted. Both label sets are bounded by configuration — a broker
-    /// name, the configured and granted venue list, the gate constants of
-    /// the two feasibility modules — and nothing an order carries can mint a
-    /// value. The window is a rate window bounded by [`FEASIBILITY_WINDOW`]
-    /// and the oldest leaves when it is full.
+    /// The recording site for every *admitted* refusal on
+    /// `qip_feasibility_refusals_total`, fed from two seams: the desk's
+    /// refusal arm in `capture_submission`, where the venue is the broker's
+    /// name and the constraint the gate literal the refusal carries, and the
+    /// cells' reports through [`Self::ingest_cell_report`], where both are
+    /// what the central plane admitted. The series has exactly one other
+    /// site — the unattributed arm in `ingest_cell_report`, which counts a
+    /// carried refusal under `unknown`/`other` and never touches the window.
+    /// Both label sets are bounded by configuration — a broker name, the
+    /// configured and granted venue list, the gate constants of the two
+    /// feasibility modules, and those two literals — and nothing an order
+    /// carries can mint a value. The window is a rate window bounded by
+    /// [`FEASIBILITY_WINDOW`] and the oldest leaves when it is full.
     fn record_feasibility_refusal(
         &mut self,
         venue: &str,

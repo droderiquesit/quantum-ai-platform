@@ -1445,6 +1445,133 @@ fn plane_with_arbitrage(policy: ArbitragePolicy) -> Result<CentralPlane> {
     )
 }
 
+/// A platform whose centre names `venues` in its arbitrage policy — the
+/// configured half of what the centre knows a cell may trade at.
+fn platform_with_arbitrage(venues: &[&str]) -> Result<Platform> {
+    let config = PlatformConfig::default().with_central(CentralConfig {
+        arbitrage: Some(arbitrage_policy(venues)),
+        ..CentralConfig::default()
+    });
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    Platform::new(config, context, Telemetry::silent(), universe(), limits())
+}
+
+/// A cell report carrying one refusal the lot gate made at `venue`, as the
+/// delta sink would build it.
+fn report_with_lot_refusal(venue: &str) -> CellReport {
+    CellReport::new(CELL, start()).with_refusals(vec![qip_mesh::delta::DeltaRefusal {
+        gate: "feasibility_lot".to_string(),
+        reason: "10.5 is not a whole number of lots".to_string(),
+        venue: Some(venue.to_string()),
+    }])
+}
+
+fn feasibility_refusals_under(platform: &Platform, venue: &str, constraint: &str) -> u64 {
+    platform.telemetry().metrics.snapshot().counter(
+        names::FEASIBILITY_REFUSALS,
+        &labels([("venue", venue), ("constraint", constraint)]),
+    )
+}
+
+#[test]
+fn a_refusal_naming_a_venue_no_grant_permits_is_counted_unknown_and_kept_out_of_the_window()
+-> Result<()> {
+    // The refusal case first. A cell that ships a refusal at a venue neither
+    // the arbitrage policy nor any live grant names is a cell reporting a
+    // venue the centre never told it about. Admitting it would let a delta
+    // mint a `venue` label and, ten refusals later, withdraw a name nothing
+    // permitted in the first place — a withdrawal nobody could explain. It
+    // is counted under the `unknown` literal, and the window does not move.
+    let mut platform = platform_with_arbitrage(&[VENUE])?;
+    assert!(
+        platform.feasibility_refusals().is_empty(),
+        "the premise failed: the window is not empty before any report"
+    );
+
+    let ingestion = platform.ingest_cell_report(report_with_lot_refusal("XZZZ"), start())?;
+    assert!(
+        ingestion.feasibility_refusals.is_empty(),
+        "a refusal at an unpermitted venue was admitted: {:?}",
+        ingestion.feasibility_refusals
+    );
+    assert_eq!(
+        ingestion.feasibility_refusals_unattributed,
+        vec![("unknown".to_string(), "feasibility_lot".to_string())]
+    );
+    assert!(
+        platform.feasibility_refusals().is_empty(),
+        "a refusal at an unpermitted venue reached the window"
+    );
+    assert_eq!(
+        feasibility_refusals_under(&platform, "unknown", "feasibility_lot"),
+        1
+    );
+    assert_eq!(
+        feasibility_refusals_under(&platform, "XZZZ", "feasibility_lot"),
+        0,
+        "the cell's own venue string became a label"
+    );
+
+    // And a gate outside the feasibility vocabulary, at a known venue, is
+    // counted under `other` and admitted no further: only a feasibility
+    // gate says anything about a venue.
+    let posture =
+        CellReport::new(CELL, start()).with_refusals(vec![qip_mesh::delta::DeltaRefusal {
+            gate: "halted".to_string(),
+            reason: "the cell is halted".to_string(),
+            venue: Some(VENUE.to_string()),
+        }]);
+    let ingestion = platform.ingest_cell_report(posture, start())?;
+    assert!(ingestion.feasibility_refusals.is_empty());
+    assert_eq!(
+        ingestion.feasibility_refusals_unattributed,
+        vec![(VENUE.to_string(), "other".to_string())]
+    );
+    assert!(platform.feasibility_refusals().is_empty());
+    Ok(())
+}
+
+#[test]
+fn an_edge_feasibility_refusal_travels_on_the_cell_report_and_lands_in_the_window() -> Result<()> {
+    // The failure this guards: `CellReport` carried no refusals at all, so
+    // the window blueprint §12.3's fourth row is judged over could hold the
+    // desk's feasibility refusals and no cell's, and a venue every cell found
+    // infeasible looked, from the centre, like a venue nobody had trouble
+    // with. A refusal the lot gate made at a venue the policy names lands in
+    // the window under the edge seam, at the report's instant, and is counted
+    // under the same series the desk's refusals are.
+    let mut platform = platform_with_arbitrage(&[VENUE])?;
+    assert!(platform.feasibility_refusals().is_empty());
+
+    let ingestion = platform.ingest_cell_report(report_with_lot_refusal(VENUE), start())?;
+    assert_eq!(ingestion.feasibility_refusals.len(), 1);
+    assert!(ingestion.feasibility_refusals_unattributed.is_empty());
+
+    let window = platform.feasibility_refusals();
+    assert_eq!(
+        window.len(),
+        1,
+        "the carried refusal did not land in the window"
+    );
+    assert_eq!(window[0].venue, VENUE);
+    assert_eq!(window[0].constraint, "feasibility_lot");
+    assert_eq!(
+        window[0].seam,
+        qip_kernel::venue_review::FeasibilitySeam::Edge
+    );
+    assert_eq!(window[0].at, start());
+    assert_eq!(
+        feasibility_refusals_under(&platform, VENUE, "feasibility_lot"),
+        1
+    );
+    assert_eq!(
+        feasibility_refusals_under(&platform, "unknown", "feasibility_lot"),
+        0,
+        "a refusal at a configured venue was counted as unknown"
+    );
+    Ok(())
+}
+
 /// The cell's installer reads an empty whitelist as
 /// `Installation::EmptyWhitelist` and installs no desk. That is the state a
 /// deployment is in until an operator sets `CentralConfig::arbitrage`, and

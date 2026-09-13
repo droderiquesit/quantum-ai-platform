@@ -281,6 +281,54 @@ fn an_off_lot_intent_is_refused_before_netting_and_never_rides_a_feasible_strate
 }
 
 #[test]
+fn a_feasibility_refusal_on_the_pass_carries_its_venue_into_the_delta() -> Result<()> {
+    // The failure this guards: the delta carried a refusal's gate and its
+    // reason and not the venue it was about, so the centre could count that
+    // the lot gate fired at some cell and never that every firing was at
+    // one venue — blueprint §12.3's fourth row, "feasibility rejections
+    // cluster on one venue", had no key on the edge half. The venue rides
+    // only on the feasibility refusal; a posture refusal on the same pass
+    // names none, which is asserted alongside so a join that attached the
+    // venue to every entry cannot pass.
+    let (mut cell, _) = trading_cell(
+        Some(lot_model()?),
+        &[
+            ("alpha", SignalKind::Enter, "10"),
+            ("beta", SignalKind::Enter, "10.5"),
+        ],
+    )?;
+    let report = work(&mut cell)?;
+    assert_eq!(
+        refusals_under(&report, "feasibility_lot").len(),
+        1,
+        "the premise failed: beta was not refused by the lot rule: {report:?}"
+    );
+
+    let delta = cell.state_delta(&report, t(10));
+    let carried: Vec<&qip_edge::mesh::DeltaRefusal> = delta
+        .refusals
+        .iter()
+        .filter(|refusal| refusal.gate == "feasibility_lot")
+        .collect();
+    assert_eq!(carried.len(), 1, "the lot refusal did not reach the delta");
+    assert_eq!(
+        carried[0].venue.as_deref(),
+        Some(venue().as_str()),
+        "the feasibility refusal does not name the venue it was about"
+    );
+    assert!(
+        delta
+            .refusals
+            .iter()
+            .filter(|refusal| refusal.gate != "feasibility_lot")
+            .all(|refusal| refusal.venue.is_none()),
+        "a refusal that is not about a venue was given one: {:?}",
+        delta.refusals
+    );
+    Ok(())
+}
+
+#[test]
 fn an_intent_larger_than_the_touch_is_refused_without_any_model_at_all() -> Result<()> {
     // Depth is the rule that needs only the book, so it must bind on a venue
     // nobody modelled. 400 is offered; 401 is asked for.

@@ -219,6 +219,28 @@ mod tests {
     }
 
     #[test]
+    fn the_desks_four_gate_literals_are_the_contracts_own() {
+        // The desk's feasibility module does not depend on `qip-contracts`
+        // and declares its four literals itself; the centre admits a cell's
+        // refusal by the contracts' eight. This kernel sees both, so it is
+        // where a desk literal drifting from the shared vocabulary — a
+        // refusal the desk counts under one name and the centre would file
+        // under `other` — fails a test rather than a dashboard.
+        use qip_contracts::feasibility as shared;
+        use qip_execution_engine::feasibility as desk;
+        assert_eq!(desk::GATE_MINIMUM_QUANTITY, shared::GATE_MINIMUM_QUANTITY);
+        assert_eq!(desk::GATE_MINIMUM_NOTIONAL, shared::GATE_MINIMUM_NOTIONAL);
+        assert_eq!(desk::GATE_LOT, shared::GATE_LOT);
+        assert_eq!(desk::GATE_TICK, shared::GATE_TICK);
+        for gate in shared::DESK_GATES {
+            assert!(
+                shared::EDGE_GATES.contains(&gate),
+                "the desk refuses under {gate}, which the centre would not admit from a cell"
+            );
+        }
+    }
+
+    #[test]
     fn a_venue_below_the_share_bar_is_not_withdrawn() {
         // Twelve refusals: eight at one venue is two thirds, below the
         // three-in-four bar, and stays; nine of twelve is exactly the bar
