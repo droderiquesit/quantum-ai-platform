@@ -17,16 +17,18 @@
 
 use qip_core::error::Result;
 use qip_core::ids::OrderId;
-use qip_core::time::Timestamp;
+use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Decimal, ObjectId, dec};
 use qip_execution_engine::feasibility::{GATE_LOT, GATE_TICK};
 use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_financial::asset_class::{InstrumentType, Sector};
 use qip_financial::object::FinancialObject;
-use qip_financial::quality::Provenance;
+use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::platform::Platform;
+use qip_market::bar::{Bar, Interval};
+use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
 use qip_observability::metrics::{Snapshot, labels, names};
 use qip_risk::limits::LimitSet;
@@ -143,6 +145,128 @@ fn limit(symbol: &str, quantity: Decimal, price: Decimal, id: &str) -> Order {
 
 fn refused_under(snapshot: &Snapshot, gate: &str) -> u64 {
     snapshot.counter(names::ORDERS_REFUSED, &labels([("control", gate)]))
+}
+
+/// A flat daily bar at `level`, for the twin to price a refusal against.
+fn bar(symbol: &str, at: Timestamp, level: f64) -> SensedRecord {
+    let price = Decimal::from_f64(level).expect("a price");
+    SensedRecord::Bar(Box::new(Bar {
+        object_id: object(symbol),
+        venue: "XNYS".to_string(),
+        interval: Interval::Day,
+        open_time: at,
+        open: price,
+        high: Decimal::from_f64(level * 1.002).expect("a price"),
+        low: Decimal::from_f64(level * 0.998).expect("a price"),
+        close: price,
+        volume: dec!("1000000"),
+        trade_count: 5_000,
+        vwap: Some(price),
+        quality: DataQuality::default(),
+    }))
+}
+
+/// `before` flat days ending at `start()`, then `after` flat days past it —
+/// enough history for the twin's liquidity view and a close past its horizon.
+fn flat_tape(symbol: &str, before: usize, after: i64) -> Vec<SensedRecord> {
+    (0..before)
+        .map(|i| {
+            bar(
+                symbol,
+                start().saturating_sub(Duration::from_days((before - i) as i64)),
+                100.0,
+            )
+        })
+        .chain((1..=after).map(|day| {
+            bar(
+                symbol,
+                start().saturating_add(Duration::from_days(day)),
+                100.0,
+            )
+        }))
+        .collect()
+}
+
+#[test]
+fn a_desk_feasibility_refusal_is_attributed_to_the_desk_venue_and_counted_by_constraint()
+-> Result<()> {
+    // The failure this guards: blueprint §12.3's fourth row — "feasibility
+    // rejections cluster on one venue" — had no key. A feasibility veto was
+    // counted under its gate (`qip_orders_refused_total{control}`) and
+    // carried to the twin without a venue, so a window of them could not
+    // say *where* they clustered. The venue is the desk's one broker, read
+    // from the same `Broker::name` the accepted arm's `result.venue` is
+    // filled from, so a refusal and a fill on the same order can never be
+    // charged to different venues.
+    let mut platform = platform()?;
+    platform.observe(flat_tape("AAA", 90, 5));
+    let off_grid = market(&mut platform, "AAA", dec!("10.5"));
+    platform
+        .submit_order(off_grid, start())
+        .expect_err("ten and a half shares of a one-lot listing reached the venue");
+
+    // Premise: the refusal is queued for the twin, once, and the window
+    // holds it with its venue and gate.
+    assert_eq!(platform.declined_awaiting_score(), 1);
+    let window = platform.feasibility_refusals();
+    assert_eq!(window.len(), 1, "the refusal did not reach the window");
+    assert_eq!(window[0].venue, "simulated-venue");
+    assert_eq!(window[0].constraint, GATE_LOT);
+    let snapshot = recorded(&platform);
+    assert_eq!(
+        snapshot.counter(
+            names::FEASIBILITY_REFUSALS,
+            &labels([("venue", "simulated-venue"), ("constraint", GATE_LOT)])
+        ),
+        1,
+        "the refusal is not counted by venue and constraint: {:?}",
+        snapshot
+            .series
+            .iter()
+            .filter(|s| s.name == names::FEASIBILITY_REFUSALS)
+            .map(|s| s.labels.clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        snapshot.counter_total(names::FEASIBILITY_REFUSALS),
+        1,
+        "the refusal was counted under a second label set"
+    );
+
+    // And the venue survives scoring, so the twin's record of the refusal
+    // says where it was refused and not only by what.
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let scores = platform.declined_scores();
+    assert_eq!(scores.len(), 1, "the refusal was not priced");
+    assert_eq!(scores[0].gate, GATE_LOT);
+    assert_eq!(
+        scores[0].venue.as_deref(),
+        Some("simulated-venue"),
+        "the priced refusal lost its venue"
+    );
+
+    // A posture refusal names no venue: an untraceable order is about the
+    // order, not about where it was going, and attributing it to the desk's
+    // broker would put a venue in the window that no feasibility gate
+    // refused.
+    let untraceable = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("10"),
+        dec!("100"),
+        "prop-untraceable",
+        Vec::new(),
+        start(),
+    );
+    platform
+        .submit_order(untraceable, start())
+        .expect_err("an untraceable order was accepted");
+    assert_eq!(
+        platform.feasibility_refusals().len(),
+        1,
+        "a posture refusal was admitted to the feasibility window"
+    );
+    Ok(())
 }
 
 #[test]

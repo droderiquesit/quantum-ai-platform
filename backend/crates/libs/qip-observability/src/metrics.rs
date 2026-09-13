@@ -981,6 +981,17 @@ pub mod names {
     /// fill that arrived while that queue was full, beside `capacity` for a
     /// refusal that did.
     pub const COUNTERFACTUALS_UNSCORED: &str = "qip_counterfactuals_unscored_total";
+    /// Feasibility refusals by `venue` and `constraint`, from both seams: the
+    /// desk's order manager, where the venue is the broker's name, and the
+    /// cells' reports, where it is the venue the intent named and the centre
+    /// admitted. Blueprint §12.3's fourth row — "feasibility rejections
+    /// cluster on one venue" — is keyed on this; `qip_orders_refused_total
+    /// {control}` and `qip_edge_refusals_total{gate}` carry no venue and
+    /// cannot key it. Both labels are bounded by configuration: `venue` by
+    /// the broker name, the configured and granted venue list and the
+    /// literal `unknown`; `constraint` by the `feasibility_*` gate constants
+    /// of the two feasibility modules and the literal `other`.
+    pub const FEASIBILITY_REFUSALS: &str = "qip_feasibility_refusals_total";
     /// How far the twin's simulated entry price was from the price the venue
     /// actually filled at, in signed basis points, by `venue` — blueprint
     /// §12.4's "fill error", measured on every filled order the LEARN stage

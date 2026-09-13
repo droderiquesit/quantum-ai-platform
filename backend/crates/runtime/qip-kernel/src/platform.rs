@@ -44,6 +44,7 @@ use crate::rule_review::{
     PROPOSAL_ENACTED, PROPOSAL_WITHDRAWN, RecalibrationProposal, RegretEvidence, RuleActivity,
     RuleDefence, RuleDormant, RuleRegret, RuleReviewJournal, regret_by_rule,
 };
+use crate::venue_review::{FEASIBILITY_WINDOW, FeasibilityRefusal, FeasibilitySeam};
 use qip_agents::memory::ResearchMemory;
 use qip_agents::runtime::{Reading, Upstream};
 use qip_agents::{Budget, RunStatus};
@@ -387,6 +388,12 @@ pub struct Platform {
     /// was from the venue's — most recent last, bounded by
     /// [`DECLINED_HISTORY`].
     fill_scores: Vec<FillScore>,
+    /// The recent feasibility refusals from both seams — the desk's order
+    /// manager and the cells' reports — each naming its venue and gate,
+    /// oldest first and bounded by [`FEASIBILITY_WINDOW`]. A rate window,
+    /// so the oldest *is* evicted here (see the constant for why that is
+    /// right here and wrong for the two queues above).
+    feasibility_refusals: Vec<FeasibilityRefusal>,
     /// What the LEARN stage priced this cycle, for the journal. Cleared as
     /// each cycle's LEARN begins.
     cycle_counterfactuals: Option<CounterfactualJournal>,
@@ -2034,6 +2041,11 @@ struct DeclinedPath {
     rules: Vec<String>,
     /// The reading behind each pre-trade rule in `rules`.
     readings: Vec<RuleReading>,
+    /// The venue a feasibility veto was about — the desk broker's name,
+    /// the same string the accepted arm's `result.venue` carries — and
+    /// `None` for every other refusal, which is about the platform's posture
+    /// and not about a venue. Blueprint §12.3's fourth row is keyed on this.
+    venue: Option<String>,
 }
 
 /// What a refused order would have done, once the twin has priced it.
@@ -2068,6 +2080,11 @@ pub struct DeclinedScore {
     /// What each rule in `rules` measured against what bound, on this order.
     #[serde(default)]
     pub readings: Vec<RuleReading>,
+    /// The venue a feasibility veto was about, `None` for a posture
+    /// refusal. Defaulted so a score journalled before the field existed
+    /// reads back as attributed to no venue rather than refusing to load.
+    #[serde(default)]
+    pub venue: Option<String>,
 }
 
 /// One order a venue filled, kept until the twin can price the sizes that
@@ -3229,6 +3246,7 @@ impl Platform {
             declined_scores: Vec::new(),
             filled: Vec::new(),
             fill_scores: Vec::new(),
+            feasibility_refusals: Vec::new(),
             cycle_counterfactuals: None,
             cycle_rule_review: None,
             rule_activity,
@@ -3639,6 +3657,11 @@ impl Platform {
         metrics.describe(
             names::COUNTERFACTUALS_UNSCORED,
             "declined and filled paths that will never be priced, by reason",
+        );
+        metrics.describe(
+            names::FEASIBILITY_REFUSALS,
+            "feasibility refusals from the desk and the cells, by venue and constraint; the window \
+             a venue is withdrawn on",
         );
         metrics.describe(
             names::VENUE_FILL_ERROR_BPS,
@@ -11058,6 +11081,23 @@ impl Platform {
                     .collect(),
                 _ => Vec::new(),
             };
+            // A feasibility veto is about a venue, and the venue is the
+            // desk's one broker — the same string the accepted arm reads
+            // out of `result.venue`, so the venue a refusal is charged to
+            // and the venue a fill comes back from cannot differ for one
+            // order. Every other refusal is about the platform's posture
+            // and names no venue. Blueprint §12.3's fourth row is keyed on
+            // this: until it was carried, a feasibility refusal was counted
+            // by its gate on both planes and by its venue on neither.
+            let venue = result
+                .refusal
+                .as_ref()
+                .and_then(RefusalReason::feasibility_gate)
+                .map(|gate| {
+                    let venue = self.broker.name().to_string();
+                    self.record_feasibility_refusal(&venue, gate, FeasibilitySeam::Desk, now);
+                    venue
+                });
             for rule in &rules {
                 self.telemetry
                     .metrics
@@ -11113,6 +11153,7 @@ impl Platform {
                         gate,
                         rules,
                         readings,
+                        venue,
                     });
                 }
             }
@@ -11903,7 +11944,7 @@ impl Platform {
             else {
                 continue;
             };
-            let (object_id, gate, declined_at, rules, readings) = {
+            let (object_id, gate, declined_at, rules, readings, venue) = {
                 let declined = &self.declined[index];
                 (
                     declined.object_id.clone(),
@@ -11911,6 +11952,7 @@ impl Platform {
                     declined.decision.at,
                     declined.rules.clone(),
                     declined.readings.clone(),
+                    declined.venue.clone(),
                 )
             };
             let priced = self
@@ -11959,6 +12001,7 @@ impl Platform {
                         alternatives: set.len(),
                         rules,
                         readings,
+                        venue,
                     });
                     if self.declined_scores.len() > DECLINED_HISTORY {
                         let excess = self.declined_scores.len() - DECLINED_HISTORY;
@@ -12168,6 +12211,47 @@ impl Platform {
     /// How many filled orders are waiting for their horizon or their bars.
     pub fn filled_awaiting_score(&self) -> usize {
         self.filled.len()
+    }
+
+    /// Put one feasibility refusal in the window and count it by venue and
+    /// constraint.
+    ///
+    /// The one recording site for `qip_feasibility_refusals_total`, fed from
+    /// two seams: the desk's refusal arm in `capture_submission`, where the
+    /// venue is the broker's name and the constraint the gate literal the
+    /// refusal carries, and the cells' reports through
+    /// [`Self::ingest_cell_report`], where both are what the central plane
+    /// admitted. Both label sets are bounded by configuration — a broker
+    /// name, the configured and granted venue list, the gate constants of
+    /// the two feasibility modules — and nothing an order carries can mint a
+    /// value. The window is a rate window bounded by [`FEASIBILITY_WINDOW`]
+    /// and the oldest leaves when it is full.
+    fn record_feasibility_refusal(
+        &mut self,
+        venue: &str,
+        constraint: &str,
+        seam: FeasibilitySeam,
+        at: Timestamp,
+    ) {
+        self.telemetry.metrics.count(
+            names::FEASIBILITY_REFUSALS,
+            labels([("venue", venue), ("constraint", constraint)]),
+        );
+        if self.feasibility_refusals.len() >= FEASIBILITY_WINDOW {
+            let excess = self.feasibility_refusals.len() + 1 - FEASIBILITY_WINDOW;
+            self.feasibility_refusals.drain(..excess);
+        }
+        self.feasibility_refusals.push(FeasibilityRefusal {
+            venue: venue.to_string(),
+            constraint: constraint.to_string(),
+            seam,
+            at,
+        });
+    }
+
+    /// The recent feasibility refusals from both seams, oldest first.
+    pub fn feasibility_refusals(&self) -> &[FeasibilityRefusal] {
+        &self.feasibility_refusals
     }
 
     /// The LEARN stage's rule review: blueprint §12.3's three rule rows,
@@ -16836,6 +16920,7 @@ mod counterfactual_sizing_tests {
             alternatives: 4,
             rules: Vec::new(),
             readings: Vec::new(),
+            venue: None,
         }
     }
 
@@ -17114,6 +17199,7 @@ mod rule_review_tests {
                 observed: 300_000.0,
                 bound: 250_000.0,
             }],
+            venue: None,
         }
     }
 

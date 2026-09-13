@@ -39,6 +39,7 @@ pub mod platform;
 pub mod references;
 pub mod rule_review;
 pub mod valuation;
+pub mod venue_review;
 
 pub use central::{CellReport, CentralPlane, StrategyDna, StrategyFactory};
 pub use config::{EventLogDestination, PlatformConfig};
