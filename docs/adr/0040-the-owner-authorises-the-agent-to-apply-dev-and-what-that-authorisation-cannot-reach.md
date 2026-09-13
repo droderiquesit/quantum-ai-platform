@@ -45,7 +45,10 @@ instruction into the part a record can carry and the part it cannot.
    services released from state with `destroy = false` and destroyed by
    nothing, and no resource destroyed except an IAM binding being
    replaced by its successor. A plan that destroys anything else is not
-   covered by this record; the agent stops and reports it.
+   covered by this record; the agent stops and reports it. *(Superseded on
+   2026-09-13: "on this instruction" by decision 9, and this destroy test by
+   decision 10's two-halved one. Kept as written because runs 34-38 were
+   made under it.)*
 
 2. **The bootstrap of the controllers is covered by the same dispatch**,
    gated as ADR 0036 built it on the environment's flag. The GitHub App
@@ -84,7 +87,8 @@ should not, and the record widens by exactly this much:
 
 6. **Dev may be re-dispatched after each fix, until it is green.** Each
    re-dispatch follows a `plan` run on the fixed commit, read by the agent
-   under decision 1's test (nothing destroyed beyond a replaced binding),
+   under decision 1's test (nothing destroyed beyond a replaced binding —
+   since 2026-09-13, decision 10's test),
    and each run's URL and terminal status are recorded in the register.
    A fix that widens an IAM grant beyond the one missing permission, or
    that drops a property ADR 0036 named (Autopilot, the private endpoint,
@@ -117,60 +121,80 @@ on "this instruction", so an agent reading it literally had to stop and ask
 before every apply, which is not what an owner who has now said it four times
 is asking for. The second — deleting the guards — is refused here for the
 same reason the original record refused the literal reading of "deliver the
-entire thing": the workflow's refusal of `prod`, the owner's sole custody of
-seeded key material, and the guard hook are not conveniences this record may
-spend. `.claude/rules/00-enterprise-governance.md` puts them above any task
-instruction, and an agent's ADR deleting them would be the artefact those
-sentences exist to refuse. The restriction that is removed is the one on
-*asking again*; the restrictions on *what* and *where* stand.
+entire thing": the workflow's refusal of `prod`
+(`.claude/rules/02-change-management.md`), the owner's sole custody of seeded
+key material and the guard hook (`.claude/rules/01-security-and-safety.md`)
+are not conveniences this record may spend. ADR 0023 says an ADR "is not an
+amendment to a rules file", and an agent's ADR deleting them would be the
+artefact that sentence exists to refuse. The restriction that is removed is
+the one on *asking again*; the restrictions on *what* and *where* stand.
 
-9. **Dev applies are standing, not per-instruction.** Decision 1's phrase
-   "on this instruction" is spent: the agent may dispatch `infra.yml`
-   `environment: dev` with `action: plan`, `up` or `down` without asking
-   again, on the same terms decisions 1 and 6 already set — a `plan` run on
-   the commit being dispatched, read first, and every run's URL and terminal
-   status recorded in `docs/DELIVERY-STATUS.md`. Nothing else about decision
-   1 moves. A `plan` that did not run on the dispatched commit is not a plan
-   for that dispatch, and reasoning from a diff is not a substitute for it.
+9. **Dev `plan` and `up` are standing, not per-instruction.** Decision 1's
+   phrase "on this instruction" is spent: the agent may dispatch `infra.yml`
+   `environment: dev` with `action: plan` or `up` without asking again, on
+   the same terms decisions 1 and 6 already set — a `plan` run on the commit
+   being dispatched, read first, and every run's URL and terminal status
+   recorded in `docs/DELIVERY-STATUS.md`. **`down` is not made standing**:
+   the owner's words were "deploy", and `down` is a `terraform destroy` of
+   the execution nodes — a no-op while `execution_nodes = {}` and a destroy
+   the day it is not — so it stays an action the owner names each time. A
+   `plan` that did not run on the dispatched commit is not a plan for that
+   dispatch, and reasoning from a diff is not a substitute for it.
 
-10. **A destroy a committed change visibly intends is covered.** Decision 1's
-    test — "no resource destroyed except an IAM binding being replaced by its
-    successor" — was written for the ADR 0036 migration and is too narrow for
-    ordinary work. It stops the agent on two shapes that are the *point* of
-    a reviewed commit rather than an accident of one:
+10. **A destroy the owner has seen and a committed change explains is
+    covered.** Decision 1's test — "no resource destroyed except an IAM
+    binding being replaced by its successor" — was written for the ADR 0036
+    migration and is too narrow for ordinary work; it stops the agent on two
+    shapes that are the *point* of a reviewed commit rather than an accident
+    of one. But `.claude/rules/domains/infrastructure.md` prohibits "deleting
+    cloud resources without explicit approval naming the resource", and an
+    ADR does not amend a rules file (ADR 0023). So the test this decision
+    sets has two halves, and the agent's register satisfies only one of them:
 
-    - **A resource the diff removes on purpose.** `plan` run 39 destroys
-      `qip-token-approver`, the secret and its binding, because
-      `terraform/main.tf` removed it from `secret_names` with nine lines
-      saying why: it held a bearer token for a role no route in `qip-api`
-      required, whose holder "could do exactly what the analyst token could
-      do", and "recreating the container here without a role to match
-      reintroduces a credential that authorises nothing". A record that makes
-      the agent stop on that makes it stop on every retirement.
-    - **A tainted resource's replacement.** Run 37 left the control-plane
-      cluster tainted when its create waited forty minutes for a node that
-      could not register, and the firewall rule that fixes it is in the same
-      plan's creates. Replacing it is the repair, not a loss.
+    - **The commit.** The agent names every destroy in the plan and the
+      commit that intends it, in the register, before dispatching. A destroy
+      it cannot attribute to a change in the diff still stops it — that was
+      the half of decision 1 worth keeping. It was never the count that
+      mattered, it was whether anybody could say why.
+    - **The person.** The owner has seen that list. On 2026-09-13 the agent
+      showed the six destroys of `plan` run 39 in the session — the retired
+      approver secret and its binding (`665c506`: a bearer token for a role
+      no route in `qip-api` required, whose holder "could do exactly what the
+      analyst token could do"), the three `universe` config objects replaced
+      because their content changed (`ece7602`), and the control-plane
+      cluster run 37 left tainted — and the owner answered "approve all" and
+      chose the path that replaces the cluster. That is the approval naming
+      the resource. A future plan that destroys something *not* on a list
+      the owner has seen is not covered by their having seen this one.
 
-    So the test becomes: **the agent names every destroy in the plan and the
-    commit that intends it, in the register, before dispatching.** A destroy
-    it cannot attribute to a change in the diff still stops it, and that is
-    the half of decision 1 worth keeping — it was never the count that
-    mattered, it was whether anybody could say why.
+11. **A tainted cluster is cleared by a person with state access, and the
+    `deletion_protection` literal does not move.** The first version of this
+    decision, written the same day, said the literal was cleared "by flipping
+    it in one commit, applying, and restoring it in the next". That was wrong
+    in a way an apply would have proved: the provider enforces the flag from
+    the value **in state** at delete time, a tainted cluster is only ever
+    planned as a replace and never as the in-place update that would carry
+    `false` into state first, so the flip would have planned cleanly and
+    refused the destroy half of the replace — a third half-applied run. And
+    a restored `true` in a file protects nothing until an apply writes it
+    back. `281d9c6` made the flip; the commit carrying this correction
+    restores the literal and it stays `true`.
 
-11. **Clearing `deletion_protection` is an act, not a setting.** The
-    control-plane module holds `deletion_protection = true` as a literal and
-    says four lines above it that clearing it is "a person's decision to
-    clear, not a second `up`". The owner has now made that decision for the
-    tainted cluster. It is cleared by flipping the literal in one commit,
-    applying, and restoring it in the next — **never by making it a module
-    input**. An input is a switch a later tfvars can throw with nobody
-    deciding anything, which is precisely what
-    `a_cloud_run_service_cannot_be_deleted_by_a_plan_nobody_read` refuses in
-    the sibling module: "deletion protection has become an input, so a tfvars
-    value can turn it off". That test is scoped to `modules/cloudrun`, so an
-    input here would pass the suite — which is the argument for writing the
-    rule down rather than relying on one.
+    What clears the taint is what the module's `depends_on` comment always
+    said it was — "a person's decision to clear, not a second `up`" — done
+    as two commands by someone holding state access: `terraform state rm`
+    of the cluster's address, and `gcloud container clusters delete` of the
+    cluster it named. The next `up` is then a plain create, and the flag is
+    never consulted. `infra.yml` has no untaint step since ADR 0036 retired
+    the Cloud Run one, and `no_service_can_be_left_tainted_because_terraform_no_longer_creates_one`
+    asserts it stays absent; this record does not add one back, because a
+    workflow that can untaint on its own authority is a workflow that can
+    talk itself past the flag. **Never a module input**, for the reason
+    `a_cloud_run_service_cannot_be_deleted_by_a_plan_nobody_read` gives in
+    the sibling module: "deletion protection has become an input, so a
+    tfvars value can turn it off". That test is scoped to `modules/cloudrun`,
+    so an input here would pass the suite — which is the argument for
+    writing the rule down rather than relying on one.
 
 12. **`test`, `stage` and `prod` are untouched by this amendment.**
     Decision 4 and decision 7's second half stand verbatim. So does
@@ -179,6 +203,12 @@ sentences exist to refuse. The restriction that is removed is the one on
     Saying an instruction a fourth time changes how often the agent asks
     before applying dev. It does not move an environment, a ceiling, or a
     line in a rules file.
+
+Where this amendment supersedes earlier text, the earlier text is marked
+rather than silently left standing: decision 1's "on this instruction" and
+its destroy test are superseded by 9 and 10; decision 6's "under decision
+1's test" reads as decision 10's test; "What would make this wrong" and
+"Applied by this record" below are amended in place.
 
 ## What this record cannot reach
 
@@ -222,14 +252,18 @@ sentences exist to refuse. The restriction that is removed is the one on
   dispatching, so "I could not attribute it" is a thing a reader can check
   rather than a thing the agent asserts about itself.
 - Any later reading of this record as authorising an apply outside dev, a
-  live ceiling, or a capital-movement path. It authorises one workflow
-  action in one environment on one instruction, and says so.
+  live ceiling, or a capital-movement path. It authorised one workflow
+  action in one environment on one instruction when written; since the
+  2026-09-13 amendment it authorises `plan` and `up` in dev as standing
+  actions, and still nothing outside dev, no ceiling, and no capital path.
 
 ## Applied by this record
 
 The dispatch of `infra.yml` `dev` `up` after the plan is read, and its
 re-dispatch after each fix under decision 6; every run's URL and terminal
-status are recorded in `docs/DELIVERY-STATUS.md` (which absorbed the missing-infrastructure register on 2026-09-07)
-beside the observation of what the apply produced. Runs 34 and 35 on
-`e1711fb` are the first two entries: both failed on the cluster, and the
-fix is the commit that carries this amendment.
+status are recorded beside the observation of what the apply produced. Runs
+34 through 38 (2026-09-05, on `e1711fb` and its fixes) are recorded in ADR
+0036's own amendment, not in `docs/DELIVERY-STATUS.md` — this paragraph said
+the latter for five days and the file never held them. From run 39 on, the
+register is the "Infrastructure register" entry in `docs/DELIVERY-STATUS.md`,
+which is where decisions 9 and 10 send a reader.

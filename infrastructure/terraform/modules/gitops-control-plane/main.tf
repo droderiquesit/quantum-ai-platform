@@ -161,25 +161,29 @@ resource "google_container_cluster" "control_plane" {
   # A cluster deleted by a plan nobody read takes every controller and both
   # App keys with it. Removing one is a deliberate two-step by a person.
   #
-  # **This is step one of that two-step, and it is open right now.** Run 37's
-  # create waited forty minutes for a node that could not reach its own
-  # endpoint and then failed, which taints the cluster; the provider refuses
-  # the replacement at destroy time while this is `true`, so the plan reads
-  # cleanly and the apply stops halfway through it. The firewall rule that
-  # fixes the original failure is `nodes_reach_control_plane` above, and it
-  # is in the same plan's creates — so the replacement is the repair.
+  # And "two-step" means two applies, not two commits, which one commit on
+  # 2026-09-13 got wrong for about an hour. The provider enforces this flag
+  # from the value **in state** at delete time ("will only succeed if this
+  # field is false in the Terraform state"), so writing `false` here does
+  # nothing to a cluster whose state still says `true` — and a tainted
+  # cluster (run 37's, whose create failed after thirty-eight minutes
+  # waiting for a node that could not reach its endpoint) is only ever
+  # planned as a replace, never as the in-place update that would carry
+  # `false` into state first. Flip this and dispatch `up`, and the plan
+  # reads cleanly and the apply refuses the destroy half of the replace with
+  # the flag's own error. The same fact runs the other way: restoring `true`
+  # in a file protects nothing until an apply writes it back into state.
   #
-  # The owner decided on 2026-09-13 to clear it for that replacement. ADR
-  # 0040 decision 11 records the shape: this literal is flipped in one
-  # commit, the apply is dispatched, and the next commit restores `true`.
-  # **It is not a module input**, and the reason is in that decision: an
+  # So the literal stays `true`, and a tainted cluster is cleared by a
+  # person with state access — `terraform state rm` of this address and a
+  # `gcloud container clusters delete` of the cluster it named, after which
+  # the next `up` is a plain create and this flag is never consulted. ADR
+  # 0040 decision 11 records that, and why this is not a module input: an
   # input is a switch a later tfvars can throw with nobody deciding
   # anything, which is exactly what
   # `a_cloud_run_service_cannot_be_deleted_by_a_plan_nobody_read` refuses in
-  # `modules/cloudrun`. If you are reading this line as `false` and no
-  # `infra.yml` `up` is in flight, the restoring commit was lost — put it
-  # back.
-  deletion_protection = false
+  # `modules/cloudrun`.
+  deletion_protection = true
 
   # Private in both directions. The endpoint has no public address at all,
   # rather than one behind an allowlist, and the only range that may reach

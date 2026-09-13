@@ -2226,22 +2226,34 @@ before the dispatch.** ADR 0040 decision 10 requires this list to exist
 is whether anybody can say why each resource goes — and an agent that writes
 the reasons down after the apply is writing them with the answer in hand.
 
-`infra.yml` `plan` / `dev`, run 39 (id `34753700174`), ref
-`claude/autonomous-investment-platform-76gt4y`, **succeeded**, reading
-`Plan: 10 to add, 0 to change, 6 to destroy.` State held 237 resources;
-project `algorik-dev`. **This run is superseded and is not the plan any
-dispatch is made on** — decision 9 requires a plan on the dispatched commit,
-and this branch is 67 commits ahead of that ref
-(`git rev-list --left-right --count origin/claude/autonomous-investment-platform-76gt4y...HEAD`
-prints `0 67`). It is recorded because it is what the six destroys were first
-read from.
+Two plan runs, both **succeeded**, both reading
+`Plan: 10 to add, 0 to change, 6 to destroy.` over 237 resources in
+`algorik-dev`:
 
-| Resource | Destroyed because | Attributed to |
-|---|---|---|
-| `module.secrets.google_secret_manager_secret.platform["qip-token-approver"]` | Removed from `secret_names`: a bearer token for a role no `qip-api` route required, whose holder could do exactly what the analyst token could do | The comment above `"qip-token-operator"` in `terraform/main.tf`, which argues it at length — `grep -n 'qip-token-approver' infrastructure/terraform/main.tf` |
-| `module.cloud_run["api"].google_secret_manager_secret_iam_member.mounted["token-approver"]` | The mount grant for that secret | "There is no token-approver mount" — `grep -n 'token-approver' infrastructure/terraform/catalogue.tf` |
-| `google_storage_bucket_object.config_files["universe"]` × 3 (api, deepbrain, fastbrain) | Replaced, not removed: the object's content changed | The universe file's own diff |
-| `module.gitops_control_plane[0].google_container_cluster.control_plane` | Tainted by run 37, whose create waited forty minutes for a node that could not register; replaced so it is created with the firewall rule that fixes it | The `depends_on` comment on `google_container_cluster.control_plane`, and `the_control_plane_nodes_may_reach_their_endpoint_and_the_cluster_waits_for_that_rule` in `infrastructure.rs` |
+- Run 39, <https://github.com/droderiquesit/quantum-ai-platform/actions/runs/34753700174>,
+  on the then-default branch at `ae0ae2c` — where the six destroys were
+  first read. Superseded: decision 9 requires a plan on the dispatched
+  commit, and the branch that carries this entry was ahead of that ref
+  (`git rev-list --left-right --count ae0ae2c...HEAD` — the left figure is
+  `0`, the right is however far this branch has since moved; the number is
+  deliberately not written here because it changed twice while this entry
+  was being drafted).
+- Run 40, <https://github.com/droderiquesit/quantum-ai-platform/actions/runs/34755889202>,
+  on `141e6bd`, the commit both the default branch and
+  `claude/compassionate-cray-jvx8jt` were fast-forwarded to — the same
+  summary line, the same state count, the same six addresses. **This is the
+  plan any `up` is read against.**
+
+Runs 34-38 (2026-09-05) are recorded in ADR 0036's amendment; ADR 0040 said
+they were here and they never were, and its "Applied by this record"
+paragraph now says so.
+
+| Resource | Destroyed because | Commit | Attributed to |
+|---|---|---|---|
+| `module.secrets.google_secret_manager_secret.platform["qip-token-approver"]` | Removed from `secret_names`: a bearer token for a role no `qip-api` route required, whose holder could do exactly what the analyst token could do | `665c506` | The comment above `"qip-token-operator"` in `terraform/main.tf` — `grep -n 'qip-token-approver' infrastructure/terraform/main.tf` |
+| `module.cloud_run["api"].google_secret_manager_secret_iam_member.mounted["token-approver"]` | The mount grant for that secret | `665c506` | "There is no token-approver mount" — `grep -n 'token-approver' infrastructure/terraform/catalogue.tf` |
+| `module.cloud_run["api"\|"deepbrain"\|"fastbrain"].google_storage_bucket_object.config_files["universe"]` (three, one per workload) | Replaced, not removed: the object's path carries a hash of its content and `data/datasets/universe.json` changed after run 37 — the plan's outputs show `universe_catalogue_sha256` moving | `ece7602` | `grep -n 'config_files' infrastructure/terraform/modules/cloudrun/main.tf` |
+| `module.gitops_control_plane[0].google_container_cluster.control_plane` | Tainted by run 37, whose create failed after thirty-eight minutes waiting for a node that could not reach its endpoint; replaced so it is created with the firewall rule that fixes it | run 37, not a commit — the rule is `nodes_reach_control_plane` | The `depends_on` comment on `google_container_cluster.control_plane`, and `the_control_plane_nodes_may_reach_their_endpoint_and_the_cluster_waits_for_that_rule` in `infrastructure.rs` |
 
 Ten creates, of which the two that matter are `nodes_reach_control_plane`
 and `nodes_reach_each_other` — the rules whose absence tainted the cluster —
@@ -2249,10 +2261,18 @@ and the two `qip-alpaca-api-*` secret containers, created empty and seeded by
 nobody — the comment above them in `terraform/main.tf` says why an empty
 container is the point (`grep -n 'qip-alpaca-api-key-id' infrastructure/terraform/main.tf`).
 
-Nothing on this list is unattributed, so decision 10's test is met. The
-cluster's replacement is blocked by `deletion_protection = true`, which the
-owner has decided to clear; ADR 0040 decision 11 records that it is cleared
-by flipping the literal and restoring it, never by making it an input.
+Nothing on this list is unattributed, and the owner saw the six on
+2026-09-13 and said "approve all" — both halves of decision 10's test. What
+is **not** yet done is the cluster: `281d9c6` flipped the module's
+`deletion_protection` literal to `false` on the belief that an apply would
+then replace the tainted cluster, and the review of that commit showed the
+belief false — the provider reads the flag from state at delete time, and a
+tainted resource is never updated in place first, so the `up` would have
+refused the destroy half of the replace. The literal is restored in the
+commit carrying this paragraph and the `up` is **not dispatched** until a
+person with state access has removed the tainted cluster from state and
+deleted it (ADR 0040 decision 11); the next plan then shows the cluster as a
+plain create, and this entry gets that run's URL and terminal status.
 
 To re-score a row: read the section in
 `docs/architecture/algorik-blueprint-v10.1-source.md`, run the row's command,
