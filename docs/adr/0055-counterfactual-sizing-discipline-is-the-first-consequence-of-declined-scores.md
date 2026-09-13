@@ -29,10 +29,21 @@ veto... if four hundred cycles are vetoed in a day and three hundred and
 eighty would have been profitable, that is an enormous signal being discarded
 daily."
 
-§12.3's own table names four possible consequences of a finding: a rule
-recalibrated, a venue dropped, an allocator objective revised, a sizing
-function adjusted. This record builds exactly one of the four and states,
-rather than implies, why the other three stay open.
+§12.3's own table names **six** findings, each with its own response — a rule
+that vetoes mostly profitable paths (recalibrate with evidence), a rule that
+vetoes mostly losing paths (quantify the avoided loss and defend it), a rule
+that almost never fires (investigate rather than leave it), feasibility
+rejections clustering on one venue (consider dropping it), an unfunded family
+outperforming funded ones (the allocator's objective is mis-specified), and
+alternative sizing consistently better (the sizing function needs work).
+This record builds part of exactly one of the six, the last, and states,
+rather than implies, why the other five stay open. *(Corrected 2026-09-13:
+this paragraph said "four possible consequences" — it had folded the three
+rule rows into one "a rule recalibrated" and so under-counted the table by
+two, and the under-count was copied into `docs/DELIVERY-STATUS.md`'s §12.3
+row and into the working plan for the lane that follows this record. Run
+`awk '/^12\.3 /{f=1} f&&/^12\.4 /{exit} f' docs/architecture/algorik-blueprint-v10.1-source.md`
+rather than trusting either count.)*
 
 ## What the data actually supports
 
@@ -208,10 +219,14 @@ cost: an instrument could, in principle, oscillate in and out of the
 discount as its 256-entry window turns over, which is more responsive than a
 sticky penalty and less protective than one that only accumulates.
 
-**Three of the four named consequences remain exactly as absent as
-`docs/DELIVERY-STATUS.md` stated**: no rule is recalibrated, no venue is
-dropped, and no allocator objective is revised from a counterfactual result.
-§12.3 moves from `ABSENT` to `PARTIAL`, not `REACHED`.
+**Five of the six rows remain exactly as absent as `docs/DELIVERY-STATUS.md`
+stated** (this said "three of the four" until 2026-09-13; see the corrected
+count in Context): no rule is recalibrated, defended or reported dormant, no
+venue is dropped, and no allocator objective is revised from a counterfactual
+result — and the sixth row is itself only half built, because this record
+reads the `trade` alternative on *declined* paths while the row is about the
+`smaller_size`/`larger_size` alternatives on *executed* orders. §12.3 moves
+from `ABSENT` to `PARTIAL`, not `REACHED`.
 
 ## What would make this wrong
 

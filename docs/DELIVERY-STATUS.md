@@ -288,7 +288,7 @@ these four are commands the build runs.
 | 11.3 | Propagation to Regions | PARTIAL | The contract is complete and the consumer half is production code: `belief_priors` is a signed policy slot with a 300s TTL mapping to `Capability::BeliefState`, and a cell that reads it stale falls to the conservative multiplier and reports it (`grep -n 'BeliefPriors\|fn narrowing' backend/crates/libs/qip-contracts/src/policy.rs`, `grep -n 'Capability::BeliefState' backend/crates/edge/qip-edge/src/telemetry.rs`). A cell forming no belief of its own is structural — no belief type is reachable from `qip-edge`. But nothing ever produces the slot: `grep -rn 'belief_priors' --include=*.rs backend/crates \| grep -v policy.rs` returns nothing, so every deployed cell would read it `unproduced` for ever. |
 | 12.1 | What Gets Shadow-Executed | PARTIAL | One of the seven paths-not-taken is captured, in production: a risk-gate veto, recorded with the proposed trade at `grep -n 'self.declined.push(DeclinedPath' backend/crates/runtime/qip-kernel/src/platform.rs` inside `capture_submission`. Against each captured path the twin does evaluate alternative sizing, venue, region, hedge and delay (`grep -n 'pub enum Alternative' -A 14 backend/crates/services/qip-twin/src/counterfactual.rs`), which covers the "alternative sizing" row. Profitability filters, feasibility rejections, un-whitelisted allocations, alternative cycle paths and the strategy that did not fire are never queued — `DeclinedPath` is constructed at exactly one site. |
 | 12.2 | How It Is Scored | REACHED | All six steps run on the LEARN path: `grep -n 'fn score_declined\|self.score_declined(now)' backend/crates/runtime/qip-kernel/src/platform.rs` (called from `stage_learn`), which reconstructs from `bar_history` into a `TwinMarket` with a `CostModel` and `COUNTERFACTUAL_IMPACT_WINDOW`, calls `Platform::evaluate_alternatives`, evaluates over the intended horizon, attributes to the declining gate and accumulates into `declined_scores` plus gate-labelled counters (`grep -n 'names::COUNTERFACTUALS_SCORED\|names::COUNTERFACTUAL_REGRETS' .../platform.rs`). Narrower than stated in one respect: accumulation is per gate only, not also per venue, regime and strategy. |
-| 12.3 | What It Changes | PARTIAL | **Corrected 2026-09-12 (ADR 0055).** One of the table's four named consequences is built: a sizing function adjusted from a counterfactual result. `Platform::counterfactual_sizing_multiplier(object_id)` reads the bounded `declined_scores` history directly rather than through the public accessor — `grep -n 'self.declined_scores' backend/crates/runtime/qip-kernel/src/platform.rs` shows the push site inside `score_declined` and this new read beside it, and `grep -rn 'declined_scores()' --include=*.rs backend/crates` (the accessor, with parens) still finds only test callers, which is a fact about which name to grep for and not about whether the finding is consumed — and narrows `Platform::sizing_confidence`, never widens it: below ten scored observations on one instrument it returns `Decimal::ONE` unconditionally, and `grep -n 'COUNTERFACTUAL_SIZING' backend/crates/runtime/qip-kernel/src/platform.rs` shows the function has no branch that returns more than `Decimal::ONE` even above ten. Reached from `sizing_confidence` → `sizeable_theses` → `construct_from` → `stage_decide`, the seam §11.2 already scores as production. The other three consequences are exactly as absent as before: no rule is recalibrated — `grep -rn 'recalibrat' --include=*.rs backend/crates \| grep -v '/tests/'` finds only this change's own comments, and §12.4's guardrail forbids the one automatic direction (loosening) outright — no venue is dropped (a declined order never reaches one; `ActualTrade` for a decline is `UNROUTED_VENUE`), and no allocator objective is revised (no declined path is attributed to a strategy or family anywhere in `DeclinedPath`/`DeclinedScore`). See ADR 0055 for the full argument, the two rejected consequences' missing-attribution reasoning, and what stays open. |
+| 12.3 | What It Changes | PARTIAL | **Corrected 2026-09-12 (ADR 0055), and again 2026-09-13: the table has six rows, not four** — `awk '/^12\.3 /{f=1} f&&/^12\.4 /{exit} f' docs/architecture/algorik-blueprint-v10.1-source.md` prints them; the three rule rows (vetoes mostly profitable / vetoes mostly losing / almost never fires) had been folded into one. Part of one of the six is built: a sizing function adjusted from a counterfactual result — and only the declined-path half of that row, since the row is about `smaller_size`/`larger_size` on executed orders and `grep -n 'evaluate_alternatives' backend/crates/runtime/qip-kernel/src/platform.rs` shows the one production caller (`score_declined`) iterating `self.declined` only. `Platform::counterfactual_sizing_multiplier(object_id)` reads the bounded `declined_scores` history directly rather than through the public accessor — `grep -n 'self.declined_scores' backend/crates/runtime/qip-kernel/src/platform.rs` shows the push site inside `score_declined` and this new read beside it, and `grep -rn 'declined_scores()' --include=*.rs backend/crates` (the accessor, with parens) still finds only test callers, which is a fact about which name to grep for and not about whether the finding is consumed — and narrows `Platform::sizing_confidence`, never widens it: below ten scored observations on one instrument it returns `Decimal::ONE` unconditionally, and `grep -n 'COUNTERFACTUAL_SIZING' backend/crates/runtime/qip-kernel/src/platform.rs` shows the function has no branch that returns more than `Decimal::ONE` even above ten. Reached from `sizing_confidence` → `sizeable_theses` → `construct_from` → `stage_decide`, the seam §11.2 already scores as production. The other three consequences are exactly as absent as before: no rule is recalibrated — `grep -rn 'recalibrat' --include=*.rs backend/crates \| grep -v '/tests/'` finds only this change's own comments, and §12.4's guardrail forbids the one automatic direction (loosening) outright — no venue is dropped (a declined order never reaches one; `ActualTrade` for a decline is `UNROUTED_VENUE`), and no allocator objective is revised (no declined path is attributed to a strategy or family anywhere in `DeclinedPath`/`DeclinedScore`). See ADR 0055 for the full argument, the two rejected consequences' missing-attribution reasoning, and what stays open. |
 | 12.4 | Guardrails | PARTIAL | Two of four hold. Impact is charged and oversized counterfactuals are refused rather than priced: `grep -n 'Unfillable' backend/crates/services/qip-twin/src/counterfactual.rs` ("more of the day's volume than the impact law is calibrated for"). **"Never loosened automatically" no longer holds trivially** (corrected 2026-09-12, ADR 0055): §12.3 now has a real automatic consumer of counterfactual evidence, `Platform::counterfactual_sizing_multiplier`, and the guarantee is held structurally rather than by the absence of anything to check — the function has no branch that returns more than `Decimal::ONE`, proved by `platform::counterfactual_sizing_tests::a_pattern_of_wrongly_declined_paths_never_widens_sizing`, which feeds it an overwhelmingly *favourable* pattern (the "rule vetoes mostly profitable paths" case this guardrail names) and asserts sizing confidence stays at one. Missing: fill-simulation error against actual fills on the same venue is not tracked as a metric (`grep -rn 'fill.*error\|simulation_error' backend/crates/libs/qip-observability/src/metrics.rs` returns nothing), and counterfactual findings enter no statistical/trial gate — ADR 0055's own discipline (a minimum sample, an unfavourable-fraction bar) is a fixed threshold rule stated and defended in the record, not the trial accounting this row asks for. |
 | 13.1 | What the Self-Model Tracks | PARTIAL | Two of the seven dimensions are built and production-fed. Estimator reliability and calibration: `grep -n 'pub struct Capability' -A 12 backend/crates/services/qip-learning-engine/src/self_model.rs` (accuracy, hit rate, mean Brier, sample count), absorbed in production at `grep -n 'self.self_model.absorb(evaluation' backend/crates/runtime/qip-kernel/src/platform.rs` inside `learn_from`, reached from `calibrate_resolved` ← `stage_learn`. Model age is readable from `last_updated` and is what `SelfModelFreshness::assess` narrows sizing on. Coverage, capacity, regime experience and blind spots are absent: `grep -rni 'blind_spot\|coverage\|capacity' backend/crates/services/qip-learning-engine/src/` returns only `Vec::with_capacity`. |
 | 13.2 | The Exploration Budget | PARTIAL | The budget is a real line item in the capital engine and is enforced downward through the mandate hierarchy: `grep -n 'exploration_share' backend/crates/services/qip-capital/src/ledger/mandate.rs backend/crates/services/qip-capital/src/ledger/registry.rs`, and it is surfaced to the console (`grep -n 'exploration_share' backend/crates/apps/qip-api/src/ledger_views.rs`). Nothing draws on it: no probe type, no UCB/Thompson selection, no per-probe maximum loss, and no separate accounting of exploration cost — `grep -rn 'exploration_share()' --include=*.rs backend/crates \| grep -v '/tests/'` reaches only the registry check and the view. |
@@ -2303,6 +2303,107 @@ commit carrying this paragraph and the `up` is **not dispatched** until a
 person with state access has removed the tainted cluster from state and
 deleted it (ADR 0040 decision 11); the next plan then shows the cluster as a
 plain create, and this entry gets that run's URL and terminal status.
+
+**Branch register, 2026-09-13 — every remote branch's tip before the
+consolidation.** The default branch was fast-forwarded to this lane's head,
+`main` was created at the same commit, and the one branch carrying unmerged
+work (`claude/algorik-architecture-refactor-pmp0zy`, eight commits from
+2026-09-09 that PR #13 predated) was merged in `cbf5a55`. The other 75 were
+triaged against that head — 19 strict ancestors or merges producing exactly
+HEAD's tree, 43 pre-rewrite snapshots on a disjoint root whose deliverables
+are byte-identical in HEAD and whose only unique files HEAD deliberately
+deleted, 4 superseded file-by-file, 9 pushed stashes whose finished form is
+in HEAD — and handed to the owner for deletion, because this session's egress
+policy refuses a ref deletion (HTTP 403 from the proxy on `git push
+--delete`, which its own README says to report rather than retry). The tips
+are recorded here so that a deleted branch can be recovered by SHA for as
+long as GitHub retains the objects: `git fetch origin <sha>` and
+`git branch <name> FETCH_HEAD`.
+
+<details><summary>78 branch tips as of 2026-09-13 12:10 UTC</summary>
+
+| Branch | Tip |
+|---|---|
+| `claude/algorik-architecture-refactor-pmp0zy` | `6c6434377cdb` |
+| `claude/autonomous-investment-platform-76gt4y` | `1c05709796ce` |
+| `claude/compassionate-cray-jvx8jt` | `1c05709796ce` |
+| `claude/wave6-architecture-docs` | `bdf782f6d856` |
+| `claude/wave6-bugs-foundational-libs` | `9825c46aaa70` |
+| `claude/wave6-central-feasibility-gate` | `e8daa51bf228` |
+| `claude/wave6-console-verification` | `21e0bad1d0a7` |
+| `claude/wave6-data-finder-licensing` | `f64901d7d0c1` |
+| `claude/wave6-mutation-audit` | `2e19a4ce85cc` |
+| `claude/wave6-pm-rescope` | `35d528d7df8f` |
+| `claude/wave6-risk-limits-audit` | `d7049d4521c5` |
+| `claude/wave7-agents-lib` | `ece48c1c91a5` |
+| `claude/wave7-ai-lib` | `5d85a8bf6555` |
+| `claude/wave7-arbitrage` | `d950292feb15` |
+| `claude/wave7-blueprint-v10-gap-map` | `582df7fd3fd0` |
+| `claude/wave7-capital` | `c902198c0a2b` |
+| `claude/wave7-capital-fabric` | `c1e62d3328d0` |
+| `claude/wave7-chain` | `e512760e4ec3` |
+| `claude/wave7-cicd-status-report` | `9f9c1d4eca4e` |
+| `claude/wave7-cli` | `d1cdab90af2c` |
+| `claude/wave7-confidential` | `be50d9cc3be2` |
+| `claude/wave7-contracts` | `0b9d8a51ddf8` |
+| `claude/wave7-core` | `a9bfb9c4dad9` |
+| `claude/wave7-cost-router` | `4fa36ced3511` |
+| `claude/wave7-deepbrain` | `6cabf73e2ce8` |
+| `claude/wave7-edge` | `f0eff6279a5d` |
+| `claude/wave7-edge-node` | `70a136ec29ca` |
+| `claude/wave7-entity-resolution` | `d505fb150ec6` |
+| `claude/wave7-events` | `5d1f22dc13f5` |
+| `claude/wave7-evolution` | `d641001c8a1f` |
+| `claude/wave7-execution-engine` | `b170af97ac35` |
+| `claude/wave7-fastbrain` | `415eadf395e1` |
+| `claude/wave7-feature-dag` | `54c0fa45b680` |
+| `claude/wave7-financial` | `a4d4f32ad077` |
+| `claude/wave7-infra-node-network` | `31a268415987` |
+| `claude/wave7-investment-agents` | `9742a2df17d2` |
+| `claude/wave7-learning-engine` | `e8591471be9a` |
+| `claude/wave7-lifecycle` | `10fed4041547` |
+| `claude/wave7-market-ingestion` | `aaabbf8d5652` |
+| `claude/wave7-mesh` | `216d3ebcd247` |
+| `claude/wave7-mesh-registration` | `d9102d3ff781` |
+| `claude/wave7-normalization` | `911ec0969f1a` |
+| `claude/wave7-numerics` | `c37b4df0a016` |
+| `claude/wave7-observability-ingestion` | `ad1d56fce88e` |
+| `claude/wave7-observability-lib` | `d6c1ef014a97` |
+| `claude/wave7-opportunity-engine` | `10295db66388` |
+| `claude/wave7-optimization-engine` | `44c2594b8766` |
+| `claude/wave7-orderbook` | `d7d3293d39c6` |
+| `claude/wave7-portfolio-engine` | `2409fed7a991` |
+| `claude/wave7-portfolio-lib` | `2782f6c8e531` |
+| `claude/wave7-prediction` | `9ae2fa85b085` |
+| `claude/wave7-protocols` | `25d1164ae327` |
+| `claude/wave7-quantum-lib` | `f17584ac1e06` |
+| `claude/wave7-reasoning-engine` | `6d0943b73e8c` |
+| `claude/wave7-risk-engine` | `468bda33d613` |
+| `claude/wave7-risk-lib` | `3c6a0be6c19f` |
+| `claude/wave7-routing` | `43b1310a25a6` |
+| `claude/wave7-sequencing` | `dd5c8e57f1e2` |
+| `claude/wave7-simulation-engine` | `b2fbcc2f9d0f` |
+| `claude/wave7-storage` | `8947a94b01b3` |
+| `claude/wave7-strategy` | `0010760568bd` |
+| `claude/wave7-training` | `e9eb14daf946` |
+| `claude/wave7-twin` | `9c8c9322d095` |
+| `claude/wave8-api-audit` | `8ff54d3cfdda` |
+| `claude/wave8-ingestion-composition-root` | `9f4a5570bc85` |
+| `claude/wave8-openobserve-otlp-wiring` | `03655a469a3b` |
+| `claude/wave8-openobserve-terraform` | `352ede801712` |
+| `claude/wave8-training-completeness-2` | `bf8ee3b856e8` |
+| `claude/wave8-web-audit` | `9071b4e3534d` |
+| `wip/wave14-inflight-e612bd6` | `e612bd683e38` |
+| `wip/wave16-inflight-b6f7549` | `b6f7549eab1a` |
+| `wip/wave16-inflight-e055180` | `1aa051c077bc` |
+| `wip/wave18-inflight-ae78702` | `ae787027c79f` |
+| `wip/wave19-inflight-47f1b0e` | `47f1b0e5e546` |
+| `wip/wave21-inflight-8a3bbc2` | `8a3bbc24d34e` |
+| `wip/wave21b-inflight-da52ce8` | `da52ce8d28c8` |
+| `wip/wave21c-inflight-1461aad` | `1461aad55c44` |
+| `wip/wave23-inflight-51661d6` | `51661d66ecb7` |
+
+</details>
 
 To re-score a row: read the section in
 `docs/architecture/algorik-blueprint-v10.1-source.md`, run the row's command,

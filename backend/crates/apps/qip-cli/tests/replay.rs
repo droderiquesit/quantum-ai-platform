@@ -35,6 +35,30 @@ use qip_risk::limits::LimitSet;
 use qip_risk_engine::autonomy::OperatorIdentity;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, MutexGuard};
+
+/// No spawn while a log is held, and no log held while a spawn is in flight.
+///
+/// `Command` forks, and the child inherits every open file description the
+/// parent had — including the `flock` an [`qip_events::log::EventLog`] holds
+/// — until its `exec` closes them. Between fork and exec that child is a
+/// second holder of the lock, so a test that drops its log and reopens it
+/// (or a `qip replay` it spawns to open it) is refused "held by another
+/// process" by a sibling test's child that has nothing to do with the file.
+/// Measured with a control before this gate existed: a loop taking, dropping
+/// and retaking the lock 4000 times beside a thread doing nothing but
+/// `Command::new("/bin/true").output()` was refused 514 times; the same loop
+/// beside `thread::yield_now()` was refused 0 times, and this binary failed
+/// 4 of 12 parallel runs and 0 of 12 serialised. The gate serialises exactly
+/// the two things that must not overlap: every spawn, and every span in
+/// which a test holds a log it expects to be released afterwards.
+static SPAWN_GATE: Mutex<()> = Mutex::new(());
+
+fn gate() -> MutexGuard<'static, ()> {
+    SPAWN_GATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// The liquidity every fixture in this file states, because nothing states it
 /// for them any more.
@@ -104,6 +128,9 @@ fn journal_path(label: &str) -> Result<PathBuf> {
 /// records are the ones a deployment would hold rather than ones this test
 /// invented.
 fn write_journal(path: &Path, decisions: bool, cycles: u64) -> Result<()> {
+    // The platform holds the journal's lock until it is dropped at the end
+    // of this function; see `SPAWN_GATE` for why no spawn may overlap that.
+    let _gate = gate();
     let config = PlatformConfig::default().with_event_log_file(path);
     let (context, _clock) = Context::deterministic(start(), config.seed);
     let mut platform = Platform::new(
@@ -172,6 +199,13 @@ fn position_of(records: &[serde_json::Value], producer: &str) -> Option<(usize, 
 
 /// What the binary printed and what it exited with.
 fn run(arguments: &[&str]) -> Result<(String, String, i32)> {
+    let _gate = gate();
+    spawn(arguments)
+}
+
+/// The spawn itself, for a caller that already holds `SPAWN_GATE` — the one
+/// test that must run the command *while* it holds a journal.
+fn spawn(arguments: &[&str]) -> Result<(String, String, i32)> {
     let output = Command::new(env!("CARGO_BIN_EXE_qip"))
         .args(arguments)
         .output()
@@ -459,11 +493,18 @@ fn a_journal_a_running_node_holds_is_refused_naming_the_holder_not_as_a_corrupt_
     let path = journal_path("held")?;
     write_journal(&path, false, 1)?;
 
+    // This test holds the gate for its whole body and spawns through
+    // `spawn` rather than `run`: it is the one place a log is deliberately
+    // held across a spawn, and the child it forks is the only child that may
+    // inherit the lock — every other test's spawn waits here until `holder`
+    // is dropped and the released journal has been verified.
+    let _gate = gate();
+
     // This process stands in for the node: the writer's open holds the
     // exclusive lock for as long as `holder` lives.
     let holder = qip_events::log::EventLog::open(&path)?;
     assert!(!holder.is_empty(), "premise: the held journal has records");
-    let (_, stderr, code) = run(&["replay", "--journal", &path.display().to_string()])?;
+    let (_, stderr, code) = spawn(&["replay", "--journal", &path.display().to_string()])?;
     assert_eq!(code, 1, "a held journal did not stop the command: {stderr}");
     assert!(
         stderr.contains("held by another process"),
@@ -475,7 +516,7 @@ fn a_journal_a_running_node_holds_is_refused_naming_the_holder_not_as_a_corrupt_
     );
 
     drop(holder);
-    let (stdout, stderr, code) = run(&["replay", "--journal", &path.display().to_string()])?;
+    let (stdout, stderr, code) = spawn(&["replay", "--journal", &path.display().to_string()])?;
     assert_eq!(
         code,
         i32::from(AGREES),
