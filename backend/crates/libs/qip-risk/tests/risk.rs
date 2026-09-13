@@ -1772,3 +1772,144 @@ fn a_file_that_only_widens_every_bound_to_an_extreme_is_admitted_and_every_move_
         "a name outside the shipped set was reported as a difference: {differences:?}"
     );
 }
+
+#[test]
+fn a_money_bound_that_rounds_to_zero_after_the_decimal_crossing_is_refused() {
+    // Security review LOW-2: `with_bound`'s finite-positive check runs on
+    // the `f64` before the crossing to `Decimal`, which rounds to nine
+    // decimal places. `5e-324` and `1e-10` both pass that check and both
+    // produce `Decimal(0)` — a bound that read positive as `f64` and was no
+    // limit at all once it became the number `LimitSet::check` actually
+    // compares against, admitting every order rather than refusing the
+    // caller's mistake.
+    let ceiling = LimitKind::MaxOrderNotional {
+        limit: Decimal::from_int(250_000),
+    };
+    for sub_scale in [5e-324, 1e-10, 4e-10] {
+        let refused = ceiling
+            .with_bound(sub_scale)
+            .expect_err(&format!("{sub_scale} rounded to zero and was admitted"));
+        assert!(
+            refused.message().contains("rounds to"),
+            "{}",
+            refused.message()
+        );
+    }
+    // The admitting half, so the refusal above is a choice about the
+    // rounding and not a constructor that refuses every small bound: a
+    // bound that survives the crossing with something left is still
+    // admitted.
+    let admitted = ceiling
+        .with_bound(1.0)
+        .expect("a one-unit bound survives the crossing");
+    assert_eq!(admitted.bound(), 1.0);
+}
+
+#[test]
+fn a_limits_document_with_an_unrecognised_key_is_refused_at_the_root_and_on_a_limit() {
+    // Security review LOW-3: an unrecognised key used to be silently
+    // ignored rather than refused, both at the document's root and on one
+    // of its limits — `autonomy_ceiling` and `live` were the review's own
+    // examples. A document a reviewer approved because it named twelve
+    // familiar limits could carry either kind of key and nobody would ever
+    // see it again once the file loaded.
+    let shipped = LimitSet::conservative_default();
+    let mut value: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&shipped).expect("serialises"))
+            .expect("the shipped set round-trips through serde_json::Value");
+
+    // The admitting half first: the same value, unmodified, still loads —
+    // so the refusals below are choices about the unrecognised keys and not
+    // a parser that has started refusing every document.
+    let unmodified = LimitSet::from_document(
+        &serde_json::to_string(&value).expect("serialises"),
+        "unmodified.json",
+    )
+    .expect("the shipped set's own document, round-tripped through Value, still loads");
+    assert_eq!(unmodified, shipped);
+
+    value
+        .as_object_mut()
+        .expect("the document is an object")
+        .insert(
+            "autonomy_ceiling".to_string(),
+            serde_json::Value::String("autonomous_live".to_string()),
+        );
+    let root_refused = LimitSet::from_document(
+        &serde_json::to_string(&value).expect("serialises"),
+        "root-unknown-key.json",
+    )
+    .expect_err("a document with an unrecognised root key was admitted");
+    assert!(
+        root_refused.message().contains("root-unknown-key.json"),
+        "the refusal does not name the file: {}",
+        root_refused.message()
+    );
+
+    // Undo the root addition and add the other shape: an unrecognised key on
+    // one limit rather than at the root.
+    value
+        .as_object_mut()
+        .expect("the document is an object")
+        .remove("autonomy_ceiling");
+    value
+        .as_object_mut()
+        .expect("the document is an object")
+        .get_mut("limits")
+        .and_then(|limits| limits.as_array_mut())
+        .and_then(|limits| limits.first_mut())
+        .and_then(|limit| limit.as_object_mut())
+        .expect("the first limit is an object")
+        .insert("live".to_string(), serde_json::Value::Bool(true));
+    let limit_refused = LimitSet::from_document(
+        &serde_json::to_string(&value).expect("serialises"),
+        "limit-unknown-key.json",
+    )
+    .expect_err("a document with an unrecognised key on one limit was admitted");
+    assert!(
+        limit_refused.message().contains("limit-unknown-key.json"),
+        "the refusal does not name the file: {}",
+        limit_refused.message()
+    );
+}
+
+#[test]
+fn a_set_or_limit_name_containing_a_control_character_is_refused() {
+    // Security review LOW-4: a limit set's name reaches the boot banner's
+    // `println!` unescaped, unlike a metric label (`qip-observability`'s
+    // `escape_label_value` does escape those). A name of
+    // `x"} 1\nqip_probe{y="` used to be admitted and could forge a line in
+    // the process log the next time the banner printed. Refusing a control
+    // character in `validate` closes it structurally rather than relying on
+    // every future caller of the name to remember to escape it.
+    let shipped = LimitSet::conservative_default();
+
+    let mut set_name_poisoned = shipped.clone();
+    set_name_poisoned.name = "x\"} 1\nqip_probe{y=\"".to_string();
+    let refused = set_name_poisoned
+        .validate(&shipped)
+        .expect_err("a set name containing a newline was admitted");
+    assert!(
+        refused.message().contains("control character"),
+        "{}",
+        refused.message()
+    );
+
+    let mut limit_name_poisoned = shipped.clone();
+    limit_name_poisoned.limits[0].name = "order-notional\nqip_probe 1".to_string();
+    let refused = limit_name_poisoned
+        .validate(&shipped)
+        .expect_err("a limit name containing a newline was admitted");
+    assert!(
+        refused.message().contains("control character"),
+        "{}",
+        refused.message()
+    );
+
+    // The admitting half: an ordinary name with no control character is
+    // untouched by this check.
+    assert!(
+        shipped.validate(&shipped).is_ok(),
+        "the shipped set's own ordinary names were refused"
+    );
+}

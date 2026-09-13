@@ -253,12 +253,30 @@ impl LimitKind {
             )));
         }
         let money = || {
-            Decimal::from_f64(bound).ok_or_else(|| {
+            let decimal = Decimal::from_f64(bound).ok_or_else(|| {
                 Error::numeric(format!(
                     "{bound} does not fit the notional a {} bound is carried as",
                     self.label()
                 ))
-            })
+            })?;
+            // `bound` already passed the positive check above, but the
+            // crossing rounds to nine decimal places: security review LOW-2
+            // found `5e-324` and `1e-10` both admitted here and both
+            // producing `Decimal(0)` — a bound that reads positive as `f64`
+            // and is no limit at all once it is the number `LimitSet::check`
+            // actually compares against. Refusing the *result* of the
+            // crossing, not just the input to it, is what "validate, do not
+            // clamp" means for a value that only turns out to be wrong after
+            // the conversion this function itself performs.
+            if !decimal.is_positive() {
+                return Err(Error::invalid(format!(
+                    "a bound for {} of {bound} rounds to {decimal} once carried as a notional; \
+                     a bound must be positive after the crossing this constructor performs, not \
+                     only before it",
+                    self.label()
+                )));
+            }
+            Ok(decimal)
         };
         Ok(match self {
             Self::MaxOrderNotional { .. } => Self::MaxOrderNotional { limit: money()? },
@@ -907,6 +925,62 @@ pub struct LimitSet {
     pub limits: Vec<Limit>,
 }
 
+/// The wire shape of a committed limits *document* — what
+/// [`LimitSet::from_document`] parses, kept as a type of its own so
+/// `#[serde(deny_unknown_fields)]` lands here and nowhere else.
+///
+/// Security review LOW-3: an unrecognised key — `autonomy_ceiling` at the
+/// root, `live` on one limit — was silently ignored rather than refused
+/// before this type existed, so a document a reviewer approved because it
+/// named twelve familiar limits could also carry a key nobody argued for in
+/// an ADR and nobody would ever see again once the file loaded. `LimitSet`
+/// and `Limit` themselves stay exactly as permissive as they always were:
+/// they are also the artefact type `RecalibrationApprovalEntry::artefact`
+/// journals (ADR 0061), produced by this process and never read back from
+/// outside it, and a field added to either for a reason unrelated to the
+/// file format must not become a boot-time refusal.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LimitSetDocument {
+    name: String,
+    limits: Vec<LimitDocument>,
+}
+
+/// One entry of [`LimitSetDocument`]. See its comment for why this exists
+/// separately from [`Limit`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LimitDocument {
+    name: String,
+    kind: LimitKind,
+    warning_threshold: f64,
+    critical_multiple: f64,
+    forces_reduction: bool,
+    rationale: String,
+}
+
+impl From<LimitDocument> for Limit {
+    fn from(document: LimitDocument) -> Self {
+        Self {
+            name: document.name,
+            kind: document.kind,
+            warning_threshold: document.warning_threshold,
+            critical_multiple: document.critical_multiple,
+            forces_reduction: document.forces_reduction,
+            rationale: document.rationale,
+        }
+    }
+}
+
+impl From<LimitSetDocument> for LimitSet {
+    fn from(document: LimitSetDocument) -> Self {
+        Self {
+            name: document.name,
+            limits: document.limits.into_iter().map(Limit::from).collect(),
+        }
+    }
+}
+
 impl LimitSet {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -933,19 +1007,23 @@ impl LimitSet {
     /// so a root's start-up failure names the file.
     ///
     /// The document is the serialised [`LimitSet`] — what a signed
-    /// recalibration's artefact renders as (ADR 0061) — and it is validated
-    /// through [`Self::validate`] against [`Self::conservative_default`],
-    /// which is what makes "a file may move a bound, never remove a control"
-    /// a property of every root rather than of a reviewer's attention.
+    /// recalibration's artefact renders as (ADR 0061) — parsed through
+    /// [`LimitSetDocument`], which refuses an unrecognised key rather than
+    /// ignoring it, and then validated through [`Self::validate`] against
+    /// [`Self::conservative_default`], which is what makes "a file may move
+    /// a bound, never remove a control" a property of every root rather
+    /// than of a reviewer's attention.
     pub fn from_document(text: &str, path: &str) -> Result<Self> {
-        let set: Self = serde_json::from_str(text).map_err(|error| {
+        let document: LimitSetDocument = serde_json::from_str(text).map_err(|error| {
             Error::invalid(format!(
                 "configuration: {path} does not hold a valid limit set: {error}. The document is \
                  the JSON of a LimitSet — a `name` and a `limits` array whose every entry \
                  carries name, kind, warning_threshold, critical_multiple, forces_reduction and \
-                 rationale — which is exactly what a signed recalibration's artefact renders as"
+                 rationale, and nothing else — which is exactly what a signed recalibration's \
+                 artefact renders as"
             ))
         })?;
+        let set: Self = document.into();
         set.validate(&Self::conservative_default())
             .map_err(|error| {
                 Error::invalid(format!("configuration: {path} {}", error.message()))
@@ -959,10 +1037,14 @@ impl LimitSet {
     /// Refuses: an empty set name; no limits at all; a limit with an empty
     /// or duplicated name, or no rationale (the shipped set asserts every
     /// limit explains itself, and a limit nobody can explain does not ship
-    /// from a file either); a bound, horizon or confidence that is not a
-    /// finite number in its range (a non-finite bound disarms the limit —
-    /// see [`Limit::assess`] — and a non-positive one refuses nothing or
-    /// everything); a `warning_threshold` outside `(0, 1]`; a
+    /// from a file either); a set name or a limit name containing a control
+    /// character (either would reach the "differs from shipped in" boot
+    /// banner or a refusal message unescaped, unlike a metric label, which
+    /// `qip-observability`'s renderer does escape); a bound, horizon or
+    /// confidence that is not a finite number in its range (a non-finite
+    /// bound disarms the limit — see [`Limit::assess`] — and a non-positive
+    /// one refuses nothing or everything); a `warning_threshold` outside
+    /// `(0, 1]`; a
     /// `critical_multiple` outside `[1, MAX_SANE_CRITICAL_MULTIPLE]`; **any
     /// limit in `shipped` whose name this set does not carry**; and, for
     /// every name this set shares with `shipped`, a limit whose *kind*, axis,
@@ -990,6 +1072,20 @@ impl LimitSet {
                 "names no limit set; a set with no name cannot be told from another in a banner",
             ));
         }
+        // Security review LOW-4: the set's name reaches the boot banner's
+        // `println!` unescaped — unlike a metric label, which
+        // `qip-observability`'s renderer does escape — so a name carrying a
+        // control character could forge a line in the process log. Refusing
+        // it here is the same fix `qip-observability::escape_label_value`
+        // makes for a different surface: a name is not the place for a
+        // character nobody reading a log line would expect.
+        if self.name.chars().any(char::is_control) {
+            return Err(Error::invalid(format!(
+                "names a limit set as {:?}, which contains a control character; a name that \
+                 reaches a boot banner or a log line must not be able to forge one",
+                self.name
+            )));
+        }
         if self.limits.is_empty() {
             return Err(Error::invalid(format!(
                 "holds no limits under the name {}; a process with no limits is not a \
@@ -1005,6 +1101,15 @@ impl LimitSet {
                     "carries a {} limit with no name; a breach it records could be charged to \
                      nothing",
                     limit.kind.label()
+                )));
+            }
+            // The same refusal as the set's own name, above: a limit's name
+            // reaches the "differs from shipped in" banner line, a breach's
+            // `limit_name`, and every refusal message this crate writes.
+            if name.chars().any(char::is_control) {
+                return Err(Error::invalid(format!(
+                    "carries a limit named {name:?}, which contains a control character; a name \
+                     that reaches a boot banner or a log line must not be able to forge one"
                 )));
             }
             if !names.insert(name) {

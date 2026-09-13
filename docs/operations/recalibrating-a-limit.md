@@ -47,7 +47,12 @@ Neither of those asks anything of you; they are context.
         -d '{"rationale": "<why the desk accepts this bound>"}' \
         .../api/v1/risk/recalibrations/:rule/approvals
    ```
-   The body takes `rationale` and nothing else. It cannot name the approver
+   Replace `:rule` with the rule's name (`order-notional`,
+   `expected-shortfall`, and so on — the same name `GET
+   /risk/recalibrations` lists it under in `open`); pasted literally, `:rule`
+   is not a rule this platform has ever proposed anything about and the
+   route answers 404. The body takes `rationale` and nothing else. It cannot
+   name the approver
    (that is your session) and it cannot name the bound (that is the
    platform's proposal). The first answer is `awaiting_countersignature`;
    the second, from a different subject, is `enacted` and carries
@@ -74,15 +79,20 @@ Neither of those asks anything of you; they are context.
 
 ## What the file may and may not do
 
-It may move a bound. It may not remove a control: a file that does not
-carry every limit the shipped set carries stops the process at start-up,
-naming the missing limit. So do an empty set, a duplicated or unexplained
-limit, a bound that is not a finite positive number, a warning threshold
-outside `(0, 1]` and a critical multiple below one. A file that does not
-read, or does not parse, stops the process too — a desk that believed a
-loosening had been deployed and was silently running the shipped set would
-find out from a refusal, at the moment the gap costs something to have
-missed.
+It may move a bound. It may not remove a control, and it may not change one
+under its own name: a file that does not carry every limit the shipped set
+carries stops the process at start-up naming the missing limit, and so does
+a file that keeps a limit's name but changes its kind, its axis, its bucket,
+its confidence, its horizon or whether it forces a reduction — a
+recalibration moves exactly one number and nothing else about a control. So
+do an empty set, a duplicated or unexplained limit, a bound that is not a
+finite positive number, a warning threshold outside `(0, 1]` and a critical
+multiple outside `[1, 100]`. A file that does not read, or does not parse,
+stops the process too — a desk that believed a loosening had been deployed
+and was silently running the shipped set would find out from a refusal, at
+the moment the gap costs something to have missed. The one thing the file
+*is* for still goes through: a moved bound is admitted and named in the boot
+banner as "differs from shipped in: `<name>` bound".
 
 ## Tightening
 

@@ -1877,9 +1877,11 @@ pub struct CycleJournalEntry {
     /// nothing. Defaulted so an older journal replays.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub counterfactuals: Option<CounterfactualJournal>,
-    /// What LEARN's rule review found this cycle: the rules it defended and
-    /// the rules it recorded dormant, by name. Absent on a cycle that found
-    /// nothing. Defaulted so an older journal replays.
+    /// What LEARN's rule review found this cycle, by name: the rules it
+    /// defended, the rules it recorded dormant, the rules a recalibration
+    /// was proposed for, and the rules whose open proposal was withdrawn.
+    /// Absent on a cycle that found nothing. Defaulted so an older journal
+    /// replays.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub rule_review: Option<RuleReviewJournal>,
     /// The strategies LEARN reviewed this cycle on the sessions their cells
@@ -18546,9 +18548,17 @@ mod rule_review_tests {
     /// log — never reused within one test binary's run, so two tests
     /// touching this cannot see each other's records.
     fn dormancy_boot_log_path() -> std::path::PathBuf {
+        // Not `std::env::temp_dir()`: `architecture.rs`'s
+        // `no_library_service_runtime_or_edge_crate_reads_the_process_environment`
+        // scans every `src/` file's *text* for `std::env`, with no
+        // `#[cfg(test)]` exemption — the rule is about shipped code and this
+        // module lives beside it in the same file. `/tmp` is the same
+        // location `temp_dir()` would resolve to on every target this
+        // workspace runs tests on (`ci.yml`'s `ubuntu-latest`, and this
+        // sandbox), stated directly rather than looked up.
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
+        let dir = std::path::PathBuf::from("/tmp").join(format!(
             "qip-kernel-rule-dormancy-boot-{}-{unique}",
             std::process::id()
         ));

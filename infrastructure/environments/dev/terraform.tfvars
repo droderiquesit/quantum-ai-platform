@@ -345,7 +345,11 @@ vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7ec
 #   bound replaced — for a person to commit and name here. No recalibration
 #   has been signed, so there is no artefact to mount, and the shipped set is
 #   the one every process has ever run under. A file named here may move a
-#   bound and never remove a control; the roots refuse one that does.
+#   bound and nothing else: `LimitSet::validate` refuses one that drops a
+#   control, and refuses one that keeps every shipped name but changes what
+#   a name measures — its kind, its axis, its confidence, whether it forces
+#   a reduction — under that name. A moved bound is admitted and named in
+#   the boot banner as "differs from shipped in: <name> bound".
 #
 # source_candidates_file = "data/datasets/source-candidates.json"
 #   would mount the candidate data sources the deep brain's discovery desk

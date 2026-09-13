@@ -60,7 +60,11 @@ In detail:
    loosening a bound that refused nothing. A feasibility veto attributes to
    its `GATE_*` constant; a posture refusal — halted, autonomy, venue —
    attributes to no rule; a risk refusal on an unevaluated figure carries no
-   breach and is charged to nobody. The kernel counts
+   breach and is charged to nobody. Nor is a breach the checker *did* write
+   charged to a rule if its `observed` or `bound` is not a finite number — a
+   code review found `RiskState::ratio`'s infinity on non-positive equity
+   made a zero-equity book "fire" every ratio limit at once, none of them a
+   comparison anybody made. The kernel counts
    `qip_rule_fired_total{rule}` at the same site as
    `qip_orders_refused_total{control}`, from the same refusal, and carries
    the names and readings on the declined path the twin scores.
@@ -90,17 +94,36 @@ In detail:
    cycles has not been asked across enough market states. Every limit name
    has an activity row from assembly, so a rule that never fires has somewhere
    for its silence to be measured; a fire ends the episode and a second
-   silence is a second record. It changes nothing.
+   silence is a second record. The idempotency key is `{rule}:{boot}:{since}`,
+   where `boot` is `Platform::inherited_through` at assembly — a code review
+   found `{rule}:{since}` alone collides across restarts, because the
+   activity table is seeded fresh at every boot and `since` reads zero for
+   the first idle episode of every one of them, not only the platform's
+   first ever. It changes nothing.
 
 5. **Recalibration is a proposal, and `RecalibrationProposal::new` is the
-   only constructor.** It refuses thin evidence, a non-finite bound, and any
+   only constructor.** It refuses thin evidence, a non-finite bound, any
    bound that does not loosen — a ceiling must rise and a floor must fall,
-   decided by `LimitKind::is_minimum`. The proposed bound is the observation
-   farthest past the bound among the paths the twin regrets: the bound at
-   which every one of them would have been admitted. Journaled under
-   `risk.rule_recalibration` (Decide group, permanently retained), withdrawn
-   when the evidence stops clearing the bar, resumed from the log at
-   assembly so a restart does not forget what it proposed.
+   decided by `LimitKind::is_minimum` — and, since a code review found a
+   floor's admitting bound can be non-positive on a fully invested or
+   negative-cash book, any bound `LimitKind::with_bound` would itself refuse
+   as no limit at all. The proposed bound is the observation farthest past
+   the bound among the paths the twin regrets: the bound at which every one
+   of them would have been admitted. Journaled under `risk.rule_recalibration`
+   (Decide group, permanently retained), withdrawn when the evidence stops
+   clearing the bar, resumed from the log at assembly. **Resumed and
+   re-validated**: a security review found the resumed record trusted
+   outright, so a rule whose kind or current bound had moved since the
+   record was written — a reviewed commit to the file, in the ordinary
+   case — was still signable into an artefact built on a stale premise.
+   Every resumed `proposed` record is now rebuilt through
+   `RecalibrationProposal::new` against the boot set's actual kind for that
+   rule and dropped, not resumed, on any mismatch. `review_rules` also
+   tracks the newest scored order behind each rule's last *closed* outcome
+   and neither proposes on evidence that has not moved past it nor opens a
+   proposal on a `journal_once` dedup — a code review found the opposite
+   let an enacted or withdrawn proposal reopen in memory, signable a second
+   time, with nothing new in the log to show for it.
 
 6. **Enactment is an artefact.** `Platform::approve_recalibration` is cloned
    from `approve_promotion`: a fresh credential, two distinct people, a first
@@ -111,26 +134,46 @@ In detail:
    it. `self.orders`, `self.monitor` and the desk are not written.
 
 7. **The file is the only door.** `QIP_RISK_LIMITS_PATH` names a committed
-   JSON `LimitSet` under `data/risk-limits/`, mounted by `risk_limits_file`
-   on all three central roots — api, fastbrain and deepbrain each assemble
-   their own `Platform` on their own set, and a bound moved on one brain and
-   not the other would be two desks with one name. Unset, a root runs the
-   shipped `conservative_default`. Set, the file is read once at boot,
-   validated against the shipped set, and never read again. **A file may
-   move a bound and never remove a control**: `LimitSet::validate` refuses
-   one that does not carry every limit the shipped set carries, along with
-   an empty set, a duplicated or unexplained limit, a bound that is not a
-   finite positive number, a threshold outside its range. It deliberately
-   does not refuse a looser bound — loosening through the file *is* the
-   governed path.
+   JSON `LimitSet` under `data/`, mounted by `risk_limits_file` on all three
+   central roots — api, fastbrain and deepbrain each assemble their own
+   `Platform` on their own set, and a bound moved on one brain and not the
+   other would be two desks with one name. Unset, a root runs the shipped
+   `conservative_default`. Set, the file is read once at boot, validated
+   against the shipped set, and never read again. **A file may move a bound
+   and never remove or change a control**: `LimitSet::validate` refuses one
+   that does not carry every limit the shipped set carries, along with an
+   empty set, a duplicated or unexplained limit, a bound that is not a
+   finite positive number, a threshold outside its range — and, for every
+   name the file shares with the shipped set, a limit whose kind, axis,
+   bucket, confidence, horizon or `forces_reduction` differs from the
+   shipped limit of that name. A security review found the coverage check
+   verified only that a name was *present*: a file that kept every shipped
+   name but replaced what the name measured — `order-notional`'s kind
+   swapped for a leverage cap, `forces_reduction` turned off, a critical
+   multiple past any breach a real book produces — passed, and the running
+   process's `qip-api` risk banner named the shipped set's own name because
+   the file had kept it. Only the *bound* may still differ, and always
+   could: loosening through the file *is* the governed path. That loosening
+   is no longer silent either — `LimitSet::bound_differences` names every
+   moved bound, and the boot banner on all three roots prints
+   `differs from shipped in: <name> bound` for each.
 
-8. **No setter exists, and the acceptance suite says so.**
+8. **No setter exists, and the acceptance suite reads code, not names, to
+   say so.**
    `no_code_path_assigns_a_limit_set_after_boot_and_no_root_reads_one_from_anywhere_but_its_configuration`
    walks every shipped `impl` of `LimitSet`, `PreTradeChecker`,
-   `RiskMonitor`, `OrderManager` and `Platform` and refuses a `&mut self`
-   method naming a limit, and refuses a `conservative_default()` call from
-   shipped code outside a reviewed list — which is how `qip-api`'s risk page
-   came to be found rendering the shipped set while the platform ran another.
+   `RiskMonitor`, `OrderManager` and `Platform`, refuses a `&mut self`
+   method whose own *name* names a limit, whose *parameter list* names one
+   of the four types that carry a set, or whose *body* assigns
+   `self.monitor` or `self.orders` directly, and refuses a
+   `conservative_default()` call from shipped code outside a reviewed
+   list — which is how `qip-api`'s risk page came to be found rendering the
+   shipped set while the platform ran another. A code review found the
+   original scan matched only the method's name: `pub fn adopt(&mut self,
+   bounds: LimitSet) { self.monitor = RiskMonitor::new(bounds, …) }` named
+   no limit and passed it outright, so the guarantee this paragraph claims
+   was actually held by `PreTradeChecker` and `RiskMonitor`'s private
+   fields, not by the scan.
 
 ## Why the route can only loosen, and why nothing tightens automatically
 

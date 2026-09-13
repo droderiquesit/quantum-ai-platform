@@ -1145,8 +1145,22 @@ mod tests {
                 text.replace("\"limit\":0.1", "\"limit\":-0.1"),
             ),
             (
+                // A genuine addition, not a substitution: replacing
+                // `"position-weight"` with `"order-notional"` also *removes*
+                // `position-weight`, so this case used to be refused by the
+                // coverage loop regardless of whether the duplicate check
+                // itself ran — a mutation deleting that check would still
+                // pass this case, which is the code review's own finding.
                 "a duplicated name",
-                text.replace("\"position-weight\"", "\"order-notional\""),
+                serde_json::to_string(&LimitSet {
+                    name: shipped.name.clone(),
+                    limits: {
+                        let mut limits = shipped.limits.clone();
+                        limits.push(shipped.limits[0].clone());
+                        limits
+                    },
+                })
+                .expect("serialises"),
             ),
             (
                 "a removed control",

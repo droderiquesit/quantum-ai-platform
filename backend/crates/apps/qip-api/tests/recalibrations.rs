@@ -152,7 +152,7 @@ fn the_approver_of_a_recalibration_is_the_session_and_never_the_body() -> Result
         "the refusal does not name the offending key by position: {text}"
     );
     assert!(
-        error.contains("the approver cannot be sent") || error.contains("neither the approver"),
+        error.contains("neither the approver"),
         "the refusal does not say the approver is the session's: {text}"
     );
     assert!(
