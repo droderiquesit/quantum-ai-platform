@@ -2545,8 +2545,10 @@ enablement (free; left by design so a disable mid-destroy could not fail
 the rest); `module.cicd` is the pool, provider, two accounts and their
 bindings (free; the identity running the job — destroying it mid-run
 revokes the token); the VPC and two subnets are free and are held only by
-Google-managed addresses that release after service deletion — a later
-`teardown` dispatch is idempotent and takes them; the two `terraform_data`
+Google-managed addresses that release after service deletion — a further
+`teardown` dispatch would be idempotent and take them, **and the owner
+declined that dispatch on 2026-09-13 at 23:57Z, so the three network
+entries stand**; the two `terraform_data`
 entries are markers with no cloud object. **Out of state and still in the
 project, not deleted:** nine KMS keys (undeletable by design; only
 schedulable), five buckets declared `force_destroy = false`

@@ -247,6 +247,15 @@ the one on *asking again*; the restrictions on *what* and *where* stand.
     left; the project, the state bucket, nine keys and five buckets are
     the owner's, and `gcloud projects delete algorik-dev` takes the rest.
 
+    *A fourth dispatch, to take the three network entries once Google
+    released its addresses, was offered and **declined by the owner** at
+    23:57Z the same day.* The teardown therefore ends here at 55 entries,
+    and that is a decision rather than a limit — recorded because a
+    register that says "a later dispatch takes them" would be describing
+    work nobody intends to do. Decision 9's standing authorisation for
+    `plan` and `up` on dev is untouched by the decline; a future
+    `teardown` still needs the owner to want one.
+
 Where this amendment supersedes earlier text, the earlier text is marked
 rather than silently left standing: decision 1's "on this instruction" and
 its destroy test are superseded by 9 and 10; decision 6's "under decision
