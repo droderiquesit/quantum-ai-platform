@@ -2521,10 +2521,13 @@ the withdrawal, and the closure — slot 11 carrying a withdrawn set refused
 at the cell's own gate — is not built. No `qip-api` route exposes
 reinstatement.
 
-Thirty-three new tests, each mutation-verified — the implementation broken,
-the test confirmed to fail for the stated reason, the code restored
-byte-for-byte with `cmp`, the test reconfirmed passing — thirty-nine
-mutations in all. Among the ones that hold the decisions: the withdrawal
+Thirty-one new tests and one existing test extended (ADR 0055's learning
+test, which now holds both numbers), each mutation-verified — the
+implementation broken, the test confirmed to fail for the stated reason,
+the code restored byte-for-byte with `cmp`, the test reconfirmed passing —
+thirty-eight mutations fired in all; this entry first said thirty-three
+and thirty-nine, and both were recounted from the per-commit records
+before the report was written. Among the ones that hold the decisions: the withdrawal
 step deleted from the order manager (an order to a withdrawn venue reached
 the venue); the step moved ahead of the kill switch (a halted, withdrawn
 venue reported the venue and not the halt); withdrawn entries excluded from
