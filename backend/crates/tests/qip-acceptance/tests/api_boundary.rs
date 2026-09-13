@@ -841,12 +841,28 @@ fn every_mutating_route_is_reviewed_here_and_each_raises_a_typed_intent() {
     // two the ladder marks as needing a signature, so this route cannot be
     // used to skip a rung that is admitted on evidence alone; a signature for
     // such a rung is refused rather than accepted and ignored.
+    //
+    // The eighth is the recalibration signature (ADR 0061), admitted on the
+    // promotion's four grounds and one more that is particular to it. The
+    // approver is the session and the body carries a rationale only —
+    // `RecalibrationApprovalRequest` refuses every other key by position,
+    // and in particular refuses a bound, because a bound a caller could name
+    // would be a request to loosen a control rather than a signature on the
+    // evidence for one. Two distinct people are required, held and refused
+    // in the kernel exactly as the promotion is. The subject is a proposal
+    // the platform *generated* from regret evidence: a rule with none
+    // standing is not found, and nothing a caller sends can create one. And
+    // the fifth ground: the second signature enacts nothing in the running
+    // process. It emits the limit set with the one bound replaced, as an
+    // artefact for a deployment to commit and mount, and `Platform` has no
+    // method that installs a set after boot — `security.rs` scans for one.
     let expected: BTreeSet<(String, String)> = [
         ("Post", "/cycle"),
         ("Post", "/kill-switch"),
         ("Delete", "/kill-switch"),
         ("Post", "/registrations/:source/approve"),
         ("Post", "/strategies/:strategy/promotion-approvals"),
+        ("Post", "/risk/recalibrations/:rule/approvals"),
         ("Post", "/ledger/users/:user/eligibility"),
         ("Post", "/ledger/users/:user/investment-requests"),
     ]
@@ -897,6 +913,13 @@ fn every_mutating_route_is_reviewed_here_and_each_raises_a_typed_intent() {
         routes_text.contains("platform.approve_promotion(")
             && routes_text.contains("crate::registration_views::PromotionApprovalRequest::parse"),
         "the promotion signature no longer screens its body and raises the kernel's intent"
+    );
+    // The recalibration signature: the same pairing, for the same reason,
+    // and the screen here is the one that keeps a bound out of the body.
+    assert!(
+        routes_text.contains("platform.approve_recalibration(")
+            && routes_text.contains("crate::rule_views::RecalibrationApprovalRequest::parse"),
+        "the recalibration signature no longer screens its body and raises the kernel's intent"
     );
     // And it must take the session's issue time, not `now`. Passing `now`
     // makes the kernel's freshness window compute an age of zero and become a
@@ -1084,6 +1107,18 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
         "observe",
         "observe_statement",
         "approve_promotion",
+        // `approve_recalibration` — the operator signature on a recalibration
+        // proposal the platform generated (ADR 0061), admitted on the same
+        // terms as `approve_promotion` and one narrower: it takes the
+        // approver from the session and the body cannot carry one; it needs
+        // two different people, held and refused in the kernel; the subject
+        // is a proposal only `Platform::review_rules` can create, so a rule
+        // with none standing is not found; and its outcome is an artefact
+        // — the limit set with one bound replaced, for a deployment to
+        // commit and mount — rather than a change to the running set, which
+        // no method on `Platform` can make. `&mut` is for the journal, the
+        // pending-signature table and closing the proposal.
+        "approve_recalibration",
         "approve_registration",
         "decide_eligibility",
         // `decide_investment` — §40.9's `investment-api` intent, and the one

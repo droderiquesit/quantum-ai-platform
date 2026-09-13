@@ -50,6 +50,7 @@ pub mod openapi;
 pub mod openobserve;
 pub mod registration_views;
 pub mod routes;
+pub mod rule_views;
 pub mod self_model_views;
 pub mod statement;
 pub mod stream;

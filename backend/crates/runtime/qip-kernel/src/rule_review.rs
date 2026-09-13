@@ -33,9 +33,11 @@ use crate::platform::{
     COUNTERFACTUAL_SIZING_MIN_SAMPLE, COUNTERFACTUAL_SIZING_UNFAVOURABLE_FRACTION, DeclinedScore,
 };
 use qip_core::Decimal;
+use qip_core::error::{Error, Result};
 use qip_core::ids::OrderId;
 use qip_core::time::Timestamp;
 use qip_events::{EventBody, Topic};
+use qip_risk::limits::LimitKind;
 use qip_twin::value::Simulated;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -84,6 +86,9 @@ pub struct RuleRegret {
     /// would have been admitted. `None` where no regretted path carried a
     /// reading of this rule, which is every feasibility gate.
     pub admitting_bound: Option<f64>,
+    /// Every scored order in the sample, in scoring order, so a proposal
+    /// built on this can name the evidence it rests on.
+    pub orders: Vec<OrderId>,
 }
 
 impl RuleRegret {
@@ -131,8 +136,10 @@ pub fn regret_by_rule(scores: &[DeclinedScore]) -> BTreeMap<String, RuleRegret> 
                 window: (score.declined_at, score.scored_at),
                 newest: score.order_id.clone(),
                 admitting_bound: None,
+                orders: Vec::new(),
             });
             entry.sample += 1;
+            entry.orders.push(score.order_id.clone());
             entry.window.0 = entry.window.0.min(score.declined_at);
             if score.scored_at >= entry.window.1 {
                 entry.window.1 = score.scored_at;
@@ -160,6 +167,168 @@ pub fn regret_by_rule(scores: &[DeclinedScore]) -> BTreeMap<String, RuleRegret> 
         }
     }
     by_rule
+}
+
+/// The evidence a recalibration proposal rests on, copied out of a
+/// [`RuleRegret`] so the record is self-describing without the scores.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegretEvidence {
+    pub sample: usize,
+    pub regrets: usize,
+    pub regret_fraction: f64,
+    /// What the regretted paths would have earned, summed. Simulated.
+    pub would_have_earned: Simulated<Decimal>,
+    pub window: (Timestamp, Timestamp),
+    /// The newest scored order in the sample — the idempotency key.
+    pub newest: OrderId,
+    pub scored_orders: Vec<OrderId>,
+}
+
+impl RegretEvidence {
+    pub fn of(regret: &RuleRegret) -> Self {
+        Self {
+            sample: regret.sample,
+            regrets: regret.regrets,
+            regret_fraction: regret.regret_fraction(),
+            would_have_earned: regret.would_have_earned,
+            window: regret.window,
+            newest: regret.newest.clone(),
+            scored_orders: regret.orders.clone(),
+        }
+    }
+}
+
+/// The outcome a [`RecalibrationProposal`] record carries.
+pub const PROPOSAL_PROPOSED: &str = "proposed";
+/// The evidence stopped clearing the bar before anybody signed.
+pub const PROPOSAL_WITHDRAWN: &str = "withdrawn";
+/// Two people signed and the artefact was emitted.
+pub const PROPOSAL_ENACTED: &str = "enacted";
+
+/// §12.3's first row: a proposal to loosen one rule's bound, generated from
+/// regret evidence, and the only shape in which that row may exist.
+///
+/// A proposal is not a change. Nothing in the process that generated it
+/// can install a bound — `Platform` has no setter for a limit set, the
+/// acceptance suite scans for one — and what two signatures produce is an
+/// artefact ([`qip_risk::limits::LimitSet::rebound`]) that a deployment
+/// commits and mounts. §12.4's guardrail, "a veto rule may only be loosened
+/// through the full approval path, never automatically from counterfactual
+/// evidence", is held by that absence rather than by care at a call site.
+///
+/// [`Self::new`] is the only constructor, and it refuses a proposal that
+/// does not loosen: a ceiling must rise and a floor must fall. There is no
+/// route that supplies a bound — the API body carries a rationale and
+/// nothing else — so a tightening cannot arrive as a proposal at all;
+/// tightening is a reviewed commit to the limits file, which is the path a
+/// desk already has.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RecalibrationProposal {
+    pub rule: String,
+    /// The limit's kind label, so the record says what sort of bound moved
+    /// without a reader looking the rule up.
+    pub kind: String,
+    pub current_bound: f64,
+    pub proposed_bound: f64,
+    pub evidence: RegretEvidence,
+    /// Generated from the evidence — never supplied by a caller.
+    pub rationale: String,
+    /// [`PROPOSAL_PROPOSED`], [`PROPOSAL_WITHDRAWN`] or [`PROPOSAL_ENACTED`].
+    pub outcome: String,
+    pub at: Timestamp,
+}
+
+impl EventBody for RecalibrationProposal {
+    const TOPIC: Topic = Topic::RiskRuleRecalibration;
+    const SCHEMA_VERSION: u32 = 1;
+
+    /// One record per rule, per outcome, per body of evidence: the same
+    /// sample reviewed on the next cycle is the same proposal.
+    fn idempotency_key(&self) -> Option<String> {
+        Some(format!(
+            "{}:{}:{}",
+            self.rule,
+            self.outcome,
+            self.evidence.newest.as_str()
+        ))
+    }
+}
+
+impl RecalibrationProposal {
+    /// Build a proposal, or refuse one that is not a loosening on enough
+    /// evidence.
+    pub fn new(
+        rule: &str,
+        kind: &LimitKind,
+        proposed_bound: f64,
+        evidence: RegretEvidence,
+        at: Timestamp,
+    ) -> Result<Self> {
+        if evidence.sample < COUNTERFACTUAL_SIZING_MIN_SAMPLE {
+            return Err(Error::invalid(format!(
+                "a recalibration of {rule} needs at least {COUNTERFACTUAL_SIZING_MIN_SAMPLE} \
+                 scored refusals and has {}; below that a pattern is as likely noise as a finding",
+                evidence.sample
+            )));
+        }
+        let current_bound = kind.bound();
+        if !proposed_bound.is_finite() || !current_bound.is_finite() {
+            return Err(Error::numeric(format!(
+                "a recalibration of {rule} from {current_bound} to {proposed_bound} is not a \
+                 comparison between two finite numbers"
+            )));
+        }
+        let loosens = if kind.is_minimum() {
+            proposed_bound < current_bound
+        } else {
+            proposed_bound > current_bound
+        };
+        if !loosens {
+            return Err(Error::invalid(format!(
+                "a recalibration of {rule} from {current_bound} to {proposed_bound} would not \
+                 loosen a {}; regret evidence can only ever argue that a rule refused too much, \
+                 and a tightening is a reviewed change to the limits file rather than a proposal",
+                if kind.is_minimum() {
+                    "floor"
+                } else {
+                    "ceiling"
+                }
+            )));
+        }
+        let rationale = format!(
+            "{} of {} paths refused by {rule} between {} and {} would have beaten standing \
+             aside, earning {} in simulation; a bound of {proposed_bound} instead of \
+             {current_bound} would have admitted every one of them",
+            evidence.regrets,
+            evidence.sample,
+            evidence.window.0.to_rfc3339(),
+            evidence.window.1.to_rfc3339(),
+            evidence.would_have_earned
+        );
+        Ok(Self {
+            rule: rule.to_string(),
+            kind: kind.label().to_string(),
+            current_bound,
+            proposed_bound,
+            evidence,
+            rationale,
+            outcome: PROPOSAL_PROPOSED.to_string(),
+            at,
+        })
+    }
+
+    /// The same proposal with its outcome moved and its instant restated.
+    pub fn with_outcome(&self, outcome: &str, at: Timestamp) -> Self {
+        Self {
+            outcome: outcome.to_string(),
+            at,
+            ..self.clone()
+        }
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.outcome == PROPOSAL_PROPOSED
+    }
 }
 
 /// §12.3's second row on the record: a rule whose declined paths were mostly
@@ -303,16 +472,41 @@ pub struct RuleReviewJournal {
     pub defended: Vec<String>,
     /// Rules newly recorded dormant this cycle.
     pub dormant: Vec<String>,
+    /// Rules a recalibration was proposed for this cycle. Defaulted so an
+    /// entry journaled before the field existed replays.
+    #[serde(default)]
+    pub proposed: Vec<String>,
+    /// Rules whose open proposal was withdrawn this cycle because the
+    /// evidence stopped clearing the bar.
+    #[serde(default)]
+    pub withdrawn: Vec<String>,
 }
 
 impl RuleReviewJournal {
     pub fn is_empty(&self) -> bool {
-        self.defended.is_empty() && self.dormant.is_empty()
+        self.defended.is_empty()
+            && self.dormant.is_empty()
+            && self.proposed.is_empty()
+            && self.withdrawn.is_empty()
     }
 
     /// One line for the stage summary.
     pub fn describe(&self) -> String {
         let mut parts = Vec::new();
+        if !self.proposed.is_empty() {
+            parts.push(format!(
+                "{} recalibration(s) proposed ({})",
+                self.proposed.len(),
+                self.proposed.join(", ")
+            ));
+        }
+        if !self.withdrawn.is_empty() {
+            parts.push(format!(
+                "{} proposal(s) withdrawn ({})",
+                self.withdrawn.len(),
+                self.withdrawn.join(", ")
+            ));
+        }
         if !self.defended.is_empty() {
             parts.push(format!(
                 "{} rule(s) defended ({})",
@@ -328,5 +522,77 @@ impl RuleReviewJournal {
             ));
         }
         parts.join("; ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qip_core::dec;
+
+    fn evidence(sample: usize) -> RegretEvidence {
+        let at = Timestamp::from_secs(1_760_000_000);
+        RegretEvidence {
+            sample,
+            regrets: sample,
+            regret_fraction: 1.0,
+            would_have_earned: Simulated::of(dec!("1000")),
+            window: (at, at),
+            newest: OrderId::from_string("ord-newest"),
+            scored_orders: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_proposal_cannot_tighten_a_bound() {
+        // The property the whole row rests on: regret evidence can only ever
+        // argue that a rule refused too much, so the one constructor refuses
+        // a bound that would not loosen — a ceiling that does not rise, a
+        // floor that does not fall, and either left where it is. Tightening
+        // is a reviewed commit to the limits file, not a proposal.
+        let at = Timestamp::from_secs(1_760_000_000);
+        let ceiling = LimitKind::MaxOrderNotional {
+            limit: Decimal::from_int(250_000),
+        };
+        let floor = LimitKind::MinCashBuffer { limit: 0.02 };
+
+        // The admitting half first, so the refusals below are choices and
+        // not a constructor that refuses everything.
+        let loosened =
+            RecalibrationProposal::new("order-notional", &ceiling, 300_000.0, evidence(12), at)
+                .expect("a ceiling raised on enough evidence is a proposal");
+        assert_eq!(loosened.outcome, PROPOSAL_PROPOSED);
+        assert!((loosened.current_bound - 250_000.0).abs() < 1e-9);
+        assert!((loosened.proposed_bound - 300_000.0).abs() < 1e-9);
+        RecalibrationProposal::new("cash-buffer", &floor, 0.01, evidence(12), at)
+            .expect("a floor lowered on enough evidence is a proposal");
+
+        for (rule, kind, bound) in [
+            ("order-notional", &ceiling, 200_000.0),
+            ("order-notional", &ceiling, 250_000.0),
+            ("cash-buffer", &floor, 0.03),
+            ("cash-buffer", &floor, 0.02),
+        ] {
+            let refused = RecalibrationProposal::new(rule, kind, bound, evidence(12), at)
+                .expect_err("a bound that does not loosen became a proposal");
+            assert!(
+                refused.message().contains("would not loosen"),
+                "the refusal does not say why: {}",
+                refused.message()
+            );
+        }
+
+        // And not on thin evidence, whichever way it points.
+        let thin =
+            RecalibrationProposal::new("order-notional", &ceiling, 300_000.0, evidence(9), at)
+                .expect_err("nine scored refusals became a proposal");
+        assert!(refused_for_sample(&thin), "{}", thin.message());
+        // Nor on a bound that is not a number.
+        RecalibrationProposal::new("order-notional", &ceiling, f64::NAN, evidence(12), at)
+            .expect_err("a NaN bound became a proposal");
+    }
+
+    fn refused_for_sample(error: &Error) -> bool {
+        error.message().contains("needs at least")
     }
 }

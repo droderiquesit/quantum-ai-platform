@@ -11,6 +11,7 @@
 //! governance decision recorded in configuration.
 
 use qip_core::Decimal;
+use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -166,6 +167,110 @@ impl LimitKind {
     /// Whether the limit is a floor rather than a ceiling.
     pub fn is_minimum(&self) -> bool {
         matches!(self, Self::MinLiquidity { .. } | Self::MinCashBuffer { .. })
+    }
+
+    /// The one bound this limit compares against, in the limit's own units.
+    ///
+    /// For `MinLiquidity` that is the fraction and not the horizon: the
+    /// horizon says *which* figure is read and the fraction says what it
+    /// must clear. The two `Decimal`-bounded kinds cross into `f64` here,
+    /// which is the statistics lane — this is the number a breach reports as
+    /// `bound` and a recalibration proposal reasons about, never a figure
+    /// money is computed from.
+    pub fn bound(&self) -> f64 {
+        match self {
+            Self::MaxOrderNotional { limit } | Self::MaxPositionNotional { limit } => {
+                limit.to_f64()
+            }
+            Self::MaxPositionWeight { limit }
+            | Self::MaxLeverage { limit }
+            | Self::MaxNetExposure { limit }
+            | Self::MaxConcentration { limit, .. }
+            | Self::MaxAxisWeight { limit, .. }
+            | Self::MaxBucketExposure { limit, .. }
+            | Self::MaxVolatility { limit }
+            | Self::MaxValueAtRisk { limit, .. }
+            | Self::MaxExpectedShortfall { limit, .. }
+            | Self::MaxDrawdown { limit }
+            | Self::MaxDailyLoss { limit }
+            | Self::MaxDaysToLiquidate { limit }
+            | Self::MaxCounterpartyExposure { limit }
+            | Self::MinCashBuffer { limit } => *limit,
+            Self::MinLiquidity { fraction, .. } => *fraction,
+        }
+    }
+
+    /// The same kind with its bound replaced, and nothing else moved: the
+    /// axis, the bucket, the confidence and the horizon are what make the
+    /// limit *this* limit, and a recalibration is about how tight it is.
+    ///
+    /// Refuses a bound that is not a finite positive number. A non-finite
+    /// bound would disarm the limit — see [`Limit::assess`] — and a
+    /// non-positive one is no limit at all for a ceiling and an
+    /// always-satisfied one for a floor; neither is a recalibration anybody
+    /// could have meant.
+    ///
+    /// For the two money-bounded kinds this is the `f64` → `Decimal`
+    /// crossing, made through `Decimal::from_f64`, which rounds to the
+    /// nine decimal places the type carries. A bound proposed from a breach
+    /// reading came out of a `Decimal` through `to_f64` in the first place,
+    /// so a round trip at nine places is exact for any notional a desk would
+    /// write down; the rounding is stated here because it exists, not
+    /// because it is expected to bite.
+    pub fn with_bound(&self, bound: f64) -> Result<Self> {
+        if !bound.is_finite() || bound <= 0.0 {
+            return Err(Error::invalid(format!(
+                "a bound for {} must be a finite positive number; {bound} is not one, and a limit \
+                 with that bound would either refuse nothing or refuse everything",
+                self.label()
+            )));
+        }
+        let money = || {
+            Decimal::from_f64(bound).ok_or_else(|| {
+                Error::numeric(format!(
+                    "{bound} does not fit the notional a {} bound is carried as",
+                    self.label()
+                ))
+            })
+        };
+        Ok(match self {
+            Self::MaxOrderNotional { .. } => Self::MaxOrderNotional { limit: money()? },
+            Self::MaxPositionNotional { .. } => Self::MaxPositionNotional { limit: money()? },
+            Self::MaxPositionWeight { .. } => Self::MaxPositionWeight { limit: bound },
+            Self::MaxLeverage { .. } => Self::MaxLeverage { limit: bound },
+            Self::MaxNetExposure { .. } => Self::MaxNetExposure { limit: bound },
+            Self::MaxConcentration { axis, .. } => Self::MaxConcentration {
+                axis: axis.clone(),
+                limit: bound,
+            },
+            Self::MaxAxisWeight { axis, .. } => Self::MaxAxisWeight {
+                axis: axis.clone(),
+                limit: bound,
+            },
+            Self::MaxBucketExposure { axis, bucket, .. } => Self::MaxBucketExposure {
+                axis: axis.clone(),
+                bucket: bucket.clone(),
+                limit: bound,
+            },
+            Self::MaxVolatility { .. } => Self::MaxVolatility { limit: bound },
+            Self::MaxValueAtRisk { confidence, .. } => Self::MaxValueAtRisk {
+                confidence: *confidence,
+                limit: bound,
+            },
+            Self::MaxExpectedShortfall { confidence, .. } => Self::MaxExpectedShortfall {
+                confidence: *confidence,
+                limit: bound,
+            },
+            Self::MaxDrawdown { .. } => Self::MaxDrawdown { limit: bound },
+            Self::MaxDailyLoss { .. } => Self::MaxDailyLoss { limit: bound },
+            Self::MinLiquidity { days, .. } => Self::MinLiquidity {
+                days: *days,
+                fraction: bound,
+            },
+            Self::MaxDaysToLiquidate { .. } => Self::MaxDaysToLiquidate { limit: bound },
+            Self::MaxCounterpartyExposure { .. } => Self::MaxCounterpartyExposure { limit: bound },
+            Self::MinCashBuffer { .. } => Self::MinCashBuffer { limit: bound },
+        })
     }
 
     /// Whether the limit's denominator is part of the same state the order
@@ -732,6 +837,40 @@ impl LimitSet {
 
     pub fn is_empty(&self) -> bool {
         self.limits.is_empty()
+    }
+
+    /// The set with exactly one limit's bound replaced, by name.
+    ///
+    /// The artefact a signed recalibration produces (ADR 0061): the running
+    /// set, unchanged in every other respect, with the one bound the
+    /// evidence was about moved. Returned rather than applied — this type
+    /// has no method that mutates a bound in place, and the kernel has no
+    /// method that installs a set after boot, so the only way this set
+    /// reaches a process is as a file that process reads at start-up.
+    ///
+    /// Refuses a name the set does not carry, because a recalibration of a
+    /// rule that is not in the set is a recalibration of nothing; and
+    /// refuses through [`LimitKind::with_bound`] a bound the kind cannot
+    /// hold.
+    pub fn rebound(&self, rule: &str, bound: f64) -> Result<Self> {
+        let mut rebound = self.clone();
+        let limit = rebound
+            .limits
+            .iter_mut()
+            .find(|limit| limit.name == rule)
+            .ok_or_else(|| {
+                Error::not_found(format!(
+                    "the limit set {} carries no limit named {rule}; the names it carries are {}",
+                    self.name,
+                    self.limits
+                        .iter()
+                        .map(|limit| limit.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            })?;
+        limit.kind = limit.kind.with_bound(bound)?;
+        Ok(rebound)
     }
 
     /// Evaluate every limit against a state.

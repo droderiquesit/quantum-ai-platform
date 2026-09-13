@@ -983,6 +983,12 @@ pub mod names {
     /// every limit at assembly and on every fire, so a rule that has never
     /// fired reads as a zero and not as an absent series.
     pub const RULE_DORMANT: &str = "qip_rule_dormant";
+    /// Recalibration proposals the LEARN stage wrote, by `rule` — blueprint
+    /// §12.3's first row, a rule that vetoed mostly profitable paths. A
+    /// proposal and never a change: the bound moves only through a file two
+    /// people signed for and a deployment mounted (ADR 0061). Counted only
+    /// when the log accepted the record.
+    pub const RULE_RECALIBRATION_PROPOSED: &str = "qip_rule_recalibration_proposed_total";
 
     /// Orders a cell reported *sent* — accepted by the venue, not filled —
     /// counted as the centre registers them against later fills. Kept beside
