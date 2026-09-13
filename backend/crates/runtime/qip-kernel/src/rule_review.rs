@@ -272,12 +272,27 @@ impl RecalibrationProposal {
             )));
         }
         let current_bound = kind.bound();
-        if !proposed_bound.is_finite() || !current_bound.is_finite() {
+        if !current_bound.is_finite() {
             return Err(Error::numeric(format!(
-                "a recalibration of {rule} from {current_bound} to {proposed_bound} is not a \
-                 comparison between two finite numbers"
+                "a recalibration of {rule} cannot be compared against a current bound of \
+                 {current_bound}, which is not a finite number"
             )));
         }
+        // The same refusal `LimitKind::with_bound` gives, because it is the
+        // same rule stated twice rather than two different ones: a bound
+        // that is not finite and positive is no limit at all. Refusing it
+        // here rather than only at enactment is code review MEDIUM-3 —
+        // `MinCashBuffer`'s floor is the lowest *observed* value among the
+        // regretted paths, and a fully invested or negative-cash book reads
+        // that as zero or negative, which `is_too_tight` cannot tell from a
+        // real floor. Journaled anyway, the proposal stood open forever:
+        // nothing about unchanged evidence makes `review_rules` withdraw it,
+        // so two people could sign it and `LimitSet::rebound` would refuse
+        // the artefact on the second signature, every time, on the same
+        // evidence that keeps clearing the bar.
+        kind.with_bound(proposed_bound).map_err(|error| {
+            Error::invalid(format!("a recalibration of {rule}: {}", error.message()))
+        })?;
         let loosens = if kind.is_minimum() {
             proposed_bound < current_bound
         } else {
@@ -379,10 +394,23 @@ pub struct RuleDormant {
     pub idle_cycles: u64,
     pub orders_submitted_meanwhile: u64,
     /// The cycle the rule last fired on, or zero for a rule that has never
-    /// fired since assembly. The idempotency key, so one episode of silence
-    /// is one record however many cycles it lasts, and a rule that fires
-    /// and falls silent again is a second episode and a second record.
+    /// fired since **this boot's** assembly — `RuleActivity` is seeded fresh
+    /// at every assembly and is never resumed from the log, so `since` alone
+    /// cannot tell a rule idle from cycle zero of a restart from one idle
+    /// from cycle zero of the platform's first boot ever.
     pub since: u64,
+    /// [`crate::platform::Platform::inherited_through`] as this boot found
+    /// it: the last sequence number a previous run wrote, or zero for a
+    /// from-scratch assembly. Part of the idempotency key alongside `since`
+    /// for exactly the reason `since` alone is not enough — two different
+    /// boots' first idle episode both read `since: 0`, and without this
+    /// field the second boot's genuine hundred-cycle silence deduplicated
+    /// against the first boot's record from a run that had long since ended,
+    /// so `review_rules` raised the gauge and reported a finding for a
+    /// record the log never actually held (code review MEDIUM-1).
+    /// Defaulted so a record serialised before the field existed decodes.
+    #[serde(default)]
+    pub boot: u64,
     pub at: Timestamp,
 }
 
@@ -391,7 +419,7 @@ impl EventBody for RuleDormant {
     const SCHEMA_VERSION: u32 = 1;
 
     fn idempotency_key(&self) -> Option<String> {
-        Some(format!("{}:{}", self.rule, self.since))
+        Some(format!("{}:{}:{}", self.rule, self.boot, self.since))
     }
 }
 
@@ -594,5 +622,43 @@ mod tests {
 
     fn refused_for_sample(error: &Error) -> bool {
         error.message().contains("needs at least")
+    }
+
+    #[test]
+    fn a_proposal_with_a_non_positive_floor_is_refused_rather_than_journaled_forever() {
+        // Code review MEDIUM-3. `MinCashBuffer`'s admitting bound is the
+        // *lowest* observed value among the regretted paths — a fully
+        // invested book reads 0.0, a negative-cash one reads negative — and
+        // `is_too_tight` cannot tell either from a real floor: 0.0 < 0.02 is
+        // still "loosens". `LimitKind::with_bound` refuses a non-positive
+        // bound as no limit at all, but until this fix that refusal only
+        // ran at enactment, after two people had signed: the proposal was
+        // journaled here, stood open because nothing about unchanged
+        // evidence makes `review_rules` withdraw it, and every later
+        // signature pair failed identically on the same evidence forever.
+        let at = Timestamp::from_secs(1_760_000_000);
+        let floor = LimitKind::MinCashBuffer { limit: 0.02 };
+
+        // Premise: both proposed floors below are less than the current
+        // 0.02, so the direction check alone would call them a loosening —
+        // the refusal this test is about has to come from somewhere else.
+        for non_positive in [0.0, -0.5] {
+            assert!(
+                non_positive < 0.02,
+                "premise: {non_positive} would loosen this floor by direction alone"
+            );
+        }
+        for non_positive in [0.0, -0.5] {
+            let refused =
+                RecalibrationProposal::new("cash-buffer", &floor, non_positive, evidence(12), at)
+                    .expect_err(&format!(
+                        "a proposed floor of {non_positive} became a proposal"
+                    ));
+            assert!(
+                refused.message().contains("finite positive number"),
+                "the refusal is not `with_bound`'s: {}",
+                refused.message()
+            );
+        }
     }
 }

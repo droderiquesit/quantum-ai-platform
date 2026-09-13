@@ -12958,10 +12958,11 @@ impl Platform {
                 idle_cycles: dormancy.idle_cycles,
                 orders_submitted_meanwhile: dormancy.idle_orders,
                 since: dormancy.since,
+                boot: self.inherited_through,
                 at: now,
             };
             match self.journal_once(record, RULE_REVIEW_ORIGIN, now) {
-                Ok(_) => {
+                Ok(true) => {
                     if let Some(activity) = self.rule_activity.get_mut(&rule) {
                         activity.dormant_since = Some(dormancy.since);
                     }
@@ -12972,6 +12973,13 @@ impl Platform {
                     );
                     journal.dormant.push(rule);
                 }
+                // A dedup on `{rule}:{boot}:{since}` — now that `boot`
+                // distinguishes restarts, this is the same episode already
+                // recorded within this very run, not a phantom crossing a
+                // restart. Either way nothing was written, so nothing here
+                // is recorded either: not the gauge, not the activity table,
+                // not the cycle journal.
+                Ok(false) => {}
                 Err(error) => problems.push(format!(
                     "the dormancy of {rule} could not be journaled: {}",
                     error.message()
@@ -18532,6 +18540,81 @@ mod rule_review_tests {
             written[1].orders_submitted_meanwhile,
             RULE_DORMANCY_MIN_ORDERS
         );
+    }
+
+    /// A fresh path under the system temp directory, for a file-backed event
+    /// log — never reused within one test binary's run, so two tests
+    /// touching this cannot see each other's records.
+    fn dormancy_boot_log_path() -> std::path::PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "qip-kernel-rule-dormancy-boot-{}-{unique}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join("events.jsonl")
+    }
+
+    fn boot_over(path: &std::path::Path) -> Platform {
+        let config = PlatformConfig::default().with_event_log_file(path);
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles over the file-backed log")
+    }
+
+    #[test]
+    fn a_dormancy_episode_idle_since_cycle_zero_on_two_different_boots_is_two_records_not_one() {
+        // Code review MEDIUM-1: `RuleActivity` is seeded fresh at every
+        // assembly and is never resumed from the log, so `since` — half of
+        // the idempotency key — reads zero for the *first* idle episode of
+        // every boot, not only the platform's first ever. Before this fix,
+        // two different boots' first episodes collided on the key `{rule}:0`:
+        // the second boot's own genuine hundred-cycle silence deduplicated
+        // against a record a previous, unrelated run had already written,
+        // so `journal_once` correctly declined to write anything and
+        // `review_rules`'s `Ok(_)` arm still raised the gauge and reported a
+        // finding for a cycle the log never actually gained a record for.
+        let path = dormancy_boot_log_path();
+
+        let mut first = boot_over(&path);
+        first.cycle = RULE_DORMANCY_CYCLES;
+        first.orders_submitted = RULE_DORMANCY_MIN_ORDERS;
+        first.review_rules(start());
+        assert_eq!(
+            dormancies(&first, RULE).len(),
+            1,
+            "the premise failed: the first boot's episode was not recorded"
+        );
+        drop(first);
+
+        let mut second = boot_over(&path);
+        assert!(
+            second.inherited_through() > 0,
+            "the premise failed: the second boot inherited nothing from the first"
+        );
+        second.cycle = RULE_DORMANCY_CYCLES;
+        second.orders_submitted = RULE_DORMANCY_MIN_ORDERS;
+        let (summary, problems) = second.review_rules(start());
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(
+            summary.as_deref().is_some_and(|s| s.contains("dormant")),
+            "the second boot's own idle episode was not reported as a finding: {summary:?}"
+        );
+        assert_eq!(
+            dormancies(&second, RULE).len(),
+            2,
+            "the second boot's dormancy episode deduplicated against the first boot's record \
+             instead of being written as its own"
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("the log path has a parent"));
     }
 }
 

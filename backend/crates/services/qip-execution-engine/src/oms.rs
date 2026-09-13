@@ -146,10 +146,28 @@ impl RefusalReason {
     /// Two rules on one refusal are two names, sorted and deduplicated, so a
     /// path refused by both counts for each. Every other refusal — halted,
     /// autonomy, venue — is a posture and not a rule, and attributes to none.
+    ///
+    /// **A breach whose `observed` or `bound` is not a finite number
+    /// attributes to nothing either** (code review MEDIUM-2). `Limit::assess`
+    /// files that breach at `Severity::Critical` through its `Uncomparable`
+    /// arm precisely because no comparison was made — the rule did not
+    /// measure the book and say no, arithmetic produced a number nobody
+    /// could read — and ADR 0061 §1 already says a refusal on an unevaluated
+    /// figure "carries no breach and is charged to nobody". That sentence
+    /// was true only of the checker's own pre-limit rejection (empty
+    /// `breaches`, the `unevaluated` case below); a `LimitBreach` the
+    /// checker *did* write with a non-finite reading reached here anyway,
+    /// which fired `qip_rule_fired_total` for a rule that made no comparison,
+    /// ended a standing dormancy episode on a figure nobody measured, and let
+    /// `RiskState::ratio`'s infinity on non-positive equity "fire" every
+    /// ratio limit on a zero-equity book at once — the twin then scoring
+    /// evidence that says a limit is too tight when what actually happened
+    /// is that the book had no equity to divide by.
     pub fn rule_names(&self) -> Vec<String> {
         match self {
             Self::RiskRejected { breaches, .. } => breaches
                 .iter()
+                .filter(|breach| breach.observed.is_finite() && breach.bound.is_finite())
                 .map(|breach| breach.limit_name.clone())
                 .collect::<BTreeSet<String>>()
                 .into_iter()

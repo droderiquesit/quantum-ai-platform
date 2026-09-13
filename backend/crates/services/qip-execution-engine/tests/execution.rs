@@ -1436,6 +1436,65 @@ fn a_pre_trade_refusal_names_the_limits_that_refused_it_and_not_a_word_of_the_se
 }
 
 #[test]
+fn a_zero_equity_books_uncomparable_ratio_breaches_are_attributed_to_no_rule() {
+    // Code review MEDIUM-2's exact scenario. `RiskState::ratio` answers
+    // `f64::INFINITY` on non-positive equity (its own documented behaviour),
+    // and `Limit::assess` refuses to compare against a non-finite figure —
+    // it takes the `Uncomparable` arm and records the breach at
+    // `Severity::Critical` regardless of the limit's own bound. A zero-equity
+    // book therefore "fires" every ratio-based limit at once, and none of
+    // those breaches is a rule saying an order is too big: no comparison was
+    // made at all. Before this fix `rule_names()` charged every one of them
+    // to its limit's name anyway, which would count `qip_rule_fired_total`
+    // for a rule that measured nothing and end a standing dormancy episode
+    // on a figure nobody computed.
+    let limits = LimitSet::new("fixture")
+        .with(
+            Limit::new("leverage", LimitKind::MaxLeverage { limit: 2.0 }).with_rationale("fixture"),
+        )
+        .with(
+            Limit::new("cash-buffer", LimitKind::MinCashBuffer { limit: 0.02 })
+                .with_rationale("fixture"),
+        );
+    let state = RiskState {
+        equity: Decimal::ZERO,
+        cash: dec!("100"),
+        gross_exposure: dec!("500"),
+        ..Default::default()
+    };
+    let check = limits.check(&state);
+    // Premise: the zero-equity book really does block on both ratio limits,
+    // each with a non-finite observation — otherwise the assertion below
+    // would pass on an empty or already-excluded set and prove nothing.
+    assert!(
+        check.is_blocked(),
+        "premise: the zero-equity book is blocked"
+    );
+    let blocking: Vec<qip_risk::limits::LimitBreach> =
+        check.blocking().into_iter().cloned().collect();
+    assert_eq!(
+        blocking.len(),
+        2,
+        "premise: both ratio limits should have blocked: {blocking:?}"
+    );
+    assert!(
+        blocking.iter().all(|breach| !breach.observed.is_finite()),
+        "premise: the blocking breaches are not the non-finite ones this test is about: \
+         {blocking:?}"
+    );
+
+    let refusal = RefusalReason::RiskRejected {
+        reasons: vec!["neither ratio could be measured against a zero-equity book".to_string()],
+        breaches: blocking,
+    };
+    assert!(
+        refusal.rule_names().is_empty(),
+        "a zero-equity book's uncomparable ratio breaches were charged to a rule: {:?}",
+        refusal.rule_names()
+    );
+}
+
+#[test]
 fn a_feasibility_veto_is_attributed_to_its_gate_constant() {
     // A feasibility veto is carried as `Malformed` and the gate is named in
     // the detail text — see the module comment on why there is no variant —
