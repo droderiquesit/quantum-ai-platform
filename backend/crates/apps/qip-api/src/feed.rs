@@ -404,13 +404,27 @@ impl ApiFeed {
             class,
             at,
         )?;
-        let feed = ConnectorFeed::open(&settings.source_id, &settings.base_url, seed, at)?;
+        let mut feed = ConnectorFeed::open(&settings.source_id, &settings.base_url, seed, at)?;
         // The reference ledger's view of the source, from the decision the
         // gate just minted and the manifest the feed was opened from. Refused
         // here — before the arm exists — for a manifest that declares no
         // category, because a connector the platform can poll but cannot
         // reference would fetch bytes nothing could later be asked about.
-        let admitted = AdmittedSource::from_decision(&decision, feed.manifest())?;
+        //
+        // Matched rather than `?`-propagated: `ConnectorFeed::open` above has
+        // already opened a socket, and a refusal here has no other path back
+        // to release it — until 2026-09-12 it was released only by `Drop`,
+        // silently, rather than by `ConnectorFeed::shutdown`. Inert today
+        // (every shipped `SourceConnector::shutdown` is the trait's no-op
+        // default), but this admission check is exactly what a lapsed or
+        // misdeclared licence trips.
+        let admitted = match AdmittedSource::from_decision(&decision, feed.manifest()) {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                let _ = feed.shutdown(at);
+                return Err(error);
+            }
+        };
         Ok(Self::Connector {
             feed: Box::new(feed),
             decision: Box::new(decision),

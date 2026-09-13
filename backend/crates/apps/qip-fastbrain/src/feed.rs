@@ -267,12 +267,29 @@ impl Feed {
         decision: &qip_data_finder::admission::LicensingDecision,
         at: Timestamp,
     ) -> Result<Self> {
-        let feed = ConnectorFeed::open(&settings.source_id, &settings.base_url, settings.seed, at)?;
+        let mut feed =
+            ConnectorFeed::open(&settings.source_id, &settings.base_url, settings.seed, at)?;
         // Refused before the arm exists for a manifest that declares no
         // category: a connector the node can poll but the platform cannot
         // reference would fetch bytes nothing could later be asked about.
-        let admitted =
-            qip_data_finder::admission::AdmittedSource::from_decision(decision, feed.manifest())?;
+        //
+        // Matched rather than `?`-propagated: `ConnectorFeed::open` above has
+        // already opened a socket, and a refusal here has no other path back
+        // to release it — until 2026-09-12 it was released only by `Drop`,
+        // silently, rather than by `ConnectorFeed::shutdown`. Inert today
+        // (every shipped `SourceConnector::shutdown` is the trait's no-op
+        // default), but this admission check is exactly what a lapsed or
+        // misdeclared licence trips.
+        let admitted = match qip_data_finder::admission::AdmittedSource::from_decision(
+            decision,
+            feed.manifest(),
+        ) {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                let _ = feed.shutdown(at);
+                return Err(error);
+            }
+        };
         Ok(Self::Connector {
             feed: Box::new(feed),
             admission: Box::new(admission),

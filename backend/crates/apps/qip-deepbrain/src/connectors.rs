@@ -88,13 +88,29 @@ impl ConnectorArm {
         let class = qip_market_ingestion::connector_feed::shipped_class(source_id)?;
         let (admission, decision) =
             StandingAdmission::open(registrations.clone(), source_id, class, at)?;
-        let feed = ConnectorFeed::open(source_id, base_url, seed, at)?;
-        let admitted = AdmittedSource::from_decision(&decision, feed.manifest())?;
-        Ok(Self {
-            feed,
-            admission,
-            admitted,
-        })
+        let mut feed = ConnectorFeed::open(source_id, base_url, seed, at)?;
+        // `feed.manifest()` is borrowed by `from_decision`'s error path too,
+        // so the failure is matched rather than `?`-propagated: a refusal
+        // here leaves the socket `ConnectorFeed::open` already holds with no
+        // other path back to this function's stack frame, and until
+        // 2026-09-12 that socket was released only by `Drop`, silently,
+        // rather than by `ConnectorFeed::shutdown` — the same release every
+        // exit past this constructor uses (`with_release` in `main.rs`).
+        // Inert today (every shipped `SourceConnector::shutdown` is the
+        // trait's no-op default), but the admission gate is exactly the
+        // check a lapsed or misdeclared licence trips, so this is the one
+        // failure arm most likely to be exercised in practice.
+        match AdmittedSource::from_decision(&decision, feed.manifest()) {
+            Ok(admitted) => Ok(Self {
+                feed,
+                admission,
+                admitted,
+            }),
+            Err(error) => {
+                let _ = feed.shutdown(at);
+                Err(error)
+            }
+        }
     }
 
     /// The same assembly over a caller-supplied transport, through the real
@@ -143,8 +159,20 @@ impl ConnectorArm {
             manifest.licensing,
             at,
         )?;
-        let feed = ConnectorFeed::over_transport(connector, manifest, transport, seed, at)?;
-        let admitted = AdmittedSource::from_decision(&decision, feed.manifest())?;
+        let mut feed = ConnectorFeed::over_transport(connector, manifest, transport, seed, at)?;
+        // Released on the way out, same as `Self::open` above: a refusal
+        // here has no other path back to this stack frame, and unlike
+        // `Self::open` the transport this constructor is handed is the one
+        // this crate's own tests use to pin the invariant, so a leak here
+        // was the one this arm's admission-refusal test could actually
+        // catch.
+        let admitted = match AdmittedSource::from_decision(&decision, feed.manifest()) {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                let _ = feed.shutdown(at);
+                return Err(error);
+            }
+        };
         Ok(Self {
             feed,
             admission,
@@ -217,5 +245,128 @@ impl ConnectorArm {
 
     pub fn descriptor(&self) -> qip_market_ingestion::adapter::SourceDescriptor {
         self.feed.descriptor()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Code review (should-fix): `Self::open`'s admission check ran after
+    //! `ConnectorFeed::open` had already opened a transport, and a refusal
+    //! there released nothing but `Drop` — silently, and never through
+    //! `ConnectorFeed::shutdown`, the release every exit past this
+    //! constructor uses (`with_release` in `main.rs`). Inert today, since
+    //! every shipped `SourceConnector::shutdown` is the trait's no-op
+    //! default, but the admission gate is exactly what a lapsed or
+    //! misdeclared licence trips.
+    //!
+    //! `Self::open` itself opens a real socket through the egress proxy and
+    //! cannot be driven from a unit test; `Self::over_transport_admitted_by`
+    //! runs the identical two-step construction — admit, then open, then
+    //! `AdmittedSource::from_decision` — over a caller-supplied transport,
+    //! so this test drives that seam instead and pins the same `match`
+    //! shape `Self::open` now shares with it.
+
+    // The workspace denies `panic_in_result_fn` for production code; in a
+    // test the assertion is the deliverable and `?` keeps the setup readable.
+    #![allow(clippy::panic_in_result_fn)]
+
+    use super::*;
+    use qip_market_ingestion::connector::checkpoint::Cursor;
+    use qip_market_ingestion::connector::emulator::SourceEmulator;
+    use qip_market_ingestion::connector::envelope::RawEvent;
+    use qip_market_ingestion::connectors::CoinbaseTickerConnector;
+    use std::sync::Mutex;
+
+    /// A connector that records whether it was shut down, and otherwise
+    /// answers nothing: decoding and mapping are never reached by this test,
+    /// since the failure under test happens before the first poll.
+    #[derive(Debug)]
+    struct ShutdownSpy {
+        manifest: SourceManifest,
+        shut_down: Arc<Mutex<bool>>,
+    }
+
+    impl SourceConnector for ShutdownSpy {
+        fn manifest(&self) -> &SourceManifest {
+            &self.manifest
+        }
+
+        fn decode(&self, _payload: &serde_json::Value, _cursor: &Cursor) -> Result<Vec<RawEvent>> {
+            Ok(Vec::new())
+        }
+
+        fn map(&self, _event: &RawEvent, _ingest_time: Timestamp) -> Result<SensedRecord> {
+            Err(qip_core::error::Error::invalid(
+                "the spy decodes no events, so it maps none",
+            ))
+        }
+
+        fn shutdown(&mut self, at: Timestamp) -> Result<()> {
+            let _ = at;
+            *self
+                .shut_down
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+            Ok(())
+        }
+    }
+
+    /// A manifest `AdmittedSource::from_decision` refuses *after* the feed
+    /// is open still releases the feed, through `ConnectorFeed::shutdown`
+    /// rather than only through `Drop`.
+    ///
+    /// The admission gate itself must succeed for this to test the seam it
+    /// claims to: the catalogue's real Coinbase entry, the manifest's own
+    /// licensing class and both required usages all agree, so the refusal
+    /// below comes from `from_decision`'s own category check and not from
+    /// `StandingAdmission::over` refusing earlier — before any transport
+    /// exists at all, which would prove nothing about this seam.
+    ///
+    /// Mutated by reverting the `match` in `over_transport_admitted_by` to
+    /// `AdmittedSource::from_decision(&decision, feed.manifest())?` —
+    /// confirmed the refusal still fires (the `?` still propagates it) but
+    /// `*shut_down.lock()` reads `false`, and the assertion that the feed
+    /// was released fails; restored.
+    #[test]
+    fn an_admission_refusal_after_the_feed_opens_still_releases_it() -> Result<()> {
+        let at = Timestamp::from_secs(1_760_000_000);
+        let mut manifest = CoinbaseTickerConnector::shipped_manifest()?;
+        manifest.endpoint.base_url = Some("http://127.0.0.1:1".to_string());
+        // No §7.6.1 category: the one failure `over_transport_admitted_by`
+        // cannot avoid by construction, since `over_transport` — unlike
+        // `ConnectorFeed::open` — never calls `SourceManifest::validate`.
+        manifest.category = None;
+        let shut_down = Arc::new(Mutex::new(false));
+        let connector = ShutdownSpy {
+            manifest: manifest.clone(),
+            shut_down: shut_down.clone(),
+        };
+        let body = r#"{"ask":"64231.55","bid":"64230.11","volume":"9184.4","trade_id":712553481,"price":"64230.99","size":"0.0018","time":"2026-08-27T00:00:00Z"}"#;
+        let transport = SourceEmulator::serving(manifest.endpoint.path.clone(), body);
+        let entries = qip_data_finder::admission::catalogue()?;
+
+        let error = ConnectorArm::over_transport_admitted_by(
+            &entries,
+            Box::new(connector),
+            manifest,
+            Box::new(transport),
+            &RegistrationRegistry::shipped(),
+            7,
+            at,
+        )
+        .expect_err("a manifest declaring no §7.6.1 category was admitted");
+        assert!(
+            error.message().contains("category"),
+            "the premise failed: this is not the category refusal this test means to drive: {}",
+            error.message()
+        );
+        assert!(
+            *shut_down
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            "the feed opened by `over_transport_admitted_by` was not released when the \
+             admission check that followed refused it"
+        );
+        Ok(())
     }
 }
