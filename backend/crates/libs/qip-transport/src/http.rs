@@ -665,6 +665,15 @@ pub const LOOPBACK_HOST: &str = "127.0.0.1";
 /// and the fast brain's parsers and at `ConnectorFeed::open`; the deep
 /// brain's hosted language-model listener; the fast brain's market-data
 /// vendor — so the refusal names the variable there and the type here.
+/// **At five of those six, not all six.** `ConnectorFeed::open`
+/// (`qip-market-ingestion/src/connector_feed.rs`) calls this with a bare
+/// `?` and adds no variable name, which `qip-api/src/feed.rs` already says
+/// out loud where it works around the same gap. It matters more since the
+/// host arm began withholding a host the redaction masked: on that one
+/// path a refusal can name neither the host nor the variable. Said here
+/// because the claim "every caller names the variable" was written into
+/// this file and into a test comment as the justification for withholding,
+/// and it was not true when it was written.
 /// Refuses rather than rewriting: an address that is nearly right is a
 /// deployment mistake somebody should see.
 pub fn require_loopback_egress(base_url: &str) -> qip_core::Result<()> {
@@ -690,38 +699,48 @@ pub fn require_loopback_egress(base_url: &str) -> qip_core::Result<()> {
              open — {error}. The egress proxy is reached at http://127.0.0.1:<port>"
         ))
     })?;
-    // From here on the message leads with `host` — what the parser resolved
-    // and what a request would actually connect to — rather than with
-    // `shown`. Both are printed, but in that order and labelled, because
-    // they can legitimately disagree: `shown` masks everything through the
-    // last `@` anywhere, so `http://evil.example/redirect@127.0.0.1:9105`
-    // shows as `http://…@127.0.0.1:9105` while its real host is
-    // `evil.example`. Leading with `shown` made the refusal read as though a
-    // correct loopback address had been rejected, and the port arm below
-    // announced "names no port" beside a displayed `:9105`. A refusal whose
-    // first clause contradicts its second teaches an operator to distrust
-    // the gate rather than fix the address. `host` is safe to print
-    // unmasked: `Url::parse` refuses userinfo before this line runs, so a
-    // parsed host cannot carry a credential.
-    // Escaped like `shown`: `Url::parse` refuses only `char::is_control`
-    // and ASCII space in a host, so a host carrying U+2028 parses cleanly
-    // and, printed raw, splits this record for any consumer that treats it
-    // as a line break — reintroducing through this arm the forged-record
-    // hole `escape_controls` closes for the address beside it.
-    // Named only when the redaction kept it. A host is not safe to print
-    // merely because `Url::parse` accepted it: the parser refuses userinfo,
-    // not a secret sitting where a host goes, so
+    // The host is named only when the redaction kept it, and `host` and
+    // `shown` therefore **cannot disagree** — which is the invariant, and is
+    // not what two earlier versions of this comment said.
+    //
+    // A host is not safe to print merely because [`Url::parse`] accepted it.
+    // The parser refuses *userinfo*, not a secret sitting where a host goes:
     // `http://hf_SECRET?x@127.0.0.1:9105` parses with the credential as its
-    // host — and naming it here would re-print the exact bytes `shown` had
-    // just masked, putting two contradictory claims about the same string
-    // in one refusal. Nothing is lost by withholding it: every caller names
-    // the configuration variable in its own wrapper, which is what an
-    // operator needs to find the address, and the variable name cannot
-    // itself be a secret.
+    // host, so naming it re-printed the exact bytes `shown` had just masked,
+    // putting two contradictory claims about one string into one refusal.
+    // The earlier comment here said the opposite — "a parsed host cannot
+    // carry a credential" — and survived, above its own correction, into the
+    // commit that corrected it. It is deleted rather than argued with,
+    // because the next reader acts on the first sentence they reach and this
+    // file has now shipped two leaks that way.
+    //
+    // `host_survived_redaction` is `!masked_userinfo`, and that is exact
+    // rather than cautious: an address reaching here is one the parser
+    // accepted, so its authority holds no `@`; any `@` [`redact_parts`]
+    // found is therefore past the host, and masking through it always takes
+    // the host too. So a named host is always already a substring of
+    // `shown`, and a withheld one is absent from both.
+    //
+    // Escaped either way: the parser refuses only `char::is_control` and
+    // ASCII space in a host, so a host carrying U+2028 parses cleanly and,
+    // printed raw, would split this record for any consumer that treats it
+    // as a line break — the forged-record hole [`escape_controls`] closes
+    // for the address beside it.
+    //
+    // What is lost by withholding it, stated plainly rather than waved
+    // through: the operator loses the host from *this* sentence, and gets it
+    // back only from the wrapper the caller adds. Five of the six call sites
+    // name their configuration variable there; `ConnectorFeed::open`
+    // (`qip-market-ingestion`) does not, and on that one path a refusal can
+    // now name neither the host nor the variable. That is a real gap, it is
+    // this change's cost, and it is recorded in ADR 0057 rather than left
+    // for someone to discover — the fix is a wrapper at that call site, not
+    // a relaxation here.
     let host = if host_survived_redaction {
         format!("`{}`", escape_controls(url.host()))
     } else {
-        "one masked along with the credential it could not be told apart from".to_string()
+        "one masked along with the credential it could not be told apart from — and the text          after `…@` below is what followed that credential, not the host this would have          connected to"
+            .to_string()
     };
     if url.host() != LOOPBACK_HOST {
         return Err(qip_core::Error::invalid(format!(
@@ -735,8 +754,17 @@ pub fn require_loopback_egress(base_url: &str) -> qip_core::Result<()> {
         )));
     }
     if !url.port_is_explicit() {
+        // Named unconditionally here, unlike the arm above. This line is
+        // reached only after `url.host() == LOOPBACK_HOST` succeeded, so the
+        // host is the `LOOPBACK_HOST` constant and not operator text — it
+        // cannot carry a credential, by construction rather than by a
+        // judgement about its shape. Withholding it here protected nothing
+        // and actively misdirected: it told an operator their host could not
+        // be told apart from a credential at the exact moment the gate had
+        // just confirmed it was loopback and the real fault was the port.
+        let host = LOOPBACK_HOST;
         return Err(qip_core::Error::invalid(format!(
-            "the egress address names the host {host} and names no port (as written, with \
+            "the egress address names the host `{host}` and names no port (as written, with \
              any credential, query and fragment masked: {shown}). The egress proxy's listeners \
              are one per vendor on distinct ports, http://127.0.0.1:<port>; an address with no \
              port would reach whatever answers on loopback port 80, and it is not the address \

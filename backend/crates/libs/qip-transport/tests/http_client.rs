@@ -115,7 +115,14 @@ fn a_url_that_carries_a_credential_is_refused() {
 /// the forged-record assertions fail, the rejected address carrying a real
 /// newline into the message. Naming `url.host()` unconditionally instead of
 /// only when the redaction kept it — confirmed the `hf_SECRET`-as-host
-/// case then prints the secret the address-level redaction had masked.
+/// assertion then fails with the secret in the message. That row was added
+/// on 2026-09-13 *because* this record named it: the mutation had been
+/// reported against a case the test did not then contain, which is the same
+/// error as the one withdrawn below, so the case was written rather than the
+/// claim softened. Deleting `{host}` from the host arm's format string —
+/// confirmed the backtick-anchored companion assertion fails; before it was
+/// anchored it passed under this mutation, because `shown` already carries
+/// the host for an address that needs no redaction.
 ///
 /// One mutation reported here on 2026-09-13 has been **withdrawn** rather
 /// than carried forward: "deleting `{host}` from the host arm — confirmed
@@ -245,12 +252,34 @@ fn an_egress_address_is_loopback_with_a_port_and_a_refusal_never_echoes_a_creden
     );
     // And where nothing was masked, the host is still named — withholding it
     // unconditionally would be the over-correction.
+    //
+    // Anchored on the backticks, and that is the whole point of the row. The
+    // unbackticked form passed while asserting nothing: this address needs no
+    // redaction, so `shown` is the address verbatim and already contains
+    // `router.huggingface.co`, which means deleting `{host}` from the format
+    // string left the assertion green. That is the trap the testing rules
+    // name by hand — a `contains` whose surrounding text always contains it.
+    // `shown` never emits a backtick, so only `{host}` can satisfy this.
     let plain =
         require_loopback_egress("http://router.huggingface.co/v1").expect_err("premise: refused");
     assert!(
-        plain.message().contains("router.huggingface.co"),
+        plain.message().contains("`router.huggingface.co`"),
         "an address with no credential in it must still name the host that was refused: {}",
         plain.message()
+    );
+
+    // T2: the leak this round exists to close, driven rather than described.
+    // It appeared only in comments until 2026-09-13. `hf_SECRET` is not
+    // userinfo — there is no `@` before the `?` — so `Url::parse` accepts it
+    // and it reaches the host arm with the credential sitting where a host
+    // goes. Naming the parsed host there printed it.
+    let in_host_position =
+        require_loopback_egress("http://hf_SECRET?x@127.0.0.1:9105").expect_err("premise: refused");
+    assert!(
+        !in_host_position.message().contains("hf_SECRET"),
+        "a secret parsed into the host position was re-printed by the arm that names the host: \
+         {}",
+        in_host_position.message()
     );
 
     // A control character in a refused address does not get to end the log
@@ -360,7 +389,10 @@ fn a_scheme_less_credential_bearing_egress_address_is_still_redacted() {
 /// round-7 implementation rather than carried forward from round 6's
 /// report, because the row count and the implementation both moved and a
 /// number quoted across a restructure is how this file's comments have gone
-/// wrong every previous time.
+/// wrong every previous time. **Re-measured again at round 9**, after the
+/// delimiter constant, the escape splice and the `>=` guard moved the
+/// implementation a third time: all three figures are unchanged, which is
+/// the answer a run gave and not one anybody assumed.
 ///
 /// * **Deleting the parameter-region cut** — masking no query or fragment
 ///   at all: `13 of 37 redaction rows are wrong`. Note this is *not* "round
@@ -378,7 +410,7 @@ fn a_scheme_less_credential_bearing_egress_address_is_still_redacted() {
 ///   survives_redaction` fails on the same mutation with `5100 of 53354
 ///   inputs printed a byte that sat before the terminating `@``.
 ///
-/// Each mutation restored byte-for-byte afterwards; all 37 rows and all 31
+/// Each mutation restored byte-for-byte afterwards; all 37 rows and all 32
 /// tests in this file pass again.
 #[test]
 fn redact_for_echo_handles_the_full_adversarial_matrix() {
@@ -819,8 +851,12 @@ fn no_byte_before_a_credentials_terminating_at_ever_survives_redaction() {
 /// variable aborted the process and printed what the refusal had masked.
 ///
 /// Mutated three ways, each restored. Restoring `base_url.len() >= 8 &&
-/// base_url[..8]` — confirmed the first two rows panic rather than refuse,
-/// with the raw address in the panic message. Restoring
+/// base_url[..8]` — confirmed the test panics rather than refusing, with the
+/// raw address in the panic message. Reported as one observation because
+/// that is what one run shows: a panic aborts the test, so later rows are
+/// never reached. All four rows do carry a multi-byte character across byte
+/// 8, but a sentence claiming to have watched several fail in a single
+/// aborting run would be the reporting error this file has corrected twice. Restoring
 /// `starts_with("https://")` — confirmed the `HTTPS://` row is then refused
 /// by the generic parse arm and this fails on the missing "never at the
 /// vendor". Deleting `escape_controls` from the host the gate names —
@@ -830,22 +866,62 @@ fn no_byte_before_a_credentials_terminating_at_ever_survives_redaction() {
 fn a_refusal_survives_an_address_that_is_not_ascii_and_names_the_scheme_whatever_its_case() {
     use qip_transport::http::require_loopback_egress;
 
-    // Byte 8 inside a multi-byte character, three ways in: an accented
-    // host, this function's own redaction marker, and a line separator.
+    // Byte 8 inside a multi-byte character, four ways in: an accented host,
+    // this function's own redaction marker, a line separator, and a currency
+    // sign behind a one-slash scheme typo. Each row asserts its own premise
+    // rather than a shared one — an earlier version checked every row for a
+    // sentinel only the first row contained, so three of the four asserted
+    // nothing, which is the trap the testing rules name by hand.
     for raw in [
         "http://ü:hf_LIVEKEY_SECRETVALUE@127.0.0.1:9105/v1",
         "http://…@127.0.0.1:9105",
         "http://\u{2028}x:9105",
         "https:/\u{20ac}/x",
     ] {
-        let error = require_loopback_egress(raw)
-            .expect_err(&format!("{raw:?} was admitted as an egress address"));
+        // Premise: the character straddling byte 8 is what makes this row a
+        // regression test at all. One whose multi-byte character drifted off
+        // that offset would still refuse, and would prove nothing.
         assert!(
-            !error.message().contains("hf_LIVEKEY_SECRETVALUE"),
-            "a non-ASCII address must be refused, not panicked on with the raw value: {}",
-            error.message()
+            !raw.is_char_boundary(8),
+            "premise: {raw:?} must not have a character boundary at byte 8, or it cannot \
+             reproduce the slice this row exists to pin"
         );
+        // Returning at all *is* the property for every row. The round-7 form
+        // panicked before it could return, and the panic printed `raw` whole.
+        require_loopback_egress(raw)
+            .expect_err(&format!("{raw:?} was admitted as an egress address"));
     }
+
+    // Then the properties that are true of one row each, stated separately
+    // rather than asserted over all four. An earlier version checked every
+    // row for a credential only the first row carried, so three of the four
+    // asserted nothing.
+    //
+    // The accented host masks its credential, and the accent with it.
+    let accented = require_loopback_egress("http://ü:hf_LIVEKEY_SECRETVALUE@127.0.0.1:9105/v1")
+        .expect_err("premise: refused");
+    assert!(
+        !accented.message().contains("hf_LIVEKEY_SECRETVALUE") && !accented.message().contains('ü'),
+        "the refusal of a non-ASCII credential-bearing address echoed it: {}",
+        accented.message()
+    );
+    // The line separator is in the kept region, so it is escaped rather than
+    // dropped — and must not survive raw, or it ends the log record.
+    let separator = require_loopback_egress("http://\u{2028}x:9105").expect_err("premise: refused");
+    assert!(
+        !separator.message().contains('\u{2028}') && separator.message().contains("\\u{2028}"),
+        "a line separator in the address must be escaped, not dropped and not passed: {}",
+        separator.message()
+    );
+    // And the one row carrying a credential proves the panic's own payload is
+    // gone, not merely that the call returned.
+    let accented = require_loopback_egress("http://ü:hf_LIVEKEY_SECRETVALUE@127.0.0.1:9105/v1")
+        .expect_err("premise: refused");
+    assert!(
+        !accented.message().contains("hf_LIVEKEY_SECRETVALUE"),
+        "the refusal of a non-ASCII credential-bearing address echoed the credential: {}",
+        accented.message()
+    );
 
     // A scheme is case-insensitive, and the operator who typed the wrong one
     // is exactly who needs the arm that names the proxy rather than the
