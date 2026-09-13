@@ -44,7 +44,10 @@ use crate::rule_review::{
     PROPOSAL_ENACTED, PROPOSAL_WITHDRAWN, RecalibrationProposal, RegretEvidence, RuleActivity,
     RuleDefence, RuleDormant, RuleRegret, RuleReviewJournal, regret_by_rule,
 };
-use crate::sizing_review::{SIZING_CAP_ARMED, SIZING_CAP_RELEASED, SizingCapEntry};
+use crate::sizing_review::{
+    SIZING_CAP_ARMED, SIZING_CAP_RELEASED, SIZING_PROPOSAL_PROPOSED, SIZING_PROPOSAL_WITHDRAWN,
+    SizingCapEntry, SizingProposal,
+};
 use crate::venue_review::{
     FEASIBILITY_WINDOW, FeasibilityRefusal, FeasibilitySeam, REINSTATED, REINSTATEMENT_AWAITING,
     REINSTATEMENT_REFUSED, VenueReinstatementEntry, VenueWithdrawal,
@@ -416,6 +419,10 @@ pub struct Platform {
     /// computed from the scores, not from this set, so the two cannot
     /// disagree — this is the journal's memory, not the control's.
     sizing_caps_armed: BTreeSet<String>,
+    /// Instruments with a larger-size proposal standing, for the same
+    /// reason: the proposal is journaled when the finding appears and when
+    /// it evaporates, not on every cycle between.
+    sizing_proposals_open: BTreeSet<String>,
     /// What the LEARN stage priced this cycle, for the journal. Cleared as
     /// each cycle's LEARN begins.
     cycle_counterfactuals: Option<CounterfactualJournal>,
@@ -3284,6 +3291,7 @@ impl Platform {
             withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
             pending_reinstatements: BTreeMap::new(),
             sizing_caps_armed: BTreeSet::new(),
+            sizing_proposals_open: BTreeSet::new(),
             cycle_counterfactuals: None,
             cycle_rule_review: None,
             rule_activity,
@@ -12424,9 +12432,49 @@ impl Platform {
             .collect();
         let mut armed = Vec::new();
         let mut released = Vec::new();
+        let mut proposed = Vec::new();
+        let mut withdrawn = Vec::new();
         let mut problems = Vec::new();
         for object in objects {
             let regret = crate::sizing_review::size_regret(&self.fill_scores, &object);
+            // The loosening direction first, and as a record only. The
+            // finding carries no multiplier and nothing below reads it into
+            // a bound: the proposal is the whole of the platform's response
+            // to "most fills would have done better larger".
+            let finding = crate::sizing_review::larger_size_finding(&self.fill_scores, &object);
+            let open = self.sizing_proposals_open.contains(&object);
+            let proposal_state = match (finding.is_some(), open) {
+                (true, false) => Some(SIZING_PROPOSAL_PROPOSED),
+                (false, true) => Some(SIZING_PROPOSAL_WITHDRAWN),
+                _ => None,
+            };
+            if let Some(outcome) = proposal_state {
+                let proposal = SizingProposal {
+                    object_id: object.clone(),
+                    sample: regret.sample,
+                    fraction: regret.larger_fraction(),
+                    direction: "larger".to_string(),
+                    outcome: outcome.to_string(),
+                    cycle: self.cycle,
+                    at: now,
+                };
+                match self.journal_once(proposal, SIZING_REVIEW_ORIGIN, now) {
+                    Ok(_) => {
+                        if outcome == SIZING_PROPOSAL_PROPOSED {
+                            self.sizing_proposals_open.insert(object.clone());
+                            proposed.push(object.clone());
+                        } else {
+                            self.sizing_proposals_open.remove(&object);
+                            withdrawn.push(object.clone());
+                        }
+                    }
+                    Err(error) => problems.push(format!(
+                        "the larger-size proposal on {object} was {outcome} and could not be \
+                         journaled: {}",
+                        error.message()
+                    )),
+                }
+            }
             let multiplier = self.sizing_cap_multiplier(&object);
             let standing = self.sizing_caps_armed.contains(&object);
             let state = match (multiplier < Decimal::ONE, standing) {
@@ -12472,6 +12520,21 @@ impl Platform {
                 "sizing cap released on {} instrument(s) ({})",
                 released.len(),
                 released.join(", ")
+            ));
+        }
+        if !proposed.is_empty() {
+            parts.push(format!(
+                "larger-size proposal journaled for {} instrument(s) ({}); a proposal, never a \
+                 bound",
+                proposed.len(),
+                proposed.join(", ")
+            ));
+        }
+        if !withdrawn.is_empty() {
+            parts.push(format!(
+                "larger-size proposal withdrawn for {} instrument(s) ({})",
+                withdrawn.len(),
+                withdrawn.join(", ")
             ));
         }
         if parts.is_empty() {

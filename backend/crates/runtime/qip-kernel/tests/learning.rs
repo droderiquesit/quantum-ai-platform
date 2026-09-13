@@ -1020,6 +1020,80 @@ fn reinstatement_needs_two_different_fresh_operators_and_is_journaled_at_each_si
     Ok(())
 }
 
+#[test]
+fn a_larger_size_pattern_journals_a_sizing_proposal_and_leaves_every_bound_where_it_was()
+-> Result<()> {
+    // ADR 0063's loosening direction. Ten filled buys before a tape that
+    // falls by half: on the twin's tape every one profits on the `trade` arm
+    // and profits more at twice the size, so `larger_size` wins on every
+    // fill. §12.4 forbids acting on that automatically, and the only
+    // consequence is a record: the proposal is journaled once, the cap on
+    // the instrument stays at one, ADR 0055's number stays at one, and no
+    // arming is on the record. A review that read the larger finding into
+    // a bound — in either direction — fails here.
+    let mut platform = platform()?;
+    platform.observe(quiet_bars("AAA", 90));
+    const SAMPLE: usize = 10;
+    for n in 0..SAMPLE {
+        fill_one(&mut platform, &format!("prop-filled-{n}"), start())?;
+    }
+    platform.observe(flat_bars_after("AAA", start(), 5, 50.0));
+    let scoring_time = start().saturating_add(Duration::from_days(3));
+    platform.run_cycle(scoring_time);
+    platform.run_cycle(scoring_time);
+    let fills = platform.fill_scores();
+    assert_eq!(fills.len(), SAMPLE, "not every fill was priced");
+    assert_eq!(
+        fills.iter().filter(|score| score.larger_favoured).count(),
+        SAMPLE,
+        "the premise failed: a winning fill did not favour the larger size: {:?}",
+        fills
+            .iter()
+            .map(|score| (score.smaller_favoured, score.larger_favoured))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        fills.iter().filter(|score| score.smaller_favoured).count(),
+        0,
+        "the premise failed: a winning fill favoured the smaller size too"
+    );
+
+    // Every bound where it was.
+    assert_eq!(
+        platform.sizing_cap_multiplier(object("AAA").as_str()),
+        Decimal::ONE,
+        "a larger-size pattern moved the weight-bound cap"
+    );
+    assert_eq!(
+        platform.sizing_confidence(object("AAA").as_str(), scoring_time)?,
+        Decimal::ONE,
+        "a larger-size pattern moved sizing confidence"
+    );
+
+    // And the record: one proposal, no arming, journaled once.
+    let reviewed = platform
+        .replay_journal(&qip_events::EventFilter::new().topic(qip_events::Topic::SizingReviewed))?;
+    assert_eq!(
+        reviewed.len(),
+        1,
+        "the sizing review wrote {} record(s)",
+        reviewed.len()
+    );
+    let proposal = reviewed[0]
+        .decode::<qip_kernel::sizing_review::SizingProposal>()?
+        .body;
+    assert_eq!(proposal.object_id, "obj-AAA");
+    assert_eq!(proposal.direction, "larger");
+    assert_eq!(proposal.outcome, "proposed");
+    assert_eq!(proposal.sample, SAMPLE);
+    assert!((proposal.fraction - 1.0).abs() < f64::EPSILON);
+    platform.run_cycle(scoring_time);
+    let reviewed = platform
+        .replay_journal(&qip_events::EventFilter::new().topic(qip_events::Topic::SizingReviewed))?;
+    assert_eq!(reviewed.len(), 1, "a standing proposal was journaled again");
+    Ok(())
+}
+
 // --- ADR 0055: the counterfactual record narrows sizing, never widens it ---
 
 #[test]

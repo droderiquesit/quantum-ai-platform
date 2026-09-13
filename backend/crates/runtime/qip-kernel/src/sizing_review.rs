@@ -136,6 +136,50 @@ pub fn larger_size_finding(scores: &[FillScore], object_id: &str) -> Option<Larg
         })
 }
 
+/// The finding stands and the proposal is open.
+pub const SIZING_PROPOSAL_PROPOSED: &str = "proposed";
+/// The evidence stopped clearing the bar and the proposal is withdrawn.
+pub const SIZING_PROPOSAL_WITHDRAWN: &str = "withdrawn";
+
+/// The only shape the larger-size finding may take: a record a person
+/// reads, journaled under `learning.sizing_reviewed` when the finding
+/// appears and when it evaporates.
+///
+/// No field on this record is a multiplier and no reader of it produces
+/// one. §12.4's guardrail — "a veto rule may only be loosened through the
+/// full approval path, never automatically from counterfactual evidence"
+/// — is held for the sizing row the same way ADR 0061 holds it for the rule
+/// rows: the loosening direction has no code path that widens a bound,
+/// only a record that says the evidence pointed that way. What a person
+/// does with it is a reviewed change to the mandate, which is the path a
+/// desk already has.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SizingProposal {
+    pub object_id: String,
+    pub sample: usize,
+    /// The fraction of the sample that favoured the larger size.
+    pub fraction: f64,
+    /// Always `larger`: the direction this record exists for. Stated on the
+    /// record so a reader does not have to know the type to know the sign.
+    pub direction: String,
+    /// [`SIZING_PROPOSAL_PROPOSED`] or [`SIZING_PROPOSAL_WITHDRAWN`].
+    pub outcome: String,
+    pub cycle: u64,
+    pub at: Timestamp,
+}
+
+impl EventBody for SizingProposal {
+    const TOPIC: Topic = Topic::SizingReviewed;
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn idempotency_key(&self) -> Option<String> {
+        Some(format!(
+            "sizing-proposal:{}:{}:{}",
+            self.object_id, self.outcome, self.cycle
+        ))
+    }
+}
+
 /// The cap was armed on this instrument this cycle.
 pub const SIZING_CAP_ARMED: &str = "armed";
 /// The cap was released: the evidence stopped clearing the bar.
