@@ -114,15 +114,20 @@ fn a_url_that_carries_a_credential_is_refused() {
 /// Deleting the `escape_controls` call from `redact_for_echo` — confirmed
 /// the forged-record assertions fail, the rejected address carrying a real
 /// newline into the message. Naming `url.host()` unconditionally instead of
-/// only when the redaction kept it — confirmed the `hf_SECRET`-as-host
-/// assertion then fails with the secret in the message. That row was added
-/// on 2026-09-13 *because* this record named it: the mutation had been
-/// reported against a case the test did not then contain, which is the same
-/// error as the one withdrawn below, so the case was written rather than the
-/// claim softened. Deleting `{host}` from the host arm's format string —
-/// confirmed the backtick-anchored companion assertion fails; before it was
-/// anchored it passed under this mutation, because `shown` already carries
-/// the host for an address that needs no redaction.
+/// only when the redaction kept it, and deleting `{host}` from the host
+/// arm's format string. **Both fail at the withheld-host assertion first**,
+/// not at the assertions they were written for: that one runs earlier in
+/// this function and both mutations break it, and an `assert!` aborts the
+/// test. Reported that way because the first draft of this record named the
+/// later assertions instead — the same "watched several things fail in a run
+/// that stops at the first" error this file has now made three times, twice
+/// of them in commits whose subject was correcting it. To see the later
+/// assertions fail, the withheld-host one has to be removed first; with it
+/// removed, the unconditional-host mutation fails the `hf_SECRET` assertion
+/// with the secret in the message, and the deleted-`{host}` mutation fails
+/// the backtick-anchored one. Before that assertion was anchored on
+/// backticks it passed under its own mutation, because the rendered address
+/// already carries the host for an address needing no redaction.
 ///
 /// One mutation reported here on 2026-09-13 has been **withdrawn** rather
 /// than carried forward: "deleting `{host}` from the host arm — confirmed
@@ -255,6 +260,28 @@ fn an_egress_address_is_loopback_with_a_port_and_a_refusal_never_echoes_a_creden
          masked host as a gate that cannot parse their address: {}",
         error.message()
     );
+
+    // The whole refusal is read by a person, not just the first clause an
+    // assertion happens to match. This caught a real defect: the withheld-host
+    // text shipped with two runs of ten literal spaces, because a `\`
+    // continuation was lost when the string was edited, and every assertion on
+    // that branch stopped before the first gap. Checking every arm's rendered
+    // text for a double space costs nothing and reads the part nobody reads.
+    for malformed in [
+        "http://someservice/API_SECRET_VALUE@upstream.example",
+        "http://router.huggingface.co/v1",
+        "http://127.0.0.1",
+        "https://router.huggingface.co",
+        "http://hf_SECRET?x@127.0.0.1:9105",
+    ] {
+        let refusal = require_loopback_egress(malformed).expect_err("premise: refused");
+        let rendered = refusal.message();
+        assert!(
+            !rendered.contains("  "),
+            "the refusal of {malformed:?} carries a run of spaces from a lost line \
+             continuation: {rendered}"
+        );
+    }
     // And where nothing was masked, the host is still named — withholding it
     // unconditionally would be the over-correction.
     //
@@ -264,7 +291,11 @@ fn an_egress_address_is_loopback_with_a_port_and_a_refusal_never_echoes_a_creden
     // `router.huggingface.co`, which means deleting `{host}` from the format
     // string left the assertion green. That is the trap the testing rules
     // name by hand — a `contains` whose surrounding text always contains it.
-    // `shown` never emits a backtick, so only `{host}` can satisfy this.
+    // This row's rendered address carries no backtick, so only `{host}` can
+    // satisfy the assertion. Said of this row and not of the function: a
+    // backtick is `is_ascii_graphic`, so the escape whitelist passes one
+    // through, and an operator's address containing one would put a backtick
+    // into the rendered address too.
     let plain =
         require_loopback_egress("http://router.huggingface.co/v1").expect_err("premise: refused");
     assert!(
@@ -280,6 +311,13 @@ fn an_egress_address_is_loopback_with_a_port_and_a_refusal_never_echoes_a_creden
     // goes. Naming the parsed host there printed it.
     let in_host_position =
         require_loopback_egress("http://hf_SECRET?x@127.0.0.1:9105").expect_err("premise: refused");
+    assert!(
+        in_host_position.message().contains("loopback"),
+        "premise: this address must reach the host arm, which is the only one that names a \
+         host — a future parser that refused it earlier would leave this row green and \
+         guarding nothing: {}",
+        in_host_position.message()
+    );
     assert!(
         !in_host_position.message().contains("hf_SECRET"),
         "a secret parsed into the host position was re-printed by the arm that names the host: \
@@ -865,8 +903,10 @@ fn no_byte_before_a_credentials_terminating_at_ever_survives_redaction() {
 /// `starts_with("https://")` — confirmed the `HTTPS://` row is then refused
 /// by the generic parse arm and this fails on the missing "never at the
 /// vendor". Deleting `escape_controls` from the host the gate names —
-/// confirmed the last row's assertion fails, the separator reaching the
-/// message raw.
+/// confirmed the separator assertion fails, U+2028 reaching the message
+/// raw. Named by what it asserts rather than by its position: the rows in
+/// the loop above carry no assertion of their own, and "the last row's"
+/// stopped resolving to anything when this test was restructured.
 #[test]
 fn a_refusal_survives_an_address_that_is_not_ascii_and_names_the_scheme_whatever_its_case() {
     use qip_transport::http::require_loopback_egress;
@@ -917,15 +957,6 @@ fn a_refusal_survives_an_address_that_is_not_ascii_and_names_the_scheme_whatever
         !separator.message().contains('\u{2028}') && separator.message().contains("\\u{2028}"),
         "a line separator in the address must be escaped, not dropped and not passed: {}",
         separator.message()
-    );
-    // And the one row carrying a credential proves the panic's own payload is
-    // gone, not merely that the call returned.
-    let accented = require_loopback_egress("http://ü:hf_LIVEKEY_SECRETVALUE@127.0.0.1:9105/v1")
-        .expect_err("premise: refused");
-    assert!(
-        !accented.message().contains("hf_LIVEKEY_SECRETVALUE"),
-        "the refusal of a non-ASCII credential-bearing address echoed the credential: {}",
-        accented.message()
     );
 
     // A scheme is case-insensitive, and the operator who typed the wrong one

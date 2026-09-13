@@ -720,8 +720,19 @@ pub fn require_loopback_egress(base_url: &str) -> qip_core::Result<()> {
     // rather than cautious: an address reaching here is one the parser
     // accepted, so its authority holds no `@`; any `@` [`redact_parts`]
     // found is therefore past the host, and masking through it always takes
-    // the host too. So a named host is always already a substring of
-    // `shown`, and a withheld one is absent from both.
+    // the host too. So **a named host is always already a substring of
+    // `shown`** — the two can never contradict each other, which is what
+    // this branch exists for.
+    //
+    // The converse does *not* hold, and an earlier version of this comment
+    // claimed it did: a withheld host is not always absent from `shown`.
+    // `http://hf_SECRET/x@hf_SECRET` parses with host `hf_SECRET`, and the
+    // surviving region after the last `@` is that same text, so the host is
+    // withheld from this sentence and printed by the rendered address
+    // anyway. That is the documented cost of the surviving region printing
+    // whole, not a leak this branch can close; what this branch guarantees
+    // is only that **this sentence** never names a host the redaction
+    // masked.
     //
     // Escaped either way: the parser refuses only `char::is_control` and
     // ASCII space in a host, so a host carrying U+2028 parses cleanly and,
@@ -741,7 +752,8 @@ pub fn require_loopback_egress(base_url: &str) -> qip_core::Result<()> {
     let host = if host_survived_redaction {
         format!("`{}`", escape_controls(url.host()))
     } else {
-        "one masked along with the credential it could not be told apart from — and the text          after `…@` below is what followed that credential, not the host this would have          connected to"
+        "one masked along with the credential it could not be told apart from; what follows \
+         `…@` below is the text after that credential, which may or may not be the host"
             .to_string()
     };
     if url.host() != LOOPBACK_HOST {

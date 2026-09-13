@@ -259,8 +259,12 @@ is now its own row in the test matrix rather than an unverified claim.
 **Amended in place an eighth time, 2026-09-13**, after three further
 rounds against the same function: a fresh security review of the seventh
 amendment's own fix (`e26c8cf`), a fresh review of *that* fix
-(`ca3d581`), and two independent reviews of the result (`e691804`, the
-current head; none of the three has been pushed). The seventh amendment
+(`ca3d581`), and two independent reviews of the result (`e691804`). **This
+sentence said "the current head" and it was not**: round seven, `d231679`,
+was already committed — it is this amendment's own commit's parent — so
+the claim was stale the moment it landed, and the ninth amendment below
+records that round and the two after it. None of those three has been
+pushed either. The seventh amendment
 predicted that the defect would not recur and gave its reason. It
 recurred twice. That paragraph is kept above, recast in the past tense,
 rather than quietly deleted, because a prediction removed once it failed
@@ -366,14 +370,176 @@ round five's mutation report named five failing rows, and an `assert_eq!`
 inside a loop stops at the first, so four of the five were inferred and
 reported as read — a reporting defect under this repository's own
 evidence rule, in a report written to satisfy it. The corrected report in
-that test's comment quotes two runs that were actually made: deleting the
-parameter-region cut gives `9 of 28 redaction rows are wrong`, and
-reversing the ordering gives `4 of 28`, including
+that test's comment quoted two runs that were actually made: **as of
+`e691804`**, deleting the parameter-region cut gave `9 of 28 redaction
+rows are wrong`, and reversing the ordering gave `4 of 28`, including
 `http://127.0.0.1:9105/x?a=1@2&api_key=SECRETVALUE` coming back as
-`http://…@2&api_key=SECRETVALUE`. The gate figures for all three rounds
+`http://…@2&api_key=SECRETVALUE`. **Those two figures were already stale
+when this amendment was committed, and are corrected here rather than
+quoted forward a second time**, which is the failure this very paragraph
+is about: the matrix is thirty-seven rows at `a190352` and the comment
+quotes `13 of 37` and `8 of 37`, re-measured against round seven's
+implementation rather than carried across the restructure, re-run
+unchanged at round nine, and illustrated by the row that shows round
+six's ordering leak — `http://svc:SECRETVALUE?tail@127.0.0.1:9105/`
+coming back as `http://svc:SECRETVALUE?…`. The ninth amendment below
+says why the figures moved. The gate figures for all three rounds
 are recorded once, with their attribution, in this round's entry in
 `docs/DELIVERY-STATUS.md`, rather than a second time here where the two
 copies could drift apart.
+
+**Amended in place a ninth time, 2026-09-13**, after three further rounds
+against the same function — `d231679` (round seven), `88ca127` (round
+eight) and `a190352` (round nine, the head as this amendment is written;
+none has been pushed). **The finding is no longer in the redaction.**
+State that first, because it is what these three rounds establish and
+because it is the first time in nine rounds it can honestly be said: a
+security review of round eight could not break the function by
+execution — zero panics in 544,161 inputs, zero survivors in 1,021,410
+inputs carrying a sentinel before a credential's terminating `@`, an
+injective escape, and all 37 adversarial rows passing. The chain moved
+one layer out, into the refusal's own prose and into the tests' own
+claims, and rounds eight and nine were both spent there.
+
+**Round seven (`d231679`) — both boundaries measured before they are
+intersected.** Round six closed a leak and opened one. It cut the
+parameter region off first and then searched only the surviving prefix
+for the credential's terminating `@`. But `?` and `#` are ordinary
+password characters, and they are *not* legal unencoded in userinfo —
+which is exactly why a password containing one arrives at this function
+instead of parsing — so the cut lands inside the credential, the search
+over the truncated prefix finds no `@`, the function concludes there is
+no userinfo, and the first half of the password prints. A security
+review reproduced it by execution rather than by reading:
+`http://svc:SECRET?x@127.0.0.1:9105` came back as `http://svc:SECRET?…`,
+and 131,040 of 640,000 enumerated inputs leaked the same way, reaching
+stderr at start-up through two arms of the gate. Both boundaries are now
+measured over the whole remainder and only then intersected, and where
+the last `@` falls at or past the cut, nothing between the scheme and the
+cut is shown at all — because "the `@` is in the query, so what precedes
+it is a host" and "the `?` is in the password, so what precedes it is a
+credential" are the same string, nothing in it distinguishes them, and
+the safe reading therefore wins. Four matrix rows that used to keep their
+host now lose it.
+
+The more consequential half of round seven is not that fix. Six rounds
+shared one mechanism, and it is not that anyone reasoned badly: each
+round's proof was correct about the code in front of it, was written into
+a comment, and was then carried forward verbatim across a restructure
+that invalidated it. Round five proved that no `@`-delimited credential
+survives; round six moved the search inside a boundary it had not
+previously had, leaving that proof true of code that no longer existed.
+**Prose does not get re-derived.** So the guarantee stopped being prose:
+`no_byte_before_a_credentials_terminating_at_ever_survives_redaction`
+sweeps a six-symbol alphabet, plants a sentinel anywhere inside what a
+credential could be, and requires that it never reach the output. It
+fails on round six's ordering with 5100 of 53354 inputs.
+
+**Round eight (`88ca127`) — round seven changed three things and tested
+one**, and both untested ones were defective, which is this chain's own
+lesson arriving from a new direction. The blocking one: making the
+`https://` check case-insensitive, round seven wrote
+`base_url.len() >= 8 && base_url[..8]` — a *byte*-length guard in front
+of a *byte*-index slice. Byte 8 need not be a character boundary, so any
+address whose byte 8 falls inside a multi-byte character panicked, and
+Rust's slice-boundary panic prints the offending string: the credential
+reached stderr through a path that never touches the redaction at all,
+defeating six rounds of work in one line. The nastiest route in is the
+function's own output. It emits `…` at offset 7, so an operator copying a
+redacted address out of a refusal and pasting it back into the variable
+aborted the process and printed what the refusal had masked. It is a
+non-panicking `get(..8)` now, pinned by four inputs, each asserting its
+own premise that byte 8 is not a character boundary.
+
+The second was a contradiction inside one refusal. The gate names the
+parsed host beside the redacted address, justified by "the parser refuses
+userinfo, so a parsed host cannot carry a credential". The parser refuses
+userinfo; it does not refuse a secret sitting where a host goes.
+`http://hf_SECRET?x@127.0.0.1:9105` has no `@` before its `?`, so it is
+not userinfo, so it parses — with the credential as the **host** — and
+naming that host re-printed exactly what the redaction had just masked,
+putting two contradictory claims about one string into one message. The
+host is now named only where the redaction kept it, which is exact rather
+than cautious: an address reaching that arm is one the parser accepted,
+so its authority holds no `@`, so any `@` the redaction found is past the
+host and masking through it always takes the host with it. Three smaller
+items from the same reviews. The parameter marker is a constant where the
+delimiter that set the cut is itself inside the credential, because
+printing the real byte leaks one character of the password and which of
+`?` or `#` it was — an absolute claim has to cover the delimiter too. The
+escape whitelist no longer exempts `…`, with the marker spliced in after
+escaping, so an operator-typed ellipsis can no longer render as though it
+had been redacted. And the sweep's premise became an exact count rather
+than a floor: `checked > 1_000` would have stayed true after a change
+that dropped coverage by 98%, which is the failure mode the observability
+rules name by hand — a number that drifts without ever becoming false.
+
+**Round nine (`a190352`) — the sentence reported deleted that was not**,
+and this is the round worth dwelling on, because its finding is about
+this record's own subject. Round eight's commit message said it had
+removed the discredited claim "a parsed host cannot carry a credential".
+It had not: it appended the correction underneath and left the original
+standing five lines above it, inside the function it was about. Two
+independent reviews found it the same way and both named it the most
+likely source of the next leak — whoever edits that arm reads the first
+sentence they reach, concludes the conditional is redundant, and reopens
+precisely what round eight closed. Round nine deletes it, and deletes the
+paragraph above it as well, which described behaviour that no longer
+existed: that the host and the redacted address are both printed because
+they can legitimately disagree. They cannot, now. A kept host is always
+already a substring of the rendered address, and that invariant is what
+the comment says instead.
+
+Round nine also found the justification for the whole host-withholding
+trade-off false. "Every caller names its configuration variable, so
+withholding the host costs nothing" is true of five of the six call
+sites; `qip-market-ingestion`'s `ConnectorFeed::open` calls the gate with
+a bare `?`, so on that one path a refusal can now name **neither** the
+host nor the variable. That is a real cost of round eight's fix. It is
+recorded here and at the decision in the code rather than left for the
+operator it happens to, and its fix is a wrapper at that call site rather
+than a relaxation of the gate. Two test defects went with it, both of the
+class this record exists to catch. Round eight's companion assertion —
+that an address needing no redaction still names its host — was vacuous:
+such an address is rendered verbatim and therefore already contains the
+host, so deleting `{host}` from the format string left the assertion
+green. It is anchored on the backticks the rendered address never emits,
+and the mutation now fires. And the very case the round existed to close,
+a secret parsed into host position, appeared only in comments rather than
+being driven — a mutation report naming a case the test did not contain.
+The case was written rather than the claim softened.
+
+**What this amendment decides**, and it decides nothing about the
+redaction, which is the point. The eighth amendment's decision — no
+predicate over the string's own shape, region boundaries rather than
+judgements — stands, and round seven's intersect is the last change to
+what the function computes. What these three rounds change is where the
+risk lives: **closing a mechanism does not close the claims made about
+it.** Round seven's leak was a proof carried forward across a restructure
+that invalidated it; round eight's blocking defect was an untested change
+made while fixing a tested one; round nine's findings are a false
+sentence reported as deleted and a trade-off justified by a claim nobody
+had counted. Three failures, none of them in the redaction, all of them
+in the prose and the tests around it — so the countermeasures are of that
+kind rather than of the first kind: the guarantee is *executed* by a
+sweep instead of asserted by a comment, the sweep's premise is an exact
+count that fails when its own coverage moves, the mutation figures are
+re-measured against the implementation in front of them instead of quoted
+forward, and a claim about callers is counted before it is used to
+justify withholding something from an operator.
+
+One known-open finding these rounds surfaced — round eight's workspace
+run met it — is recorded, with its repro and the control experiment that
+establishes its cause, in this round's
+entry in `docs/DELIVERY-STATUS.md` rather than here: it belongs to the
+event log's lock — the subject of this record's *fourth* amendment, whose
+regression test is the one that flakes — and not to the catalogue door or
+the campaign. Round eight's commit message said that finding "is recorded
+as known-open with its repro" when it was recorded nowhere in this
+repository, which is round nine's deleted-and-not-deleted sentence one
+document further out, and is why the record is being made now. The gate
+figures for all three rounds are recorded once, with their attribution,
+in that same entry.
 
 **Relates to:** blueprint §22.1 (Retention Classes), §22.2 (Sufficient
 Statistics), §22.3 (Data References), §22.4 (Fetch-on-Demand for Research),
