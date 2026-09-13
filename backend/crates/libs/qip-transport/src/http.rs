@@ -473,6 +473,29 @@ fn split_scheme(raw: &str) -> (Option<&str>, &str) {
 /// string. The fix was to delete the predicate, not narrow it again. ADR
 /// 0057 records the decision and what it costs.
 pub fn redact_for_echo(raw: &str) -> String {
+    redact_parts(raw).0
+}
+
+/// [`redact_for_echo`]'s rendering, plus whether the *parsed* host is
+/// visible in it.
+///
+/// One function answering both questions, because the alternative is
+/// [`require_loopback_egress`] re-deriving the second from the string — and
+/// two pieces of code deciding independently where a credential ends is the
+/// shape that produced rounds 3 and 4. The second value exists because the
+/// gate names `Url::parse`'s host beside this rendering, and a host is not
+/// safe to print merely because the parser accepted it: the parser refuses
+/// *userinfo*, so `http://hf_SECRET?x@127.0.0.1:9105` parses with the
+/// secret as its **host**, and naming it re-prints the exact bytes this
+/// function had just decided were credential. The two claims then
+/// contradict each other inside one refusal.
+///
+/// The flag is `!masked_userinfo` and that is exact rather than
+/// approximate. An address reaching the host arm is one [`Url::parse`]
+/// accepted, so its authority holds no `@`; any `@` this function finds is
+/// therefore past the host, and masking through it always takes the host
+/// with it.
+fn redact_parts(raw: &str) -> (String, bool) {
     let (scheme, rest) = split_scheme(raw);
     // The parameter region is cut off **first**, and is never searched for
     // anything — it is dropped whole. Order matters here and getting it
@@ -493,32 +516,53 @@ pub fn redact_for_echo(raw: &str) -> String {
     // `http://svc:SECRET?x@127.0.0.1:9105` came back as `http://svc:SECRET?…`.
     // 131,040 of 640,000 enumerated inputs leaked that way.
     let cut = rest.find(['?', '#']).unwrap_or(rest.len());
-    let params = &rest[cut..rest.len().min(cut + 1)];
-    let (kept, masked_userinfo) = match rest.rfind('@') {
-        // The last `@` is past the cut, so the `?`/`#` that set the cut is
-        // inside the credential. Nothing between the scheme and the cut can
-        // be shown: it is credential, not authority.
-        Some(at) if at > cut => ("", true),
-        Some(at) => (&rest[at + 1..cut], true),
-        None => (&rest[..cut], false),
+    let has_params = cut < rest.len();
+    // `at >= cut` rather than `at > cut`: they are equivalent today, because
+    // `rest[cut]` is a `?` or `#` and `rest[at]` is an `@`, so the two
+    // indices cannot coincide. Written as `>=` anyway, because the slice in
+    // the arm below would panic with start past end if they ever could, and
+    // an edit that added `@` to the `find` set — a plausible future
+    // tightening — would make that reachable. The guard costs nothing and
+    // removes an invariant nothing states.
+    let (kept, masked_userinfo, delimiter_is_credential) = match rest.rfind('@') {
+        // The last `@` is past the cut, so the `?`/`#` that set the cut sits
+        // *inside* the credential. Nothing between the scheme and the cut
+        // can be shown: it is credential, not authority — and that includes
+        // the delimiter byte itself, which is why the marker below is a
+        // constant here rather than the byte that was found. Printing the
+        // real one leaks which of `?` or `#` the password contained, one
+        // character of it, from strictly before the terminating `@`.
+        Some(at) if at >= cut => ("", true, true),
+        Some(at) => (&rest[at + 1..cut], true, false),
+        None => (&rest[..cut], false, false),
     };
-    if !masked_userinfo && params.is_empty() {
+    if !masked_userinfo && !has_params {
         // Nothing to mask. Returning `raw` rather than a reassembly keeps an
         // address that needed no redaction byte-identical to what was set,
         // which is what an operator compares against their configuration.
-        return escape_controls(raw);
+        return (escape_controls(raw), true);
     }
     let scheme = match scheme {
-        Some(scheme) => format!("{scheme}://"),
+        Some(scheme) => format!("{}://", escape_controls(scheme)),
         None => String::new(),
     };
     let userinfo = if masked_userinfo { "…@" } else { "" };
-    let params = if params.is_empty() {
+    let params = if !has_params {
         String::new()
+    } else if delimiter_is_credential {
+        "?…".to_string()
     } else {
-        format!("{params}…")
+        format!("{}…", escape_controls(&rest[cut..cut + 1]))
     };
-    escape_controls(&format!("{scheme}{userinfo}{kept}{params}"))
+    // Every piece carrying caller text is escaped **before** the marker is
+    // spliced in, never after. Escaping the assembled string would leave the
+    // one non-ASCII character the whitelist has to admit — `…`, the marker
+    // itself — indistinguishable from a `…` an operator typed, so an address
+    // could render as though it had been redacted when it had not.
+    (
+        format!("{scheme}{userinfo}{}{params}", escape_controls(kept)),
+        !masked_userinfo,
+    )
 }
 
 /// `text` with everything outside printable ASCII replaced by an escape.
@@ -546,7 +590,7 @@ pub fn redact_for_echo(raw: &str) -> String {
 /// literal `\u{000a}` typed into an address cannot round-trip to something
 /// a consumer that unescapes would turn back into a newline.
 fn escape_controls(text: &str) -> String {
-    let safe = |c: char| (c.is_ascii_graphic() && c != '\\') || c == ' ' || c == '…';
+    let safe = |c: char| (c.is_ascii_graphic() && c != '\\') || c == ' ';
     if text.chars().all(safe) {
         return text.to_string();
     }
@@ -624,13 +668,16 @@ pub const LOOPBACK_HOST: &str = "127.0.0.1";
 /// Refuses rather than rewriting: an address that is nearly right is a
 /// deployment mistake somebody should see.
 pub fn require_loopback_egress(base_url: &str) -> qip_core::Result<()> {
-    let shown = redact_for_echo(base_url);
+    let (shown, host_survived_redaction) = redact_parts(base_url);
     // Case-insensitively, because a scheme is case-insensitive and an
     // operator who typed `HTTPS://` is making exactly the mistake this arm
     // exists to explain. Matching it byte-for-byte sent them to the generic
     // parse refusal instead, which says the address is malformed rather
     // than naming the egress proxy they were supposed to point at.
-    if base_url.len() >= 8 && base_url[..8].eq_ignore_ascii_case("https://") {
+    if base_url
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+    {
         return Err(qip_core::Error::invalid(format!(
             "the egress address is {shown}. This transport speaks plaintext HTTP/1.1 and has \
              no TLS stack: point it at the egress proxy that terminates TLS to the vendor, \
@@ -661,10 +708,24 @@ pub fn require_loopback_egress(base_url: &str) -> qip_core::Result<()> {
     // and, printed raw, splits this record for any consumer that treats it
     // as a line break — reintroducing through this arm the forged-record
     // hole `escape_controls` closes for the address beside it.
-    let host = escape_controls(url.host());
+    // Named only when the redaction kept it. A host is not safe to print
+    // merely because `Url::parse` accepted it: the parser refuses userinfo,
+    // not a secret sitting where a host goes, so
+    // `http://hf_SECRET?x@127.0.0.1:9105` parses with the credential as its
+    // host — and naming it here would re-print the exact bytes `shown` had
+    // just masked, putting two contradictory claims about the same string
+    // in one refusal. Nothing is lost by withholding it: every caller names
+    // the configuration variable in its own wrapper, which is what an
+    // operator needs to find the address, and the variable name cannot
+    // itself be a secret.
+    let host = if host_survived_redaction {
+        format!("`{}`", escape_controls(url.host()))
+    } else {
+        "one masked along with the credential it could not be told apart from".to_string()
+    };
     if url.host() != LOOPBACK_HOST {
         return Err(qip_core::Error::invalid(format!(
-            "the egress address names the host `{host}` (as written, with any credential, \
+            "the egress address names the host {host} (as written, with any credential, \
              query and fragment masked: {shown}). A vendor is reached only \
              through the egress proxy on loopback — http://127.0.0.1:<port>, the literal \
              address and not a name a resolver answers — which terminates TLS to the vendor \
@@ -675,7 +736,7 @@ pub fn require_loopback_egress(base_url: &str) -> qip_core::Result<()> {
     }
     if !url.port_is_explicit() {
         return Err(qip_core::Error::invalid(format!(
-            "the egress address names the host `{host}` and names no port (as written, with \
+            "the egress address names the host {host} and names no port (as written, with \
              any credential, query and fragment masked: {shown}). The egress proxy's listeners \
              are one per vendor on distinct ports, http://127.0.0.1:<port>; an address with no \
              port would reach whatever answers on loopback port 80, and it is not the address \
