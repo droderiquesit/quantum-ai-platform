@@ -438,6 +438,36 @@ fn split_scheme(raw: &str) -> (Option<&str>, &str) {
 /// buried inside the misread "scheme". `TOKEN` came back unredacted. See
 /// [`split_scheme`] for why anchoring to the start closes this rather than
 /// only patching the one input that was reproduced.
+///
+/// **An authority-candidate that could never be a real host does not prove
+/// there is no credential.** Until 2026-09-13 this function trusted "no `@`
+/// before the first `/`, `?` or `#`" unconditionally: when no scheme is
+/// found, that first delimiter can be the *very first character* of the
+/// whole string — an operator's `://` typo'd down to `//`, `/`, `?` or `#`
+/// with the scheme dropped entirely, e.g. `//svc:TOKEN@127.0.0.1:9106` or
+/// `/TOKEN@127.0.0.1:9106` — which makes the "authority" an empty string,
+/// or (`://svc:TOKEN@…`, where the candidate is just `:`) a string that
+/// cannot be a host at all. Neither is a real authority under any URL
+/// grammar, so "no `@` in it" said nothing about the credential sitting
+/// one character later, past the delimiter, and this function returned
+/// `raw` untouched — six such inputs, all reachable through
+/// `QIP_LANGUAGE_MODEL_BASE_URL`, all still leaking their token.
+///
+/// The fix is narrower than "search the whole remainder for `@`": that
+/// would also catch `127.0.0.1:9105/path@notacredential`, whose authority
+/// candidate (`127.0.0.1:9105`) *is* a real, complete host — a case
+/// [`redact_userinfo_handles_the_full_adversarial_matrix`] pins as
+/// intentional, because a scheme-less host that already looks like a
+/// legitimate `host[:port]` followed by a `/path` containing an ordinary
+/// `@` is not a credential and must not be over-redacted. `authority` is
+/// widened past only when [`split_authority`] cannot read it as a
+/// non-empty host at all — which is true of `""` and `":"`, and false of
+/// both `127.0.0.1:9105` and, deliberately, the bare word `svc` (a
+/// single-label hostname is legal, so `svc/TOKEN@127.0.0.1:9106` is
+/// indistinguishable, by this function's own grammar, from a host named
+/// `svc` followed by a path — this is a documented residual, not a silent
+/// one; see [`redact_userinfo_handles_the_full_adversarial_matrix`]'s own
+/// case for it).
 pub fn redact_userinfo(raw: &str) -> String {
     let (scheme, rest) = split_scheme(raw);
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
@@ -447,8 +477,34 @@ pub fn redact_userinfo(raw: &str) -> String {
             Some(scheme) => format!("{scheme}://…@{host}{remainder}"),
             None => format!("…@{host}{remainder}"),
         },
-        None => raw.to_string(),
+        None if authority_could_be_a_host(authority) => raw.to_string(),
+        None => match rest.rfind('@') {
+            None => raw.to_string(),
+            Some(at) => {
+                let after = &rest[at + 1..];
+                let host_end = after.find(['/', '?', '#']).unwrap_or(after.len());
+                let (host, tail) = after.split_at(host_end);
+                match scheme {
+                    Some(scheme) => format!("{scheme}://…@{host}{tail}"),
+                    None => format!("…@{host}{tail}"),
+                }
+            }
+        },
     }
+}
+
+/// Whether `candidate` could be a real authority's host on its own — the
+/// same `host[:port]` grammar [`Url::parse`] parses with, via
+/// [`split_authority`], requiring a non-empty host. Not a judgement about
+/// how *likely* a string is to be a scheme typo: `"svc"` passes, same as
+/// `"127.0.0.1:9105"`, because a bare single-label hostname is a legal
+/// authority and this function is a display helper, not the parser — it
+/// exists only to tell an authority-candidate that cannot be a host at all
+/// (`""`, or anything [`split_authority`] refuses, such as `":"`) from one
+/// that already is a complete host, so [`redact_userinfo`] knows which of
+/// the two it is looking at before deciding whether to search further.
+fn authority_could_be_a_host(candidate: &str) -> bool {
+    matches!(split_authority(candidate), Some((host, _)) if !host.is_empty())
 }
 
 /// The one host an egress address may name: the proxy's loopback listener,

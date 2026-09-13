@@ -216,6 +216,19 @@ fn a_scheme_less_credential_bearing_egress_address_is_still_redacted() {
 /// "scheme" and leaving the real credential outside anything the function
 /// checked for `'@'`.
 ///
+/// The fourth round's finding is here too, five new rows in: a scheme-less
+/// string whose first character is already one of the three delimiters
+/// (`://`, `//`, `/`, `?`, `#` with the scheme dropped) makes the naive
+/// authority-candidate empty, or — for a bare `://` with nothing before it
+/// — the single character `:`; neither is a real host, so the old code's
+/// "no `@` in the candidate, therefore no credential" read as true of a
+/// string whose credential sat one character later. See
+/// [`qip_transport::http::redact_userinfo`]'s doc comment for the fix and
+/// its documented residual (the `svc/TOKEN@…` row, kept unredacted on
+/// purpose because it cannot be told apart from the legitimate
+/// `127.0.0.1:9105/path@notacredential` row two above it without reopening
+/// that one).
+///
 /// Table-driven over the full matrix the security review asked for,
 /// because every row is the same property — does this string get the
 /// exact redaction it should — and a table keeps that property visible
@@ -228,7 +241,11 @@ fn a_scheme_less_credential_bearing_egress_address_is_still_redacted() {
 /// `split_scheme` call) — confirmed row 1 (the exact case above) then
 /// returns the input unchanged, `TOKEN` and `svc` both present, and this
 /// test fails on that row precisely; restored, confirmed every row passes
-/// again.
+/// again. Mutated a second way for round 4: replacing `None if
+/// authority_could_be_a_host(authority) => raw.to_string()` with a bare
+/// `None => raw.to_string()` (round 3's shape) — confirmed the four new
+/// empty-authority rows and the `:`-authority row all fail, each returning
+/// the token unredacted; restored, confirmed every row passes again.
 #[test]
 fn redact_userinfo_handles_the_full_adversarial_matrix() {
     use qip_transport::http::redact_userinfo;
@@ -295,6 +312,49 @@ fn redact_userinfo_handles_the_full_adversarial_matrix() {
              branch of `redact_userinfo` runs",
             "127.0.0.1:9105/path@notacredential",
             "127.0.0.1:9105/path@notacredential",
+        ),
+        (
+            "round 4's finding: a `://` typo'd down to `//`, with the scheme dropped \
+             entirely, makes the authority-candidate an empty string — `\"\"` is not a real \
+             host under any grammar, so finding no `@` in it must not read as `no credential`",
+            "//svc:TOKEN@127.0.0.1:9106",
+            "…@127.0.0.1:9106",
+        ),
+        (
+            "round 4's finding, one slash: the same empty-authority shape",
+            "/TOKEN@127.0.0.1:9106",
+            "…@127.0.0.1:9106",
+        ),
+        (
+            "round 4's finding, a bare `?`: the authority-candidate is still empty",
+            "?TOKEN@127.0.0.1:9106",
+            "…@127.0.0.1:9106",
+        ),
+        (
+            "round 4's finding, a bare `#`: the authority-candidate is still empty",
+            "#TOKEN@127.0.0.1:9106",
+            "…@127.0.0.1:9106",
+        ),
+        (
+            "round 4's finding: `://` with nothing before it makes the authority-candidate \
+             the single character `:`, which `split_authority` refuses outright (an empty \
+             host after the colon) rather than reading as an empty one — a different shape \
+             of `not a real host` than the four rows above, and worth its own row so a fix \
+             that only widens past an empty string, and not past one `split_authority` \
+             rejects for another reason, is still caught",
+            "://svc:TOKEN@127.0.0.1:9106",
+            "…@127.0.0.1:9106",
+        ),
+        (
+            "round 4's residual: `svc` before the `/` is a syntactically legal single-label \
+             hostname — indistinguishable, by the grammar `authority_could_be_a_host` \
+             enforces, from the `127.0.0.1:9105/path@notacredential` row above, which this \
+             same test pins as *not* a credential. Closing this one row would reopen that \
+             one; documented as an accepted residual rather than fixed silently, and its \
+             `@` must still not reach `Url::parse`'s `UnsupportedScheme` or `InvalidUrl` \
+             unredacted if it should ever be judged worth closing later",
+            "svc/TOKEN@127.0.0.1:9106",
+            "svc/TOKEN@127.0.0.1:9106",
         ),
     ];
 
