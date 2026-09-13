@@ -204,6 +204,30 @@ the one on *asking again*; the restrictions on *what* and *where* stand.
     before applying dev. It does not move an environment, a ceiling, or a
     line in a rules file.
 
+13. **The owner instructed a full teardown of dev on 2026-09-13, and the
+    agent carries it out through the workflow.** The words were "Stop and
+    delete all google cloud resources immediately" and, when the agent said
+    it held no credential, "Perform the delete command for me, I give you
+    authority." That is explicit approval naming every resource, which is
+    what `.claude/rules/domains/infrastructure.md` requires. The agent has no
+    Google credential and may not run `terraform destroy` or `gcloud …
+    delete` from its own shell (decision 5, the guard hook), so the act is a
+    `teardown` action added to `infra.yml` and dispatched under the
+    workflow's own identity. It deletes the Cloud Run services and the
+    control-plane cluster by `gcloud`, takes the cluster and every KMS key
+    out of state, and runs a targeted destroy of every module except
+    `module.services` (disabling an API mid-destroy fails the rest; an
+    enabled API is free) and `module.cicd` (the identity running the job;
+    a pool and an account are free). What it cannot reach, and says so: the
+    project itself (the identity holds no `resourcemanager.projects.delete`
+    and this record does not widen it — `gcloud projects delete algorik-dev`
+    remains the owner's one-command, thirty-day-recoverable alternative),
+    the state bucket (bootstrap-created, outside Terraform), non-empty
+    buckets declared `force_destroy = false`, and the KMS keys (undeletable
+    by Google's design). The run's own `what exists now` step is the record
+    of what remained; the register carries the run URL and terminal status.
+    Nothing this action deletes is recoverable.
+
 Where this amendment supersedes earlier text, the earlier text is marked
 rather than silently left standing: decision 1's "on this instruction" and
 its destroy test are superseded by 9 and 10; decision 6's "under decision

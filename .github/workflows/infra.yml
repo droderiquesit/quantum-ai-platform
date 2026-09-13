@@ -38,6 +38,28 @@
 # `up` (a plain apply) at the start of the next. A true full teardown is a
 # deliberate human act with `terraform destroy` and a reading of the KMS and
 # WIF caveats above.
+#
+# ## `teardown` — that act, dispatched by name
+#
+# Added 2026-09-13 on the owner's instruction to delete every Google Cloud
+# resource (ADR 0040 decision 13). It is not `down` and it is not a plain
+# `terraform destroy`, for the reasons above, and it does four things in
+# order: deletes the Cloud Run services (released from state under ADR 0036,
+# so only `gcloud` reaches them); deletes the control-plane cluster and takes
+# it out of state (its `deletion_protection` in state would otherwise refuse
+# the destroy); takes every KMS key out of state (they carry
+# `prevent_destroy`, a key cannot be deleted anyway, and a destroy that
+# plans one aborts before touching anything else); then runs a *targeted*
+# destroy of every module except two. `module.services` is left because
+# disabling an API while its resources are still being deleted fails the
+# rest, and an enabled API costs nothing. `module.cicd` is left because it
+# holds the identity running this very job — destroy the account and its
+# token is revoked mid-run with the remainder stranded — and a pool and an
+# account cost nothing standing. Non-empty buckets with `force_destroy =
+# false` refuse and are listed. The step prints what it deleted and the
+# `what exists now` step prints what remains; that list, not this comment,
+# is the record. Nothing here is recoverable once run: unlike a project
+# deletion, there is no thirty-day window.
 name: infra
 
 on:
@@ -53,7 +75,7 @@ on:
           - test
           - stage
       action:
-        description: "plan (read-only), up (apply), down (destroy the execution nodes to stop the meter; everything else stands)"
+        description: "plan (read-only), up (apply), down (destroy the execution nodes to stop the meter; everything else stands), teardown (delete the environment: cluster, services, then a targeted destroy of every module but the identity running this job — the owner's act, by name)"
         required: true
         default: "plan"
         type: choice
@@ -61,6 +83,7 @@ on:
           - plan
           - up
           - down
+          - teardown
 
 permissions:
   contents: read
@@ -660,6 +683,86 @@ jobs:
           terraform -chdir=infrastructure/terraform destroy -input=false -auto-approve \
             -target=module.execution_node \
             ${VAR_FILES}
+
+      - name: teardown
+        if: inputs.action == 'teardown'
+        env:
+          VAR_FILES: ${{ steps.vars.outputs.files }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+        run: |
+          set -euo pipefail
+          # See the header's `teardown` section for the order and the two
+          # modules deliberately left standing.
+          tfvars="infrastructure/environments/${ENVIRONMENT}/terraform.tfvars"
+          region="$(sed -n 's/^region[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          [ -n "$region" ] || {
+            echo "the tfvars name no region; nothing here can be addressed." >&2
+            exit 1
+          }
+          tf() { terraform -chdir=infrastructure/terraform "$@"; }
+
+          # 1. Cloud Run services. Released from state by ADR 0036's `removed`
+          #    blocks, so Terraform cannot see them; bounded to this
+          #    environment's prefix so no other environment's service is named.
+          services="$(gcloud run services list --project "$GCP_PROJECT" --region "$region" \
+            --format='value(metadata.name)' --filter="metadata.name~^qip-${ENVIRONMENT}-" || true)"
+          for service in $services; do
+            gcloud run services delete "$service" --project "$GCP_PROJECT" --region "$region" --quiet
+            echo "deleted Cloud Run service ${service}"
+          done
+          [ -n "$services" ] || echo "no qip-${ENVIRONMENT}-* Cloud Run service exists"
+
+          # 2. The control-plane cluster, by gcloud, because its
+          #    `deletion_protection` is true in state and a tainted cluster is
+          #    only ever planned as a replace (module comment says why).
+          cluster="qip-${ENVIRONMENT}-control-plane"
+          if gcloud container clusters describe "$cluster" --project "$GCP_PROJECT" --region "$region" \
+              --format='value(name)' >/dev/null 2>&1; then
+            gcloud container clusters delete "$cluster" --project "$GCP_PROJECT" --region "$region" --quiet
+            echo "deleted cluster ${cluster}"
+          else
+            echo "cluster ${cluster} does not exist"
+          fi
+
+          # 3. Out of state, not destroyed: the cluster entry (now deleted
+          #    above, or never created) and every KMS key. A key carries
+          #    `prevent_destroy`, so a destroy that plans one aborts before
+          #    touching anything else; and a key cannot be deleted, only
+          #    scheduled, so leaving it is not leaving a cost. The pattern
+          #    requires a literal dot after the type, which keeps the
+          #    `_iam_member` bindings in state for the destroy to remove.
+          for address in $(tf state list | grep -E 'google_container_cluster\.|google_kms_crypto_key\.' || true); do
+            tf state rm "$address"
+          done
+
+          # 4. Targeted, per the header: every module but module.services and
+          #    module.cicd. A refusal (a non-empty bucket with force_destroy
+          #    false) stops Terraform's scheduling but not this step; what is
+          #    left is printed by `what exists now` below.
+          tf destroy -input=false -auto-approve \
+            -target=module.execution_node \
+            -target=module.gitops_control_plane \
+            -target=module.cloud_run \
+            -target=module.openobserve \
+            -target=module.network \
+            -target=module.trust_zones \
+            -target=module.connectivity \
+            -target=module.egress_proxy \
+            -target=module.registry \
+            -target=module.image_bake \
+            -target=module.secrets \
+            -target=module.evidence \
+            -target=module.backup \
+            -target=module.data \
+            -target=module.ai \
+            -target=module.observability \
+            -target=module.binary_authorization \
+            -target=module.scc \
+            -target=module.identity \
+            ${VAR_FILES} \
+            || echo "the destroy stopped before the end; the remainder is listed below and the refusal is in the log above." >&2
+          echo "teardown finished; module.services and module.cicd were left standing by design."
 
       # Only where init succeeded, and only counting what was actually
       # listed. `state list | wc -l` printed 0 for a backend that could not
