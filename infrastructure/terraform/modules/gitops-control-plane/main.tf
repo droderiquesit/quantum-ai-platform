@@ -160,7 +160,26 @@ resource "google_container_cluster" "control_plane" {
 
   # A cluster deleted by a plan nobody read takes every controller and both
   # App keys with it. Removing one is a deliberate two-step by a person.
-  deletion_protection = true
+  #
+  # **This is step one of that two-step, and it is open right now.** Run 37's
+  # create waited forty minutes for a node that could not reach its own
+  # endpoint and then failed, which taints the cluster; the provider refuses
+  # the replacement at destroy time while this is `true`, so the plan reads
+  # cleanly and the apply stops halfway through it. The firewall rule that
+  # fixes the original failure is `nodes_reach_control_plane` above, and it
+  # is in the same plan's creates — so the replacement is the repair.
+  #
+  # The owner decided on 2026-09-13 to clear it for that replacement. ADR
+  # 0040 decision 11 records the shape: this literal is flipped in one
+  # commit, the apply is dispatched, and the next commit restores `true`.
+  # **It is not a module input**, and the reason is in that decision: an
+  # input is a switch a later tfvars can throw with nobody deciding
+  # anything, which is exactly what
+  # `a_cloud_run_service_cannot_be_deleted_by_a_plan_nobody_read` refuses in
+  # `modules/cloudrun`. If you are reading this line as `false` and no
+  # `infra.yml` `up` is in flight, the restoring commit was lost — put it
+  # back.
+  deletion_protection = false
 
   # Private in both directions. The endpoint has no public address at all,
   # rather than one behind an allowlist, and the only range that may reach
