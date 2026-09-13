@@ -489,8 +489,8 @@ variable "venue_registrations_file" {
   default = null
 
   validation {
-    condition     = var.venue_registrations_file == null ? true : can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.venue_registrations_file))
-    error_message = "The venue registrations file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read."
+    condition     = var.venue_registrations_file == null ? true : (can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.venue_registrations_file)) && !strcontains(var.venue_registrations_file, ".."))
+    error_message = "The venue registrations file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read. A `..` segment is refused outright rather than left to the character class above, which admits both `.` and `/` and so admits it too."
   }
 }
 
@@ -520,8 +520,8 @@ variable "wallet_statement_file" {
   default = null
 
   validation {
-    condition     = var.wallet_statement_file == null ? true : can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.wallet_statement_file))
-    error_message = "The wallet statement file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read."
+    condition     = var.wallet_statement_file == null ? true : (can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.wallet_statement_file)) && !strcontains(var.wallet_statement_file, ".."))
+    error_message = "The wallet statement file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read. A `..` segment is refused outright rather than left to the character class above, which admits both `.` and `/` and so admits it too."
   }
 }
 
@@ -563,8 +563,8 @@ variable "capital_fabric_file" {
   default = null
 
   validation {
-    condition     = var.capital_fabric_file == null ? true : can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.capital_fabric_file))
-    error_message = "The capital fabric file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read."
+    condition     = var.capital_fabric_file == null ? true : (can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.capital_fabric_file)) && !strcontains(var.capital_fabric_file, ".."))
+    error_message = "The capital fabric file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read. A `..` segment is refused outright rather than left to the character class above, which admits both `.` and `/` and so admits it too."
   }
 }
 
@@ -600,8 +600,8 @@ variable "central_horizons_file" {
   default = null
 
   validation {
-    condition     = var.central_horizons_file == null ? true : can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.central_horizons_file))
-    error_message = "The central horizons file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read."
+    condition     = var.central_horizons_file == null ? true : (can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.central_horizons_file)) && !strcontains(var.central_horizons_file, ".."))
+    error_message = "The central horizons file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read. A `..` segment is refused outright rather than left to the character class above, which admits both `.` and `/` and so admits it too."
   }
 }
 
@@ -642,8 +642,8 @@ variable "risk_limits_file" {
   default = null
 
   validation {
-    condition     = var.risk_limits_file == null ? true : can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.risk_limits_file))
-    error_message = "The risk limits file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read."
+    condition     = var.risk_limits_file == null ? true : (can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.risk_limits_file)) && !strcontains(var.risk_limits_file, ".."))
+    error_message = "The risk limits file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read. A `..` segment is refused outright rather than left to the character class above, which admits both `.` and `/` and so admits it too."
   }
 }
 
@@ -692,8 +692,8 @@ variable "source_candidates_file" {
   default = null
 
   validation {
-    condition     = var.source_candidates_file == null ? true : can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.source_candidates_file))
-    error_message = "The source-candidates file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read."
+    condition     = var.source_candidates_file == null ? true : (can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.source_candidates_file)) && !strcontains(var.source_candidates_file, ".."))
+    error_message = "The source-candidates file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read. A `..` segment is refused outright rather than left to the character class above, which admits both `.` and `/` and so admits it too."
   }
 }
 

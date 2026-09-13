@@ -957,3 +957,123 @@ fn a_catalogue_entry_setting_the_openobserve_url_while_it_is_anonymous_is_refuse
          substring, which is the trap the testing rules name"
     );
 }
+
+// --- the six `*_file` variables refuse a `..` segment explicitly ------------
+//
+// Security review MEDIUM-1: `^data/[A-Za-z0-9._/-]+\.json$` puts `.` and `/`
+// both inside the character class, so `data/../infrastructure/anything.json`
+// satisfies it — the class cannot tell a parent-directory hop from an
+// ordinary subdirectory. Each variable's own `error_message` said the hop was
+// refused; it was not. Reproduced against the real root with a scratch module
+// holding the exact variable block (`terraform init`, `terraform plan
+// -var risk_limits_file=data/../infrastructure/terraform/anything.json`):
+// before the fix, `plan` printed `+ chosen =
+// "data/../infrastructure/terraform/anything.json"` and exited 0; after it,
+// `plan` refused with the message this test checks for, exit 1. `terraform
+// validate`'s own graph evaluation does not exercise a caller-supplied value
+// (it only sees each variable's `default`, which is `null`), so this needs a
+// plan with `-var` — the same reason a scratch module was used to check it
+// live rather than adding a permanent dependency on the `terraform` binary
+// to this crate's test binary, which `ci.yml`'s `test` job does not install
+// (only its separate `infrastructure` job does, via `hashicorp/setup-terraform`).
+// This file's own convention is a textual contract check rather than a
+// literal `terraform plan`, so the regression guard below is that: it reads
+// the same source the live plan proved, rather than re-deriving it.
+
+/// The six variables sharing `^data/[A-Za-z0-9._/-]+\.json$`, named in the
+/// security review's MEDIUM-1.
+const FILE_PATH_VARIABLES: [&str; 6] = [
+    "venue_registrations_file",
+    "wallet_statement_file",
+    "capital_fabric_file",
+    "central_horizons_file",
+    "risk_limits_file",
+    "source_candidates_file",
+];
+
+/// Whether `path` would satisfy `^data/[A-Za-z0-9._/-]+\.json$` on the
+/// character class alone, with no `regex` engine — this workspace holds
+/// none (ADR 0002, ADR 0009). `data/` and `.json` are the pattern's only
+/// fixed parts; everything between them need only be in the bracketed
+/// class.
+fn admitted_by_the_character_class_alone(path: &str) -> bool {
+    let Some(middle) = path
+        .strip_prefix("data/")
+        .and_then(|rest| rest.strip_suffix(".json"))
+    else {
+        return false;
+    };
+    !middle.is_empty()
+        && middle
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-'))
+}
+
+#[test]
+fn a_parent_directory_hop_would_satisfy_the_shared_character_class_on_its_own() {
+    // Premise for the test below: the character class the six `*_file`
+    // variables share admits a `..` segment by itself, because `.` and `/`
+    // are both inside the brackets. If this premise were false, the
+    // `strcontains` guard the next test looks for would be redundant rather
+    // than the fix for a real gap.
+    assert!(
+        admitted_by_the_character_class_alone("data/../infrastructure/terraform/anything.json"),
+        "the premise failed: the character class alone already refuses a parent-directory hop, \
+         so this file's fix would be guarding against nothing"
+    );
+    assert!(
+        !admitted_by_the_character_class_alone("/etc/anything.json"),
+        "the premise failed: an absolute path already fails the character class alone, so it is \
+         not the shape this test is about"
+    );
+}
+
+/// The text of one `variable "{name}" { … }` block from a `variables.tf`
+/// source, up to the first `\n}\n` — the same "closes at column zero" rule
+/// `admitted_ceiling_levels` in `infrastructure.rs` uses, because nested
+/// `validation` blocks close indented.
+fn variable_block<'a>(source: &'a str, name: &str) -> &'a str {
+    let marker = format!("variable \"{name}\" {{");
+    let start = source
+        .find(&marker)
+        .unwrap_or_else(|| panic!("variables.tf no longer declares a \"{name}\" variable"));
+    let body = &source[start..];
+    match body.find("\n}\n") {
+        Some(end) => &body[..end],
+        None => body,
+    }
+}
+
+#[test]
+fn every_file_variable_refuses_a_path_traversal_segment_explicitly() {
+    // Each of the six variables' own validation must refuse a `..` segment
+    // by name, not merely by the character class the previous test showed
+    // cannot tell it apart from an ordinary path. Checked on the delimited
+    // call `!strcontains(var.{name}, "..")` rather than a bare `contains(".."
+    // )` substring, because `strcontains` also appears as a substring of
+    // nothing else here, but the point of naming the exact call is that a
+    // rewrite to some other predicate would have to update this test rather
+    // than pass it by accident.
+    let variables = std::fs::read_to_string(terraform_root().join("variables.tf"))
+        .expect("infrastructure/terraform/variables.tf is readable");
+    let mut checked = 0usize;
+    for name in FILE_PATH_VARIABLES {
+        let block = variable_block(&variables, name);
+        assert!(
+            block.contains(&format!("!strcontains(var.{name}, \"..\")")),
+            "{name}'s validation no longer refuses a `..` segment explicitly: {block}"
+        );
+        assert!(
+            block.contains("refused outright"),
+            "{name}'s error message no longer says a `..` segment is refused outright, so an \
+             operator reading the refusal would not know why a value matching the character \
+             class was rejected: {block}"
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked,
+        FILE_PATH_VARIABLES.len(),
+        "not every listed variable was found in variables.tf"
+    );
+}
