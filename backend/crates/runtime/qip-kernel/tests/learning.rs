@@ -824,6 +824,202 @@ fn a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue() -> Result<(
     Ok(())
 }
 
+/// Withdraw the desk's venue the way LEARN does: ten off-lot buys on `AAA`
+/// (a one-lot listing), every one refused by the lot gate at the desk's
+/// one broker, then a cycle.
+fn withdraw_the_desk_venue(platform: &mut Platform) -> Result<()> {
+    for n in 0..10 {
+        let order = platform.order_from(
+            object("AAA"),
+            Side::Buy,
+            dec!("10.5"),
+            dec!("100"),
+            &format!("prop-off-lot-{n}"),
+            vec![format!("hyp-off-lot-{n}")],
+            start(),
+        );
+        let error = platform
+            .submit_order(order, start())
+            .expect_err("ten and a half shares of a one-lot listing reached the venue");
+        assert!(
+            error.message().contains("infeasible (feasibility_lot):"),
+            "the premise failed: refused for another reason than the lot grid: {}",
+            error.message()
+        );
+    }
+    platform.run_cycle(start());
+    assert_eq!(
+        platform.withdrawn_venues().iter().collect::<Vec<_>>(),
+        vec!["simulated-venue"],
+        "the premise failed: ten lot refusals did not withdraw the desk venue"
+    );
+    Ok(())
+}
+
+fn operator(name: &str, at: Timestamp) -> qip_risk_engine::autonomy::OperatorIdentity {
+    qip_risk_engine::autonomy::OperatorIdentity::verified(name, "hardware-token", at)
+}
+
+fn reinstatements(
+    platform: &Platform,
+) -> Result<Vec<qip_kernel::venue_review::VenueReinstatementEntry>> {
+    platform
+        .replay_journal(&qip_events::EventFilter::new().topic(qip_events::Topic::VenueReinstated))?
+        .iter()
+        .map(|envelope| {
+            Ok(envelope
+                .decode::<qip_kernel::venue_review::VenueReinstatementEntry>()?
+                .body)
+        })
+        .collect()
+}
+
+#[test]
+fn reinstatement_needs_two_different_fresh_operators_and_is_journaled_at_each_signature()
+-> Result<()> {
+    // Putting a venue the platform stopped using back into use is a person
+    // widening what the platform may do, so it is held to the promotion's
+    // discipline: a fresh credential, two distinct people, every signature
+    // on the record before anything changes. The refusals come first — a
+    // venue nothing withdrew, a stale credential, the same person twice —
+    // and each leaves the venue withdrawn, which the next order proves.
+    let mut platform = platform()?;
+    platform.observe(quiet_bars("AAA", 30));
+    let now = start();
+    // Refusal first: nothing is withdrawn, so nothing can be reinstated.
+    let not_withdrawn = platform
+        .reinstate_venue(
+            "simulated-venue",
+            &operator("alice", now),
+            "it is fine",
+            now,
+        )
+        .expect_err("a venue nothing withdrew accepted a reinstatement signature");
+    assert!(
+        not_withdrawn.message().contains("is not withdrawn"),
+        "{}",
+        not_withdrawn.message()
+    );
+
+    withdraw_the_desk_venue(&mut platform)?;
+    let refused_order = |platform: &mut Platform, n: usize| -> bool {
+        let order = platform.order_from(
+            object("AAA"),
+            Side::Buy,
+            dec!("1000"),
+            dec!("100"),
+            &format!("prop-probe-{n}"),
+            vec![format!("hyp-probe-{n}")],
+            now,
+        );
+        platform.submit_order(order, now).is_err_and(|error| {
+            error
+                .message()
+                .contains("withdrawn on feasibility evidence")
+        })
+    };
+    assert!(
+        refused_order(&mut platform, 0),
+        "the premise failed: the venue admits orders"
+    );
+
+    // A stale credential signs nothing.
+    let stale = operator("alice", now.saturating_sub(Duration::from_mins(20)));
+    let refused = platform
+        .reinstate_venue("simulated-venue", &stale, "it is fine", now)
+        .expect_err("a stale credential signed a reinstatement");
+    assert!(
+        refused.message().contains("re-authenticate"),
+        "{}",
+        refused.message()
+    );
+    assert!(
+        reinstatements(&platform)?.is_empty(),
+        "a refused signature was journaled"
+    );
+    assert!(refused_order(&mut platform, 1));
+
+    // The first signature is journaled and changes nothing.
+    let first = platform.reinstate_venue(
+        "simulated-venue",
+        &operator("alice", now),
+        "the venue's grid was corrected in the catalogue",
+        now,
+    )?;
+    assert_eq!(first.outcome, "awaiting_countersignature");
+    assert_eq!(first.approver, "alice");
+    assert_eq!(first.second_approver, None);
+    assert!(
+        refused_order(&mut platform, 2),
+        "one signature reinstated the venue"
+    );
+    assert_eq!(reinstatements(&platform)?.len(), 1);
+
+    // The same person again is not a second person.
+    let same = platform
+        .reinstate_venue(
+            "simulated-venue",
+            &operator("alice", now),
+            "still fine",
+            now,
+        )
+        .expect_err("one operator countersigned their own signature");
+    assert!(
+        same.message()
+            .contains("a second session is not a second person"),
+        "{}",
+        same.message()
+    );
+    assert!(refused_order(&mut platform, 3));
+    assert_eq!(
+        reinstatements(&platform)?.len(),
+        1,
+        "a refused countersignature was journaled"
+    );
+
+    // A second, distinct, fresh person: the record first, then the venue.
+    let second = platform.reinstate_venue(
+        "simulated-venue",
+        &operator("bram", now),
+        "confirmed against the venue's own specification",
+        now,
+    )?;
+    assert_eq!(second.outcome, "reinstated");
+    assert_eq!(second.approver, "alice");
+    assert_eq!(second.second_approver.as_deref(), Some("bram"));
+    assert!(platform.withdrawn_venues().is_empty());
+    let records = reinstatements(&platform)?;
+    assert_eq!(records.len(), 2);
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.outcome.as_str())
+            .collect::<Vec<_>>(),
+        vec!["awaiting_countersignature", "reinstated"]
+    );
+    let order = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("1000"),
+        dec!("100"),
+        "prop-after-reinstatement",
+        vec!["hyp-after".to_string()],
+        now,
+    );
+    platform.submit_order(order, now)?;
+
+    // And a reinstated venue can be withdrawn again on fresh evidence, as
+    // a new record: the window still holds the ten, and nothing has
+    // reinstated the *evidence*, so the next review withdraws it once more.
+    platform.run_cycle(now);
+    assert_eq!(
+        platform.withdrawn_venues().iter().collect::<Vec<_>>(),
+        vec!["simulated-venue"],
+        "the standing cluster did not withdraw the reinstated venue again"
+    );
+    Ok(())
+}
+
 // --- ADR 0055: the counterfactual record narrows sizing, never widens it ---
 
 #[test]

@@ -173,7 +173,8 @@ facts that once had no production caller now have one, in the LEARN stage:
 `Platform::learn_from`, which produces the belief calibration, is called from
 `calibrate_resolved`, which `stage_learn` calls (`04738ee`), and
 `Platform::evaluate_alternatives`, which scores counterfactuals, is called
-from `score_declined`, which `stage_learn` also calls (`b9e2242`). **The four
+from `score_declined`, which `stage_learn` also calls (`b9e2242`), and since
+`dd64c0a` from `score_filled` beside it, for the venue's fills. **The four
 line numbers this passage used to give — `:4086`, `:3965`, `:5107`, `:3982` —
 were all wrong and are removed rather than replaced.** They came from a
 `platform.rs` roughly half the length of the present one and every one of them
@@ -186,6 +187,33 @@ working session, while a parallel lane was editing the file. Name the symbol,
 run the command. Recount with
 `grep -n "learn_from\|evaluate_alternatives" backend/crates/runtime/qip-kernel/src/platform.rs`
 before quoting either line.
+
+**Two central series from lane B-2 of §12.3 (ADR 0062), located by symbol.**
+`qip_feasibility_refusals_total{venue,constraint}` counts every feasibility
+refusal from both seams — the desk's order manager and the cells' reports —
+and is the window a venue is withdrawn on. It has exactly two recording
+sites, both in `platform.rs`: `record_feasibility_refusal`, which every
+*admitted* refusal goes through and which also writes the window, and the
+unattributed arm in `ingest_cell_report`, which counts a carried refusal
+under the literals `unknown` (a venue neither the arbitrage policy nor a live
+grant names) and `other` (a gate outside
+`qip_contracts::feasibility::EDGE_GATES`) and never writes the window.
+Recount with
+`grep -n 'names::FEASIBILITY_REFUSALS' backend/crates/runtime/qip-kernel/src/platform.rs`,
+which printed two lines on 2026-09-13; a third site would be a refusal that
+reached the window by a path the ADR does not describe. `venue` is bounded by
+the desk broker's name, the configured and granted venue list and `unknown`;
+`constraint` by the eight gate literals and `other`. Beside it,
+`qip_venue_fill_error_bps{venue}` is a histogram on
+`Histogram::signed_basis_points` — bounds straddling zero because the sign is
+the finding, negative meaning the twin filled better than reality on the side
+taken — recorded once, in `score_filled`
+(`grep -n 'names::VENUE_FILL_ERROR_BPS' backend/crates/runtime/qip-kernel/src/platform.rs`,
+one recording line plus its `describe`). It is diagnostic and read by nothing
+that decides: `qip-kernel/tests/learning.rs::a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue`
+misprices twelve fills by a thousand basis points and asserts no venue moves.
+Neither series has an alert policy, and neither should until something
+scrapes; both reach the same `Telemetry` the other central series do.
 
 `workload_metrics_exist` remains `false` everywhere — the default in
 `infrastructure/terraform/variables.tf` and in the observability module, and

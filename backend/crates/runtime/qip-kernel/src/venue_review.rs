@@ -226,6 +226,48 @@ impl EventBody for VenueWithdrawal {
     }
 }
 
+/// A first signature is on the record and the venue stays withdrawn until
+/// a second person signs.
+pub const REINSTATEMENT_AWAITING: &str = "awaiting_countersignature";
+/// Two people signed and the venue is back at both seams.
+pub const REINSTATED: &str = "reinstated";
+/// The second signature was refused and the venue stays withdrawn.
+pub const REINSTATEMENT_REFUSED: &str = "refused";
+
+/// One signature on a venue's reinstatement, and what came of it.
+///
+/// Journaled at each signature under `venue.reinstated`, so the log says
+/// who asked first, who countersigned, and whether the venue came back —
+/// the same shape as a promotion approval, because putting a venue the
+/// platform stopped using back into use is the same kind of act: a person
+/// widening what the platform may do. `outcome` is one of
+/// [`REINSTATEMENT_AWAITING`], [`REINSTATED`] or [`REINSTATEMENT_REFUSED`],
+/// and a restarted process reads the `reinstated` records, in log order
+/// against the withdrawals, to resume the set.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VenueReinstatementEntry {
+    pub venue: String,
+    pub approver: String,
+    pub second_approver: Option<String>,
+    pub rationale: String,
+    pub outcome: String,
+    pub detail: Option<String>,
+    pub cycle: u64,
+    pub at: Timestamp,
+}
+
+impl EventBody for VenueReinstatementEntry {
+    const TOPIC: Topic = Topic::VenueReinstated;
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn idempotency_key(&self) -> Option<String> {
+        Some(format!(
+            "venue-reinstatement:{}:{}:{}",
+            self.venue, self.outcome, self.cycle
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -45,7 +45,8 @@ use crate::rule_review::{
     RuleDefence, RuleDormant, RuleRegret, RuleReviewJournal, regret_by_rule,
 };
 use crate::venue_review::{
-    FEASIBILITY_WINDOW, FeasibilityRefusal, FeasibilitySeam, VenueWithdrawal,
+    FEASIBILITY_WINDOW, FeasibilityRefusal, FeasibilitySeam, REINSTATED, REINSTATEMENT_AWAITING,
+    REINSTATEMENT_REFUSED, VenueReinstatementEntry, VenueWithdrawal,
 };
 use qip_agents::memory::ResearchMemory;
 use qip_agents::runtime::{Reading, Upstream};
@@ -404,6 +405,10 @@ pub struct Platform {
     /// log at assembly, so a restarted process still refuses what it
     /// withdrew; a caller cannot put a name here.
     withdrawn_venues: BTreeSet<String>,
+    /// First signatures on a venue's reinstatement waiting for a
+    /// countersignature, by venue. In memory and not replayed, for exactly
+    /// the reason [`Self::pending_promotions`] gives.
+    pending_reinstatements: BTreeMap<String, qip_contracts::governance::Approval>,
     /// What the LEARN stage priced this cycle, for the journal. Cleared as
     /// each cycle's LEARN begins.
     cycle_counterfactuals: Option<CounterfactualJournal>,
@@ -949,6 +954,10 @@ const RECALIBRATION_APPROVAL_ORIGIN: &str = "kernel/recalibration-approval";
 /// The producer on every venue withdrawal the LEARN stage's venue review
 /// writes, and the one [`Platform::resume_withdrawn_venues`] selects on.
 const VENUE_REVIEW_ORIGIN: &str = "kernel/venue-review";
+
+/// The producer on every reinstatement signature, told apart from the
+/// withdrawal records the resume walks beside them.
+const VENUE_REINSTATEMENT_ORIGIN: &str = "kernel/venue-reinstatement";
 
 /// How recently an operator must have authenticated to sign a promotion to a
 /// capital-holding rung.
@@ -3262,6 +3271,7 @@ impl Platform {
             fill_scores: Vec::new(),
             feasibility_refusals: Vec::new(),
             withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
+            pending_reinstatements: BTreeMap::new(),
             cycle_counterfactuals: None,
             cycle_rule_review: None,
             rule_activity,
@@ -12386,19 +12396,152 @@ impl Platform {
         self.central.withdraw_venue(venue);
     }
 
-    /// The venues the log says were withdrawn and not since reinstated,
-    /// selected by producer so the records of other kinds on these topics
+    /// Sign a withdrawn venue's reinstatement, and put it back at both seams
+    /// once two people have.
+    ///
+    /// Cloned from [`Self::approve_promotion`] where the two are about the
+    /// same thing — a fresh credential, two distinct people, a first
+    /// signature that goes stale after [`PROMOTION_APPROVAL_WINDOW`] — and
+    /// different where they are not. The subject is a venue *the platform
+    /// withdrew*: one that is not withdrawn is refused as not found, so a
+    /// signature cannot land on a venue nothing stopped using. Every
+    /// signature is journaled under `venue.reinstated` before anything
+    /// changes, and the countersignature's record is written before the
+    /// venue is reinstated, so a restarted process reads the same set.
+    ///
+    /// What the second signature can do is remove a name from a subtractive
+    /// set. The order manager still walks every other gate for the next
+    /// order there, and the whitelist carries only what the policy and the
+    /// grant already permitted; a venue `QIP_VENUES`, the policy's venue map
+    /// and the grant's terms do not name is not made reachable by this. No
+    /// HTTP route exposes it yet — that is follow-on work ADR 0062 names.
+    pub fn reinstate_venue(
+        &mut self,
+        venue: &str,
+        operator: &OperatorIdentity,
+        rationale: &str,
+        now: Timestamp,
+    ) -> Result<VenueReinstatementEntry> {
+        if !self.withdrawn_venues.contains(venue) {
+            return Err(Error::not_found(format!(
+                "{venue} is not withdrawn; a reinstatement signs a withdrawal the platform made \
+                 on feasibility evidence, and there is none for this venue"
+            )));
+        }
+        if !operator.is_fresh(now, PROMOTION_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to sign the \
+                 reinstatement of a venue the platform withdrew",
+                operator.subject(),
+                PROMOTION_CREDENTIAL_AGE
+            )));
+        }
+
+        match self.pending_reinstatements.get(venue).cloned() {
+            None => {
+                let approval = qip_contracts::governance::Approval::new(
+                    venue,
+                    operator.subject(),
+                    now,
+                    rationale.to_string(),
+                )?;
+                let entry = VenueReinstatementEntry {
+                    venue: venue.to_string(),
+                    approver: approval.approver.clone(),
+                    second_approver: None,
+                    rationale: approval.rationale.clone(),
+                    outcome: REINSTATEMENT_AWAITING.to_string(),
+                    detail: None,
+                    cycle: self.cycle,
+                    at: now,
+                };
+                self.journal_record(entry.clone(), VENUE_REINSTATEMENT_ORIGIN, now)?;
+                self.pending_reinstatements
+                    .insert(venue.to_string(), approval);
+                Ok(entry)
+            }
+            Some(first) => {
+                if first.at.saturating_add(PROMOTION_APPROVAL_WINDOW) < now {
+                    self.pending_reinstatements.remove(venue);
+                    return Err(Error::denied(format!(
+                        "the first signature on {venue}'s reinstatement was given at {} and a \
+                         countersignature must follow within {:?}; it has been discarded and \
+                         both signatures must be given again",
+                        first.at.to_rfc3339(),
+                        PROMOTION_APPROVAL_WINDOW
+                    )));
+                }
+                if first.approver == operator.subject() {
+                    return Err(Error::denied(format!(
+                        "{} has already signed {venue}'s reinstatement; a dual approval needs \
+                         two people, and a second session is not a second person",
+                        operator.subject()
+                    )));
+                }
+                let first_approver = first.approver.clone();
+                let approval = first.countersigned_by(operator.subject());
+                // Cleared either way, as the promotion is: the pair have had
+                // their answer.
+                self.pending_reinstatements.remove(venue);
+                let mut entry = VenueReinstatementEntry {
+                    venue: venue.to_string(),
+                    approver: first_approver,
+                    second_approver: Some(operator.subject().to_string()),
+                    rationale: rationale.to_string(),
+                    outcome: REINSTATED.to_string(),
+                    detail: None,
+                    cycle: self.cycle,
+                    at: now,
+                };
+                if let Err(error) = &approval {
+                    entry.outcome = REINSTATEMENT_REFUSED.to_string();
+                    entry.detail = Some(error.message().to_string());
+                }
+                // The record before the change: a venue reinstated in a
+                // process whose log does not say so would be withdrawn again
+                // by the next assembly.
+                self.journal_record(entry.clone(), VENUE_REINSTATEMENT_ORIGIN, now)?;
+                approval?;
+                self.reinstate_venue_at_seams(venue);
+                Ok(entry)
+            }
+        }
+    }
+
+    /// Put `venue` back at both seams. Reached only from
+    /// [`Self::reinstate_venue`] after the record is in the log, and from
+    /// assembly replaying that record.
+    fn reinstate_venue_at_seams(&mut self, venue: &str) {
+        self.withdrawn_venues.remove(venue);
+        self.orders.reinstate_venue(venue);
+        self.central.reinstate_venue(venue);
+    }
+
+    /// The venues the log says were withdrawn and not since reinstated —
+    /// the withdrawals and the `reinstated` records walked in log order, so
+    /// a venue withdrawn, reinstated and withdrawn again resumes withdrawn.
+    /// Selected by producer so the records of other kinds on these topics
     /// are passed over. Called from assembly.
     fn resume_withdrawn_venues(log: &EventLog) -> Result<BTreeSet<String>> {
         let mut withdrawn = BTreeSet::new();
-        for event in log.by_topic(VenueWithdrawal::TOPIC) {
-            if event.lineage.producer != VENUE_REVIEW_ORIGIN {
-                continue;
+        for event in log.events() {
+            if event.topic == VenueWithdrawal::TOPIC
+                && event.lineage.producer == VENUE_REVIEW_ORIGIN
+            {
+                let record = StreamEnvelope::from_frame(event)
+                    .and_then(|envelope| envelope.decode::<VenueWithdrawal>())?
+                    .body;
+                withdrawn.insert(record.venue);
+            } else if event.topic == VenueReinstatementEntry::TOPIC
+                && event.lineage.producer == VENUE_REINSTATEMENT_ORIGIN
+            {
+                let record = StreamEnvelope::from_frame(event)
+                    .and_then(|envelope| envelope.decode::<VenueReinstatementEntry>())?
+                    .body;
+                if record.outcome == REINSTATED {
+                    withdrawn.remove(&record.venue);
+                }
             }
-            let record = StreamEnvelope::from_frame(event)
-                .and_then(|envelope| envelope.decode::<VenueWithdrawal>())?
-                .body;
-            withdrawn.insert(record.venue);
         }
         Ok(withdrawn)
     }

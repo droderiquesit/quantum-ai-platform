@@ -128,6 +128,20 @@ before `workload_metrics_exist` is flipped anywhere.
 * **Suppressed opportunities.** The opportunity engine caps emissions per cycle
   and reports `suppressed_count` rather than silently truncating. A rising
   count means the queue is not being worked.
+* **Feasibility refusals by venue.** `qip_feasibility_refusals_total{venue,constraint}`,
+  from both seams — the desk's order manager and the cells' reports — and the
+  window a venue is withdrawn on (ADR 0062). A `venue="unknown"` or
+  `constraint="other"` bar is a cell shipping a venue no policy or grant names,
+  or a gate outside the shared vocabulary; neither reaches the window. Locate
+  the two recording sites with
+  `grep -n 'names::FEASIBILITY_REFUSALS' backend/crates/runtime/qip-kernel/src/platform.rs`,
+  and the withdrawals themselves on the event log under `venue.withdrawn`.
+* **The twin's fill error.** `qip_venue_fill_error_bps{venue}`, a signed
+  histogram: negative means the twin filled better than the venue did on the
+  side taken, the direction that flatters every counterfactual. Diagnostic
+  only — read by nothing that withdraws a venue or narrows a size — so a
+  drift here is a fill model to recalibrate, not a control that fired.
+  `grep -n 'names::VENUE_FILL_ERROR_BPS' backend/crates/runtime/qip-kernel/src/platform.rs`.
 
 ## Health
 
