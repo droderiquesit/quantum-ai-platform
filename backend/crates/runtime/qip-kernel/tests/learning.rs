@@ -1114,6 +1114,76 @@ fn a_persistent_pattern_of_unfavourable_declines_on_one_instrument_narrows_only_
         Decimal::ONE,
         "an unrelated instrument's sizing was narrowed by another instrument's record"
     );
+
+    // --- ADR 0063: the executed-order half, on disjoint evidence ---------
+    // Premise: with no fill priced, the fill-record cap is one on both names,
+    // so what moves below is the fills and only the fills.
+    assert_eq!(
+        platform.sizing_cap_multiplier(object("AAA").as_str()),
+        Decimal::ONE
+    );
+    assert!(platform.fill_scores().is_empty());
+
+    // Ten filled buys on `AAA` at the same instant, before the jump to 300:
+    // on the twin's tape every one loses on the `trade` arm and loses half as
+    // much at half the size, so `smaller_size` wins on every fill.
+    for n in 0..SAMPLE {
+        fill_one(&mut platform, &format!("prop-filled-{n}"), start())?;
+    }
+    assert_eq!(platform.filled_awaiting_score(), SAMPLE);
+    platform.run_cycle(scoring_time);
+    platform.run_cycle(scoring_time);
+    assert_eq!(
+        platform.filled_awaiting_score(),
+        0,
+        "not every fill was priced"
+    );
+    let fills = platform.fill_scores();
+    assert_eq!(fills.len(), SAMPLE);
+    assert_eq!(
+        fills.iter().filter(|score| score.smaller_favoured).count(),
+        SAMPLE,
+        "the premise failed: a losing fill did not favour the smaller size: {:?}",
+        fills
+            .iter()
+            .map(|score| (score.smaller_favoured, score.larger_favoured))
+            .collect::<Vec<_>>()
+    );
+
+    // The consequence: the weight-bound cap on `AAA` is ADR 0063's stated
+    // multiplier, while ADR 0055's number is exactly where it was — the two
+    // read disjoint evidence, and a fill record folded into
+    // `counterfactual_sizing_multiplier` would move this figure.
+    assert_eq!(
+        platform.sizing_cap_multiplier(object("AAA").as_str()),
+        dec!("0.5"),
+        "a clear, sufficient pattern of smaller-favoured fills did not arm the sizing cap"
+    );
+    assert_eq!(
+        platform.sizing_confidence(object("AAA").as_str(), scoring_time)?,
+        dec!("0.5"),
+        "the fill record moved the declined-path narrowing, which reads disjoint evidence"
+    );
+    assert_eq!(
+        platform.sizing_cap_multiplier(object("BBB").as_str()),
+        Decimal::ONE
+    );
+    assert_eq!(
+        platform.sizing_confidence(object("BBB").as_str(), scoring_time)?,
+        Decimal::ONE
+    );
+    // And the arming is on the record, once.
+    let armed = platform
+        .replay_journal(&qip_events::EventFilter::new().topic(qip_events::Topic::SizingReviewed))?;
+    assert_eq!(
+        armed.len(),
+        1,
+        "the cap's arming is not on the record exactly once"
+    );
+    platform.run_cycle(scoring_time);
+    let armed = platform
+        .replay_journal(&qip_events::EventFilter::new().topic(qip_events::Topic::SizingReviewed))?;
+    assert_eq!(armed.len(), 1, "a standing cap was journaled again");
     Ok(())
 }
 

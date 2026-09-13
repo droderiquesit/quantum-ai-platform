@@ -721,6 +721,215 @@ fn the_weaker_of_two_marks_produces_the_smaller_notional_from_an_otherwise_ident
     Ok(())
 }
 
+// --- 3a. ADR 0063: a halved bound inside a halved budget ---------------------
+
+/// A flat tape at `level`, every day after `from`, so the twin marks every
+/// path at a level the test chose.
+fn flat_after(symbol: &str, from: Timestamp, days: i64, level: f64) -> Vec<SensedRecord> {
+    (1..=days)
+        .map(|day| {
+            bar(
+                symbol,
+                from.saturating_add(Duration::from_days(day)),
+                level,
+                level,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_budget_with_a_halved_bound()
+-> Result<()> {
+    // ADR 0055 narrows the *budget* the constructor is handed; ADR 0063
+    // narrows the *weight bound* on the one name its evidence is about. The
+    // two read disjoint evidence — the declined scores and the fill scores —
+    // and with both active on one instrument the leg's notional is a quarter
+    // of the unnarrowed one: half the budget times half the bound. Stated
+    // here as arithmetic on the book rather than read back off either
+    // platform, because a figure derived from the platform moves with the
+    // mutation and pins nothing.
+    let universe = {
+        let mut universe = Universe::new();
+        universe.insert(listed("AAA")?)?;
+        universe
+    };
+    let mut platform = platform_over(universe, leverage_only())?;
+    platform.observe(tape("AAA"));
+
+    // The reference: the same cycle on the same tape before any evidence.
+    let report = platform.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    let reference = platform
+        .proposals()
+        .last()
+        .cloned()
+        .expect("every cycle records a proposal");
+    let reference_notional = sized_notional(&reference, "reference");
+    assert_eq!(
+        reference.equity.amount,
+        book() * dec!("0.375"),
+        "the premise failed: the reference budget is not the free capital narrowed by §6.2"
+    );
+    let reference_leg = reference
+        .legs
+        .iter()
+        .find(|leg| leg.object_id == object("AAA"))
+        .expect("the reference sized AAA");
+    assert!(
+        (reference_leg.target_weight - 0.08).abs() < 1e-9,
+        "the premise failed: the reference leg is not at the mandate's 8% cap: {}",
+        reference_leg.target_weight
+    );
+
+    // The reference cycle's own ACT stage may have queued an order of its
+    // own for the twin, so the counts below are measured from here.
+    let declined_before = platform.declined_awaiting_score();
+    let filled_before = platform.filled_awaiting_score();
+
+    // The evidence: ten buys a control refused and ten buys the venue
+    // filled, all at the reference instant, then a flat tape ten percent
+    // higher. A rise after a declined buy is what the twin charges it a loss
+    // for (the direction convention `qip-kernel/tests/learning.rs` states),
+    // so every decline scores as correctly declined and ADR 0055's bar is
+    // cleared; the same rise makes every filled buy lose on the twin's
+    // `trade` arm and lose half as much at half the size, so every fill
+    // favours the smaller size and ADR 0063's bar is cleared.
+    for n in 0..10 {
+        let declined = platform.order_from(
+            object("AAA"),
+            Side::Buy,
+            dec!("1000"),
+            dec!("100"),
+            &format!("prop-declined-{n}"),
+            Vec::new(),
+            start(),
+        );
+        assert!(
+            platform.submit_order(declined, start()).is_err(),
+            "an untraceable order was accepted"
+        );
+        // One share each, so that what the fills do to the book — their
+        // cost and their mark on the higher tape — is under a thousandth of
+        // it and the budget below can be stated on the book rather than read
+        // back; ten thousand-share fills moved it by three percent.
+        let filled = platform.order_from(
+            object("AAA"),
+            Side::Buy,
+            dec!("1"),
+            dec!("100"),
+            &format!("prop-filled-{n}"),
+            vec![format!("hyp-filled-{n}")],
+            start(),
+        );
+        platform.submit_order(filled, start())?;
+    }
+    assert_eq!(platform.declined_awaiting_score(), declined_before + 10);
+    assert_eq!(platform.filled_awaiting_score(), filled_before + 10);
+    platform.observe(flat_after("AAA", start(), 5, 110.0));
+    // At least twenty evaluations under a cap of eight per cycle: three
+    // LEARN passes, and a fourth in case the reference cycle queued more.
+    let scoring = start().saturating_add(Duration::from_days(3));
+    for _ in 0..4 {
+        platform.run_cycle(scoring);
+    }
+    // Each scoring cycle's own ACT stage queues an order of its own whose
+    // horizon has not passed, so the queues are not empty here; what must
+    // hold is that the twenty seeded paths were priced and scored as the
+    // tape says.
+    assert!(
+        platform
+            .declined_scores()
+            .iter()
+            .filter(|score| !score.regret)
+            .count()
+            >= 10,
+        "the premise failed: not every seeded decline scored as correctly declined: {:?}",
+        platform
+            .declined_scores()
+            .iter()
+            .map(|score| score.regret)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        platform
+            .fill_scores()
+            .iter()
+            .filter(|score| score.smaller_favoured)
+            .count()
+            >= 10,
+        "the premise failed: not every seeded fill favoured the smaller size: {:?}",
+        platform
+            .fill_scores()
+            .iter()
+            .map(|score| (score.smaller_favoured, score.larger_favoured))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(platform.sizing_confidence("obj-AAA", scoring)?, dec!("0.5"));
+    assert_eq!(platform.sizing_cap_multiplier("obj-AAA"), dec!("0.5"));
+
+    // The compounding cycle.
+    let report = platform.run_cycle(scoring.saturating_add(Duration::from_days(1)));
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    let compounded = platform
+        .proposals()
+        .last()
+        .cloned()
+        .expect("every cycle records a proposal");
+    let compounded_notional = sized_notional(&compounded, "compounded");
+    let expected_budget = book() * dec!("0.375") * dec!("0.5");
+    assert!(
+        (compounded.equity.amount - expected_budget).abs() <= expected_budget * dec!("0.001"),
+        "the budget was not halved by the declined record: {} against {expected_budget}",
+        compounded.equity.amount
+    );
+    let leg = compounded
+        .legs
+        .iter()
+        .find(|leg| leg.object_id == object("AAA"))
+        .expect("the compounded cycle sized AAA");
+    assert!(
+        (leg.target_weight - 0.04).abs() < 1e-9,
+        "the weight bound was not halved by the fill record: {}",
+        leg.target_weight
+    );
+    assert!(
+        compounded
+            .compromises
+            .iter()
+            .any(|c| c.starts_with("obj-AAA: sizing bound narrowed from 8.00% to 4.00%")),
+        "the proposal does not name the cap: {:?}",
+        compounded.compromises
+    );
+    // A quarter, stated on the book: the position the compounded cycle
+    // sized — its budget times its target weight, `book × 0.375 × 0.5 ×
+    // 0.04` — against the position the reference sized, `book × 0.375 ×
+    // 0.08`, to the thousandth the fills moved the book by. The *traded*
+    // notional is deliberately not the figure compared: the reference
+    // cycle's own ACT stage filled its proposal, so the compounded cycle's
+    // legs net against a position the book already holds, and a comparison
+    // of traded notionals would be a statement about that holding rather
+    // than about the two narrowings. Both notionals are still asserted
+    // positive above, so neither cycle is an empty proposal passing by
+    // default.
+    let reference_position = book() * dec!("0.375") * dec!("0.08");
+    let compounded_position = compounded.equity.amount * dec!("0.04");
+    let expected = reference_position * dec!("0.25");
+    assert!(
+        (compounded_position - expected).abs() <= expected * dec!("0.001"),
+        "the compounded position {compounded_position} is not a quarter of the reference \
+         {reference_position}: budget {} at weight {}",
+        compounded.equity.amount,
+        leg.target_weight
+    );
+    assert!(
+        compounded_notional < reference_notional,
+        "the compounded cycle traded at least as much as the reference: {compounded_notional} \
+         against {reference_notional}"
+    );
+    Ok(())
+}
+
 // --- 3b. a mark nobody has refreshed ----------------------------------------
 
 /// How long before [`start`] the administrator's report is dated in the stale

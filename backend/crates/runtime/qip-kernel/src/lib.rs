@@ -38,6 +38,7 @@ pub mod fabric_declaration;
 pub mod platform;
 pub mod references;
 pub mod rule_review;
+pub mod sizing_review;
 pub mod valuation;
 pub mod venue_review;
 

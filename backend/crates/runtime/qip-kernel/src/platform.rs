@@ -44,6 +44,7 @@ use crate::rule_review::{
     PROPOSAL_ENACTED, PROPOSAL_WITHDRAWN, RecalibrationProposal, RegretEvidence, RuleActivity,
     RuleDefence, RuleDormant, RuleRegret, RuleReviewJournal, regret_by_rule,
 };
+use crate::sizing_review::{SIZING_CAP_ARMED, SIZING_CAP_RELEASED, SizingCapEntry};
 use crate::venue_review::{
     FEASIBILITY_WINDOW, FeasibilityRefusal, FeasibilitySeam, REINSTATED, REINSTATEMENT_AWAITING,
     REINSTATEMENT_REFUSED, VenueReinstatementEntry, VenueWithdrawal,
@@ -409,6 +410,12 @@ pub struct Platform {
     /// countersignature, by venue. In memory and not replayed, for exactly
     /// the reason [`Self::pending_promotions`] gives.
     pending_reinstatements: BTreeMap<String, qip_contracts::governance::Approval>,
+    /// Instruments whose sizing cap stands armed, so a change of state is
+    /// journaled once rather than every cycle the cap holds. Derived from
+    /// `fill_scores` on every LEARN pass; the cap the DECIDE stage reads is
+    /// computed from the scores, not from this set, so the two cannot
+    /// disagree — this is the journal's memory, not the control's.
+    sizing_caps_armed: BTreeSet<String>,
     /// What the LEARN stage priced this cycle, for the journal. Cleared as
     /// each cycle's LEARN begins.
     cycle_counterfactuals: Option<CounterfactualJournal>,
@@ -958,6 +965,10 @@ const VENUE_REVIEW_ORIGIN: &str = "kernel/venue-review";
 /// The producer on every reinstatement signature, told apart from the
 /// withdrawal records the resume walks beside them.
 const VENUE_REINSTATEMENT_ORIGIN: &str = "kernel/venue-reinstatement";
+
+/// The producer on every record the LEARN stage's sizing review writes —
+/// a cap armed or released, and a larger-size proposal.
+const SIZING_REVIEW_ORIGIN: &str = "kernel/sizing-review";
 
 /// How recently an operator must have authenticated to sign a promotion to a
 /// capital-holding rung.
@@ -3272,6 +3283,7 @@ impl Platform {
             feasibility_refusals: Vec::new(),
             withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
             pending_reinstatements: BTreeMap::new(),
+            sizing_caps_armed: BTreeSet::new(),
             cycle_counterfactuals: None,
             cycle_rule_review: None,
             rule_activity,
@@ -8663,6 +8675,7 @@ impl Platform {
     ) -> Result<(
         qip_portfolio_engine::construction::ConstructionOutcome,
         Vec<String>,
+        Vec<String>,
     )> {
         const MIN_SHARED_RETURNS: usize = 20;
 
@@ -8755,11 +8768,33 @@ impl Platform {
             ))
         })?;
 
-        let outcome = self.constructor.construct(
+        // And, per name, the bound narrowed by the instrument's own fill
+        // record (ADR 0063) — a cap on the weight bound rather than a further
+        // budget multiplier, because the finding names an instrument and a
+        // budget cannot. Disjoint evidence from the `sizing_confidence`
+        // narrowing above: that reads the declined scores, this reads the
+        // fill scores, and with both active on one name the weight bound is
+        // halved inside a budget that is halved. `Decimal → f64` here, once:
+        // the constructor's bounds are f64 and the one multiplier the review
+        // can produce, 0.5, is exact in both.
+        let mut caps: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
+        let mut capped = Vec::new();
+        for thesis in theses {
+            let multiplier = self.sizing_cap_multiplier(thesis.object_id.as_str());
+            if multiplier < Decimal::ONE {
+                caps.insert(thesis.object_id.as_str().to_string(), multiplier.to_f64());
+                capped.push(format!(
+                    "{} sized under a {multiplier} cap on its own fill record",
+                    thesis.object_id
+                ));
+            }
+        }
+        let outcome = self.constructor.construct_capped(
             theses,
             &covariance,
             &current,
             Money::new(budget, Currency::USD),
+            &caps,
             now,
             now,
             ProposalId::from_string(format!("prop-{}", self.cycle)),
@@ -8837,7 +8872,7 @@ impl Platform {
                 Duration::from_hours(24),
             )?;
         }
-        Ok((outcome, unsizeable))
+        Ok((outcome, unsizeable, capped))
     }
 
     fn thesis_from(
@@ -9505,6 +9540,7 @@ impl Platform {
         // "none of them was sized" are different cycles, and the second used to
         // be the only one the stage could report.
         let mut unsizeable: Vec<String> = Vec::new();
+        let mut capped: Vec<String> = Vec::new();
         let proposal = if theses.is_empty() {
             self.constructor.nothing_to_do(
                 ProposalId::from_string(format!("prop-{}", self.cycle)),
@@ -9515,8 +9551,9 @@ impl Platform {
             )
         } else {
             match self.construct_from(&theses, now) {
-                Ok((outcome, left_out)) => {
+                Ok((outcome, left_out, narrowed)) => {
                     unsizeable = left_out;
+                    capped = narrowed;
                     outcome.proposal
                 }
                 // A refusal is a normal state, and it is *this* cycle's
@@ -9582,6 +9619,12 @@ impl Platform {
                 "; {} of {approved} thesis(es) left out for want of a mark to size against",
                 unsizeable.len()
             ));
+        }
+        // Named beside the removals and not among them: a capped thesis was
+        // sized, under a narrower bound its own fill record earned, and the
+        // proposal's compromises carry the number.
+        if !capped.is_empty() {
+            detail.push_str(&format!("; {}", capped.join(", ")));
         }
         let mut outcome = StageOutcome::ran(Stage::Decide, legs, detail);
         // Named, one problem per thesis. A removal folded into a count would
@@ -10177,6 +10220,20 @@ impl Platform {
         // caller. What this can do is subtract a venue at both seams; it
         // cannot add one anywhere.
         let (reviewed, problems) = self.review_venues(now);
+        if let Some(reviewed) = reviewed {
+            let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
+        // Read what the fill scores say about each instrument's size.
+        // Blueprint §12.3's last row, executed-order half: a cap on the
+        // weight bound where most fills should have been smaller, journaled
+        // when it changes; the other direction is a proposal and nothing
+        // else. The cap DECIDE reads is computed from the scores on every
+        // construction — this pass only puts the change on the record.
+        let (reviewed, problems) = self.review_sizing(now);
         if let Some(reviewed) = reviewed {
             let detail = format!("{}; {reviewed}", outcome.detail);
             outcome = StageOutcome { detail, ..outcome };
@@ -12337,6 +12394,91 @@ impl Platform {
     /// venue back takes two operators' signatures (ADR 0062).
     pub fn withdrawn_venues(&self) -> &BTreeSet<String> {
         &self.withdrawn_venues
+    }
+
+    /// The cap on `object_id`'s weight bound from its own fill record, in
+    /// `(0, 1]` — blueprint §12.3's last row, executed-order half (ADR
+    /// 0063). Computed from [`Self::fill_scores`] on every call rather than
+    /// cached, so the bound DECIDE sizes under and the record LEARN wrote
+    /// cannot disagree. Delegates to [`crate::sizing_review::cap_multiplier`],
+    /// which has no branch above one.
+    pub fn sizing_cap_multiplier(&self, object_id: &str) -> Decimal {
+        crate::sizing_review::cap_multiplier(&self.fill_scores, object_id)
+    }
+
+    /// The LEARN stage's sizing review: put each instrument's cap on the
+    /// record when its state changes.
+    ///
+    /// Armed when [`Self::sizing_cap_multiplier`] first drops below one for
+    /// an instrument with scored fills, released when it returns to one;
+    /// journaled only at the change, keyed on object, state and cycle, so a
+    /// cap that stands for a hundred cycles is one record and not a hundred.
+    /// The cap itself is not held here — DECIDE recomputes it from the
+    /// scores — so a journal failure changes no bound; it is a problem on
+    /// the cycle's record and the arming is retried next cycle.
+    fn review_sizing(&mut self, now: Timestamp) -> (Option<String>, Vec<String>) {
+        let objects: BTreeSet<String> = self
+            .fill_scores
+            .iter()
+            .map(|score| score.object_id.as_str().to_string())
+            .collect();
+        let mut armed = Vec::new();
+        let mut released = Vec::new();
+        let mut problems = Vec::new();
+        for object in objects {
+            let regret = crate::sizing_review::size_regret(&self.fill_scores, &object);
+            let multiplier = self.sizing_cap_multiplier(&object);
+            let standing = self.sizing_caps_armed.contains(&object);
+            let state = match (multiplier < Decimal::ONE, standing) {
+                (true, false) => SIZING_CAP_ARMED,
+                (false, true) => SIZING_CAP_RELEASED,
+                _ => continue,
+            };
+            let entry = SizingCapEntry {
+                object_id: object.clone(),
+                sample: regret.sample,
+                fraction: regret.smaller_fraction(),
+                multiplier,
+                state: state.to_string(),
+                cycle: self.cycle,
+                at: now,
+            };
+            match self.journal_once(entry, SIZING_REVIEW_ORIGIN, now) {
+                Ok(_) => {
+                    if state == SIZING_CAP_ARMED {
+                        self.sizing_caps_armed.insert(object.clone());
+                        armed.push(format!("{object} at {multiplier}"));
+                    } else {
+                        self.sizing_caps_armed.remove(&object);
+                        released.push(object);
+                    }
+                }
+                Err(error) => problems.push(format!(
+                    "the sizing cap on {object} was {state} and could not be journaled: {}",
+                    error.message()
+                )),
+            }
+        }
+        let mut parts = Vec::new();
+        if !armed.is_empty() {
+            parts.push(format!(
+                "sizing cap armed on {} instrument(s) ({})",
+                armed.len(),
+                armed.join(", ")
+            ));
+        }
+        if !released.is_empty() {
+            parts.push(format!(
+                "sizing cap released on {} instrument(s) ({})",
+                released.len(),
+                released.join(", ")
+            ));
+        }
+        if parts.is_empty() {
+            (None, problems)
+        } else {
+            (Some(parts.join("; ")), problems)
+        }
     }
 
     /// The LEARN stage's venue review: blueprint §12.3's fourth row, read

@@ -196,6 +196,14 @@ pub enum Topic {
     /// the defect this repository records under `MaxExpectedShortfall`, and
     /// the record is what lets a person ask whether it can still fire.
     RiskRuleDormant,
+    /// One instrument's sizing cap changed state on the twin's fill scores
+    /// (blueprint §12.3, last row, executed-order half): armed when most of
+    /// a sample of its fills would have done better smaller, released when
+    /// the evidence stops clearing the bar, and the proposal — never a
+    /// number — when most would have done better larger. Journaled when the
+    /// state changes, not on every cycle it stands. A Learn finding,
+    /// retained permanently. See ADR 0063.
+    SizingReviewed,
 
     // --- SYSTEM ---
     ServiceStarted,
@@ -210,7 +218,7 @@ pub enum Topic {
 impl Topic {
     /// Every topic, in declaration order. Used by the registry, the
     /// documentation-drift test and the observability bootstrap.
-    pub const ALL: [Self; 75] = [
+    pub const ALL: [Self; 76] = [
         Self::MarketTick,
         Self::MarketQuote,
         Self::MarketTrade,
@@ -279,6 +287,7 @@ impl Topic {
         Self::ResearchCampaignFlagged,
         Self::RiskRuleDefended,
         Self::RiskRuleDormant,
+        Self::SizingReviewed,
         Self::ServiceStarted,
         Self::ServiceStopped,
         Self::KillSwitchEngaged,
@@ -360,6 +369,7 @@ impl Topic {
             Self::ResearchCampaignFlagged => "learning.campaign_flagged",
             Self::RiskRuleDefended => "risk.rule_defended",
             Self::RiskRuleDormant => "risk.rule_dormant",
+            Self::SizingReviewed => "learning.sizing_reviewed",
             Self::ServiceStarted => "system.service_started",
             Self::ServiceStopped => "system.service_stopped",
             Self::KillSwitchEngaged => "system.kill_switch_engaged",
@@ -451,7 +461,8 @@ impl Topic {
             | Self::ResearchCampaignClosed
             | Self::ResearchCampaignFlagged
             | Self::RiskRuleDefended
-            | Self::RiskRuleDormant => TopicGroup::Learn,
+            | Self::RiskRuleDormant
+            | Self::SizingReviewed => TopicGroup::Learn,
 
             Self::ServiceStarted
             | Self::ServiceStopped
