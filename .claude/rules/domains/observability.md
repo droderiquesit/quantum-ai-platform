@@ -200,8 +200,13 @@ grant names) and `other` (a gate outside
 `qip_contracts::feasibility::EDGE_GATES`) and never writes the window.
 Recount with
 `grep -n 'names::FEASIBILITY_REFUSALS' backend/crates/runtime/qip-kernel/src/platform.rs`,
-which printed two lines on 2026-09-13; a third site would be a refusal that
-reached the window by a path the ADR does not describe. `venue` is bounded by
+which printed three lines on 2026-09-13: the constant's `metrics.describe(...)`
+registration call, first, and then the two recording sites above — the same
+shape `VENUE_FILL_ERROR_BPS` is stated in two paragraphs below ("one
+recording line plus its `describe`"), and this paragraph should have used
+from the start. It said "two lines" until an independent code review ran
+the command and found three; a fourth site would be a refusal that reached
+the window by a path the ADR does not describe. `venue` is bounded by
 the desk broker's name, the configured and granted venue list and `unknown`;
 `constraint` by the eight gate literals and `other`. Beside it,
 `qip_venue_fill_error_bps{venue}` is a histogram on

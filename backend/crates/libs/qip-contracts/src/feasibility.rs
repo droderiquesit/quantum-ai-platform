@@ -82,4 +82,26 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn the_desk_gates_literal_has_no_duplicate_of_its_own() {
+        // A code-review finding: the test above checks `EDGE_GATES` for
+        // internal duplication and `DESK_GATES` only for membership in
+        // `EDGE_GATES` — a mutation that duplicated an entry inside
+        // `DESK_GATES` itself (as opposed to `EDGE_GATES`) would pass both
+        // checks there, because every duplicate is still a member of
+        // `EDGE_GATES`. A duplicate here would merge two of the desk's four
+        // gates on every series keyed on them — `qip_orders_refused_total`
+        // and the declined-path evidence `venue_review` reads — exactly as
+        // a duplicate in `EDGE_GATES` would for the cells.
+        let mut seen = std::collections::BTreeSet::new();
+        for gate in DESK_GATES {
+            assert!(seen.insert(gate), "{gate} is declared twice in DESK_GATES");
+        }
+        assert_eq!(
+            seen.len(),
+            DESK_GATES.len(),
+            "the premise: this test must actually walk every declared gate"
+        );
+    }
 }

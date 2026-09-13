@@ -230,6 +230,21 @@ impl OperatorIdentity {
         self
     }
 
+    /// **Every dual-signature control's "two distinct people" guarantee
+    /// rests on this being a durable, per-human identifier** — the same
+    /// check every second-approval comparison uses
+    /// (`first.approver == operator.subject()`, e.g.
+    /// `Platform::reinstate_venue`) compares *subjects*, not people, so a
+    /// subject that is session- or request-scoped instead of durable would
+    /// let one person countersign their own approval in a second session
+    /// without the check ever noticing. That is a convention this type
+    /// documents rather than enforces — `subject` is a `String` populated
+    /// by whichever authentication code calls [`Self::verified`], and
+    /// nothing here can refuse a caller that passes something narrower.
+    /// `qip-acceptance/tests/security.rs`'s
+    /// `every_operatoridentity_is_built_from_the_principals_durable_
+    /// subject_not_a_session_value` holds every existing call site to it;
+    /// a new one must be added there too.
     pub fn subject(&self) -> &str {
         &self.subject
     }

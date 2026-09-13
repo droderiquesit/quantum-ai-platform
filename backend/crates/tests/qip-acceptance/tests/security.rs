@@ -2468,3 +2468,69 @@ fn no_code_path_assigns_a_limit_set_after_boot_and_no_root_reads_one_from_anywhe
         );
     }
 }
+
+// --- the dual-signature identity invariant, documented where nothing yet enforces it ---
+
+#[test]
+fn every_operatoridentity_is_built_from_the_principals_durable_subject_not_a_session_value() {
+    // What this documents, and does not fix: the "two distinct people"
+    // guarantee behind every dual-signature control — a promotion, a
+    // recalibration, and (per ADR 0062) a venue reinstatement once it has a
+    // route — rests entirely on `OperatorIdentity::subject()` being a
+    // durable, per-human identifier. `Platform::reinstate_venue`'s check
+    // (`first.approver == operator.subject()`) compares *subjects*, not
+    // people; if whatever builds `OperatorIdentity::verified(...)` were ever
+    // changed to key on something session- or request-scoped instead — a
+    // token id, a request id — one person could countersign their own
+    // reinstatement in a second session and this check would not catch it.
+    // That is a fact about the type, not about this crate, and redesigning
+    // `OperatorIdentity` is out of scope here: the field is a `String` by
+    // its own doc comment's admission ("the operator's identifier from the
+    // authentication system"), and nothing short of a new type distinguishes
+    // a durable subject from a session token at compile time.
+    //
+    // `reinstate_venue` has no HTTP route yet — ADR 0062 says so directly,
+    // and the assertion just below this comment re-checks it rather than
+    // taking the ADR's word for it — so there is nothing to exercise end to
+    // end. What this test holds instead: every *existing* dual-signature route —
+    // the ones a future reinstatement route would be modelled on — builds
+    // its `OperatorIdentity` from `principal.subject`, the field the
+    // authentication middleware populates from the verified credential, and
+    // not from anything narrower. A future PR that wires the reinstatement
+    // route by copying one of these call sites inherits a correct one; a
+    // reviewer who instead reaches for a session or request identifier will
+    // fail this test, or should extend it, before shipping a second
+    // signature that cannot actually tell two sessions from two people.
+    let routes = read("backend/crates/apps/qip-api/src/routes.rs");
+    assert!(
+        !routes.contains("reinstate_venue"),
+        "a reinstatement route now exists; it must build its `OperatorIdentity` the same way \
+         every call site below does, and this test's premise (nothing to exercise end to end) \
+         is stale and should be rewritten to call the route directly"
+    );
+    let mut call_sites = 0usize;
+    let mut lines = routes.lines().enumerate().peekable();
+    while let Some((index, line)) = lines.next() {
+        if !line.contains("OperatorIdentity::verified(") {
+            continue;
+        }
+        call_sites += 1;
+        let (next_index, next_line) = lines
+            .peek()
+            .copied()
+            .unwrap_or_else(|| panic!("line {} is the last line of the file", index + 1));
+        assert_eq!(
+            next_line.trim(),
+            "principal.subject.clone(),",
+            "routes.rs:{}: `OperatorIdentity::verified` is not built from the authenticated \
+             principal's durable subject — this is exactly the drift that would silently break \
+             the two-distinct-people guarantee every dual-signature control rests on: {next_line}",
+            next_index + 1
+        );
+    }
+    assert!(
+        call_sites >= 1,
+        "no `OperatorIdentity::verified` call site was found in routes.rs; the walk is not \
+         reaching the file and this test proves nothing"
+    );
+}
