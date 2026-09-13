@@ -83,7 +83,7 @@ fraction in `(0, 1]` that can only narrow
 never widen it — and `sizing_confidence` multiplies its own result by that
 fraction before returning.**
 
-This is §12.3's fourth named consequence, "a sizing function adjusted from a
+This is §12.3's sixth row, "a sizing function adjusted from a
 counterfactual result", built at the seam DELIVERY-STATUS §11.2 already names
 as the sizing function's production home:
 `sizing_confidence` → `sizeable_theses` → `construct_from` → `stage_decide`,

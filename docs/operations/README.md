@@ -9,6 +9,7 @@ needs the first line more than the reasoning.
   and how a serving revision traces back to a commit
 * [The kill switch tripped](kill-switch.md)
 * [A risk limit is breached](limit-breach.md)
+* [Recalibrating a risk limit](recalibrating-a-limit.md) — the platform proposes a loosening from counterfactual regret, two people sign, and what the second signature produces is a file a deployment mounts; nothing changes a bound in a running process (ADR 0061)
 * [Enabling live trading](enabling-live-trading.md)
 * [An agent attempted an ungranted capability](permission-violation.md)
 * [The book and the venue disagree](reconciliation-break.md)

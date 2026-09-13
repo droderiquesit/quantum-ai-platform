@@ -21,7 +21,11 @@
    whether it does.
 4. If a scope is halted, the book is not coming back on its own. Decide whether
    to reduce manually or to accept the breach and raise the limit, which is a
-   risk-committee decision rather than an operational one.
+   risk-committee decision rather than an operational one. Raising a limit is
+   a file the deployment mounts, never a setting a running process takes — and
+   if the platform's own regret evidence has already proposed the loosening,
+   the proposal is what two people sign. See
+   [Recalibrating a risk limit](recalibrating-a-limit.md) (ADR 0061).
 
 ## Why the first breach does not halt
 
