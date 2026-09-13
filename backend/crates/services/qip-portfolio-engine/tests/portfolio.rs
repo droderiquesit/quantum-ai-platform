@@ -256,13 +256,27 @@ fn of_two_otherwise_identical_theses_the_one_with_the_larger_expected_return_tak
 fn a_capped_thesis_is_bounded_at_its_cap_and_the_gross_shortfall_is_recorded_not_reallocated()
 -> Result<()> {
     // The larger-return name, capped to half the mandate's position cap, is
-    // bounded at 30% and says so in the compromises. With a second name the
-    // budget is still reachable and the gross does not fall; alone, the
-    // narrowed bound is the whole reachable gross, the equality is lowered
-    // to it, and the shortfall is reported rather than handed to nobody —
-    // without the lowering the optimiser is asked to sum to 60% under a
-    // 30% bound and reports no feasible sizing.
+    // bounded at 30% and says so in the compromises. What this test guards
+    // against is a code-review finding: an earlier version of this function
+    // lowered the budget equality to `cap_only.min(sum of the bounds)`, and
+    // with a second name whose own bound was untouched, that sum still
+    // reached the pre-cap 80% gross — so the equality kept demanding 80%
+    // from a construction where one bound had just shrunk, and the solver
+    // had to hand AAA's foregone 30% to BBB to reach it. The gross read
+    // "unaffected" and the compromise said "not reallocated" while BBB's
+    // weight had in fact risen above what an uncapped construction gave it.
+    // The fix takes AAA's foregone capacity (60% cap minus its 30% bound,
+    // i.e. 30 points of gross) off the budget unconditionally, so the total
+    // gross itself falls by exactly what the cap took and BBB's own bound is
+    // never asked to cover the difference.
     let theses = vec![thesis("AAA", 0.9, 0.08), thesis("BBB", 0.9, 0.02)];
+    let uncapped = build_capped(&theses, wide_mandate(), &BTreeMap::new())?;
+    let bbb_uncapped = weight_of(&uncapped, "BBB");
+    assert!(
+        bbb_uncapped > 0.0 && bbb_uncapped < 0.45,
+        "the premise (from the test above) failed: BBB's uncapped weight is {bbb_uncapped}"
+    );
+
     let caps = BTreeMap::from([(object("AAA").as_str().to_string(), 0.5)]);
     let proposal = build_capped(&theses, wide_mandate(), &caps)?;
     let aaa = weight_of(&proposal, "AAA");
@@ -271,10 +285,17 @@ fn a_capped_thesis_is_bounded_at_its_cap_and_the_gross_shortfall_is_recorded_not
         aaa > 0.30 - 1e-6,
         "the capped name sits well under its bound, so the bound is not what decided it: {aaa}"
     );
+    let bbb = weight_of(&proposal, "BBB");
+    assert!(
+        bbb <= bbb_uncapped + 1e-6,
+        "BBB's weight rose above its uncapped weight ({bbb_uncapped}) when a different \
+         instrument was capped: {bbb} — the capped name's foregone weight was reallocated to it"
+    );
     let gross: f64 = proposal.legs.iter().map(|leg| leg.target_weight).sum();
     assert!(
-        approx_eq(gross, 0.8, 1e-6),
-        "with a second name the budget is still reachable: {gross}"
+        approx_eq(gross, 0.5, 1e-6),
+        "the cap's foregone 30 points of gross (60% bound to 30% bound) were not taken off the \
+         80% cap-only total: {gross}"
     );
     let note = proposal
         .compromises
@@ -284,6 +305,12 @@ fn a_capped_thesis_is_bounded_at_its_cap_and_the_gross_shortfall_is_recorded_not
     assert!(
         note.contains("from 60.00% to 30.00%") && note.contains("(cap 0.5)"),
         "{note}"
+    );
+    assert!(
+        note.contains(
+            "gross reaches 50.00%, 30.00% short of the cap-only gross and not reallocated"
+        ),
+        "the compromise still claims a shortfall of zero on a construction that reallocated: {note}"
     );
     assert!(
         !proposal

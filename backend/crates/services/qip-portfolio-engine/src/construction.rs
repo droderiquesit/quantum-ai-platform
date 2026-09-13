@@ -218,10 +218,24 @@ impl PortfolioConstructor {
     /// still demands the old gross is an infeasible problem on every capped
     /// cycle. Lowering it is what makes the shortfall *recorded, not
     /// reallocated* — the other names do not absorb what the capped name
-    /// gave up. With several names and a binding `target_gross` the sum of
-    /// the narrowed bounds can still exceed the target, in which case the
-    /// gross does not fall and the cap only bounds the name; the compromise
-    /// then reports a shortfall of zero, which is the honest number.
+    /// gave up.
+    ///
+    /// **The reduction is unconditional, not only when it binds.** An
+    /// earlier version of this function lowered `achievable` to
+    /// `cap_only.min(Σ upper)` — the *sum* of the (possibly narrowed)
+    /// bounds — rather than to `cap_only` minus what each cap actually took.
+    /// Whenever the uncapped names had enough headroom to cover a capped
+    /// name's shortfall on their own (`Σ upper ≥ cap_only`, the common case
+    /// with more than one name and a binding `target_gross`), that formula
+    /// left `achievable` at `cap_only`, unchanged by the cap. The equality
+    /// constraint then still demanded the pre-cap total, so the solver *had*
+    /// to give the capped name's foregone weight to an uncapped name to
+    /// reach it — reallocating exactly what the compromise message claimed
+    /// it did not. The reduction below (`self.mandate.position_cap - bound`
+    /// per narrowed name, summed) is now subtracted from `cap_only`
+    /// unconditionally, whether or not the other bounds had room to absorb
+    /// it, so the total gross itself falls by what the cap took and no other
+    /// name's own bound is asked to make up the difference.
     ///
     /// With no caps this is exactly [`Self::construct`], including the
     /// budget it has always used, so the callers that never cap see no
@@ -310,16 +324,22 @@ impl PortfolioConstructor {
             .collect();
 
         // The gross the names can reach under the cap alone, as `construct`
-        // has always computed it; and, where a cap narrowed a bound, the
-        // gross the narrowed bounds can actually reach. The equality below
-        // is pinned at the second, or the optimiser would be asked to sum to
-        // a number the bounds forbid.
+        // has always computed it; and, where a cap narrowed a bound, what
+        // that narrowing actually took off the total. The equality below is
+        // pinned at `cap_only` minus that reduction, or the optimiser would
+        // be asked to sum to the pre-cap total with one bound too low to
+        // help supply it — which an uncapped name's own headroom would then
+        // have to make up, reallocating exactly what the compromise message
+        // below claims does not happen. Subtracted unconditionally, not only
+        // when the narrowed bounds' own sum would have forced it: the
+        // question is what the cap took, not whether anything else happened
+        // to have room to hide it.
         let cap_only = self.mandate.achievable_gross(n);
-        let achievable = if caps.is_empty() {
-            cap_only
-        } else {
-            cap_only.min(upper.iter().sum())
-        };
+        let reduction: f64 = narrowed
+            .iter()
+            .map(|(_, _, bound, _)| self.mandate.position_cap - bound)
+            .sum();
+        let achievable = (cap_only - reduction).max(0.0);
         let mut problem = PortfolioProblem::new(assets.clone(), covariance.to_vec())?
             .with_objective(Objective::MeanVariance)
             .with_expected_returns(theses.iter().map(|t| t.expected_return).collect())

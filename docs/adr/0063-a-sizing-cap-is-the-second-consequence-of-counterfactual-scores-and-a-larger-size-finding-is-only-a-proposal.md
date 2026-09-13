@@ -72,13 +72,28 @@ and nothing else.**
   weight under the minimum, and a shrink that became a silent drop is the
   one failure a bound must not have. When the floor binds the compromise
   says so.
-- **The equality.** With caps present, `achievable = min(cap-only gross,
-  Σ upper)`. That is fact 2's consequence and what makes the shortfall
-  *recorded, not reallocated*: the other names do not absorb what the
-  capped name gave up, and the compromise reports the shortfall against
-  the cap-only gross. With several names and a binding target the narrowed
-  bounds can still sum past it, the gross does not fall, and the shortfall
-  reads zero — the honest number.
+- **The equality.** With caps present, `achievable = cap-only gross − Σ
+  (position cap − narrowed bound)` over the capped names, floored at zero.
+  That reduction is what makes the shortfall *recorded, not reallocated*:
+  the other names' own bounds are never touched by another name's cap, and
+  because the total the equality demands falls by exactly what each cap
+  took, no other name's weight is asked to make up the difference. An
+  earlier version of this record and of `construct_capped` computed
+  `achievable` as `min(cap-only gross, Σ upper)` instead — the sum of the
+  (possibly narrowed) bounds — which is a different number whenever the
+  uncapped names have enough headroom to cover the capped name's shortfall
+  on their own (`Σ upper ≥ cap-only gross`, the common case with more than
+  one name and a binding `target_gross`). In that regime the old formula
+  left `achievable` at the pre-cap total, so the equality still demanded it
+  and an uncapped name's own bound *did* absorb the capped name's foregone
+  weight — the exact reallocation this bullet's first sentence says does not
+  happen. An independent code review found this by tracing the shipped
+  test's own fixture algebraically (two theses, `wide_mandate()`, one capped
+  to half its bound: the old code left the gross at 0.8 and forced the
+  uncapped name from ~0.20 to ~0.50) and it is fixed: the reduction now
+  applies unconditionally, so the gross itself falls by what the cap took
+  and the shortfall the compromise reports is that same number, never zero
+  merely because something else happened to have room to hide it.
 - **The arithmetic.** `sizing_review::cap_multiplier` returns
   `SIZING_CAP_MULTIPLIER` (one half, one auditable number as ADR 0055's
   discount is) when at least `SIZING_CAP_FAVOUR_FRACTION` of at least
