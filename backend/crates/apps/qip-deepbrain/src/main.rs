@@ -766,9 +766,14 @@ fn with_release(error: Error, release: Result<()>) -> Error {
 
 /// `error` with `message` in place of its own, and its class kept.
 ///
-/// The one place the class-preserving rewrite is written, so that the two
-/// callers — the start-up prefix and [`with_release`]'s appended release
-/// failure — cannot drift into relabelling differently.
+/// The one place the class-preserving rewrite is written, so that its three
+/// callers — the start-up prefix in [`configuration`], the double-failure
+/// text in [`fold_releases`], and [`with_release`]'s appended release
+/// failure — cannot drift into relabelling differently. This doc comment
+/// said "two callers" and named only the first and the third until
+/// 2026-09-13; a code review found `fold_releases` was already a third and
+/// had been since it was added, which is exactly the drift a shared
+/// function exists to prevent and a stale comment about it does not.
 fn relabel(error: &Error, message: String) -> Error {
     match error {
         Error::Invalid(_) => Error::Invalid(message),

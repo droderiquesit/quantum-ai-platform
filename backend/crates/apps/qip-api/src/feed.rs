@@ -418,12 +418,14 @@ impl ApiFeed {
         // (every shipped `SourceConnector::shutdown` is the trait's no-op
         // default), but this admission check is exactly what a lapsed or
         // misdeclared licence trips.
+        //
+        // Until 2026-09-13 the shutdown's own result was discarded (`let _ =
+        // feed.shutdown(at);`), so a real release failure on top of the
+        // admission refusal vanished silently. `Error::and_release` folds it
+        // into the returned error instead, keeping the refusal's class.
         let admitted = match AdmittedSource::from_decision(&decision, feed.manifest()) {
             Ok(admitted) => admitted,
-            Err(error) => {
-                let _ = feed.shutdown(at);
-                return Err(error);
-            }
+            Err(error) => return Err(error.and_release(feed.shutdown(at))),
         };
         Ok(Self::Connector {
             feed: Box::new(feed),

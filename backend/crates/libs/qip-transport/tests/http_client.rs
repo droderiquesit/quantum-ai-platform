@@ -287,6 +287,15 @@ fn redact_userinfo_handles_the_full_adversarial_matrix() {
             "http://127.0.0.1:9105?redirect=ftp://other",
             "http://127.0.0.1:9105?redirect=ftp://other",
         ),
+        (
+            "the permutation the round-2 code review flagged as untested: no scheme at all, \
+             and the `@` sits in the path rather than the authority — the row above already \
+             covers a scheme plus a query `@`, this covers no scheme plus a path `@`, and \
+             neither reduces to the other since the scheme's presence is what selects which \
+             branch of `redact_userinfo` runs",
+            "127.0.0.1:9105/path@notacredential",
+            "127.0.0.1:9105/path@notacredential",
+        ),
     ];
 
     for (why, input, expected) in cases {

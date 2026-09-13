@@ -100,16 +100,20 @@ impl ConnectorArm {
         // trait's no-op default), but the admission gate is exactly the
         // check a lapsed or misdeclared licence trips, so this is the one
         // failure arm most likely to be exercised in practice.
+        //
+        // The `shutdown` call's own result was discarded here until
+        // 2026-09-13 (`let _ = feed.shutdown(at);`): a real release failure
+        // on top of an admission refusal vanished silently, leaving an
+        // operator who saw only the refusal with no way to know the socket
+        // was also still open. `Error::and_release` folds it in instead,
+        // keeping the admission refusal's class.
         match AdmittedSource::from_decision(&decision, feed.manifest()) {
             Ok(admitted) => Ok(Self {
                 feed,
                 admission,
                 admitted,
             }),
-            Err(error) => {
-                let _ = feed.shutdown(at);
-                Err(error)
-            }
+            Err(error) => Err(error.and_release(feed.shutdown(at))),
         }
     }
 
@@ -165,13 +169,11 @@ impl ConnectorArm {
         // `Self::open` the transport this constructor is handed is the one
         // this crate's own tests use to pin the invariant, so a leak here
         // was the one this arm's admission-refusal test could actually
-        // catch.
+        // catch. The same fold as `Self::open`'s: a shutdown failure on top
+        // of the admission refusal is appended rather than discarded.
         let admitted = match AdmittedSource::from_decision(&decision, feed.manifest()) {
             Ok(admitted) => admitted,
-            Err(error) => {
-                let _ = feed.shutdown(at);
-                return Err(error);
-            }
+            Err(error) => return Err(error.and_release(feed.shutdown(at))),
         };
         Ok(Self {
             feed,
