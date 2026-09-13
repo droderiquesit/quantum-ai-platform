@@ -100,7 +100,7 @@ fn a_url_that_carries_a_credential_is_refused() {
 /// reordering of the arms cannot reopen the leak silently.
 #[test]
 fn an_egress_address_is_loopback_with_a_port_and_a_refusal_never_echoes_a_credential() {
-    use qip_transport::http::{redact_userinfo, require_loopback_egress};
+    use qip_transport::http::{redact_for_echo, require_loopback_egress};
 
     for admitted in [
         "http://127.0.0.1:9105",
@@ -156,36 +156,70 @@ fn an_egress_address_is_loopback_with_a_port_and_a_refusal_never_echoes_a_creden
     }
 
     // The redaction itself, on text the parser refuses: everything through
-    // the last `@` past the scheme goes, the host after it stays, and an
-    // address with no userinfo is returned as it was.
+    // the last `@` before the parameter region goes, the path after it
+    // stays, and the query goes whole.
     assert_eq!(
-        redact_userinfo("http://svc:TOK@EN@127.0.0.1:9106/v1?x=1"),
-        "http://…@127.0.0.1:9106/v1?x=1"
+        redact_for_echo("http://svc:TOK@EN@127.0.0.1:9106/v1?x=1"),
+        "http://…@127.0.0.1:9106/v1?…"
     );
     // Corrected 2026-09-13 (round 5): this used to assert an `@` past a
     // real, delimiter-bounded authority was kept verbatim. Two rounds of
     // trying to tell "an `@` that ends a real authority" apart from "an `@`
     // that is the credential a scheme-typo hid past a delimiter" each left
-    // a fifth bypass standing — see `redact_userinfo`'s doc comment. This
-    // input no longer gets special treatment for having a real host in
-    // front of its query `@`.
+    // a fifth bypass standing — see `redact_for_echo`'s doc comment. The
+    // query now goes as a region, which is why the real host survives here
+    // rather than being masked as a suspected credential: cutting the
+    // parameters off first leaves no `@` in what remains.
     assert_eq!(
-        redact_userinfo("http://127.0.0.1:9106/v1?to=a@b"),
-        "http://…@b",
-        "every `@` past the scheme is a possible credential boundary now, even one whose \
-         query happens to contain an ordinary `a@b`"
+        redact_for_echo("http://127.0.0.1:9106/v1?to=a@b"),
+        "http://127.0.0.1:9106/v1?…",
+        "the query goes whole, so an `@` inside it never has to be judged"
     );
     // Corrected 2026-09-12: this used to assert the scheme-less string was
     // passed through unchanged, on the premise that every credential-bearing
     // string this process handles has a `://`. It does not — see the
     // dedicated regression below — so a scheme-less string carrying an `@`
     // is exactly the case that must redact, not the case that is exempt.
-    assert_eq!(redact_userinfo("no scheme@here"), "…@here");
+    assert_eq!(redact_for_echo("no scheme@here"), "…@here");
+
+    // The floor under the accepted cost of over-redaction, which nothing
+    // pinned until 2026-09-13: a refusal has to stay diagnosable. Redaction
+    // may mask the credential, but the operator must still be able to tell
+    // *which* of several configured addresses was refused. This holds
+    // through a different path than `shown` — the host arm prints
+    // `url.host()` from the parse, and a parsed host cannot carry userinfo
+    // because `Url::parse` refuses that first — so without this assertion a
+    // future round that redacts harder has nothing telling it where the
+    // floor is.
+    let error = require_loopback_egress("http://someservice/API_SECRET_VALUE@upstream.example")
+        .expect_err("premise: an off-loopback host is refused");
+    assert!(
+        error.message().contains("someservice"),
+        "a refusal an operator cannot trace back to the address they set is not diagnosable: {}",
+        error.message()
+    );
+    assert!(
+        !error.message().contains("API_SECRET_VALUE"),
+        "the one-character `:`→`/` typo must not print the secret it hides: {}",
+        error.message()
+    );
+
+    // A control character in a refused address does not get to end the log
+    // line and start one the operator did not write.
+    let forged = redact_for_echo("http://a@127.0.0.1:9105\r\nFATAL forged record");
+    assert!(
+        !forged.contains('\n') && !forged.contains('\r'),
+        "a rejected address carried a line break into the message: {forged:?}"
+    );
+    assert!(
+        forged.contains("\\u{000a}"),
+        "the escape should still show what was there, rather than dropping it: {forged:?}"
+    );
 }
 
 /// The scenario the prior round's fix did not cover: an operator drops the
 /// `http://` and sets a base URL as `svc:TOKEN@127.0.0.1:9106`.
-/// `redact_userinfo` used to require `"://"` before it would redact anything,
+/// `redact_for_echo` used to require `"://"` before it would redact anything,
 /// so this string — which has none — came back unchanged from both call
 /// sites that are supposed to keep a credential out of an error message:
 /// `require_loopback_egress`'s own `shown`, and `Url::parse`'s `invalid`
@@ -194,7 +228,7 @@ fn an_egress_address_is_loopback_with_a_port_and_a_refusal_never_echoes_a_creden
 /// in the clear, in the fatal start-up error every one of the six egress
 /// call sites wraps this in.
 ///
-/// Mutated by reverting `redact_userinfo` to require a scheme (restoring the
+/// Mutated by reverting `redact_for_echo` to require a scheme (restoring the
 /// `let Some((scheme, rest)) = raw.split_once("://") else { return
 /// raw.to_string(); }` early return) — confirmed both assertions below then
 /// fail, `TOKEN` appearing in the `Display` and the `Debug` of the refusal;
@@ -214,11 +248,11 @@ fn a_scheme_less_credential_bearing_egress_address_is_still_redacted() {
     }
 }
 
-/// The third round's finding, reproduced directly against `redact_userinfo`
+/// The third round's finding, reproduced directly against `redact_for_echo`
 /// rather than only through `require_loopback_egress`: a scheme-less
 /// credential whose path or query contains the ordinary substring
 /// `"://"` — any `?redirect=`, `?callback=` or `?fallback=` parameter
-/// naming another URL — used to make `redact_userinfo`'s own
+/// naming another URL — used to make `redact_for_echo`'s own
 /// `raw.split_once("://")` match on that later occurrence instead of
 /// finding no scheme at all, misreading almost the whole string as a
 /// "scheme" and leaving the real credential outside anything the function
@@ -246,40 +280,61 @@ fn a_scheme_less_credential_bearing_egress_address_is_still_redacted() {
 /// both leaked through `require_loopback_egress`'s real refusal message,
 /// not just a synthetic string. Four rounds, four leaks, each one the next
 /// hole in a heuristic that had just been made one input narrower. See
-/// [`qip_transport::http::redact_userinfo`]'s doc comment for why round
-/// five drops the heuristic rather than narrowing it again: it now redacts
-/// through the *last* `@` anywhere past the scheme unconditionally, which
-/// means three rows below that used to assert an `@` past a real-looking
-/// host was kept now assert it is redacted too — over-redaction, on
-/// purpose, in exchange for there being no more "is this a host" judgment
-/// left to be wrong about.
+/// [`qip_transport::http::redact_for_echo`]'s doc comment for why round
+/// five drops the heuristic rather than narrowing it again: it redacts
+/// through the *last* `@` unconditionally, which means the rows below that
+/// used to assert an `@` past a real-looking host was kept now assert it is
+/// redacted too — over-redaction, on purpose, in exchange for there being
+/// no more "is this a host" judgment left to be wrong about.
+///
+/// **Round six** closed the half of the defect class that no `@` rule could
+/// ever have reached: a credential with no `@` in it, `?api_key=…`, which
+/// every arm of `require_loopback_egress` printed in full. The parameter
+/// region now goes whole, cut off *before* the `@` search rather than
+/// after — see the ordering row below, and the mutation report at the end
+/// of this comment for what happens when that order is reversed.
 ///
 /// Table-driven over the full matrix the security review asked for,
 /// because every row is the same property — does this string get the
 /// exact redaction it should — and a table keeps that property visible
-/// rather than restated fourteen times with fourteen slightly different
-/// names.
+/// rather than restated twenty-eight times with twenty-eight slightly
+/// different names.
 ///
-/// Mutated by reverting `redact_userinfo` to its round-4 shape (the
-/// `split_scheme`-plus-`authority_could_be_a_host`-guarded version, in
-/// place of the unconditional `rest.rfind('@')`) — confirmed the
-/// `abc:80`/`123`/`http://svc/…`/`http://123//…`/`someservice` rows below
-/// all fail, each with its token or `someservice`/`svc` present in the
-/// output; restored, confirmed every row passes again. Mutated a second
-/// way, reverting further to round-2's `raw.split_once("://")` shape —
-/// confirmed row 1 (the later-`://`-in-the-query case) then returns the
-/// input unchanged, `TOKEN` and `svc` both present; restored, confirmed
-/// every row passes again.
+/// # Mutations, and what each one actually printed
+///
+/// Reported from what a run named, not from what the design implies. Round
+/// five's report claimed five specific rows failed under one mutation; the
+/// loop below used `assert_eq!` per row at the time, so it aborted at the
+/// first mismatch and could not have observed the other four. The loop now
+/// collects every mismatch and asserts once, so a mutation run enumerates
+/// exactly the rows it broke and the report can quote them.
+///
+/// * **Deleting the parameter-region cut** (round five's shape, no query or
+///   fragment masking): `9 of 28 redaction rows are wrong` — the two
+///   `?redirect=` rows, `http://127.0.0.1:9105/x?y=a@b`, the `1nvalid:`
+///   row, the bare `?` and `#` rows, and all three round-six rows
+///   (`?api_key=SECRETVALUE`, the `?a=1@2&api_key=` ordering row, and the
+///   `#token=SECRETVALUE` fragment row).
+/// * **Reversing the order** — searching for `@` across the whole remainder
+///   first and cutting the parameters only afterwards, which is the shape
+///   this round nearly shipped: `4 of 28`, and the one that matters is
+///   `http://127.0.0.1:9105/x?a=1@2&api_key=SECRETVALUE` coming back as
+///   `http://…@2&api_key=SECRETVALUE`. The `@` inside the query ends the
+///   search there and everything past it prints, `SECRETVALUE` included.
+///   That is why the cut is first and not second.
+///
+/// Each mutation restored byte-for-byte afterwards; all 28 rows and all 30
+/// tests in this file pass again.
 #[test]
-fn redact_userinfo_handles_the_full_adversarial_matrix() {
-    use qip_transport::http::redact_userinfo;
+fn redact_for_echo_handles_the_full_adversarial_matrix() {
+    use qip_transport::http::redact_for_echo;
 
     let cases: &[(&str, &str, &str)] = &[
         (
             "a later, unrelated `://` in the query must not be read as the scheme boundary — \
              this is the exact defect this round closes",
             "svc:TOKEN@127.0.0.1:9106/callback?redirect=http://evil.example/x",
-            "…@127.0.0.1:9106/callback?redirect=http://evil.example/x",
+            "…@127.0.0.1:9106/callback?…",
         ),
         (
             "round 2's case: no scheme, no later `://` either",
@@ -302,7 +357,7 @@ fn redact_userinfo_handles_the_full_adversarial_matrix() {
         (
             "round 5 correction: same reasoning, for a query `@` instead of a path one",
             "http://127.0.0.1:9105/x?y=a@b",
-            "http://…@b",
+            "http://127.0.0.1:9105/x?…",
         ),
         (
             "two `@` in the authority mask down to the rightmost split",
@@ -313,7 +368,7 @@ fn redact_userinfo_handles_the_full_adversarial_matrix() {
             "a leading digit can never start an RFC 3986 scheme, so this stays scheme-less \
              even though a `1nvalid:` prefix looks scheme-shaped",
             "1nvalid:TOKEN@127.0.0.1:9106/x?y=http://z",
-            "…@127.0.0.1:9106/x?y=http://z",
+            "…@127.0.0.1:9106/x?…",
         ),
         (
             "no `@` and no `://` anywhere: nothing to redact",
@@ -329,7 +384,7 @@ fn redact_userinfo_handles_the_full_adversarial_matrix() {
             "a later `://` in the query with no `@` anywhere must not be over-corrected into \
              an authority that was never there",
             "http://127.0.0.1:9105?redirect=ftp://other",
-            "http://127.0.0.1:9105?redirect=ftp://other",
+            "http://127.0.0.1:9105?…",
         ),
         (
             "the permutation the round-2 code review flagged as untested: no scheme at all, \
@@ -355,20 +410,21 @@ fn redact_userinfo_handles_the_full_adversarial_matrix() {
         (
             "round 4's finding, a bare `?`: the authority-candidate is still empty",
             "?TOKEN@127.0.0.1:9106",
-            "…@127.0.0.1:9106",
+            "?…",
         ),
         (
             "round 4's finding, a bare `#`: the authority-candidate is still empty",
             "#TOKEN@127.0.0.1:9106",
-            "…@127.0.0.1:9106",
+            "#…",
         ),
         (
             "round 4's finding: `://` with nothing before it makes the authority-candidate \
              the single character `:`, which `split_authority` refuses outright (an empty \
              host after the colon) rather than reading as an empty one — a different shape \
-             of `not a real host` than the four rows above, and worth its own row so a fix \
-             that only widens past an empty string, and not past one `split_authority` \
-             rejects for another reason, is still caught",
+             of `not a real host` than the four rows above. Under the unconditional search \
+             it no longer discriminates anything those rows do not; kept because it is one of \
+             the six shapes the round-4 review reproduced, and a reproduction is worth keeping \
+             even once the design that failed it is gone",
             "://svc:TOKEN@127.0.0.1:9106",
             "…@127.0.0.1:9106",
         ),
@@ -426,24 +482,91 @@ fn redact_userinfo_handles_the_full_adversarial_matrix() {
             "http://127.0.0.1:9105@evil/TOKEN@127.0.0.1:9106",
             "http://…@127.0.0.1:9106",
         ),
+        (
+            "round 6's finding, and the one no `@` rule could ever have caught: a credential \
+             with no `@` in it at all. This is the shape a vendor console hands an operator to \
+             copy, and every arm of `require_loopback_egress` printed it in full until the \
+             parameter region started going whole",
+            "https://api.vendor.example/v1?api_key=SECRETVALUE",
+            "https://api.vendor.example/v1?…",
+        ),
+        (
+            "round 6: the ordering that matters. Masking the query only *after* the `@` search \
+             would end that search at the `1@2` inside the query and print everything past it, \
+             `SECRETVALUE` included. Cutting the parameter region off first makes the bytes \
+             unreachable rather than merely unsearched",
+            "http://127.0.0.1:9105/x?a=1@2&api_key=SECRETVALUE",
+            "http://127.0.0.1:9105/x?…",
+        ),
+        (
+            "round 6: a fragment is a parameter region too, and `Url::parse` refuses one \
+             outright — but this function runs on addresses the parser refuses, so it cannot \
+             rely on that",
+            "http://127.0.0.1:9105/x#token=SECRETVALUE",
+            "http://127.0.0.1:9105/x#…",
+        ),
+        (
+            "round 6's named limit, asserted rather than left to be discovered: a credential \
+             inside a *path segment* is still printed. Masking it would mean guessing which \
+             segment is secret, and guessing which part of a string is sensitive is what \
+             produced five consecutive leaks here. The row exists so that the limit is a \
+             decision on the record and not a gap somebody finds",
+            "http://127.0.0.1:9105/v1/hunter2/chat",
+            "http://127.0.0.1:9105/v1/hunter2/chat",
+        ),
+        (
+            "round 6: a control character is escaped rather than copied through, so a rejected \
+             address cannot end the log line and begin one the operator did not write",
+            "http://127.0.0.1:9105/x\r\nFATAL forged",
+            "http://127.0.0.1:9105/x\\u{000d}\\u{000a}FATAL forged",
+        ),
     ];
 
+    // Collected rather than asserted row by row, because `assert_eq!` inside
+    // the loop panics on the first mismatch and never evaluates the rest —
+    // which made round 5's own mutation report claim an enumeration of five
+    // failing rows that a single run could not have produced. A mutation run
+    // against this loop names every row it broke, so the report can quote
+    // what was read instead of what was inferred.
+    let mut mismatches = Vec::new();
     for (why, input, expected) in cases {
-        assert_eq!(
-            redact_userinfo(input),
-            *expected,
-            "{why}: redacting {input:?} did not produce {expected:?}"
-        );
+        let actual = redact_for_echo(input);
+        if actual != *expected {
+            mismatches.push(format!(
+                "  input    {input:?}\n  expected {expected:?}\n  actual   {actual:?}\n  because  {why}"
+            ));
+        }
+        // The premise the whole no-under-redaction argument rests on, pinned
+        // per row rather than reasoned about once: `split_scheme`'s grammar
+        // excludes `@`, so it can never strip one out of `raw`, so "no `@`
+        // in `rest`" means "no `@` in `raw`". If a later edit widened that
+        // grammar, the early return would start concluding "no credential"
+        // about strings that have one — and every expected-value row above
+        // could still pass while it did.
+        if input.contains('@') {
+            assert_ne!(
+                actual, **input,
+                "an input containing `@` came back byte-identical, which is what \
+                 under-redaction looks like: {input:?}"
+            );
+        }
     }
+    assert!(
+        mismatches.is_empty(),
+        "{} of {} redaction rows are wrong:\n{}",
+        mismatches.len(),
+        cases.len(),
+        mismatches.join("\n\n")
+    );
 
     // Empty string and a bare `@`: no panic, and the credential-shaped
     // input still masks to something with no raw content in it.
-    assert_eq!(redact_userinfo(""), "");
-    assert_eq!(redact_userinfo("@"), "…@");
+    assert_eq!(redact_for_echo(""), "");
+    assert_eq!(redact_for_echo("@"), "…@");
 }
 
 /// The security review's own reproduction, against `Url::parse` rather
-/// than `redact_userinfo`: the same scheme-less, later-`"://"` string must
+/// than `redact_for_echo`: the same scheme-less, later-`"://"` string must
 /// fall through to the "no scheme" refusal — not be misparsed into
 /// [`HttpError::UnsupportedScheme`] carrying the credential as its
 /// "scheme" — and that refusal's message must not contain the token.

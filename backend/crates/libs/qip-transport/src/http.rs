@@ -131,9 +131,9 @@ pub enum HttpError {
     /// could hand this variant an entire scheme-less credential-bearing
     /// string as its "scheme" — see [`split_scheme`]'s doc comment — and
     /// this variant's `Display` prints `scheme` outright, with no call to
-    /// [`redact_userinfo`], because a value that can only be a clean scheme
+    /// [`redact_for_echo`], because a value that can only be a clean scheme
     /// token needs none. That was the second, structurally separate finding
-    /// of this round: fixing [`redact_userinfo`] alone would have left this
+    /// of this round: fixing [`redact_for_echo`] alone would have left this
     /// arm printing the same credential by a different path.
     UnsupportedScheme { scheme: String },
     /// DNS said no.
@@ -359,18 +359,18 @@ impl std::fmt::Display for Method {
 /// A URI scheme is `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )` and, by that
 /// grammar, can only ever be the literal prefix of the string — RFC 3986
 /// does not admit a scheme found by scanning the tail. Both
-/// [`Url::parse`] and [`redact_userinfo`] used to run their own
+/// [`Url::parse`] and [`redact_for_echo`] used to run their own
 /// `raw.split_once("://")` to find it, and `split_once` finds the *first*
 /// occurrence anywhere in the string, not the one at the start. Two
 /// independent detectors that each searched the whole string is the exact
 /// shape of the defect this closes: a fix landing in one of them — as it did
-/// on 2026-09-12, in `redact_userinfo` alone — leaves the other to
+/// on 2026-09-12, in `redact_for_echo` alone — leaves the other to
 /// misparse the identical string its own way. A scheme-less credential
 /// whose path or query happens to contain the ordinary substring `"://"`
 /// (`?redirect=http://…`, `?callback=http://…` — any parameter naming
 /// another URL) supplies exactly such a later occurrence: `split_once`
 /// matched on it, so almost the whole string up to that point — credential
-/// included — was misread as "the scheme", which [`redact_userinfo`] then
+/// included — was misread as "the scheme", which [`redact_for_echo`] then
 /// had no reason to look inside for an `'@'`, and which
 /// [`HttpError::UnsupportedScheme`] carried and printed outright once the
 /// real parser failed the same way. Anchoring the check to the start, and
@@ -395,108 +395,133 @@ fn split_scheme(raw: &str) -> (Option<&str>, &str) {
     }
 }
 
-/// `raw` with any userinfo in its authority replaced by `…@`, for echoing
-/// an address in a refusal.
+/// `raw` rendered safe to print in a refusal: userinfo masked, the query
+/// and fragment masked, control characters escaped.
 ///
-/// A URL carrying userinfo is refused by [`Url::parse`] precisely because a
-/// credential in the URL lands in every line that records it — and until
-/// 2026-09-12 the refusal itself echoed the whole URL, so
-/// `http://svc:TOKEN@127.0.0.1:9105` set in a deployment put `TOKEN` on
-/// stderr and into Cloud Logging at start-up, from the one check that
-/// existed to keep it out of there. Everything through the last `@` of the
-/// authority goes, so no fragment of a credential that itself contains an
-/// `@` survives; the host after it is kept, because that is the part an
-/// operator needs to see to find the mistake. A URL with no userinfo is
-/// returned unchanged. Pure text, no parse: it must work on exactly the
-/// addresses the parser refuses.
+/// **Use this for an address a caller is *refusing*, never for one it
+/// accepted** — it deliberately destroys detail, and on an accepted address
+/// that detail is the answer rather than the risk.
 ///
-/// **A `"://"` is not required to find the authority.** Until 2026-09-12
-/// this function returned `raw` verbatim whenever `"://"` was absent, on the
-/// premise that every credential-bearing string this process handles has a
-/// scheme. That premise was wrong: an operator who sets
-/// `QIP_LANGUAGE_MODEL_BASE_URL=svc:TOKEN@127.0.0.1:9106` (the `http://`
-/// dropped by mistake) produces exactly the shape this function existed to
-/// catch, and both call sites in [`require_loopback_egress`] and both
-/// invocations inside [`Url::parse`]'s own `invalid` closure fed it straight
-/// back to the caller — the fix that was supposed to keep `TOKEN` out of the
-/// log printed it twice. So: treat everything up to the first `/`, `?` or
-/// `#` as the candidate authority whether or not a scheme was found, and
-/// redact it the same way either way. A string with no such delimiter is
-/// entirely a candidate authority (matching `require_loopback_egress`'s
-/// `"svc:TOKEN@127.0.0.1:9106"` scenario, which has none of the three).
+/// Three masks, and what each one does and does not promise:
 ///
-/// **The scheme is found by [`split_scheme`], not by searching for `"://"`
-/// in the whole string.** Until 2026-09-13 this function ran its own
-/// `raw.split_once("://")`, which finds the first `"://"` *anywhere* —
-/// including one an adversarial or merely ordinary query parameter puts
-/// well past the authority, `?redirect=http://…` being the unremarkable
-/// case. On `svc:TOKEN@127.0.0.1:9106/callback?redirect=http://evil.example/x`
-/// that matched the query's `"://"`, not the (absent) scheme boundary, so
-/// this function read everything up to it — `svc:TOKEN@127.0.0.1:9106/`
-/// `callback?redirect=http` — as a "scheme", handed the rest to the
-/// authority search, and found no `'@'` there because the real one was
-/// buried inside the misread "scheme". `TOKEN` came back unredacted. See
-/// [`split_scheme`] for why anchoring to the start closes this rather than
-/// only patching the one input that was reproduced.
+/// * **Userinfo — guaranteed.** Everything through the *last* `@` past the
+///   scheme is replaced by `…@`. Userinfo precedes an `@` by definition, and
+///   [`split_scheme`] cannot have discarded one, because its grammar
+///   (`ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`) has no `@` in it and its
+///   fallthrough returns the whole string. So "`rest` holds no `@`" and
+///   "`raw` holds no `@`" are the same statement, and the one early return
+///   below is a decision, not a guess. **No `@`-delimited credential can
+///   survive this function.** That is a proof about the code, not a summary
+///   of the cases that were tried; the five rounds it took to get here are
+///   in ADR 0057, and the short version is in the History note below.
+/// * **Query and fragment — masked, and the reason is that they are *not*
+///   covered by the proof above.** A credential with no `@` in it —
+///   `?api_key=hf_REALSECRET`, the shape a vendor console hands an operator
+///   to copy — is invisible to an `@` search, and every arm of
+///   [`require_loopback_egress`] printed it in full until 2026-09-13.
+///   Everything from the first `?` or `#` is therefore replaced by `?…` or
+///   `#…`. This is structural, like the `@` rule: a region boundary, not a
+///   judgement about which parameter looks secret.
+/// * **A credential inside a *path* segment — NOT covered, deliberately.**
+///   `http://host/v1/hunter2/chat` still prints in full. Masking it would
+///   mean guessing which segment is a secret, and guessing which part of a
+///   string is sensitive is the exact activity that produced five
+///   consecutive leaks here. The path is also what an operator needs to
+///   identify which of several configured addresses was refused. Named as a
+///   known limit rather than papered over: if this must close, the answer is
+///   to stop putting the address in the message at all, not to add a
+///   heuristic.
 ///
-/// **An authority-candidate that could never be a real host does not prove
-/// there is no credential.** Until 2026-09-13 this function trusted "no `@`
-/// before the first `/`, `?` or `#`" unconditionally: when no scheme is
-/// found, that first delimiter can be the *very first character* of the
-/// whole string — an operator's `://` typo'd down to `//`, `/`, `?` or `#`
-/// with the scheme dropped entirely, e.g. `//svc:TOKEN@127.0.0.1:9106` or
-/// `/TOKEN@127.0.0.1:9106` — which makes the "authority" an empty string,
-/// or (`://svc:TOKEN@…`, where the candidate is just `:`) a string that
-/// cannot be a host at all. Neither is a real authority under any URL
-/// grammar, so "no `@` in it" said nothing about the credential sitting
-/// one character later, past the delimiter, and this function returned
-/// `raw` untouched — six such inputs, all reachable through
-/// `QIP_LANGUAGE_MODEL_BASE_URL`, all still leaking their token. The first
-/// attempt at a fix widened the search only when a `split_authority`-based
-/// `authority_could_be_a_host` check said the candidate could not be a real
-/// host — narrower than searching the whole remainder unconditionally,
-/// because that would also have caught `127.0.0.1:9105/path@notacredential`
-/// below, which a test pinned as intentional. **That attempt itself did not
-/// close the class.** A fresh security review found it still trusted any
-/// non-empty `word` or `word:validport` shape as "a host" — `abc:80`,
-/// `123`, and the bare `svc` this file used to call out by name — which
-/// let `http://svc/TOKEN@127.0.0.1:9106` and, through
-/// [`require_loopback_egress`]'s own real error path, a one-character
-/// `:`→`/` typo on an otherwise ordinary `http://someservice:TOKEN@host`
-/// address (`http://someservice/TOKEN@host`) print the credential
-/// unredacted. Four fix rounds against this function had each closed the
-/// one reported shape and left an adjacent one standing; a fifth review of
-/// the fourth attempt closed on the same result. That pattern — narrow the
-/// heuristic, find the next gap in it — is itself the finding: no `host`
-/// heuristic drawn from this string's own shape can distinguish a
-/// scheme-typo'd credential from a legitimate bare hostname, because
-/// nothing about the string says which one it is.
+/// Control characters are escaped (`\u{000a}` and the like) rather than
+/// copied through. A `\r\n` in a rejected address otherwise ends the log
+/// line and begins one the operator did not write, which is a forged record
+/// in whatever collects stderr; whoever can set a config variable can
+/// otherwise write an arbitrary line into the log.
 ///
-/// **So this function no longer tries.** It redacts everything through the
-/// *last* `@` anywhere past the scheme, unconditionally, whether or not
-/// what precedes that `@` looks like it could have been a host. This can
-/// only ever over-redact — mask a benign `@` that happens to sit in a path
-/// or query, as `127.0.0.1:9105/path@notacredential` now does, rather than
-/// print it — and it can never under-redact, because there is no longer a
-/// heuristic step whose failure mode is "conclude there is no credential."
-/// The three tests that used to pin the narrower behavior as intentional
-/// (an `@` in a path or query being kept, with a real host in front of it)
-/// were rewritten for this: over-redaction is the accepted, permanent cost
-/// of a function whose one job is to never be the fifth report.
-pub fn redact_userinfo(raw: &str) -> String {
+/// Pure text, no parse: it has to work on exactly the addresses
+/// [`Url::parse`] refuses, which are by definition the ones it cannot
+/// parse.
+///
+/// # History
+///
+/// This function leaked a credential five times, in five different shapes,
+/// across five fix rounds between 2026-09-12 and 2026-09-13: it required a
+/// `"://"` before redacting anything; it found that `"://"` with
+/// `split_once`, which matches a query's `://` as readily as a scheme's; it
+/// read the text before the first `/`, `?` or `#` as "the authority" when
+/// that text was empty or a bare `:`; and it then trusted a
+/// `split_authority` check that accepted `abc:80`, `123` and `svc` as real
+/// hosts. Each round closed the reported shape and left an adjacent one.
+/// The pattern was the finding: **nothing in the string says whether a
+/// host-shaped prefix is a host or a scheme-typo'd credential**, so every
+/// predicate over the string's shape was eventually wrong about some
+/// string. The fix was to delete the predicate, not narrow it again. ADR
+/// 0057 records the decision and what it costs.
+pub fn redact_for_echo(raw: &str) -> String {
     let (scheme, rest) = split_scheme(raw);
-    match rest.rfind('@') {
-        None => raw.to_string(),
-        Some(at) => {
-            let after = &rest[at + 1..];
-            let host_end = after.find(['/', '?', '#']).unwrap_or(after.len());
-            let (host, remainder) = after.split_at(host_end);
-            match scheme {
-                Some(scheme) => format!("{scheme}://…@{host}{remainder}"),
-                None => format!("…@{host}{remainder}"),
-            }
-        }
+    // The parameter region is cut off **first**, and is never searched for
+    // anything — it is dropped whole. Order matters here and getting it
+    // backwards reopens the leak: masking the query only after the `@`
+    // search means an earlier `@` inside the query ends the search there and
+    // prints everything after it, so `http://h/x?a=1@2&key=SECRET` would
+    // come back carrying `SECRET`. Cutting first makes that unreachable,
+    // because no byte at or past the first `?`/`#` reaches the output at all.
+    let (authority_and_path, params) = match rest.find(['?', '#']) {
+        Some(at) => (&rest[..at], &rest[at..at + 1]),
+        None => (rest, ""),
+    };
+    // Then the userinfo, within what is left. Sound because `split_scheme`
+    // cannot have taken an `@` out of `raw` — see the guarantee above — so
+    // "no `@` here" is "no `@` in the part that will be printed", not "no
+    // `@` where I happened to look". A change to `split_scheme`'s grammar
+    // admitting `@` would silently reopen all five leaks through this line;
+    // the matrix test asserts per row that an input holding an `@` never
+    // comes back byte-identical, which fails if that ever stops holding.
+    let kept = match authority_and_path.rfind('@') {
+        Some(at) => &authority_and_path[at + 1..],
+        None => authority_and_path,
+    };
+    let masked_userinfo = kept.len() != authority_and_path.len();
+    if !masked_userinfo && params.is_empty() {
+        // Nothing to mask. Returning `raw` rather than a reassembly keeps an
+        // address that needed no redaction byte-identical to what was set,
+        // which is what an operator compares against their configuration.
+        return escape_controls(raw);
     }
+    let scheme = match scheme {
+        Some(scheme) => format!("{scheme}://"),
+        None => String::new(),
+    };
+    let userinfo = if masked_userinfo { "…@" } else { "" };
+    let params = if params.is_empty() {
+        String::new()
+    } else {
+        format!("{params}…")
+    };
+    escape_controls(&format!("{scheme}{userinfo}{kept}{params}"))
+}
+
+/// `text` with every control character replaced by an escape.
+///
+/// Not cosmetic. The output of [`redact_for_echo`] goes into a refusal that
+/// a composition root prints to stderr at start-up, and a `\r\n` inside a
+/// rejected address would end that line and start another — one whose
+/// contents the person who set the address chose. A log a reader cannot
+/// trust to have one record per line is a log that can be made to say
+/// anything.
+fn escape_controls(text: &str) -> String {
+    if !text.chars().any(char::is_control) {
+        return text.to_string();
+    }
+    text.chars()
+        .fold(String::with_capacity(text.len()), |mut out, c| {
+            if c.is_control() {
+                out.push_str(&format!("\\u{{{:04x}}}", c as u32));
+            } else {
+                out.push(c);
+            }
+            out
+        })
 }
 
 /// The one host an egress address may name: the proxy's loopback listener,
@@ -541,7 +566,7 @@ pub const LOOPBACK_HOST: &str = "127.0.0.1";
 ///   validation (`startswith("http://127.0.0.1:")`) has never admitted one,
 ///   so until 2026-09-12 the process was again the wider of the two gates.
 ///
-/// Every echo of the address goes through [`redact_userinfo`], so a refusal
+/// Every echo of the address goes through [`redact_for_echo`], so a refusal
 /// of `http://svc:TOKEN@…` does not print `TOKEN`. Only the first two arms
 /// can meet a credential — the parser refuses userinfo before the host and
 /// port arms run — but all four echo the redacted form, so a reordering
@@ -553,7 +578,7 @@ pub const LOOPBACK_HOST: &str = "127.0.0.1";
 /// Refuses rather than rewriting: an address that is nearly right is a
 /// deployment mistake somebody should see.
 pub fn require_loopback_egress(base_url: &str) -> qip_core::Result<()> {
-    let shown = redact_userinfo(base_url);
+    let shown = redact_for_echo(base_url);
     if base_url.starts_with("https://") {
         return Err(qip_core::Error::invalid(format!(
             "the egress address is {shown}. This transport speaks plaintext HTTP/1.1 and has \
@@ -567,10 +592,24 @@ pub fn require_loopback_egress(base_url: &str) -> qip_core::Result<()> {
              open — {error}. The egress proxy is reached at http://127.0.0.1:<port>"
         ))
     })?;
+    // From here on the message leads with `host` — what the parser resolved
+    // and what a request would actually connect to — rather than with
+    // `shown`. Both are printed, but in that order and labelled, because
+    // they can legitimately disagree: `shown` masks everything through the
+    // last `@` anywhere, so `http://evil.example/redirect@127.0.0.1:9105`
+    // shows as `http://…@127.0.0.1:9105` while its real host is
+    // `evil.example`. Leading with `shown` made the refusal read as though a
+    // correct loopback address had been rejected, and the port arm below
+    // announced "names no port" beside a displayed `:9105`. A refusal whose
+    // first clause contradicts its second teaches an operator to distrust
+    // the gate rather than fix the address. `host` is safe to print
+    // unmasked: `Url::parse` refuses userinfo before this line runs, so a
+    // parsed host cannot carry a credential.
     let host = url.host();
     if host != LOOPBACK_HOST {
         return Err(qip_core::Error::invalid(format!(
-            "the egress address is {shown}, whose host is `{host}`. A vendor is reached only \
+            "the egress address names the host `{host}` (as written, with any credential, \
+             query and fragment masked: {shown}). A vendor is reached only \
              through the egress proxy on loopback — http://127.0.0.1:<port>, the literal \
              address and not a name a resolver answers — which terminates TLS to the vendor \
              (ADR 0024) and reaches only the hosts its bootstrap names; this transport has no \
@@ -580,7 +619,8 @@ pub fn require_loopback_egress(base_url: &str) -> qip_core::Result<()> {
     }
     if !url.port_is_explicit() {
         return Err(qip_core::Error::invalid(format!(
-            "the egress address is {shown}, which names no port. The egress proxy's listeners \
+            "the egress address names the host `{host}` and names no port (as written, with \
+             any credential, query and fragment masked: {shown}). The egress proxy's listeners \
              are one per vendor on distinct ports, http://127.0.0.1:<port>; an address with no \
              port would reach whatever answers on loopback port 80, and it is not the address \
              Terraform admits"
@@ -617,19 +657,19 @@ impl Url {
     /// a credential in every log line that records the URL), and refuses a
     /// fragment (it is a client-side construct that never goes on the wire).
     /// The address the error carries has its userinfo redacted — see
-    /// [`redact_userinfo`] — so the refusal of a credential-bearing URL is
+    /// [`redact_for_echo`] — so the refusal of a credential-bearing URL is
     /// not itself the leak.
     ///
     /// The scheme boundary is found by [`split_scheme`] — the same function
-    /// [`redact_userinfo`] uses — rather than by this function running its
+    /// [`redact_for_echo`] uses — rather than by this function running its
     /// own `"://"` search, which is what let a scheme-less credential
     /// string be misread as carrying a scheme at all until 2026-09-13. A
     /// string [`split_scheme`] does not anchor a scheme onto now falls
     /// through to the "no scheme" arm below, whatever it contains further
-    /// in, and that arm already redacts through [`redact_userinfo`].
+    /// in, and that arm already redacts through [`redact_for_echo`].
     pub fn parse(raw: &str) -> HttpResult<Self> {
         let invalid = |detail: &str| HttpError::InvalidUrl {
-            url: redact_userinfo(raw),
+            url: redact_for_echo(raw),
             detail: detail.to_string(),
         };
 
