@@ -638,8 +638,14 @@ fn universe(platform: &Platform, now: Timestamp) -> UniverseView {
 }
 
 /// The limits the platform runs under, with their rationales.
-fn limit_rows(_platform: &Platform) -> Vec<LimitRow> {
-    qip_risk::limits::LimitSet::conservative_default()
+/// The limits this process actually runs under — the set the platform
+/// booted with — and not the shipped default. The two were the same in every
+/// deployment until a limits file could be mounted (ADR 0061); a page that
+/// kept rendering the shipped set would show a desk the bounds it used to
+/// have on the day a signed recalibration took effect.
+fn limit_rows(platform: &Platform) -> Vec<LimitRow> {
+    platform
+        .limits()
         .limits
         .iter()
         .map(|limit| LimitRow {

@@ -2136,3 +2136,202 @@ fn no_signing_or_withdrawal_path_appears_in_the_venue_tooling_or_the_portal() {
          same refusal broken in a language the workspace scan does not read: {offenders:?}"
     );
 }
+
+// --- the limit set moves only through the file read at boot -------------------
+
+/// The `impl` blocks that hold a limit set or stand between one and an order,
+/// and on which no `&mut self` method may name a limit.
+///
+/// `LimitSet` and `PreTradeChecker` hold the set; `RiskMonitor` holds the
+/// monitor's copy; `OrderManager` holds the checker; `Platform` holds all of
+/// them. A setter on any one of these is the door ADR 0061 closes.
+const LIMIT_HOLDERS: [&str; 5] = [
+    "LimitSet",
+    "PreTradeChecker",
+    "RiskMonitor",
+    "OrderManager",
+    "Platform",
+];
+
+/// Where `LimitSet::conservative_default()` may be called from shipped code,
+/// and why. Everything else is a test.
+///
+/// A shipped call outside this list is a process — or a page — deciding for
+/// itself which limits it runs under, which is exactly what made
+/// `qip-api`'s risk page render the shipped set while the platform ran
+/// another.
+const CONSERVATIVE_DEFAULT_SITES: [(&str, &str); 7] = [
+    (
+        "libs/qip-risk/src/limits.rs",
+        "the definition, and `LimitSet::from_document` validating a file against it",
+    ),
+    (
+        "apps/qip-api/src/main.rs",
+        "`load_risk_limits`: the shipped set where QIP_RISK_LIMITS_PATH is unset",
+    ),
+    (
+        "apps/qip-fastbrain/src/main.rs",
+        "`load_risk_limits`: the shipped set where QIP_RISK_LIMITS_PATH is unset",
+    ),
+    (
+        "apps/qip-deepbrain/src/main.rs",
+        "`load_risk_limits`: the shipped set where QIP_RISK_LIMITS_PATH is unset",
+    ),
+    (
+        "apps/qip-cli/src/",
+        "the operator's local tool, deliberately outside the deployment (ADR 0010): `qip limits` \
+         prints the shipped set and the demo and replay assemble on it",
+    ),
+    (
+        "agents/qip-investment-agents/src/desk.rs",
+        "`Desk::empty`, the placeholder view an agent host is assembled on before the kernel \
+         hands it the platform's own; the kernel overwrites it with the set it booted with",
+    ),
+    (
+        "runtime/qip-kernel/src/platform.rs",
+        "none today; reserved so the entry that appears here is a reviewed one",
+    ),
+];
+
+#[test]
+fn no_code_path_assigns_a_limit_set_after_boot_and_no_root_reads_one_from_anywhere_but_its_configuration()
+ {
+    // The guarantee ADR 0061 rests on, and the one a helpful change would
+    // erode first. A recalibration is signed through the API and what the
+    // signature produces is a file; the obvious next step — "apply it to the
+    // running process too, so the operator does not have to redeploy" — is
+    // a `set_limits(&mut self, …)` on `Platform`, and with it the paper
+    // boundary's neighbour: a control that moves under a running book on a
+    // request. Nothing in the type system stops it, so the guarantee is
+    // held here, on every shipped `impl` of the five types that hold a set.
+    //
+    // Tokenised rather than `contains`, for the reason the scans above give:
+    // `limit` is a substring of `delimiter`, and a scan that refused that
+    // would be loosened once and trusted never.
+    let mut scanned = 0usize;
+    let mut blocks_read = 0usize;
+    let mut setters = Vec::new();
+    let mut default_sites: Vec<String> = Vec::new();
+
+    for file in files_with_extension("backend/crates", "rs") {
+        // `tests/` directories and the `#[cfg(test)]` tail are not shipped.
+        if file
+            .components()
+            .any(|component| component.as_os_str() == "tests")
+        {
+            continue;
+        }
+        let content = std::fs::read_to_string(&file).expect("readable source");
+        let shipped = match content.find("#[cfg(test)]") {
+            Some(cut) => &content[..cut],
+            None => &content[..],
+        };
+        scanned += 1;
+        let relative = file
+            .strip_prefix(repository_root().join("backend/crates"))
+            .expect("under backend/crates")
+            .to_string_lossy()
+            .to_string();
+
+        for holder in LIMIT_HOLDERS {
+            let marker = format!("impl {holder} {{");
+            for (index, _) in shipped.match_indices(&marker) {
+                let brace = index + marker.len() - 1;
+                let Some(block) = bracketed(shipped, brace, b'{', b'}') else {
+                    continue;
+                };
+                blocks_read += 1;
+                for (at, _) in block.match_indices("fn ") {
+                    // A method: `fn name(` followed by `&mut self`.
+                    let rest = &block[at + 3..];
+                    let name: String = rest
+                        .chars()
+                        .take_while(|c| is_identifier_char(*c))
+                        .collect();
+                    if name.is_empty() {
+                        continue;
+                    }
+                    let after = rest[name.len()..].trim_start();
+                    let Some(list) = after.strip_prefix('(') else {
+                        continue;
+                    };
+                    let takes_mut_self = list.trim_start().starts_with("&mut self");
+                    if takes_mut_self && name.to_lowercase().contains("limit") {
+                        setters.push(format!("{relative}: {holder}::{name}(&mut self, …)"));
+                    }
+                }
+            }
+        }
+
+        let calls = shipped.match_indices("conservative_default(").count();
+        if calls > 0 {
+            default_sites.push(relative);
+        }
+    }
+
+    // The vacuity guards. Every assertion below is about absence, so a walk
+    // that read nothing would pass while proving nothing.
+    assert!(
+        scanned > 300,
+        "only {scanned} shipped Rust files were scanned; the walk is not reaching the crates"
+    );
+    assert!(
+        blocks_read >= 5,
+        "only {blocks_read} `impl` block(s) of the five limit holders were read; the block \
+         scan has stopped matching the form they are written in"
+    );
+    // The positive control on the setter scan: `Platform::approve_recalibration`
+    // takes `&mut self` and is found by the same tokeniser — it just does not
+    // name a limit. Without this a tokeniser that matched no method at all
+    // would satisfy the assertion below.
+    let platform = read("backend/crates/runtime/qip-kernel/src/platform.rs");
+    assert!(
+        platform.contains("pub fn approve_recalibration(\n        &mut self,"),
+        "the positive control has moved; `approve_recalibration` no longer takes `&mut self` \
+         where this test looks for it"
+    );
+
+    assert!(
+        setters.is_empty(),
+        "a `&mut self` method naming a limit has appeared on a type that holds the limit set: \
+         {setters:?}. ADR 0061: the only path by which a bound reaches a running process is the \
+         file the composition root reads at boot. A signed recalibration is a file for that \
+         variable to name, never a mutation of the running set."
+    );
+
+    // And the shipped set is chosen only where this list says, each with a
+    // reason. Two directions, so the list cannot rot: every site found must
+    // be listed, and every listed site must still be found — bar the one
+    // reserved entry, which exists to be the line a reviewer edits.
+    let unlisted: Vec<&String> = default_sites
+        .iter()
+        .filter(|site| {
+            !CONSERVATIVE_DEFAULT_SITES
+                .iter()
+                .any(|(prefix, _)| site.starts_with(prefix))
+        })
+        .collect();
+    assert!(
+        unlisted.is_empty(),
+        "`LimitSet::conservative_default()` is called from shipped code this test has not \
+         reviewed: {unlisted:?}. A process or a page that chooses the shipped set for itself \
+         is one that will disagree with the set the platform booted on the day a limits file is \
+         mounted; read `Platform::limits()` instead, or name the site here with its reason."
+    );
+    for (prefix, why) in CONSERVATIVE_DEFAULT_SITES {
+        if prefix == "runtime/qip-kernel/src/platform.rs" {
+            assert!(
+                !default_sites.iter().any(|site| site.starts_with(prefix)),
+                "the kernel's shipped code now calls `conservative_default()`; the reserved \
+                 entry says none should, because the kernel is handed its set and must never \
+                 choose one"
+            );
+            continue;
+        }
+        assert!(
+            default_sites.iter().any(|site| site.starts_with(prefix)),
+            "{prefix} is listed as a `conservative_default()` site ({why}) and no longer calls \
+             it; remove the entry, or the list will excuse the next call that appears there"
+        );
+    }
+}

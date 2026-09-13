@@ -13,7 +13,21 @@
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// The environment variable a composition root reads the desk's limit set
+/// from: a committed JSON [`LimitSet`], mounted the way the universe is.
+///
+/// Named here, beside the type it names a file of, for the reason
+/// [`COUNTERPARTY_AXIS`] gives: the three central roots read it and the
+/// deployment writes it, and a variable spelled two ways is a file nobody
+/// reads. Unset, a root runs the shipped [`LimitSet::conservative_default`];
+/// set, the file is read once at boot through [`LimitSet::from_document`]
+/// and a file that does not validate stops the process. It is the only path
+/// by which a bound reaches a running process (ADR 0061): a signed
+/// recalibration produces a file for this variable to name, and nothing
+/// installs a set after boot.
+pub const RISK_LIMITS_PATH_VARIABLE: &str = "QIP_RISK_LIMITS_PATH";
 
 /// The exposure axis [`LimitKind::MaxCounterpartyExposure`] reads.
 ///
@@ -837,6 +851,143 @@ impl LimitSet {
 
     pub fn is_empty(&self) -> bool {
         self.limits.is_empty()
+    }
+
+    /// A committed limits document, parsed and validated against the shipped
+    /// set, or the reason it was refused — prefixed `configuration: {path}`
+    /// so a root's start-up failure names the file.
+    ///
+    /// The document is the serialised [`LimitSet`] — what a signed
+    /// recalibration's artefact renders as (ADR 0061) — and it is validated
+    /// through [`Self::validate`] against [`Self::conservative_default`],
+    /// which is what makes "a file may move a bound, never remove a control"
+    /// a property of every root rather than of a reviewer's attention.
+    pub fn from_document(text: &str, path: &str) -> Result<Self> {
+        let set: Self = serde_json::from_str(text).map_err(|error| {
+            Error::invalid(format!(
+                "configuration: {path} does not hold a valid limit set: {error}. The document is \
+                 the JSON of a LimitSet — a `name` and a `limits` array whose every entry \
+                 carries name, kind, warning_threshold, critical_multiple, forces_reduction and \
+                 rationale — which is exactly what a signed recalibration's artefact renders as"
+            ))
+        })?;
+        set.validate(&Self::conservative_default())
+            .map_err(|error| {
+                Error::invalid(format!("configuration: {path} {}", error.message()))
+            })?;
+        Ok(set)
+    }
+
+    /// Whether this set is one a process may boot on, given the set it ships
+    /// with.
+    ///
+    /// Refuses: an empty set name; no limits at all; a limit with an empty
+    /// or duplicated name, or no rationale (the shipped set asserts every
+    /// limit explains itself, and a limit nobody can explain does not ship
+    /// from a file either); a bound, horizon or confidence that is not a
+    /// finite number in its range (a non-finite bound disarms the limit —
+    /// see [`Limit::assess`] — and a non-positive one refuses nothing or
+    /// everything); a `warning_threshold` outside `(0, 1]`; a
+    /// `critical_multiple` below one; and **any limit in `shipped` whose
+    /// name this set does not carry**. That last is the rule ADR 0061
+    /// states as "a file may move a bound, never remove a control": the
+    /// governed path loosens one bound at a time on evidence, and a file
+    /// that dropped `expected-shortfall` would be a control removed by
+    /// omission, which is the defect this repository already records under
+    /// that name.
+    ///
+    /// Deliberately no "not looser than the shipped set" check. Loosening
+    /// through the file *is* the governed path — it is how a signed
+    /// recalibration reaches a process — so refusing it here would refuse
+    /// the one thing the file exists to carry.
+    pub fn validate(&self, shipped: &LimitSet) -> Result<()> {
+        if self.name.trim().is_empty() {
+            return Err(Error::invalid(
+                "names no limit set; a set with no name cannot be told from another in a banner",
+            ));
+        }
+        if self.limits.is_empty() {
+            return Err(Error::invalid(format!(
+                "holds no limits under the name {}; a process with no limits is not a \
+                 deployment with a permissive desk, it is one with no risk engine",
+                self.name
+            )));
+        }
+        let mut names: BTreeSet<&str> = BTreeSet::new();
+        for limit in &self.limits {
+            let name = limit.name.trim();
+            if name.is_empty() {
+                return Err(Error::invalid(format!(
+                    "carries a {} limit with no name; a breach it records could be charged to \
+                     nothing",
+                    limit.kind.label()
+                )));
+            }
+            if !names.insert(name) {
+                return Err(Error::invalid(format!(
+                    "carries two limits named {name}; a recalibration of that name could not say \
+                     which bound it moved"
+                )));
+            }
+            if limit.rationale.trim().is_empty() {
+                return Err(Error::invalid(format!(
+                    "carries {name} with no rationale; a limit nobody can explain does not ship"
+                )));
+            }
+            let bound = limit.kind.bound();
+            if !bound.is_finite() || bound <= 0.0 {
+                return Err(Error::invalid(format!(
+                    "carries {name} with a bound of {bound}; a bound must be a finite positive \
+                     number, because anything else either refuses nothing or refuses everything"
+                )));
+            }
+            if let LimitKind::MinLiquidity { days, .. } = &limit.kind
+                && (!days.is_finite() || *days <= 0.0)
+            {
+                return Err(Error::invalid(format!(
+                    "carries {name} with a horizon of {days} days; the horizon must be a finite \
+                     positive number of days"
+                )));
+            }
+            if let LimitKind::MaxValueAtRisk { confidence, .. }
+            | LimitKind::MaxExpectedShortfall { confidence, .. } = &limit.kind
+                && (!confidence.is_finite() || *confidence <= 0.0 || *confidence >= 1.0)
+            {
+                return Err(Error::invalid(format!(
+                    "carries {name} at a confidence of {confidence}; a tail confidence is a \
+                     finite number strictly between zero and one"
+                )));
+            }
+            if !limit.warning_threshold.is_finite()
+                || limit.warning_threshold <= 0.0
+                || limit.warning_threshold > 1.0
+            {
+                return Err(Error::invalid(format!(
+                    "carries {name} with a warning threshold of {}; the threshold is a fraction \
+                     of the bound in (0, 1]",
+                    limit.warning_threshold
+                )));
+            }
+            if !limit.critical_multiple.is_finite() || limit.critical_multiple < 1.0 {
+                return Err(Error::invalid(format!(
+                    "carries {name} with a critical multiple of {}; the multiple is a finite \
+                     number of at least one, because a breach cannot be critical below the \
+                     bound it breached",
+                    limit.critical_multiple
+                )));
+            }
+        }
+        for control in &shipped.limits {
+            if !names.contains(control.name.as_str()) {
+                return Err(Error::invalid(format!(
+                    "does not carry {}, which the shipped set {} does; a limits file may move a \
+                     bound and never remove a control, because a control removed by omission \
+                     reads as protection to everyone who did not read the diff",
+                    control.name, shipped.name
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// The set with exactly one limit's bound replaced, by name.

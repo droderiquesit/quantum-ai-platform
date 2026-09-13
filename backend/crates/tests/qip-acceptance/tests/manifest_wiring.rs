@@ -2021,6 +2021,88 @@ fn the_wallet_statement_is_mountable_from_a_root_variable_and_no_environment_nam
 }
 
 #[test]
+fn the_risk_limits_file_is_mountable_from_a_root_variable_on_all_three_central_roots_and_no_environment_names_one()
+ {
+    // ADR 0061's deployment half. The kernel's `Platform::limits()` is
+    // read-only and the acceptance suite refuses a setter, so a signed
+    // recalibration reaches a process only as a file the root reads at boot
+    // — which is a guarantee about the roots, not a capability, unless the
+    // deployment can actually mount that file. It has to reach *all three*
+    // central roots, because each assembles its own `Platform` on its own
+    // set, and the fast brain had no optional-file map until this: a mount
+    // on the API and the deep brain alone would loosen the desk's sizing
+    // and leave the fast path refusing at the old bound.
+    let constants = variables_by_constant();
+    for binary in ["qip-api", "qip-fastbrain", "qip-deepbrain"] {
+        let read = variables_read_by(binary, &constants);
+        assert!(
+            read.all().contains("QIP_RISK_LIMITS_PATH"),
+            "{binary} no longer reads QIP_RISK_LIMITS_PATH through `RISK_LIMITS_PATH_VARIABLE`; \
+             the mount below would then feed nothing"
+        );
+    }
+
+    let optional = catalogue_optional_config_files();
+    for workload in ["api", "fastbrain", "deepbrain"] {
+        let files = optional.get(workload).unwrap_or_else(|| {
+            panic!("local.optional_config_files declares no {workload} workload")
+        });
+        assert!(
+            files.contains("QIP_RISK_LIMITS_PATH"),
+            "the catalogue mounts no limits file on {workload}; it mounts {files:?}"
+        );
+    }
+    let catalogue = read(CATALOGUE);
+    assert!(
+        catalogue.contains("local.optional_config_files.fastbrain,"),
+        "the fast brain's config_files block does not merge its optional files; the arm in \
+         local.optional_config_files renders a document no entry mounts"
+    );
+
+    let block = root_variable_block("risk_limits_file");
+    assert!(
+        block.contains("default = null"),
+        "risk_limits_file has a non-null default; a deployment would then boot on a set nobody \
+         signed for"
+    );
+    assert!(
+        block.contains("^data/[A-Za-z0-9._/-]+\\\\.json$"),
+        "risk_limits_file no longer refuses a path outside data/"
+    );
+
+    for environment in ENVIRONMENTS {
+        assert_eq!(
+            tfvars_assignment(environment, "risk_limits_file"),
+            None,
+            "{environment} names a limits file; if a recalibration has been signed and its \
+             artefact committed, the RunService manifests under {GITOPS_ENVS}/{environment} \
+             must carry QIP_RISK_LIMITS_PATH on all three roots and this premise is the line \
+             to revisit"
+        );
+        let tfvars = read(&format!(
+            "infrastructure/environments/{environment}/terraform.tfvars"
+        ));
+        assert!(
+            tfvars.contains("risk_limits_file"),
+            "{environment} does not mention risk_limits_file at all. Unset is a decision here — \
+             no recalibration has been signed — and a decision nobody wrote down is one the \
+             next reader will make again from scratch"
+        );
+    }
+
+    for binary in ["qip-api", "qip-fastbrain", "qip-deepbrain"] {
+        assert!(
+            !READ_BUT_NOT_SET
+                .iter()
+                .any(|(crate_name, variable, _)| *crate_name == binary
+                    && *variable == "QIP_RISK_LIMITS_PATH"),
+            "QIP_RISK_LIMITS_PATH is argued unset for {binary} in READ_BUT_NOT_SET and the \
+             catalogue sets it from var.risk_limits_file; one of the two is wrong"
+        );
+    }
+}
+
+#[test]
 fn a_workloads_rendered_manifest_mounts_exactly_the_secrets_its_catalogue_entry_declares() {
     // `infrastructure/CLAUDE.md` calls the catalogue "the source of truth for
     // both the identity Terraform creates and the manifest Argo CD applies".

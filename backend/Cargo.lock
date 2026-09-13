@@ -710,6 +710,7 @@ dependencies = [
  "qip-numerics",
  "qip-portfolio",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

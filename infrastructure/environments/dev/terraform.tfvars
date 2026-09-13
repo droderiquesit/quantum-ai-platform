@@ -276,8 +276,8 @@ github_repository = "droderiquesit/quantum-ai-platform"
 # same sha256, so the tag had not moved under the reviewed line.
 vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9e105491d58d29ac2739560b3b"
 
-# --- The five optional files the API and the deep brain can be given, and
-# --- why none is named here ---
+# --- The six optional files the central roots can be given, and why none
+# --- is named here ---
 #
 # `venue_registrations_file`, `wallet_statement_file` and
 # `capital_fabric_file` stay at their default
@@ -285,7 +285,8 @@ vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7ec
 # API sees neither QIP_VENUE_REGISTRATIONS_PATH nor QIP_WALLET_STATEMENT_PATH.
 # `central_horizons_file` and `source_candidates_file` — the deep brain's own
 # pair, following the same convention — stay null for the same reason, argued
-# below. Absent is a state each variable documents, not an omission:
+# below, and so does `risk_limits_file`, the one file all three roots share.
+# Absent is a state each variable documents, not an omission:
 #
 # venue_registrations_file = "data/registrations/venue-registrations.json"
 #   would mount the records the API's registry ships with. Nobody has
@@ -334,6 +335,17 @@ vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7ec
 #   No strategy run from this environment has been given a stated horizon, so
 #   there is no claim to declare; setting this without one would arm a gate
 #   against a policy nobody actually holds.
+#
+# risk_limits_file = "data/risk-limits/<the desk's signed set>.json"
+#   would mount the limit set every central root boots on, in place of the
+#   shipped `conservative_default`. It is the only path by which a bound
+#   reaches a running process (ADR 0061): the LEARN stage proposes a
+#   loosening from counterfactual regret, two operators sign it through the
+#   API, and the second signature emits this file — the running set with one
+#   bound replaced — for a person to commit and name here. No recalibration
+#   has been signed, so there is no artefact to mount, and the shipped set is
+#   the one every process has ever run under. A file named here may move a
+#   bound and never remove a control; the roots refuse one that does.
 #
 # source_candidates_file = "data/datasets/source-candidates.json"
 #   would mount the candidate data sources the deep brain's discovery desk

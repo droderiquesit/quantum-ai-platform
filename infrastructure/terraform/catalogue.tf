@@ -138,6 +138,45 @@ locals {
           env_file_variable = "QIP_CAPITAL_FABRIC_PATH"
         }
       },
+      # The desk's limit set (ADR 0061), or nothing — on every central root,
+      # because each assembles its own Platform on its own set and a bound
+      # moved on one brain and not the other would be two desks with one
+      # name. Unset, the root runs the shipped `conservative_default`, which
+      # is every deployment's state and the only set any process has ever
+      # run under. Set, it is the artefact two operators signed for: the
+      # running set with one bound replaced, validated at boot against the
+      # shipped set — a file may move a bound and never remove a control —
+      # and the only path by which a bound reaches a running process.
+      var.risk_limits_file == null ? {} : {
+        risk-limits = {
+          content           = file("${path.module}/../../${var.risk_limits_file}")
+          file_name         = "risk-limits.json"
+          content_type      = "application/json"
+          env_file_variable = "QIP_RISK_LIMITS_PATH"
+        }
+      },
+    )
+    # The fast brain's one optional file. It had no entry here until ADR
+    # 0061, because nothing optional reached it; the limit set does, for the
+    # reason the arm gives.
+    fastbrain = merge(
+      # The desk's limit set (ADR 0061), or nothing — on every central root,
+      # because each assembles its own Platform on its own set and a bound
+      # moved on one brain and not the other would be two desks with one
+      # name. Unset, the root runs the shipped `conservative_default`, which
+      # is every deployment's state and the only set any process has ever
+      # run under. Set, it is the artefact two operators signed for: the
+      # running set with one bound replaced, validated at boot against the
+      # shipped set — a file may move a bound and never remove a control —
+      # and the only path by which a bound reaches a running process.
+      var.risk_limits_file == null ? {} : {
+        risk-limits = {
+          content           = file("${path.module}/../../${var.risk_limits_file}")
+          file_name         = "risk-limits.json"
+          content_type      = "application/json"
+          env_file_variable = "QIP_RISK_LIMITS_PATH"
+        }
+      },
     )
     # The deep brain's two optional files, following the API's three above
     # rather than a convention of their own: a root variable names a path in
@@ -170,6 +209,23 @@ locals {
           file_name         = "source-candidates.json"
           content_type      = "application/json"
           env_file_variable = "QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH"
+        }
+      },
+      # The desk's limit set (ADR 0061), or nothing — on every central root,
+      # because each assembles its own Platform on its own set and a bound
+      # moved on one brain and not the other would be two desks with one
+      # name. Unset, the root runs the shipped `conservative_default`, which
+      # is every deployment's state and the only set any process has ever
+      # run under. Set, it is the artefact two operators signed for: the
+      # running set with one bound replaced, validated at boot against the
+      # shipped set — a file may move a bound and never remove a control —
+      # and the only path by which a bound reaches a running process.
+      var.risk_limits_file == null ? {} : {
+        risk-limits = {
+          content           = file("${path.module}/../../${var.risk_limits_file}")
+          file_name         = "risk-limits.json"
+          content_type      = "application/json"
+          env_file_variable = "QIP_RISK_LIMITS_PATH"
         }
       },
     )
@@ -365,13 +421,23 @@ locals {
           QIP_CONNECTOR_BASE_URL = var.market_data_connector.base_url
         },
       )
+      # The universe every root reads, and whatever optional files the tfvars
+      # named for this workload — the same comprehension the API's entry
+      # uses, and for the same reason: the block still opens with
+      # `config_files = {`, and the acceptance walks read the universe's
+      # mount out of the lines under that opening.
       config_files = {
-        universe = {
-          content           = local.universe_catalogue
-          file_name         = "universe.json"
-          content_type      = "application/json"
-          env_file_variable = "QIP_UNIVERSE_PATH"
-        }
+        for name, document in merge(
+          {
+            universe = {
+              content           = local.universe_catalogue
+              file_name         = "universe.json"
+              content_type      = "application/json"
+              env_file_variable = "QIP_UNIVERSE_PATH"
+            }
+          },
+          local.optional_config_files.fastbrain,
+        ) : name => document
       }
       secret_mounts = {
         # The capital-envelope key, as a file. Absent, this process runs on

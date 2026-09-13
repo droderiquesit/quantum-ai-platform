@@ -42,7 +42,7 @@ use qip_fastbrain::{health, node, roster};
 use qip_kernel::{Platform, PlatformConfig};
 use qip_market_ingestion::connector::journal::StreamJournal;
 use qip_observability::Telemetry;
-use qip_risk::limits::LimitSet;
+use qip_risk::limits::{LimitSet, RISK_LIMITS_PATH_VARIABLE};
 use qip_risk_engine::autonomy::AutonomyLevel;
 use qip_storage::ChainArchive;
 use qip_storage::settings::StorageSettings;
@@ -206,12 +206,15 @@ fn run() -> Result<()> {
     // platform exists — see `load_universe` for why an unset path is a
     // refusal and not an empty universe.
     let catalogue = load_universe(&config.storage, started)?;
+    // The limit set, read once here and never again: a bound reaches a
+    // running process through this file and nothing else (ADR 0061).
+    let (limits, limits_banner) = load_risk_limits()?;
     let mut platform = Platform::new(
         platform_config,
         context,
         telemetry,
         catalogue.universe,
-        LimitSet::conservative_default(),
+        limits,
     )?;
 
     // The trust root, before anything is served: install the operator's
@@ -277,7 +280,15 @@ fn run() -> Result<()> {
     let stop = Arc::new(AtomicBool::new(false));
 
     banner(
-        provenance, &config, &cleared, &feed, &platform, &ceiling, bound, &archive,
+        provenance,
+        &config,
+        &cleared,
+        &feed,
+        &platform,
+        &ceiling,
+        bound,
+        &archive,
+        &limits_banner,
     );
     // Read off the platform's own registry rather than the one handed to the
     // feed above. The two are built by the same function from the same
@@ -425,6 +436,66 @@ fn load_universe(
     Ok(catalogue)
 }
 
+/// The desk's limit set, from the file `QIP_RISK_LIMITS_PATH` names, and the
+/// banner line that says which set this process runs under and its hash.
+///
+/// Unset, the shipped [`LimitSet::conservative_default`] — every deployment
+/// today, and the only set any process has ever run under. Set, the file is
+/// read once, here, validated against the shipped set through
+/// [`LimitSet::from_document`], and never read again: it is the one path by
+/// which a bound reaches a running process (ADR 0061), because a signed
+/// recalibration produces a file for this variable to name and nothing on
+/// the platform installs a set after boot. Set and unreadable, or readable
+/// and invalid — not JSON, a bound that is not a positive number, a control
+/// the shipped set carries and the file does not — stops the process, the
+/// posture `load_universe` takes: a desk that believed a loosening had been
+/// deployed and was silently running the shipped set would find out from a
+/// refusal, at the moment the gap costs something to have missed.
+///
+/// The hash is of the bytes read, so `sha256sum` on the committed file
+/// answers the same string the banner prints; for the shipped set it is the
+/// hash of the set as serialised, and the banner says which.
+fn load_risk_limits() -> Result<(LimitSet, String)> {
+    let Some(path) = std::env::var(RISK_LIMITS_PATH_VARIABLE)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        let shipped = LimitSet::conservative_default();
+        let serialised = serde_json::to_vec(&shipped)?;
+        let banner = format!(
+            "{} ({} limit(s)), the shipped set — {RISK_LIMITS_PATH_VARIABLE} is not set; \
+             sha256 of the set as serialised {}",
+            shipped.name,
+            shipped.len(),
+            qip_core::hash::sha256_hex(&serialised)
+        );
+        return Ok((shipped, banner));
+    };
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        Error::io(format!(
+            "configuration: {RISK_LIMITS_PATH_VARIABLE} names {path}, which cannot be read: \
+             {error}. Unset it to run the shipped set; a named file that does not read is not a \
+             deployment on the shipped set"
+        ))
+    })?;
+    let limits = parse_risk_limits(&text, &path)?;
+    let banner = format!(
+        "{} ({} limit(s)) from {path}, sha256 {}",
+        limits.name,
+        limits.len(),
+        qip_core::hash::sha256_hex(text.as_bytes())
+    );
+    Ok((limits, banner))
+}
+
+/// The parsing half of [`load_risk_limits`], split out so it is testable
+/// without an environment variable or a file on disk — this workspace
+/// forbids `unsafe`, and Rust 2024 made `std::env::set_var` unsafe, so a
+/// test cannot set the variable this function's caller reads.
+fn parse_risk_limits(text: &str, path: &str) -> Result<LimitSet> {
+    LimitSet::from_document(text, path)
+}
+
 fn banner(
     provenance: qip_fastbrain::trust::KeyProvenance,
     config: &FastBrainConfig,
@@ -434,10 +505,12 @@ fn banner(
     ceiling: &str,
     bound: std::net::SocketAddr,
     archive: &ChainArchive,
+    limits: &str,
 ) {
     println!("qip-fastbrain health on {bound}");
     println!("  autonomy ceiling: {ceiling}");
     println!("  envelope key:     {}", provenance.describe());
+    println!("  risk limits:      {limits}");
     println!("  agents:           {}", platform.organisation().len());
     println!(
         "  live trading:     {}",
@@ -493,4 +566,73 @@ fn banner(
         println!("{line}");
     }
     println!("  event chain:      {}", archive.describe());
+}
+
+#[cfg(test)]
+mod tests {
+    //! `load_risk_limits` is the file read and `parse_risk_limits` the
+    //! parser; this proves the parser refuses what a root must not boot on.
+
+    use super::*;
+
+    #[test]
+    fn a_malformed_limits_file_stops_the_process() {
+        // Every refusal `parse_risk_limits` makes is a process that does not
+        // start rather than one that falls back to the shipped set: a desk
+        // that believed a loosening had been deployed and was silently
+        // running the shipped set would find out from a refusal, not a
+        // banner. JSON cannot spell NaN, so the not-a-number case is the
+        // parser refusing the literal; the bound that is not a positive
+        // number is the validator's.
+        let shipped = LimitSet::conservative_default();
+        // The admitting half, so the refusals below are choices: the shipped
+        // set's own document loads, and a moved bound loads with the move.
+        let text = serde_json::to_string(&shipped).expect("the shipped set serialises");
+        assert_eq!(
+            parse_risk_limits(&text, "limits.json").expect("the shipped document loads"),
+            shipped
+        );
+        let moved = shipped
+            .rebound("order-notional", 300_000.0)
+            .expect("a known limit rebounds");
+        let moved = parse_risk_limits(
+            &serde_json::to_string(&moved).expect("serialises"),
+            "moved.json",
+        )
+        .expect("a document that moves one bound loads");
+        assert_ne!(moved, shipped, "the premise failed: nothing moved");
+
+        for (label, document) in [
+            ("not JSON", "{ this is not a limits file".to_string()),
+            ("a NaN bound", text.replace("250000", "NaN")),
+            (
+                "a negative bound",
+                text.replace("\"limit\":0.1", "\"limit\":-0.1"),
+            ),
+            (
+                "a duplicated name",
+                text.replace("\"position-weight\"", "\"order-notional\""),
+            ),
+            (
+                "a removed control",
+                serde_json::to_string(&LimitSet {
+                    name: shipped.name.clone(),
+                    limits: shipped.limits[1..].to_vec(),
+                })
+                .expect("serialises"),
+            ),
+        ] {
+            assert_ne!(
+                document, text,
+                "the premise failed: the {label} document is the shipped one"
+            );
+            let error = parse_risk_limits(&document, "limits.json")
+                .expect_err(&format!("a limits file with {label} loaded"));
+            assert!(
+                error.message().starts_with("configuration: limits.json"),
+                "the {label} refusal does not name the file: {}",
+                error.message()
+            );
+        }
+    }
 }

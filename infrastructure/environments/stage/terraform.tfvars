@@ -59,8 +59,8 @@ execution_nodes = {}
 # and see dev/terraform.tfvars for what setting it requires — a digest and a
 # `management` entry in trust_zones above, neither declared here.
 
-# The five optional files the API and the deep brain can be given stay unset
-# here, at their default of null: venue_registrations_file, because nobody
+# The six optional files the central roots can be given stay unset here, at
+# their default of null: venue_registrations_file, because nobody
 # has registered with a venue from this environment and a record is a named
 # person's act (docs/operations/registering-a-venue.md); wallet_statement_file,
 # because this environment trades on the in-process simulated venue (ADR
@@ -89,6 +89,13 @@ execution_nodes = {}
 # can reach a vendor, and no subject has two vendors among the shipped
 # connectors, so polling one here would feed a rule-31 hold it cannot lift —
 # dev/terraform.tfvars says what setting it would mean.
+#
+# risk_limits_file — the one optional file all three central roots share —
+# stays null because no recalibration has been signed (ADR 0061): the file
+# is the artefact two operators' signatures emit, and until one exists the
+# shipped `conservative_default` is the only set any process has run under.
+# risk_limits_file = "data/risk-limits/<the desk's signed set>.json" would
+# mount it; dev/terraform.tfvars says what that means.
 
 enable_bigquery      = false
 enable_cloud_storage = false

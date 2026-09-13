@@ -1487,3 +1487,114 @@ fn the_factors_variance_is_the_variance_of_the_series_it_reports() {
         factor.variance()
     );
 }
+
+// --- the limits file --------------------------------------------------------
+
+#[test]
+fn a_limits_file_may_move_a_bound_but_not_remove_a_control() {
+    // ADR 0061's rule for the file a signed recalibration produces. The
+    // governed path loosens one bound at a time on evidence; a file that
+    // dropped a limit would be a control removed by omission — the defect
+    // this crate records under `MaxExpectedShortfall`, arriving by a
+    // reviewed-looking route.
+    let shipped = LimitSet::conservative_default();
+    assert!(
+        shipped
+            .limits
+            .iter()
+            .any(|limit| limit.name == "expected-shortfall"),
+        "the premise failed: the shipped set no longer carries expected-shortfall"
+    );
+
+    // The admitting half first, or every refusal below could be a parser
+    // that refuses everything: the shipped set round-trips, and the same set
+    // with one bound moved is admitted with the moved bound intact.
+    let text = serde_json::to_string(&shipped).expect("the shipped set serialises");
+    let read_back = LimitSet::from_document(&text, "shipped.json")
+        .expect("the shipped set's own document is a valid limits file");
+    assert_eq!(read_back, shipped);
+    let moved = shipped
+        .rebound("order-notional", 300_000.0)
+        .expect("a known limit rebounds");
+    let moved_text = serde_json::to_string(&moved).expect("serialises");
+    let moved_back = LimitSet::from_document(&moved_text, "moved.json")
+        .expect("a file that moves one bound is admitted");
+    assert_eq!(
+        moved_back
+            .limits
+            .iter()
+            .find(|limit| limit.name == "order-notional")
+            .map(|limit| limit.kind.bound()),
+        Some(300_000.0),
+        "the moved bound did not survive the round trip"
+    );
+
+    // A file that removes a control is refused, and the refusal names it.
+    let mut without = shipped.clone();
+    without
+        .limits
+        .retain(|limit| limit.name != "expected-shortfall");
+    assert_eq!(without.len(), shipped.len() - 1);
+    let refused = LimitSet::from_document(
+        &serde_json::to_string(&without).expect("serialises"),
+        "without.json",
+    )
+    .expect_err("a file that dropped expected-shortfall was admitted");
+    assert!(
+        refused.message().contains("expected-shortfall")
+            && refused.message().contains("never remove a control"),
+        "the refusal does not name the missing control: {}",
+        refused.message()
+    );
+    assert!(
+        refused.message().starts_with("configuration: without.json"),
+        "the refusal does not name the file: {}",
+        refused.message()
+    );
+
+    // And the other shapes a file must not take: a duplicated name, a bound
+    // that is not positive, a threshold outside its range, a missing
+    // rationale, an empty set.
+    let mut duplicated = shipped.clone();
+    duplicated.limits.push(shipped.limits[0].clone());
+    assert!(
+        duplicated
+            .validate(&shipped)
+            .expect_err("a duplicated name was admitted")
+            .message()
+            .contains("two limits named"),
+    );
+    let negative = shipped
+        .rebound("leverage", -1.0)
+        .expect_err("a negative bound was rebound");
+    assert!(
+        negative.message().contains("finite positive"),
+        "{}",
+        negative.message()
+    );
+    let mut threshold = shipped.clone();
+    threshold.limits[0].warning_threshold = 1.5;
+    assert!(
+        threshold
+            .validate(&shipped)
+            .expect_err("a warning threshold above one was admitted")
+            .message()
+            .contains("warning threshold")
+    );
+    let mut unexplained = shipped.clone();
+    unexplained.limits[0].rationale = String::new();
+    assert!(
+        unexplained
+            .validate(&shipped)
+            .expect_err("a limit with no rationale was admitted")
+            .message()
+            .contains("no rationale")
+    );
+    assert!(
+        LimitSet::new("empty")
+            .validate(&shipped)
+            .expect_err("an empty set was admitted")
+            .message()
+            .contains("no limits")
+    );
+}

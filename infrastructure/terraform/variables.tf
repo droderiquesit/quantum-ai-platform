@@ -605,6 +605,48 @@ variable "central_horizons_file" {
   }
 }
 
+variable "risk_limits_file" {
+  description = <<-EOT
+    A committed JSON `LimitSet` every central root mounts and reads as
+    `QIP_RISK_LIMITS_PATH`, or null where the desk runs the shipped
+    `LimitSet::conservative_default` — every environment today.
+
+    Same convention as the universe and the files above: a path in this
+    repository, read with `file()`, so the bytes a revision mounts are the
+    bytes in the reviewed commit and `modules/cloudrun` names the object by
+    their hash. It reaches all three central roots — api, fastbrain and
+    deepbrain — because each assembles its own `Platform` on its own limit
+    set, and a bound moved on one brain and not the other would be two desks
+    with one name.
+
+    What a person setting this must know (ADR 0061,
+    docs/operations/recalibrating-a-limit.md): this is the **only** path by
+    which a bound reaches a running process. A recalibration is proposed by
+    the LEARN stage from counterfactual regret, signed by two operators
+    through the API, and what the second signature produces is a file — the
+    running set with exactly one bound replaced — committed under
+    `data/risk-limits/` and named here. Nothing installs a set after boot.
+    The file is validated at start-up against the shipped set: it may move a
+    bound, and it may never remove a control — a file that drops a limit the
+    shipped set carries stops the process rather than running one control
+    short. Present but malformed — not valid JSON, a bound that is not a
+    positive number, a duplicated name — stops the process too, the posture
+    every optional file here takes.
+
+    Every environment leaves this null: no recalibration has been signed, so
+    there is no artefact to mount, and the shipped set is the one every
+    process has ever run under.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.risk_limits_file == null ? true : can(regex("^data/[A-Za-z0-9._/-]+\\.json$", var.risk_limits_file))
+    error_message = "The risk limits file is a repository-relative path under data/ ending in .json — the data domain of ADR 0016, read with file() from the commit. An absolute path, a parent-directory hop or a path elsewhere in the tree would let a plan mount bytes no reviewer of this repository read."
+  }
+}
+
 variable "source_candidates_file" {
   description = <<-EOT
     A committed JSON catalogue of source-discovery candidates (blueprint
