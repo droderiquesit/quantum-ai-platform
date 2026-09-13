@@ -184,6 +184,60 @@ impl PortfolioConstructor {
         now: Timestamp,
         proposal_id: ProposalId,
     ) -> Result<ConstructionOutcome> {
+        self.construct_capped(
+            theses,
+            covariance,
+            current,
+            equity,
+            &BTreeMap::new(),
+            as_of,
+            now,
+            proposal_id,
+        )
+    }
+
+    /// Build a proposal with some names' weight bounds narrowed.
+    ///
+    /// `caps` maps an object id to a multiplier in `(0, 1]` on the mandate's
+    /// position cap for that name alone — blueprint §12.3's last row as
+    /// ADR 0063 reads it: a *bound* on the instrument the counterfactual
+    /// evidence is about, rather than a second multiplier on the budget,
+    /// because a budget multiplier cannot name the instrument and a bound
+    /// can, and the proposal's own `compromises` then say which name was
+    /// narrowed and by how much. A cap is refused, never clamped, when it is
+    /// outside `(0, 1]` or names an object not in `theses`: a cap of zero
+    /// would be a drop wearing a sizing's clothes, a cap above one would be
+    /// the loosening §12.4 forbids, and a cap on an absent name is a caller
+    /// that computed the wrong key.
+    ///
+    /// The narrowed bound is floored at the mandate's minimum position, so a
+    /// shrink can never turn into a silent drop under the `minimum_position`
+    /// rule below; when the floor binds the compromise says so. And the
+    /// budget equality is lowered by what the caps took: the optimiser pins
+    /// the gross at `achievable`, and a bound cut under an equality that
+    /// still demands the old gross is an infeasible problem on every capped
+    /// cycle. Lowering it is what makes the shortfall *recorded, not
+    /// reallocated* — the other names do not absorb what the capped name
+    /// gave up. With several names and a binding `target_gross` the sum of
+    /// the narrowed bounds can still exceed the target, in which case the
+    /// gross does not fall and the cap only bounds the name; the compromise
+    /// then reports a shortfall of zero, which is the honest number.
+    ///
+    /// With no caps this is exactly [`Self::construct`], including the
+    /// budget it has always used, so the callers that never cap see no
+    /// change.
+    #[allow(clippy::too_many_arguments)]
+    pub fn construct_capped(
+        &self,
+        theses: &[ApprovedThesis],
+        covariance: &[Vec<f64>],
+        current: &BTreeMap<String, f64>,
+        equity: Money,
+        caps: &BTreeMap<String, f64>,
+        as_of: Timestamp,
+        now: Timestamp,
+        proposal_id: ProposalId,
+    ) -> Result<ConstructionOutcome> {
         if now < as_of {
             return Err(Error::invalid(format!(
                 "constructing at {now} for an as-of time of {as_of}, which is in its future"
@@ -199,6 +253,22 @@ impl PortfolioConstructor {
         }
         if equity.amount <= Decimal::ZERO {
             return Err(Error::invalid("cannot size a proposal against no equity"));
+        }
+        for (object, cap) in caps {
+            if !cap.is_finite() || *cap <= 0.0 || *cap > 1.0 {
+                return Err(Error::invalid(format!(
+                    "the sizing cap {cap} on {object} is outside (0, 1]; a cap narrows the \
+                     mandate's position cap for one name and can neither drop it nor widen it, \
+                     so it is refused rather than clamped"
+                )));
+            }
+            if !theses.iter().any(|t| t.object_id.as_str() == object) {
+                return Err(Error::invalid(format!(
+                    "the sizing cap on {object} names no thesis in this construction; a cap on \
+                     an absent name is a caller that computed the wrong key, and it is refused \
+                     rather than ignored"
+                )));
+            }
         }
 
         let assets: Vec<String> = theses
@@ -217,19 +287,39 @@ impl PortfolioConstructor {
             -self.mandate.position_cap
         };
         let lower: Vec<f64> = vec![floor; n];
+        // One line per capped name for the compromises, built where the
+        // bound is decided so the number the proposal reports is the number
+        // the optimiser was given.
+        let mut narrowed: Vec<(String, f64, f64, bool)> = Vec::new();
         let upper: Vec<f64> = theses
             .iter()
             .map(|t| {
                 if self.mandate.long_only && t.conviction < 0.0 {
                     dropped.push(t.hypothesis_id.clone());
                     0.0
+                } else if let Some(cap) = caps.get(t.object_id.as_str()) {
+                    let narrowed_to = self.mandate.position_cap * cap;
+                    let floored = narrowed_to < self.mandate.minimum_position;
+                    let bound = narrowed_to.max(self.mandate.minimum_position);
+                    narrowed.push((t.object_id.as_str().to_string(), *cap, bound, floored));
+                    bound
                 } else {
                     self.mandate.position_cap
                 }
             })
             .collect();
 
-        let achievable = self.mandate.achievable_gross(n);
+        // The gross the names can reach under the cap alone, as `construct`
+        // has always computed it; and, where a cap narrowed a bound, the
+        // gross the narrowed bounds can actually reach. The equality below
+        // is pinned at the second, or the optimiser would be asked to sum to
+        // a number the bounds forbid.
+        let cap_only = self.mandate.achievable_gross(n);
+        let achievable = if caps.is_empty() {
+            cap_only
+        } else {
+            cap_only.min(upper.iter().sum())
+        };
         let mut problem = PortfolioProblem::new(assets.clone(), covariance.to_vec())?
             .with_objective(Objective::MeanVariance)
             .with_expected_returns(theses.iter().map(|t| t.expected_return).collect())
@@ -338,6 +428,32 @@ impl PortfolioConstructor {
                 self.mandate.position_cap * 100.0,
                 achievable * 100.0,
                 self.mandate.target_gross * 100.0
+            ));
+        }
+        // One line per narrowed name, naming the instrument, the multiplier,
+        // the bound it produced, and what the gross gave up and did not get
+        // back — so a reader of the proposal can see the sizing consequence
+        // of the counterfactual evidence without the score that produced it.
+        let shortfall = (cap_only - achievable).max(0.0);
+        for (object, cap, bound, floored) in &narrowed {
+            let floor_note = if *floored {
+                format!(
+                    ", held at the {:.2}% minimum position rather than {:.2}% so the leg can \
+                     still clear the minimum",
+                    self.mandate.minimum_position * 100.0,
+                    self.mandate.position_cap * cap * 100.0
+                )
+            } else {
+                String::new()
+            };
+            compromises.push(format!(
+                "{object}: sizing bound narrowed from {:.2}% to {:.2}% on counterfactual \
+                 evidence (cap {cap}){floor_note}; gross reaches {:.2}%, {:.2}% short of the \
+                 cap-only gross and not reallocated",
+                self.mandate.position_cap * 100.0,
+                bound * 100.0,
+                achievable * 100.0,
+                shortfall * 100.0
             ));
         }
         if !dropped.is_empty() {

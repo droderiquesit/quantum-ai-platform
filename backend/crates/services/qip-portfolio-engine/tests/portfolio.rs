@@ -139,6 +139,226 @@ fn the_concentration_cap_wins_over_the_exposure_target() -> Result<()> {
     Ok(())
 }
 
+// --- ADR 0063: a sizing cap is a bound on one name, never a widening -------
+
+/// A mandate wide enough that two names are not both pinned at the cap, so
+/// the optimiser's preference between them can be seen: with the default 8%
+/// cap and a 95% target both names sit at 8% and no premise about returns
+/// can be shown.
+fn wide_mandate() -> Mandate {
+    Mandate {
+        position_cap: 0.6,
+        target_gross: 0.8,
+        ..Mandate::default()
+    }
+}
+
+fn build_capped(
+    theses: &[ApprovedThesis],
+    mandate: Mandate,
+    caps: &BTreeMap<String, f64>,
+) -> Result<Proposal> {
+    Ok(constructor(mandate)?
+        .construct_capped(
+            theses,
+            &covariance(theses.len()),
+            &BTreeMap::new(),
+            equity(),
+            caps,
+            now(),
+            now(),
+            ProposalId::from_string("prop-capped"),
+        )?
+        .proposal)
+}
+
+fn weight_of(proposal: &Proposal, symbol: &str) -> f64 {
+    proposal
+        .legs
+        .iter()
+        .find(|leg| leg.object_id == object(symbol))
+        .map_or(0.0, |leg| leg.target_weight)
+}
+
+#[test]
+fn a_cap_outside_the_unit_interval_or_naming_an_unknown_object_is_refused_rather_than_clamped()
+-> Result<()> {
+    // The refusal case first. A cap of zero is a drop wearing a sizing's
+    // clothes, a cap above one is the loosening §12.4 forbids, a cap that is
+    // not a number is nothing, and a cap on a name not in the construction
+    // is a caller that computed the wrong key. Each is refused; clamping any
+    // of them to the nearest legal value would let the caller's bug survive
+    // into a weight. The admitting half is asserted too — a cap of exactly
+    // one is legal and changes nothing — so the refusals are choices and not
+    // a method that refuses every cap.
+    let theses = vec![thesis("AAA", 0.9, 0.08), thesis("BBB", 0.9, 0.02)];
+    for bad in [0.0, -0.5, 1.5, f64::NAN, f64::INFINITY] {
+        let caps = BTreeMap::from([(object("AAA").as_str().to_string(), bad)]);
+        let error = build_capped(&theses, wide_mandate(), &caps)
+            .expect_err("a cap outside (0, 1] was accepted");
+        assert!(
+            error.message().contains("outside (0, 1]") && error.message().contains("refused"),
+            "the refusal does not say why: {}",
+            error.message()
+        );
+    }
+    let unknown = BTreeMap::from([("obj-ZZZ".to_string(), 0.5)]);
+    let error = build_capped(&theses, wide_mandate(), &unknown)
+        .expect_err("a cap on a name not in the construction was accepted");
+    assert!(
+        error.message().contains("names no thesis"),
+        "{}",
+        error.message()
+    );
+
+    let one = BTreeMap::from([(object("AAA").as_str().to_string(), 1.0)]);
+    let capped_at_one = build_capped(&theses, wide_mandate(), &one)?;
+    let uncapped = build_capped(&theses, wide_mandate(), &BTreeMap::new())?;
+    assert!(
+        approx_eq(
+            weight_of(&capped_at_one, "AAA"),
+            weight_of(&uncapped, "AAA"),
+            1e-9
+        ),
+        "a cap of one changed a weight"
+    );
+    Ok(())
+}
+
+#[test]
+fn of_two_otherwise_identical_theses_the_one_with_the_larger_expected_return_takes_the_larger_weight()
+-> Result<()> {
+    // The premise every capping test below rests on. If the optimiser gave
+    // two identical-risk names equal weight regardless of return, a cap that
+    // did nothing would pass every test that follows — the capped name would
+    // be at its bound by coincidence. So the preference is asserted on its
+    // own first: 8% expected return against 2%, everything else equal.
+    let theses = vec![thesis("AAA", 0.9, 0.08), thesis("BBB", 0.9, 0.02)];
+    let proposal = build_capped(&theses, wide_mandate(), &BTreeMap::new())?;
+    let (aaa, bbb) = (weight_of(&proposal, "AAA"), weight_of(&proposal, "BBB"));
+    assert!(aaa > 0.0 && bbb > 0.0, "a name was dropped: {aaa}, {bbb}");
+    assert!(
+        aaa > bbb + 0.05,
+        "the larger expected return did not take the larger weight: {aaa} against {bbb}"
+    );
+    // And it sits above the 30% bound the capping test below applies, so
+    // that test's cap binds something rather than confirming a weight the
+    // optimiser would have chosen anyway.
+    assert!(
+        aaa > 0.30 + 1e-6,
+        "the premise failed: the larger name already sits at or under the bound the capping \
+         test uses: {aaa}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_capped_thesis_is_bounded_at_its_cap_and_the_gross_shortfall_is_recorded_not_reallocated()
+-> Result<()> {
+    // The larger-return name, capped to half the mandate's position cap, is
+    // bounded at 30% and says so in the compromises. With a second name the
+    // budget is still reachable and the gross does not fall; alone, the
+    // narrowed bound is the whole reachable gross, the equality is lowered
+    // to it, and the shortfall is reported rather than handed to nobody —
+    // without the lowering the optimiser is asked to sum to 60% under a
+    // 30% bound and reports no feasible sizing.
+    let theses = vec![thesis("AAA", 0.9, 0.08), thesis("BBB", 0.9, 0.02)];
+    let caps = BTreeMap::from([(object("AAA").as_str().to_string(), 0.5)]);
+    let proposal = build_capped(&theses, wide_mandate(), &caps)?;
+    let aaa = weight_of(&proposal, "AAA");
+    assert!(aaa <= 0.30 + 1e-9, "the cap did not bound the name: {aaa}");
+    assert!(
+        aaa > 0.30 - 1e-6,
+        "the capped name sits well under its bound, so the bound is not what decided it: {aaa}"
+    );
+    let gross: f64 = proposal.legs.iter().map(|leg| leg.target_weight).sum();
+    assert!(
+        approx_eq(gross, 0.8, 1e-6),
+        "with a second name the budget is still reachable: {gross}"
+    );
+    let note = proposal
+        .compromises
+        .iter()
+        .find(|c| c.starts_with("obj-AAA: sizing bound narrowed"))
+        .expect("the compromise names the capped instrument");
+    assert!(
+        note.contains("from 60.00% to 30.00%") && note.contains("(cap 0.5)"),
+        "{note}"
+    );
+    assert!(
+        !proposal
+            .compromises
+            .iter()
+            .any(|c| c.contains("no feasible sizing")),
+        "{:?}",
+        proposal.compromises
+    );
+
+    let alone = build_capped(&theses[..1], wide_mandate(), &caps)?;
+    let aaa = weight_of(&alone, "AAA");
+    assert!(
+        approx_eq(aaa, 0.30, 1e-6),
+        "alone, the bound is the gross: {aaa}"
+    );
+    let gross: f64 = alone.legs.iter().map(|leg| leg.target_weight).sum();
+    assert!(
+        approx_eq(gross, 0.30, 1e-6),
+        "the shortfall was reallocated: gross {gross}"
+    );
+    let note = alone
+        .compromises
+        .iter()
+        .find(|c| c.starts_with("obj-AAA: sizing bound narrowed"))
+        .expect("the compromise names the capped instrument");
+    assert!(
+        note.contains(
+            "gross reaches 30.00%, 30.00% short of the cap-only gross and not reallocated"
+        ),
+        "{note}"
+    );
+    assert!(
+        !alone
+            .compromises
+            .iter()
+            .any(|c| c.contains("no feasible sizing")),
+        "the equality was not lowered with the bound: {:?}",
+        alone.compromises
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cap_can_never_push_a_bound_below_the_minimum_position() -> Result<()> {
+    // A 1% cap halved is 0.5%, under a 0.6% minimum position, and a bound
+    // under the minimum is a leg the drop rule below removes — a shrink that
+    // became a silent drop. The bound is floored at the minimum and the
+    // compromise says the floor bound.
+    let mandate = Mandate {
+        position_cap: 0.01,
+        minimum_position: 0.006,
+        ..Mandate::default()
+    };
+    let theses = vec![thesis("AAA", 0.9, 0.08)];
+    let caps = BTreeMap::from([(object("AAA").as_str().to_string(), 0.5)]);
+    let proposal = build_capped(&theses, mandate, &caps)?;
+    assert_eq!(proposal.legs.len(), 1, "the capped leg was dropped");
+    assert!(
+        approx_eq(weight_of(&proposal, "AAA"), 0.006, 1e-9),
+        "the bound is not the minimum position: {}",
+        weight_of(&proposal, "AAA")
+    );
+    let note = proposal
+        .compromises
+        .iter()
+        .find(|c| c.starts_with("obj-AAA: sizing bound narrowed"))
+        .expect("the compromise names the capped instrument");
+    assert!(
+        note.contains("held at the 0.60% minimum position rather than 0.50%"),
+        "{note}"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_short_thesis_is_dropped_under_a_long_only_mandate_and_said_so() -> Result<()> {
     // Silently flipping it to zero would hide that the thesis was unusable.
