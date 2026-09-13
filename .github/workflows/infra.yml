@@ -47,16 +47,20 @@
 # order: deletes the Cloud Run services (released from state under ADR 0036,
 # so only `gcloud` reaches them); deletes the control-plane cluster and takes
 # it out of state (its `deletion_protection` in state would otherwise refuse
-# the destroy); takes every KMS key out of state (they carry
-# `prevent_destroy`, a key cannot be deleted anyway, and a destroy that
-# plans one aborts before touching anything else); then runs a *targeted*
-# destroy of every module except two. `module.services` is left because
+# the destroy); takes out of state every resource the module sources declare
+# `prevent_destroy = true` (a destroy that plans one aborts before touching
+# anything else — run 41 did exactly that on the evidence bucket, and a key
+# cannot be deleted anyway, only scheduled) and every bucket declared
+# `force_destroy = false` (it refuses while it holds objects this identity
+# may not delete); then runs a *targeted* destroy of every module except
+# two. `module.services` is left because
 # disabling an API while its resources are still being deleted fails the
 # rest, and an enabled API costs nothing. `module.cicd` is left because it
 # holds the identity running this very job — destroy the account and its
 # token is revoked mid-run with the remainder stranded — and a pool and an
-# account cost nothing standing. Non-empty buckets with `force_destroy =
-# false` refuse and are listed. The step prints what it deleted and the
+# account cost nothing standing. The five `force_destroy = false` buckets
+# and the keys stay, out of state, holding a few files and no meter. The
+# step prints what it deleted and the
 # `what exists now` step prints what remains; that list, not this comment,
 # is the record. Nothing here is recoverable once run: unlike a project
 # deletion, there is no thirty-day window.
@@ -726,15 +730,43 @@ jobs:
           fi
 
           # 3. Out of state, not destroyed: the cluster entry (now deleted
-          #    above, or never created) and every KMS key. A key carries
-          #    `prevent_destroy`, so a destroy that plans one aborts before
-          #    touching anything else; and a key cannot be deleted, only
-          #    scheduled, so leaving it is not leaving a cost. The pattern
-          #    requires a literal dot after the type, which keeps the
-          #    `_iam_member` bindings in state for the destroy to remove.
-          for address in $(tf state list | grep -E 'google_container_cluster\.|google_kms_crypto_key\.' || true); do
+          #    above, or never created) and every resource this identity
+          #    cannot or must not delete. Derived from the module sources,
+          #    not typed: any resource declared with `prevent_destroy = true`
+          #    (a destroy that plans one aborts at plan time before touching
+          #    anything else — run 41 stopped on the evidence *bucket*, which
+          #    a hand-typed pattern for keys had missed) and any bucket
+          #    declared `force_destroy = false` (it refuses while it holds
+          #    objects, and this identity holds no project-wide right to
+          #    delete objects). A KMS key cannot be deleted, only scheduled;
+          #    the buckets hold a few files; both are listed as remaining.
+          python3 - > "${RUNNER_TEMP}/kept.txt" <<'PY'
+          import glob, re
+          kept = set()
+          for path in glob.glob("infrastructure/terraform/modules/*/main.tf"):
+              last = None
+              for line in open(path, encoding="utf-8"):
+                  header = re.match(r'\s*resource\s+"([^"]+)"\s+"([^"]+)"', line)
+                  if header:
+                      last = f"{header.group(1)}.{header.group(2)}"
+                  if last and (re.match(r'\s*prevent_destroy\s*=\s*true', line)
+                               or re.match(r'\s*force_destroy\s*=\s*false', line)):
+                      kept.add(last)
+          print("\n".join(sorted(kept)))
+          PY
+          echo "declared undeletable or refusing, taken out of state:"; cat "${RUNNER_TEMP}/kept.txt"
+          for address in $(tf state list | grep -E 'google_container_cluster\.' || true); do
             tf state rm "$address"
           done
+          while read -r kept; do
+            [ -n "$kept" ] || continue
+            # Anchored on the address's own type.name, followed by an
+            # instance key or the end, so `bucket.evidence` cannot take
+            # `bucket.evidence_x` with it.
+            for address in $(tf state list | grep -E "\.${kept}(\[|$)" || true); do
+              tf state rm "$address"
+            done
+          done < "${RUNNER_TEMP}/kept.txt"
 
           # 4. Targeted, per the header: every module but module.services and
           #    module.cicd. A refusal (a non-empty bucket with force_destroy
