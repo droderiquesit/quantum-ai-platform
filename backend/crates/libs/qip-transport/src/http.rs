@@ -121,6 +121,20 @@ pub enum HttpError {
     /// The URL could not be parsed.
     InvalidUrl { url: String, detail: String },
     /// A scheme this build cannot speak. `https` is the one that matters.
+    ///
+    /// `scheme` can only ever be a token matching the RFC 3986 scheme
+    /// grammar — `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`, so never `@`,
+    /// `:` or `/` — because [`split_scheme`] is the only function that
+    /// produces the `Some` this variant is built from, and it stops
+    /// advancing at the first byte outside that grammar. Until 2026-09-13
+    /// this was not true: the unbounded `raw.split_once("://")` it replaced
+    /// could hand this variant an entire scheme-less credential-bearing
+    /// string as its "scheme" — see [`split_scheme`]'s doc comment — and
+    /// this variant's `Display` prints `scheme` outright, with no call to
+    /// [`redact_userinfo`], because a value that can only be a clean scheme
+    /// token needs none. That was the second, structurally separate finding
+    /// of this round: fixing [`redact_userinfo`] alone would have left this
+    /// arm printing the same credential by a different path.
     UnsupportedScheme { scheme: String },
     /// DNS said no.
     Resolve { authority: String, detail: String },
@@ -338,6 +352,49 @@ impl std::fmt::Display for Method {
     }
 }
 
+/// The scheme prefix of `raw`, if RFC 3986 syntax puts one there, and the
+/// remainder after the `"://"` that ends it — or `None` and `raw` unchanged
+/// when no such prefix exists.
+///
+/// A URI scheme is `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )` and, by that
+/// grammar, can only ever be the literal prefix of the string — RFC 3986
+/// does not admit a scheme found by scanning the tail. Both
+/// [`Url::parse`] and [`redact_userinfo`] used to run their own
+/// `raw.split_once("://")` to find it, and `split_once` finds the *first*
+/// occurrence anywhere in the string, not the one at the start. Two
+/// independent detectors that each searched the whole string is the exact
+/// shape of the defect this closes: a fix landing in one of them — as it did
+/// on 2026-09-12, in `redact_userinfo` alone — leaves the other to
+/// misparse the identical string its own way. A scheme-less credential
+/// whose path or query happens to contain the ordinary substring `"://"`
+/// (`?redirect=http://…`, `?callback=http://…` — any parameter naming
+/// another URL) supplies exactly such a later occurrence: `split_once`
+/// matched on it, so almost the whole string up to that point — credential
+/// included — was misread as "the scheme", which [`redact_userinfo`] then
+/// had no reason to look inside for an `'@'`, and which
+/// [`HttpError::UnsupportedScheme`] carried and printed outright once the
+/// real parser failed the same way. Anchoring the check to the start, and
+/// giving both callers this one function to anchor it in, removes the
+/// "two detectors that can disagree" shape rather than repairing one more
+/// instance of it.
+fn split_scheme(raw: &str) -> (Option<&str>, &str) {
+    let is_scheme_char = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.');
+    let bytes = raw.as_bytes();
+    let scheme_len = if bytes.first().is_some_and(u8::is_ascii_alphabetic) {
+        bytes.iter().position(|&b| !is_scheme_char(b))
+    } else {
+        // RFC 3986 requires a scheme to start with a letter. A string
+        // starting with anything else — a digit, a colon, an `@` — has no
+        // scheme at all, however much of it happens to precede a `"://"`
+        // later on.
+        None
+    };
+    match scheme_len {
+        Some(len) if raw[len..].starts_with("://") => (Some(&raw[..len]), &raw[len + 3..]),
+        _ => (None, raw),
+    }
+}
+
 /// `raw` with any userinfo in its authority replaced by `…@`, for echoing
 /// an address in a refusal.
 ///
@@ -367,11 +424,22 @@ impl std::fmt::Display for Method {
 /// redact it the same way either way. A string with no such delimiter is
 /// entirely a candidate authority (matching `require_loopback_egress`'s
 /// `"svc:TOKEN@127.0.0.1:9106"` scenario, which has none of the three).
+///
+/// **The scheme is found by [`split_scheme`], not by searching for `"://"`
+/// in the whole string.** Until 2026-09-13 this function ran its own
+/// `raw.split_once("://")`, which finds the first `"://"` *anywhere* —
+/// including one an adversarial or merely ordinary query parameter puts
+/// well past the authority, `?redirect=http://…` being the unremarkable
+/// case. On `svc:TOKEN@127.0.0.1:9106/callback?redirect=http://evil.example/x`
+/// that matched the query's `"://"`, not the (absent) scheme boundary, so
+/// this function read everything up to it — `svc:TOKEN@127.0.0.1:9106/`
+/// `callback?redirect=http` — as a "scheme", handed the rest to the
+/// authority search, and found no `'@'` there because the real one was
+/// buried inside the misread "scheme". `TOKEN` came back unredacted. See
+/// [`split_scheme`] for why anchoring to the start closes this rather than
+/// only patching the one input that was reproduced.
 pub fn redact_userinfo(raw: &str) -> String {
-    let (scheme, rest) = match raw.split_once("://") {
-        Some((scheme, rest)) => (Some(scheme), rest),
-        None => (None, raw),
-    };
+    let (scheme, rest) = split_scheme(raw);
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let (authority, remainder) = rest.split_at(end);
     match authority.rsplit_once('@') {
@@ -503,17 +571,41 @@ impl Url {
     /// The address the error carries has its userinfo redacted — see
     /// [`redact_userinfo`] — so the refusal of a credential-bearing URL is
     /// not itself the leak.
+    ///
+    /// The scheme boundary is found by [`split_scheme`] — the same function
+    /// [`redact_userinfo`] uses — rather than by this function running its
+    /// own `"://"` search, which is what let a scheme-less credential
+    /// string be misread as carrying a scheme at all until 2026-09-13. A
+    /// string [`split_scheme`] does not anchor a scheme onto now falls
+    /// through to the "no scheme" arm below, whatever it contains further
+    /// in, and that arm already redacts through [`redact_userinfo`].
     pub fn parse(raw: &str) -> HttpResult<Self> {
         let invalid = |detail: &str| HttpError::InvalidUrl {
             url: redact_userinfo(raw),
             detail: detail.to_string(),
         };
 
-        let Some((scheme, rest)) = raw.split_once("://") else {
+        let (scheme, rest) = split_scheme(raw);
+        let Some(scheme) = scheme else {
             return Err(invalid("no scheme; an absolute http:// URL is required"));
         };
         let scheme = scheme.to_ascii_lowercase();
         if scheme != "http" {
+            // `scheme` is a byte-for-byte slice of `raw` that `split_scheme`
+            // stopped advancing through at the first character outside the
+            // RFC 3986 scheme grammar, so it can hold neither `@`, `:` nor
+            // `/` — see `HttpError::UnsupportedScheme`'s doc comment for why
+            // that is exactly what makes printing it unredacted safe. This
+            // is the structural guarantee rather than a trusted one: if a
+            // future edit to `split_scheme` ever let a non-conforming byte
+            // through, this is where it would be caught, in every debug and
+            // test build, before it reached a caller that prints the field.
+            debug_assert!(
+                scheme
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.')),
+                "split_scheme returned a scheme token outside the RFC 3986 grammar: {scheme:?}"
+            );
             return Err(HttpError::UnsupportedScheme { scheme });
         }
         if rest.is_empty() {

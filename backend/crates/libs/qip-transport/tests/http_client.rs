@@ -206,6 +206,193 @@ fn a_scheme_less_credential_bearing_egress_address_is_still_redacted() {
     }
 }
 
+/// The third round's finding, reproduced directly against `redact_userinfo`
+/// rather than only through `require_loopback_egress`: a scheme-less
+/// credential whose path or query contains the ordinary substring
+/// `"://"` — any `?redirect=`, `?callback=` or `?fallback=` parameter
+/// naming another URL — used to make `redact_userinfo`'s own
+/// `raw.split_once("://")` match on that later occurrence instead of
+/// finding no scheme at all, misreading almost the whole string as a
+/// "scheme" and leaving the real credential outside anything the function
+/// checked for `'@'`.
+///
+/// Table-driven over the full matrix the security review asked for,
+/// because every row is the same property — does this string get the
+/// exact redaction it should — and a table keeps that property visible
+/// rather than restated fourteen times with fourteen slightly different
+/// names.
+///
+/// Mutated by reverting `redact_userinfo` to its round-2 shape (`let
+/// (scheme, rest) = match raw.split_once("://") { Some((scheme, rest)) =>
+/// (Some(scheme), rest), None => (None, raw) };` in place of the
+/// `split_scheme` call) — confirmed row 1 (the exact case above) then
+/// returns the input unchanged, `TOKEN` and `svc` both present, and this
+/// test fails on that row precisely; restored, confirmed every row passes
+/// again.
+#[test]
+fn redact_userinfo_handles_the_full_adversarial_matrix() {
+    use qip_transport::http::redact_userinfo;
+
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "a later, unrelated `://` in the query must not be read as the scheme boundary — \
+             this is the exact defect this round closes",
+            "svc:TOKEN@127.0.0.1:9106/callback?redirect=http://evil.example/x",
+            "…@127.0.0.1:9106/callback?redirect=http://evil.example/x",
+        ),
+        (
+            "round 2's case: no scheme, no later `://` either",
+            "svc:TOKEN@127.0.0.1:9106",
+            "…@127.0.0.1:9106",
+        ),
+        (
+            "a real scheme and a real credential both redact as before",
+            "http://svc:TOKEN@127.0.0.1:9105/path",
+            "http://…@127.0.0.1:9105/path",
+        ),
+        (
+            "an `@` only in the path is not a credential",
+            "http://127.0.0.1:9105/path@notacredential",
+            "http://127.0.0.1:9105/path@notacredential",
+        ),
+        (
+            "an `@` only in the query is not a credential",
+            "http://127.0.0.1:9105/x?y=a@b",
+            "http://127.0.0.1:9105/x?y=a@b",
+        ),
+        (
+            "two `@` in the authority mask down to the rightmost split",
+            "a@b@127.0.0.1",
+            "…@127.0.0.1",
+        ),
+        (
+            "a leading digit can never start an RFC 3986 scheme, so this stays scheme-less \
+             even though a `1nvalid:` prefix looks scheme-shaped",
+            "1nvalid:TOKEN@127.0.0.1:9106/x?y=http://z",
+            "…@127.0.0.1:9106/x?y=http://z",
+        ),
+        (
+            "no `@` and no `://` anywhere: nothing to redact",
+            "just-a-plain-string/path",
+            "just-a-plain-string/path",
+        ),
+        (
+            "a legitimate scheme and no credential: unchanged",
+            "http://127.0.0.1:9105",
+            "http://127.0.0.1:9105",
+        ),
+        (
+            "a later `://` in the query with no `@` anywhere must not be over-corrected into \
+             an authority that was never there",
+            "http://127.0.0.1:9105?redirect=ftp://other",
+            "http://127.0.0.1:9105?redirect=ftp://other",
+        ),
+    ];
+
+    for (why, input, expected) in cases {
+        assert_eq!(
+            redact_userinfo(input),
+            *expected,
+            "{why}: redacting {input:?} did not produce {expected:?}"
+        );
+    }
+
+    // Empty string and a bare `@`: no panic, and the credential-shaped
+    // input still masks to something with no raw content in it.
+    assert_eq!(redact_userinfo(""), "");
+    assert_eq!(redact_userinfo("@"), "…@");
+}
+
+/// The security review's own reproduction, against `Url::parse` rather
+/// than `redact_userinfo`: the same scheme-less, later-`"://"` string must
+/// fall through to the "no scheme" refusal — not be misparsed into
+/// [`HttpError::UnsupportedScheme`] carrying the credential as its
+/// "scheme" — and that refusal's message must not contain the token.
+///
+/// Mutated by reverting `Url::parse`'s scheme detection to
+/// `raw.split_once("://")` and removing the `debug_assert` beside it (the
+/// assert alone would catch a plain `split_scheme` regression first and
+/// panic before this test's own assertions ran, which proves the guard
+/// works but not what the pre-fix code actually returned) — confirmed this
+/// then returns
+/// `UnsupportedScheme { scheme: "svc:token@127.0.0.1:9106/callback?redirect=http" }`
+/// instead of `InvalidUrl`, and the token survives in that field in the
+/// clear; restored byte-for-byte, confirmed `InvalidUrl` with no token is
+/// produced again.
+#[test]
+fn a_scheme_less_credential_with_a_later_marker_falls_through_to_invalid_url_not_unsupported_scheme()
+ {
+    let raw = "svc:TOKEN@127.0.0.1:9106/callback?redirect=http://evil.example/x";
+    let error = Url::parse(raw).expect_err("a scheme-less credential-bearing string parsed");
+
+    assert!(
+        matches!(error, HttpError::InvalidUrl { .. }),
+        "expected the no-scheme refusal, got {error:?}, which means the later `://` in the \
+         query was read as a scheme boundary"
+    );
+    assert_eq!(
+        error.code(),
+        "invalid_url",
+        "a scheme-less string must never be classified as unsupported_scheme, because that \
+         variant's Display prints its field with no redaction"
+    );
+    for rendered in [error.to_string(), format!("{error:?}")] {
+        assert!(
+            !rendered.contains("TOKEN") && !rendered.contains("svc"),
+            "the no-scheme refusal echoed the credential: {rendered}"
+        );
+    }
+}
+
+/// The legitimate case `split_scheme`'s anchoring must not break: a
+/// well-formed but genuinely unsupported scheme still produces
+/// `UnsupportedScheme` with exactly that scheme as a clean token.
+#[test]
+fn a_genuinely_unsupported_scheme_is_still_reported_with_a_clean_token() {
+    let error = Url::parse("ftp://127.0.0.1:9105").expect_err("ftp was accepted");
+    assert_eq!(
+        error,
+        HttpError::UnsupportedScheme {
+            scheme: "ftp".to_string()
+        }
+    );
+}
+
+/// `HttpError::UnsupportedScheme.scheme` can never carry `@`, `:` or `/`,
+/// across a set of inputs chosen to try to produce one: a credential
+/// before a real scheme, a credential with no scheme at all but a later
+/// `"://"`, and a path-shaped string with no scheme. Each is checked
+/// structurally — by reading the field when the variant is reached at all
+/// — rather than trusted to be clean because the code review said so.
+#[test]
+fn unsupported_scheme_never_carries_unbounded_content() {
+    let adversarial = [
+        "svc:TOKEN@127.0.0.1:9106/callback?redirect=http://evil.example/x",
+        "1nvalid:TOKEN@127.0.0.1:9106/x?y=http://z",
+        "no-scheme-at-all/path?x=http://y",
+        "http://svc:TOKEN@127.0.0.1:9106/path",
+        "",
+        "@",
+        "://leading-marker-with-nothing-before-it",
+    ];
+    for raw in adversarial {
+        if let Err(HttpError::UnsupportedScheme { scheme }) = Url::parse(raw) {
+            assert!(
+                scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')),
+                "input {raw:?} reached UnsupportedScheme with a field outside the RFC 3986 \
+                 scheme grammar: {scheme:?}"
+            );
+            assert!(
+                !scheme.contains('@') && !scheme.contains(':') && !scheme.contains('/'),
+                "input {raw:?} produced an UnsupportedScheme field that could carry a \
+                 credential: {scheme:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn a_url_parses_into_the_three_parts_a_request_needs() {
     let url = Url::parse("http://cell-us-east:8080/v1/mesh/publish?since=7")
