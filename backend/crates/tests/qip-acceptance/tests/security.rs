@@ -2193,6 +2193,80 @@ const CONSERVATIVE_DEFAULT_SITES: [(&str, &str); 7] = [
     ),
 ];
 
+/// Where a `&mut self` method on one of [`LIMIT_HOLDERS`] may assign
+/// `self.monitor` or `self.orders` directly, and why. Empty today: those two
+/// fields — `Platform::orders` and `Platform::monitor` — are written once,
+/// at assembly, inside `Platform::new`, which takes no `self` at all and so
+/// never reaches this scan. A future entry here is a reviewed exception, the
+/// same shape as [`CONSERVATIVE_DEFAULT_SITES`]; a `&mut self` method that
+/// replaces either field is otherwise exactly the "apply it to the running
+/// process too" convenience ADR 0061 §8 forbids, whether or not the method
+/// names a limit or takes one of the four holder types as a parameter.
+const FIELD_ASSIGNMENT_SITES: [(&str, &str); 0] = [];
+
+/// The one holder type named in `params`, if any — a parameter list reading
+/// `bounds: LimitSet` or `monitor: &mut RiskMonitor` is refused the same way
+/// a method literally named `set_limits` is, because a `&mut self` method
+/// that receives one of the four types that carry a set can build the
+/// replacement `Platform::monitor` or `Platform::orders` from it without its
+/// own name ever saying "limit". Matched as a whole identifier — `LimitSet`
+/// is a substring of a hypothetical `LimitSetSnapshot`, and a scan that
+/// could not tell the two apart would refuse a type that carries no set at
+/// all.
+fn named_holder_type(params: &str) -> Option<&'static str> {
+    const NAMES: [&str; 4] = ["LimitSet", "PreTradeChecker", "RiskMonitor", "OrderManager"];
+    let bytes = params.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if is_identifier_char(bytes[index] as char) {
+            let start = index;
+            while index < bytes.len() && is_identifier_char(bytes[index] as char) {
+                index += 1;
+            }
+            let token = &params[start..index];
+            if let Some(&name) = NAMES.iter().find(|&&name| name == token) {
+                return Some(name);
+            }
+        } else {
+            index += 1;
+        }
+    }
+    None
+}
+
+/// Whether `body` assigns `self.{field}` — an ordinary assignment, not a
+/// comparison (`==`) and not a longer field name that merely starts with
+/// `field` (`self.monitors`, say).
+///
+/// Mutation B from the code review's B-1 pass — `pub fn adopt(&mut self,
+/// bounds: LimitSet) { self.monitor = RiskMonitor::new(bounds, …) }` — names
+/// `LimitSet` in its parameter list and so is already caught by
+/// [`named_holder_type`]; this exists for the method that builds the
+/// replacement from something that names none of the four holder types, for
+/// instance a config struct carrying a `LimitSet` field of its own.
+fn assigns_field(body: &str, field: &str) -> bool {
+    let needle = format!("self.{field}");
+    let mut search_from = 0;
+    while let Some(relative) = body[search_from..].find(needle.as_str()) {
+        let start = search_from + relative;
+        let end = start + needle.len();
+        let boundary = match body.as_bytes().get(end) {
+            Some(&byte) => !is_identifier_char(byte as char),
+            None => true,
+        };
+        if boundary {
+            let after = body[end..].trim_start();
+            if let Some(rest) = after.strip_prefix('=')
+                && !rest.starts_with('=')
+            {
+                return true;
+            }
+        }
+        search_from = end;
+    }
+    false
+}
+
 #[test]
 fn no_code_path_assigns_a_limit_set_after_boot_and_no_root_reads_one_from_anywhere_but_its_configuration()
  {
@@ -2207,9 +2281,21 @@ fn no_code_path_assigns_a_limit_set_after_boot_and_no_root_reads_one_from_anywhe
     //
     // Tokenised rather than `contains`, for the reason the scans above give:
     // `limit` is a substring of `delimiter`, and a scan that refused that
-    // would be loosened once and trusted never.
+    // would be loosened once and trusted never. The same reasoning is why
+    // this no longer stops at the method's own *name*: the code review's
+    // Mutation B, `pub fn adopt(&mut self, bounds: LimitSet) { self.monitor
+    // = RiskMonitor::new(bounds, …) }`, names no limit in `adopt` and passed
+    // the name-only scan outright. A `&mut self` method is now also refused
+    // when its parameter list names one of the four types that carry a set
+    // (`LimitSet`, `PreTradeChecker`, `RiskMonitor`, `OrderManager`) or its
+    // body assigns `self.monitor` or `self.orders` directly — the two
+    // fields `Platform` holds them under (`grep -n 'orders: OrderManager\|
+    // monitor: RiskMonitor' runtime/qip-kernel/src/platform.rs`) — because a
+    // convenience method can construct the replacement from a config type
+    // that names none of the four without ever mentioning "limit".
     let mut scanned = 0usize;
     let mut blocks_read = 0usize;
+    let mut mut_self_methods_seen = 0usize;
     let mut setters = Vec::new();
     let mut default_sites: Vec<String> = Vec::new();
 
@@ -2242,7 +2328,7 @@ fn no_code_path_assigns_a_limit_set_after_boot_and_no_root_reads_one_from_anywhe
                 };
                 blocks_read += 1;
                 for (at, _) in block.match_indices("fn ") {
-                    // A method: `fn name(` followed by `&mut self`.
+                    // A method: `fn name(` followed by its parameter list.
                     let rest = &block[at + 3..];
                     let name: String = rest
                         .chars()
@@ -2251,13 +2337,50 @@ fn no_code_path_assigns_a_limit_set_after_boot_and_no_root_reads_one_from_anywhe
                     if name.is_empty() {
                         continue;
                     }
-                    let after = rest[name.len()..].trim_start();
-                    let Some(list) = after.strip_prefix('(') else {
+                    let after_name = at + 3 + name.len();
+                    let leading_ws =
+                        block[after_name..].len() - block[after_name..].trim_start().len();
+                    let paren = after_name + leading_ws;
+                    if block.as_bytes().get(paren) != Some(&b'(') {
+                        continue;
+                    }
+                    let Some(params) = bracketed(block, paren, b'(', b')') else {
                         continue;
                     };
-                    let takes_mut_self = list.trim_start().starts_with("&mut self");
-                    if takes_mut_self && name.to_lowercase().contains("limit") {
+                    let takes_mut_self = params.trim_start().starts_with("&mut self");
+                    if !takes_mut_self {
+                        continue;
+                    }
+                    mut_self_methods_seen += 1;
+
+                    if name.to_lowercase().contains("limit") {
                         setters.push(format!("{relative}: {holder}::{name}(&mut self, …)"));
+                        continue;
+                    }
+                    if let Some(named) = named_holder_type(params) {
+                        setters.push(format!(
+                            "{relative}: {holder}::{name}(&mut self, …) takes a {named}"
+                        ));
+                        continue;
+                    }
+
+                    // The body: the first brace after the parameter list's
+                    // closing paren, which a return type or a `where` clause
+                    // cannot contain one of before this workspace's style.
+                    let after_params = paren + 1 + params.len() + 1;
+                    if let Some(offset) = block[after_params..].find('{') {
+                        let body_open = after_params + offset;
+                        if let Some(body) = bracketed(block, body_open, b'{', b'}')
+                            && (assigns_field(body, "monitor") || assigns_field(body, "orders"))
+                            && !FIELD_ASSIGNMENT_SITES
+                                .iter()
+                                .any(|(prefix, _)| relative.starts_with(prefix))
+                        {
+                            setters.push(format!(
+                                "{relative}: {holder}::{name}(&mut self, …) assigns self.monitor \
+                                 or self.orders directly"
+                            ));
+                        }
                     }
                 }
             }
@@ -2279,6 +2402,16 @@ fn no_code_path_assigns_a_limit_set_after_boot_and_no_root_reads_one_from_anywhe
         blocks_read >= 5,
         "only {blocks_read} `impl` block(s) of the five limit holders were read; the block \
          scan has stopped matching the form they are written in"
+    );
+    // A second vacuity guard, specific to the parameter-list and body scans
+    // added for the code review's Mutation B: a tokeniser that read every
+    // block but matched zero `&mut self` methods would let both scans pass
+    // by finding nothing to flag, the same way an empty `setters` proves
+    // nothing on its own.
+    assert!(
+        mut_self_methods_seen > 0,
+        "no `&mut self` method was found on any of the five limit holders; the parameter-list \
+         and self-assignment scans below would pass on a walk that matched nothing"
     );
     // The positive control on the setter scan: `Platform::approve_recalibration`
     // takes `&mut self` and is found by the same tokeniser — it just does not
