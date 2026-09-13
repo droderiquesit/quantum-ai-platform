@@ -267,15 +267,29 @@ fn an_egress_address_is_loopback_with_a_port_and_a_refusal_never_echoes_a_creden
     // continuation was lost when the string was edited, and every assertion on
     // that branch stopped before the first gap. Checking every arm's rendered
     // text for a double space costs nothing and reads the part nobody reads.
-    for malformed in [
-        "http://someservice/API_SECRET_VALUE@upstream.example",
-        "http://router.huggingface.co/v1",
-        "http://127.0.0.1",
-        "https://router.huggingface.co",
-        "http://hf_SECRET?x@127.0.0.1:9105",
+    for (malformed, arm) in [
+        (
+            "http://someservice/API_SECRET_VALUE@upstream.example",
+            "loopback",
+        ),
+        ("http://router.huggingface.co/v1", "loopback"),
+        ("http://127.0.0.1", "names no port"),
+        ("https://router.huggingface.co", "never at the vendor"),
+        ("http://hf_SECRET?x@127.0.0.1:9105", "loopback"),
+        // The parse-failure arm, which the first version of this loop missed
+        // — four arms build a message and only three were being read.
+        ("127.0.0.1:9106", "absolute http://"),
     ] {
         let refusal = require_loopback_egress(malformed).expect_err("premise: refused");
         let rendered = refusal.message();
+        // Premise: each row must actually reach the arm it is here to read.
+        // Without this the loop could drift onto one arm and still pass,
+        // leaving the others' text unread — which is how the defect it
+        // catches got in.
+        assert!(
+            rendered.contains(arm),
+            "premise: {malformed:?} was meant to reach the arm saying `{arm}`: {rendered}"
+        );
         assert!(
             !rendered.contains("  "),
             "the refusal of {malformed:?} carries a run of spaces from a lost line \
@@ -312,10 +326,13 @@ fn an_egress_address_is_loopback_with_a_port_and_a_refusal_never_echoes_a_creden
     let in_host_position =
         require_loopback_egress("http://hf_SECRET?x@127.0.0.1:9105").expect_err("premise: refused");
     assert!(
-        in_host_position.message().contains("loopback"),
-        "premise: this address must reach the host arm, which is the only one that names a \
-         host — a future parser that refused it earlier would leave this row green and \
-         guarding nothing: {}",
+        in_host_position
+            .message()
+            .contains("A vendor is reached only"),
+        "premise: this address must reach the host arm, and that phrase is the only text \
+         unique to it — a future parser that routed this address to another arm would leave \
+         the row below green while guarding nothing. `loopback` was the first choice here and \
+         proved nothing: the port arm says it too: {}",
         in_host_position.message()
     );
     assert!(

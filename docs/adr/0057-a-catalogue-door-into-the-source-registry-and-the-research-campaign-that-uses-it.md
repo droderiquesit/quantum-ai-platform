@@ -390,8 +390,12 @@ copies could drift apart.
 
 **Amended in place a ninth time, 2026-09-13**, after three further rounds
 against the same function — `d231679` (round seven), `88ca127` (round
-eight) and `a190352` (round nine, the head as this amendment is written;
-none has been pushed). **The finding is no longer in the redaction.**
+eight), `a190352` (round nine), `3af8854` (round nine's own corrections)
+and `e451ff1`, which carries this amendment. None has been pushed. This
+sentence named `a190352` as "the head as this amendment is written", and
+it was not — the amendment is written two commits later, which is the
+same error corrected four paragraphs above and is why the commits are
+now listed rather than one of them called the head. **The finding is no longer in the redaction.**
 State that first, because it is what these three rounds establish and
 because it is the first time in nine rounds it can honestly be said: a
 security review of round eight could not break the function by
@@ -503,8 +507,16 @@ class this record exists to catch. Round eight's companion assertion —
 that an address needing no redaction still names its host — was vacuous:
 such an address is rendered verbatim and therefore already contains the
 host, so deleting `{host}` from the format string left the assertion
-green. It is anchored on the backticks the rendered address never emits,
-and the mutation now fires. And the very case the round existed to close,
+green. It is anchored on a backtick, which *this row's* rendered address
+does not carry — said of the row and not of the renderer, because a
+backtick is `is_ascii_graphic` and so passes the escape whitelist, and an
+operator address containing one would put a backtick into the rendered
+address too. That distinction was itself a correction: the sentence was
+first written as a claim about the renderer, retracted in the test
+comment, and then shipped verbatim into this record and into
+`DELIVERY-STATUS.md` by the same commit that retracted it. The mutation
+it describes is observable only with the withheld-host assertion removed,
+because that one runs earlier and both mutations break it. And the very case the round existed to close,
 a secret parsed into host position, appeared only in comments rather than
 being driven — a mutation report naming a case the test did not contain.
 The case was written rather than the claim softened.

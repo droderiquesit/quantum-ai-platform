@@ -1580,8 +1580,13 @@ findings and their resolutions:
   needing no redaction still names its host, was vacuous: such an
   address is rendered verbatim and so already contains the host, and
   deleting `{host}` from the format string left the assertion green. It
-  is anchored on the backticks the rendered address never emits, and the
-  mutation fires now. And the very case the round existed to close — a
+  is anchored on a backtick, which *that row's* rendered address does not
+  carry — a claim about the row and not the renderer, since a backtick is
+  `is_ascii_graphic` and passes the escape whitelist. The sentence was
+  first written as a claim about the renderer and shipped here by the
+  same commit that retracted it in the code. The mutation it describes is
+  observable only with the withheld-host assertion removed, because that
+  one runs earlier and both mutations break it. And the very case the round existed to close — a
   secret parsed into host position — appeared only in comments rather
   than being driven, a mutation report naming a case the test did not
   contain. The case was written rather than the claim softened.
@@ -1633,11 +1638,13 @@ findings and their resolutions:
   ADR carries the decision, this carries what the tree does today.
 
 Commits, in order: `d231679` (round seven), `88ca127` (round eight),
-`a190352` (round nine, the head as this entry is written), and this
-entry's commit. None of these three has been pushed. Each of the
-three code commits touches `qip-transport/src/http.rs` and its own
+`a190352` (round nine), `3af8854` (round nine's own corrections) and
+`e451ff1`, which carries this entry. None has been pushed. This sentence
+called `a190352` "the head as this entry is written" and it was not, two
+commits later — the same error this entry corrects in the eighth. Each of the
+code commits touches `qip-transport/src/http.rs` and its own
 `tests/http_client.rs` and nothing else; `git diff --name-only
-e691804..a190352` names those two files and the two documents that
+e691804..e451ff1` names those two files and the two documents that
 record the rounds, and no dependency edge was added. The paper-trading
 boundary is intact at all three layers and was not reached by any of
 these changes: no Terraform file, no `AutonomyLevel::deployable` call
@@ -1645,7 +1652,10 @@ site and no `qip-edge` constructor was touched.
 
 Gate — **quoted from the implementer's commit messages, not re-run for
 this entry**, which changes Markdown only and was written in a session
-told not to run cargo. `a190352` records: `cargo fmt --all --check`
+told not to run cargo. The figures below were first recorded against
+`a190352` and re-run unchanged at `e451ff1`, the commit this entry ships
+with; attributing them to `a190352` alone would have credited a tree two
+code commits behind the one being pushed. `e451ff1` records: `cargo fmt --all --check`
 clean; `cargo clippy --workspace --all-targets` zero warnings; `cargo
 test --workspace --no-fail-fast` exited 0 with no FAILED line, the
 transport suite reporting `test result: ok. 32 passed; 0 failed; 0
