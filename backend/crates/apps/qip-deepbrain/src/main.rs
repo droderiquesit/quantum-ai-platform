@@ -863,7 +863,9 @@ fn load_universe(
 /// recalibration produces a file for this variable to name and nothing on
 /// the platform installs a set after boot. Set and unreadable, or readable
 /// and invalid — not JSON, a bound that is not a positive number, a control
-/// the shipped set carries and the file does not — stops the process, the
+/// the shipped set carries and the file does not, or a shared-name limit
+/// whose kind, axis, bucket, confidence, horizon or forced-reduction
+/// differs from the shipped limit of that name — stops the process, the
 /// posture `load_universe` takes: a desk that believed a loosening had been
 /// deployed and was silently running the shipped set would find out from a
 /// refusal, at the moment the gap costs something to have missed.
@@ -895,12 +897,7 @@ fn load_risk_limits() -> Result<(LimitSet, String)> {
         ))
     })?;
     let limits = parse_risk_limits(&text, &path)?;
-    let banner = format!(
-        "{} ({} limit(s)) from {path}, sha256 {}",
-        limits.name,
-        limits.len(),
-        qip_core::hash::sha256_hex(text.as_bytes())
-    );
+    let banner = limits_banner(&limits, &path, text.as_bytes());
     Ok((limits, banner))
 }
 
@@ -910,6 +907,28 @@ fn load_risk_limits() -> Result<(LimitSet, String)> {
 /// test cannot set the variable this function's caller reads.
 fn parse_risk_limits(text: &str, path: &str) -> Result<LimitSet> {
     LimitSet::from_document(text, path)
+}
+
+/// The banner half of [`load_risk_limits`], split out for the same reason as
+/// [`parse_risk_limits`]: testable without an environment variable.
+///
+/// A file may loosen a bound without removing a control (ADR 0061 §7,
+/// [`LimitSet::validate`]) — that loosening is the lane's whole purpose, not
+/// a gap in it, so it belongs on the banner rather than in a refusal. Named
+/// per changed limit, not merely "the file differs from shipped": an
+/// operator reading the health output for what a deployment actually runs
+/// needs the name a recalibration approval will also carry.
+fn limits_banner(limits: &LimitSet, path: &str, text: &[u8]) -> String {
+    let mut banner = format!(
+        "{} ({} limit(s)) from {path}, sha256 {}",
+        limits.name,
+        limits.len(),
+        qip_core::hash::sha256_hex(text)
+    );
+    for name in limits.bound_differences(&LimitSet::conservative_default()) {
+        banner.push_str(&format!("\n  differs from shipped in: {name} bound"));
+    }
+    banner
 }
 
 /// The desk's §23.4 horizon policy — how the whole-book risk budget divides
@@ -1150,6 +1169,43 @@ mod tests {
                 error.message()
             );
         }
+    }
+
+    #[test]
+    fn a_limits_file_that_only_widens_a_bound_boots_and_the_banner_names_which_one_moved() {
+        // Security review HIGH-1: a file that keeps every shipped control but
+        // moves a bound is exactly the loosening ADR 0061 §7 exists to allow,
+        // and it used to boot with a banner that said only the set's name and
+        // hash. `limits_banner` now names the moved limit.
+        let shipped = LimitSet::conservative_default();
+        let moved = shipped
+            .rebound("order-notional", 300_000.0)
+            .expect("a known limit rebounds");
+        assert_ne!(
+            moved
+                .limits
+                .iter()
+                .find(|limit| limit.name == "order-notional")
+                .map(|limit| limit.kind.bound()),
+            shipped
+                .limits
+                .iter()
+                .find(|limit| limit.name == "order-notional")
+                .map(|limit| limit.kind.bound()),
+            "premise failed: the bound did not move"
+        );
+
+        let banner = limits_banner(&moved, "moved.json", b"irrelevant to this assertion");
+        assert!(
+            banner.contains("differs from shipped in: order-notional bound"),
+            "the banner does not name the moved bound: {banner}"
+        );
+
+        let unchanged_banner = limits_banner(&shipped, "shipped.json", b"irrelevant");
+        assert!(
+            !unchanged_banner.contains("differs from shipped"),
+            "the banner claims a difference for a set that reloaded unchanged: {unchanged_banner}"
+        );
     }
 
     fn start() -> qip_core::Timestamp {

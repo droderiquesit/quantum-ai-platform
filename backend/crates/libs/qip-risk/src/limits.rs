@@ -54,6 +54,19 @@ pub const EXPECTED_SHORTFALL_FIGURE: &str = "expected_shortfall";
 /// See [`VALUE_AT_RISK_FIGURE`].
 pub const VOLATILITY_FIGURE: &str = "volatility";
 
+/// The largest `critical_multiple` [`LimitSet::validate`] admits.
+///
+/// A multiple exists to say "a breach this far past the bound needs
+/// intervention beyond blocking one order" (see [`Limit::assess`]). Set past
+/// a hundred, the observation that would have to occur before the escalation
+/// ever fires is not a number any real book produces, so the arm is
+/// unreachable — the same "reads as protection and is not" shape this file
+/// already records for `MaxExpectedShortfall` and `MaxConcentration`, except
+/// here nothing needs to be broken; a document can simply carry the value. A
+/// file that widened this to `1e300` under the shipped name was admitted
+/// before this bound existed.
+pub const MAX_SANE_CRITICAL_MULTIPLE: f64 = 100.0;
+
 /// How serious a breach is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -326,6 +339,68 @@ impl LimitKind {
             | Self::MaxDaysToLiquidate { .. }
             | Self::MaxCounterpartyExposure { .. }
             | Self::MinCashBuffer { .. } => false,
+        }
+    }
+
+    /// What differs between `self` and `shipped` besides the bound, or
+    /// `None` if `self` is a shape a recalibration of `shipped` could have
+    /// produced — a recalibration moves exactly one number and nothing else.
+    ///
+    /// This is the check [`LimitSet::validate`]'s coverage loop was missing:
+    /// it confirmed a name was *present*, never that the limit behind the
+    /// name still measured the same thing. A file that kept every shipped
+    /// name but replaced `order-notional`'s kind with `MaxLeverage`, or
+    /// `sector-concentration`'s axis with `"country"`, or
+    /// `value-at-risk`'s confidence with `0.01`, passed the old loop and
+    /// disarmed the control while keeping its label — a reviewer checking
+    /// "are all twelve names present" would find them all. The named field
+    /// is what the refusal points at, so the message says which structural
+    /// property changed rather than only that something did.
+    ///
+    /// Exact equality on `confidence` and `days` is deliberate, not an
+    /// oversight: both numbers are carried through JSON, never computed, so
+    /// a document that means the shipped confidence writes the shipped
+    /// literal back and an epsilon comparison would let a document through
+    /// that quietly nudged a horizon or a confidence — exactly the omission
+    /// this method exists to catch.
+    #[allow(clippy::float_cmp)]
+    fn structural_difference(&self, shipped: &Self) -> Option<&'static str> {
+        if self.label() != shipped.label() {
+            return Some("kind");
+        }
+        match (self, shipped) {
+            (Self::MaxConcentration { axis: a, .. }, Self::MaxConcentration { axis: b, .. })
+            | (Self::MaxAxisWeight { axis: a, .. }, Self::MaxAxisWeight { axis: b, .. })
+                if a != b =>
+            {
+                Some("axis")
+            }
+            (
+                Self::MaxBucketExposure {
+                    axis: a1,
+                    bucket: b1,
+                    ..
+                },
+                Self::MaxBucketExposure {
+                    axis: a2,
+                    bucket: b2,
+                    ..
+                },
+            ) if a1 != a2 || b1 != b2 => Some("axis or bucket"),
+            (
+                Self::MaxValueAtRisk { confidence: c1, .. },
+                Self::MaxValueAtRisk { confidence: c2, .. },
+            )
+            | (
+                Self::MaxExpectedShortfall { confidence: c1, .. },
+                Self::MaxExpectedShortfall { confidence: c2, .. },
+            ) if c1 != c2 => Some("confidence"),
+            (Self::MinLiquidity { days: d1, .. }, Self::MinLiquidity { days: d2, .. })
+                if d1 != d2 =>
+            {
+                Some("horizon")
+            }
+            _ => None,
         }
     }
 }
@@ -888,18 +963,27 @@ impl LimitSet {
     /// finite number in its range (a non-finite bound disarms the limit —
     /// see [`Limit::assess`] — and a non-positive one refuses nothing or
     /// everything); a `warning_threshold` outside `(0, 1]`; a
-    /// `critical_multiple` below one; and **any limit in `shipped` whose
-    /// name this set does not carry**. That last is the rule ADR 0061
-    /// states as "a file may move a bound, never remove a control": the
-    /// governed path loosens one bound at a time on evidence, and a file
-    /// that dropped `expected-shortfall` would be a control removed by
-    /// omission, which is the defect this repository already records under
-    /// that name.
+    /// `critical_multiple` outside `[1, MAX_SANE_CRITICAL_MULTIPLE]`; **any
+    /// limit in `shipped` whose name this set does not carry**; and, for
+    /// every name this set shares with `shipped`, a limit whose *kind*, axis,
+    /// bucket, confidence, horizon or `forces_reduction` differs from the
+    /// shipped limit of that name — everything a recalibration does not
+    /// move. The first of those is the rule ADR 0061 states as "a file may
+    /// move a bound, never remove a control": the governed path loosens one
+    /// bound at a time on evidence, and a file that dropped
+    /// `expected-shortfall` would be a control removed by omission, which is
+    /// the defect this repository already records under that name. The
+    /// second closes the same rule's other half: a file that kept every
+    /// shipped name but replaced what the name measured was a control
+    /// removed while its label stayed, which is worse, because the diff a
+    /// reviewer checks against is the list of names.
     ///
-    /// Deliberately no "not looser than the shipped set" check. Loosening
-    /// through the file *is* the governed path — it is how a signed
-    /// recalibration reaches a process — so refusing it here would refuse
-    /// the one thing the file exists to carry.
+    /// Deliberately no "not looser than the shipped set" check on the bound
+    /// itself. Loosening the bound through the file *is* the governed
+    /// path — it is how a signed recalibration reaches a process — so
+    /// refusing it here would refuse the one thing the file exists to
+    /// carry; [`Self::bound_differences`] is how that loosening is made
+    /// visible instead of prevented.
     pub fn validate(&self, shipped: &LimitSet) -> Result<()> {
         if self.name.trim().is_empty() {
             return Err(Error::invalid(
@@ -968,26 +1052,99 @@ impl LimitSet {
                     limit.warning_threshold
                 )));
             }
-            if !limit.critical_multiple.is_finite() || limit.critical_multiple < 1.0 {
+            if !limit.critical_multiple.is_finite()
+                || limit.critical_multiple < 1.0
+                || limit.critical_multiple > MAX_SANE_CRITICAL_MULTIPLE
+            {
                 return Err(Error::invalid(format!(
                     "carries {name} with a critical multiple of {}; the multiple is a finite \
-                     number of at least one, because a breach cannot be critical below the \
-                     bound it breached",
+                     number in [1, {MAX_SANE_CRITICAL_MULTIPLE}], because a breach cannot be \
+                     critical below the bound it breached and one past the top of that range \
+                     could never be reached by any real book, which disarms the escalation as \
+                     surely as turning it off",
                     limit.critical_multiple
                 )));
             }
         }
+        // The coverage loop: not merely that every shipped name is present,
+        // but that the limit behind each name is a shape a recalibration of
+        // the shipped limit could have produced — same kind, same axis,
+        // bucket, confidence and horizon where the kind carries one, same
+        // `forces_reduction`. Only the bound may differ, because moving the
+        // bound is what a recalibration is (ADR 0061 §7). A file that kept
+        // every name but replaced `order-notional`'s kind with `MaxLeverage`,
+        // or turned off `forces_reduction` on `leverage`, used to pass this
+        // loop entirely: it checked presence by name and nothing else, so a
+        // reviewer who confirmed all twelve names were still there would see
+        // a control disarmed under its own label.
+        let by_name: BTreeMap<&str, &Limit> = self
+            .limits
+            .iter()
+            .map(|limit| (limit.name.as_str(), limit))
+            .collect();
         for control in &shipped.limits {
-            if !names.contains(control.name.as_str()) {
+            let Some(candidate) = by_name.get(control.name.as_str()) else {
                 return Err(Error::invalid(format!(
                     "does not carry {}, which the shipped set {} does; a limits file may move a \
                      bound and never remove a control, because a control removed by omission \
                      reads as protection to everyone who did not read the diff",
                     control.name, shipped.name
                 )));
+            };
+            if let Some(field) = candidate.kind.structural_difference(&control.kind) {
+                return Err(Error::invalid(format!(
+                    "carries {} with a different {field} than the shipped set {} does; a limits \
+                     file may move a bound and never remove a control, and changing a control's \
+                     {field} under its own name removes the control while keeping its label",
+                    control.name, shipped.name
+                )));
+            }
+            if candidate.forces_reduction != control.forces_reduction {
+                return Err(Error::invalid(format!(
+                    "carries {} with forces_reduction {}, but the shipped set {} carries it as \
+                     {}; a control that stops forcing a reduction under its own name is \
+                     weakened, not moved",
+                    control.name,
+                    candidate.forces_reduction,
+                    shipped.name,
+                    control.forces_reduction
+                )));
             }
         }
         Ok(())
+    }
+
+    /// The names of shipped limits whose bound in `self` differs from the
+    /// bound `shipped` carries under the same name.
+    ///
+    /// Meaningful only once `self` has passed [`Self::validate`] against
+    /// `shipped` — before that guarantee, a name in common could differ in
+    /// kind or axis too, and calling the difference "a bound" would be
+    /// wrong. Used to print the "differs from shipped in" banner line: the
+    /// loosening a signed recalibration produces is exactly the thing ADR
+    /// 0061 exists to make visible, not to prevent.
+    ///
+    /// Exact equality is deliberate: the bound is exactly what a
+    /// recalibration is allowed to move, in either direction, and a bound
+    /// unmoved by even the smallest representable amount is not the loosening
+    /// this line exists to name.
+    #[allow(clippy::float_cmp)]
+    pub fn bound_differences(&self, shipped: &LimitSet) -> Vec<String> {
+        let by_name: BTreeMap<&str, &Limit> = self
+            .limits
+            .iter()
+            .map(|limit| (limit.name.as_str(), limit))
+            .collect();
+        shipped
+            .limits
+            .iter()
+            .filter(|control| {
+                by_name
+                    .get(control.name.as_str())
+                    .is_some_and(|candidate| candidate.kind.bound() != control.kind.bound())
+            })
+            .map(|control| control.name.clone())
+            .collect()
     }
 
     /// The set with exactly one limit's bound replaced, by name.

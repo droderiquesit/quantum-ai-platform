@@ -10,8 +10,8 @@ use qip_core::testing::approx_eq;
 use qip_numerics::matrix::Matrix;
 use qip_risk::factor::FactorRisk;
 use qip_risk::limits::{
-    EXPECTED_SHORTFALL_FIGURE, Limit, LimitKind, LimitSet, RiskState, Severity,
-    VALUE_AT_RISK_FIGURE, VOLATILITY_FIGURE,
+    EXPECTED_SHORTFALL_FIGURE, Limit, LimitKind, LimitSet, MAX_SANE_CRITICAL_MULTIPLE, RiskState,
+    Severity, VALUE_AT_RISK_FIGURE, VOLATILITY_FIGURE,
 };
 use qip_risk::metrics::{
     self, DrawdownProfile, RiskMetrics, TailRisk, drawdown_profile, expected_shortfall,
@@ -1596,5 +1596,179 @@ fn a_limits_file_may_move_a_bound_but_not_remove_a_control() {
             .expect_err("an empty set was admitted")
             .message()
             .contains("no limits")
+    );
+}
+
+#[test]
+fn a_file_that_keeps_every_shipped_name_but_swaps_order_notionals_kind_is_refused() {
+    // Security review HIGH-1: the coverage loop used to check only
+    // `names.contains(name)`, so a file that kept `order-notional`'s name but
+    // replaced its kind with `MaxLeverage` — a per-order notional cap
+    // becoming a leverage cap — passed. A reviewer checking "are all twelve
+    // names present" would find them all; the control behind the name would
+    // be gone.
+    let shipped = LimitSet::conservative_default();
+    let mut kind_swapped = shipped.clone();
+    let order_notional = kind_swapped
+        .limits
+        .iter_mut()
+        .find(|limit| limit.name == "order-notional")
+        .expect("premise: the shipped set carries order-notional");
+    // Premise: the replacement kind really is a different one, so a check
+    // that could not tell the two apart would still pass by accident.
+    assert_ne!(order_notional.kind.label(), "max_leverage");
+    order_notional.kind = LimitKind::MaxLeverage { limit: 1000.0 };
+
+    let text = serde_json::to_string(&kind_swapped).expect("serialises");
+    let refused = LimitSet::from_document(&text, "kind-swapped.json")
+        .expect_err("a file that swapped a limit's kind under its own name was admitted");
+    assert!(
+        refused.message().contains("order-notional") && refused.message().contains("kind"),
+        "the refusal does not name the swapped kind: {}",
+        refused.message()
+    );
+}
+
+#[test]
+fn a_file_that_turns_off_forces_reduction_on_a_forcing_shipped_limit_is_refused() {
+    // The other half of "structurally compatible": a file that left
+    // `leverage`'s kind and bound untouched but set `forces_reduction` to
+    // `false` disarms the one thing that limit adds beyond blocking — see
+    // `LimitCheck::requires_reduction` — while keeping every name the
+    // coverage loop checks for presence.
+    let shipped = LimitSet::conservative_default();
+    let mut weakened = shipped.clone();
+    let leverage = weakened
+        .limits
+        .iter_mut()
+        .find(|limit| limit.name == "leverage")
+        .expect("premise: the shipped set carries leverage");
+    assert!(
+        leverage.forces_reduction,
+        "premise: the shipped leverage limit forces a reduction"
+    );
+    leverage.forces_reduction = false;
+
+    let refused = weakened
+        .validate(&shipped)
+        .expect_err("a file that turned off forces_reduction on leverage was admitted");
+    assert!(
+        refused.message().contains("forces_reduction"),
+        "{}",
+        refused.message()
+    );
+}
+
+#[test]
+fn a_file_that_changes_a_concentration_limits_axis_under_its_own_name_is_refused() {
+    // Axis, bucket, confidence and horizon are as much a part of what a
+    // limit measures as its kind is: `sector-concentration` renamed to read
+    // the `country` axis is a country cap wearing the sector cap's name and
+    // rationale.
+    let shipped = LimitSet::conservative_default();
+    let mut axis_swapped = shipped.clone();
+    let sector = axis_swapped
+        .limits
+        .iter_mut()
+        .find(|limit| limit.name == "sector-concentration")
+        .expect("premise: the shipped set carries sector-concentration");
+    let LimitKind::MaxAxisWeight { axis, limit: bound } = &sector.kind else {
+        panic!("premise: sector-concentration is a MaxAxisWeight");
+    };
+    assert_eq!(
+        axis, "sector",
+        "premise: sector-concentration reads the sector axis"
+    );
+    let bound = *bound;
+    sector.kind = LimitKind::MaxAxisWeight {
+        axis: "country".into(),
+        limit: bound,
+    };
+
+    let refused = axis_swapped
+        .validate(&shipped)
+        .expect_err("a file that changed sector-concentration's axis to country was admitted");
+    assert!(refused.message().contains("axis"), "{}", refused.message());
+}
+
+#[test]
+fn a_file_with_a_critical_multiple_beyond_the_sane_range_is_refused() {
+    // Security review HIGH-1's third admitted shape: `critical_multiple:
+    // 1e300` passed the old validation, which only checked the multiple was
+    // finite and at least one. A multiple that large can never be reached by
+    // any breach a real book produces, so the critical escalation never
+    // fires — the same "reads as protection and is not" defect this crate
+    // already records for `MaxExpectedShortfall`.
+    let shipped = LimitSet::conservative_default();
+    let mut poisoned = shipped.clone();
+    poisoned.limits[0].critical_multiple = 1e300;
+    assert!(
+        poisoned.limits[0].critical_multiple > MAX_SANE_CRITICAL_MULTIPLE,
+        "premise: 1e300 exceeds the sane range"
+    );
+
+    let refused = poisoned
+        .validate(&shipped)
+        .expect_err("a critical multiple of 1e300 was admitted");
+    assert!(
+        refused.message().contains("critical multiple"),
+        "{}",
+        refused.message()
+    );
+}
+
+#[test]
+fn a_file_that_only_widens_every_bound_to_an_extreme_is_admitted_and_every_move_is_reported() {
+    // ADR 0061 §7 deliberately does not refuse a looser bound — loosening
+    // through the file is the governed path — so widening every bound to the
+    // most extreme value its representation can carry must still be
+    // admitted (security review HIGH-1's first shape). What changed is that
+    // the loosening is no longer silent: `LimitSet::bound_differences` must
+    // name every limit that moved.
+    let shipped = LimitSet::conservative_default();
+    let mut widened = shipped.clone();
+    for limit in &mut widened.limits {
+        let extreme = match &limit.kind {
+            // The largest value that survives the `f64` -> `Decimal`
+            // crossing in `LimitKind::with_bound`; `f64::MAX` itself does not
+            // fit the notional and would make this a refusal instead of the
+            // admission this test is about.
+            LimitKind::MaxOrderNotional { .. } | LimitKind::MaxPositionNotional { .. } => {
+                9.223_372_036_854_776e18
+            }
+            _ => f64::MAX,
+        };
+        limit.kind = limit
+            .kind
+            .with_bound(extreme)
+            .expect("an extreme positive bound rebounds");
+    }
+    // Premise: every bound actually moved, or the assertions below would be
+    // vacuous.
+    for (widened_limit, shipped_limit) in widened.limits.iter().zip(shipped.limits.iter()) {
+        assert_ne!(
+            widened_limit.kind.bound(),
+            shipped_limit.kind.bound(),
+            "premise failed: {}'s bound did not move",
+            shipped_limit.name
+        );
+    }
+
+    let text = serde_json::to_string(&widened).expect("serialises");
+    let admitted = LimitSet::from_document(&text, "widened.json").expect(
+        "widening every bound to an extreme loosens every control rather than removing one",
+    );
+    let differences = admitted.bound_differences(&shipped);
+    for shipped_limit in &shipped.limits {
+        assert!(
+            differences.contains(&shipped_limit.name),
+            "{} was widened but not reported among the bound differences: {differences:?}",
+            shipped_limit.name
+        );
+    }
+    assert_eq!(
+        differences.len(),
+        shipped.len(),
+        "a name outside the shipped set was reported as a difference: {differences:?}"
     );
 }
