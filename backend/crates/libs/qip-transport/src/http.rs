@@ -404,16 +404,25 @@ fn split_scheme(raw: &str) -> (Option<&str>, &str) {
 ///
 /// Three masks, and what each one does and does not promise:
 ///
-/// * **Userinfo — guaranteed.** Everything through the *last* `@` past the
-///   scheme is replaced by `…@`. Userinfo precedes an `@` by definition, and
-///   [`split_scheme`] cannot have discarded one, because its grammar
-///   (`ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`) has no `@` in it and its
-///   fallthrough returns the whole string. So "`rest` holds no `@`" and
-///   "`raw` holds no `@`" are the same statement, and the one early return
-///   below is a decision, not a guess. **No `@`-delimited credential can
-///   survive this function.** That is a proof about the code, not a summary
-///   of the cases that were tried; the five rounds it took to get here are
-///   in ADR 0057, and the short version is in the History note below.
+/// * **Userinfo — guaranteed.** Everything through the last `@` *that falls
+///   before the parameter cut* is replaced by `…@`; if the last `@` falls at
+///   or after that cut, nothing between the scheme and the cut is shown at
+///   all. Say the mechanism precisely, because getting this sentence wrong
+///   is how round 6 shipped a leak: "everything through the last `@`
+///   anywhere" was true of round 5's code, was carried forward verbatim over
+///   a restructure that made it false, and the false version described an
+///   implementation that printed half of any password containing a `?`.
+///   What holds either way is the guarantee: userinfo precedes an `@` by
+///   definition, [`split_scheme`] cannot have discarded one (its grammar
+///   `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )` has no `@` in it, and its
+///   fallthrough returns the whole string), and every byte before the
+///   surviving region is dropped rather than inspected. So **no
+///   `@`-delimited credential can survive this function** — a proof about
+///   the code rather than a summary of the cases that were tried, and
+///   `no_byte_before_a_credentials_terminating_at_ever_survives_redaction`
+///   executes it over every input in a small alphabet rather than leaving it
+///   to be re-derived by the next reader. The six rounds it took are in ADR
+///   0057.
 /// * **Query and fragment — masked, and the reason is that they are *not*
 ///   covered by the proof above.** A credential with no `@` in it —
 ///   `?api_key=hf_REALSECRET`, the shape a vendor console hands an operator
@@ -422,21 +431,27 @@ fn split_scheme(raw: &str) -> (Option<&str>, &str) {
 ///   Everything from the first `?` or `#` is therefore replaced by `?…` or
 ///   `#…`. This is structural, like the `@` rule: a region boundary, not a
 ///   judgement about which parameter looks secret.
-/// * **A credential inside a *path* segment — NOT covered, deliberately.**
-///   `http://host/v1/hunter2/chat` still prints in full. Masking it would
-///   mean guessing which segment is a secret, and guessing which part of a
-///   string is sensitive is the exact activity that produced five
-///   consecutive leaks here. The path is also what an operator needs to
-///   identify which of several configured addresses was refused. Named as a
-///   known limit rather than papered over: if this must close, the answer is
-///   to stop putting the address in the message at all, not to add a
-///   heuristic.
+/// * **An address with no `@` before the cut and no `?` or `#` at all — NOT
+///   covered, deliberately.** It is returned whole. `hf_LIVEKEY_SECRET`,
+///   pasted into the base-URL variable instead of the key variable next to
+///   it, prints in full, and so does `http://host/v1/hunter2/chat`. This
+///   said "a credential inside a *path* segment" until 2026-09-13 and that
+///   was narrower than the code: the surviving region is every region, not
+///   the path. Masking it would mean guessing which part of an unparseable
+///   string is a secret, and that guess is the exact activity that produced
+///   five consecutive leaks here. What survives is also what an operator
+///   needs to identify which of several configured addresses was refused.
+///   Named as a known limit rather than papered over: if it must close, the
+///   answer is to stop putting the address in the message at all, not to
+///   add a heuristic.
 ///
-/// Control characters are escaped (`\u{000a}` and the like) rather than
-/// copied through. A `\r\n` in a rejected address otherwise ends the log
-/// line and begins one the operator did not write, which is a forged record
-/// in whatever collects stderr; whoever can set a config variable can
-/// otherwise write an arbitrary line into the log.
+/// Anything outside printable ASCII is escaped rather than copied through —
+/// see [`escape_controls`], which is a whitelist for the same reason this
+/// function's regions are boundaries rather than judgements. A `\r\n` in a
+/// rejected address otherwise ends the log line and begins one the operator
+/// did not write, which is a forged record in whatever collects stderr;
+/// whoever can set a config variable can otherwise write an arbitrary line
+/// into the log.
 ///
 /// Pure text, no parse: it has to work on exactly the addresses
 /// [`Url::parse`] refuses, which are by definition the ones it cannot
@@ -466,22 +481,27 @@ pub fn redact_for_echo(raw: &str) -> String {
     // prints everything after it, so `http://h/x?a=1@2&key=SECRET` would
     // come back carrying `SECRET`. Cutting first makes that unreachable,
     // because no byte at or past the first `?`/`#` reaches the output at all.
-    let (authority_and_path, params) = match rest.find(['?', '#']) {
-        Some(at) => (&rest[..at], &rest[at..at + 1]),
-        None => (rest, ""),
+    // **Both boundaries are measured over the whole of `rest`, and only then
+    // intersected.** Measuring the second one inside the first is what round
+    // 6 did, and it leaked: a credential may itself contain a `?` or a `#`
+    // — they are ordinary password characters, and they are *not* legal
+    // unencoded in userinfo, which is exactly why such a string arrives here
+    // rather than parsing — so the parameter cut can land in the middle of
+    // the credential. The `@` search over that truncated prefix then finds
+    // nothing, the code concludes "no userinfo", and prints the prefix,
+    // which is the first half of the password:
+    // `http://svc:SECRET?x@127.0.0.1:9105` came back as `http://svc:SECRET?…`.
+    // 131,040 of 640,000 enumerated inputs leaked that way.
+    let cut = rest.find(['?', '#']).unwrap_or(rest.len());
+    let params = &rest[cut..rest.len().min(cut + 1)];
+    let (kept, masked_userinfo) = match rest.rfind('@') {
+        // The last `@` is past the cut, so the `?`/`#` that set the cut is
+        // inside the credential. Nothing between the scheme and the cut can
+        // be shown: it is credential, not authority.
+        Some(at) if at > cut => ("", true),
+        Some(at) => (&rest[at + 1..cut], true),
+        None => (&rest[..cut], false),
     };
-    // Then the userinfo, within what is left. Sound because `split_scheme`
-    // cannot have taken an `@` out of `raw` — see the guarantee above — so
-    // "no `@` here" is "no `@` in the part that will be printed", not "no
-    // `@` where I happened to look". A change to `split_scheme`'s grammar
-    // admitting `@` would silently reopen all five leaks through this line;
-    // the matrix test asserts per row that an input holding an `@` never
-    // comes back byte-identical, which fails if that ever stops holding.
-    let kept = match authority_and_path.rfind('@') {
-        Some(at) => &authority_and_path[at + 1..],
-        None => authority_and_path,
-    };
-    let masked_userinfo = kept.len() != authority_and_path.len();
     if !masked_userinfo && params.is_empty() {
         // Nothing to mask. Returning `raw` rather than a reassembly keeps an
         // address that needed no redaction byte-identical to what was set,
@@ -501,24 +521,41 @@ pub fn redact_for_echo(raw: &str) -> String {
     escape_controls(&format!("{scheme}{userinfo}{kept}{params}"))
 }
 
-/// `text` with every control character replaced by an escape.
+/// `text` with everything outside printable ASCII replaced by an escape.
 ///
-/// Not cosmetic. The output of [`redact_for_echo`] goes into a refusal that
-/// a composition root prints to stderr at start-up, and a `\r\n` inside a
+/// Not cosmetic. The output of [`redact_for_echo`], and the host
+/// [`require_loopback_egress`] names beside it, go into a refusal that a
+/// composition root prints to stderr at start-up. A `\r\n` inside a
 /// rejected address would end that line and start another — one whose
 /// contents the person who set the address chose. A log a reader cannot
 /// trust to have one record per line is a log that can be made to say
 /// anything.
+///
+/// **The test is "is this byte provably safe to print", not "is this byte
+/// known to be dangerous".** An earlier version escaped `char::is_control`,
+/// which is the Unicode `Cc` category and therefore covers C0, DEL and C1
+/// but *not* U+2028 and U+2029 — which Python's `str.splitlines`, several
+/// log viewers, and pre-ES2019 JSON parsing all treat as line boundaries,
+/// leaving the forged-record hole open for exactly the consumers most
+/// likely to be reading these logs. Nor did it cover U+202E, which reverses
+/// the rendering of everything after it, or U+FEFF. Enumerating dangerous
+/// characters is the same losing shape as enumerating dangerous URL
+/// regions, and this file has already lost that argument five times: the
+/// rule is now a whitelist, so a character that has not been considered is
+/// escaped rather than passed through. The backslash is escaped too, so a
+/// literal `\u{000a}` typed into an address cannot round-trip to something
+/// a consumer that unescapes would turn back into a newline.
 fn escape_controls(text: &str) -> String {
-    if !text.chars().any(char::is_control) {
+    let safe = |c: char| (c.is_ascii_graphic() && c != '\\') || c == ' ' || c == '…';
+    if text.chars().all(safe) {
         return text.to_string();
     }
     text.chars()
         .fold(String::with_capacity(text.len()), |mut out, c| {
-            if c.is_control() {
-                out.push_str(&format!("\\u{{{:04x}}}", c as u32));
-            } else {
+            if safe(c) {
                 out.push(c);
+            } else {
+                out.push_str(&format!("\\u{{{:04x}}}", c as u32));
             }
             out
         })
@@ -567,10 +604,19 @@ pub const LOOPBACK_HOST: &str = "127.0.0.1";
 ///   so until 2026-09-12 the process was again the wider of the two gates.
 ///
 /// Every echo of the address goes through [`redact_for_echo`], so a refusal
-/// of `http://svc:TOKEN@…` does not print `TOKEN`. Only the first two arms
-/// can meet a credential — the parser refuses userinfo before the host and
-/// port arms run — but all four echo the redacted form, so a reordering
-/// cannot reopen the leak. Called at the seams that
+/// of `http://svc:TOKEN@…` does not print `TOKEN`. **`shown` is
+/// load-bearing in all four arms, not belt-and-braces in the last two**,
+/// and this comment said the opposite until 2026-09-13. The reasoning it
+/// gave was half right: [`Url::parse`] does refuse *userinfo* before the
+/// host and port arms run, so no `user:pass@` address reaches them. But it
+/// does not refuse a *query*, and a credential does not have to be
+/// userinfo — `http://api.vendor.example/v1?api_key=SECRET` parses
+/// cleanly, reaches the host arm, and `http://127.0.0.1/v1?api_key=SECRET`
+/// reaches the port arm. In both, the only thing keeping the key out of the
+/// log is `shown`. A reader who believed the old sentence would delete it
+/// from those arms as redundant, which is the shape of every leak in this
+/// file's history: a true statement about one kind of credential, read as a
+/// statement about credentials. Called at the seams that
 /// carry a credential — the connector pair in the API's, the deep brain's
 /// and the fast brain's parsers and at `ConnectorFeed::open`; the deep
 /// brain's hosted language-model listener; the fast brain's market-data
@@ -579,7 +625,12 @@ pub const LOOPBACK_HOST: &str = "127.0.0.1";
 /// deployment mistake somebody should see.
 pub fn require_loopback_egress(base_url: &str) -> qip_core::Result<()> {
     let shown = redact_for_echo(base_url);
-    if base_url.starts_with("https://") {
+    // Case-insensitively, because a scheme is case-insensitive and an
+    // operator who typed `HTTPS://` is making exactly the mistake this arm
+    // exists to explain. Matching it byte-for-byte sent them to the generic
+    // parse refusal instead, which says the address is malformed rather
+    // than naming the egress proxy they were supposed to point at.
+    if base_url.len() >= 8 && base_url[..8].eq_ignore_ascii_case("https://") {
         return Err(qip_core::Error::invalid(format!(
             "the egress address is {shown}. This transport speaks plaintext HTTP/1.1 and has \
              no TLS stack: point it at the egress proxy that terminates TLS to the vendor, \
@@ -605,8 +656,13 @@ pub fn require_loopback_egress(base_url: &str) -> qip_core::Result<()> {
     // the gate rather than fix the address. `host` is safe to print
     // unmasked: `Url::parse` refuses userinfo before this line runs, so a
     // parsed host cannot carry a credential.
-    let host = url.host();
-    if host != LOOPBACK_HOST {
+    // Escaped like `shown`: `Url::parse` refuses only `char::is_control`
+    // and ASCII space in a host, so a host carrying U+2028 parses cleanly
+    // and, printed raw, splits this record for any consumer that treats it
+    // as a line break — reintroducing through this arm the forged-record
+    // hole `escape_controls` closes for the address beside it.
+    let host = escape_controls(url.host());
+    if url.host() != LOOPBACK_HOST {
         return Err(qip_core::Error::invalid(format!(
             "the egress address names the host `{host}` (as written, with any credential, \
              query and fragment masked: {shown}). A vendor is reached only \

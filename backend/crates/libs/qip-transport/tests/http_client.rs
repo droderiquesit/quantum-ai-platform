@@ -93,11 +93,29 @@ fn a_url_that_carries_a_credential_is_refused() {
 /// `https://svc:TOKEN@127.0.0.1:9106/` then prints `TOKEN` and this fails.
 /// Echoing `{base_url:?}` in the parse-failure arm — confirmed the refusal
 /// of `http://svc:TOKEN@127.0.0.1:9106/` then prints `TOKEN` and this
-/// fails. Each restored. The same mutation on the host arm does **not**
-/// fire, and that is structural rather than a gap in the rows: the parser
-/// refuses userinfo before the host and port arms run, so neither can
-/// reach an address carrying one; they echo `shown` anyway so that a
-/// reordering of the arms cannot reopen the leak silently.
+/// fails. Each restored.
+///
+/// **Corrected 2026-09-13.** This paragraph used to end by saying the same
+/// mutation on the host arm does *not* fire, "structural rather than a gap
+/// in the rows", because the parser refuses userinfo before the host and
+/// port arms run. That reasoning was true of userinfo and wrong about
+/// credentials, which is this file's recurring mistake in miniature:
+/// `Url::parse` refuses userinfo and a fragment, not a *query*, so
+/// `http://api.vendor.example/v1?api_key=SECRET` parses cleanly and reaches
+/// the host arm with a credential in it. `shown` is load-bearing in all four
+/// arms, and a reader who believed the old sentence would delete it from two
+/// of them as redundant. The diagnosability assertion below now drives the
+/// host arm deliberately, so echoing `base_url` there **does** fire.
+///
+/// Mutations for the four assertions this test gained on 2026-09-13, each
+/// run and each restored: deleting `{host}` from the host arm's message —
+/// confirmed the `contains("someservice")` assertion fails, the refusal no
+/// longer naming which address was set. Echoing `base_url` in place of
+/// `shown` in the host arm — confirmed `API_SECRET_VALUE` then appears and
+/// the second assertion fails, which is the mutation the old paragraph
+/// claimed could not fire. Deleting the `escape_controls` call from
+/// `redact_for_echo` — confirmed the forged-record assertions fail, the
+/// rejected address carrying a real newline into the message.
 #[test]
 fn an_egress_address_is_loopback_with_a_port_and_a_refusal_never_echoes_a_credential() {
     use qip_transport::http::{redact_for_echo, require_loopback_egress};
@@ -162,18 +180,21 @@ fn an_egress_address_is_loopback_with_a_port_and_a_refusal_never_echoes_a_creden
         redact_for_echo("http://svc:TOK@EN@127.0.0.1:9106/v1?x=1"),
         "http://…@127.0.0.1:9106/v1?…"
     );
-    // Corrected 2026-09-13 (round 5): this used to assert an `@` past a
-    // real, delimiter-bounded authority was kept verbatim. Two rounds of
-    // trying to tell "an `@` that ends a real authority" apart from "an `@`
-    // that is the credential a scheme-typo hid past a delimiter" each left
-    // a fifth bypass standing — see `redact_for_echo`'s doc comment. The
-    // query now goes as a region, which is why the real host survives here
-    // rather than being masked as a suspected credential: cutting the
-    // parameters off first leaves no `@` in what remains.
+    // Corrected twice, and the second correction is the interesting one.
+    // Round 5 stopped keeping an `@` that sat past a real authority. Round 6
+    // masked the query as a region and, because it cut that region off
+    // before looking for `@`, kept the host here — which read as a
+    // diagnosability win until round 7's security review showed the same
+    // ordering printed the first half of any password containing a `?`.
+    // Under the corrected rule an `@` past the cut masks everything, because
+    // "the `@` is in the query, so the text before it is a host" and "the
+    // `?` is in the password, so the text before it is a credential" are the
+    // same string. Nothing distinguishes them, so the safe reading wins and
+    // the host is lost here too.
     assert_eq!(
         redact_for_echo("http://127.0.0.1:9106/v1?to=a@b"),
-        "http://127.0.0.1:9106/v1?…",
-        "the query goes whole, so an `@` inside it never has to be judged"
+        "http://…@?…",
+        "an `@` past the parameter cut cannot be told from a password containing a `?`"
     );
     // Corrected 2026-09-12: this used to assert the scheme-less string was
     // passed through unchanged, on the premise that every credential-bearing
@@ -294,10 +315,10 @@ fn a_scheme_less_credential_bearing_egress_address_is_still_redacted() {
 /// after — see the ordering row below, and the mutation report at the end
 /// of this comment for what happens when that order is reversed.
 ///
-/// Table-driven over the full matrix the security review asked for,
+/// Table-driven over the full matrix the security reviews asked for,
 /// because every row is the same property — does this string get the
 /// exact redaction it should — and a table keeps that property visible
-/// rather than restated twenty-eight times with twenty-eight slightly
+/// rather than restated thirty-seven times with thirty-seven slightly
 /// different names.
 ///
 /// # Mutations, and what each one actually printed
@@ -307,23 +328,29 @@ fn a_scheme_less_credential_bearing_egress_address_is_still_redacted() {
 /// loop below used `assert_eq!` per row at the time, so it aborted at the
 /// first mismatch and could not have observed the other four. The loop now
 /// collects every mismatch and asserts once, so a mutation run enumerates
-/// exactly the rows it broke and the report can quote them.
+/// exactly the rows it broke. These figures were re-measured against the
+/// round-7 implementation rather than carried forward from round 6's
+/// report, because the row count and the implementation both moved and a
+/// number quoted across a restructure is how this file's comments have gone
+/// wrong every previous time.
 ///
-/// * **Deleting the parameter-region cut** (round five's shape, no query or
-///   fragment masking): `9 of 28 redaction rows are wrong` — the two
-///   `?redirect=` rows, `http://127.0.0.1:9105/x?y=a@b`, the `1nvalid:`
-///   row, the bare `?` and `#` rows, and all three round-six rows
-///   (`?api_key=SECRETVALUE`, the `?a=1@2&api_key=` ordering row, and the
-///   `#token=SECRETVALUE` fragment row).
-/// * **Reversing the order** — searching for `@` across the whole remainder
-///   first and cutting the parameters only afterwards, which is the shape
-///   this round nearly shipped: `4 of 28`, and the one that matters is
-///   `http://127.0.0.1:9105/x?a=1@2&api_key=SECRETVALUE` coming back as
-///   `http://…@2&api_key=SECRETVALUE`. The `@` inside the query ends the
-///   search there and everything past it prints, `SECRETVALUE` included.
-///   That is why the cut is first and not second.
+/// * **Deleting the parameter-region cut** — masking no query or fragment
+///   at all: `13 of 37 redaction rows are wrong`. Note this is *not* "round
+///   five's shape", which is how round 6's report described the same
+///   mutation: round five also had no `escape_controls`, so restoring it
+///   literally breaks more rows than deleting this one line does.
+/// * **Reversing the order** — cutting the parameter region first and then
+///   searching only that prefix for `@`, which is exactly what round 6
+///   shipped: `8 of 37`. This is the blocking leak round 7 closes. The row
+///   that shows it is `http://svc:SECRETVALUE?tail@127.0.0.1:9105/`, which
+///   comes back as `http://svc:SECRETVALUE?…` — the `?` inside the password
+///   ends the region before the `@` search ever runs, so the search finds
+///   nothing, concludes there is no userinfo, and prints the first half of
+///   the credential. `no_byte_before_a_credentials_terminating_at_ever_
+///   survives_redaction` fails on the same mutation with `5100 of 53354
+///   inputs printed a byte that sat before the terminating `@``.
 ///
-/// Each mutation restored byte-for-byte afterwards; all 28 rows and all 30
+/// Each mutation restored byte-for-byte afterwards; all 37 rows and all 31
 /// tests in this file pass again.
 #[test]
 fn redact_for_echo_handles_the_full_adversarial_matrix() {
@@ -357,7 +384,7 @@ fn redact_for_echo_handles_the_full_adversarial_matrix() {
         (
             "round 5 correction: same reasoning, for a query `@` instead of a path one",
             "http://127.0.0.1:9105/x?y=a@b",
-            "http://127.0.0.1:9105/x?…",
+            "http://…@?…",
         ),
         (
             "two `@` in the authority mask down to the rightmost split",
@@ -410,12 +437,12 @@ fn redact_for_echo_handles_the_full_adversarial_matrix() {
         (
             "round 4's finding, a bare `?`: the authority-candidate is still empty",
             "?TOKEN@127.0.0.1:9106",
-            "?…",
+            "…@?…",
         ),
         (
             "round 4's finding, a bare `#`: the authority-candidate is still empty",
             "#TOKEN@127.0.0.1:9106",
-            "#…",
+            "…@#…",
         ),
         (
             "round 4's finding: `://` with nothing before it makes the authority-candidate \
@@ -496,7 +523,7 @@ fn redact_for_echo_handles_the_full_adversarial_matrix() {
              `SECRETVALUE` included. Cutting the parameter region off first makes the bytes \
              unreachable rather than merely unsearched",
             "http://127.0.0.1:9105/x?a=1@2&api_key=SECRETVALUE",
-            "http://127.0.0.1:9105/x?…",
+            "http://…@?…",
         ),
         (
             "round 6: a fragment is a parameter region too, and `Url::parse` refuses one \
@@ -519,6 +546,76 @@ fn redact_for_echo_handles_the_full_adversarial_matrix() {
              address cannot end the log line and begin one the operator did not write",
             "http://127.0.0.1:9105/x\r\nFATAL forged",
             "http://127.0.0.1:9105/x\\u{000d}\\u{000a}FATAL forged",
+        ),
+        (
+            "round 7's blocking finding, and it was round 6's own doing: `?` and `#` are \
+             ordinary password characters, and are not legal unencoded in userinfo — which is \
+             why a password containing one arrives here rather than parsing. Round 6 cut the \
+             parameter region first and then searched that prefix for `@`, so the cut landed \
+             inside the credential, the search found nothing, and the first half of the \
+             password printed. 131,040 of 640,000 enumerated inputs leaked this way",
+            "http://svc:SECRETVALUE?tail@127.0.0.1:9105/",
+            "http://…@?…",
+        ),
+        (
+            "round 7: the same defect through a `#` rather than a `?`",
+            "http://svc:SECRETVALUE#tail@127.0.0.1:9105/",
+            "http://…@#…",
+        ),
+        (
+            "round 7: the same defect with no scheme, so neither boundary is where the naive \
+             reading would put it",
+            "svc:SECRETVALUE?x@127.0.0.1:9105",
+            "…@?…",
+        ),
+        (
+            "round 7: an `@` both before and after the cut. The one before is a real authority \
+             boundary and the one after is inside the credential; nothing in the string says \
+             which reading the operator meant, so both are masked",
+            "http://a@b:SECRETVALUE?c@127.0.0.1:9105/",
+            "http://…@?…",
+        ),
+        (
+            "round 7's named limit, restated honestly after the security review found the \
+             earlier wording too narrow: what survives is not `a path segment` but *any* \
+             address with no `@` before the parameter cut and no `?` or `#` at all. This is \
+             the realistic one — an operator pastes the API key into the base-URL variable \
+             instead of the key variable, two adjacent Secret Manager mounts — and it prints \
+             in full. Naming it is the point: it is the cost of refusing to guess which part \
+             of an unparseable string is sensitive",
+            "hf_LIVEKEY_SECRETVALUE",
+            "hf_LIVEKEY_SECRETVALUE",
+        ),
+        (
+            "round 7: a Unicode line separator is escaped too. `char::is_control` is the `Cc` \
+             category and does not cover U+2028, which Python's `str.splitlines` and several \
+             log viewers treat as a record boundary — so escaping only `Cc` left the forged \
+             record open for exactly the consumers most likely to be reading these logs",
+            "http://127.0.0.1:9105/x\u{2028}FATAL forged",
+            "http://127.0.0.1:9105/x\\u{2028}FATAL forged",
+        ),
+        (
+            "round 7: a right-to-left override reverses how everything after it renders in a \
+             terminal, so an operator reads an address that is not the one that was refused",
+            "http://127.0.0.1:9105/\u{202e}x",
+            "http://127.0.0.1:9105/\\u{202e}x",
+        ),
+        (
+            "round 7: the escape is itself escaped, so a literal `\\u{000a}` typed into an \
+             address cannot round-trip to something a consumer that unescapes turns back into \
+             a newline",
+            "http://127.0.0.1:9105/x\\u{000a}FATAL",
+            "http://127.0.0.1:9105/x\\u{005c}u{000a}FATAL",
+        ),
+        (
+            "round 7, from the code review: the one row that can tell whether `split_scheme`'s \
+             grammar still excludes `@`. Every other `@`-bearing row keeps its expected value \
+             under a widened grammar, so the per-row guard below was vacuous against the \
+             mutation its own comment named. Here a widened grammar makes `user@host` the \
+             scheme, leaving no `@` and no parameters in what remains, so the early return \
+             hands the input back byte-identical and the guard fires",
+            "user@host://path",
+            "…@host://path",
         ),
     ];
 
@@ -563,6 +660,115 @@ fn redact_for_echo_handles_the_full_adversarial_matrix() {
     // input still masks to something with no raw content in it.
     assert_eq!(redact_for_echo(""), "");
     assert_eq!(redact_for_echo("@"), "…@");
+}
+
+/// The guarantee, executed rather than argued.
+///
+/// Six rounds of this defect share one mechanism, and it is not that anyone
+/// reasoned badly. Each round's proof was correct about the code in front of
+/// it, was written into a comment, and was then carried forward verbatim
+/// across a restructure that invalidated it. Round 5 proved that no
+/// `@`-delimited credential survives, and round 6 moved the `@` search
+/// inside a boundary it did not previously have — leaving the proof true of
+/// the code that no longer existed and false of the code that did. Prose
+/// does not get re-derived. A test does.
+///
+/// So the property is asserted over every string in a small alphabet rather
+/// than over the hand-picked rows above: place a sentinel byte strictly
+/// inside the region a credential would occupy — anywhere before the last
+/// `@` — and require that it never reaches the output. The alphabet is the
+/// set of characters that have ever mattered here: the two region
+/// delimiters, the userinfo terminator, the scheme punctuation, and one
+/// ordinary letter. Six rounds of leaks are all reachable inside it.
+///
+/// The scheme token is the one legitimate survivor, since
+/// [`qip_transport::http::split_scheme`]'s grammar proves it cannot contain
+/// an `@` — so the sentinel is never placed inside a scheme position.
+///
+/// Mutated three ways, each restored byte-for-byte, and reported as what
+/// the runs printed rather than as what the design implies — the last two
+/// rounds were both held up for getting that distinction wrong:
+///
+/// * **Round 6's ordering** (cut the parameter region, then search only that
+///   prefix for `@`): this test fails, `5100 of 53354 inputs printed a byte
+///   that sat before the terminating `@``. That is the blocking leak round 7
+///   exists to close, and this is the test that would have caught it.
+/// * **Round 5's shape** (search the whole remainder, no parameter cut at
+///   all): this test **passes**, and that is correct rather than a gap.
+///   Round 5 did search the whole remainder, so no byte before the last `@`
+///   survived it; its defect was the credential with *no* `@` — a query
+///   parameter — which this property does not describe and cannot detect.
+///   Stated because the first draft of this comment claimed the mutation
+///   fires, and it does not; the query half is covered by the matrix rows
+///   above, not here.
+/// * **Widening `split_scheme`'s grammar to admit `@`**: this test passes
+///   too, and the matrix test above fails instead, on its `user@host://path`
+///   row — `an input containing `@` came back byte-identical`. That row
+///   exists only because a reviewer showed the per-row guard was otherwise
+///   vacuous against exactly this mutation.
+#[test]
+fn no_byte_before_a_credentials_terminating_at_ever_survives_redaction() {
+    use qip_transport::http::redact_for_echo;
+
+    const ALPHABET: [&str; 6] = ["a", "@", "?", "#", ":", "/"];
+    const SENTINEL: &str = "S";
+
+    let mut checked = 0_u32;
+    let mut leaked = Vec::new();
+    // Every prefix and suffix of length 0..=3 over the alphabet, with the
+    // sentinel between them, tried both bare and behind a real scheme.
+    for prefix in combinations(&ALPHABET, 3) {
+        for suffix in combinations(&ALPHABET, 3) {
+            for scheme in ["", "http://"] {
+                let raw = format!("{scheme}{prefix}{SENTINEL}{suffix}");
+                // Only meaningful when the sentinel is strictly inside what
+                // a credential would be: there has to be an `@` after it.
+                if !suffix.contains('@') {
+                    continue;
+                }
+                checked += 1;
+                let shown = redact_for_echo(&raw);
+                if shown.contains(SENTINEL) {
+                    leaked.push(format!("  {raw:?} -> {shown:?}"));
+                }
+            }
+        }
+    }
+
+    assert!(
+        checked > 1_000,
+        "premise: the sweep must actually exercise the property, not pass by \
+         generating nothing — only {checked} inputs placed a sentinel before an `@`"
+    );
+    assert!(
+        leaked.is_empty(),
+        "{} of {checked} inputs printed a byte that sat before the terminating `@`, \
+         which is what a leaked credential looks like:\n{}",
+        leaked.len(),
+        leaked
+            .iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+/// Every string of length `0..=max` over `alphabet`.
+fn combinations(alphabet: &[&str], max: usize) -> Vec<String> {
+    let mut out = vec![String::new()];
+    let mut frontier = vec![String::new()];
+    for _ in 0..max {
+        let mut next = Vec::new();
+        for stem in &frontier {
+            for symbol in alphabet {
+                next.push(format!("{stem}{symbol}"));
+            }
+        }
+        out.extend(next.iter().cloned());
+        frontier = next;
+    }
+    out
 }
 
 /// The security review's own reproduction, against `Url::parse` rather
