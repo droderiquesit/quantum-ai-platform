@@ -1459,7 +1459,14 @@ fn platform_with_arbitrage(venues: &[&str]) -> Result<Platform> {
 /// A cell report carrying one refusal the lot gate made at `venue`, as the
 /// delta sink would build it.
 fn report_with_lot_refusal(venue: &str) -> CellReport {
-    CellReport::new(CELL, start()).with_refusals(vec![qip_mesh::delta::DeltaRefusal {
+    report_with_lot_refusal_from(CELL, venue)
+}
+
+/// The same report, from a named cell rather than the fixed [`CELL`] —
+/// what a second, genuinely distinct cell corroborating the same venue looks
+/// like on the wire.
+fn report_with_lot_refusal_from(cell: &str, venue: &str) -> CellReport {
+    CellReport::new(cell, start()).with_refusals(vec![qip_mesh::delta::DeltaRefusal {
         gate: "feasibility_lot".to_string(),
         reason: "10.5 is not a whole number of lots".to_string(),
         venue: Some(venue.to_string()),
@@ -1670,13 +1677,71 @@ fn a_window_dominated_by_a_venue_the_policy_does_not_name_changes_no_whitelist()
 }
 
 #[test]
-fn ten_cell_refusals_at_the_only_policy_venue_withdraw_it_and_the_whitelist_says_so() -> Result<()>
-{
-    // The edge seam end to end: the cells' refusals at the one policy venue
-    // withdraw it, and the next whitelist the centre issues for the cell is
-    // empty and says why — `AllWithdrawn`, on the journaled issue — so the
-    // installer installs nothing. Reviewed once: the venue is withdrawn on
-    // the first cycle and the second finds nothing new.
+fn ten_refusals_from_one_cell_do_not_withdraw_the_only_policy_venue() -> Result<()> {
+    // The security fix: before it, this exact scenario — ten reports from
+    // one cell registration, naming one venue — withdrew the platform's only
+    // policy venue on the evidence of a single, unauthenticated reporter.
+    // The cell→centre uplink authenticates nobody (`qip-api/src/mesh.rs`,
+    // `qip-edge/src/mesh.rs`), so one compromised or spoofed cell process
+    // could deny the venue to every other cell and the desk. Corroboration
+    // from a second distinct cell is now required before edge-only evidence
+    // clears the bar (`VENUE_WITHDRAWAL_MIN_CELLS`), so the same ten reports
+    // from the same one cell withdraw nothing: no record is journaled and
+    // the whitelist the centre next issues is exactly what it was before.
+    let now = start();
+    let id = strategy();
+    let mut platform = platform_with_arbitrage(&[VENUE])?;
+    register(platform.central_mut(), &id, CELL)?;
+    walk_to(platform.central_mut(), &id, GateStage::Pilot)?;
+    issue(platform.central_mut(), &id, CELL, now)?;
+    let before = platform.issue_cycle_whitelist(CELL, now)?;
+    assert!(
+        !before.is_empty(),
+        "the premise failed: the grant emits no whitelist"
+    );
+
+    for _ in 0..10 {
+        platform.ingest_cell_report(report_with_lot_refusal(VENUE), now)?;
+    }
+    assert_eq!(
+        platform.feasibility_refusals().len(),
+        10,
+        "the premise failed: the refusals did not reach the window"
+    );
+    platform.run_cycle(now);
+    assert_eq!(
+        withdrawals(&platform)?,
+        Vec::new(),
+        "a single cell's uncorroborated evidence withdrew a venue"
+    );
+    assert!(
+        platform.withdrawn_venues().is_empty(),
+        "a single cell's uncorroborated evidence withdrew a venue"
+    );
+
+    let after = platform.issue_cycle_whitelist(CELL, now)?;
+    assert_eq!(
+        after.outcome,
+        before.outcome,
+        "the whitelist moved on evidence from one cell alone: {}",
+        after.describe()
+    );
+    Ok(())
+}
+
+#[test]
+fn ten_cell_refusals_from_two_distinct_cells_at_the_only_policy_venue_withdraw_it_and_the_whitelist_says_so()
+-> Result<()> {
+    // The admitting half of the same fix, so it isn't just a refusal:
+    // corroboration from a second, genuinely distinct cell still withdraws
+    // the venue exactly as ten refusals from one cell did before the fix.
+    // Six from `CELL` and four from a second registration together clear
+    // both the sample/share bars and the two-cell corroboration bar, and
+    // the next whitelist the centre issues for either cell is empty and
+    // says why — `AllWithdrawn`, on the journaled issue — so the installer
+    // installs nothing. Reviewed once: the venue is withdrawn on the first
+    // cycle and the second finds nothing new.
+    const OTHER_CELL: &str = "cell-fra-1";
     let now = start();
     let id = strategy();
     let mut platform = platform_with_arbitrage(&[VENUE])?;
@@ -1688,8 +1753,11 @@ fn ten_cell_refusals_at_the_only_policy_venue_withdraw_it_and_the_whitelist_says
         "the premise failed: the grant emits no whitelist"
     );
 
-    for _ in 0..10 {
+    for _ in 0..6 {
         platform.ingest_cell_report(report_with_lot_refusal(VENUE), now)?;
+    }
+    for _ in 0..4 {
+        platform.ingest_cell_report(report_with_lot_refusal_from(OTHER_CELL, VENUE), now)?;
     }
     platform.run_cycle(now);
     let records = withdrawals(&platform)?;
@@ -1798,6 +1866,12 @@ fn an_edge_feasibility_refusal_travels_on_the_cell_report_and_lands_in_the_windo
     assert_eq!(
         window[0].seam,
         qip_kernel::venue_review::FeasibilitySeam::Edge
+    );
+    assert_eq!(
+        window[0].cell,
+        Some(CELL.to_string()),
+        "the reporting cell's identity did not travel into the window, which is what \
+         corroboration is checked against"
     );
     assert_eq!(window[0].at, start());
     assert_eq!(

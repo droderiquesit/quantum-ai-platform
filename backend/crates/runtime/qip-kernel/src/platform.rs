@@ -4023,6 +4023,7 @@ impl Platform {
                 &refusal.venue,
                 &refusal.constraint,
                 refusal.seam,
+                refusal.cell.as_deref(),
                 refusal.at,
             );
         }
@@ -11252,7 +11253,7 @@ impl Platform {
                 .and_then(RefusalReason::feasibility_gate)
                 .map(|gate| {
                     let venue = self.broker.name().to_string();
-                    self.record_feasibility_refusal(&venue, gate, FeasibilitySeam::Desk, now);
+                    self.record_feasibility_refusal(&venue, gate, FeasibilitySeam::Desk, None, now);
                     venue
                 });
             for rule in &rules {
@@ -12386,11 +12387,17 @@ impl Platform {
     /// feasibility modules, and those two literals — and nothing an order
     /// carries can mint a value. The window is a rate window bounded by
     /// [`FEASIBILITY_WINDOW`] and the oldest leaves when it is full.
+    ///
+    /// `cell` is `None` from the desk seam — the platform's own broker
+    /// connection, one identity — and `Some(report.cell)` from a cell's
+    /// report: the self-asserted key `venue_review::assess` corroborates
+    /// edge-only evidence on before it will let it withdraw a venue.
     fn record_feasibility_refusal(
         &mut self,
         venue: &str,
         constraint: &str,
         seam: FeasibilitySeam,
+        cell: Option<&str>,
         at: Timestamp,
     ) {
         self.telemetry.metrics.count(
@@ -12405,6 +12412,7 @@ impl Platform {
             venue: venue.to_string(),
             constraint: constraint.to_string(),
             seam,
+            cell: cell.map(str::to_string),
             at,
         });
     }

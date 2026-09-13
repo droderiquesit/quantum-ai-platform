@@ -82,6 +82,30 @@ The mechanism, in the order it runs:
   and admitted to nothing. A cell that ships a venue nobody configured
   cannot mint a label, and a cluster that would have withdrawn such a venue
   is charted under a name an operator can search for rather than acted on.
+- **Corroboration across cells.** A cluster whose window contains no desk
+  refusal at the winning venue must also name at least
+  `venue_review::VENUE_WITHDRAWAL_MIN_CELLS` (two) distinct cells before
+  `assess` returns it. This closed a gap an independent security review
+  found in the first cut of this record: `attribute_refusals` checked a
+  refusal's gate and venue against configuration but never asked whether
+  more than one cell agreed, so a window of ten refusals from **one** cell
+  registration cleared the same sample-and-share bar the desk's own,
+  trusted, single-source evidence clears — and the shipped test
+  `ten_cell_refusals_at_the_only_policy_venue_withdraw_it_and_the_whitelist_
+  says_so` demonstrated exactly that as intended behaviour. On a wire that
+  authenticates nobody (`qip-api/src/mesh.rs`, `qip-edge/src/mesh.rs`), one
+  compromised, buggy, or spoofed cell process could deny a venue to the desk
+  and every other cell with no corroboration and no rate check against real
+  order volume. `FeasibilityRefusal` now carries the reporting cell's
+  self-asserted identity (`None` for the desk, `Some(report.cell)` for a
+  cell), and `assess` requires either a desk refusal in the cluster or
+  refusals naming at least two distinct cells. `ten_cell_refusals_at_the_
+  only_policy_venue_withdraw_it_and_the_whitelist_says_so` was renamed
+  `ten_refusals_from_one_cell_do_not_withdraw_the_only_policy_venue` and now
+  asserts the opposite of what it did, and
+  `ten_cell_refusals_from_two_distinct_cells_at_the_only_policy_venue_
+  withdraw_it_and_the_whitelist_says_so` proves corroboration still admits a
+  genuine cluster rather than merely refusing every edge-sourced one.
 - **The finding.** `venue_review::assess` is pure arithmetic over the
   window: the venue with the largest count whose share of the *whole*
   window is at least `VENUE_WITHDRAWAL_SHARE` on a window of at least
@@ -160,6 +184,16 @@ is exactly the situation in which the desk should stop and a person should
 look at the grid, and a rule that exempted the one venue that matters would
 exempt the case the row exists for.
 
+Corroboration is deliberately not this same shape applied to cells: it does
+not require two *venues*, and it does not exempt a cell's only venue either.
+It requires two distinct *cells* before edge-only evidence counts, because
+the vector this closes is one untrusted reporter, not one venue. A single
+cell that is the *only* cell configured for a region can still never clear
+the edge-only bar alone — which is correct: nothing distinguishes "this
+region's one cell is right" from "this region's one cell is compromised" on
+an unauthenticated wire, and the desk's parallel path (fact-checked against
+the platform's own broker) is exactly where that ambiguity does not exist.
+
 ## The edge limit, stated
 
 Omission from the whitelist is necessary and not sufficient for a desk a
@@ -218,6 +252,18 @@ reinstatement on the next pass.
 - **Any code path that reads the withdrawn set to admit.** There is none;
   the day one appears, the "why evidence can never add a venue" section
   above is false and this record is void.
+- **The corroboration key is a self-asserted string, not a verified
+  identity.** `report.cell` is whatever the sender of a mesh frame wrote; the
+  uplink authenticates nobody. Requiring two distinct values raises the cost
+  of the attack this record's "corroboration across cells" section closes —
+  a single unauthenticated sender must now name two apparently-distinct
+  cells across separate reports rather than one — but it does not make the
+  identity trustworthy, and a sender able to forge two distinct `cell`
+  strings defeats it exactly as it would have defeated a bare count of
+  reports. Closing this fully needs the uplink to authenticate its senders,
+  which is out of this record's scope and is not claimed here. Until then,
+  this is a structural raise of the bar, not a proof the bar cannot be
+  cleared by one attacker.
 
 ## Consequences
 

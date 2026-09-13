@@ -24,6 +24,15 @@
 //! share, because the platform has one answer to "how much evidence makes
 //! a pattern a finding" and a second, differently-sized answer would be a
 //! number nobody could reconcile with the first.
+//!
+//! A cluster attributed only to cells must also be corroborated by more than
+//! one of them ([`VENUE_WITHDRAWAL_MIN_CELLS`]) before it can withdraw
+//! anything. The cell→centre uplink authenticates nobody, so admitting a
+//! single cell's evidence at the same bar as the desk's own would let one
+//! untrusted report deny a venue to the whole platform; the desk is exempt
+//! because it is the platform's own connection, not a population of
+//! independently operated processes, and "more than one desk" is not a
+//! stronger form of evidence.
 
 use qip_core::time::Timestamp;
 use qip_events::{EventBody, Topic};
@@ -63,6 +72,33 @@ pub const VENUE_WITHDRAWAL_MIN_SAMPLE: usize = crate::platform::COUNTERFACTUAL_S
 pub const VENUE_WITHDRAWAL_SHARE: f64 =
     crate::platform::COUNTERFACTUAL_SIZING_UNFAVOURABLE_FRACTION;
 
+/// How many distinct cells must corroborate a venue's cluster before
+/// edge-only evidence can withdraw it.
+///
+/// **Why this exists.** Before it did, one cell — compromised, buggy, or
+/// merely spoofed on a wire that authenticates nobody — could carry ten
+/// `DeltaRefusal`s naming one venue and withdraw that venue for the desk and
+/// every other cell, on evidence nobody corroborated. `attribute_refusals`
+/// checked the *gate* and the *venue* against configuration but never asked
+/// whether more than one cell agreed, so a single untrusted report cleared
+/// the same bar `assess` uses for the desk's own, trusted, single-source
+/// evidence. Two, so that a cluster attributed only to cells requires at
+/// least a second distinct cell to have made the same claim — not a
+/// majority of the fleet, which would let a busy region's own noise mask a
+/// genuine cluster in a quiet one, and not a fixed fraction of a fleet size
+/// this module has no way to know.
+///
+/// **Why the desk is exempt.** The desk has exactly one identity: it is the
+/// platform's own broker connection, not a population of independently
+/// operated processes, so "more than one desk" is not a stronger form of
+/// evidence — it is not a form of evidence at all. ADR 0062's "sole-venue
+/// consequence, chosen" already accepts that the desk's own feasibility
+/// refusals, alone, are enough to withdraw its only venue; that stays true
+/// here. This constant gates *edge-sourced* evidence only: [`assess`]
+/// requires either at least one desk refusal in the winning venue's cluster,
+/// or refusals from at least this many distinct cells.
+pub const VENUE_WITHDRAWAL_MIN_CELLS: usize = 2;
+
 /// Which plane refused.
 ///
 /// Carried so a withdrawal record can say whether the desk, the cells, or
@@ -88,6 +124,21 @@ pub struct FeasibilityRefusal {
     /// constants of the two feasibility modules.
     pub constraint: String,
     pub seam: FeasibilitySeam,
+    /// Which cell reported this refusal, for the edge seam; `None` for the
+    /// desk, which is not a cell and has exactly one identity throughout the
+    /// window.
+    ///
+    /// This is the key [`assess`] corroborates edge evidence on: the
+    /// cell→centre uplink authenticates nobody (`qip-api/src/mesh.rs`,
+    /// `qip-edge/src/mesh.rs`), so a report's `cell` field is whatever the
+    /// sender wrote, not a verified identity. Requiring more than one
+    /// distinct value here does not make that field trustworthy — it raises
+    /// the cost of the attack from "one report" to "reports naming several
+    /// distinct cells", which a single unauthenticated sender can still, in
+    /// principle, forge. It is not a substitute for authenticating the wire;
+    /// it is the cheapest structural check available until that wire is
+    /// authenticated, and ADR 0062 says so.
+    pub cell: Option<String>,
     pub at: Timestamp,
 }
 
@@ -146,6 +197,27 @@ pub fn assess(window: &[FeasibilityRefusal], withdrawn: &BTreeSet<String>) -> Op
     // usize → f64: a ratio of counts, in the statistics lane.
     let share = count as f64 / sample as f64;
     if share < VENUE_WITHDRAWAL_SHARE {
+        return None;
+    }
+    // Corroboration (the security fix this comment describes at
+    // `VENUE_WITHDRAWAL_MIN_CELLS`'s definition): the desk's own refusals
+    // are single-source evidence the platform already trusts, but an
+    // edge-only cluster must name at least that many distinct cells before
+    // it clears the bar, or one unauthenticated report withdraws a venue
+    // for everyone.
+    let mut desk_corroborates = false;
+    let mut distinct_cells: BTreeSet<&str> = BTreeSet::new();
+    for refusal in window.iter().filter(|refusal| refusal.venue == venue) {
+        match refusal.seam {
+            FeasibilitySeam::Desk => desk_corroborates = true,
+            FeasibilitySeam::Edge => {
+                if let Some(cell) = refusal.cell.as_deref() {
+                    distinct_cells.insert(cell);
+                }
+            }
+        }
+    }
+    if !desk_corroborates && distinct_cells.len() < VENUE_WITHDRAWAL_MIN_CELLS {
         return None;
     }
     let mut by_constraint: BTreeMap<&str, usize> = BTreeMap::new();
@@ -281,6 +353,7 @@ mod tests {
             venue: venue.to_string(),
             constraint: constraint.to_string(),
             seam,
+            cell: None,
             at: at(),
         }
     }
@@ -290,6 +363,27 @@ mod tests {
         (0..count)
             .map(|_| refusal(venue, "feasibility_lot", FeasibilitySeam::Desk))
             .collect()
+    }
+
+    /// One refusal at `venue`, under the lot gate, reported by `cell`.
+    fn edge_refusal(venue: &str, cell: &str) -> FeasibilityRefusal {
+        FeasibilityRefusal {
+            venue: venue.to_string(),
+            constraint: "feasibility_lot".to_string(),
+            seam: FeasibilitySeam::Edge,
+            cell: Some(cell.to_string()),
+            at: at(),
+        }
+    }
+
+    /// `count` refusals at `venue`, all under the lot gate, all reported by
+    /// the same single cell.
+    fn edge_refusals_from_one_cell(
+        venue: &str,
+        cell: &str,
+        count: usize,
+    ) -> Vec<FeasibilityRefusal> {
+        (0..count).map(|_| edge_refusal(venue, cell)).collect()
     }
 
     #[test]
@@ -338,6 +432,57 @@ mod tests {
                 "the desk refuses under {gate}, which the centre would not admit from a cell"
             );
         }
+    }
+
+    #[test]
+    fn ten_refusals_from_one_uncorroborated_cell_do_not_clear_the_bar() {
+        // The security defect this guards: before `VENUE_WITHDRAWAL_MIN_CELLS`
+        // existed, ten refusals naming one venue cleared both the sample and
+        // share bars regardless of how many distinct cells sent them, so a
+        // single compromised or spoofed cell — the mesh uplink authenticates
+        // nobody — could withdraw a venue for the whole platform alone. The
+        // premise is that the sample and share bars are otherwise met (ten
+        // of ten, a share of one, both comfortably above their bars), so a
+        // `None` here can only be the corroboration gate, not an
+        // unrelated failure of the arithmetic already proven above.
+        let window = edge_refusals_from_one_cell("simulated-venue", "cell-lon-1", 10);
+        assert_eq!(window.len(), 10, "the premise is ten");
+        assert!(
+            window
+                .iter()
+                .all(|refusal| refusal.venue == "simulated-venue"),
+            "the premise is a share of one"
+        );
+        assert_eq!(
+            assess(&window, &BTreeSet::new()),
+            None,
+            "a single cell's uncorroborated evidence withdrew a venue"
+        );
+    }
+
+    #[test]
+    fn ten_refusals_from_two_distinct_cells_do_clear_the_bar() {
+        // The admitting half of the same fix: corroboration is a bar, not a
+        // refusal of every edge-sourced cluster. Six refusals from one cell
+        // and four from a second, genuinely distinct, cell still meet the
+        // sample and share bars and now also meet
+        // `VENUE_WITHDRAWAL_MIN_CELLS`, so the venue is found exactly as it
+        // would have been before the fix — the corroboration requirement
+        // does not disable edge-sourced withdrawal, only single-cell
+        // withdrawal.
+        let mut window = edge_refusals_from_one_cell("simulated-venue", "cell-lon-1", 6);
+        window.extend(edge_refusals_from_one_cell(
+            "simulated-venue",
+            "cell-fra-1",
+            4,
+        ));
+        assert_eq!(window.len(), 10, "the premise is ten");
+        let found = assess(&window, &BTreeSet::new())
+            .expect("two distinct cells corroborating the same venue were not admitted");
+        assert_eq!(found.venue, "simulated-venue");
+        assert_eq!(found.sample, 10);
+        assert!((found.share - 1.0).abs() < f64::EPSILON);
+        assert_eq!(found.seams, vec![FeasibilitySeam::Edge]);
     }
 
     #[test]

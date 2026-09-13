@@ -1746,6 +1746,12 @@ impl CentralPlane {
     /// literals, so a cell that ships a venue nobody configured cannot mint
     /// a series, and a cluster that would have withdrawn it is charted
     /// under a name an operator can search for rather than acted on.
+    ///
+    /// An admitted refusal also carries `report.cell` — the reporting cell's
+    /// self-asserted identity on a wire that authenticates nobody, so not a
+    /// verified fact, but the only key `venue_review::assess` has to require
+    /// more than one cell before edge-only evidence withdraws a venue. See
+    /// `VENUE_WITHDRAWAL_MIN_CELLS`.
     fn attribute_refusals(
         &self,
         report: &CellReport,
@@ -1765,6 +1771,7 @@ impl CentralPlane {
                     venue: venue.clone(),
                     constraint: refusal.gate.clone(),
                     seam: FeasibilitySeam::Edge,
+                    cell: Some(report.cell.clone()),
                     at: report.at,
                 });
             } else {
