@@ -1144,12 +1144,29 @@ fn the_two_reinstatement_signatures_are_held_to_one_rationale_floor() -> Result<
 
     // The premise: the floor is real on the first signature, and it is ten
     // trimmed characters. Asserted against `Approval` itself rather than
-    // assumed, because `REINSTATEMENT_RATIONALE_FLOOR` is a constant mirroring
-    // a number the contracts crate does not export — a mirror that drifts
-    // would hold the two signers to different floors and nobody would know.
+    // assumed, because `COUNTERSIGNATURE_RATIONALE_FLOOR` is a constant
+    // mirroring a number the contracts crate does not export — a mirror that
+    // drifts would hold the two signers to different floors and nobody would
+    // know.
+    //
+    // **The two strings below are the whole of that proof, and until
+    // 2026-09-14 they were not.** This premise passed `"  fine  "` — four
+    // trimmed characters, described in its own message as nine — and the
+    // countersignature `"   x   "`, one. Both sit so far below either floor
+    // that the kernel's constant was free to move: a review dropped it from
+    // ten to five and all three tests that claim to hold it stayed green, so
+    // the second signer could have been held to half the first signer's bar
+    // with nothing catching it. Nine trimmed characters must be refused and
+    // exactly ten admitted at *both* signatures, which pins each floor from
+    // both sides and so pins them equal.
+    const BELOW_FLOOR: &str = "  lot fixed  ";
+    const AT_FLOOR: &str = "  grid fixed  ";
+    assert_eq!(BELOW_FLOOR.trim().len(), 9);
+    assert_eq!(AT_FLOOR.trim().len(), 10);
+
     let too_short = platform
-        .reinstate_venue("simulated-venue", &operator("alice", now), "  fine  ", now)
-        .expect_err("a nine-character rationale signed the first half");
+        .reinstate_venue("simulated-venue", &operator("alice", now), BELOW_FLOOR, now)
+        .expect_err("a rationale one character below the floor signed the first half");
     assert!(
         too_short
             .message()
@@ -1162,19 +1179,18 @@ fn the_two_reinstatement_signatures_are_held_to_one_rationale_floor() -> Result<
         "a refused first signature was journaled"
     );
 
-    let first = platform.reinstate_venue(
-        "simulated-venue",
-        &operator("alice", now),
-        "the venue's grid was corrected in the catalogue",
-        now,
-    )?;
+    // And admitted at exactly the floor, which pins `Approval::new`'s number
+    // from above: a contracts-side floor of eleven fails here rather than
+    // silently holding the first signer to a bar the second is not.
+    let first =
+        platform.reinstate_venue("simulated-venue", &operator("alice", now), AT_FLOOR, now)?;
     assert_eq!(first.outcome, "awaiting_countersignature");
 
     // The countersignature, one character short of the same floor. Trimmed,
     // so padding it with spaces does not buy a signer past the bar either.
     let thin = platform
-        .reinstate_venue("simulated-venue", &operator("bram", now), "   x   ", now)
-        .expect_err("a one-character countersignature reinstated a withdrawn venue");
+        .reinstate_venue("simulated-venue", &operator("bram", now), BELOW_FLOOR, now)
+        .expect_err("a countersignature below the floor reinstated a withdrawn venue");
     assert!(
         thin.message()
             .contains("must state a rationale somebody can review later"),
@@ -1209,15 +1225,15 @@ fn the_two_reinstatement_signatures_are_held_to_one_rationale_floor() -> Result<
     // The admitting half. Without it this test passes against a
     // `reinstate_venue` that refuses every countersignature, which is a floor
     // nobody can clear rather than a floor.
-    let second = platform.reinstate_venue(
-        "simulated-venue",
-        &operator("bram", now),
-        "confirmed against the venue's own specification",
-        now,
-    )?;
+    let second =
+        platform.reinstate_venue("simulated-venue", &operator("bram", now), AT_FLOOR, now)?;
     assert_eq!(second.outcome, "reinstated");
     assert_eq!(second.second_approver.as_deref(), Some("bram"));
-    assert!(second.rationale.trim().len() >= 10);
+    assert_eq!(
+        second.rationale.trim().len(),
+        AT_FLOOR.trim().len(),
+        "the record does not carry the second signer's own text"
+    );
     assert!(platform.withdrawn_venues().is_empty());
     Ok(())
 }

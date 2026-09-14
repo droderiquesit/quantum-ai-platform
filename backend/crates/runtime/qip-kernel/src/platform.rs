@@ -1038,10 +1038,20 @@ const PROMOTION_APPROVAL_WINDOW: Duration = Duration::from_hours(24);
 /// `Approval::countersigned_by` does not re-apply — it cannot, because it is
 /// never handed a rationale to check. Held equal to `Approval::new`'s own
 /// number by the three tests [`require_countersignature_rationale`] names,
-/// each of which asserts the first signature's refusal one character below
-/// this floor as its premise, rather than by this comment: a mirrored number
-/// that drifts is worse than no number, because the second signer would then
-/// be held to a floor the first is not and nobody would know which.
+/// rather than by this comment: a mirrored number that drifts is worse than
+/// no number, because the second signer would then be held to a floor the
+/// first is not and nobody would know which.
+///
+/// **This paragraph claimed that guarantee for two days before the tests
+/// delivered it.** It said each test "asserts the first signature's refusal
+/// one character below this floor as its premise", and every one of the three
+/// used `"  fine  "` — four trimmed characters — and `"   x   "` for the
+/// countersignature, one. A review changed this constant from ten to five and
+/// all three stayed green, so the second signer could have been held to half
+/// the first signer's bar with nothing in the suite catching it. Each test now
+/// refuses nine trimmed characters and admits exactly ten at *both*
+/// signatures, which pins each floor from both sides and so pins them equal;
+/// moving this constant in either direction fails all three.
 ///
 /// One floor for all three dual approvals, on purpose. A promotion rationale
 /// held to a different bar than a reinstatement rationale would need a reason
@@ -18928,9 +18938,31 @@ mod rule_review_tests {
         // constant mirrors a number `qip-contracts` does not export and a
         // mirror that drifts would hold the two signers to different floors
         // with nobody able to say which.
+        //
+        // **The two strings below are the whole of that proof, and until
+        // 2026-09-14 they were not.** This premise passed `"  fine  "` —
+        // four trimmed characters — and the countersignature `"   x   "`,
+        // one. Both are so far below either floor that the constant was free
+        // to move: a review dropped it from ten to five and all three tests
+        // that claim to hold it stayed green, so the second signer could
+        // have been held to half the first signer's bar with nothing
+        // catching it. [`BELOW_FLOOR`] is nine trimmed characters and
+        // [`AT_FLOOR`] is exactly ten, asserted refused and admitted at
+        // *both* signatures, which pins each floor from both sides and so
+        // pins them equal. Padded with spaces, so buying past the bar with
+        // whitespace fails here too.
+        const BELOW_FLOOR: &str = "  lot fixed  ";
+        const AT_FLOOR: &str = "  grid fixed  ";
+        // Nine and ten as literals, not as `COUNTERSIGNATURE_RATIONALE_FLOOR`
+        // arithmetic: a premise written against the constant moves with it,
+        // and would fire on the premise rather than on the behaviour the
+        // constant is supposed to produce.
+        assert_eq!(BELOW_FLOOR.trim().len(), 9);
+        assert_eq!(AT_FLOOR.trim().len(), 10);
+
         let short = platform
-            .approve_recalibration(RULE, &operator("ops-dana", start()), "  fine  ", start())
-            .expect_err("a nine-character rationale signed the first half");
+            .approve_recalibration(RULE, &operator("ops-dana", start()), BELOW_FLOOR, start())
+            .expect_err("a rationale one character below the floor signed the first half");
         assert!(
             short
                 .message()
@@ -18943,16 +18975,19 @@ mod rule_review_tests {
             "a refused first signature was held as pending anyway"
         );
 
+        // And admitted at exactly the floor, which is the half that pins
+        // `Approval::new`'s number from above: a contracts-side floor of
+        // eleven would fail here rather than silently hold the first signer
+        // to a bar the second is not.
         platform
-            .approve_recalibration(RULE, &operator("ops-dana", start()), WHY, start())
-            .expect("a first signature with a reviewable reason");
+            .approve_recalibration(RULE, &operator("ops-dana", start()), AT_FLOOR, start())
+            .expect("a first signature at exactly the floor");
 
-        // The countersignature, one character and then some below the same
-        // floor. Trimmed, so padding with spaces does not buy a signer past
-        // the bar either.
+        // The countersignature, one character below the same floor. Trimmed,
+        // so padding with spaces does not buy a signer past the bar either.
         let thin = platform
-            .approve_recalibration(RULE, &operator("ops-ravi", start()), "   x   ", start())
-            .expect_err("a one-character countersignature loosened a risk limit");
+            .approve_recalibration(RULE, &operator("ops-ravi", start()), BELOW_FLOOR, start())
+            .expect_err("a countersignature below the floor loosened a risk limit");
         assert!(
             thin.message().contains("must state a rationale"),
             "the countersignature was refused for some other reason: {}",
@@ -18992,9 +19027,11 @@ mod rule_review_tests {
         // The admitting half. Without it this test passes against an
         // `approve_recalibration` that refuses every countersignature, which
         // is a floor nobody can clear rather than a floor.
+        // At exactly the floor, so a constant raised by one fails here
+        // instead of passing on a rationale long enough to hide the change.
         let done = platform
-            .approve_recalibration(RULE, &operator("ops-ravi", start()), WHY, start())
-            .expect("a second, different signer with a reviewable reason enacts");
+            .approve_recalibration(RULE, &operator("ops-ravi", start()), AT_FLOOR, start())
+            .expect("a second, different signer at exactly the floor enacts");
         assert_eq!(done.outcome, PROPOSAL_ENACTED);
         assert_eq!(done.second_approver.as_deref(), Some("ops-ravi"));
         assert!(
