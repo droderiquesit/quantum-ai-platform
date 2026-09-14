@@ -1030,6 +1030,18 @@ const PROMOTION_CREDENTIAL_AGE: Duration = ELIGIBILITY_CREDENTIAL_AGE;
 /// attempt is refused, naming the age, and the pair start again.
 const PROMOTION_APPROVAL_WINDOW: Duration = Duration::from_hours(24);
 
+/// The shortest rationale a reinstatement signature may state, in trimmed
+/// characters.
+///
+/// Mirrors the floor `qip_contracts::governance::Approval::new` applies to the
+/// *first* signature, which is not exported as a constant and which
+/// `Approval::countersigned_by` does not re-apply. Held equal to it by
+/// `the_two_reinstatement_signatures_are_held_to_one_rationale_floor` rather
+/// than by this comment: a mirrored number that drifts is worse than no
+/// number, because the second signer would then be held to a floor the first
+/// is not and nobody would know which.
+const REINSTATEMENT_RATIONALE_FLOOR: usize = 10;
+
 /// The producer every venue-registration record in the event log carries,
 /// and the one [`Platform::replay_registrations`] selects on. Distinct from
 /// the eligibility and fabric producers on the topic the three share, so
@@ -4076,8 +4088,13 @@ impl Platform {
         // The cell's feasibility refusals, into the same window the desk's
         // land in, through the same recording site. What the plane could
         // not attribute is counted under its fallback labels and admitted
-        // to nothing: this is the second and last site that records
-        // `qip_feasibility_refusals_total`, and it never writes the window.
+        // to nothing: this is one of the sites that records
+        // `qip_feasibility_refusals_total` without writing the window, and
+        // the echo arm below is the other. This comment read "the second and
+        // last site" until 2026-09-14, when the echo arm had already made it
+        // a third — the invariant is not how many sites count the series, it
+        // is that `record_feasibility_refusal` is the only one that also puts
+        // a refusal in the window a venue is withdrawn on.
         for refusal in &ingestion.feasibility_refusals {
             self.record_feasibility_refusal(
                 &refusal.venue,
@@ -12631,9 +12648,21 @@ impl Platform {
     /// refusal arm in `capture_submission`, where the venue is the broker's
     /// name and the constraint the gate literal the refusal carries, and the
     /// cells' reports through [`Self::ingest_cell_report`], where both are
-    /// what the central plane admitted. The series has exactly one other
-    /// site — the unattributed arm in `ingest_cell_report`, which counts a
-    /// carried refusal under `unknown`/`other` and never touches the window.
+    /// what the central plane admitted.
+    ///
+    /// Other sites count the series and none of them touches the window, both
+    /// in [`Self::ingest_cell_report`]: the unattributed arm, which counts a
+    /// carried refusal under `unknown`/`other`, and the echo arm, which counts
+    /// a refusal the central plane attributed in full and still kept out of
+    /// the window because its gate is not withdrawal evidence
+    /// (`qip_contracts::feasibility::is_withdrawal_evidence`). Deliberately
+    /// stated without a count: this said "exactly one other site" until
+    /// 2026-09-14, by which time the echo arm had made it two, and how a
+    /// refusal is classified is live work. **This function is the only writer
+    /// of the window**, and that — not the number of places that count — is
+    /// the property to preserve. Enumerate the counting sites with
+    /// `grep -n 'names::FEASIBILITY_REFUSALS' backend/crates/runtime/qip-kernel/src/platform.rs`,
+    /// whose first hit is the `describe` registration and not a recording.
     /// Both label sets are bounded by configuration — a broker name, the
     /// configured and granted venue list, the gate constants of the two
     /// feasibility modules, and those two literals — and nothing an order
@@ -13066,8 +13095,28 @@ impl Platform {
     /// set. The order manager still walks every other gate for the next
     /// order there, and the whitelist carries only what the policy and the
     /// grant already permitted; a venue `QIP_VENUES`, the policy's venue map
-    /// and the grant's terms do not name is not made reachable by this. No
-    /// HTTP route exposes it yet — that is follow-on work ADR 0062 names.
+    /// and the grant's terms do not name is not made reachable by this.
+    ///
+    /// `POST /api/v1/venues/:venue/reinstatements` in `qip-api` is the one
+    /// caller outside tests. The route shipped in the same merge as this
+    /// method, and this paragraph said "no HTTP route exposes it yet" until
+    /// 2026-09-14, which would have told a reader the signing path was
+    /// unreachable while it was serving. Its request body carries the
+    /// rationale and nothing else: the venue is the path segment, and the
+    /// approver is the authenticated principal rather than anything the body
+    /// says, which is what makes the record an approval and not a claim to
+    /// have been approved. Locate the caller rather than trusting the line —
+    /// `grep -rn 'reinstate_venue(' backend/crates/apps` — because how an
+    /// operator identity reaches this method is live work.
+    ///
+    /// Both signatures are held to the same rationale floor. The first goes
+    /// through `Approval::new`, which refuses a rationale under ten trimmed
+    /// characters; the countersignature goes through
+    /// `Approval::countersigned_by`, which does not check one, so the floor is
+    /// applied here before it. Until 2026-09-14 it was not, and the second
+    /// signer — whose text is the one written to `entry.rationale`, and so
+    /// the whole of the justification on the record for putting a venue back
+    /// — could write `"x"` where the first was made to argue.
     pub fn reinstate_venue(
         &mut self,
         venue: &str,
@@ -13129,6 +13178,18 @@ impl Platform {
                         "{} has already signed {venue}'s reinstatement; a dual approval needs \
                          two people, and a second session is not a second person",
                         operator.subject()
+                    )));
+                }
+                // The same floor the first signature was held to, applied
+                // before the countersignature is taken rather than after, so
+                // a reinstatement is never journaled against a rationale the
+                // platform would have refused from the first signer. Refused
+                // and not trimmed-and-accepted: a rationale nobody can review
+                // is a caller bug, and clamping it would leave the record
+                // saying somebody argued when nobody did.
+                if rationale.trim().len() < REINSTATEMENT_RATIONALE_FLOOR {
+                    return Err(Error::invalid(format!(
+                        "the countersignature on {venue}'s reinstatement must state a rationale                          somebody can review later, of at least                          {REINSTATEMENT_RATIONALE_FLOOR} characters; the second signer's text is                          what the record carries as the justification for putting the venue back"
                     )));
                 }
                 let first_approver = first.approver.clone();
