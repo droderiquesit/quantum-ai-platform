@@ -28,6 +28,7 @@ pub mod intelligence;
 pub mod ladder;
 pub mod manifest;
 pub mod object;
+pub mod physical;
 pub mod quality;
 pub mod risk_profile;
 pub mod universe;
@@ -51,6 +52,10 @@ pub use ladder::{
 };
 pub use manifest::SourceManifest;
 pub use object::{FinancialObject, ObjectBuilder};
+pub use physical::{
+    Customs, LandedCost, Leg, LogisticsTerms, MarketplaceFees, PhysicalArbitrage, Returns,
+    Spoilage, TransportMode, delivered_price,
+};
 pub use quality::{DataQuality, LicensingClass, Provenance};
 pub use risk_profile::{FactorExposures, Greeks, RiskCharacteristics};
 pub use universe::{CatalogueOrigin, Universe};

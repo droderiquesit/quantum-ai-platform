@@ -5,7 +5,8 @@
 //! this crate decides what envelopes to issue, watches what the cells have
 //! collectively done with them, and takes capital back.
 //!
-//! Seven things live here.
+//! Eight of the modules in brief. [`ledger`] and [`compounding`] are
+//! documented at their own module heads rather than summarised twice.
 //!
 //! * [`allocation`] splits a risk budget across strategies and cells, subject
 //!   to per-strategy, per-cell, per-venue and total limits at once. Strategies
@@ -31,6 +32,13 @@
 //!   long the book would take to exit at a stated participation rate. A
 //!   position that takes three weeks to leave is a different animal from one
 //!   that takes an hour at the same notional.
+//! * [`collateral`] is the graph [`margin`]'s scalar cannot be: which asset
+//!   stands behind which obligation, at which venue, under which regime, and
+//!   what a forced close-out at one venue does to margin at another. It
+//!   refuses the arrangements that make a collateral balance larger than the
+//!   collateral — an asset pledged beyond its mark, a re-pledge cycle, a
+//!   cross-venue link into a venue that ring-fences — and it publishes the
+//!   reuse that is legitimate rather than netting it away.
 //! * [`reservation`] holds capital between the check and the trade. A
 //!   proposal that passes a capital check without holding the capital is one
 //!   half of a double-spend — the second proposal against the same free
@@ -103,6 +111,7 @@
 
 pub mod allocation;
 pub mod capacity;
+pub mod collateral;
 pub mod compounding;
 pub mod envelope;
 pub mod exposure;
@@ -116,6 +125,10 @@ pub use allocation::{
     StrategyProposal,
 };
 pub use capacity::{Capacity, CapacityBound, CapacityModel};
+pub use collateral::{
+    CascadeStep, CollateralAsset, CollateralGraph, CollateralReuse, CrossVenueLink, DomainCoverage,
+    LiquidationCascade, MarginDomain, MarginRegime, Pledge, Rehypothecation,
+};
 pub use compounding::{
     CapitalThreshold, CompoundingPolicy, FeeVolumeLedger, ReinvestmentDecision, ReinvestmentPlan,
     ThresholdLadder,
