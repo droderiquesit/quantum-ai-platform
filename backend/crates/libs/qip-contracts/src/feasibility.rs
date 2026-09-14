@@ -33,11 +33,18 @@ pub const GATE_FEE_FLOOR: &str = "feasibility_fee_floor";
 pub const GATE_GAS_FLOOR: &str = "feasibility_gas_floor";
 /// A policy-fed constraint refused (edge only).
 pub const GATE_CONSTRAINT: &str = "feasibility_constraint";
+/// The centre has withdrawn the venue this order is bound for (edge only).
+///
+/// Not a fact about the order's size, its grid or the book: a fact about the
+/// venue, shipped on policy slot 11 and refused against here so that a desk
+/// a cell installed *before* the withdrawal stops reaching the venue on its
+/// next pass rather than on its next process restart (ADR 0062).
+pub const GATE_WITHDRAWN_VENUE: &str = "feasibility_withdrawn_venue";
 
 /// Every gate a cell's feasibility module can refuse under — the set the
 /// centre admits a carried refusal by. A gate outside this array is not a
 /// feasibility refusal whatever its text says.
-pub const EDGE_GATES: [&str; 8] = [
+pub const EDGE_GATES: [&str; 9] = [
     GATE_MINIMUM_QUANTITY,
     GATE_MINIMUM_NOTIONAL,
     GATE_LOT,
@@ -46,7 +53,32 @@ pub const EDGE_GATES: [&str; 8] = [
     GATE_FEE_FLOOR,
     GATE_GAS_FLOOR,
     GATE_CONSTRAINT,
+    GATE_WITHDRAWN_VENUE,
 ];
+
+/// Whether a refusal under `gate` may enter the window a venue is withdrawn
+/// on, or is only the echo of a withdrawal already made.
+///
+/// **The control this keeps able to fire.** Every gate but one answers a
+/// question about an order at a venue, so a cluster of them is evidence the
+/// venue is the problem. [`GATE_WITHDRAWN_VENUE`] answers no question: it
+/// reports the platform's own earlier decision back to itself, once per
+/// intent per pass, for as long as an already-installed desk keeps offering
+/// cycles through the withdrawn venue. Admitted to a 256-entry rate window
+/// those echoes would evict every genuine refusal within a few passes and
+/// then hold the denominator every other venue's share is measured against,
+/// so no second venue could ever reach three in four and no second
+/// withdrawal could ever happen. That is the `MaxExpectedShortfall` failure
+/// this repository names as the template for what not to ship — a control
+/// that reads as protection and cannot fire — so the echo is counted on the
+/// series under its own venue and its own gate, and kept out of the window.
+///
+/// The desk seam has the same shape by a different route: a withdrawn venue
+/// refuses there under `RefusalReason::VenueUnavailable`, which is not a
+/// feasibility gate at all and so never reached the window either.
+pub fn is_withdrawal_evidence(gate: &str) -> bool {
+    gate != GATE_WITHDRAWN_VENUE
+}
 
 /// Every gate the desk's feasibility module can refuse under: the four the
 /// central path mirrors from the edge.
@@ -103,5 +135,35 @@ mod tests {
             DESK_GATES.len(),
             "the premise: this test must actually walk every declared gate"
         );
+    }
+
+    #[test]
+    fn the_withdrawn_venue_gate_is_vocabulary_the_centre_admits_but_never_evidence() {
+        // Two halves, and each guards a different failure. If the literal
+        // ever left `EDGE_GATES`, `CentralPlane::attribute_refusals` would
+        // file every withdrawal echo under the `other` constraint, which is
+        // the label that means "a cell used a gate name this build does not
+        // know" — a drift alarm firing on a gate this build declares. If
+        // `is_withdrawal_evidence` ever admitted it, the echoes would fill
+        // the 256-entry window and no second venue could reach the share
+        // bar again.
+        assert!(
+            EDGE_GATES.contains(&GATE_WITHDRAWN_VENUE),
+            "the premise: the centre must recognise the gate it is about to refuse as evidence"
+        );
+        assert!(
+            !is_withdrawal_evidence(GATE_WITHDRAWN_VENUE),
+            "a withdrawal's own echo was admitted to the window it would then dominate"
+        );
+        for gate in EDGE_GATES {
+            if gate == GATE_WITHDRAWN_VENUE {
+                continue;
+            }
+            assert!(
+                is_withdrawal_evidence(gate),
+                "{gate} asks a question about an order at a venue and was excluded from the \
+                 window anyway"
+            );
+        }
     }
 }

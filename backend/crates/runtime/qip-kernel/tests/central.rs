@@ -1462,6 +1462,17 @@ fn report_with_lot_refusal(venue: &str) -> CellReport {
     report_with_lot_refusal_from(CELL, venue)
 }
 
+/// A cell report carrying one refusal under the withdrawn-venue gate at
+/// `venue` — what a desk installed before a withdrawal reports on every pass
+/// afterwards, once `qip_edge::feasibility::assess` reads slot 11.
+fn report_with_withdrawn_venue_refusal(cell: &str, venue: &str) -> CellReport {
+    CellReport::new(cell, start()).with_refusals(vec![qip_mesh::delta::DeltaRefusal {
+        gate: qip_contracts::feasibility::GATE_WITHDRAWN_VENUE.to_string(),
+        reason: format!("{venue} is withdrawn on feasibility evidence"),
+        venue: Some(venue.to_string()),
+    }])
+}
+
 /// The same report, from a named cell rather than the fixed [`CELL`] —
 /// what a second, genuinely distinct cell corroborating the same venue looks
 /// like on the wire.
@@ -4601,6 +4612,179 @@ fn a_rung_that_needs_no_signature_refuses_one_rather_than_accepting_it() -> Resu
         refused.message().contains("takes no human approval"),
         "the refusal does not say why: {}",
         refused.message()
+    );
+    Ok(())
+}
+
+#[test]
+fn the_slot_the_centre_ships_carries_the_withdrawn_set_it_applies_and_states_no_grid() -> Result<()>
+{
+    // Policy slot 11 had no producer anywhere, which is why a venue withdrawn
+    // at the centre reached a cell only by being omitted from the next
+    // whitelist — and a cell that had already installed its desk took no new
+    // whitelist. What the producer ships is bounded two ways, and both are
+    // asserted here because either failing would be a different defect.
+    //
+    // First, it ships what the centre is *applying*: `withdrawn_venues` is
+    // written only after the `venue.withdrawn` record is in the log, and it
+    // is the same field `cycle_whitelist_for` retains against, so the set a
+    // cell refuses on and the set the whitelist omits on cannot disagree.
+    //
+    // Second, the three grid maps stay empty. `central::whitelist`'s register
+    // refuses them because the centre's grids are keyed by instrument and the
+    // slot is keyed by venue, and `qip_edge::feasibility::effective` takes a
+    // slot grid in *preference* to the cell's own — so a re-keyed grid would
+    // replace the right number rather than sit beside it. A producer that
+    // quietly began filling them would be signing a number nobody computed,
+    // and this is the assertion that fails when it does.
+    const OTHER_CELL: &str = "cell-fra-1";
+    let now = start();
+    let id = strategy();
+    let mut platform = platform_with_arbitrage(&[VENUE])?;
+    register(platform.central_mut(), &id, CELL)?;
+    walk_to(platform.central_mut(), &id, GateStage::Pilot)?;
+    issue(platform.central_mut(), &id, CELL, now)?;
+    assert!(
+        !platform.issue_cycle_whitelist(CELL, now)?.is_empty(),
+        "the premise failed: the grant emits no whitelist, so nothing is being withdrawn from"
+    );
+    let before = platform.feasibility_constraints();
+    assert!(
+        before.withdrawn_venues.is_empty(),
+        "the premise failed: something was already withdrawn: {:?}",
+        before.withdrawn_venues
+    );
+
+    for _ in 0..6 {
+        platform.ingest_cell_report(report_with_lot_refusal(VENUE), now)?;
+    }
+    for _ in 0..4 {
+        platform.ingest_cell_report(report_with_lot_refusal_from(OTHER_CELL, VENUE), now)?;
+    }
+    platform.run_cycle(now);
+    assert_eq!(
+        withdrawals(&platform)?.len(),
+        1,
+        "the premise failed: no withdrawal was journaled, so the slot has nothing to carry"
+    );
+
+    let shipped = platform.feasibility_constraints();
+    assert_eq!(
+        shipped.withdrawn_venues,
+        [VENUE.to_string()].into_iter().collect(),
+        "the slot does not carry the venue the platform withdrew"
+    );
+    assert_eq!(
+        shipped.withdrawn_venues,
+        platform.withdrawn_venues().clone(),
+        "the slot and the set the whitelist is retained against disagree"
+    );
+    assert!(
+        shipped.minimum_order.is_empty() && shipped.fee_floor.is_empty() && shipped.tick.is_empty(),
+        "the producer began stating a per-venue grid the centre does not hold: {shipped:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_refusal_a_withdrawal_itself_caused_is_counted_and_never_lands_in_the_window() -> Result<()> {
+    // The control this keeps able to fire, and the reason the shared
+    // vocabulary carries `is_withdrawal_evidence` rather than letting every
+    // `EDGE_GATES` member into the window.
+    //
+    // Once the cells refuse a withdrawn venue at pass time, a desk installed
+    // before the withdrawal reports one such refusal per intent per pass, for
+    // as long as it keeps offering cycles through that venue. Those are not
+    // observations about the venue: they are this platform's own decision
+    // arriving back at it. Admitted to a 256-entry rate window they evict
+    // every genuine refusal and then hold the denominator every other venue's
+    // share is measured against, so no second venue could ever reach three in
+    // four — a withdrawal control that reads as protection and cannot fire a
+    // second time, which is exactly the `MaxExpectedShortfall` shape this
+    // repository names as the template for what not to ship.
+    //
+    // Premise first, in the order the platform would really reach it: a
+    // genuine cluster withdraws XNYS, the cells then echo that withdrawal,
+    // and only then does a second, genuine cluster arrive at the other venue.
+    const OTHER_CELL: &str = "cell-fra-1";
+    const FIRST: &str = "XLON";
+    let now = start();
+    let mut platform = platform_with_arbitrage(&[VENUE, FIRST])?;
+
+    for _ in 0..6 {
+        platform.ingest_cell_report(report_with_lot_refusal(FIRST), now)?;
+    }
+    for _ in 0..4 {
+        platform.ingest_cell_report(report_with_lot_refusal_from(OTHER_CELL, FIRST), now)?;
+    }
+    platform.run_cycle(now);
+    assert_eq!(
+        platform.withdrawn_venues().iter().collect::<Vec<_>>(),
+        vec![FIRST],
+        "the premise failed: the first venue was not withdrawn, so there is no echo to make"
+    );
+    let window_after_first = platform.feasibility_refusals().len();
+    assert_eq!(
+        window_after_first, 10,
+        "the premise failed: the first cluster is not ten entries: {window_after_first}"
+    );
+
+    // The echo. Counted under its real venue and its real gate — an operator
+    // can see the withdrawal biting at the edge — and admitted to nothing.
+    for _ in 0..24 {
+        let ingestion =
+            platform.ingest_cell_report(report_with_withdrawn_venue_refusal(CELL, FIRST), now)?;
+        assert!(
+            ingestion.feasibility_refusals.is_empty(),
+            "a withdrawal's own echo was admitted to the window"
+        );
+        assert!(
+            ingestion.feasibility_refusals_unattributed.is_empty(),
+            "the echo was filed as unattributable, which is the label that means a cell used a \
+             gate name this build does not know: {:?}",
+            ingestion.feasibility_refusals_unattributed
+        );
+        assert_eq!(
+            ingestion.feasibility_refusals_echoed,
+            vec![(
+                FIRST.to_string(),
+                qip_contracts::feasibility::GATE_WITHDRAWN_VENUE.to_string()
+            )]
+        );
+    }
+    assert_eq!(
+        platform.feasibility_refusals().len(),
+        window_after_first,
+        "twenty-four echoes moved the window they were derived from"
+    );
+    assert_eq!(
+        feasibility_refusals_under(
+            &platform,
+            FIRST,
+            qip_contracts::feasibility::GATE_WITHDRAWN_VENUE
+        ),
+        24,
+        "the echo was kept out of the series as well as out of the window, so an operator \
+         cannot see the withdrawal taking effect at all"
+    );
+
+    // And now the half that matters: a second, genuine cluster at the other
+    // venue still clears the bar. Forty refusals against ten surviving
+    // entries is a share of four in five; with the twenty-four echoes in the
+    // window it would be forty of seventy-four, and nothing would withdraw.
+    for _ in 0..24 {
+        platform.ingest_cell_report(report_with_lot_refusal(VENUE), now)?;
+    }
+    for _ in 0..16 {
+        platform.ingest_cell_report(report_with_lot_refusal_from(OTHER_CELL, VENUE), now)?;
+    }
+    platform.run_cycle(now);
+    let withdrawn: Vec<&String> = platform.withdrawn_venues().iter().collect();
+    assert_eq!(
+        withdrawn,
+        vec![FIRST, VENUE],
+        "the second cluster did not withdraw its venue, so the first withdrawal had disabled \
+         the control"
     );
     Ok(())
 }

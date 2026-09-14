@@ -194,18 +194,145 @@ region's one cell is right" from "this region's one cell is compromised" on
 an unauthenticated wire, and the desk's parallel path (fact-checked against
 the platform's own broker) is exactly where that ambiguity does not exist.
 
-## The edge limit, stated
+## The edge limit, stated — **superseded 2026-09-14, closed as named**
 
-Omission from the whitelist is necessary and not sufficient for a desk a
-cell has already installed (fact 3). A withdrawal takes effect for any desk
-installed *after* it; a desk installed before keeps its graph, including the
-withdrawn venue's conversions, until the node restarts. The closure is named
-rather than pretended: produce policy slot 11 (`FeasibilityConstraints`) at
-the centre, carry a `withdrawn_venues` set on it, and refuse an intent
-bound for a withdrawn venue in `qip_edge::feasibility::assess` under a new
-`GATE_*` literal — at which point the withdrawal reaches an installed desk
-on its next pass rather than its next install. Until then §12.3's fourth
-row is `PARTIAL`, and `docs/DELIVERY-STATUS.md` says so in the same words.
+**This section is kept rather than struck.** It is the statement of a limit
+this record shipped with, and the amendment that follows is only legible
+beside it. Read the paragraph as history: the limit described below was real
+between this record's date and 2026-09-14, and the closure took exactly the
+shape the paragraph named, which is the useful part.
+
+> Omission from the whitelist is necessary and not sufficient for a desk a
+> cell has already installed (fact 3). A withdrawal takes effect for any desk
+> installed *after* it; a desk installed before keeps its graph, including the
+> withdrawn venue's conversions, until the node restarts. The closure is named
+> rather than pretended: produce policy slot 11 (`FeasibilityConstraints`) at
+> the centre, carry a `withdrawn_venues` set on it, and refuse an intent
+> bound for a withdrawn venue in `qip_edge::feasibility::assess` under a new
+> `GATE_*` literal — at which point the withdrawal reaches an installed desk
+> on its next pass rather than its next install. Until then §12.3's fourth
+> row is `PARTIAL`, and `docs/DELIVERY-STATUS.md` says so in the same words.
+
+### Amendment: the edge limit is closed
+
+Slot 11 has a producer. `CentralPlane::feasibility_constraints`, reached
+through `Platform::feasibility_constraints` and assigned at the shipping seam
+in `qip-api`'s `pending_policy`, ships `FeasibilityConstraints` on every
+payload to every cell, carrying `withdrawn_venues` and **three empty grid
+maps**. `qip_edge::feasibility::assess` refuses an intent whose venue is in
+that set under `qip_contracts::feasibility::GATE_WITHDRAWN_VENUE`
+(`feasibility_withdrawn_venue`), before every rule that asks a question about
+the order, because this one asks nothing about the order. A desk a cell
+installed before the withdrawal therefore stops reaching the venue on its
+**next pass**;
+`qip-edge/tests/arbitrage.rs::a_desk_installed_before_a_withdrawal_stops_trading_the_withdrawn_venue_on_its_next_pass`
+drives exactly that sequence — three legs placed, a second install refused,
+the withdrawal applied, no leg placed, and the desk's graph still holding its
+three edges afterwards, so what stopped the legs is the pass-time gate and not
+a teardown.
+
+Four things about the shape are decisions rather than details.
+
+- **The grids stay empty, and that is asserted rather than merely intended.**
+  `central::whitelist`'s register refuses them because the centre's grids are
+  keyed by instrument and the slot is keyed by venue, and
+  `qip_edge::feasibility::effective` takes a slot grid in *preference* to the
+  cell's own — so a re-keyed grid would not sit beside the right number, it
+  would replace it for every instrument at that venue. The register's
+  paragraph is amended in place, not deleted, for the same reason this
+  section is. `the_slot_the_centre_ships_carries_the_withdrawn_set_it_applies_and_states_no_grid`
+  fails if a producer ever begins filling one.
+- **What ships is what is applied.** The producer reads `withdrawn_venues`,
+  the one field `Platform::withdraw_venue` writes *after* the
+  `venue.withdrawn` record is in the log, and the same field
+  `cycle_whitelist_for` retains against. The set a cell refuses on and the set
+  the whitelist omits on cannot disagree, and a withdrawal the log does not
+  hold reaches neither. Nothing new is journaled here, because there is
+  nothing new: a second record of one fact is the second source of truth
+  ADR 0016 refuses.
+- **The slot is produced even when nothing is withdrawn.** An empty set is a
+  statement — the centre is applying no withdrawal — and a cell that could not
+  tell that from a centre that had stopped speaking would have to guess.
+  Producing it widens nothing: `PolicyItem::capability` maps slot 11 to no
+  §6.2 capability, so it moves no sizing multiplier and lifts no pause, unlike
+  the three slots `central::whitelist` refuses on precisely that ground.
+- **The new gate is vocabulary the centre admits and never evidence.**
+  `GATE_WITHDRAWN_VENUE` joins `EDGE_GATES`, so `attribute_refusals`
+  recognises it and a refusal under it is counted on
+  `qip_feasibility_refusals_total{venue,constraint}` under its real venue and
+  its real gate rather than under `other`, which is the label that means a
+  cell used a name this build does not know. But it is **kept out of the
+  window**, through `qip_contracts::feasibility::is_withdrawal_evidence` and
+  a third return vector on `CellIngestion`. This is not tidiness. A desk
+  installed before a withdrawal reports one such refusal per intent per pass
+  for as long as it keeps offering cycles through the venue; admitted to a
+  256-entry rate window those echoes evict every genuine refusal within a few
+  passes and then hold the denominator every other venue's share is measured
+  against, so no second venue could ever reach three in four and no second
+  withdrawal could ever happen. That is a control that reads as protection and
+  cannot fire — this repository's `MaxExpectedShortfall` template for what not
+  to ship — reached by closing the edge limit carelessly. The desk seam has
+  the same shape by a different route: a withdrawn venue refuses there under
+  `RefusalReason::VenueUnavailable`, which is not a feasibility gate and never
+  reached the window either. `a_refusal_a_withdrawal_itself_caused_is_counted_and_never_lands_in_the_window`
+  withdraws one venue, sends twenty-four echoes, and then proves a second,
+  genuine cluster still withdraws its venue.
+
+The "no-cascade denominator" section above is unchanged and still governs:
+a withdrawn venue's **genuine** later feasibility refusals stay in the window
+and in the denominator. Only the echo of the withdrawal itself is excluded,
+and the two are different facts — one is an observation about the venue, the
+other is this platform's own decision arriving back at it.
+
+### Why a withdrawn set on the wire is safe in the direction it travels
+
+The policy payload crosses the cell↔centre mesh, and **that wire
+authenticates nobody** — `qip-api/src/mesh.rs` and `qip-edge/src/mesh.rs` say
+so in their own module docs, and the security review recorded in
+"corroboration across cells" above found a single cell could force a
+platform-wide withdrawal before `b92f2aa` required a plurality of distinct
+cells. So the question has to be asked of every new field on that wire, and
+it is answered here rather than left for a reader to derive.
+
+`withdrawn_venues` travels *to* a cell and can only subtract. A forged,
+replayed or corrupted payload naming venues in it costs the cell the ability
+to trade somewhere it was configured to trade; it cannot make a venue
+reachable, because there is no field on the slot and no branch in
+`qip_edge::feasibility` by which a payload could add one. The direction
+matters and the asymmetry is the whole argument: the *evidence* direction
+(cell → centre, a refusal that could withdraw a venue for everyone) is the
+dangerous one and is what corroboration guards; the *decision* direction
+(centre → cell, a name to refuse) fails closed by construction.
+
+Three structural guards make adding impossible and all three still hold after
+this change, none of them touched by it:
+
+1. `qip-edge-node`'s `graph_from_whitelist` checks every conversion against
+   `QIP_VENUES`, the node's own configuration.
+2. `Cell::install_arbitrage` checks every graph edge against
+   `self.config.venues`, the cell's own configuration — asserted with a
+   payload applied by
+   `a_policy_payload_cannot_make_a_venue_this_cell_is_not_configured_for_reachable`,
+   which was mutation-verified against removing that check.
+3. `ArbitragePolicy::whitelist_for` only ever emits conversions the grant's
+   `envelope.permits_venue` admits.
+
+The residual is availability, not capital: a cell that has never received
+*any* payload naming the withdrawal keeps its graph, exactly as it keeps a
+whitelist it never received. That is ADR 0008's "cells decide alone" and it
+fails in the direction this platform chooses — a partitioned cell keeps
+working inside an envelope, and the centre's ability to reach it is what is
+missing, not a boundary.
+
+### What is still not built
+
+Reinstatement still has no `qip-api` route: the way back is two operator
+signatures through `Platform::reinstate_venue`, and no HTTP surface exposes
+it. That is unchanged by this amendment and remains follow-on work. It is
+about the way back rather than the withdrawal, so it does not hold R4 short;
+it does mean an operator cannot today undo a withdrawal without a process
+that calls the kernel directly, which is worth an operator knowing before the
+first cluster fires.
 
 ## The no-cascade denominator
 
@@ -227,7 +354,8 @@ reinstatement on the next pass.
 - One `Vec` on `WorkReport` at the cell, which crossed clippy's variant-size
   bar in `qip-edge-node`'s `PassOutcome`; the report is boxed there.
 - A new shared module, `qip_contracts::feasibility`, holding the eight gate
-  literals once. `qip_edge::feasibility` aliases them; the desk's
+  literals once — nine since the 2026-09-14 amendment, and the ninth is the
+  only one `is_withdrawal_evidence` excludes from the window. `qip_edge::feasibility` aliases them; the desk's
   `qip_execution_engine::feasibility` does not depend on `qip-contracts` and
   keeps its four declarations, pinned equal by a kernel unit test rather than
   by an internal dependency added for the purpose.
@@ -264,6 +392,19 @@ reinstatement on the next pass.
 - **The edge limit closing silently.** If slot 11 is produced without the
   `withdrawn_venues` set, an installed desk still keeps its graph and the
   status row must not move to `REACHED` on the slot's existence alone.
+  *(2026-09-14: closed with the set, and the two assertions that would catch
+  a regression to the hollow form are
+  `the_slot_the_centre_ships_carries_the_withdrawn_set_it_applies_and_states_no_grid`
+  at the centre and
+  `a_desk_installed_before_a_withdrawal_stops_trading_the_withdrawn_venue_on_its_next_pass`
+  at a cell. The second is the one that matters: a slot that exists and
+  changes no pass is the failure this bullet names.)*
+- **A tenth `EDGE_GATES` member that is also not evidence.** Today exactly one
+  gate is excluded from the window and `is_withdrawal_evidence` names it by
+  a single comparison. A second exclusion would mean the window's contents
+  are no longer "every feasibility refusal the centre could attribute", and
+  the bars in this record are calibrated on that meaning. Add one only with
+  an amendment here saying what the window now measures.
 - **Any code path that reads the withdrawn set to admit.** There is none;
   the day one appears, the "why evidence can never add a venue" section
   above is false and this record is void.
@@ -290,8 +431,14 @@ reinstatement on the next pass.
   Decide and retained permanently; `Topic::ALL` is 75.
 - Two central series, documented with grep commands in
   `.claude/rules/domains/observability.md` and `docs/ops/observability/README.md`.
-- Follow-on work: a `qip-api` route for reinstatement; slot 11 with a
-  withdrawn set, for the edge limit; and a structured `Infeasible { venue,
+- Follow-on work: a `qip-api` route for reinstatement; ~~slot 11 with a
+  withdrawn set, for the edge limit~~ **(done 2026-09-14 — see "the edge
+  limit, stated", amended in place)**; and a structured `Infeasible { venue,
   gate, detail }` refusal reason in place of the `Malformed` prefix, which
   this lane left alone because ADR 0061's lane was editing `RefusalReason`
   concurrently.
+- **Amended 2026-09-14.** §12.3's fourth row moves `PARTIAL → REACHED` on
+  the withdrawal mechanism: slot 11 is produced, the cells refuse a withdrawn
+  venue at pass time, and an installed desk no longer outlives a withdrawal.
+  `EDGE_GATES` is nine rather than eight, and the ninth is deliberately not
+  admitted to the window. `docs/DELIVERY-STATUS.md` carries the same words.

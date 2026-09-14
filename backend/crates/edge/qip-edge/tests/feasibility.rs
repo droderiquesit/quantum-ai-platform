@@ -32,7 +32,7 @@ use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
 use qip_strategy::ir::{Expr, Rule, StrategySpec};
 use qip_strategy::program::Program;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 const CELL: &str = "london-1";
@@ -422,6 +422,7 @@ fn policy_with_minimum(
             minimum_order,
             fee_floor: BTreeMap::new(),
             tick: BTreeMap::new(),
+            withdrawn_venues: BTreeSet::new(),
         },
         issued_at,
     );

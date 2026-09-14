@@ -19,7 +19,9 @@ use qip_arbitrage::{
 };
 use qip_contracts::capital::CapitalEnvelope;
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
-use qip_contracts::policy::{BeliefPriors, CausalDigest, EpisodicDigest, PolicyPayload, Slot};
+use qip_contracts::policy::{
+    BeliefPriors, CausalDigest, EpisodicDigest, FeasibilityConstraints, PolicyPayload, Slot,
+};
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
@@ -243,6 +245,48 @@ fn fresh_policy(issued_at: Timestamp) -> Result<VerifiedPolicy> {
         EpisodicDigest {
             digest: "d".to_string(),
             episodes: 0,
+        },
+        issued_at,
+    );
+    VerifiedPolicy::verify(payload.signed(POLICY_KEY)?, POLICY_KEY, CELL, issued_at)
+}
+
+/// A fresh policy whose slot 11 withdraws `withdrawn` and states no grid.
+///
+/// Empty grids on purpose: the centre ships none, for the reason
+/// `central::whitelist`'s register gives, so a fixture that shipped one would
+/// prove the gate against a payload the platform cannot produce.
+fn policy_withdrawing(
+    sequence: u64,
+    issued_at: Timestamp,
+    withdrawn: &[&str],
+) -> Result<VerifiedPolicy> {
+    let mut payload = PolicyPayload::unproduced(sequence, CELL, issued_at);
+    payload.belief_priors = Slot::produced(
+        BeliefPriors {
+            priors: BTreeMap::new(),
+        },
+        issued_at,
+    );
+    payload.causal_digest = Slot::produced(
+        CausalDigest {
+            active_edges: Vec::new(),
+        },
+        issued_at,
+    );
+    payload.episodic_digest = Slot::produced(
+        EpisodicDigest {
+            digest: "d".to_string(),
+            episodes: 0,
+        },
+        issued_at,
+    );
+    payload.feasibility_constraints = Slot::produced(
+        FeasibilityConstraints {
+            minimum_order: BTreeMap::new(),
+            fee_floor: BTreeMap::new(),
+            tick: BTreeMap::new(),
+            withdrawn_venues: withdrawn.iter().map(|v| (*v).to_string()).collect(),
         },
         issued_at,
     );
@@ -809,6 +853,170 @@ fn a_cycle_whose_legs_all_go_out_spends_the_region_allocation_and_does_not_get_i
     assert!(
         cell.region_allocation_free().expect("still allocated") <= after,
         "the sweep returned capital a sent cycle had already spent"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_desk_installed_before_a_withdrawal_stops_trading_the_withdrawn_venue_on_its_next_pass()
+-> Result<()> {
+    // The limit ADR 0062 stated in words and this closes in code, and it was
+    // real rather than hypothetical: a venue withdrawn at the centre was
+    // omitted from the next `CycleWhitelist`, which only ever reached a desk
+    // installed *after* the withdrawal. `install_arbitrage` refuses a second
+    // desk, nothing sets `self.desk` back to `None`, and `refresh` re-quotes
+    // the edges it already holds over a fixed `edge_count()` without adding
+    // or removing any — so a cell that had already installed its desk kept
+    // routing through the withdrawn venue until the node process restarted.
+    //
+    // Premise, asserted first and in three parts, because each is a way this
+    // test could pass while proving nothing: the same fixture really does
+    // send three legs before the withdrawal; the desk really is installed and
+    // really cannot be replaced; and the graph really does still hold its
+    // edges afterwards, so what stops the legs below is the pass-time gate
+    // and not a desk that was quietly torn down.
+    let (mut cell, metrics) = cell_with(ethereum_books()?, desk(ethereum_graph()?, 4)?, None)?;
+    let mut gateway = RecordingGateway::default();
+    let before = cell.work(t(10), &mut gateway)?;
+    assert_eq!(
+        before.orders.len(),
+        3,
+        "the premise failed: the cycle's legs did not go out before the withdrawal: {before:?}"
+    );
+    assert_eq!(gateway.placed.len(), 3, "the legs did not reach the venue");
+
+    let refusal = cell
+        .install_arbitrage(desk(ethereum_graph()?, 4)?)
+        .expect_err("the premise failed: a second desk was installable, so the limit is not this");
+    assert!(
+        refusal.message().contains("already holds"),
+        "the refusal does not say why: {}",
+        refusal.message()
+    );
+    let edges = cell
+        .arbitrage()
+        .map(|desk| desk.graph().edge_count())
+        .expect("the premise failed: no desk is installed");
+    assert_eq!(
+        edges, 3,
+        "the premise failed: the graph is not the triangle"
+    );
+
+    // The centre withdraws the venue. Nothing tears the desk down.
+    cell.apply_policy(policy_withdrawing(2, t(11), &[VENUE])?, t(11))?;
+    let mut after_gateway = RecordingGateway::default();
+    let after = cell.work(t(12), &mut after_gateway)?;
+
+    assert!(
+        after.orders.is_empty(),
+        "a desk installed before the withdrawal still sent legs to the withdrawn venue: {:?}",
+        after.orders
+    );
+    assert!(
+        after_gateway.placed.is_empty(),
+        "a leg reached a withdrawn venue: {:?}",
+        after_gateway.placed
+    );
+    assert_eq!(
+        cell.arbitrage().map(|desk| desk.graph().edge_count()),
+        Some(edges),
+        "the desk lost its graph, so this proves a teardown rather than a pass-time refusal"
+    );
+
+    let withdrawn = refusals_under(&after, "feasibility_withdrawn_venue");
+    assert_eq!(
+        withdrawn.len(),
+        1,
+        "the withdrawn-venue gate did not refuse the cycle's first leg exactly once: {:?}",
+        after.refusals
+    );
+    assert!(
+        withdrawn[0].contains(VENUE) && withdrawn[0].contains("countersign"),
+        "the refusal names neither the venue nor the way back: {}",
+        withdrawn[0]
+    );
+    assert_eq!(
+        refusals_under(&after, "arbitrage_cycle").len(),
+        1,
+        "the cycle was not vetoed whole: {:?}",
+        after.refusals
+    );
+    assert_eq!(
+        metrics.snapshot().counter(
+            names::EDGE_REFUSALS,
+            &labels([
+                ("cell", CELL),
+                ("region", REGION),
+                ("gate", "feasibility_withdrawn_venue")
+            ])
+        ),
+        1,
+        "the refusal did not reach the series under its own gate literal"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_policy_payload_cannot_make_a_venue_this_cell_is_not_configured_for_reachable() -> Result<()> {
+    // The other direction, and the one that would be a capital-boundary
+    // defect rather than an availability one. Slot 11 travels over a mesh
+    // that authenticates nobody, so the only safe shape for it is one that
+    // can subtract and cannot add — and the structural guard that makes
+    // adding impossible is `Cell::install_arbitrage` checking every edge
+    // against the cell's *own* configured venue list, not against anything
+    // the payload says. This asserts that guard still holds with a payload
+    // applied: a graph through XNYS is refused by a cell configured for CX
+    // whether or not a payload has ever mentioned XNYS.
+    let mut graph = ArbitrageGraph::new();
+    let elsewhere = VenueId::new("XNYS");
+    graph.register_venue(
+        elsewhere.clone(),
+        VenueFacts::new(VenueClass::Exchange, VenueStatus::Open),
+    );
+    graph.add_trade(
+        Node::new(object("USD"), elsewhere.clone()),
+        Node::new(object("ACME"), elsewhere.clone()),
+        Decimal::ONE,
+        Decimal::ZERO,
+        object("ACME"),
+        BookSide::Ask,
+        t(0),
+        0,
+    )?;
+    graph.add_trade(
+        Node::new(object("ACME"), elsewhere.clone()),
+        Node::new(object("USD"), elsewhere),
+        Decimal::ONE,
+        Decimal::ZERO,
+        object("ACME"),
+        BookSide::Bid,
+        t(0),
+        0,
+    )?;
+
+    let config = CellConfig::new(CELL, REGION).with_venue(venue());
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?;
+    // A payload naming XNYS in the only venue-bearing field slot 11 has. The
+    // premise: it really was applied, so a refusal below cannot be a payload
+    // the cell ignored.
+    cell.apply_policy(policy_withdrawing(1, t(5), &["XNYS"])?, t(5))?;
+    assert!(
+        cell.policy_sequence() == Some(1),
+        "the premise failed: the payload was not applied"
+    );
+
+    let refusal = cell
+        .install_arbitrage(desk(graph, 1)?)
+        .expect_err("a payload made a venue the cell is not configured for installable");
+    assert!(
+        refusal.message().contains("XNYS") && refusal.message().contains("may not trade"),
+        "the refusal is not the cell's own venue check: {}",
+        refusal.message()
+    );
+    assert!(
+        cell.arbitrage().is_none(),
+        "a desk through an unconfigured venue was installed anyway"
     );
     Ok(())
 }
