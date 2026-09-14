@@ -31,6 +31,7 @@
 //! capital demand forecaster, and the cost meter that charges every cycle for
 //! having been run. See [`platform`].
 
+pub mod adversary_review;
 pub mod central;
 pub mod config;
 pub mod cycle;
