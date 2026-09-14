@@ -340,6 +340,25 @@ impl StrategyFactory {
         self.candidates.values()
     }
 
+    /// The registered population grouped by the family each candidate was
+    /// registered under.
+    ///
+    /// Read-only and derived on every call rather than held: a second copy of
+    /// a fact `self.candidates` already carries would eventually disagree with
+    /// it, and the disagreement would surface as a family the review scored
+    /// and the ledger had never heard of.
+    ///
+    /// `BTreeMap` and not a hash map because the grouping reaches a journal
+    /// record through `crate::family_review`, and a replay that reorders is
+    /// not a replay.
+    pub fn families(&self) -> BTreeMap<&StrategyFamily, Vec<&StrategyCandidate>> {
+        let mut out: BTreeMap<&StrategyFamily, Vec<&StrategyCandidate>> = BTreeMap::new();
+        for candidate in self.candidates.values() {
+            out.entry(candidate.family()).or_default().push(candidate);
+        }
+        out
+    }
+
     pub fn ledger(&self) -> &LifecycleLedger {
         &self.ledger
     }

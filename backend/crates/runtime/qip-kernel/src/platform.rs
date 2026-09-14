@@ -40,6 +40,7 @@ use crate::central::{
 };
 use crate::config::PlatformConfig;
 use crate::cycle::{CycleReport, Stage, StageOutcome};
+use crate::family_review::{FamilyMember, FamilyStanding};
 use crate::rule_review::{
     PROPOSAL_ENACTED, PROPOSAL_WITHDRAWN, RecalibrationProposal, RegretEvidence, RuleActivity,
     RuleDefence, RuleDormant, RuleRegret, RuleReviewJournal, regret_by_rule,
@@ -133,6 +134,7 @@ use qip_learning_engine::self_model::{ComponentKey, SelfModel};
 use qip_lifecycle::corridor::{
     CorridorRoute, CorridorStanding as LifecycleCorridorStanding, CorridorSubject,
 };
+use qip_lifecycle::gates::HoldoutGate;
 use qip_lifecycle::trials::TrialBook;
 use qip_market::bar::{Bar, Interval};
 use qip_market::corporate_action::{CorporateAction, CorporateActionKind};
@@ -4297,6 +4299,47 @@ impl Platform {
             .factory()
             .candidate(strategy)
             .map(|candidate| candidate.family().to_string())
+    }
+
+    /// Where every registered strategy family stands against funding —
+    /// blueprint §12.3's fifth row, as far as the evidence honestly reaches
+    /// (ADR 0064).
+    ///
+    /// Read-only, and recomputed from the factory's population on every call
+    /// rather than cached, for the reason [`Self::sizing_cap_multiplier`]
+    /// gives: a standing held beside the population it was derived from is a
+    /// second claim about one fact, and the two will disagree the first time a
+    /// candidate is registered between a cycle and a scrape.
+    ///
+    /// Nothing in this platform reads the result to move a weight, a grant, a
+    /// budget or a bound, and there is no method on `Platform` that would —
+    /// `qip-acceptance`'s `security` suite scans for one. What this answers is
+    /// a question a person asks: which families are we paying for, and does
+    /// the evidence agree.
+    pub fn family_standings(&self) -> BTreeMap<String, FamilyStanding> {
+        let factory = self.central().factory();
+        let grouped = factory.families();
+        let members: Vec<FamilyMember<'_>> = grouped
+            .iter()
+            .flat_map(|(family, candidates)| {
+                candidates.iter().map(move |candidate| FamilyMember {
+                    family,
+                    strategy: candidate.strategy(),
+                    // The ledger's rung and not the evidence's: a candidate
+                    // carrying pilot evidence it was never promoted on holds
+                    // no capital, and counting it as funded would invent the
+                    // funded side of a comparison that has never had one.
+                    stage: factory.stage_of(candidate.strategy()),
+                    evidence: candidate.evidence(),
+                })
+            })
+            .collect();
+        // The same gate the promotion path applies:
+        // `qip_lifecycle::gates::gate_for(GateStage::Holdout)` constructs
+        // `HoldoutGate::default()` and nothing else, so the deflation the
+        // review reads is the deflation an admission was decided on rather
+        // than one computed beside it under a policy nobody configured.
+        crate::family_review::standings(&HoldoutGate::default(), &members)
     }
 
     /// Journal a funding refusal, count it, and return it as the error.
