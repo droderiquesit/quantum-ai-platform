@@ -268,14 +268,16 @@ Four things about the shape are decisions rather than details.
   Producing it widens nothing: `PolicyItem::capability` maps slot 11 to no
   §6.2 capability, so it moves no sizing multiplier and lifts no pause, unlike
   the three slots `central::whitelist` refuses on precisely that ground.
-- **The new gate is vocabulary the centre admits and never evidence.**
+- **The new gate is vocabulary the centre admits and never evidence** —
+  **first half stands; second half superseded 2026-09-14 by Amendment C.**
   `GATE_WITHDRAWN_VENUE` joins `EDGE_GATES`, so `attribute_refusals`
   recognises it and a refusal under it is counted on
   `qip_feasibility_refusals_total{venue,constraint}` under its real venue and
   its real gate rather than under `other`, which is the label that means a
-  cell used a name this build does not know. But it is **kept out of the
-  window**, through `qip_contracts::feasibility::is_withdrawal_evidence` and
-  a third return vector on `CellIngestion`. This is not tidiness. A desk
+  cell used a name this build does not know. But it was **kept out of the
+  window** — decided by the gate string alone, on a predicate over `gate`,
+  and carried on a third return vector on `CellIngestion`. This is not
+  tidiness. A desk
   installed before a withdrawal reports one such refusal per intent per pass
   for as long as it keeps offering cycles through the venue; admitted to a
   256-entry rate window those echoes evict every genuine refusal within a few
@@ -287,8 +289,25 @@ Four things about the shape are decisions rather than details.
   the same shape by a different route: a withdrawn venue refuses there under
   `RefusalReason::VenueUnavailable`, which is not a feasibility gate and never
   reached the window either. `a_refusal_a_withdrawal_itself_caused_is_counted_and_never_lands_in_the_window`
-  withdraws one venue, sends twenty-four echoes, and then proves a second,
+  withdrew one venue, sent twenty-four echoes, and then proved a second,
   genuine cluster still withdraws its venue.
+
+  *(2026-09-14, Amendment C. The reasoning above — that an echo admitted
+  whole evicts the window it came from and leaves a control that cannot fire
+  — is right, and it stands. What it got wrong is the remedy. Total exclusion
+  took the withdrawn venue out of the denominator its own runner-up is judged
+  against, which is the opposite cascade in the same arithmetic, and on an
+  edge-only fleet it took it out the instant the venue was withdrawn. An echo
+  the centre's own set confirms now takes one window seat per venue per
+  report and is weighed no higher than the genuine evidence that venue still
+  holds, so it can sustain a denominator and can never evict one. And whether
+  a refusal is an echo at all is no longer read off the gate string a cell
+  sent — `is_withdrawal_echo(gate, venue, withdrawn)` asks the centre, so a
+  cell citing a withdrawal the centre does not hold is ordinary evidence. The
+  test named just above was replaced rather than relaxed, because its claim
+  that an echo never reaches the window was the defect and not the guarantee;
+  its closing half is kept and made harder to satisfy. Amendment C names the
+  replacements.)*
 
 The "no-cascade denominator" section above is unchanged and still governs:
 a withdrawn venue's **genuine** later feasibility refusals stay in the window
@@ -371,8 +390,11 @@ section did not notice.
 - One `Vec` on `WorkReport` at the cell, which crossed clippy's variant-size
   bar in `qip-edge-node`'s `PassOutcome`; the report is boxed there.
 - A new shared module, `qip_contracts::feasibility`, holding the eight gate
-  literals once — nine since the 2026-09-14 amendment, and the ninth is the
-  only one `is_withdrawal_evidence` excludes from the window. `qip_edge::feasibility` aliases them; the desk's
+  literals once — nine since the 2026-09-14 amendment, and the ninth was the
+  only one excluded from the window outright. Amendment C ended that
+  exclusion: it is now the only one whose weight in the window the centre
+  decides rather than the cell, through `is_withdrawal_echo`.
+  `qip_edge::feasibility` aliases them; the desk's
   `qip_execution_engine::feasibility` does not depend on `qip-contracts` and
   keeps its four declarations, pinned equal by a kernel unit test rather than
   by an internal dependency added for the purpose.
@@ -416,12 +438,18 @@ section did not notice.
   `a_desk_installed_before_a_withdrawal_stops_trading_the_withdrawn_venue_on_its_next_pass`
   at a cell. The second is the one that matters: a slot that exists and
   changes no pass is the failure this bullet names.)*
-- **A tenth `EDGE_GATES` member that is also not evidence.** Today exactly one
-  gate is excluded from the window and `is_withdrawal_evidence` names it by
-  a single comparison. A second exclusion would mean the window's contents
-  are no longer "every feasibility refusal the centre could attribute", and
-  the bars in this record are calibrated on that meaning. Add one only with
-  an amendment here saying what the window now measures.
+- **A tenth `EDGE_GATES` member that the window weighs differently.** When
+  this bullet was written exactly one gate was excluded from the window, by a
+  single comparison on the gate string, and the tripwire was a second
+  exclusion. Amendment C ended the exclusion, so the tripwire has moved
+  rather than gone: the ninth gate now enters the window as a seat capped by
+  the venue's own surviving evidence when the centre's set confirms it, and
+  as ordinary evidence when it does not, which restores the window's contents
+  to "every feasibility refusal the centre could attribute" — the meaning the
+  bars in this record are calibrated on. A second gate weighed as anything
+  other than one refusal, whether excluded or capped, breaks that calibration
+  again. Add one only with an amendment here saying what the window now
+  measures.
 - **Any code path that reads the withdrawn set to admit.** There is none;
   the day one appears, the "why evidence can never add a venue" section
   above is false and this record is void.
