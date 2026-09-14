@@ -258,6 +258,147 @@ fn a_principal_below_the_required_role_is_refused_without_naming_its_own() {
     assert!(error.message().contains("operator"));
     assert!(!error.message().contains("viewer"));
 }
+// --- what a standing secret attests -----------------------------------------
+
+/// A phrase from the refusal, matched whole.
+///
+/// `contains("standing")` would also be true of half a dozen sentences on this
+/// surface, and `contains("authentication")` of most of them. This is the
+/// clause that names the *class* of credential, which is the finding.
+const NO_PRESENCE: &str = "a standing bearer token cannot carry it";
+
+#[test]
+fn an_authenticated_principal_carries_no_authentication_instant_whatever_the_clock_says() {
+    // The defect this prevents, and it shipped: `Principal` exposed
+    // `issued_at`, the seven signature-gated routes passed it to
+    // `OperatorIdentity::verified` as `authenticated_at`, and `qip-api`'s
+    // composition root set it once — `let now = clock.now()` at the top of
+    // `run` — for every credential it minted. So the fifteen-minute window on
+    // every one of those routes measured the *process's uptime*. A six-week-old
+    // copy of `QIP_TOKEN_OPERATOR` presented five minutes after a restart
+    // computed an age of five minutes and was admitted; the operator actually
+    // at the keyboard was refused from minute sixteen onwards and no amount of
+    // re-authenticating helped, because there is nothing to re-authenticate
+    // against.
+    //
+    // Both halves are asserted, because the dangerous half is the *admission*
+    // and a test that only checked the refusal at some late instant would have
+    // passed against the broken implementation.
+    let authenticator = Authenticator::new(credentials());
+    let principal = authenticator
+        .authenticate(Some("Bearer operator-token"), now())
+        .expect("the operator credential authenticates");
+
+    // Premise: this is a real, authenticated principal with the operator role,
+    // so what follows is about presence and not about a failed authentication.
+    assert_eq!(principal.subject, "operator@example.com");
+    assert!(principal.require(Role::Operator).is_ok());
+
+    assert!(
+        principal.presence().attested_at().is_none(),
+        "a standing secret reported an instant at which somebody was present"
+    );
+    let refusal = principal
+        .authentication_instant("clearing the kill switch")
+        .expect_err("a standing secret has no authentication instant to give");
+    assert!(
+        refusal.message().contains(NO_PRESENCE),
+        "the refusal does not name the credential class: {}",
+        refusal.message()
+    );
+    assert!(
+        refusal.message().contains("clearing the kill switch"),
+        "the refusal does not name the act it is refusing: {}",
+        refusal.message()
+    );
+    // A refusal names what to do instead, and here what to do instead is not
+    // something the caller can do — so it says so, and says what would be
+    // required of the platform.
+    assert!(
+        refusal
+            .message()
+            .contains("an interactive authentication step or a per-request proof of recency"),
+        "the refusal does not name what would be required instead: {}",
+        refusal.message()
+    );
+
+    // And the answer does not depend on the clock. This is the assertion that
+    // fails against the implementation that shipped: authenticating at the
+    // instant the credential record was minted used to yield an age of zero
+    // and an admitted call, and authenticating an hour later used to yield a
+    // refusal naming an age. One credential, two instants, one answer.
+    let later = authenticator
+        .authenticate(
+            Some("Bearer operator-token"),
+            now().saturating_add(Duration::from_secs(3600)),
+        )
+        .expect("the operator credential still authenticates an hour later");
+    assert_eq!(
+        later.presence().attested_at(),
+        principal.presence().attested_at(),
+        "an hour of uptime changed what the credential attests"
+    );
+    assert!(
+        !refusal.message().contains(" ago"),
+        "the refusal reports an age, so something is still dating this identity: {}",
+        refusal.message()
+    );
+}
+
+#[test]
+fn no_route_dates_an_operator_identity_from_a_value_the_principal_carries() {
+    // The regression guard for the defect above, at the seam a *new* route
+    // would reintroduce it. `qip-acceptance/tests/security.rs` already walks
+    // the first argument of every `OperatorIdentity::verified` call in
+    // `routes.rs` and holds it to `principal.subject.clone()`. Nothing held
+    // the third, and the third was the fabricated instant.
+    //
+    // The rule is that the instant must come from a binding produced by
+    // `Principal::authentication_instant`, which refuses. Passing
+    // `principal.issued_at` (the process's own minting instant) or `now` (an
+    // age of zero) are the two wrong answers this file has now seen shipped,
+    // one after the other.
+    let routes = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/routes.rs"),
+    )
+    .expect("routes.rs is readable");
+
+    let mut call_sites = 0usize;
+    for (index, window) in routes.lines().collect::<Vec<_>>().windows(4).enumerate() {
+        if !window[0].contains("OperatorIdentity::verified(") {
+            continue;
+        }
+        call_sites += 1;
+        assert_eq!(
+            window[3].trim(),
+            "authenticated_at,",
+            "routes.rs:{}: an operator identity is dated from something other than the instant \
+             `Principal::authentication_instant` returned. That is how the fifteen-minute \
+             window became a measurement of process uptime: {}",
+            index + 4,
+            window[3]
+        );
+    }
+    // Premise: the walk found the call sites at all. A parser that reads
+    // nothing asserts nothing, and this file has the whole route table to be
+    // wrong about.
+    assert!(
+        call_sites >= 5,
+        "only {call_sites} `OperatorIdentity::verified` call sites were found in routes.rs; the \
+         walk is not reaching the file it is written against"
+    );
+
+    // And the binding it insists on is produced by the refusing accessor,
+    // once per call site. Without this the assertion above would be satisfied
+    // by `let authenticated_at = now;`.
+    assert_eq!(
+        routes.matches("principal.authentication_instant(").count(),
+        call_sites,
+        "the number of identities built and the number of instants asked for disagree, so at \
+         least one route is dating an identity from somewhere else"
+    );
+}
+
 // --- the brute-force budget -------------------------------------------------
 //
 // These guard a defect that was real in this file, not a hypothetical one: the
@@ -933,7 +1074,25 @@ fn a_viewer_cannot_halt_the_platform() -> Result<()> {
 }
 
 #[test]
-fn an_operator_can_halt_and_clear_the_platform() -> Result<()> {
+fn an_operator_can_halt_the_platform_and_no_bearer_token_can_clear_it() -> Result<()> {
+    // This test was `an_operator_can_halt_and_clear_the_platform`, and the
+    // second half of that name is the change. Stopping and restarting are
+    // deliberately asymmetric here — the kill switch's own doc says tripping
+    // should be easy and clearing should not — and the asymmetry is now
+    // absolute in one direction.
+    //
+    // `KillSwitch::clear_global` requires an operator identity authenticated
+    // within fifteen minutes. The API's credential is a standing bearer token
+    // mounted from Secret Manager: it proves possession and attests nobody's
+    // presence. The route used to date the identity at the instant *this
+    // process* minted its record of that token, so the window measured the
+    // pod's uptime — a copy of the token of any age lifted a halt for the
+    // first fifteen minutes after a restart, and afterwards no token lifted
+    // one at all. Refusing is the fail-closed direction of a control whose
+    // safe state is "stopped". ADR 0065 records the cost: a halt is now lifted
+    // by restarting the process, which is a deployment action with its own
+    // audit trail, and the `KillSwitchClearance` record naming who lifted it
+    // is no longer obtainable through the API.
     let api = api()?;
     let halt = api.handle(&request(
         Method::Post,
@@ -951,10 +1110,26 @@ fn an_operator_can_halt_and_clear_the_platform() -> Result<()> {
         "/api/v1/kill-switch",
         Some("operator-token"),
     ));
-    assert_eq!(clear.status, 200);
+    assert_eq!(
+        clear.status,
+        403,
+        "{}",
+        String::from_utf8_lossy(&clear.body)
+    );
+    let refusal = String::from_utf8(clear.body).unwrap();
+    assert!(
+        refusal.contains("a standing bearer token cannot carry it"),
+        "the refusal is not the credential-class gate: {refusal}"
+    );
+    assert!(
+        refusal.contains("per-request proof of recency"),
+        "the refusal does not name what would be required instead: {refusal}"
+    );
 
+    // And the platform is still halted, which is the half that matters: a
+    // refusal that had cleared the switch anyway would be the worst of both.
     let body = String::from_utf8(get(&api, "/api/v1/health", Some("monitor-token")).body).unwrap();
-    assert!(body.contains("\"halted\":false"), "{body}");
+    assert!(body.contains("\"halted\":true"), "{body}");
     Ok(())
 }
 

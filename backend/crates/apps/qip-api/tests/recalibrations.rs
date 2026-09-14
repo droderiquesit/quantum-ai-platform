@@ -180,30 +180,49 @@ fn the_approver_of_a_recalibration_is_the_session_and_never_the_body() -> Result
 }
 
 #[test]
-fn no_recalibration_the_platform_did_not_propose_can_be_approved() -> Result<()> {
-    // A good body, a good operator, and a rule the platform has generated
-    // no proposal for: not found, because a proposal is generated from
-    // regret evidence and cannot be supplied by a caller. The distinction
-    // from a 400 matters — the request was well formed; the thing it names
-    // does not exist.
+fn a_recalibration_signature_is_refused_for_want_of_an_authentication_instant() -> Result<()> {
+    // This test was `no_recalibration_the_platform_did_not_propose_can_be_
+    // approved` and asserted the kernel's 404 for a rule with no standing
+    // proposal. That refusal is still the kernel's, and it is no longer what
+    // this route answers: the signature is refused before the kernel is asked,
+    // because the API cannot date an operator identity.
+    //
+    // Why it cannot, stated once here and argued in ADR 0065: the credential
+    // is `QIP_TOKEN_OPERATOR`, a standing value mounted from Secret Manager.
+    // Possession of it says nothing about when — or whether — a person
+    // authenticated, and the route used to supply the instant at which *this
+    // process* minted its record of the token. That made the kernel's
+    // fifteen-minute window measure the pod's uptime: a six-week-old copy of
+    // the token passed at 09:05 on a process started at 09:00, and the
+    // operator genuinely at the keyboard was refused from 09:15 for ever.
     let rig = rig()?;
+
+    // Premise: the operator credential authenticates and the role admits it,
+    // so the refusal below is this gate and not a 401 or the role check.
+    let (premise, _) = body_of(rig.call(Method::Get, LIST_PATH, OPERATOR_TOKEN, ""));
+    assert!(
+        premise.contains("history"),
+        "the operator credential does not authenticate, so the refusal proves nothing: {premise}"
+    );
+
     let response = rig.call(Method::Post, APPROVE_PATH, OPERATOR_TOKEN, GOOD_BODY);
     assert_eq!(
         response.status,
-        404,
+        403,
         "{}",
         String::from_utf8_lossy(&response.body)
     );
     let (text, body) = body_of(response);
     assert!(
-        body["error"]
-            .as_str()
-            .is_some_and(|error| error.contains("proposed no recalibration")
-                && error.contains("cannot be supplied")),
-        "the refusal does not say a proposal cannot be supplied: {text}"
+        body["error"].as_str().is_some_and(|error| error
+            .contains("a standing bearer token cannot carry it")
+            && error.contains("per-request proof of recency")),
+        "the refusal does not name the gate or what would satisfy it: {text}"
     );
 
-    // Nothing was journaled: the list still holds no history.
+    // Nothing was journaled: the list still holds no history. The refusal
+    // happens before the kernel, so a signature that left a record behind
+    // would mean the gate fired after the act rather than before it.
     let (_, view) = body_of(rig.call(Method::Get, LIST_PATH, VIEWER_TOKEN, ""));
     assert_eq!(view["history"].as_array().map(Vec::len), Some(0));
     assert_eq!(view["open"].as_array().map(Vec::len), Some(0));

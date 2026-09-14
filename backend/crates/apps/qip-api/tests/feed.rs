@@ -699,26 +699,42 @@ fn json_of(response: &Response) -> serde_json::Value {
 }
 
 #[test]
-fn an_approval_whose_credential_slot_resolves_reopens_the_connector_on_the_record_just_written()
+fn an_approval_reopens_no_connector_because_the_route_refuses_before_the_record_is_written()
 -> Result<()> {
-    // The failure this guards: the feed's admission gate ran once, at
-    // start-up, against the registry the deployment's configuration stood
-    // for. An operator who approved a registration through the API moved the
-    // registry and the event log and nothing else — the answer said the
-    // source stood registered, which was true, and was read as "and is now
-    // being read", which was not. Nothing anywhere said a restart was
-    // needed.
+    // These assertions replace two tests —
+    // `an_approval_whose_credential_slot_resolves_reopens_the_connector_on_the_
+    // record_just_written` and `an_approval_whose_credential_slot_is_absent_
+    // names_the_slot_and_leaves_the_connector_alone` — which between them drove
+    // both branches of the approval route's connector re-admission over HTTP.
+    //
+    // Neither is reachable any more, and the reason is worth stating rather
+    // than deleting. `POST /registrations/:source/approve` builds an
+    // `OperatorIdentity` and the kernel refuses one older than fifteen
+    // minutes. The instant the route had to offer was `principal.issued_at` —
+    // the moment *this process* minted its record of `QIP_TOKEN_OPERATOR`,
+    // which is a standing secret read once at start-up. So the window measured
+    // the pod's uptime: a token copied out of a laptop backup six weeks
+    // earlier was admitted for fifteen minutes after every restart, and the
+    // operator actually present was refused for ever after. There is no honest
+    // instant to put there, so the route refuses (ADR 0065).
+    //
+    // What is asserted here is the fail-closed direction that matters for this
+    // file: a refused approval re-opens nothing. A route that refused the
+    // record but re-admitted the connector would be worse than either of the
+    // behaviours it replaced — a process reading a vendor under a licensing
+    // decision no record stands for.
     let server = RateServer::serving(RATE_TABLE);
     let settings = ConnectorSettings {
         source_id: CONNECTOR_SOURCE.to_string(),
         base_url: server.url.clone(),
     };
-    let (directory, path) = credential_file("resolves");
+    let (directory, path) = credential_file("refused");
     let feed = ApiFeed::connector(&settings, 7, wall())?;
 
-    // Premise: this process senses that connector, the source really is the
-    // one the approval below names, and the server was reached opening it —
-    // so a later connection is a *re*-opening and not the first one.
+    // Premise: this process senses that connector, the source is the one the
+    // approval names, and a socket was opened at start-up — so "no further
+    // socket" below is a measurement and not an artefact of a feed that never
+    // connected at all.
     assert_eq!(
         feed.connector_source(),
         Some(CONNECTOR_SOURCE),
@@ -729,132 +745,61 @@ fn an_approval_whose_credential_slot_resolves_reopens_the_connector_on_the_recor
 
     let slot_file = format!("{CREDENTIAL_SLOT}{}", qip_core::secret::FILE_SUFFIX);
     let rig = rig_with_variables(Some(feed), vars(&[(&slot_file, &path)]))?;
-    // Premise: nobody has registered this source in this process, so the
-    // record the approval writes is the one the gate is re-run against.
+    // Premise: nobody has registered this source in this process, and the
+    // credential the record would name *is* resolvable here — so the refusal
+    // below is the operator gate and not a missing credential, which is the
+    // one confusion that would make this test prove the wrong thing.
     assert!(
         rig.with_platform(|platform| platform.registrations().record(CONNECTOR_SOURCE).is_none())?,
         "a registration record existed before the approval"
     );
 
     let response = rig.approve(CONNECTOR_SOURCE, &approval_body());
-    assert_eq!(response.status, 200, "{}", body(&response));
-    let approved = json_of(&response);
+    assert_eq!(response.status, 403, "{}", body(&response));
+    let refusal = json_of(&response);
+    let reason = refusal["error"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("a standing bearer token cannot carry it"),
+        "the refusal is not the operator gate: {}",
+        body(&response)
+    );
+    // And it names what would be required instead, which is the difference
+    // between a refusal and a wall.
+    assert!(
+        reason.contains("per-request proof of recency"),
+        "the refusal does not say what would satisfy it: {}",
+        body(&response)
+    );
+    // The refusal is the whole answer: a body that still carried a
+    // `connector` verdict would say the re-admission had been considered.
+    assert!(
+        refusal.get("connector").is_none(),
+        "a refused approval still reported a connector verdict: {}",
+        body(&response)
+    );
+
+    // No record was written.
+    assert!(
+        rig.with_platform(|platform| platform.registrations().record(CONNECTOR_SOURCE).is_none())?,
+        "a refused approval wrote a registration record"
+    );
+    // And no connector was re-opened: the socket count has not moved.
     assert_eq!(
-        approved["connector"]["admitted"],
-        serde_json::json!(true),
-        "the approval did not re-admit the connector: {}",
-        body(&response)
-    );
-    // The reason is the feed's own banner for the connector it now holds, so
-    // it carries the licensing decision the gate made a second time rather
-    // than a sentence this route composed about it.
-    assert!(
-        approved["connector"]["reason"]
-            .as_str()
-            .is_some_and(|reason| reason.contains("ecb-reference-rates-via-frankfurter")),
-        "the reason does not carry the licensing decision the gate made: {}",
-        body(&response)
-    );
-    // The witness that the connector was really re-opened rather than
-    // reported as re-opened: a socket the process did not have before.
-    assert!(
-        server.served() > opened,
-        "the re-admission opened no socket, so nothing was re-opened: {} then {}",
+        server.served(),
         opened,
-        server.served()
+        "a refused approval re-opened the connector anyway, so the process is reading a vendor \
+         under a licensing decision no record stands for"
     );
-    // The record stands, and the credential is nowhere in the answer.
-    assert!(rig.with_platform(|platform| {
-        platform
-            .registrations()
-            .record(CONNECTOR_SOURCE)
-            .is_some_and(|record| record.secret().variable() == CREDENTIAL_SLOT)
-    })?);
+    // Nothing about the credential file reached the answer, which was true of
+    // both tests this replaces and is not allowed to lapse because the answer
+    // is now a refusal.
     assert!(
         !body(&response).contains("not-a-key-this-file"),
         "the answer echoed what the credential file holds: {}",
         body(&response)
     );
 
-    // And the replaced feed is the one the cycle senses through: a cycle
-    // after the re-admission observes the rate table, which a feed left
-    // half-open would not.
-    let cycled = rig.cycle();
-    assert_eq!(cycled.status, 202, "{}", body(&cycled));
-    assert!(
-        body(&cycled).contains(r#""released":3,"observed":3,"rejected":0"#),
-        "the re-opened connector sensed nothing: {}",
-        body(&cycled)
-    );
-
     let _ = std::fs::remove_dir_all(&directory);
-    Ok(())
-}
-
-#[test]
-fn an_approval_whose_credential_slot_is_absent_names_the_slot_and_leaves_the_connector_alone()
--> Result<()> {
-    // The other half, and the one that decides whether the gate above is a
-    // gate: a process that cannot read the credential the record names must
-    // not re-open the connector, because the transport would then fail at
-    // the vendor with an error naming neither the variable nor the record —
-    // and the operator who had just approved would read it as the venue
-    // refusing them.
-    let server = RateServer::serving(RATE_TABLE);
-    let settings = ConnectorSettings {
-        source_id: CONNECTOR_SOURCE.to_string(),
-        base_url: server.url.clone(),
-    };
-    let feed = ApiFeed::connector(&settings, 7, wall())?;
-    assert_eq!(feed.connector_source(), Some(CONNECTOR_SOURCE));
-
-    // Nothing mounted: the map is the whole of what this process can resolve
-    // a slot against, and it is empty.
-    let rig = rig_with_variables(Some(feed), BTreeMap::new())?;
-    let opened = server.served();
-    assert!(opened >= 1, "the admitted source opened no socket");
-
-    let response = rig.approve(CONNECTOR_SOURCE, &approval_body());
-    // Premise: the approval itself succeeded and the record stands. Without
-    // this the refusal below could be the approval's rather than the
-    // connector's.
-    assert_eq!(response.status, 200, "{}", body(&response));
-    let approved = json_of(&response);
-    assert_eq!(
-        approved["source_id"],
-        serde_json::json!(CONNECTOR_SOURCE),
-        "{}",
-        body(&response)
-    );
-    assert!(
-        rig.with_platform(|platform| platform.registrations().record(CONNECTOR_SOURCE).is_some())?
-    );
-
-    assert_eq!(
-        approved["connector"]["admitted"],
-        serde_json::json!(false),
-        "a connector was re-opened on a credential this process cannot read: {}",
-        body(&response)
-    );
-    let reason = approved["connector"]["reason"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
-    // Both names, because an operator has to know which of the two to set.
-    assert!(
-        names_token(&reason, CREDENTIAL_SLOT)
-            && reason.contains(&format!(
-                "{CREDENTIAL_SLOT}{}",
-                qip_core::secret::FILE_SUFFIX
-            )),
-        "the refusal does not name the slot and its file variant: {reason}"
-    );
-    // Nothing was opened: the feed is the one the process started with.
-    assert_eq!(
-        server.served(),
-        opened,
-        "a refused re-admission still opened a socket, so the credential check ran after it"
-    );
     Ok(())
 }
 

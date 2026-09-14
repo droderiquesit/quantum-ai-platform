@@ -23,7 +23,7 @@ use qip_api::routes::{Api, ROUTES};
 use qip_contracts::governance::Usage;
 use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
-use qip_core::{Context, ManualClock, ObjectId, dec};
+use qip_core::{Clock, Context, ManualClock, ObjectId, dec};
 use qip_data_finder::admission::CatalogueEntry;
 use qip_data_finder::legal::{LicensingPosture, SourceLicense};
 use qip_data_finder::registration::{
@@ -191,6 +191,39 @@ impl Rig {
     fn standing(&self) -> Result<std::result::Result<RegistrationStanding, Error>> {
         self.with_platform(|platform| platform.registration_standing(ACCOUNT_SOURCE))
     }
+
+    /// Register the account source by calling the kernel directly.
+    ///
+    /// Not a shortcut around the route's gate — a *replacement for a route
+    /// that can no longer reach it*. `POST /registrations/:source/approve`
+    /// refuses every caller now, because a standing bearer token attests
+    /// nobody's presence and the kernel's fifteen-minute window is entitled to
+    /// an instant that means something (ADR 0065). The tests below whose
+    /// subject is what a *registered* source looks like — what a viewer may
+    /// read off one, what a connector does with one — still need one to exist,
+    /// and building it here says plainly that the state is arranged rather
+    /// than reached through the API. The operator identity is constructed with
+    /// an explicit instant, which is exactly the thing the composition root no
+    /// longer fabricates and a test legitimately may.
+    fn register_in_kernel(&self) -> Result<()> {
+        let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
+            OPERATOR_SUBJECT,
+            "test-fixture",
+            self.clock.now(),
+        );
+        let mut platform = self
+            .platform
+            .lock()
+            .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+        platform.approve_registration(
+            ACCOUNT_SOURCE,
+            &operator,
+            TERMS,
+            SecretRef::new(ACCOUNT_SLOT)?,
+            self.clock.now(),
+        )?;
+        Ok(())
+    }
 }
 
 fn body_of(response: Response) -> (String, serde_json::Value) {
@@ -216,12 +249,24 @@ fn good_body() -> String {
 // --- the approval -------------------------------------------------------------
 
 #[test]
-fn an_approval_by_an_operator_moves_a_pending_source_to_registered_and_the_journal_replays_it()
--> Result<()> {
+fn an_approval_is_refused_and_the_registry_the_log_replays_is_the_shipped_one() -> Result<()> {
+    // This test was
+    // `an_approval_by_an_operator_moves_a_pending_source_to_registered_and_the_
+    // journal_replays_it` and drove a working approval end to end. The old
+    // assertions were true of the fixture and false of the binary, which is
+    // the whole finding: the rig minted its credential at `start()` and
+    // approved at `start()`, so the kernel's fifteen-minute window computed an
+    // age of zero. In a deployment the same number was the process's uptime —
+    // `qip-api`'s composition root reads `QIP_TOKEN_OPERATOR` once at start-up
+    // and stamps the credential record with the boot instant — so a token
+    // copied out of a shell history six weeks earlier approved registrations
+    // for the first fifteen minutes after every restart, and the operator at
+    // the keyboard was refused from minute sixteen with no way back but a
+    // restart. ADR 0065.
     let rig = rig()?;
 
-    // Premise: the list says the account source is pending and names who
-    // must register, and the kernel agrees.
+    // Premise: the account source is pending and the kernel agrees, so the
+    // refusal below is this gate and not a source that was never approvable.
     let (_, before) = body_of(rig.list(VIEWER_TOKEN));
     let pending = row(&before, ACCOUNT_SOURCE);
     assert_eq!(pending["requirement"], "account");
@@ -230,36 +275,56 @@ fn an_approval_by_an_operator_moves_a_pending_source_to_registered_and_the_journ
         pending["standing"]["who_must_register"],
         rig.with_platform(|platform| platform.config().owner.clone())?
     );
-    assert!(
-        pending["standing"]["reason"]
-            .as_str()
-            .is_some_and(|reason| reason.contains(NOT_OFFERED)),
-        "{pending}"
-    );
     assert!(rig.standing()?.is_err());
+
+    // Premise two: the operator credential authenticates and the role admits
+    // it. Without this the 403 below could be the role check.
+    assert_eq!(rig.slots(OPERATOR_TOKEN).status, 200);
 
     let response = rig.approve(OPERATOR_TOKEN, &good_body());
     assert_eq!(
         response.status,
-        200,
+        403,
         "{}",
         String::from_utf8_lossy(&response.body)
     );
-    let (text, approved) = body_of(response);
-    assert_eq!(approved["posture"], POSTURE);
-    assert_eq!(approved["source_id"], ACCOUNT_SOURCE);
-    assert_eq!(approved["standing"]["standing"], "registered");
-    // The operator is the authenticated subject, not anything the body said
-    // — the body named nobody.
-    assert_eq!(approved["standing"]["operator"], OPERATOR_SUBJECT);
-    assert_eq!(approved["standing"]["secret"], ACCOUNT_SLOT);
-    assert_eq!(approved["standing"]["terms_read_at"], start().to_rfc3339());
-    // The body names the variable and nothing that could be a value: the
-    // only `secret` key in it is the slot name.
-    assert_eq!(text.matches("\"secret\"").count(), 1, "{text}");
+    let (text, body) = body_of(response);
+    assert!(
+        body["error"].as_str().is_some_and(|error| error
+            .contains("a standing bearer token cannot carry it")
+            && error.contains("per-request proof of recency")),
+        "the refusal does not name the gate or what would satisfy it: {text}"
+    );
+    // The refusal does not repeat the terms or the slot the caller sent: a
+    // route that screens a body must not echo it, and that rule does not
+    // relax because the refusal moved earlier.
+    assert!(
+        !text.contains(TERMS),
+        "the refusal echoed the terms: {text}"
+    );
+    assert!(
+        !text.contains(ACCOUNT_SLOT),
+        "the refusal echoed the slot: {text}"
+    );
 
-    // The kernel holds the record, the list now says registered, and the
-    // event log alone rebuilds the registry the platform is acting on.
+    // Nothing was journaled. The refusal is before the kernel, so the log
+    // replays the registry this process shipped with and not one a refused
+    // approval half-wrote.
+    assert!(rig.standing()?.is_err());
+    rig.with_platform(|platform| -> Result<()> {
+        assert!(platform.registrations().record(ACCOUNT_SOURCE).is_none());
+        assert_eq!(
+            &platform.replay_registrations()?,
+            &RegistrationRegistry::shipped()
+        );
+        Ok(())
+    })??;
+
+    // And the kernel itself still registers, given an identity that carries a
+    // real instant. Without this the assertions above would also pass against
+    // a kernel that had simply stopped accepting registrations, which is a
+    // different defect and a worse one.
+    rig.register_in_kernel()?;
     match rig
         .standing()?
         .map_err(|error| Error::invalid(error.message()))?
@@ -270,22 +335,6 @@ fn an_approval_by_an_operator_moves_a_pending_source_to_registered_and_the_journ
         }
         RegistrationStanding::Keyless => panic!("an account source stood as keyless"),
     }
-    let (_, after) = body_of(rig.list(VIEWER_TOKEN));
-    assert_eq!(
-        row(&after, ACCOUNT_SOURCE)["standing"]["operator"],
-        OPERATOR_SUBJECT
-    );
-    rig.with_platform(|platform| -> Result<()> {
-        let replayed = platform.replay_registrations()?;
-        assert_eq!(&replayed, platform.registrations());
-        assert_eq!(
-            replayed
-                .record(ACCOUNT_SOURCE)
-                .map(RegistrationRecord::operator),
-            Some(OPERATOR_SUBJECT)
-        );
-        Ok(())
-    })??;
     Ok(())
 }
 
@@ -582,9 +631,17 @@ fn the_viewer_list_carries_the_standing_and_never_a_slot_or_the_command_that_fil
     // The half that a fix to the row alone would have left open. The
     // registered standing carries the variable the *record* names, so before
     // this test a viewer saw no slot for a pending source and saw one the
-    // moment an operator approved it. Approve, then read the viewer's list
+    // moment an operator approved it. Register, then read the viewer's list
     // again.
-    assert_eq!(rig.approve(OPERATOR_TOKEN, &good_body()).status, 200);
+    //
+    // Registered through the kernel rather than through `POST
+    // /registrations/:source/approve`, which now refuses every caller: a
+    // standing bearer token carries no authentication instant and the
+    // kernel's fifteen-minute window will not be handed a fabricated one (ADR
+    // 0065). What is under test here is what a viewer may read off a
+    // *registered* source, and that question survives the route's refusal
+    // intact.
+    rig.register_in_kernel()?;
     let (after_text, after) = body_of(rig.list(VIEWER_TOKEN));
     let registered = row(&after, ACCOUNT_SOURCE);
     assert_eq!(registered["standing"]["standing"], "registered");
@@ -679,69 +736,79 @@ fn the_feed_refuses_an_account_source_nobody_registered_and_admits_it_on_the_own
     Ok(())
 }
 
-/// A session older than the kernel's credential window cannot approve.
+/// No amount of elapsed time turns a standing secret into an authentication.
 ///
-/// This is the gate that could not fire. The route built its
-/// `OperatorIdentity` with `authenticated_at = now`, so
-/// `is_fresh(now, REGISTRATION_CREDENTIAL_AGE)` measured the age of the
-/// identity it had just stamped and got zero every time. Fifteen minutes was
-/// enforced by a comparison whose two sides were the same value. Nothing
-/// caught it because every test approved at the instant the rig issued the
-/// token, where a correct implementation and a broken one agree.
+/// This test replaces `a_session_older_than_the_credential_window_cannot_
+/// approve_a_registration`, and the replacement is the more interesting half
+/// of the same story.
 ///
-/// So this test asserts both halves, which is what distinguishes a working
-/// gate from one that refuses everything: the same operator, the same body
-/// and the same source are refused once the session has aged past the window
-/// and accepted while it is inside it.
+/// The original guarded a real fix. The route had built its `OperatorIdentity`
+/// with `authenticated_at = now`, so `is_fresh(now, REGISTRATION_CREDENTIAL_
+/// AGE)` compared a value against itself and the fifteen minutes were enforced
+/// by nothing. The fix passed `principal.issued_at` instead, and this test
+/// proved both halves of the resulting gate: refused past the window, admitted
+/// inside it.
+///
+/// Both halves were true of the rig and neither was true of the binary.
+/// `principal.issued_at` is the instant *this process* minted its record of a
+/// standing secret — `qip-api`'s composition root reads `QIP_TOKEN_OPERATOR`
+/// once at start-up and stamps every credential with the boot instant — so the
+/// window measured the pod's uptime. The rig advanced its own clock and saw a
+/// window; a deployment advanced nothing and saw fifteen minutes of uptime.
+/// The "admitted inside it" half was the dangerous one: a six-week-old copy of
+/// the token, presented five minutes after a restart, computed an age of five
+/// minutes and was admitted.
+///
+/// So the property now is the opposite of a window: **elapsed time changes
+/// nothing**, because the credential class attests nobody and no clock can
+/// make it attest somebody. A regression that reinstated any fabricated
+/// instant would be caught by the first row below, at zero elapsed, where the
+/// old implementation answered 200.
 #[test]
-fn a_session_older_than_the_credential_window_cannot_approve_a_registration() -> Result<()> {
-    let aged = rig()?;
-    // Premise: the source really is pending, so a refusal below is the
-    // freshness gate rather than a source that was never approvable.
-    assert!(
-        aged.standing()?.is_err(),
-        "the source is not pending before the approval, so this test would pass whatever the \
-         gate did"
-    );
+fn no_amount_of_process_uptime_turns_a_standing_secret_into_an_authentication() -> Result<()> {
+    for elapsed in [
+        Duration::from_secs(0),
+        Duration::from_secs(60),
+        Duration::from_secs(15 * 60 + 1),
+        // Twenty-nine days, not more: the credential's own expiry is thirty
+        // and is a *different* clock that does work. A row past it would
+        // answer 401 for the right reason and prove nothing about this gate.
+        Duration::from_days(29),
+    ] {
+        let rig = rig()?;
+        // Premise: the source really is pending, so a refusal is this gate
+        // rather than a source that was never approvable.
+        assert!(
+            rig.standing()?.is_err(),
+            "the source is not pending, so this row would pass whatever the gate did"
+        );
+        rig.clock.advance(elapsed);
 
-    // One second past the window. The credential itself is good for thirty
-    // days, so what expires here is the operator's *authentication*, not the
-    // token — the two are different clocks and only one of them is the gate.
-    aged.clock.advance(Duration::from_secs(15 * 60 + 1));
-    let stale = aged.approve(OPERATOR_TOKEN, &good_body());
-    let stale_text = String::from_utf8_lossy(&stale.body).to_string();
-    assert_ne!(
-        stale.status, 200,
-        "a session {} past the fifteen-minute window approved a registration: {stale_text}",
-        "one second"
-    );
-    // The refusal says what to do instead, and the registry did not move.
-    // A refusal names what to do instead. Matched on the delimited window
-    // the kernel prints rather than on "15", which is a substring of far too
-    // much, and on the remedy rather than on the complaint.
-    assert!(
-        stale_text.contains("900.000s ago"),
-        "the refusal does not name the window the operator has fallen outside: {stale_text}"
-    );
-    assert!(
-        stale_text.contains("re-authenticate"),
-        "the refusal does not say what to do instead: {stale_text}"
-    );
-    assert!(
-        aged.standing()?.is_err(),
-        "the registry adopted a record from a session the gate refused: {stale_text}"
-    );
+        let response = rig.approve(OPERATOR_TOKEN, &good_body());
+        let text = String::from_utf8_lossy(&response.body).to_string();
+        assert_eq!(
+            response.status, 403,
+            "at {elapsed:?} of uptime the route answered something other than this gate: {text}"
+        );
+        assert!(
+            text.contains("a standing bearer token cannot carry it"),
+            "at {elapsed:?} the refusal is not this gate: {text}"
+        );
+        assert!(
+            rig.standing()?.is_err(),
+            "at {elapsed:?} the registry adopted a record the gate refused: {text}"
+        );
 
-    // And the other half: a fresh session is still admitted. A gate that
-    // refused every approval would pass every assertion above.
-    let inside_the_window = rig()?;
-    let accepted = inside_the_window.approve(OPERATOR_TOKEN, &good_body());
-    assert_eq!(
-        accepted.status,
-        200,
-        "a session inside the window was refused, so the gate refuses everything rather than \
-         refusing stale credentials: {}",
-        String::from_utf8_lossy(&accepted.body)
-    );
+        // The other half, and the one that distinguishes this gate from a
+        // credential that has simply stopped working: the same token, at the
+        // same instant, still reads the operator's own list. A test that only
+        // asserted refusals would pass against an API that refused everything.
+        assert_eq!(
+            rig.slots(OPERATOR_TOKEN).status,
+            200,
+            "at {elapsed:?} the operator credential no longer authenticates at all, so the \
+             refusal above is not about presence"
+        );
+    }
     Ok(())
 }
