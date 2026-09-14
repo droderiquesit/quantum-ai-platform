@@ -36,6 +36,7 @@ pub mod adversary_review;
 pub mod causal_review;
 pub mod central;
 pub mod config;
+pub mod cross_margin;
 pub mod cycle;
 pub mod fabric_declaration;
 pub mod family_review;
