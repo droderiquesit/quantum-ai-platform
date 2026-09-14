@@ -16,13 +16,24 @@
 //! See ADR-0054 for why Granger-style lead-lag was chosen over the other five
 //! methods §9.2 names, and for what remains open (natural experiments,
 //! instrumental variables, structural constraints, the platform's own order
-//! flow, and hypothesis-plus-falsification; confounder adjustment for this
-//! method too).
+//! flow, and hypothesis-plus-falsification).
+//!
+//! **Confounder adjustment is no longer among them.** ADR-0054 listed it as
+//! open and it was: this module ran an uncontrolled test, which §9.2 does not
+//! actually name — the blueprint's method is "Granger-style lead-lag *with
+//! controls*". [`establish_temporal_precedence_controlling_for`] is that
+//! method, and [`establish_temporal_precedence`] is now a thin call to it
+//! with an empty [`crate::confounder::ConfounderSet`]. The uncontrolled form
+//! is kept because a pair with no plausible common driver is a real case,
+//! and removed as the default because a scan of one book under a shared
+//! driver manufactures an edge between nearly every pair that driver
+//! touches. See [`crate::confounder`].
 
 use qip_core::{Duration, Error, Result, Timestamp};
-use qip_numerics::stats::granger_causality;
+use qip_numerics::stats::granger_causality_controlling_for;
 
 use crate::causal::{CausalEdge, Mechanism};
+use crate::confounder::ConfounderSet;
 
 /// The lag tested, in bars of the effect series' own cadence. Fixed at one
 /// rather than swept over several — see
@@ -66,10 +77,45 @@ pub const TEMPORAL_PRECEDENCE_MIN_EFFECT: f64 = 0.02;
 ///
 /// `seed_demo_world`'s mechanism-backed, evidence-cited claims default to
 /// `0.7` ([`CausalEdge::new`]). This method may never reach that: it
-/// establishes precedence, not a mechanism, and §9.4's "confounders are
-/// often unobserved" limit applies to every edge it can produce without
-/// exception, because nothing here adjusts for one.
+/// establishes precedence, not a mechanism, and no amount of adjustment
+/// turns a lead-lag relationship into a channel anybody can name.
+///
+/// This applies to an edge produced under a set of observed controls with
+/// nothing recorded as unobserved. Where a plausible unobserved confounder
+/// *is* recorded, [`TEMPORAL_PRECEDENCE_SUGGESTIVE_CEILING`] applies
+/// instead.
 pub const TEMPORAL_PRECEDENCE_CONFIDENCE_CEILING: f64 = 0.5;
+
+/// The confidence ceiling for an edge against which a plausible *unobserved*
+/// confounder is recorded — blueprint §9.4's "suggestive rather than
+/// established".
+///
+/// **This number was not estimated from anything, and saying so is the
+/// point.** Nothing in this platform measures how much an unnamed common
+/// cause should cost a claim; a figure presented here as though it had been
+/// inferred would be a fabricated measurement wearing a constant's clothes.
+/// What is asserted, and what does not need measuring, is the *ordering*: an
+/// edge carrying a confounder nobody could adjust for must never rank above
+/// an edge produced by the same statistics with that confounder removed.
+/// Half the adjusted ceiling is one point satisfying that ordering, and
+/// a `const` assertion below holds `SUGGESTIVE < CONFIDENCE` at compile time,
+/// and no test asserts either value, so that changing the point does not
+/// quietly become changing the claim.
+pub const TEMPORAL_PRECEDENCE_SUGGESTIVE_CEILING: f64 =
+    TEMPORAL_PRECEDENCE_CONFIDENCE_CEILING / 2.0;
+
+/// The ordering above, enforced by the compiler rather than by a test.
+///
+/// A guarantee the type system holds beats one a runtime check holds, which
+/// beats one a comment asserts. The *ordering* is the claim this module
+/// makes — an edge carrying an unadjustable confounder never outranks the
+/// same statistics without it — and someone editing either constant to a
+/// value that broke it would otherwise find out from a test run, or not at
+/// all if they edited both. This fails the build.
+const _: () = assert!(
+    TEMPORAL_PRECEDENCE_SUGGESTIVE_CEILING < TEMPORAL_PRECEDENCE_CONFIDENCE_CEILING,
+    "a suggestive edge must never be capable of outranking an adjusted one"
+);
 
 /// Establish a causal edge between `cause_id` and `effect_id` from their
 /// return histories alone, or refuse.
@@ -89,8 +135,8 @@ pub const TEMPORAL_PRECEDENCE_CONFIDENCE_CEILING: f64 = 0.5;
 ///   deliberate: a caller scanning many pairs every cycle must not treat
 ///   "this pair had nothing to say" as a fault.
 /// * `Err` — a caller bug: `cause_id == effect_id`, or a malformed series
-///   ([`granger_causality`]'s own refusals: mismatched lengths, a
-///   non-finite value).
+///   ([`qip_numerics::stats::granger_causality_controlling_for`]'s own refusals:
+///   mismatched lengths, a non-finite value).
 ///
 /// # `bar_interval` is the caller's fact, not this function's assumption
 ///
@@ -110,6 +156,66 @@ pub fn establish_temporal_precedence(
     bar_interval: Duration,
     recorded_at: Timestamp,
 ) -> Result<Option<CausalEdge>> {
+    establish_temporal_precedence_controlling_for(
+        cause_id,
+        cause_returns,
+        effect_id,
+        effect_returns,
+        &ConfounderSet::new(),
+        bar_interval,
+        recorded_at,
+    )
+}
+
+/// [`establish_temporal_precedence`] with blueprint §9.2's own qualifier
+/// attached: "temporal precedence with confounders **explicitly adjusted**".
+///
+/// # What `confounders` changes
+///
+/// Every [`crate::confounder::Confounder::observed`] in the set contributes its lags to both
+/// the restricted and unrestricted regressions
+/// ([`qip_numerics::stats::granger_causality_controlling_for`]), so the
+/// F-test measures the cause's lagged information about the effect's future
+/// *beyond* what those drivers already carry. An uncontrolled scan over one
+/// book reproduces any shared driver as an edge between very many of the
+/// pairs it touches; each is significant, each is spurious, and they fail
+/// together when the regime turns — which is the failure §9 was written to
+/// answer, so running this method without controls does not merely weaken it.
+///
+/// Every [`crate::confounder::Confounder::unobserved`] in the set adjusts for nothing and is
+/// carried onto the edge's `suspected_confounders`, making it
+/// [`crate::causal::EdgeStanding::Suggestive`] — §9.4's "recorded as such,
+/// and the edge is treated as suggestive rather than established".
+///
+/// # The confidence ceiling is a chosen ordering, not an estimate
+///
+/// A suggestive edge is capped at
+/// [`TEMPORAL_PRECEDENCE_SUGGESTIVE_CEILING`] and an adjusted one at
+/// [`TEMPORAL_PRECEDENCE_CONFIDENCE_CEILING`]. **Neither number was
+/// estimated from anything.** No procedure here measures how much an
+/// unobserved confounder should cost a claim, and presenting one of these as
+/// if it had been inferred would be the dishonest half of the same act. What
+/// they encode is an *ordering* the platform is entitled to assert without
+/// measuring anything: an edge with a named confounder nobody could adjust
+/// for must never outrank an edge established under the same statistics with
+/// that confounder removed. The ordering is the property; the numbers are
+/// one pair of points that satisfies it, and the tests assert the ordering.
+///
+/// # Refusals
+///
+/// Everything [`establish_temporal_precedence`] refuses, plus a control
+/// series not sampled on the same bars as the pair — refused by name here,
+/// rather than as an anonymous column index out of the numerics layer, so
+/// the message says which driver is mis-sampled.
+pub fn establish_temporal_precedence_controlling_for(
+    cause_id: &str,
+    cause_returns: &[f64],
+    effect_id: &str,
+    effect_returns: &[f64],
+    confounders: &ConfounderSet,
+    bar_interval: Duration,
+    recorded_at: Timestamp,
+) -> Result<Option<CausalEdge>> {
     if cause_id == effect_id {
         return Err(Error::invalid(format!(
             "{cause_id} cannot Granger-cause itself; pass two distinct series"
@@ -124,7 +230,25 @@ pub fn establish_temporal_precedence(
         return Ok(None);
     }
 
-    let test = granger_causality(cause_returns, effect_returns, TEMPORAL_PRECEDENCE_LAG)?;
+    // Refused by name rather than by column index: the numerics layer can
+    // only say "control series 2", and an operator reading that has to
+    // reconstruct the set's ordering to learn which driver is wrong.
+    if let Some(id) = confounders.misaligned(cause_returns.len()) {
+        return Err(Error::invalid(format!(
+            "confounder '{id}' is not sampled on the same bars as {cause_id}->{effect_id} \
+             ({} observation(s)); resample it or leave it out — a control on the wrong \
+             instants adjusts for the wrong thing",
+            cause_returns.len()
+        )));
+    }
+
+    let controls = confounders.observed_series();
+    let test = granger_causality_controlling_for(
+        cause_returns,
+        effect_returns,
+        &controls,
+        TEMPORAL_PRECEDENCE_LAG,
+    )?;
     if test.p_value >= TEMPORAL_PRECEDENCE_ALPHA
         || test.partial_r_squared < TEMPORAL_PRECEDENCE_MIN_EFFECT
         || test.coefficient == 0.0
@@ -137,11 +261,29 @@ pub fn establish_temporal_precedence(
     } else {
         Mechanism::InverseTemporalPrecedence
     };
-    let confidence =
-        ((1.0 - test.p_value) * TEMPORAL_PRECEDENCE_CONFIDENCE_CEILING).clamp(0.0, 1.0);
+    let adjusted_for = confounders.observed_ids();
+    let suspected = confounders.unobserved_ids();
+    // §9.4's ordering, made arithmetic. See this function's doc comment: the
+    // ceiling is a chosen point, the ordering between the two is the claim.
+    let ceiling = if suspected.is_empty() {
+        TEMPORAL_PRECEDENCE_CONFIDENCE_CEILING
+    } else {
+        TEMPORAL_PRECEDENCE_SUGGESTIVE_CEILING
+    };
+    let confidence = ((1.0 - test.p_value) * ceiling).clamp(0.0, 1.0);
     let lag = bar_interval * TEMPORAL_PRECEDENCE_LAG as i64;
+    // What was controlled for goes into the evidence string, not only into
+    // the edge's own fields. An operator comparing two edges in a log reads
+    // the evidence id; one that omitted the controls would make an adjusted
+    // edge and an unadjusted one indistinguishable in the one place they are
+    // most often compared.
+    let controlled_for = if adjusted_for.is_empty() {
+        "none".to_string()
+    } else {
+        adjusted_for.iter().cloned().collect::<Vec<_>>().join("+")
+    };
     let evidence_id = format!(
-        "granger:{cause_id}->{effect_id}:lag={}:p={:.4}:n={}",
+        "granger:{cause_id}->{effect_id}:lag={}:p={:.4}:n={}:controls={controlled_for}",
         TEMPORAL_PRECEDENCE_LAG, test.p_value, test.observations
     );
 
@@ -155,6 +297,7 @@ pub fn establish_temporal_precedence(
             recorded_at,
         )
         .with_confidence(confidence)
-        .with_evidence(vec![evidence_id]),
+        .with_evidence(vec![evidence_id])
+        .with_confounders(adjusted_for, suspected),
     ))
 }

@@ -447,9 +447,75 @@ pub struct GrangerCausalityTest {
 /// [`correlation`] already answers and which precedence, by definition,
 /// cannot claim), and too few observations to fit the unrestricted
 /// regression's `2*lag + 1` parameters at all.
+///
+/// **This form adjusts for nothing.** It is
+/// [`granger_causality_controlling_for`] with an empty control set, and is
+/// kept as a named function only because a pair with no plausible common
+/// driver is a real case. Where a common driver exists and the platform
+/// holds a series for it, use the controlled form: §9.2 names the method
+/// "Granger-style lead-lag **with controls**", and the uncontrolled test
+/// reproduces any shared driver as an edge between nearly every pair that
+/// driver touches.
 pub fn granger_causality(
     cause: &[f64],
     effect: &[f64],
+    lag: usize,
+) -> Result<GrangerCausalityTest> {
+    granger_causality_controlling_for(cause, effect, &[], lag)
+}
+
+/// The same nested F-test as [`granger_causality`], with each series in
+/// `controls` contributing its own lags to **both** regressions.
+///
+/// # Why this exists, and what an uncontrolled test actually measures
+///
+/// Blueprint §9.2 does not name "Granger-style lead-lag". It names
+/// "Granger-style lead-lag **with controls** — temporal precedence with
+/// confounders explicitly adjusted", and the qualifier is the whole method.
+/// Run an uncontrolled pairwise scan across a book of instruments while a
+/// single common driver moves them — a market factor, a funding rate, an
+/// index flow — and that driver reproduces itself as an edge between very
+/// many of the pairs it touches, because the candidate cause's lag carries
+/// the driver's lag and the effect's own lag carries it only imperfectly.
+/// Each such edge is significant; each is spurious; and they are spurious
+/// *together*, which is precisely the failure the whole of §9 exists to
+/// answer — models that learned the same absent structure break at the same
+/// moment, and nothing in the system can say which relationship should have
+/// survived.
+///
+/// Putting the control in both fits removes it from the comparison. What the
+/// F-test then reports is the cause's lagged information about the effect's
+/// future *beyond* what the effect's own past and the named controls' pasts
+/// already carry. That is a strictly weaker and strictly honester claim, and
+/// it is the only one a caller with no experiment is entitled to make.
+///
+/// # What it does not do
+///
+/// It adjusts for the confounders that were **supplied**. One nobody named,
+/// or one for which the platform holds no series, is not adjusted for here
+/// and cannot be. See `qip_world_model::confounder` for where such a
+/// confounder is instead *recorded as unobserved*, which is §9.4's handling
+/// and is not a substitute for measuring it.
+///
+/// # Column order is a contract, not an implementation detail
+///
+/// The unrestricted design is `[effect lags, cause lags, control lags]`, so
+/// the first cause-lag coefficient sits at index `1 + lag` of
+/// [`Regression::coefficients`] — index 0 being the intercept `ols` adds —
+/// whatever number of controls is passed. The **sign** of that coefficient
+/// is the direction a caller turns into a mechanism, and a layout in which
+/// its index moved with the control count would silently read some
+/// control's coefficient as the cause's on every call that supplied one,
+/// producing edges pointed at random.
+///
+/// Refuses, rather than guessing, on everything [`granger_causality`]
+/// refuses, plus: a control series whose length differs from the pair's, a
+/// non-finite control observation, and a control count that leaves too few
+/// rows to fit the unrestricted parameters at all.
+pub fn granger_causality_controlling_for(
+    cause: &[f64],
+    effect: &[f64],
+    controls: &[&[f64]],
     lag: usize,
 ) -> Result<GrangerCausalityTest> {
     if cause.len() != effect.len() {
@@ -472,21 +538,40 @@ pub fn granger_causality(
              rather than filtering it here",
         ));
     }
+    for (index, control) in controls.iter().enumerate() {
+        if control.len() != cause.len() {
+            return Err(Error::invalid(format!(
+                "control series {index} has {} observation(s) but the tested pair has {}; a \
+                 control must be sampled on the same bars as the pair it adjusts, or it \
+                 adjusts for the wrong instants",
+                control.len(),
+                cause.len()
+            )));
+        }
+        if control.iter().any(|v| !v.is_finite()) {
+            return Err(Error::invalid(format!(
+                "control series {index} has a non-finite observation; fix the series at its \
+                 source rather than filtering it here"
+            )));
+        }
+    }
     let n = cause.len();
     let rows = n.saturating_sub(lag);
     // Unrestricted regressors, excluding the intercept `ols` adds itself:
-    // `lag` of effect's own lags plus `lag` of cause's.
-    let unrestricted_regressors = 2 * lag;
+    // `lag` of effect's own lags, `lag` of cause's, and `lag` of each
+    // control's.
+    let control_regressors = controls.len() * lag;
+    let unrestricted_regressors = 2 * lag + control_regressors;
     if rows <= unrestricted_regressors + 1 {
         return Err(Error::invalid(format!(
             "{rows} observation(s) after a lag of {lag} cannot fit {} parameters; need more \
-             history or a shorter lag",
+             history, fewer controls, or a shorter lag",
             unrestricted_regressors + 1
         )));
     }
 
-    let mut own_lag = Matrix::zeros(rows, lag);
-    let mut both_lags = Matrix::zeros(rows, 2 * lag);
+    let mut own_lag = Matrix::zeros(rows, lag + control_regressors);
+    let mut both_lags = Matrix::zeros(rows, unrestricted_regressors);
     let mut y = vec![0.0; rows];
     for (row, t) in (lag..n).enumerate() {
         y[row] = effect[t];
@@ -496,6 +581,16 @@ pub fn granger_causality(
             own_lag.set(row, l - 1, own);
             both_lags.set(row, l - 1, own);
             both_lags.set(row, lag + l - 1, driver);
+            for (index, control) in controls.iter().enumerate() {
+                let value = control[t - l];
+                // The restricted design is `[effect lags, control lags]` and
+                // the unrestricted `[effect lags, cause lags, control lags]`.
+                // The cause block sits second, never last, so that the index
+                // this function reads its sign from does not move with the
+                // control count — see the doc comment.
+                own_lag.set(row, lag + index * lag + l - 1, value);
+                both_lags.set(row, 2 * lag + index * lag + l - 1, value);
+            }
         }
     }
 
@@ -529,7 +624,8 @@ pub fn granger_causality(
     // The first cause-lag coefficient: index 0 is `ols`'s own intercept,
     // `lag` own-lag coefficients follow, then cause's — index `1 + lag` is
     // the shortest, least-noisy horizon and (at `lag == 1`, the only value
-    // this crate's caller currently requests) the only one there is.
+    // this crate's caller currently requests) the only one there is. Any
+    // control coefficients sit after cause's and so never shift this index.
     let coefficient = unrestricted
         .coefficients
         .get(1 + lag)

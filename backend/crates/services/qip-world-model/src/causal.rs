@@ -156,6 +156,53 @@ pub struct CausalEdge {
     /// again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decayed_at: Option<Timestamp>,
+    /// Ids of the common causes that were genuinely put into both sides of
+    /// the comparison this edge was established by — blueprint §9.1's
+    /// confounders layer, "explicit, and adjusted for".
+    ///
+    /// Empty on every edge established by a method that adjusts for nothing,
+    /// which includes every hand-asserted mechanism claim: a person claiming
+    /// a supply-chain link is not running a regression, and recording an
+    /// empty set there is honest rather than a gap.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub adjusted_for: BTreeSet<String>,
+    /// Ids of common causes that are plausible and that the platform holds
+    /// no series for — §9.4's "confounders are often unobserved".
+    ///
+    /// Recording one is an admission and not a remedy. Its entire effect is
+    /// [`Self::standing`]: a non-empty set makes the edge
+    /// [`EdgeStanding::Suggestive`] whatever its p-value, which is §9.4's
+    /// instruction in the one place a reader of the edge will see it.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub suspected_confounders: BTreeSet<String>,
+}
+
+/// How far an edge may be relied on — blueprint §9.4's own two words.
+///
+/// A mark, never an attenuation, for exactly the reason
+/// [`CausalEdge::decayed_at`] is one: silently shrinking an edge's
+/// transmission because a confounder was admitted would move every
+/// propagation result in the platform with nothing in the record naming the
+/// number that changed. The establishment method lowers its own confidence
+/// *ceiling* at the moment of creation instead, where the choice is visible
+/// in the edge it wrote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeStanding {
+    /// No plausible unobserved confounder is recorded against it.
+    Established,
+    /// At least one is. §9.4: "the edge is treated as suggestive rather than
+    /// established".
+    Suggestive,
+}
+
+impl EdgeStanding {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Established => "established",
+            Self::Suggestive => "suggestive",
+        }
+    }
 }
 
 impl CausalEdge {
@@ -177,12 +224,48 @@ impl CausalEdge {
             evidence: Vec::new(),
             recorded_at,
             decayed_at: None,
+            adjusted_for: BTreeSet::new(),
+            suspected_confounders: BTreeSet::new(),
         }
     }
 
     pub fn with_confidence(mut self, confidence: f64) -> Self {
         self.confidence = confidence.clamp(0.0, 1.0);
         self
+    }
+
+    /// Record what this edge was and was not adjusted for.
+    ///
+    /// Both sets at once, deliberately. Two builders would let a caller set
+    /// `adjusted_for` and forget `suspected_confounders`, and an edge that
+    /// names controls while staying silent about what it could not control
+    /// for reads *more* trustworthy than one that names neither — which is
+    /// the wrong way round and is exactly the impression §9.4 exists to
+    /// forbid.
+    pub fn with_confounders(
+        mut self,
+        adjusted_for: BTreeSet<String>,
+        suspected: BTreeSet<String>,
+    ) -> Self {
+        self.adjusted_for = adjusted_for;
+        self.suspected_confounders = suspected;
+        self
+    }
+
+    /// Whether a plausible unobserved confounder stands against this edge.
+    ///
+    /// An edge nobody asked the question of answers
+    /// [`EdgeStanding::Established`], which is the same honest convention
+    /// [`Self::is_decayed`] uses: an unasked question is not a negative
+    /// answer, and the remedy for a method that never considers confounders
+    /// is to make it consider them, not to have this function guess on its
+    /// behalf.
+    pub fn standing(&self) -> EdgeStanding {
+        if self.suspected_confounders.is_empty() {
+            EdgeStanding::Established
+        } else {
+            EdgeStanding::Suggestive
+        }
     }
 
     pub fn with_evidence(mut self, evidence: Vec<String>) -> Self {
