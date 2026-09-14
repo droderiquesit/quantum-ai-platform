@@ -35,9 +35,12 @@ sizing in units the venue does not quote.
    ```
    Each row names the venue, whether a first signature is already standing,
    and the cluster the finding was made on: `constraint` is the gate that
-   dominated — one of step 2's table, and never `feasibility_withdrawn_venue`,
-   for the reason that table's last row gives — `count` and `sample` are this
-   venue's refusals and the whole window, and `seams`
+   dominated — one of step 2's table, and read its last row first if the
+   answer is `feasibility_withdrawn_venue`, because that one names a
+   different problem — `count` is this venue's refusals and `sample` is the
+   denominator they were measured against: the whole window, with a
+   *withdrawn* venue's echoes weighted rather than counted whole, so it is
+   not simply the number of entries. `seams`
    says whether the desk, the cells, or both saw it. `withdrawals_recorded`
    counts every withdrawal the log holds, including venues since put back —
    so a zero there means this platform has never withdrawn anything.
@@ -57,27 +60,36 @@ sizing in units the venue does not quote.
    | `feasibility_fee_floor` | the venue's fixed costs against the edge the cycle claims — the cycle does not pay for itself |
    | `feasibility_gas_floor` | the same for gas, where the venue charges it |
    | `feasibility_constraint` | the policy payload, not the venue and not the order: slot 11 stated a grid value that is not a grid — a non-positive tick, a negative figure — and the cell refused it rather than quietly substituting its own. A cluster here is a bug in what the centre shipped, and it will withdraw a venue that never did anything wrong |
-   | `feasibility_withdrawn_venue` | **nothing, and you will not see it here.** It is the cell enforcing a withdrawal the centre already made. It is charted on `qip_feasibility_refusals_total` under its real venue and its real gate, and it is deliberately never admitted to the withdrawal window — see below |
+   | `feasibility_withdrawn_venue` | **the policy the cells are applying, not the venue.** A cell refuses under this gate when *its* slot 11 says the venue is withdrawn. If the centre agrees, that is an echo and it cannot dominate anything — see below. If you are reading it here, the centre does *not* hold this venue withdrawn and the cells do: their policy is stale, or they never heard a reinstatement. Fix the policy path; the venue's grid is not the problem |
 
    The first four are the only gates the desk's own order manager can refuse
    under; all nine are the cells'. The window spans both planes, so a cluster
    may be entirely the cells', entirely the desk's, or mixed; `seams` in
    step 1 says which.
 
-   **Why the last row is different, and why you must not "fix" it.** Whether
-   a gate's refusals may enter the window a venue is withdrawn on is decided
-   in one place, `qip_contracts::feasibility::is_withdrawal_evidence`, and a
-   withdrawal's own echo is excluded there. Every other gate asks a question
-   about an order at a venue, so a cluster of them is evidence about the
-   venue; the echo asks nothing — it reports the platform's earlier decision
-   back to itself, once per intent per pass, for as long as a desk installed
-   before the withdrawal keeps offering cycles through it. Admitted, those
-   echoes would fill the window within a few passes and then own the
-   denominator every other venue's share is measured against, and no second
-   venue could ever be withdrawn. The exclusion is what keeps the control
-   able to fire twice. Read the function rather than this paragraph if you
-   need the current rule; the property is stable, the way it is decided is
-   being worked on.
+   **Why the last row is different, and what an "echo" is.** A refusal under
+   that gate is an echo only when the centre's own withdrawn set agrees with
+   the cell — `qip_contracts::feasibility::is_withdrawal_echo(gate, venue,
+   withdrawn)` decides it, and it takes the venue and the centre's set on
+   purpose. The gate string arrives on a report over a wire that
+   authenticates nobody, so a cell with a stale slot 11 can refuse at a venue
+   the desk is still trading and call it withdrawn. That is not an echo; it
+   is an ordinary refusal, and it counts as evidence like any other. This is
+   the case the table's last row tells you to investigate.
+
+   A confirmed echo is the platform's own decision arriving back at it, and
+   it is handled with more care than "ignore it", because ignoring it is what
+   broke: dropping a withdrawn venue's refusals emptied the denominator every
+   other venue's share is measured against, the runner-up became a cluster of
+   whatever remained, and the desk lost venue after venue. So one echo per
+   venue per report is seated in the window as a **denominator** entry, its
+   weight is capped at the genuine evidence that venue still holds
+   (`venue_review::VenueTally::weight`), and a withdrawn venue is never a
+   candidate for withdrawal — so no echo can withdraw anything, and the
+   echoes stop counting for anything once the venue's real refusals age out.
+   Read `VenueTally::weight` and `venue_review::assess` if you need the
+   arithmetic; what you need operationally is that an echo cannot cause a
+   withdrawal and cannot hide one.
 
    Enumerate the cells' gates from the source rather than from this table:
    `sed -n '/^pub const EDGE_GATES/,/^];/p'
