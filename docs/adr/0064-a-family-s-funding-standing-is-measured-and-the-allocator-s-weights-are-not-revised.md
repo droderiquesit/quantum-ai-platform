@@ -82,6 +82,18 @@ therefore resolved by the caller from `TrialBook::lifetime_trials` — a read,
 never a charge — and the deflation is the same `deflated_sharpe` call the
 gate's own last line makes.
 
+**Four — found by review after this record was first written, and it makes
+the paragraph above true only in part.** `TrialBook::lifetime_trials` is *not*
+the number `HoldoutGate::charged_trials` resolves to. `charged_trials` returns
+`TrialAccount::lifetime()`, the family's total as it stood when that member
+was charged: a snapshot. `lifetime_trials` returns the last journal record's
+`lifetime_after`, the family's total now, which every later sibling's charge
+has raised. They coincide for the member charged last, and therefore for every
+member of a one-member family — which is the arity the bit-equality test was
+written at, so the claim held exactly where it could not be tested. Moving
+that fixture to two members prints `left: 12`, `right: 24`. This record said
+the two agreed, and the code never made them agree.
+
 ## Decision
 
 **The platform measures where every registered strategy family stands against
@@ -99,7 +111,37 @@ It is deliberately **not** `DeflatedSharpe::observed`, which is the
 thousand configurations level with one that tried ten, which is the selection
 bias the holdout gate exists to correct arriving through the back door.
 `a_family_s_figure_is_the_gate_s_own_deflation_and_not_the_raw_sharpe` holds
-the review's figure to the gate's own, as bits rather than to a tolerance.
+the review's figure to the gate's own, as bits rather than to a tolerance, at
+one member — the arity where the two trial counts coincide, and the only one
+where "the gate's own deflation" is a claim about arithmetic rather than about
+arity.
+
+**The count that deflation is against is the family's whole search as of the
+review, and that is deliberate.** A deflated Sharpe exists to correct a result
+for the multiple testing that produced it. A comparison drawn *now* between
+two families must therefore correct each for the search each has actually
+done; grading family A on the twelve configurations it had tried when its
+first member ran, while family B is graded on ten thousand, re-introduces on
+the review's own axis exactly the bias the deflation removes. The gate's
+per-member snapshot is right for the gate, which decides one admission at one
+instant, and wrong for a cross-family comparison drawn afterwards.
+`a_family_s_count_is_the_whole_family_s_search_and_not_one_member_s_snapshot`
+holds the general relation at two members: one count per family, at least as
+large as every member's snapshot, equal to the snapshot of the member charged
+last.
+
+**It follows that a member's contribution is not stationary, and that is a
+property of the record rather than a defect.** Evaluating any sibling raises
+the family's lifetime count and lowers every other member's excess, so two
+`FamilyAllocationReview` records built from byte-identical evidence at
+different cycles disagree. That does not break "every decision reproducible
+from the log alone": each record carries its `cycle` and its `at`, and what it
+claims is the family's standing *against the search as of that cycle* — a
+statement about a moment, which replays to the same value because the trial
+book is itself a hash-chained journal whose totals are reconstructed rather
+than remembered. What is not reproducible is one member's figure compared
+across cycles, and nothing here invites that comparison: the finding names
+families, never members.
 
 Both sides of the comparison are the same measure. A realised return over a
 grant and a backtested holdout series are different quantities; comparing them
@@ -118,6 +160,20 @@ The LEARN stage then does three things, in this order:
    funded family, journals a `MisallocationFinding` — journal first, adopt
    after — and counts `qip_family_misallocations_total`.
 
+**Evaluated, and the first implementation of it counted registrations.**
+`FamilyStanding::clears_the_member_bar` tested `members` while the figure
+being compared is a mean over `admitted` alone, so a family of ten
+registrations with one readable holdout series cleared a ten-*observation*
+bar on one observation, and the finding reported ten as its sample size. The
+constant is `COUNTERFACTUAL_SIZING_MIN_SAMPLE` — a sample bar applied to a
+population count. The bar is now `admitted >= FAMILY_REVIEW_MIN_MEMBERS`, the
+finding's two counts are named `unfunded_evaluated` and `funded_evaluated` and
+carry the admitted counts, and
+`a_family_registered_ten_times_and_read_once_has_one_observation_and_not_ten`
+holds both halves. The `>=` on the margin — argued in the code and untested
+until the same review — is held by
+`a_gap_of_exactly_the_margin_is_a_finding_and_one_ulp_below_it_is_not`.
+
 The bars are ADR 0055's minimum sample by reference, for the reason
 `rule_review`, `sizing_review` and `venue_review` all give, and one stated
 margin of half a unit of annualised Sharpe. The comparison is against the best
@@ -130,17 +186,48 @@ we are paying for" is true of almost any population.
 The guarantee is the **absence of a code path**, not a check.
 
 - `family_review` exports no function returning a `Decimal` or any multiplier.
-- `MisallocationFinding` carries two family names, two member counts, an
-  outcome, a cycle and a timestamp. No margin, no excess, no ratio. The
-  magnitude lives on the `FamilyAllocationReview` beside it, because a number
-  on the *finding* is the one field the obvious next edit — "size the
+  Enforced by an allow-list of the return types the module may name, not by a
+  search for the word: `pub fn family_cap(…) -> FamilyWeight`, a newtype over
+  `Decimal`, passed the search and is refused by the list.
+- `MisallocationFinding` carries two family names, two evaluated-member
+  counts, an outcome, a cycle and a timestamp. No margin, no excess, no ratio.
+  The magnitude lives on the `FamilyAllocationReview` beside it, because a
+  number on the *finding* is the one field the obvious next edit — "size the
   reallocation by how far ahead it is" — would reach for.
+- **State the scope of that honestly, because it is narrower than it reads.**
+  `standings()` returns `FamilyStanding { deflated_excess: f64, … }` and any
+  caller can multiply by that number. The guarantee is not "no number leaves
+  the module"; it is that the *finding* carries none and no exported
+  *function* hands one out. The magnitude must be readable somewhere, and it
+  is on the measurement — beside the counts that qualify it — rather than on
+  the record that names two families. A Sharpe excess is also not a multiplier
+  in any case: unbounded, routinely negative, and a caller that scaled a
+  notional by it would be inventing a unit conversion nobody recorded.
 - `qip-acceptance/tests/security.rs` scans every shipped `impl` of `Platform`,
-  `CentralPlane` and `StrategyFactory` for a `&mut self` method whose name or
-  parameter list names a family and whose body assigns a proposal, an envelope
-  or a factory field. The same shape ADR 0061's limit-set scan takes, and for
-  the same reason: the guarantee is held on every shipped `impl` rather than by
-  nobody having written the method yet.
+  `CentralPlane` and `StrategyFactory` for a `&mut self` method that names a
+  family — in its own name *or* in a parameter of type `StrategyFamily`,
+  `Misallocation`, `MisallocationFinding` or `FamilyStanding` — and whose body
+  moves a weight by any of three shapes: reassigning a weight field, calling a
+  mutating method on one, or calling `set_proposal`, `issue` or
+  `family_horizons` anywhere. The same shape ADR 0061's limit-set scan takes,
+  and for the same reason: the guarantee is held on every shipped `impl`
+  rather than by nobody having written the method yet.
+
+**The first version of that scan detected one of those shapes and was
+demonstrated bypassed by execution.** It decided a mover with a search for a
+literal `self.<field> =`, so `self.central.set_proposal(…)` — the call this
+record's own argument names as the allocator's reachable writer —
+`self.proposals.get_mut(…).weight = …` and `self.envelopes.insert(…)` all
+passed; and it examined a method only when the method's *own name* contained
+`famil`, so `apply_misallocation(&mut self, &MisallocationFinding)` was never
+read. This repository shipped that class once before and fixed it in
+`28857ed`, where an acceptance scan matched method names and a working
+`adopt(&mut self, LimitSet)` passed. Every detector now carries its own
+positive and negative controls asserted inside the test, and the control that
+the walk reached the shipped review is the walk's own record of what it
+examined rather than a string search over the file — the previous one proved
+the method existed and said nothing about whether the tokeniser had matched
+it.
 
 Before a weight could honestly move, three things would have to exist that do
 not: a production caller for `CentralPlane::issue` (so that "funded" means
@@ -186,10 +273,24 @@ replacing it, precisely so that skim fails.
   correlation — become confusable in a way they are not today. That needs its
   own record before either is wired to a weight.
 - **Something attaches a trial account to a registered candidate.** Then
-  `HoldoutGate::deflated` becomes callable and the count this review resolves
-  from the book should be checked against it rather than assumed equal. The
-  bit-equality test is written so that the day it stops agreeing is a test
-  failure and not a silent divergence.
+  `HoldoutGate::deflated` becomes callable — and it must not simply be
+  substituted, because it deflates against the member's snapshot rather than
+  the family's search. This bullet claimed "the bit-equality test is written
+  so that the day it stops agreeing is a test failure and not a silent
+  divergence", and that was false when written: the two counts already
+  disagreed at every arity above one, and the test was pinned at one. The
+  relation is now asserted rather than the equality
+  (`a_family_s_count_is_the_whole_family_s_search_and_not_one_member_s_snapshot`),
+  so a change to either quantity fails a test at the arity the platform
+  actually runs at.
+- **A member's figure is read as stationary.** It is not, and nothing should
+  chart one member's excess over time or compare two `FamilyAllocationReview`
+  records field by field across cycles expecting agreement. A later sibling's
+  evaluation legitimately moves it. If a consumer ever needs a stationary
+  per-member figure, that is a different statistic and needs its own record:
+  the honest one would fix the trial count at the member's own charge and stop
+  being comparable across families, which is the trade this record chose the
+  other side of.
 - **The margin turns out to be measuring estimation error.** Half a Sharpe over
   ten members each is a stated bar, not a fitted one. If real populations
   produce findings every cycle, the bar is too low and the finding is noise
@@ -209,6 +310,9 @@ replacing it, precisely so that skim fails.
 - §23.1's LEVEL 2 stays `ABSENT`. A provenance-family review now reaches LEARN
   and allocates nothing; the correlation family still has no consumer.
 - No verdict in the shape table moves. 23/128/1/14/15 is unchanged.
+- `docs/DELIVERY-STATUS.md`'s §12.3 R5 wording must say **evaluated** members
+  and mean it: the bar is `admitted`, and the finding reports the admitted
+  count as its sample size. It already said "evaluated"; the code did not.
 - Two new metric names, neither in `SERIES_THAT_MUST_PAGE`: a finding nobody
   can act on should not wake anybody.
 - One new topic, `learning.family_allocation_reviewed`, in `TopicGroup::Learn`

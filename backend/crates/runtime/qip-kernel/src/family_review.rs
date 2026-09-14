@@ -25,8 +25,24 @@
 //! limit that shipped in every default set and could never trigger, and reads
 //! as protection while being none. So the finding this module produces
 //! carries no multiplier, no notional, no `Decimal` and no money type of any
-//! kind, and no function exported here returns one. A later edit cannot
-//! "wire it up" without first writing the weight it would move.
+//! kind, and no function exported here returns one — the acceptance scan
+//! enumerates the return types this module may name rather than searching for
+//! the word `Decimal`, because a newtype over one would pass that search.
+//! A later edit cannot "wire it up" without first writing the weight it would
+//! move.
+//!
+//! Be precise about the scope of that, because it is narrower than it reads
+//! and a reviewer found the gap. [`FamilyStanding::deflated_excess`] is a
+//! public `f64` and any caller can multiply by it. The guarantee is not "no
+//! number leaves this module": it is that the *finding* carries none, and
+//! that no exported *function* hands one out. The magnitude has to live
+//! somewhere a person can read, and it lives on the measurement — beside the
+//! member counts that qualify it — rather than on the record that names two
+//! families, which is the field the obvious next edit would reach for. A
+//! Sharpe excess in annualised units is also not a multiplier in any case: it
+//! is not bounded to `(0, 1]`, it is routinely negative, and a caller that
+//! scaled a notional by it would be inventing a unit conversion nobody
+//! recorded.
 //!
 //! # The statistic, and why it is the gate's own
 //!
@@ -60,12 +76,65 @@
 //! comparison — the `MaxExpectedShortfall` shape a second time, inside the
 //! very lane that exists to refuse it. So the count is resolved by the caller
 //! from the trial book (`TrialBook::lifetime_trials`, a read and not a
-//! charge), which is the same number `HoldoutGate::charged_trials` resolves
-//! to, and the deflation is the same [`deflated_sharpe`] call the gate's own
-//! last line makes. `a_family_s_figure_is_the_gate_s_own_deflation_and_not_the_raw_sharpe`
-//! holds the two to bit equality on evidence carrying an account, so the day
-//! anything does attach one the agreement is a test failure away from being
-//! visible rather than an assumption.
+//! charge), and the deflation is the same [`deflated_sharpe`] call the gate's
+//! own last line makes.
+//!
+//! ## The count is the family's search now, not the gate's snapshot
+//!
+//! Until 2026-09-14 the paragraph above ended "…which is the same number
+//! `HoldoutGate::charged_trials` resolves to". **It is not the same number**,
+//! and the test that was offered as proof held only at the one arity where
+//! the two coincide. The two quantities:
+//!
+//! - `HoldoutGate::charged_trials`, which `HoldoutGate::deflated` calls, returns
+//!   `TrialAccount::lifetime()` — the family's total *as it stood when that
+//!   member was charged*. A snapshot, frozen at one member's evaluation.
+//! - `TrialBook::lifetime_trials` returns the last
+//!   journal record's `lifetime_after` — the family's total *now*, which
+//!   every later sibling's charge has raised.
+//!
+//! They agree only for the member charged last, and therefore for every
+//! member of a one-member family. Enrol two and they diverge: the shipped
+//! fixture, moved from one member to two, printed `left: 12` (the gate's
+//! snapshot for the first member) against `right: 24` (the family's total
+//! after the second was charged).
+//!
+//! **The family's total as of the review is the right quantity and the
+//! arithmetic stays.** A deflated Sharpe exists to correct a result for the
+//! multiple testing that produced it, and a comparison made *now* between two
+//! families must correct each for the search it has actually done. Grading
+//! family A on the twelve configurations it had tried when its first member
+//! was evaluated, while family B is graded on ten thousand, re-introduces on
+//! the review's own axis exactly the selection bias the deflation exists to
+//! remove. The gate's snapshot is right for the gate — it decides one
+//! admission at one instant — and wrong for a cross-family comparison drawn
+//! afterwards.
+//!
+//! ### What that costs: a member's contribution is not stationary
+//!
+//! It follows, and is stated here because it is easy to discover later and
+//! read as a bug: evaluating any sibling raises the family's lifetime count
+//! and therefore lowers every other member's excess. Two
+//! [`FamilyAllocationReview`] records built from byte-identical evidence at
+//! two different cycles will disagree, legitimately.
+//!
+//! That is not a break with "every decision reproducible from the log alone".
+//! The record carries its `cycle` and its `at`, and what it claims is the
+//! family's standing *against the search as of that cycle* — a statement
+//! about a moment, which replays to the same value from the same log because
+//! the trial book is itself a hash-chained journal whose totals are
+//! reconstructed rather than remembered. What is not reproducible is the
+//! comparison of one member's figure across cycles, and nothing in this
+//! module or the record it writes invites that comparison: the finding names
+//! families, never members.
+//!
+//! `a_family_s_figure_is_the_gate_s_own_deflation_and_not_the_raw_sharpe`
+//! keeps the degenerate one-member case, where the two counts coincide and
+//! bit equality is a real claim about the arithmetic;
+//! `a_family_s_count_is_the_whole_family_s_search_and_not_one_member_s_snapshot`
+//! holds the general relation at two members — the review's count is the
+//! family's current total, it is greater than or equal to every member's
+//! snapshot, and equality falls on the member charged last.
 //!
 //! Both sides of the comparison are the same measure. A realised return over
 //! a grant and a backtested holdout series are different quantities; a
@@ -84,8 +153,20 @@ use qip_simulation_engine::validation::deflated_sharpe;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Members a family needs on *each* side of the comparison before a
-/// difference between two families is a finding rather than noise.
+/// Members whose evidence the gate could actually read, on *each* side of the
+/// comparison, before a difference between two families is a finding rather
+/// than noise.
+///
+/// **Evaluated members, not registered ones.** This bar tested
+/// [`FamilyStanding::members`] until 2026-09-14, so a family of ten
+/// registrations with one readable holdout series cleared a bar whose own
+/// documentation says it exists "so a difference between two families is a
+/// finding rather than noise" — on one observation. The constant is
+/// [`COUNTERFACTUAL_SIZING_MIN_SAMPLE`], a *sample* bar, and it was being
+/// applied to a *population* count; a registration nothing could deflate is
+/// not an observation, and counting it as one is the same error as averaging
+/// a refused member in as a zero, which [`standings`] already refuses to do
+/// three lines from here.
 ///
 /// [`COUNTERFACTUAL_SIZING_MIN_SAMPLE`], by reference, for the reason
 /// `rule_review`, `sizing_review` and `venue_review` all give: the platform
@@ -124,9 +205,13 @@ pub struct FamilyMember<'a> {
     pub evidence: &'a StrategyEvidence,
     /// The family's lifetime trial count, from the trial book the factory
     /// enrolled this strategy in — the number the deflation corrects
-    /// against. See the module documentation for why it is passed rather
-    /// than read from `evidence.trial_account`, which is `None` on every
-    /// candidate this platform registers.
+    /// against. One value for the whole family, as the search stands at the
+    /// review, and deliberately **not** the snapshot the gate charged this
+    /// member under: see the module documentation for both halves — why it is
+    /// passed rather than read from `evidence.trial_account`, which is `None`
+    /// on every candidate this platform registers, and why the family's
+    /// current total rather than the member's snapshot is the right
+    /// correction for a comparison drawn now.
     pub lifetime_trials: u64,
 }
 
@@ -162,10 +247,18 @@ impl FamilyStanding {
         self.funded > 0
     }
 
-    /// Whether this family has enough members for a difference against
-    /// another to be read as a pattern.
-    fn clears_the_member_bar(&self) -> bool {
-        self.members >= FAMILY_REVIEW_MIN_MEMBERS
+    /// Whether this family has enough *evaluated* members for a difference
+    /// against another to be read as a pattern.
+    ///
+    /// [`Self::admitted`] and never [`Self::members`]. The figure being
+    /// compared is a mean over the admitted members alone, so the sample
+    /// behind it is `admitted`; a family with ten registrations and one
+    /// readable series has produced one observation, and testing `members`
+    /// let that clear a ten-observation bar. Fixed 2026-09-14 —
+    /// `a_family_registered_ten_times_and_read_once_has_one_observation_and_not_ten`
+    /// is the test.
+    fn clears_the_evidence_bar(&self) -> bool {
+        self.admitted >= FAMILY_REVIEW_MIN_MEMBERS
     }
 }
 
@@ -262,8 +355,12 @@ pub struct Misallocation {
     pub unfunded: String,
     /// The best-placed funded family it stands above.
     pub funded: String,
-    pub unfunded_members: usize,
-    pub funded_members: usize,
+    /// How many of the unfunded family's members the gate could actually
+    /// deflate — the sample the figure was computed over, and never the
+    /// number of registrations.
+    pub unfunded_evaluated: usize,
+    /// The same for the funded side.
+    pub funded_evaluated: usize,
 }
 
 /// The strongest funded/unfunded separation in `standings`, if one clears
@@ -278,21 +375,34 @@ pub struct Misallocation {
 /// Ties are broken by name, and the map's own order decides them, so two
 /// replays of one log name the same pair.
 pub fn misallocation(standings: &BTreeMap<String, FamilyStanding>) -> Option<Misallocation> {
-    let best_unfunded = best(standings.values().filter(|standing| {
-        !standing.is_funded() && standing.clears_the_member_bar() && standing.admitted > 0
-    }))?;
-    let best_funded = best(standings.values().filter(|standing| {
-        standing.is_funded() && standing.clears_the_member_bar() && standing.admitted > 0
-    }))?;
+    let best_unfunded = best(
+        standings
+            .values()
+            .filter(|standing| !standing.is_funded() && standing.clears_the_evidence_bar()),
+    )?;
+    let best_funded = best(
+        standings
+            .values()
+            .filter(|standing| standing.is_funded() && standing.clears_the_evidence_bar()),
+    )?;
+    // The separate `admitted > 0` guard that used to sit beside the bar is
+    // gone because the bar is now on `admitted` itself and
+    // `FAMILY_REVIEW_MIN_MEMBERS` is ten. It is not missing: a second, weaker
+    // readability test beside a stronger one reads as though the stronger one
+    // did not cover it, which is how the two drifted apart in the first
+    // place.
+    //
     // `>=` and not `>`: the margin is the bar, and a gap that lands exactly
     // on a declared threshold clears it. The same shape as
-    // `SizeRegret::clears`.
+    // `SizeRegret::clears`. Held by
+    // `a_gap_of_exactly_the_margin_is_a_finding_and_one_ulp_below_it_is_not`,
+    // because an argued boundary nothing tests is an argument and not a bar.
     if best_unfunded.deflated_excess - best_funded.deflated_excess >= FAMILY_REVIEW_MARGIN {
         Some(Misallocation {
             unfunded: best_unfunded.family.clone(),
             funded: best_funded.family.clone(),
-            unfunded_members: best_unfunded.members,
-            funded_members: best_funded.members,
+            unfunded_evaluated: best_unfunded.admitted,
+            funded_evaluated: best_funded.admitted,
         })
     } else {
         None
@@ -443,8 +553,13 @@ impl EventBody for FamilyAllocationReview {
 pub struct MisallocationFinding {
     pub unfunded: String,
     pub funded: String,
-    pub unfunded_members: usize,
-    pub funded_members: usize,
+    /// The sample each side's figure was computed over: members the gate
+    /// could read, not members registered. Named `unfunded_members` until
+    /// 2026-09-14, when it carried the registration count — a reader takes
+    /// this number for the sample size, and on a family of ten registrations
+    /// with one readable series it said ten.
+    pub unfunded_evaluated: usize,
+    pub funded_evaluated: usize,
     /// [`FAMILY_FINDING_PROPOSED`] or [`FAMILY_FINDING_WITHDRAWN`].
     pub outcome: String,
     pub cycle: u64,
@@ -456,8 +571,8 @@ impl MisallocationFinding {
         Self {
             unfunded: pair.unfunded.clone(),
             funded: pair.funded.clone(),
-            unfunded_members: pair.unfunded_members,
-            funded_members: pair.funded_members,
+            unfunded_evaluated: pair.unfunded_evaluated,
+            funded_evaluated: pair.funded_evaluated,
             outcome: outcome.to_string(),
             cycle,
             at,
@@ -592,6 +707,31 @@ mod tests {
                         .with_holdout(evidence)
                         .with_trial_account(account),
                 );
+            }
+            self
+        }
+
+        /// Enrol `count` members of `family` that carry no holdout series at
+        /// all, at `stage`.
+        ///
+        /// Registered and unreadable: `member_deflation` refuses each one and
+        /// `standings` counts it under `refused`, which is the population a
+        /// bar tested on `members` rather than `admitted` could not tell from
+        /// a population of real observations.
+        fn enrol_unreadable(mut self, family: &str, count: usize, stage: GateStage) -> Self {
+            let family = StrategyFamily::new(family).expect("an admissible family name");
+            if self.book.lifetime_trials(&family).is_none() {
+                self.book.open_family(&family, at()).expect("family opened");
+            }
+            for index in 0..count {
+                let strategy = StrategyId::new(format!("{}-blind-{index}", family.as_str()));
+                self.book
+                    .enrol(&strategy, &family, at())
+                    .expect("enrolled in its family");
+                self.families.push(family.clone());
+                self.strategies.push(strategy);
+                self.stages.push(stage);
+                self.evidence.push(StrategyEvidence::new());
             }
             self
         }
@@ -773,7 +913,7 @@ mod tests {
         let full_standings = standings(&full_members);
         let finding = misallocation(&full_standings)
             .expect("one more member and the same evidence is a finding");
-        assert_eq!(finding.unfunded_members, FAMILY_REVIEW_MIN_MEMBERS);
+        assert_eq!(finding.unfunded_evaluated, FAMILY_REVIEW_MIN_MEMBERS);
     }
 
     #[test]
@@ -849,12 +989,25 @@ mod tests {
         // would have been decided on, and the review's figure has to equal it
         // — though the review reached it through the book, because no
         // candidate this platform registers carries an account at all.
+        //
+        // One member on purpose, and the arity is the point rather than a
+        // convenience. The gate deflates against the family's total *as it
+        // stood when this member was charged* and the review against the
+        // family's total *now*; in a one-member family those are the same
+        // number, so here — and only here — bit equality is a claim about the
+        // arithmetic instead of a coincidence of arity. The module doc
+        // asserted the two counts were always equal until 2026-09-14, and
+        // this test was the evidence offered; moving the fixture to two
+        // members printed `left: 12`, `right: 24`. The general relation is
+        // `a_family_s_count_is_the_whole_family_s_search_and_not_one_member_s_snapshot`
+        // below, which is where a reader should go before believing anything
+        // about the two counts at any other arity.
         let deflated = HoldoutGate::default()
             .deflated(members[0].strategy, members[0].evidence)
             .expect("the gate reads the same evidence");
         assert_eq!(
             deflated.trials, members[0].lifetime_trials as usize,
-            "the premise: the gate and the review deflated against one count"
+            "the premise: at one member the gate's snapshot and the family's current total are              the same count, which is what makes the bit equality below meaningful"
         );
         // Compared as bits rather than as floats. "To the bit" is the claim
         // — that the review reads the gate's arithmetic rather than an
@@ -887,6 +1040,254 @@ mod tests {
     }
 
     #[test]
+    fn a_family_s_count_is_the_whole_family_s_search_and_not_one_member_s_snapshot() {
+        // The relation the one-member test above cannot see, and the claim
+        // the module doc made falsely until 2026-09-14: the review deflates
+        // every member against the family's lifetime total *as the review
+        // finds it*, which is at least as large as the snapshot the gate
+        // charged that member under and strictly larger for every member but
+        // the last. That is deliberate — a comparison drawn now must correct
+        // each family for the search it has actually done — and it is
+        // asserted here so that a future edit "fixing" the review to use the
+        // per-member snapshot fails rather than quietly re-introducing
+        // selection bias on the review's own axis.
+        let population = Population::new().enrol("alpha", 2, GateStage::Holdout, AHEAD);
+        let members = population.members();
+        assert_eq!(members.len(), 2, "the premise: two members were enrolled");
+        let standings = standings(&members);
+        let alpha = standings.get("alpha").expect("alpha stands");
+        assert_eq!(
+            alpha.admitted, 2,
+            "the premise: both members' evidence was readable, so the mean is over two"
+        );
+
+        // The two snapshots, from the gate itself. Charged in enrolment
+        // order, twelve trials each, so the first member's account froze at
+        // twelve and the second's at twenty-four.
+        let first = HoldoutGate::default()
+            .deflated(members[0].strategy, members[0].evidence)
+            .expect("the gate reads the first member");
+        let second = HoldoutGate::default()
+            .deflated(members[1].strategy, members[1].evidence)
+            .expect("the gate reads the second member");
+        assert!(
+            second.trials > first.trials,
+            "the premise: the two members were charged at different points in the family's \
+             search, so their snapshots differ — {} against {}",
+            first.trials,
+            second.trials
+        );
+
+        // One count for the family, not one per member.
+        assert_eq!(
+            members[0].lifetime_trials, members[1].lifetime_trials,
+            "the review read a different count for each member; the deflation is against the \
+             family's search and a family has one"
+        );
+        let family_total = usize::try_from(members[0].lifetime_trials).expect("a small count");
+
+        // The relation, both halves. `>=` for every member, and equality
+        // exactly at the member charged last.
+        for member in &members {
+            let snapshot = HoldoutGate::default()
+                .deflated(member.strategy, member.evidence)
+                .expect("the gate reads this member");
+            assert!(
+                family_total >= snapshot.trials,
+                "the family's current total {family_total} is below {}'s snapshot {}; a total \
+                 that shrank means a charge was lost",
+                member.strategy,
+                snapshot.trials
+            );
+        }
+        assert_eq!(
+            family_total, second.trials,
+            "equality falls on the member charged last, and the second member is it"
+        );
+        assert!(
+            family_total > first.trials,
+            "the first member's snapshot {} equals the family total {family_total}; the review \
+             has stopped correcting for the siblings evaluated after it",
+            first.trials
+        );
+
+        // And the figure follows from that count rather than from the
+        // snapshots. Summed in the order `standings` sums, so this is bit
+        // equality and not a tolerance.
+        let mut total = 0.0_f64;
+        for member in &members {
+            let holdout = member
+                .evidence
+                .holdout
+                .as_ref()
+                .expect("the holdout series");
+            let deflated = deflated_sharpe(
+                &holdout.holdout_returns,
+                family_total,
+                holdout.periods_per_year,
+            )
+            .expect("the series deflates against the family total");
+            total += deflated.observed - deflated.expected_maximum;
+        }
+        let at_family_total = total / 2.0;
+        assert_eq!(
+            alpha.deflated_excess.to_bits(),
+            at_family_total.to_bits(),
+            "the family figure is not the deflation at the family's own lifetime count"
+        );
+        let at_snapshots = ((first.observed - first.expected_maximum)
+            + (second.observed - second.expected_maximum))
+            / 2.0;
+        assert!(
+            (alpha.deflated_excess - at_snapshots).abs() > f64::EPSILON,
+            "the family figure equals the mean of the per-member snapshots; the review is \
+             grading each member against the search as it stood when that member ran, which \
+             lets a family that has since tried ten thousand more configurations keep an old, \
+             flattering correction"
+        );
+    }
+
+    #[test]
+    fn a_family_registered_ten_times_and_read_once_has_one_observation_and_not_ten() {
+        // The bar is a *sample* bar — `COUNTERFACTUAL_SIZING_MIN_SAMPLE`, by
+        // reference — and it was being applied to a population count until
+        // 2026-09-14. A reviewer's probe built exactly this population and
+        // got a finding reporting ten as the unfunded side's member count
+        // from one readable observation, which is the number a reader takes
+        // as the sample size.
+        //
+        // Both halves. The refusal, and then the same family with the
+        // readable members it actually needs, so this cannot pass against a
+        // `misallocation` that returns `None` for everything.
+        let thin = Population::new()
+            .enrol("alpha", 1, GateStage::Holdout, AHEAD)
+            .enrol_unreadable("alpha", FAMILY_REVIEW_MIN_MEMBERS - 1, GateStage::Holdout)
+            .enrol(
+                "omega",
+                FAMILY_REVIEW_MIN_MEMBERS,
+                GateStage::Scaled,
+                BEHIND,
+            );
+        let thin_members = thin.members();
+        let thin_standings = standings(&thin_members);
+        let alpha = thin_standings.get("alpha").expect("alpha stands");
+        assert_eq!(
+            alpha.members, FAMILY_REVIEW_MIN_MEMBERS,
+            "the premise: the family clears the bar on registrations"
+        );
+        assert_eq!(alpha.admitted, 1, "the premise: exactly one was readable");
+        assert_eq!(alpha.refused, FAMILY_REVIEW_MIN_MEMBERS - 1);
+        assert!(
+            alpha.deflated_excess
+                - thin_standings
+                    .get("omega")
+                    .expect("omega stands")
+                    .deflated_excess
+                >= FAMILY_REVIEW_MARGIN,
+            "the premise: the one observation would clear the margin, so only the sample bar \
+             can be what refuses this"
+        );
+        assert_eq!(
+            misallocation(&thin_standings),
+            None,
+            "one readable member cleared a ten-observation bar because nine registrations \
+             nothing could read were counted as observations"
+        );
+
+        // The admitting half: the same family, read ten times — and carrying
+        // three further registrations nothing can read, so that the two
+        // counts on the record differ and the field is proved to carry the
+        // sample rather than the population.
+        let full = Population::new()
+            .enrol(
+                "alpha",
+                FAMILY_REVIEW_MIN_MEMBERS,
+                GateStage::Holdout,
+                AHEAD,
+            )
+            .enrol_unreadable("alpha", 3, GateStage::Holdout)
+            .enrol(
+                "omega",
+                FAMILY_REVIEW_MIN_MEMBERS,
+                GateStage::Scaled,
+                BEHIND,
+            );
+        let full_members = full.members();
+        let full_standings = standings(&full_members);
+        let full_alpha = full_standings.get("alpha").expect("alpha stands");
+        assert_eq!(
+            full_alpha.members,
+            FAMILY_REVIEW_MIN_MEMBERS + 3,
+            "the premise: the two counts differ, so the assertion below distinguishes them"
+        );
+        assert_eq!(full_alpha.admitted, FAMILY_REVIEW_MIN_MEMBERS);
+        let finding = misallocation(&full_standings).expect("ten readable members is a finding");
+        // And the record says how many observations it rests on, not how
+        // many registrations exist.
+        assert_eq!(
+            finding.unfunded_evaluated, FAMILY_REVIEW_MIN_MEMBERS,
+            "the finding reported the registration count as its sample size"
+        );
+        assert_eq!(finding.funded_evaluated, FAMILY_REVIEW_MIN_MEMBERS);
+    }
+
+    #[test]
+    fn a_gap_of_exactly_the_margin_is_a_finding_and_one_ulp_below_it_is_not() {
+        // `misallocation` argues its `>=` in a comment — "the margin is the
+        // bar, and a gap that lands exactly on a declared threshold clears
+        // it" — and nothing tested it: changing the operator to `>` left the
+        // module's whole suite green. An argued bar with no test is an
+        // argument.
+        //
+        // The standings are built directly rather than from evidence,
+        // because a gap of *exactly* the margin cannot be reached by choosing
+        // drifts. The margin less zero is exact in binary and `next_down` is
+        // the nearest representable value below it, so the two cases below
+        // are one unit in the last place apart and neither is a rounding
+        // accident.
+        let standing = |family: &str, funded: usize, excess: f64| FamilyStanding {
+            family: family.to_string(),
+            members: FAMILY_REVIEW_MIN_MEMBERS,
+            funded,
+            admitted: FAMILY_REVIEW_MIN_MEMBERS,
+            refused: 0,
+            deflated_excess: excess,
+        };
+        let pair = |unfunded_excess: f64| {
+            BTreeMap::from([
+                ("alpha".to_string(), standing("alpha", 0, unfunded_excess)),
+                ("omega".to_string(), standing("omega", 1, 0.0)),
+            ])
+        };
+
+        let exactly = pair(FAMILY_REVIEW_MARGIN);
+        // Compared as bits: this premise is "exactly", and a float equality
+        // here would be the one place in the test where "exactly" meant
+        // something looser than the word.
+        assert_eq!(
+            (exactly.get("alpha").expect("alpha stands").deflated_excess
+                - exactly.get("omega").expect("omega stands").deflated_excess)
+                .to_bits(),
+            FAMILY_REVIEW_MARGIN.to_bits(),
+            "the premise: the gap is the margin exactly, to the bit"
+        );
+        let finding = misallocation(&exactly)
+            .expect("a gap of exactly the declared margin did not clear the declared margin");
+        assert_eq!(finding.unfunded, "alpha");
+
+        let below = pair(FAMILY_REVIEW_MARGIN.next_down());
+        assert!(
+            below.get("alpha").expect("alpha stands").deflated_excess < FAMILY_REVIEW_MARGIN,
+            "the premise: the second case is genuinely below the margin"
+        );
+        assert_eq!(
+            misallocation(&below),
+            None,
+            "a gap one unit in the last place below the margin was read as clearing it"
+        );
+    }
+
+    #[test]
     fn two_families_whose_names_differ_only_after_a_colon_cannot_exist_so_the_finding_key_is_injective()
      {
         // The finding's idempotency key joins two family names with `:`, so
@@ -912,8 +1313,8 @@ mod tests {
                 .expect("admissible")
                 .as_str()
                 .to_string(),
-            unfunded_members: FAMILY_REVIEW_MIN_MEMBERS,
-            funded_members: FAMILY_REVIEW_MIN_MEMBERS,
+            unfunded_evaluated: FAMILY_REVIEW_MIN_MEMBERS,
+            funded_evaluated: FAMILY_REVIEW_MIN_MEMBERS,
         };
         let right = Misallocation {
             unfunded: StrategyFamily::new("a.b")
@@ -988,7 +1389,7 @@ mod tests {
             let review = FamilyAllocationReview::of(&standings, 11, at());
             let finding = misallocation(&standings).expect("the premise: a finding is produced");
             assert_eq!(
-                finding.unfunded_members, FAMILY_REVIEW_MIN_MEMBERS,
+                finding.unfunded_evaluated, FAMILY_REVIEW_MIN_MEMBERS,
                 "the premise: three families tied on evidence, so only the order decides"
             );
             seen.insert(format!(

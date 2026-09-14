@@ -12942,11 +12942,14 @@ impl Platform {
                 unfunded: unfunded.to_string(),
                 funded: funded.to_string(),
                 // The counts as they stand now, not as they stood when the
-                // finding was raised: a family that has since lost every
-                // member reads as zero, which is the honest reason the
-                // finding evaporated.
-                unfunded_members: standings.get(unfunded).map_or(0, |s| s.members),
-                funded_members: standings.get(funded).map_or(0, |s| s.members),
+                // finding was raised: a family whose evidence has since
+                // stopped being readable reads as zero, which is the honest
+                // reason the finding evaporated. `admitted` and not
+                // `members`, matching the bar the finding had to clear —
+                // a withdrawal that reported the registration count would say
+                // the sample was still there when the sample is what left.
+                unfunded_evaluated: standings.get(unfunded).map_or(0, |s| s.admitted),
+                funded_evaluated: standings.get(funded).map_or(0, |s| s.admitted),
             };
             let record = MisallocationFinding::of(&pair, FAMILY_FINDING_WITHDRAWN, self.cycle, now);
             match self.journal_once(record, FAMILY_REVIEW_ORIGIN, now) {
