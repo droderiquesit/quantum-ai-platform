@@ -1131,8 +1131,14 @@ fn the_two_reinstatement_signatures_are_held_to_one_rationale_floor() -> Result<
         .reinstate_venue("simulated-venue", &operator("bram", now), "   x   ", now)
         .expect_err("a one-character countersignature reinstated a withdrawn venue");
     assert!(
-        thin.message().contains("must state a rationale"),
+        thin.message()
+            .contains("must state a rationale somebody can review later"),
         "the countersignature was refused for some other reason: {}",
+        thin.message()
+    );
+    assert!(
+        thin.message().contains("reinstatement"),
+        "the refusal does not name which signature is short: {}",
         thin.message()
     );
     assert_eq!(

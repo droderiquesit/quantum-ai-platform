@@ -1030,17 +1030,81 @@ const PROMOTION_CREDENTIAL_AGE: Duration = ELIGIBILITY_CREDENTIAL_AGE;
 /// attempt is refused, naming the age, and the pair start again.
 const PROMOTION_APPROVAL_WINDOW: Duration = Duration::from_hours(24);
 
-/// The shortest rationale a reinstatement signature may state, in trimmed
-/// characters.
+/// The shortest rationale either signature on a dual approval may state, in
+/// trimmed characters.
 ///
 /// Mirrors the floor `qip_contracts::governance::Approval::new` applies to the
 /// *first* signature, which is not exported as a constant and which
-/// `Approval::countersigned_by` does not re-apply. Held equal to it by
-/// `the_two_reinstatement_signatures_are_held_to_one_rationale_floor` rather
-/// than by this comment: a mirrored number that drifts is worse than no
-/// number, because the second signer would then be held to a floor the first
-/// is not and nobody would know which.
-const REINSTATEMENT_RATIONALE_FLOOR: usize = 10;
+/// `Approval::countersigned_by` does not re-apply — it cannot, because it is
+/// never handed a rationale to check. Held equal to `Approval::new`'s own
+/// number by the three tests [`require_countersignature_rationale`] names,
+/// each of which asserts the first signature's refusal one character below
+/// this floor as its premise, rather than by this comment: a mirrored number
+/// that drifts is worse than no number, because the second signer would then
+/// be held to a floor the first is not and nobody would know which.
+///
+/// One floor for all three dual approvals, on purpose. A promotion rationale
+/// held to a different bar than a reinstatement rationale would need a reason
+/// and there is none: each is a second person's written answer to why the act
+/// is safe now, and the record keeps only what they wrote.
+const COUNTERSIGNATURE_RATIONALE_FLOOR: usize = 10;
+
+/// Refuse a countersignature whose rationale nobody could review.
+///
+/// # The defect this prevents, and it shipped three times
+///
+/// Every dual approval in this file has one shape. `Approval::new` holds the
+/// first signature and refuses a rationale under
+/// [`COUNTERSIGNATURE_RATIONALE_FLOOR`] trimmed characters. The countersigning
+/// arm then calls `Approval::countersigned_by`, which checks only that the
+/// second signer is not the first, and writes the *second* signer's text onto
+/// the record. So the first signer had to argue and the second could write
+/// `"x"` — and the second signer's text is the whole of the justification the
+/// log carries for the act.
+///
+/// Three sites had it, and the third is why this is a function rather than a
+/// check repeated at each: [`Platform::reinstate_venue`], which puts back a
+/// venue the platform stopped using on its own evidence;
+/// [`Platform::approve_promotion`], which puts capital behind a strategy; and
+/// [`Platform::approve_recalibration`], which loosens a risk limit and whose
+/// own documentation says it was "cloned from `approve_promotion` line for
+/// line". A dual signature whose second half carries no reviewable
+/// justification is a control that reads as protection and does less than it
+/// claims — the `MaxExpectedShortfall` shape.
+///
+/// The floor belongs here and not in `Approval::countersigned_by` only because
+/// that method is never given the second rationale; it takes an approver and
+/// keeps the first signer's text. Moving it there means changing its
+/// signature, which is `qip-contracts`' to decide.
+///
+/// `act` names what is being signed, so the refusal says *which* signature is
+/// short rather than that some signature somewhere is.
+///
+/// Refused and not trimmed-and-accepted: a rationale nobody can review is a
+/// caller bug, and clamping it would leave the record saying somebody argued
+/// when nobody did.
+///
+/// Called before the countersignature is taken at all three sites, so nothing
+/// is journaled against a rationale the platform would have refused from the
+/// first signer, and the first signature is left standing — the second signer
+/// restates their reason rather than sending the first back to sign again.
+///
+/// Proven by `the_two_recalibration_signatures_are_held_to_one_rationale_floor`
+/// in this file's own suite, `the_two_reinstatement_signatures_are_held_to_one_rationale_floor`
+/// in `qip-kernel/tests/learning.rs`, and
+/// `the_two_promotion_signatures_are_held_to_one_rationale_floor` in
+/// `qip-kernel/tests/central.rs`.
+fn require_countersignature_rationale(act: &str, rationale: &str) -> Result<()> {
+    if rationale.trim().len() < COUNTERSIGNATURE_RATIONALE_FLOOR {
+        return Err(Error::invalid(format!(
+            "the countersignature on {act} must state a rationale somebody can review later, \
+             of at least {COUNTERSIGNATURE_RATIONALE_FLOOR} characters; the second signer's \
+             text is what the record carries as the justification, and the first signature \
+             was held to the same floor"
+        )));
+    }
+    Ok(())
+}
 
 /// The producer every venue-registration record in the event log carries,
 /// and the one [`Platform::replay_registrations`] selects on. Distinct from
@@ -4883,6 +4947,13 @@ impl Platform {
     /// because two signatures far apart are agreement about two different
     /// states of the world rather than about one decision.
     ///
+    /// Both signatures are held to one rationale floor, by
+    /// [`require_countersignature_rationale`], which argues why. Until
+    /// 2026-09-14 the countersignature was held to none: the second signer's
+    /// text is what `entry.rationale` carries and what `promote` passes down
+    /// to the lifecycle ledger, and it could be `"x"` where the first signer
+    /// was made to argue — on the act that puts capital behind a strategy.
+    ///
     /// # What it still cannot do
     ///
     /// Approve nothing into capital that the gate would refuse. The pair
@@ -4977,6 +5048,15 @@ impl Platform {
                         strategy
                     )));
                 }
+                // The floor the first signature was held to, applied to the
+                // second before it is taken. `rationale` here is the *second*
+                // signer's, and it reaches both the journal entry below and
+                // the lifecycle ledger through `promote`, neither of which
+                // checks it.
+                require_countersignature_rationale(
+                    &format!("{strategy}'s promotion to {}", to.as_str()),
+                    rationale,
+                )?;
                 let approval = first.countersigned_by(operator.subject())?;
                 let outcome = self.central.factory_mut().promote(
                     strategy,
@@ -13109,14 +13189,12 @@ impl Platform {
     /// `grep -rn 'reinstate_venue(' backend/crates/apps` — because how an
     /// operator identity reaches this method is live work.
     ///
-    /// Both signatures are held to the same rationale floor. The first goes
-    /// through `Approval::new`, which refuses a rationale under ten trimmed
-    /// characters; the countersignature goes through
-    /// `Approval::countersigned_by`, which does not check one, so the floor is
-    /// applied here before it. Until 2026-09-14 it was not, and the second
-    /// signer — whose text is the one written to `entry.rationale`, and so
-    /// the whole of the justification on the record for putting a venue back
-    /// — could write `"x"` where the first was made to argue.
+    /// Both signatures are held to the same rationale floor, by
+    /// [`require_countersignature_rationale`], which argues why. Until
+    /// 2026-09-14 the countersignature was held to none, and the second signer
+    /// — whose text is the one written to `entry.rationale`, and so the whole
+    /// of the justification on the record for putting a venue back — could
+    /// write `"x"` where the first was made to argue.
     pub fn reinstate_venue(
         &mut self,
         venue: &str,
@@ -13181,17 +13259,8 @@ impl Platform {
                     )));
                 }
                 // The same floor the first signature was held to, applied
-                // before the countersignature is taken rather than after, so
-                // a reinstatement is never journaled against a rationale the
-                // platform would have refused from the first signer. Refused
-                // and not trimmed-and-accepted: a rationale nobody can review
-                // is a caller bug, and clamping it would leave the record
-                // saying somebody argued when nobody did.
-                if rationale.trim().len() < REINSTATEMENT_RATIONALE_FLOOR {
-                    return Err(Error::invalid(format!(
-                        "the countersignature on {venue}'s reinstatement must state a rationale                          somebody can review later, of at least                          {REINSTATEMENT_RATIONALE_FLOOR} characters; the second signer's text is                          what the record carries as the justification for putting the venue back"
-                    )));
-                }
+                // before the countersignature is taken rather than after.
+                require_countersignature_rationale(&format!("{venue}'s reinstatement"), rationale)?;
                 let first_approver = first.approver.clone();
                 let approval = first.countersigned_by(operator.subject());
                 // Cleared either way, as the promotion is: the pair have had
@@ -13629,6 +13698,11 @@ impl Platform {
     /// and the desk are not written: the artefact is committed under
     /// `data/risk-limits/`, named by `risk_limits_file`, and read at the
     /// next boot (ADR 0061, docs/operations/recalibrating-a-limit.md).
+    ///
+    /// "Cloned line for line" carried the defect too: both signatures are now
+    /// held to one rationale floor by [`require_countersignature_rationale`],
+    /// and until 2026-09-14 the countersignature was held to none here, on
+    /// the act that loosens a risk limit.
     pub fn approve_recalibration(
         &mut self,
         rule: &str,
@@ -13694,6 +13768,11 @@ impl Platform {
                         operator.subject()
                     )));
                 }
+                // The floor the first signature was held to. Applied before
+                // `rebound` runs, so a limit is never loosened against a
+                // second signature the platform would have refused from the
+                // first signer.
+                require_countersignature_rationale(&format!("{rule}'s recalibration"), rationale)?;
                 let approval = first.countersigned_by(operator.subject())?;
                 // Cleared either way, as the promotion is: the pair have had
                 // their answer.
@@ -18756,6 +18835,114 @@ mod rule_review_tests {
             outcomes,
             vec!["proposed".to_string(), "enacted".to_string()]
         );
+    }
+
+    #[test]
+    fn the_two_recalibration_signatures_are_held_to_one_rationale_floor() {
+        // The defect this prevents, and it shipped: `approve_recalibration`'s
+        // own documentation says it was "cloned from `approve_promotion` line
+        // for line", and the line it cloned was the one that was wrong.
+        // `Approval::new` refuses a first rationale under ten trimmed
+        // characters; `Approval::countersigned_by` checks none, and the
+        // countersigning arm wrote the second signer's string straight onto
+        // `RecalibrationApprovalEntry.rationale` and then ran `rebound`. So
+        // the first signer had to argue and the second could write "x" — on
+        // the act that loosens a risk limit, and the second signer's text is
+        // the whole of the justification the log carries for it.
+        //
+        // Found while fixing the same defect on `reinstate_venue`. Three
+        // sites had it; that is why the check is one function and not three.
+        let mut platform = platform();
+        regret_twelve(&mut platform);
+        platform.review_rules(start());
+        // Premise: there is a proposal to sign. Without this the refusals
+        // below would be "no such proposal" and the test would assert nothing
+        // about rationales at all.
+        assert!(
+            platform.open_recalibrations().contains_key(RULE),
+            "the premise failed: no proposal stands to be signed"
+        );
+
+        // Premise: the floor is real on the *first* signature and it is ten
+        // trimmed characters. Asserted against `Approval::new`'s own refusal
+        // rather than against `COUNTERSIGNATURE_RATIONALE_FLOOR`, because that
+        // constant mirrors a number `qip-contracts` does not export and a
+        // mirror that drifts would hold the two signers to different floors
+        // with nobody able to say which.
+        let short = platform
+            .approve_recalibration(RULE, &operator("ops-dana", start()), "  fine  ", start())
+            .expect_err("a nine-character rationale signed the first half");
+        assert!(
+            short
+                .message()
+                .contains("state a rationale somebody can review later"),
+            "the first signature was refused for some other reason: {}",
+            short.message()
+        );
+        assert!(
+            platform.pending_recalibrations.is_empty(),
+            "a refused first signature was held as pending anyway"
+        );
+
+        platform
+            .approve_recalibration(RULE, &operator("ops-dana", start()), WHY, start())
+            .expect("a first signature with a reviewable reason");
+
+        // The countersignature, one character and then some below the same
+        // floor. Trimmed, so padding with spaces does not buy a signer past
+        // the bar either.
+        let thin = platform
+            .approve_recalibration(RULE, &operator("ops-ravi", start()), "   x   ", start())
+            .expect_err("a one-character countersignature loosened a risk limit");
+        assert!(
+            thin.message().contains("must state a rationale"),
+            "the countersignature was refused for some other reason: {}",
+            thin.message()
+        );
+        assert!(
+            thin.message().contains("recalibration"),
+            "the refusal does not name which signature is short: {}",
+            thin.message()
+        );
+
+        // The consequence, which is the half that matters: no artefact, no
+        // enactment record, and the proposal still open. A test that only
+        // checked the refusal would pass against an implementation that
+        // refused *after* calling `rebound`.
+        assert!(
+            platform.open_recalibrations().contains_key(RULE),
+            "a refused countersignature closed the proposal"
+        );
+        let outcomes: Vec<String> = proposals(&platform)
+            .into_iter()
+            .map(|p| p.outcome)
+            .collect();
+        assert_eq!(
+            outcomes,
+            vec!["proposed".to_string()],
+            "a refused countersignature journaled an outcome for the proposal"
+        );
+        // And the first signature still stands: a refusal on the floor is not
+        // a refusal of the pair, so the second signer restates their reason
+        // rather than sending the first back to sign again.
+        assert!(
+            platform.pending_recalibrations.contains_key(RULE),
+            "a rationale too short discarded the first signature"
+        );
+
+        // The admitting half. Without it this test passes against an
+        // `approve_recalibration` that refuses every countersignature, which
+        // is a floor nobody can clear rather than a floor.
+        let done = platform
+            .approve_recalibration(RULE, &operator("ops-ravi", start()), WHY, start())
+            .expect("a second, different signer with a reviewable reason enacts");
+        assert_eq!(done.outcome, PROPOSAL_ENACTED);
+        assert_eq!(done.second_approver.as_deref(), Some("ops-ravi"));
+        assert!(
+            done.artefact.is_some(),
+            "the enacting signature produced no artefact"
+        );
+        assert!(platform.open_recalibrations().is_empty());
     }
 
     #[test]
