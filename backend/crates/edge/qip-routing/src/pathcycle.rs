@@ -71,6 +71,33 @@ impl VenueRegions {
         self
     }
 
+    /// Every named venue in one region: what a cell that has only been told
+    /// its own region can honestly say.
+    ///
+    /// This is the *whole* map, not a default applied to anything else. A
+    /// venue absent from `venues` is still refused by [`Self::region_of`],
+    /// which is the point: a cell built this way routes its own region's
+    /// cycles and refuses one that reaches a venue nobody placed, rather
+    /// than assuming the venue is local because the cell is.
+    ///
+    /// Refused when `venues` is empty. A map naming no venue can route no
+    /// cycle, and a caller that built one has a configuration problem the
+    /// first refused cycle would report as a venue problem instead.
+    pub fn all_in(region: RegionId, venues: &[VenueId]) -> Result<Self> {
+        if venues.is_empty() {
+            return Err(Error::invalid(format!(
+                "no venue was named for region {}, so every cycle would be refused for an \
+                 unrecorded venue; name the venues this cell may trade at",
+                region.as_str()
+            )));
+        }
+        let mut map = Self::new();
+        for venue in venues {
+            map = map.with(venue.clone(), region.clone());
+        }
+        Ok(map)
+    }
+
     pub fn len(&self) -> usize {
         self.by_venue.len()
     }
@@ -415,6 +442,36 @@ mod tests {
             .expect("a cross-region cycle with inventory routes");
         assert_eq!(assignment.assigned(), ExecutionPath::MirroredInventory);
         assert!(!assignment.eligible().contains(&ExecutionPath::CrossVenue));
+    }
+
+    #[test]
+    fn a_single_region_map_places_every_named_venue_and_still_refuses_one_it_was_not_given() {
+        // The shape a cell is built with: it knows its own region and the
+        // venues it may trade at, and nothing else. The second half is the
+        // half that matters — a convenience constructor that made the whole
+        // map permissive would turn "this cell is local" into "every venue
+        // is local", which is exactly the assumption `region_of` exists to
+        // refuse.
+        let map = VenueRegions::all_in(region("us-east"), &[venue("XNAS"), venue("XLON")])
+            .expect("two venues in one region is a map");
+        assert_eq!(map.len(), 2);
+        assert_eq!(
+            map.region_of(&venue("XLON")).expect("named"),
+            &region("us-east")
+        );
+        let refusal = map
+            .region_of(&venue("XCBO"))
+            .expect_err("a venue the map does not name has no region");
+        assert_eq!(refusal.code(), "not_found");
+
+        let empty = VenueRegions::all_in(region("us-east"), &[])
+            .expect_err("a map naming no venue can route nothing");
+        assert_eq!(empty.code(), "invalid");
+        assert!(
+            empty.message().contains("no venue was named for region"),
+            "the refusal should say why: {}",
+            empty.message()
+        );
     }
 
     #[test]
