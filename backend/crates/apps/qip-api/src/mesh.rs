@@ -835,6 +835,20 @@ pub fn pending_policy(
         // multiplier and lifts no pause, and its only reader,
         // `qip_edge::feasibility::assess`, reads it to refuse.
         payload.feasibility_constraints = Slot::produced(platform.feasibility_constraints(), now);
+        // Slot twelve, §41.5's last and unproduced in every payload the centre
+        // has ever built. `adversary_review::slot` is fail-closed twice over:
+        // unproduced when nothing has been measured, and unproduced *entirely*
+        // rather than partially if any venue fails to encode — a half-filled
+        // profile set would read at a cell as "these venues are fine" about
+        // venues the centre never assessed.
+        //
+        // Say plainly what producing it does and does not do. It changes the
+        // payload digest and gives a cell something to read. It changes no
+        // behaviour anywhere: `PolicyItem::capability` maps this slot to no
+        // §6.2 capability, so it lifts no pause and moves no multiplier, and
+        // no cell reads it yet. Do not describe the profiles as acted on.
+        payload.adversary_profiles =
+            qip_kernel::adversary_review::slot(platform.fill_scores(), now);
         pending.payloads.push((cell, payload));
     }
     pending

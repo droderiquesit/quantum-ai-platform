@@ -10523,6 +10523,24 @@ impl Platform {
         for problem in problems {
             outcome = outcome.with_problem(problem);
         }
+        // §15.2's third question, after `score_filled` so the twin's per-fill
+        // error exists to read. Until this call the fill error was charted per
+        // venue and nothing ever asked whether a venue's fills were getting
+        // *worse*. It measures and journals: it withdraws no venue, sizes
+        // nothing and widens nothing, and `adversary_review`'s header says why
+        // each of those is refused rather than deferred. The one that matters
+        // most: a monitor able to withdraw on its own evidence would put a
+        // mis-specified cost model in charge of whether the platform trades,
+        // which is what `a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue`
+        // exists to stop.
+        let (reviewed, problems) = crate::adversary_review::review(self, now);
+        if let Some(reviewed) = reviewed {
+            let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
         // ADR 0066's cadence, evaluation tiers and compounding plan, in the
         // same `(summary, problems)` shape and for the same reason: three
         // subjects asking one question — does this run now? — answered once
