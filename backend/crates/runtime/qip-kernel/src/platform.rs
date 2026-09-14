@@ -40,7 +40,10 @@ use crate::central::{
 };
 use crate::config::PlatformConfig;
 use crate::cycle::{CycleReport, Stage, StageOutcome};
-use crate::family_review::{FamilyMember, FamilyStanding};
+use crate::family_review::{
+    FAMILY_FINDING_PROPOSED, FAMILY_FINDING_WITHDRAWN, FamilyAllocationReview, FamilyMember,
+    FamilyStanding, Misallocation, MisallocationFinding,
+};
 use crate::rule_review::{
     PROPOSAL_ENACTED, PROPOSAL_WITHDRAWN, RecalibrationProposal, RegretEvidence, RuleActivity,
     RuleDefence, RuleDormant, RuleRegret, RuleReviewJournal, regret_by_rule,
@@ -134,8 +137,7 @@ use qip_learning_engine::self_model::{ComponentKey, SelfModel};
 use qip_lifecycle::corridor::{
     CorridorRoute, CorridorStanding as LifecycleCorridorStanding, CorridorSubject,
 };
-use qip_lifecycle::gates::HoldoutGate;
-use qip_lifecycle::trials::TrialBook;
+use qip_lifecycle::trials::{StrategyFamily, TrialBook};
 use qip_market::bar::{Bar, Interval};
 use qip_market::corporate_action::{CorporateAction, CorporateActionKind};
 use qip_market::snapshot::MarketSnapshot;
@@ -425,6 +427,15 @@ pub struct Platform {
     /// reason: the proposal is journaled when the finding appears and when
     /// it evaporates, not on every cycle between.
     sizing_proposals_open: BTreeSet<String>,
+    /// Misallocation findings standing, keyed `unfunded:funded` — the journal's
+    /// memory, so the finding is recorded when it appears and when it
+    /// evaporates rather than on every cycle between. A `BTreeSet` and not a
+    /// single `Option` because a key that is somehow open twice must be
+    /// withdrawn twice rather than silently overwritten.
+    ///
+    /// Nothing reads this to decide anything. The finding moves no weight
+    /// (ADR 0064); this exists only so the log does not restate it.
+    family_findings_open: BTreeSet<String>,
     /// What the LEARN stage priced this cycle, for the journal. Cleared as
     /// each cycle's LEARN begins.
     cycle_counterfactuals: Option<CounterfactualJournal>,
@@ -988,6 +999,10 @@ const VENUE_REINSTATEMENT_ORIGIN: &str = "kernel/venue-reinstatement";
 /// The producer on every record the LEARN stage's sizing review writes —
 /// a cap armed or released, and a larger-size proposal.
 const SIZING_REVIEW_ORIGIN: &str = "kernel/sizing-review";
+
+/// The producer on every record the LEARN stage's family review writes — the
+/// per-cycle measurement and the misallocation finding.
+const FAMILY_REVIEW_ORIGIN: &str = "kernel/family-review";
 
 /// How recently an operator must have authenticated to sign a promotion to a
 /// capital-holding rung.
@@ -3310,6 +3325,7 @@ impl Platform {
             pending_reinstatements: BTreeMap::new(),
             sizing_caps_armed: BTreeSet::new(),
             sizing_proposals_open: BTreeSet::new(),
+            family_findings_open: BTreeSet::new(),
             cycle_counterfactuals: None,
             cycle_rule_review: None,
             rule_activity,
@@ -3722,6 +3738,17 @@ impl Platform {
             names::RULE_RECALIBRATION_PROPOSED,
             "recalibration proposals written for a rule that vetoed mostly profitable paths, by \
              rule; a proposal, never a change",
+        );
+        metrics.describe(
+            names::FAMILY_STANDINGS,
+            "strategy families the foundry has registered, by whether any member holds capital; \
+             written every cycle including when the funded arm is zero, which is the state every \
+             deployment of this platform is in",
+        );
+        metrics.describe(
+            names::FAMILY_MISALLOCATIONS,
+            "misallocation findings written for an unfunded family whose deflated evidence stands \
+             clear of every funded family's; a finding, never a weight",
         );
         metrics.describe(
             names::COUNTERFACTUALS_DEFERRED,
@@ -4319,12 +4346,28 @@ impl Platform {
     pub fn family_standings(&self) -> BTreeMap<String, FamilyStanding> {
         let factory = self.central().factory();
         let grouped = factory.families();
+        let book = factory.ledger().trial_book();
+        let trial_counts: BTreeMap<&StrategyFamily, u64> = grouped
+            .keys()
+            .filter_map(|family| {
+                book.and_then(|book| book.lifetime_trials(family))
+                    .map(|count| (*family, count))
+            })
+            .collect();
         let members: Vec<FamilyMember<'_>> = grouped
             .iter()
             .flat_map(|(family, candidates)| {
+                let trials = trial_counts.get(*family).copied().unwrap_or(0);
                 candidates.iter().map(move |candidate| FamilyMember {
                     family,
                     strategy: candidate.strategy(),
+                    // The book's count, read and never charged: a charge on
+                    // every scrape would inflate the lifetime total that every
+                    // future deflation is corrected against, which is the one
+                    // number in this platform a reader must not be able to
+                    // move by reading. A family the book does not know is
+                    // scored against no trials, and `standings` refuses it.
+                    lifetime_trials: trials,
                     // The ledger's rung and not the evidence's: a candidate
                     // carrying pilot evidence it was never promoted on holds
                     // no capital, and counting it as funded would invent the
@@ -4334,12 +4377,7 @@ impl Platform {
                 })
             })
             .collect();
-        // The same gate the promotion path applies:
-        // `qip_lifecycle::gates::gate_for(GateStage::Holdout)` constructs
-        // `HoldoutGate::default()` and nothing else, so the deflation the
-        // review reads is the deflation an admission was decided on rather
-        // than one computed beside it under a policy nobody configured.
-        crate::family_review::standings(&HoldoutGate::default(), &members)
+        crate::family_review::standings(&members)
     }
 
     /// Journal a funding refusal, count it, and return it as the error.
@@ -10332,6 +10370,18 @@ impl Platform {
         // settled nothing, so it can. This measures and allocates nothing:
         // no seam in this platform consumes a family, and a decision keyed on
         // one would be a gate with no subject.
+        //
+        // That sentence is still true of the *correlation* family this call
+        // produces — the clustering of realised return series, which nothing
+        // downstream reads. It is no longer the whole story, and was not
+        // amended when it stopped being: since ADR 0064 the *provenance*
+        // family — the sweep a candidate was registered under, which is the
+        // identity the foundry actually mints — is reviewed against funding
+        // standing a few lines below. That review allocates nothing either,
+        // and for a harder reason than "no seam consumes it": every weight it
+        // could narrow sits behind a writer with no production caller, so a
+        // cap built on it would be a control that cannot fire. The two
+        // families are different objects and neither moves capital.
         match self.central.family_structure(now) {
             Ok(Some(journal)) => {
                 let detail = format!("{}; {}", outcome.detail, journal.describe());
@@ -10345,6 +10395,20 @@ impl Platform {
                     error.message()
                 ));
             }
+        }
+        // Blueprint §12.3's fifth row: where each registered family stands
+        // against funding, measured and journaled, and — where an unfunded
+        // family's evidence stands clear of every funded one's — a finding.
+        // A measurement and a record. Nothing below reads either to size
+        // anything, and `qip-acceptance`'s `security` suite refuses the
+        // method that would (ADR 0064).
+        let (reviewed, problems) = self.review_family_allocation(now);
+        if let Some(reviewed) = reviewed {
+            let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
         }
         // Re-arm the blueprint §23.4 pool gate on the figures this cycle
         // leaves: the allocator's own sizing of the proposal book at the
@@ -12690,6 +12754,126 @@ impl Platform {
         } else {
             (Some(parts.join("; ")), problems)
         }
+    }
+
+    /// The LEARN stage's family review: blueprint §12.3's fifth row, as far
+    /// as the evidence honestly reaches (ADR 0064).
+    ///
+    /// Three effects, and their order is the control.
+    ///
+    /// First `qip_family_standings` is written, **unconditionally and before
+    /// anything can return early**, including when both arms are zero and
+    /// including when the factory has registered nothing at all. That is the
+    /// deliverable of this row rather than a nicety: no deployment of this
+    /// platform funds a family, so a `funded` arm reading zero cycle after
+    /// cycle is the fact "this row has never had a subject" stated in a
+    /// series a person can chart. A gauge written only when there was
+    /// something to say would read in every chart exactly like a review that
+    /// never ran, and those two mean opposite things.
+    ///
+    /// Then the measurement is journaled, once per cycle, and only where
+    /// there is at least one family — a record saying "no families" every
+    /// cycle for a year would bury the log in a fact the series already
+    /// carries.
+    ///
+    /// Then the finding, journal-then-adopt, the `review_venues` ordering:
+    /// the record goes in the log first and `family_findings_open` is updated
+    /// only on `Ok`, because a finding the log does not hold is one a
+    /// restarted process silently raises again as if it were new. A journal
+    /// failure is a problem on the cycle and changes nothing else — which it
+    /// could not anyway, since the finding moves no weight at any point.
+    ///
+    /// Same `(summary, problems)` shape as [`Self::review_sizing`], for the
+    /// same reason.
+    fn review_family_allocation(&mut self, now: Timestamp) -> (Option<String>, Vec<String>) {
+        let standings = self.family_standings();
+        crate::family_review::record_standings(&self.telemetry.metrics, &standings);
+        if standings.is_empty() {
+            return (None, Vec::new());
+        }
+        let mut problems = Vec::new();
+        let review = FamilyAllocationReview::of(&standings, self.cycle, now);
+        let mut parts = vec![review.describe()];
+        if let Err(error) = self.journal_once(review, FAMILY_REVIEW_ORIGIN, now) {
+            problems.push(format!(
+                "the family allocation review could not be journaled: {}",
+                error.message()
+            ));
+        }
+
+        let found = crate::family_review::misallocation(&standings);
+        let standing_key = found
+            .as_ref()
+            .map(|pair| format!("{}:{}", pair.unfunded, pair.funded));
+        // Withdraw first, so a cycle where the finding moved from one pair to
+        // another leaves the log holding both facts in the order they became
+        // true rather than only the newer one.
+        let stale: Vec<String> = self
+            .family_findings_open
+            .iter()
+            .filter(|open| Some(*open) != standing_key.as_ref())
+            .cloned()
+            .collect();
+        for key in stale {
+            // The key's two segments are family names, and `StrategyFamily`
+            // refuses `:` in one, so this split cannot mis-attribute a
+            // withdrawal to a family that was never in the finding.
+            let Some((unfunded, funded)) = key.split_once(':') else {
+                problems.push(format!(
+                    "a standing family finding is keyed {key:?}, which names no pair; it is left \
+                     open rather than withdrawn against a pair nobody established"
+                ));
+                continue;
+            };
+            let pair = Misallocation {
+                unfunded: unfunded.to_string(),
+                funded: funded.to_string(),
+                // The counts as they stand now, not as they stood when the
+                // finding was raised: a family that has since lost every
+                // member reads as zero, which is the honest reason the
+                // finding evaporated.
+                unfunded_members: standings.get(unfunded).map_or(0, |s| s.members),
+                funded_members: standings.get(funded).map_or(0, |s| s.members),
+            };
+            let record = MisallocationFinding::of(&pair, FAMILY_FINDING_WITHDRAWN, self.cycle, now);
+            match self.journal_once(record, FAMILY_REVIEW_ORIGIN, now) {
+                Ok(_) => {
+                    self.family_findings_open.remove(&key);
+                    parts.push(format!(
+                        "the misallocation finding on {unfunded} over {funded} was withdrawn"
+                    ));
+                }
+                Err(error) => problems.push(format!(
+                    "the withdrawal of the misallocation finding on {unfunded} over {funded} \
+                     could not be journaled: {}",
+                    error.message()
+                )),
+            }
+        }
+        if let (Some(pair), Some(key)) = (found, standing_key)
+            && !self.family_findings_open.contains(&key)
+        {
+            let record = MisallocationFinding::of(&pair, FAMILY_FINDING_PROPOSED, self.cycle, now);
+            let described = record.describe();
+            match self.journal_once(record, FAMILY_REVIEW_ORIGIN, now) {
+                Ok(_) => {
+                    self.family_findings_open.insert(key);
+                    // Counted where the log accepted the record and nowhere
+                    // else, the `RULE_DEFENDED` discipline: a finding
+                    // re-derived from unchanged evidence next cycle charts
+                    // nothing, so the series counts findings and not cycles.
+                    self.telemetry
+                        .metrics
+                        .count(names::FAMILY_MISALLOCATIONS, labels([]));
+                    parts.push(described);
+                }
+                Err(error) => problems.push(format!(
+                    "a misallocation finding was raised and could not be journaled: {}",
+                    error.message()
+                )),
+            }
+        }
+        (Some(parts.join("; ")), problems)
     }
 
     /// The LEARN stage's venue review: blueprint §12.3's fourth row, read

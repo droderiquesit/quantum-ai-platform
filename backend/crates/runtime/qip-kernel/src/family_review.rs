@@ -31,18 +31,41 @@
 //! # The statistic, and why it is the gate's own
 //!
 //! A family's figure is the member mean of `observed - expected_maximum` from
-//! [`HoldoutGate::deflated`] — how far its holdout Sharpe stands above what
-//! its own search alone would produce, in annualised Sharpe units.
+//! [`deflated_sharpe`] — how far its holdout Sharpe stands above what its own
+//! search alone would produce, in annualised Sharpe units.
 //!
 //! It is not [`qip_simulation_engine::validation::DeflatedSharpe::observed`],
 //! which is the *undeflated* Sharpe: grading a family that tried ten thousand
 //! configurations on the same scale as one that tried ten is exactly the
 //! selection bias the holdout gate was built to correct, and re-introducing
 //! it here would let a review recommend funding on a number the selector
-//! never used. It is the gate's own arithmetic, reached through the gate,
-//! rather than a second statistic computed beside it — two expressions of one
-//! quantity eventually disagree, and the one that loses is the one nobody
-//! reads.
+//! never used.
+//!
+//! ## Why the count is passed in rather than read off the evidence
+//!
+//! [`qip_lifecycle::gates::HoldoutGate::deflated`] is the obvious call here,
+//! and it cannot be made. It resolves the lifetime trial count from
+//! `StrategyEvidence::trial_account`, and **no candidate in this platform ever
+//! carries one**: `qip_lifecycle::ledger`'s `charge_holdout_trials` charges
+//! the account into a `Cow` that `attempt_promotion` hands to the gate and
+//! drops, and `StrategyFactory::submit_evidence`, the only writer that could
+//! put it back, has no caller at all. Check both rather than believe this:
+//!
+//! ```text
+//! grep -rn 'with_trial_account\|submit_evidence' backend/crates --include=*.rs
+//! ```
+//!
+//! A review that called `HoldoutGate::deflated` would therefore refuse every
+//! member of every family for ever, while reading in the code like a working
+//! comparison — the `MaxExpectedShortfall` shape a second time, inside the
+//! very lane that exists to refuse it. So the count is resolved by the caller
+//! from the trial book (`TrialBook::lifetime_trials`, a read and not a
+//! charge), which is the same number `HoldoutGate::charged_trials` resolves
+//! to, and the deflation is the same [`deflated_sharpe`] call the gate's own
+//! last line makes. `a_family_s_figure_is_the_gate_s_own_deflation_and_not_the_raw_sharpe`
+//! holds the two to bit equality on evidence carrying an account, so the day
+//! anything does attach one the agreement is a test failure away from being
+//! visible rather than an assumption.
 //!
 //! Both sides of the comparison are the same measure. A realised return over
 //! a grant and a backtested holdout series are different quantities; a
@@ -55,9 +78,9 @@ use qip_contracts::signal::StrategyId;
 use qip_core::time::Timestamp;
 use qip_events::{EventBody, Topic};
 use qip_lifecycle::evidence::StrategyEvidence;
-use qip_lifecycle::gates::HoldoutGate;
 use qip_lifecycle::trials::StrategyFamily;
 use qip_observability::metrics::{Metrics, labels, names};
+use qip_simulation_engine::validation::deflated_sharpe;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -99,6 +122,12 @@ pub struct FamilyMember<'a> {
     /// The rung the factory's ledger says it stands at.
     pub stage: GateStage,
     pub evidence: &'a StrategyEvidence,
+    /// The family's lifetime trial count, from the trial book the factory
+    /// enrolled this strategy in — the number the deflation corrects
+    /// against. See the module documentation for why it is passed rather
+    /// than read from `evidence.trial_account`, which is `None` on every
+    /// candidate this platform registers.
+    pub lifetime_trials: u64,
 }
 
 /// Where one family stands: how many of its members hold capital, how much of
@@ -146,15 +175,7 @@ impl FamilyStanding {
 /// the record is replayed: a review that reordered its families between two
 /// replays of one log would produce two different lines for one fact.
 ///
-/// `gate` is taken rather than constructed here so the deflation is
-/// demonstrably the one the promotion path applies. It reads no policy — the
-/// bars live on the rung, not on the statistic — but taking it makes the
-/// dependency visible at every call site instead of leaving the next reader
-/// to establish that two deflations agree.
-pub fn standings(
-    gate: &HoldoutGate,
-    members: &[FamilyMember<'_>],
-) -> BTreeMap<String, FamilyStanding> {
+pub fn standings(members: &[FamilyMember<'_>]) -> BTreeMap<String, FamilyStanding> {
     // Sums kept beside the standings rather than on them: a running total
     // with a divisor is not a standing, and a field carrying one would be
     // readable as a weight by anyone who did not read this comment.
@@ -177,7 +198,7 @@ pub fn standings(
         // usize/GateStage above, f64 below: this is the crossing point from
         // the lifecycle's counts into the statistics lane, and everything
         // past it is `f64` because a Sharpe ratio is not money.
-        match gate.deflated(member.strategy, member.evidence) {
+        match member_deflation(member) {
             Ok(deflated) => {
                 let member_excess = deflated.observed - deflated.expected_maximum;
                 if member_excess.is_finite() {
@@ -201,6 +222,31 @@ pub fn standings(
         }
     }
     out
+}
+
+/// One member's deflated Sharpe, by the same arithmetic
+/// [`qip_lifecycle::gates::HoldoutGate::deflated`] ends in.
+///
+/// Refuses — rather than scoring zero — a member with no holdout series and a
+/// lifetime count that does not fit a `usize`. `deflated_sharpe` makes the
+/// rest of the refusals itself: too few observations, no trials charged,
+/// returns that do not vary.
+fn member_deflation(
+    member: &FamilyMember<'_>,
+) -> qip_core::error::Result<qip_simulation_engine::validation::DeflatedSharpe> {
+    let holdout = member.evidence.holdout.as_ref().ok_or_else(|| {
+        qip_core::error::Error::invalid(format!(
+            "{} submitted no holdout evidence, so its family's figure has nothing to read",
+            member.strategy
+        ))
+    })?;
+    let trials = usize::try_from(member.lifetime_trials).map_err(|_| {
+        qip_core::error::Error::numeric(format!(
+            "a lifetime count of {} trials cannot be deflated against",
+            member.lifetime_trials
+        ))
+    })?;
+    deflated_sharpe(&holdout.holdout_returns, trials, holdout.periods_per_year)
 }
 
 /// A pair of families the evidence separates: one holding capital, one not,
@@ -342,11 +388,31 @@ impl FamilyAllocationReview {
     }
 
     /// One line for the cycle's detail.
+    ///
+    /// Names the families rather than only counting them, because the
+    /// question this row exists to answer is *which* families the desk is
+    /// paying for, and a count answers it for nobody. Bounded by the number
+    /// of sweeps the foundry has run, which is small and set by the desk —
+    /// unlike a per-instrument line, which is why the sizing review counts
+    /// where this names. Name order, so two replays of one log produce one
+    /// line.
     pub fn describe(&self) -> String {
+        let named: Vec<String> = self
+            .standings
+            .iter()
+            .map(|standing| {
+                format!(
+                    "{} ({} member(s), {} funded)",
+                    standing.family, standing.members, standing.funded
+                )
+            })
+            .collect();
         format!(
-            "{} strategy family(ies) reviewed against funding standing, {} of them funded; the \
-             review allocates nothing",
-            self.families, self.funded_families
+            "{} strategy family(ies) reviewed against funding standing, {} of them funded [{}]; \
+             the review allocates nothing",
+            self.families,
+            self.funded_families,
+            named.join(", ")
         )
     }
 }
@@ -431,6 +497,7 @@ mod tests {
     use qip_lifecycle::evidence::{
         CrossValidationRun, FeatureTiming, HoldoutEvidence, LeakageAudit,
     };
+    use qip_lifecycle::gates::HoldoutGate;
     use qip_lifecycle::trials::TrialBook;
     use qip_numerics::stats;
 
@@ -536,6 +603,12 @@ mod tests {
                     strategy: &self.strategies[i],
                     stage: self.stages[i],
                     evidence: &self.evidence[i],
+                    // The book's own count, exactly as `Platform::family_standings`
+                    // resolves it.
+                    lifetime_trials: self
+                        .book
+                        .lifetime_trials(&self.families[i])
+                        .expect("the family is open in the book"),
                 })
                 .collect()
         }
@@ -567,7 +640,7 @@ mod tests {
                 BEHIND,
             );
         let members = population.members();
-        let standings = standings(&HoldoutGate::default(), &members);
+        let standings = standings(&members);
         let finding = misallocation(&standings).expect("the premise: a finding is produced");
         assert_eq!(finding.unfunded, "alpha");
         assert_eq!(finding.funded, "omega");
@@ -619,7 +692,7 @@ mod tests {
             )
             .enrol("omega", FAMILY_REVIEW_MIN_MEMBERS, GateStage::Scaled, AHEAD);
         let members = population.members();
-        let standings = standings(&HoldoutGate::default(), &members);
+        let standings = standings(&members);
 
         // Both premises first: both sides cleared the member minimum and both
         // were readable, so `None` below is a verdict and not a shortfall.
@@ -661,7 +734,7 @@ mod tests {
                 BEHIND,
             );
         let short_members = short.members();
-        let short_standings = standings(&HoldoutGate::default(), &short_members);
+        let short_standings = standings(&short_members);
         let alpha = short_standings.get("alpha").expect("alpha stands");
         assert_eq!(
             alpha.members,
@@ -697,7 +770,7 @@ mod tests {
                 BEHIND,
             );
         let full_members = full.members();
-        let full_standings = standings(&HoldoutGate::default(), &full_members);
+        let full_standings = standings(&full_members);
         let finding = misallocation(&full_standings)
             .expect("one more member and the same evidence is a finding");
         assert_eq!(finding.unfunded_members, FAMILY_REVIEW_MIN_MEMBERS);
@@ -724,7 +797,7 @@ mod tests {
             )
             .enrol("beta", FAMILY_REVIEW_MIN_MEMBERS, GateStage::Shadow, BEHIND);
         let members = population.members();
-        let standings = standings(&HoldoutGate::default(), &members);
+        let standings = standings(&members);
 
         assert_eq!(
             standings.len(),
@@ -764,17 +837,25 @@ mod tests {
         // configurations level with one that tried ten.
         let population = Population::new().enrol("alpha", 1, GateStage::Holdout, AHEAD);
         let members = population.members();
-        let gate = HoldoutGate::default();
-        let standings = standings(&gate, &members);
+        let standings = standings(&members);
         let alpha = standings.get("alpha").expect("alpha stands");
         assert_eq!(
             alpha.admitted, 1,
             "the premise: one admitted member, so the mean is exact"
         );
 
-        let deflated = gate
+        // Put the *gate* in front of the same evidence. `Population` charges a
+        // real account through `TrialBook`, so this is the number an admission
+        // would have been decided on, and the review's figure has to equal it
+        // — though the review reached it through the book, because no
+        // candidate this platform registers carries an account at all.
+        let deflated = HoldoutGate::default()
             .deflated(members[0].strategy, members[0].evidence)
             .expect("the gate reads the same evidence");
+        assert_eq!(
+            deflated.trials, members[0].lifetime_trials as usize,
+            "the premise: the gate and the review deflated against one count"
+        );
         // Compared as bits rather than as floats. "To the bit" is the claim
         // — that the review reads the gate's arithmetic rather than an
         // arithmetic that agrees with it to a tolerance — and a tolerance
@@ -894,7 +975,7 @@ mod tests {
                     BEHIND,
                 );
             let members = population.members();
-            let standings = standings(&HoldoutGate::default(), &members);
+            let standings = standings(&members);
             let names: Vec<&str> = standings
                 .values()
                 .map(|standing| standing.family.as_str())

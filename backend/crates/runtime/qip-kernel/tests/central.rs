@@ -8,9 +8,12 @@
 //! cannot — three cells accumulating one name between them, and one cell's
 //! books not agreeing with its venue.
 //!
-//! The last test is the one that says the whole module is additive: the same
-//! cycle, stage for stage, on a platform whose central plane has been used and
-//! one whose has not.
+//! One test says how nearly additive the module is: the same cycle, stage for
+//! stage, on a platform whose central plane has been used and one whose has
+//! not — with one enumerated exception since ADR 0064, because the LEARN stage
+//! now reviews the families the factory has registered and an empty factory
+//! has none to review. The exception is written out in that test rather than
+//! excused by comparing less.
 
 // The workspace denies `panic_in_result_fn` for production code, where an
 // assertion that aborts a `Result`-returning function is a bug. In a test the
@@ -1179,8 +1182,23 @@ fn the_whole_walk_from_candidate_to_scaled_is_reconstructable_from_the_ledger() 
     Ok(())
 }
 
+/// Until ADR 0064 this was `attaching_the_central_plane_leaves_a_cycle_exactly_as_it_was`
+/// and asserted whole-report equality. That claim is now false by design, for
+/// exactly one clause of exactly one stage: the LEARN stage reviews the
+/// families the factory has registered, so a plane holding a candidate reports
+/// a standing and an empty plane reports nothing.
+///
+/// The assertion is narrowed rather than dropped, and narrowed by enumerating
+/// the permitted difference rather than by comparing less. Seven stages must
+/// still match outcome for outcome; the LEARN stage must match in everything
+/// but a suffix, and that suffix must be the family review and nothing else —
+/// so a change that perturbed the counterfactual pass, the rule review or the
+/// attribution would still fail here. The name says what it asserts, because
+/// a test called "exactly as it was" that no longer checks that is a false
+/// statement in the one place a reader looks first.
 #[test]
-fn attaching_the_central_plane_leaves_a_cycle_exactly_as_it_was() -> Result<()> {
+fn attaching_the_central_plane_changes_no_stage_but_the_family_review_the_learn_stage_now_runs()
+-> Result<()> {
     let mut untouched = platform()?;
     let mut worked = platform()?;
 
@@ -1206,9 +1224,51 @@ fn attaching_the_central_plane_leaves_a_cycle_exactly_as_it_was() -> Result<()> 
     let expected = untouched.run_cycle(start());
     let actual = worked.run_cycle(start());
 
+    assert_eq!(actual.cycle, expected.cycle);
+    assert_eq!(actual.correlation_id, expected.correlation_id);
+    assert_eq!(actual.halted, expected.halted);
+    for (actual_stage, expected_stage) in actual.stages.iter().zip(expected.stages.iter()) {
+        assert_eq!(actual_stage.stage, expected_stage.stage);
+        if actual_stage.stage != Stage::Learn {
+            assert_eq!(
+                actual_stage, expected_stage,
+                "the central plane changed the {:?} stage, which it is not part of",
+                actual_stage.stage
+            );
+        }
+    }
+    let actual_learn = actual
+        .stage(Stage::Learn)
+        .ok_or_else(|| qip_core::Error::not_found("the LEARN stage ran"))?;
+    let expected_learn = expected
+        .stage(Stage::Learn)
+        .ok_or_else(|| qip_core::Error::not_found("the LEARN stage ran"))?;
+    assert_eq!(actual_learn.produced, expected_learn.produced);
+    assert_eq!(actual_learn.problems, expected_learn.problems);
+    // The premise the whole comparison rests on: the empty plane says nothing
+    // about families, so the suffix below is the difference and not part of a
+    // line both platforms write.
+    assert!(
+        !expected_learn
+            .detail
+            .contains("reviewed against funding standing"),
+        "the untouched platform reviewed a family, so there is no difference to attribute: {}",
+        expected_learn.detail
+    );
+    let permitted = format!(
+        "{}; 1 strategy family(ies) reviewed against funding standing, 1 of them funded \
+         [central-tests (1 member(s), 1 funded)]; the review allocates nothing",
+        expected_learn.detail
+    );
     assert_eq!(
-        actual, expected,
-        "the central plane changed a cycle it is not part of"
+        actual_learn.detail, permitted,
+        "the central plane changed the LEARN stage by more than the family review it now runs"
+    );
+    // One extra record on the log, and one only: the family review's.
+    assert_eq!(
+        actual.events_logged,
+        expected.events_logged + 1,
+        "the central plane wrote a record beyond the one family review"
     );
     assert!(actual.traversed_every_stage());
     assert_eq!(
@@ -3398,9 +3458,29 @@ fn the_learn_stage_measures_no_family_structure_on_a_corpus_the_centre_never_gra
     let learn = report
         .stage(Stage::Learn)
         .ok_or_else(|| qip_core::Error::not_found("the LEARN stage ran"))?;
+    // Matched on `clustered into`, which is `FamilyStructureJournal::describe`'s
+    // own wording, and not on `family(ies)`. It was the latter until ADR 0064
+    // put a second, unrelated family on this line — the *provenance* family,
+    // the sweep a candidate was registered under — and the loose token then
+    // made this test fail for a reason that had nothing to do with the
+    // correlation clustering it is about. The exact trap
+    // `.claude/rules/architecture/01-testing-strategy.md` names: a substring
+    // that was unique when it was written and stopped being so without
+    // anybody touching this file.
     assert!(
-        !learn.detail.contains("family(ies)"),
+        !learn.detail.contains("clustered into"),
         "the stage measured no family structure: {}",
+        learn.detail
+    );
+    // And the distinguishing positive: the *other* family review did run on
+    // this same cycle. Without this the assertion above would pass equally
+    // well on a LEARN stage that had stopped saying anything about families
+    // at all, which is a different platform from the one under test.
+    assert!(
+        learn
+            .detail
+            .contains("strategy family(ies) reviewed against funding standing"),
+        "the provenance-family review did not run, so the absence above proves nothing: {}",
         learn.detail
     );
 
@@ -4602,5 +4682,382 @@ fn a_rung_that_needs_no_signature_refuses_one_rather_than_accepting_it() -> Resu
         "the refusal does not say why: {}",
         refused.message()
     );
+    Ok(())
+}
+
+// --- blueprint §12.3's fifth row, through the cycle (ADR 0064) ---------------
+
+/// A feature catalogue wide enough for the generator not to starve: at least
+/// two features of every type, so a type-preserving choice always has
+/// somewhere to go. The same shape `tests/foundry.rs` uses, because the
+/// population under test has to be one the production search could mint.
+fn family_catalogue(on: &ObjectId) -> Result<qip_strategy::catalogue::FeatureCatalogue> {
+    use qip_strategy::ir::Type;
+    let mut catalogue = qip_strategy::catalogue::FeatureCatalogue::new();
+    for (name, value_type) in [
+        ("microprice", Type::Exact),
+        ("mid", Type::Exact),
+        ("spread", Type::Exact),
+        ("imbalance", Type::Statistic),
+        ("volatility", Type::Statistic),
+        ("momentum", Type::Statistic),
+        ("trades", Type::Count),
+        ("cancels", Type::Count),
+        ("halted", Type::Flag),
+        ("auction", Type::Flag),
+    ] {
+        catalogue.declare(FeatureKey::new(name, on.clone()), value_type)?;
+    }
+    Ok(catalogue)
+}
+
+/// Register `count` candidates under `lineage` through the production path:
+/// a `StrategyFoundry` searches, and its `register` hands the survivors to the
+/// factory with the search's own trial count attached.
+///
+/// Through the foundry and not `StrategyFactory::register` directly, because
+/// the family the review reads is the *provenance* family — the sweep's
+/// lineage — and the foundry is what mints it. A test that named the family
+/// itself would prove the review can read a name a test wrote.
+fn register_family(platform: &mut Platform, lineage: &str, count: usize) -> Result<()> {
+    use qip_evolution::grammar::Grammar;
+    use qip_evolution::palette::FeaturePalette;
+    use qip_kernel::central::foundry::{HoldoutInputs, StrategyFoundry};
+
+    let on = ObjectId::from_string("obj-AAA");
+    let catalogue = family_catalogue(&on)?;
+    let grammar = Grammar::over(FeaturePalette::from_catalogue(&catalogue, &on)?);
+    let mut foundry = StrategyFoundry::new(
+        catalogue,
+        grammar,
+        CELL,
+        venue(),
+        lineage,
+        // One seed per lineage, so two families are two different searches
+        // rather than the same strategies under two names.
+        u64::from(lineage.len() as u32) * 7 + 3,
+    )?;
+    foundry.search(count.max(1) * 4)?;
+    let pending: Vec<StrategyId> = foundry
+        .pending()
+        .iter()
+        .take(count)
+        .map(|candidate| candidate.id().clone())
+        .collect();
+    assert_eq!(
+        pending.len(),
+        count,
+        "premise: the search produced {count} compilable candidates for {lineage}"
+    );
+    for strategy in pending {
+        foundry.register(
+            platform.central_mut().factory_mut(),
+            &strategy,
+            HoldoutInputs {
+                returns: good_returns(9, 300, 0.0018),
+                in_sample_folds: vec![vec![0.001; 40]],
+                out_of_sample_folds: vec![vec![0.0006; 20]],
+                periods_per_year: 252.0,
+                cross_validation: honest_cross_validation(300)?,
+                leakage: clean_leakage_audit(),
+            },
+            start(),
+        )?;
+    }
+    Ok(())
+}
+
+/// Every family-allocation review this process journalled, in stream order.
+///
+/// Read from the journal, which carries the bodies typed. `filter_map` on the
+/// decode rather than `?`, because the topic carries two bodies and a
+/// `MisallocationFinding` is not a review.
+fn family_reviews(
+    platform: &Platform,
+) -> Result<Vec<qip_kernel::family_review::FamilyAllocationReview>> {
+    use qip_events::{EventFilter, Topic};
+    Ok(platform
+        .replay_journal(&EventFilter::new().topic(Topic::FamilyAllocationReviewed))?
+        .iter()
+        .filter_map(|envelope| {
+            envelope
+                .decode::<qip_kernel::family_review::FamilyAllocationReview>()
+                .ok()
+                .map(|decoded| decoded.body)
+        })
+        .collect())
+}
+
+/// The deduplication keys the **event log** holds on the family-review topic.
+///
+/// The log and not the journal, because the log is what spans a restart and
+/// the journal is this process's own — a test that counted journal records
+/// would see a restarted platform as having written nothing, which is the
+/// opposite of the property under test. Keys and not decoded bodies, because
+/// the log stores the sealed frame and `AnyEvent::decode` reads the frame
+/// rather than the body inside it; `dedup_key` is the exact string
+/// `journal_once` consults, so this is the set the suppression is made of.
+fn family_review_keys(platform: &Platform) -> Result<Vec<String>> {
+    use qip_events::Topic;
+    let mut out = Vec::new();
+    platform.event_log().replay(|event| {
+        if event.topic == Topic::FamilyAllocationReviewed {
+            out.push(event.dedup_key());
+        }
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+#[test]
+fn the_learn_stage_reviews_family_allocation_on_a_population_the_foundry_actually_registered()
+-> Result<()> {
+    // Blueprint §12.3's fifth row reaching the cycle. Two sweeps register
+    // candidates through `StrategyFoundry::register` — the production path —
+    // and the LEARN stage measures where each family stands and puts it on
+    // the record.
+    //
+    // What this does NOT assert is as much the point as what it does: no
+    // weight, grant, budget or bound moves, because there is no code path
+    // that would (ADR 0064). The review is a measurement and a record.
+    let mut platform = platform()?;
+
+    // Premise: before any family is registered, the review has nothing to
+    // journal — so a record found afterwards is this population's and not
+    // something the cycle writes unconditionally.
+    let quiet = platform.run_cycle(start());
+    let quiet_learn = quiet
+        .stage(Stage::Learn)
+        .ok_or_else(|| qip_core::Error::not_found("the LEARN stage ran"))?;
+    assert!(
+        !quiet_learn
+            .detail
+            .contains("reviewed against funding standing"),
+        "an empty population journalled a family review: {}",
+        quiet_learn.detail
+    );
+    assert!(
+        family_reviews(&platform)?.is_empty(),
+        "premise: no family review is on the record yet"
+    );
+
+    register_family(&mut platform, "sweep-alpha", 2)?;
+    register_family(&mut platform, "sweep-omega", 3)?;
+    assert_eq!(
+        platform.central().factory().candidates().count(),
+        5,
+        "premise: the foundry registered five candidates across two families"
+    );
+    assert_eq!(
+        platform.family_standings().len(),
+        2,
+        "premise: the factory groups them into exactly two families"
+    );
+
+    let cycle = platform.run_cycle(start().saturating_add(Duration::from_mins(5)));
+    let learn = cycle
+        .stage(Stage::Learn)
+        .ok_or_else(|| qip_core::Error::not_found("the LEARN stage ran"))?;
+    assert!(
+        learn.detail.contains(
+            "2 strategy family(ies) reviewed against funding standing, 0 of \
+             them funded"
+        ),
+        "the LEARN stage did not report the family review: {}",
+        learn.detail
+    );
+    // Both families by name, and the counts that distinguish them, so a
+    // review that found one family twice would fail here.
+    assert!(
+        learn.detail.contains("sweep-alpha (2 member(s), 0 funded)"),
+        "the first sweep is not named on the cycle: {}",
+        learn.detail
+    );
+    assert!(
+        learn.detail.contains("sweep-omega (3 member(s), 0 funded)"),
+        "the second sweep is not named on the cycle: {}",
+        learn.detail
+    );
+
+    let records = family_reviews(&platform)?;
+    assert_eq!(
+        records.len(),
+        1,
+        "the review is not on the record exactly once"
+    );
+    assert_eq!(records[0].families, 2);
+    assert_eq!(records[0].funded_families, 0);
+    // Both families are refused at this point and the record says so: a
+    // registered candidate has not been in front of the holdout gate, so its
+    // family's lifetime trial count is zero and there is nothing to deflate
+    // against. Refused rather than scored zero, and counted rather than
+    // dropped, so a family of ten unevaluated members does not read as a
+    // family of none.
+    for standing in &records[0].standings {
+        assert_eq!(
+            standing.admitted, 0,
+            "{} was scored unevaluated",
+            standing.family
+        );
+        assert_eq!(standing.refused, standing.members);
+    }
+    assert_eq!(
+        records[0]
+            .standings
+            .iter()
+            .map(|standing| standing.family.as_str())
+            .collect::<Vec<_>>(),
+        vec!["sweep-alpha", "sweep-omega"],
+        "the record's families are not in name order, so a replay would reorder them"
+    );
+    // Nothing was funded, so there is no funded side to compare against and
+    // no finding — the state every deployment of this platform is in, stated
+    // rather than inferred.
+    assert!(
+        !learn
+            .detail
+            .contains("holds no capital and its deflated evidence"),
+        "a misallocation finding was raised with nothing funded: {}",
+        learn.detail
+    );
+
+    // And the admitting half of the deflation, without which every standing in
+    // this platform would read `admitted: 0` for ever and the comparison would
+    // be a control that cannot fire — the `MaxExpectedShortfall` shape, which
+    // is the one thing ADR 0064 exists to refuse. Putting one candidate of one
+    // family in front of the holdout gate charges its family's lifetime count,
+    // and the next cycle's standing reads that family as admitted.
+    let evaluated = platform
+        .central()
+        .factory()
+        .candidates()
+        .find(|candidate| candidate.family().as_str() == "sweep-alpha")
+        .map(|candidate| candidate.strategy().clone())
+        .ok_or_else(|| qip_core::Error::not_found("a candidate of the first sweep"))?;
+    // The gate's verdict is not the subject here — the charge happens before
+    // the gate reads, which is the whole reason a failed evaluation still
+    // counts as a trial — so a refusal is tolerated and the count is asserted.
+    let _ = platform.central_mut().factory_mut().promote(
+        &evaluated,
+        None,
+        "put in front of the holdout gate",
+        start(),
+    );
+    let standings = platform.family_standings();
+    let alpha = standings
+        .get("sweep-alpha")
+        .ok_or_else(|| qip_core::Error::not_found("the first sweep stands"))?;
+    assert_eq!(
+        alpha.admitted, 2,
+        "the holdout charge left the family's members unscoreable, so the comparison could          never fire for any population"
+    );
+    assert_eq!(alpha.refused, 0);
+    assert_eq!(
+        standings
+            .get("sweep-omega")
+            .map(|standing| standing.admitted),
+        Some(0),
+        "the sweep that was never evaluated is still refused, so the charge is what admitted          the other one"
+    );
+    Ok(())
+}
+
+/// The cycle counter starts at zero on every `Platform::new` — it is not
+/// resumed from the log (`grep -n 'cycle: 0,' qip-kernel/src/platform.rs`) —
+/// so a process restarted over a journal it already wrote runs a *second*
+/// cycle 1. Every record the LEARN stage keys on the cycle therefore has a
+/// twin waiting on the next restart, and `qip-api` and `qip-deepbrain` both
+/// mount a file-backed journal that spans one.
+///
+/// The failure this refuses: two records on the log, each claiming to be the
+/// family-allocation measurement for cycle 1, disagreeing about a population
+/// that changed between the two runs. An auditor replaying the log cannot
+/// tell which is the measurement and which is the restart, and the row's
+/// whole claim is that it is reproducible from the log alone.
+#[test]
+fn a_platform_restarted_over_its_own_log_journals_no_second_family_review_for_the_same_cycle()
+-> Result<()> {
+    use qip_risk::limits::LimitSet;
+
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-family-review-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let path = directory.join("events.jsonl");
+    let at = start().saturating_add(Duration::from_mins(5));
+
+    let first_keys = {
+        let config = PlatformConfig::default().with_event_log_file(&path);
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            universe(),
+            LimitSet::conservative_default(),
+        )?;
+        register_family(&mut platform, "sweep-alpha", 2)?;
+        platform.run_cycle(at);
+        let keys = family_review_keys(&platform)?;
+        assert_eq!(keys.len(), 1, "premise: one cycle wrote one record");
+        assert_eq!(
+            family_reviews(&platform)?.len(),
+            1,
+            "premise: that record is a review and decodes as one"
+        );
+        keys
+    };
+
+    // The restart. A fresh platform over the same file, the same population
+    // registered again, the same cycle number reached — because the counter
+    // starts at zero and is not resumed.
+    let config = PlatformConfig::default().with_event_log_file(&path);
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut restarted = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe(),
+        LimitSet::conservative_default(),
+    )?;
+    assert_eq!(
+        family_review_keys(&restarted)?,
+        first_keys,
+        "premise: the restarted platform reads the record the first run wrote, so a duplicate \
+         would be visible here"
+    );
+    register_family(&mut restarted, "sweep-alpha", 2)?;
+    restarted.run_cycle(at);
+
+    let after_restart = family_review_keys(&restarted)?;
+    assert_eq!(
+        after_restart, first_keys,
+        "the restart wrote a second family review under a key the log already held"
+    );
+
+    // The admitting half. A cycle the log has *not* seen is journalled
+    // normally — without this the assertion above would pass just as well
+    // against a review that had stopped writing anything after the first
+    // record, which is a different and worse platform.
+    restarted.run_cycle(at.saturating_add(Duration::from_mins(5)));
+    let after_next = family_review_keys(&restarted)?;
+    assert_eq!(
+        after_next.len(),
+        2,
+        "the next cycle's own measurement was suppressed along with the duplicate: {after_next:?}"
+    );
+    assert_ne!(
+        after_next[0], after_next[1],
+        "two records share one key, so one of them is a duplicate"
+    );
+    assert!(
+        after_next[0].starts_with("learning.family_allocation_reviewed:family-review:"),
+        "the key is not the review's own: {}",
+        after_next[0]
+    );
+
+    let _ = std::fs::remove_dir_all(&directory);
     Ok(())
 }
