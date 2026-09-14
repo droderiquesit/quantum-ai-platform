@@ -200,36 +200,37 @@ grows. The counting-only sites are arms of `ingest_cell_report` — the
 unattributed arm, which counts a carried refusal under the literals `unknown`
 (a venue neither the arbitrage policy nor a live grant names) and `other` (a
 gate outside `qip_contracts::feasibility::EDGE_GATES`), and, since
-2026-09-14, the echo arm, which counts a refusal the central plane attributed
-in full and still kept out of the window because its gate is not withdrawal
-evidence (`qip_contracts::feasibility::is_withdrawal_evidence`).
+2026-09-14, the echo arm, which counts the *repeat* echoes of one withdrawal
+— the second and every later refusal, in a single report, under
+`GATE_WITHDRAWN_VENUE` at a venue the centre itself holds withdrawn. One
+echo per venue per report is admitted through the writer instead; the
+paragraph on the ninth gate literal below says why, and it is not the reason
+this file gave until 2026-09-14.
 
 Recount with
-`grep -n 'names::FEASIBILITY_REFUSALS' backend/crates/runtime/qip-kernel/src/platform.rs`,
-which printed four lines on 2026-09-14: the constant's `metrics.describe(...)`
-registration call, first, then the two counting arms, then
-`record_feasibility_refusal`. **This paragraph has now been wrong about that
-number twice, and the second time it was wrong in a way that would have made
-an agent raise a false alarm.** It said "two lines" until an independent code
-review ran the command and found three; it then said three *and* that "a
-fourth site would be a refusal that reached the window by a path the ADR does
-not describe" — until 2026-09-14, by which time a fourth site had shipped in
-the same merge that corrected the gate-literal count in the sentence below.
-The fourth site is legitimate: it never writes the window. The count is
-deliberately not offered as a bound, and it must be re-run after the lanes
-currently reworking how the echo arm classifies a refusal land, because one of
-them may add, move or remove a counting site without touching the invariant at
-all.
+`grep -n 'names::FEASIBILITY_REFUSALS' backend/crates/runtime/qip-kernel/src/platform.rs`.
+**No number is given here, and the reason is a live one rather than a
+principle.** This paragraph has been wrong about that count twice — it said
+"two lines" until an independent review ran the command and found three, then
+said three *and* that "a fourth site would be a refusal that reached the
+window by a path the ADR does not describe", which was the dangerous half: a
+legitimate fourth site had shipped, and an agent following that sentence would
+have reported a violation that did not exist. Since then a lane reworking the
+echo arm reported the command printing three lines in its own worktree; run in
+that worktree on 2026-09-14 it printed four, the same as the main checkout. A
+count taken from a report is not a measurement, which is the whole argument of
+this file, and a count written down here is a count of somebody's tree at some
+hour. Run it in the tree you are about to change and say which tree that was.
 
 What **would** be an alarm is a second writer of the window: a path by which a
 refusal enters the evidence a venue is withdrawn on without going through
-`record_feasibility_refusal`, or an echo admitted to the window at all. That
-is the thing to check, with
+`record_feasibility_refusal`. That is the invariant, it is stable across both
+reworkings of the echo arm so far, and it is the thing to check, with
 `grep -n 'feasibility_refusals\.push\|feasibility_refusals\.drain' backend/crates/runtime/qip-kernel/src/platform.rs`,
-which printed one `drain` and one `push` on 2026-09-14, both inside
+which printed one `drain` and one `push` on 2026-09-14 — in the main checkout
+and in the echo-arm lane's worktree alike — both inside
 `record_feasibility_refusal`. A window with two writers is the
-`MaxExpectedShortfall` failure in a new place: the echo of a withdrawal would
-evict the evidence the next withdrawal needs, and the control would read as
+`MaxExpectedShortfall` failure in a new place: a control that reads as
 protection while being unable to fire a second time. `venue` is bounded by
 the desk broker's name, the configured and granted venue list and `unknown`;
 `constraint` by the **nine** gate literals and `other` — eight until
@@ -239,12 +240,39 @@ day. Recount rather than quoting either number:
 `sed -n '/^pub const EDGE_GATES/,/^];/p' backend/crates/libs/qip-contracts/src/feasibility.rs | grep -c '^    GATE_'`
 printed 9 on 2026-09-14. Not a bare `grep -c '^    GATE_'` over the file,
 which prints 13 — it also counts `DESK_GATES`' four, and a count of the
-wrong array is the exact shape of error this file exists to stop. Note the one thing a count does not say: the
-ninth literal is charted on this series and is deliberately **not**
-admitted to the window a venue is withdrawn on
-(`qip_contracts::feasibility::is_withdrawal_evidence`), because it is the
-echo of a withdrawal already made and would evict the window it came
-from. Beside it,
+wrong array is the exact shape of error this file exists to stop.
+
+Note the one thing a count does not say, and note that this file stated it
+backwards until 2026-09-14. It said the ninth literal was charted and
+"deliberately **not** admitted to the window a venue is withdrawn on".
+Excluding it outright was the bug: a withdrawn venue left the denominator the
+moment it was withdrawn, the runner-up became a cluster of whatever remained,
+and the desk cascaded to no venues at all. The rule now has three parts and
+each is load-bearing.
+
+- **Whether a refusal under the ninth literal is an echo is decided by the
+  centre's own withdrawn set, not by the gate string.**
+  `qip_contracts::feasibility::is_withdrawal_echo(gate, venue, withdrawn)`
+  — which replaced `is_withdrawal_evidence(gate)`, so do not cite the old
+  name. The gate arrives on a report over a wire that authenticates nobody,
+  and a cell holding a stale slot 11 refuses at a venue *in use* under it; the
+  centre believing that string kept those refusals out of the window and made
+  the venue unwithdrawable for as long as the slot stayed stale. Such a
+  refusal is now ordinary evidence.
+- **A confirmed echo is seated in the window, at a bounded rate.** The first
+  per venue per report goes through `record_feasibility_refusal` like any
+  admitted refusal; every repeat in the same report is counted on the series
+  and given no seat (`CentralPlane::attribute_refusals`).
+- **A seated echo can sustain a venue's weight and never amplify it, and can
+  never withdraw anything.** `venue_review::VenueTally::weight` is
+  `refusals + echoes.min(refusals)`, so the platform's own decision keeps a
+  venue in the denominator only up to the genuine evidence that venue still
+  holds, and decays to nothing once those refusals age out; and `assess`
+  filters candidates by the withdrawn set, so a withdrawn venue is never a
+  numerator. Read `VenueTally::weight` and `assess` rather than this bullet —
+  the property is the invariant, the arithmetic is theirs.
+
+Beside it,
 `qip_venue_fill_error_bps{venue}` is a histogram on
 `Histogram::signed_basis_points` — bounds straddling zero because the sign is
 the finding, negative meaning the twin filled better than reality on the side
