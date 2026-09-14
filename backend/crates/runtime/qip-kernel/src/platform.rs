@@ -54,7 +54,7 @@ use crate::sizing_review::{
 };
 use crate::venue_review::{
     FEASIBILITY_WINDOW, FeasibilityRefusal, FeasibilitySeam, REINSTATED, REINSTATEMENT_AWAITING,
-    REINSTATEMENT_REFUSED, VenueReinstatementEntry, VenueWithdrawal,
+    REINSTATEMENT_REFUSED, RefusalStanding, VenueReinstatementEntry, VenueWithdrawal,
 };
 use qip_agents::memory::ResearchMemory;
 use qip_agents::runtime::{Reading, Upstream};
@@ -4166,6 +4166,7 @@ impl Platform {
                 refusal.seam,
                 refusal.cell.as_deref(),
                 refusal.at,
+                refusal.standing,
             );
         }
         for (venue, constraint) in &ingestion.feasibility_refusals_unattributed {
@@ -4184,7 +4185,7 @@ impl Platform {
         // withdrawal is *made* on, and a decision that fed itself back into
         // its own evidence would evict every genuine refusal and leave the
         // control unable to fire a second time.
-        for (venue, constraint) in &ingestion.feasibility_refusals_echoed {
+        for (venue, constraint) in &ingestion.feasibility_refusals_repeated {
             self.telemetry.metrics.count(
                 names::FEASIBILITY_REFUSALS,
                 labels([
@@ -11519,6 +11520,13 @@ impl Platform {
                             FeasibilitySeam::Desk,
                             None,
                             now,
+                            // Never an echo at this seam, and structurally
+                            // so: `OrderManager::submit` refuses a withdrawn
+                            // venue under `RefusalReason::VenueUnavailable`,
+                            // which carries no feasibility gate, so a desk
+                            // refusal that reaches this line is one the
+                            // venue's own grid made.
+                            RefusalStanding::Evidence,
                         );
                         venue.clone()
                     })
@@ -12767,12 +12775,30 @@ impl Platform {
         seam: FeasibilitySeam,
         cell: Option<&str>,
         at: Timestamp,
+        standing: RefusalStanding,
     ) {
         self.telemetry.metrics.count(
             names::FEASIBILITY_REFUSALS,
             labels([("venue", venue), ("constraint", constraint)]),
         );
         if self.feasibility_refusals.len() >= FEASIBILITY_WINDOW {
+            // **Nothing that cannot withdraw a venue may displace something
+            // that can.** An echo and a pardoned refusal are both denominator
+            // entries: neither can ever be a numerator, corroborate a cluster
+            // or name a constraint. A full window that admitted them by
+            // eviction would let a cell reporting at a venue nobody is
+            // judging push out the evidence every *other* venue's withdrawal
+            // would be made on, until fewer than
+            // `VENUE_WITHDRAWAL_MIN_SAMPLE` genuine entries survived and no
+            // venue could be withdrawn at all — a control that reads as
+            // protection and cannot fire, arrived at by arithmetic rather
+            // than by anybody's decision. So when the window is full they
+            // are counted on the series and seated nowhere, and the
+            // denominator they were holding is one the window no longer has
+            // room to hold.
+            if standing != RefusalStanding::Evidence {
+                return;
+            }
             let excess = self.feasibility_refusals.len() + 1 - FEASIBILITY_WINDOW;
             self.feasibility_refusals.drain(..excess);
         }
@@ -12782,6 +12808,7 @@ impl Platform {
             seam,
             cell: cell.map(str::to_string),
             at,
+            standing,
         });
     }
 
@@ -13298,11 +13325,36 @@ impl Platform {
         }
     }
 
-    /// Put `venue` back at both seams. Reached only from
-    /// [`Self::reinstate_venue`] after the record is in the log, and from
-    /// assembly replaying that record.
+    /// Put `venue` back at both seams, and set aside the evidence it was
+    /// withdrawn on. Reached only from [`Self::reinstate_venue`] after the
+    /// record is in the log, and from assembly replaying that record.
+    ///
+    /// **The third effect is the one that makes the signatures mean
+    /// something, and it was missing.** Until 2026-09-14 this method touched
+    /// the withdrawn set and the two seams and left the feasibility window
+    /// exactly as it found it — so the cluster that withdrew the venue was
+    /// still standing, the venue became a candidate again in the same step,
+    /// and the next LEARN pass withdrew it once more from the same entries.
+    /// A reinstatement had never survived a cycle, before or after the echo
+    /// seating that made the case against the venue grow the longer it
+    /// stayed out. Two operators exercising a control the platform reverts
+    /// by itself on the next pass is the `MaxExpectedShortfall` shape this
+    /// repository names: protection in the reading and nothing in the fact.
+    ///
+    /// [`crate::venue_review::pardon`] marks rather than deletes, and its
+    /// doc argues why: deleting this venue's entries would shrink the
+    /// denominator every other venue's share is measured against and make
+    /// the runner-up a cluster of the remainder, and deleting the whole
+    /// window would clear evidence about venues these two people did not
+    /// sign for.
+    ///
+    /// At assembly the window is empty — it is a per-process rate sample and
+    /// is never resumed from the log — so the pardon there is a no-op, and
+    /// the two callers are kept on one path rather than on two that could
+    /// drift.
     fn reinstate_venue_at_seams(&mut self, venue: &str) {
         self.withdrawn_venues.remove(venue);
+        crate::venue_review::pardon(&mut self.feasibility_refusals, venue);
         self.orders.reinstate_venue(venue);
         self.central.reinstate_venue(venue);
     }

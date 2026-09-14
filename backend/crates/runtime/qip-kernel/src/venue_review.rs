@@ -19,6 +19,12 @@
 //! evidence can only ever say "stop using this one", and putting a venue
 //! back is two operators' signatures (ADR 0062).
 //!
+//! Those signatures reach the window as well as the set, through [`pardon`],
+//! and they must: a reinstatement that left the window alone was undone by
+//! the platform on the next LEARN pass, because the cluster that withdrew the
+//! venue was still sitting there. A control two people exercise and the
+//! machine reverts by itself is not a control.
+//!
 //! The thresholds are ADR 0055's, by reference: the same minimum sample the
 //! sizing discount and the rule review trust, and the same three-in-four
 //! share, because the platform has one answer to "how much evidence makes
@@ -34,7 +40,6 @@
 //! independently operated processes, and "more than one desk" is not a
 //! stronger form of evidence.
 
-use qip_contracts::feasibility::is_withdrawal_echo;
 use qip_core::time::Timestamp;
 use qip_events::{EventBody, Topic};
 use serde::{Deserialize, Serialize};
@@ -141,6 +146,98 @@ pub struct FeasibilityRefusal {
     /// authenticated, and ADR 0062 says so.
     pub cell: Option<String>,
     pub at: Timestamp,
+    /// What this refusal may be used for — decided when it was recorded, or
+    /// by a signed decision afterwards, and never re-derived at read time.
+    pub standing: RefusalStanding,
+}
+
+/// What a refusal in the window may be used for.
+///
+/// One enum rather than a pair of flags because the three states are
+/// mutually exclusive and "an echo that is also pardoned" is not a thing the
+/// platform can mean; and stored on the entry rather than recomputed in
+/// [`assess`] because **that recomputation was a defect, twice over**.
+///
+/// [`assess`] used to ask `is_withdrawal_echo` of the *current* withdrawn set
+/// every time it read the window. The instant two operators reinstated a
+/// venue, every seat it had taken as an [`RefusalStanding::Echo`] while
+/// withdrawn was promoted in one step to a full numerator refusal against it,
+/// in the same step that made it a candidate again. A probe measured the
+/// result: nothing while withdrawn, and a cluster at a share of 0.87 the
+/// moment the second signature landed, whose modal constraint was
+/// `feasibility_withdrawn_venue` — the next LEARN pass withdrew the venue and
+/// journalled that the reason was that it had been withdrawn. A
+/// classification that moves under a stored record is not a record of what
+/// happened; it is a function of what is true now, and the two must not be
+/// confused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefusalStanding {
+    /// An observation about an order at this venue. The only standing that
+    /// can be a numerator, corroborate a cluster, or name the constraint a
+    /// withdrawal record cites.
+    Evidence,
+    /// Recorded under `GATE_WITHDRAWN_VENUE` while the centre itself held
+    /// this venue withdrawn: the platform's own decision arriving back at
+    /// it. A denominator entry, weight-capped by [`VenueTally::weight`].
+    Echo,
+    /// Set aside by a reinstatement (ADR 0062) — either an entry two
+    /// operators signed away through [`pardon`], or a refusal that arrived
+    /// afterwards from a cell whose policy had not yet heard them.
+    ///
+    /// Stays in the window and holds the denominator at full rate; never a
+    /// numerator. A reinstatement is precisely the decision that the
+    /// accumulated evidence no longer binds the venue it was about, so a
+    /// venue that comes back must earn a fresh cluster before it goes again
+    /// — and until this existed it did not: the window that withdrew it was
+    /// untouched by the signatures and re-fired on the very next LEARN pass,
+    /// so a reinstatement had never survived a cycle. That is the
+    /// `MaxExpectedShortfall` shape: a control that reads as protection and
+    /// cannot do what it says.
+    Pardoned,
+}
+
+impl FeasibilityRefusal {
+    /// Whether this refusal may count *against* the venue it names: the
+    /// numerator of the share test, the cells that corroborate it, and the
+    /// constraint the withdrawal record cites.
+    fn is_evidence(&self) -> bool {
+        matches!(self.standing, RefusalStanding::Evidence)
+    }
+}
+
+/// Set aside every refusal in `window` that names `venue`, because two
+/// operators have reinstated it. Returns how many entries were set aside, so
+/// a caller can say what the signatures actually reached.
+///
+/// **Why the entries are marked and not removed, which is the whole of the
+/// design.** Removing this venue's entries would shrink the denominator every
+/// *other* venue's share is measured against while leaving their numerators
+/// alone — the runner-up becomes a cluster of what remains, which is the
+/// cascade [`assess`] exists to refuse, arriving by a new door. Removing the
+/// whole window would avoid the bias and over-reach in the other direction:
+/// two people signed for *this* venue, and evidence about a venue they did
+/// not name is not theirs to clear. Marking is scoped to exactly what was
+/// signed for: the venue stops being judged on refusals the signatures set
+/// aside, every other venue's arithmetic is untouched to the entry, and the
+/// entries age out of the rate window on the same terms as any other.
+///
+/// Only [`RefusalStanding::Evidence`] moves. An echo is already incapable of
+/// withdrawing anything and is already weighted as the platform quoting
+/// itself; promoting it to `Pardoned` would raise its denominator weight from
+/// capped to full at the moment of the signature, which is the same
+/// retroactive rewriting of a stored record that [`RefusalStanding`] exists
+/// to stop.
+pub fn pardon(window: &mut [FeasibilityRefusal], venue: &str) -> usize {
+    let mut set_aside = 0;
+    for refusal in window
+        .iter_mut()
+        .filter(|refusal| refusal.venue == venue && refusal.is_evidence())
+    {
+        refusal.standing = RefusalStanding::Pardoned;
+        set_aside += 1;
+    }
+    set_aside
 }
 
 /// A venue that dominates the window: the finding [`assess`] returns.
@@ -154,12 +251,18 @@ pub struct VenueCluster {
     pub venue: String,
     /// The gate this venue was most often refused under.
     pub constraint: String,
-    /// The denominator: every refusal in the window, all venues, with a
-    /// withdrawn venue's echoes weighted rather than counted whole. Not
-    /// `window.len()` — see [`assess`] for why the two differ and what
-    /// breaks when they are conflated.
+    /// The denominator this venue was judged against: every *other* venue's
+    /// refusals at their weight — a withdrawn venue's echoes counted at the
+    /// cap rather than whole — plus this venue's own binding refusals.
+    ///
+    /// Not `window.len()`, and not a single figure every venue shares. See
+    /// [`assess`] for both departures and for what breaks when either is
+    /// conflated with a plain count.
     pub sample: usize,
-    /// This venue's refusals in the window — the numerator.
+    /// This venue's *binding* refusals in the window — the numerator.
+    /// Neither an echo nor a refusal a reinstatement set aside is counted
+    /// here, so a venue two operators put back has to earn a fresh cluster
+    /// before it goes again.
     pub count: usize,
     /// `count` over `sample`.
     pub share: f64,
@@ -169,15 +272,24 @@ pub struct VenueCluster {
 
 /// A venue's refusals in the window, split by what they are evidence of.
 ///
-/// Two counts rather than one because they answer different questions and a
+/// Three counts rather than one because they answer different questions and a
 /// single total conflates them: `refusals` is what the venue is *judged* on,
-/// `echoes` is what the platform said about the venue arriving back at it.
+/// `pardoned` is what two operators signed away, and `echoes` is what the
+/// platform said about the venue arriving back at it. All three hold the
+/// denominator — the venue is still being attempted, whichever it is — and
+/// only the first is ever a numerator.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct VenueTally {
-    /// Refusals that ask a question about an order at this venue.
+    /// Refusals that ask a question about an order at this venue and still
+    /// bind on it.
     refusals: usize,
-    /// Refusals under `GATE_WITHDRAWN_VENUE` at a venue the centre itself
-    /// holds withdrawn — see `qip_contracts::feasibility::is_withdrawal_echo`.
+    /// Refusals at this venue set aside by a reinstatement — see
+    /// [`FeasibilityRefusal::pardoned`].
+    pardoned: usize,
+    /// Refusals recorded under `GATE_WITHDRAWN_VENUE` while the centre
+    /// itself held this venue withdrawn — see
+    /// `qip_contracts::feasibility::is_withdrawal_echo`, which decided it
+    /// once, at the seam.
     echoes: usize,
 }
 
@@ -205,8 +317,16 @@ impl VenueTally {
     /// constant: the bound decays with the evidence it is anchored to,
     /// instead of being a floor somebody had to choose and nobody could
     /// check.
+    ///
+    /// A pardoned refusal is genuine evidence of an attempt at this venue —
+    /// it is only its *bearing on this venue's withdrawal* that two
+    /// operators set aside — so it holds the denominator at full rate and
+    /// anchors the echo cap beside the binding refusals. Dropping it would
+    /// shrink the denominator the instant a reinstatement was signed, which
+    /// is the cascade this method's first paragraph refuses.
     fn weight(&self) -> usize {
-        self.refusals + self.echoes.min(self.refusals)
+        let attempts = self.refusals + self.pardoned;
+        attempts + self.echoes.min(attempts)
     }
 }
 
@@ -240,6 +360,24 @@ impl VenueTally {
 /// below is the withdrawn set, so nothing an echo does can withdraw a venue
 /// a second time or feed a decision back into its own evidence.
 ///
+/// **How each entry is classified, and why not here.** An echo is an echo
+/// because of what the centre held when the refusal was recorded, and a
+/// pardoned refusal is one two operators signed away afterwards; both are
+/// read off [`FeasibilityRefusal`] and neither is re-derived from the
+/// withdrawn set as it stands at this call. That distinction is the second
+/// defect this function has had of the same family. Until 2026-09-14 the
+/// echo test ran *here*, against the current set, so a reinstatement
+/// reclassified every seat the venue had accumulated while withdrawn — from
+/// weight-capped denominator entries into full numerator refusals — in the
+/// same step that made the venue a candidate again. A probe measured the
+/// result: nothing while withdrawn, and the instant the second signature
+/// landed, a cluster at a share of 0.87 whose modal constraint was
+/// `feasibility_withdrawn_venue`. The next LEARN pass withdrew the venue and
+/// journalled that as the reason — the paragraph above claiming an echo can
+/// never "feed a decision back into its own evidence", disproved by the code
+/// under it, which is precisely why the claim is now held by where the flag
+/// is written rather than by this prose.
+///
 /// Where two venues tie at or above the bar — impossible above one half,
 /// possible only at exactly the bar with a share of one half, which the
 /// three-in-four bar rules out — the `BTreeMap` order decides, so a replay
@@ -248,21 +386,44 @@ pub fn assess(window: &[FeasibilityRefusal], withdrawn: &BTreeSet<String>) -> Op
     let mut by_venue: BTreeMap<&str, VenueTally> = BTreeMap::new();
     for refusal in window {
         let tally = by_venue.entry(refusal.venue.as_str()).or_default();
-        if is_withdrawal_echo(&refusal.constraint, &refusal.venue, withdrawn) {
-            tally.echoes += 1;
-        } else {
-            tally.refusals += 1;
+        // Read off the entry, never re-derived from the withdrawn set as it
+        // stands now: the standing was fixed when the refusal was recorded or
+        // by a signed decision afterwards. See
+        // [`RefusalStanding`] for the retroactive reclassification that
+        // reading it from present state caused.
+        match refusal.standing {
+            RefusalStanding::Evidence => tally.refusals += 1,
+            RefusalStanding::Echo => tally.echoes += 1,
+            RefusalStanding::Pardoned => tally.pardoned += 1,
         }
     }
-    let sample: usize = by_venue.values().map(VenueTally::weight).sum();
-    if sample < VENUE_WITHDRAWAL_MIN_SAMPLE {
-        return None;
-    }
-    let (venue, count) = by_venue
+    let total: usize = by_venue.values().map(VenueTally::weight).sum();
+    let (venue, tally) = by_venue
         .iter()
         .filter(|(venue, _)| !withdrawn.contains(**venue))
         .max_by_key(|(_, tally)| tally.refusals)
-        .map(|(venue, tally)| (*venue, tally.refusals))?;
+        .map(|(venue, tally)| (*venue, *tally))?;
+    let count = tally.refusals;
+    // **The denominator a candidate is judged against: every other venue's
+    // weight in full, plus this one's own binding refusals.**
+    //
+    // Every other venue at full weight is the anti-cascade rule and is
+    // unchanged — drop a withdrawn venue's entries and the runner-up becomes
+    // a cluster of what remains. What this subtracts is only the candidate's
+    // *own* non-binding entries: the refusals two operators signed away when
+    // they reinstated it, and any echo it took while it was withdrawn.
+    //
+    // Leaving those in would turn a pardon into a shield. Ten refusals
+    // withdraw a venue; two people put it back; the same ten then sit in the
+    // denominator of that venue's own share, so thirty fresh refusals would
+    // be needed before it could be withdrawn a second time — the signatures
+    // would have raised the bar on a control rather than reset it, and
+    // nobody signed for that. A reinstatement sets the old evidence aside;
+    // it does not weigh it on the venue's side.
+    let sample = total - tally.weight() + count;
+    if sample < VENUE_WITHDRAWAL_MIN_SAMPLE {
+        return None;
+    }
     // usize -> f64: a ratio of counts, in the statistics lane.
     let share = count as f64 / sample as f64;
     if share < VENUE_WITHDRAWAL_SHARE {
@@ -276,7 +437,17 @@ pub fn assess(window: &[FeasibilityRefusal], withdrawn: &BTreeSet<String>) -> Op
     // for everyone.
     let mut desk_corroborates = false;
     let mut distinct_cells: BTreeSet<&str> = BTreeSet::new();
-    for refusal in window.iter().filter(|refusal| refusal.venue == venue) {
+    // `is_evidence` here and in the constraint tally below, and not merely in
+    // the numerator: a venue must be corroborated, and its record must cite a
+    // gate, from the same entries it was judged on. Counting an echo or a
+    // pardoned refusal here would let a cluster be corroborated by the
+    // platform's own decision, and would let a withdrawal record name
+    // `feasibility_withdrawn_venue` as the constraint — an audit line saying
+    // the venue was withdrawn because it was withdrawn.
+    for refusal in window
+        .iter()
+        .filter(|refusal| refusal.venue == venue && refusal.is_evidence())
+    {
         match refusal.seam {
             FeasibilitySeam::Desk => desk_corroborates = true,
             FeasibilitySeam::Edge => {
@@ -291,7 +462,10 @@ pub fn assess(window: &[FeasibilityRefusal], withdrawn: &BTreeSet<String>) -> Op
     }
     let mut by_constraint: BTreeMap<&str, usize> = BTreeMap::new();
     let mut seams = Vec::new();
-    for refusal in window.iter().filter(|refusal| refusal.venue == venue) {
+    for refusal in window
+        .iter()
+        .filter(|refusal| refusal.venue == venue && refusal.is_evidence())
+    {
         *by_constraint
             .entry(refusal.constraint.as_str())
             .or_insert(0) += 1;
@@ -424,6 +598,7 @@ mod tests {
             seam,
             cell: None,
             at: at(),
+            standing: RefusalStanding::Evidence,
         }
     }
 
@@ -442,13 +617,29 @@ mod tests {
             seam: FeasibilitySeam::Edge,
             cell: Some(cell.to_string()),
             at: at(),
+            standing: RefusalStanding::Evidence,
         }
     }
 
-    /// `count` echoes of a withdrawal at `venue`, reported by `cell` — what
-    /// a cell whose desk was installed before the withdrawal sends once per
-    /// intent per pass, one seat per venue per report.
-    fn edge_echoes(venue: &str, cell: &str, count: usize) -> Vec<FeasibilityRefusal> {
+    /// `count` refusals under the withdrawn-venue gate at `venue`, reported
+    /// by `cell`, with the standing the centre would have stamped on them —
+    /// what a cell whose desk was installed before the withdrawal sends once
+    /// per intent per pass.
+    ///
+    /// `standing` is a parameter because the gate alone does not decide it
+    /// and must not: `CentralPlane::attribute_refusals` writes
+    /// [`RefusalStanding::Echo`] only where the centre's *own* withdrawn set
+    /// agrees, [`RefusalStanding::Pardoned`] where the centre has reinstated
+    /// the venue and the cell has not heard, and
+    /// [`RefusalStanding::Evidence`] where the centre never withdrew it at
+    /// all. A helper that guessed from the gate would be the defect these
+    /// tests exist to catch.
+    fn withdrawn_gate_refusals(
+        venue: &str,
+        cell: &str,
+        count: usize,
+        standing: RefusalStanding,
+    ) -> Vec<FeasibilityRefusal> {
         (0..count)
             .map(|_| FeasibilityRefusal {
                 venue: venue.to_string(),
@@ -456,6 +647,7 @@ mod tests {
                 seam: FeasibilitySeam::Edge,
                 cell: Some(cell.to_string()),
                 at: at(),
+                standing,
             })
             .collect()
     }
@@ -661,7 +853,12 @@ mod tests {
         assert_eq!(cascaded.sample, 32, "the premise failed: {cascaded:?}");
 
         let mut with = without.clone();
-        with.extend(edge_echoes("alpha", "cell-lon-1", 8));
+        with.extend(withdrawn_gate_refusals(
+            "alpha",
+            "cell-lon-1",
+            8,
+            RefusalStanding::Echo,
+        ));
         assert_eq!(
             assess(&with, &withdrawn),
             None,
@@ -689,7 +886,12 @@ mod tests {
         // four and is found.
         let withdrawn = BTreeSet::from(["alpha".to_string()]);
         let mut window = edge_refusals_from_two_cells("alpha", 8);
-        window.extend(edge_echoes("alpha", "cell-lon-1", 200));
+        window.extend(withdrawn_gate_refusals(
+            "alpha",
+            "cell-lon-1",
+            200,
+            RefusalStanding::Echo,
+        ));
         window.extend(edge_refusals_from_two_cells("beta", 48));
         let found = assess(&window, &withdrawn)
             .expect("a venue dominating every recent refusal was not withdrawn");
@@ -707,7 +909,8 @@ mod tests {
         // observed refusing anything in two hundred and fifty-six entries
         // would still be holding the denominator down.
         let aged_out = {
-            let mut window = edge_echoes("alpha", "cell-lon-1", 200);
+            let mut window =
+                withdrawn_gate_refusals("alpha", "cell-lon-1", 200, RefusalStanding::Echo);
             window.extend(edge_refusals_from_two_cells("beta", 10));
             window
         };
@@ -732,8 +935,14 @@ mod tests {
         // stale. With nothing withdrawn, ten such refusals from two cells
         // are ten refusals.
         let window = {
-            let mut window = edge_echoes("beta", "cell-lon-1", 5);
-            window.extend(edge_echoes("beta", "cell-fra-1", 5));
+            let mut window =
+                withdrawn_gate_refusals("beta", "cell-lon-1", 5, RefusalStanding::Evidence);
+            window.extend(withdrawn_gate_refusals(
+                "beta",
+                "cell-fra-1",
+                5,
+                RefusalStanding::Evidence,
+            ));
             window
         };
         assert_eq!(window.len(), 10, "the premise is ten");
@@ -767,6 +976,153 @@ mod tests {
             assess(&window, &withdrawn),
             None,
             "a venue already withdrawn was found again"
+        );
+    }
+
+    #[test]
+    fn a_pardoned_refusal_holds_the_denominator_for_every_venue_but_the_one_it_names() {
+        // The two failures `pardon` sits between, in one test, because
+        // choosing either extreme is what makes the other look right.
+        //
+        // Deleting a reinstated venue's entries would shrink the denominator
+        // every *other* venue's share is measured against and leave their
+        // numerators alone — the cascade `assess` exists to refuse, arriving
+        // by a new door. Leaving them weighing on the venue's *own* share
+        // would turn a pardon into a shield: the ten refusals that withdrew
+        // it would sit in its own denominator, so thirty fresh ones would be
+        // needed to withdraw it again, and two signatures meant to reset a
+        // control would have raised its bar instead.
+        let mut window = refusals("alpha", 30);
+        window.extend(refusals("beta", 10));
+        let before = assess(&window, &BTreeSet::new()).expect("alpha dominates thirty of forty");
+        assert_eq!(
+            (before.venue.as_str(), before.count, before.sample),
+            ("alpha", 30, 40)
+        );
+
+        assert_eq!(
+            pardon(&mut window, "alpha"),
+            30,
+            "the premise: thirty entries were set aside"
+        );
+
+        // Beta is not made a cluster of the remainder: alpha's pardoned
+        // entries still hold the denominator beta is judged against, so beta
+        // is ten of forty and not ten of ten.
+        assert_eq!(
+            assess(&window, &BTreeSet::new()),
+            None,
+            "the runner-up was withdrawn as a cluster of what a reinstatement left behind"
+        );
+
+        // And alpha is judged only on what still binds it. Ten fresh
+        // refusals — the same bar any venue starts from — are ten of twenty
+        // against beta's ten, which is below the share bar and not yet a
+        // finding; thirty are thirty of forty and are.
+        window.extend(refusals("alpha", 10));
+        assert_eq!(
+            assess(&window, &BTreeSet::new()),
+            None,
+            "ten fresh refusals at a pardoned venue outvoted ten at another"
+        );
+        window.extend(refusals("alpha", 20));
+        let after = assess(&window, &BTreeSet::new()).expect("alpha earned a fresh cluster");
+        assert_eq!(
+            (after.venue.as_str(), after.count, after.sample),
+            ("alpha", 30, 40),
+            "the pardoned entries were counted against alpha's own share: {after:?}"
+        );
+    }
+
+    #[test]
+    fn a_pardoned_refusal_never_names_the_constraint_a_withdrawal_record_cites() {
+        // The audit line this refuses, which the platform has written: a
+        // venue withdrawn under the constraint `feasibility_withdrawn_venue`
+        // — "withdrawn because it was withdrawn". The window here is the
+        // shape that produced it: many entries under the withdrawn-venue
+        // gate set aside by a reinstatement, and a smaller number of genuine
+        // lot refusals earned since. Only the genuine ones may be counted,
+        // corroborate, or name the gate.
+        let mut window =
+            withdrawn_gate_refusals("alpha", "cell-lon-1", 20, RefusalStanding::Pardoned);
+        window.extend(edge_refusals_from_two_cells("alpha", 12));
+        let found = assess(&window, &BTreeSet::new()).expect("twelve fresh refusals are a cluster");
+        assert_eq!(
+            found.constraint, "feasibility_lot",
+            "the record cites a gate that was set aside: {found:?}"
+        );
+        assert_eq!(
+            (found.count, found.sample),
+            (12, 12),
+            "a pardoned entry reached the arithmetic of the venue it names: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_pardoned_venues_cluster_still_needs_two_cells_to_corroborate_it() {
+        // Corroboration reads the same entries the share does, and a
+        // reinstatement must not be a way past it. Twenty pardoned refusals
+        // from two cells and twelve fresh ones from a single cell: the
+        // pardoned ones name two distinct cells, so a corroboration check
+        // that walked every entry at the venue rather than every *binding*
+        // one would read this as corroborated and withdraw the venue on one
+        // cell's word.
+        let mut window =
+            withdrawn_gate_refusals("alpha", "cell-lon-1", 10, RefusalStanding::Pardoned);
+        window.extend(withdrawn_gate_refusals(
+            "alpha",
+            "cell-fra-1",
+            10,
+            RefusalStanding::Pardoned,
+        ));
+        window.extend(edge_refusals_from_one_cell("alpha", "cell-lon-1", 12));
+        assert_eq!(
+            assess(&window, &BTreeSet::new()),
+            None,
+            "one cell's evidence withdrew a venue because pardoned entries corroborated it"
+        );
+
+        // The admitting half: a second cell among the *binding* refusals
+        // clears the bar, so this is corroboration and not a refusal of
+        // every pardoned venue.
+        window.extend(edge_refusals_from_one_cell("alpha", "cell-fra-1", 12));
+        let found = assess(&window, &BTreeSet::new()).expect("two cells corroborate twenty-four");
+        assert_eq!((found.venue.as_str(), found.count), ("alpha", 24));
+    }
+
+    #[test]
+    fn an_echo_stays_an_echo_after_the_venue_leaves_the_withdrawn_set() {
+        // The non-stationarity defect, isolated from every seam. The same
+        // stored window, read twice against two different withdrawn sets:
+        // the entries do not change, so what they are evidence of must not
+        // change either.
+        //
+        // It did. `assess` used to call `is_withdrawal_echo` against the set
+        // it was handed, so the moment a reinstatement removed the venue,
+        // every echo it had taken while withdrawn became a full refusal
+        // against it — in the same step that made it a candidate again.
+        let mut window = edge_refusals_from_two_cells("alpha", 10);
+        window.extend(withdrawn_gate_refusals(
+            "alpha",
+            "cell-lon-1",
+            10,
+            RefusalStanding::Echo,
+        ));
+        window.extend(refusals("beta", 6));
+        let withdrawn = BTreeSet::from(["alpha".to_string()]);
+        assert_eq!(
+            assess(&window, &withdrawn),
+            None,
+            "the premise failed: a withdrawn venue was a candidate"
+        );
+
+        // Alpha is reinstated: the set no longer holds it, and nothing else
+        // moved. Its ten genuine refusals are still ten, its ten echoes are
+        // still echoes, and ten of sixteen is below the bar.
+        let found = assess(&window, &BTreeSet::new());
+        assert_eq!(
+            found, None,
+            "echoes became refusals against the venue the instant it was reinstated: {found:?}"
         );
     }
 }

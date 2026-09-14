@@ -5311,20 +5311,20 @@ fn a_repeated_echo_of_one_withdrawal_is_counted_in_full_and_seated_once() -> Res
         ingestion.feasibility_refusals_unattributed
     );
     assert_eq!(
-        ingestion.feasibility_refusals_echoed.len(),
+        ingestion.feasibility_refusals_repeated.len(),
         7,
         "the repeats were not carried, so the series under-counts what the cell refused: {:?}",
-        ingestion.feasibility_refusals_echoed
+        ingestion.feasibility_refusals_repeated
     );
     assert!(
         ingestion
-            .feasibility_refusals_echoed
+            .feasibility_refusals_repeated
             .iter()
             .all(|(venue, gate)| {
                 venue == FIRST && gate == qip_contracts::feasibility::GATE_WITHDRAWN_VENUE
             }),
         "a repeat was counted under another venue or another gate: {:?}",
-        ingestion.feasibility_refusals_echoed
+        ingestion.feasibility_refusals_repeated
     );
     assert_eq!(
         platform.feasibility_refusals().len(),
@@ -5483,9 +5483,9 @@ fn a_cell_citing_a_withdrawal_the_centre_does_not_hold_is_evidence_and_not_an_ec
                  refusal out of the window: {ingestion:?}"
             );
             assert!(
-                ingestion.feasibility_refusals_echoed.is_empty(),
+                ingestion.feasibility_refusals_repeated.is_empty(),
                 "the centre believed the cell's gate string over its own withdrawn set: {:?}",
-                ingestion.feasibility_refusals_echoed
+                ingestion.feasibility_refusals_repeated
             );
         }
     }
@@ -5501,6 +5501,266 @@ fn a_cell_citing_a_withdrawal_the_centre_does_not_hold_is_evidence_and_not_an_ec
         vec![VENUE],
         "ten corroborated refusals at a venue the centre has not withdrawn withdrew nothing, \
          so a stale slot at one cell can hold the control shut"
+    );
+    Ok(())
+}
+/// `count` lot-gate refusals at `venue`, all on one report from `cell` —
+/// one pass's whole intent fan-out arriving as a single message.
+fn report_with_many_lot_refusals(cell: &str, venue: &str, count: usize) -> CellReport {
+    CellReport::new(cell, start()).with_refusals(
+        (0..count)
+            .map(|_| qip_mesh::delta::DeltaRefusal {
+                gate: "feasibility_lot".to_string(),
+                reason: "10.5 is not a whole number of lots".to_string(),
+                venue: Some(venue.to_string()),
+            })
+            .collect(),
+    )
+}
+
+/// Two operators putting `venue` back, both credentials fresh at `now`.
+fn reinstate(platform: &mut Platform, venue: &str, now: Timestamp) -> Result<()> {
+    let first =
+        qip_risk_engine::autonomy::OperatorIdentity::verified("alice", "hardware-token", now);
+    let second =
+        qip_risk_engine::autonomy::OperatorIdentity::verified("bram", "hardware-token", now);
+    platform.reinstate_venue(
+        venue,
+        &first,
+        "the venue's grid was corrected in the catalogue",
+        now,
+    )?;
+    platform.reinstate_venue(
+        venue,
+        &second,
+        "confirmed against the venue's own specification",
+        now,
+    )?;
+    Ok(())
+}
+
+#[test]
+fn one_report_cannot_be_the_whole_window_however_many_refusals_it_carries() -> Result<()> {
+    // **A probe withdrew a venue for the entire platform in two messages.**
+    // `venue_review::VENUE_WITHDRAWAL_MIN_CELLS` requires two distinct cells
+    // before edge-only evidence can withdraw anything — but it counts
+    // distinct cell *names*, not evidence per cell, so thirty refusals in
+    // one report plus a single refusal from a second name cleared it, on a
+    // wire `qip-edge/src/mesh.rs` says authenticates nobody. The
+    // corroboration control can only mean something if one report cannot
+    // fill the window, which is why `attribute_refusals` now seats the first
+    // refusal per venue per gate in a report and counts the rest.
+    //
+    // The cap used to apply to `feasibility_withdrawn_venue` alone, and the
+    // eight gates it did not cover are the ones this test uses.
+    const OTHER_CELL: &str = "cell-fra-1";
+    let now = start();
+    let mut platform = platform_with_arbitrage(&[VENUE])?;
+    let ingestion =
+        platform.ingest_cell_report(report_with_many_lot_refusals(CELL, VENUE, 30), now)?;
+    assert_eq!(
+        ingestion.feasibility_refusals.len(),
+        1,
+        "a report bought more than one window seat for one venue under one gate"
+    );
+    assert_eq!(
+        ingestion.feasibility_refusals_repeated.len(),
+        29,
+        "the repeats were not carried for counting: {:?}",
+        ingestion.feasibility_refusals_repeated
+    );
+    // The series still counts every refusal the cell made — the cap is on
+    // the evidence window, not on what an operator can see.
+    assert_eq!(
+        feasibility_refusals_under(&platform, VENUE, "feasibility_lot"),
+        30,
+        "the repeats were dropped from the series as well as from the window"
+    );
+    platform.ingest_cell_report(report_with_lot_refusal_from(OTHER_CELL, VENUE), now)?;
+    assert_eq!(
+        platform.feasibility_refusals().len(),
+        2,
+        "the premise: two reports are two seats"
+    );
+    platform.run_cycle(now);
+    assert!(
+        platform.withdrawn_venues().is_empty(),
+        "two messages withdrew a venue for the whole platform: {:?}",
+        platform.withdrawn_venues()
+    );
+
+    // The admitting half: the same thirty refusals, sent as a cell would
+    // observe them — one report per pass — still withdraw the venue. The cap
+    // bounds what one message may assert, not what a fleet may establish.
+    for _ in 0..15 {
+        platform.ingest_cell_report(report_with_lot_refusal(VENUE), now)?;
+        platform.ingest_cell_report(report_with_lot_refusal_from(OTHER_CELL, VENUE), now)?;
+    }
+    platform.run_cycle(now);
+    assert_eq!(
+        platform.withdrawn_venues().iter().collect::<Vec<_>>(),
+        vec![VENUE],
+        "thirty corroborated refusals across thirty reports withdrew nothing, so the cap \
+         disabled the control rather than bounding it"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cell_that_has_not_heard_a_reinstatement_cannot_undo_it() -> Result<()> {
+    // **The loop this refuses, measured before it was closed.** A
+    // reinstatement makes every cell's policy slot 11 stale about that venue
+    // *by construction* — a cell learns on its next policy frame, not on the
+    // signature — so until the frame arrives, every intent there comes back
+    // under `feasibility_withdrawn_venue`. Those are not echoes: the centre
+    // no longer holds the withdrawal. Admitted as evidence about the venue,
+    // they withdrew it again on the next LEARN pass, and a probe on this
+    // platform did exactly that with a window of 256 entries of which not
+    // one was a genuine refusal. The signatures made the cells stale, the
+    // staleness withdrew the venue, and no reinstatement could ever have
+    // survived a cycle while any two cells were behind.
+    const OTHER_CELL: &str = "cell-fra-1";
+    let now = start();
+    let mut platform = platform_with_arbitrage(&[VENUE])?;
+    for _ in 0..6 {
+        platform.ingest_cell_report(report_with_lot_refusal(VENUE), now)?;
+        platform.ingest_cell_report(report_with_lot_refusal_from(OTHER_CELL, VENUE), now)?;
+    }
+    platform.run_cycle(now);
+    assert_eq!(
+        platform.withdrawn_venues().iter().collect::<Vec<_>>(),
+        vec![VENUE],
+        "the premise failed: twelve corroborated refusals did not withdraw the venue"
+    );
+    reinstate(&mut platform, VENUE, now)?;
+    assert!(
+        platform.withdrawn_venues().is_empty(),
+        "the premise failed: the venue is still out"
+    );
+
+    // Forty passes from each of two cells whose slot 11 never heard the
+    // signatures. Interleaved, so both are still in the window at the end:
+    // one cell alone would be stopped by the corroboration bar, and this
+    // test is about the classification and not about that bar.
+    for _ in 0..40 {
+        for cell in [CELL, OTHER_CELL] {
+            platform
+                .ingest_cell_report(report_with_withdrawn_venue_refusals(cell, VENUE, 8), now)?;
+        }
+    }
+    let window = platform.feasibility_refusals();
+    assert!(
+        window
+            .iter()
+            .filter(|refusal| refusal.constraint
+                == qip_contracts::feasibility::GATE_WITHDRAWN_VENUE)
+            .count()
+            >= 60,
+        "the premise failed: the stale refusals did not reach the window at all, so a pass \
+         here would prove nothing about how they are weighed: {}",
+        window.len()
+    );
+    platform.run_cycle(now);
+    assert!(
+        platform.withdrawn_venues().is_empty(),
+        "a venue was withdrawn again because the cells had not yet heard it was back: {:?}",
+        platform.withdrawn_venues()
+    );
+
+    // The admitting half, twice over. A venue the centre has *never*
+    // withdrawn is not excused: a cell citing a withdrawal nobody made is
+    // making an ordinary refusal at a venue in use, which is the security
+    // finding this must not undo.
+    const SECOND: &str = "XLON";
+    let mut fresh = platform_with_arbitrage(&[SECOND])?;
+    for _ in 0..5 {
+        for cell in [CELL, OTHER_CELL] {
+            fresh.ingest_cell_report(report_with_withdrawn_venue_refusals(cell, SECOND, 1), now)?;
+        }
+    }
+    fresh.run_cycle(now);
+    assert_eq!(
+        fresh.withdrawn_venues().iter().collect::<Vec<_>>(),
+        vec![SECOND],
+        "a cell asserting a withdrawal the centre never made was excused as a stale cell, so \
+         one stale slot can hold the control shut for ever"
+    );
+    // And the reinstated venue can still be withdrawn on evidence about the
+    // venue rather than about the policy path.
+    for _ in 0..12 {
+        platform.ingest_cell_report(report_with_lot_refusal(VENUE), now)?;
+        platform.ingest_cell_report(report_with_lot_refusal_from(OTHER_CELL, VENUE), now)?;
+    }
+    platform.run_cycle(now);
+    assert_eq!(
+        platform.withdrawn_venues().iter().collect::<Vec<_>>(),
+        vec![VENUE],
+        "a reinstated venue could never be withdrawn again, whatever its grid did"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_refusal_that_cannot_withdraw_a_venue_never_evicts_one_that_can() -> Result<()> {
+    // A full window is a rate sample of *evidence*. An echo and a pardoned
+    // refusal are denominator entries: neither can be a numerator,
+    // corroborate a cluster, or name a constraint. If they could evict, a
+    // cell reporting at a venue nobody is judging would push the evidence
+    // every other venue's withdrawal rests on out of the window — until
+    // fewer than `VENUE_WITHDRAWAL_MIN_SAMPLE` genuine entries survived and
+    // no venue could be withdrawn at all, which is a control that cannot
+    // fire arrived at by arithmetic rather than by anyone's decision.
+    const OTHER_CELL: &str = "cell-fra-1";
+    const SECOND: &str = "XLON";
+    let now = start();
+    let mut platform = platform_with_arbitrage(&[VENUE, SECOND])?;
+    for _ in 0..6 {
+        platform.ingest_cell_report(report_with_lot_refusal(VENUE), now)?;
+        platform.ingest_cell_report(report_with_lot_refusal_from(OTHER_CELL, VENUE), now)?;
+    }
+    platform.run_cycle(now);
+    assert_eq!(
+        platform.withdrawn_venues().iter().collect::<Vec<_>>(),
+        vec![VENUE],
+        "the premise failed: the venue the echoes will name is not withdrawn"
+    );
+    // Fill the rest of the window with genuine refusals at a second venue,
+    // below its own share bar, and then flood it with echoes of the first
+    // venue's withdrawal — far more than the window could ever hold.
+    while platform.feasibility_refusals().len() < 256 {
+        platform.ingest_cell_report(report_with_lot_refusal(SECOND), now)?;
+    }
+    let genuine_before = platform
+        .feasibility_refusals()
+        .iter()
+        .filter(|refusal| refusal.venue == SECOND)
+        .count();
+    assert!(
+        genuine_before >= 200,
+        "the premise failed: the window is not mostly the second venue's genuine refusals: \
+         {genuine_before}"
+    );
+    for _ in 0..500 {
+        platform.ingest_cell_report(report_with_withdrawn_venue_refusals(CELL, VENUE, 4), now)?;
+    }
+    assert_eq!(
+        platform
+            .feasibility_refusals()
+            .iter()
+            .filter(|refusal| refusal.venue == SECOND)
+            .count(),
+        genuine_before,
+        "five hundred echoes evicted the evidence a second venue would be judged on"
+    );
+    // And the series still saw every one of them, so nothing is hidden —
+    // only kept out of the window.
+    assert!(
+        feasibility_refusals_under(
+            &platform,
+            VENUE,
+            qip_contracts::feasibility::GATE_WITHDRAWN_VENUE
+        ) >= 2000,
+        "the echoes were dropped from the series as well as from the window"
     );
     Ok(())
 }

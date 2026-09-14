@@ -1070,16 +1070,61 @@ fn reinstatement_needs_two_different_fresh_operators_and_is_journaled_at_each_si
     );
     platform.submit_order(order, now)?;
 
-    // And a reinstated venue can be withdrawn again on fresh evidence, as
-    // a new record: the window still holds the ten, and nothing has
-    // reinstated the *evidence*, so the next review withdraws it once more.
+    // And the reinstatement survives a LEARN pass.
+    //
+    // **This assertion was the opposite until 2026-09-14, and the old one
+    // was wrong.** It read "a reinstated venue can be withdrawn again on
+    // fresh evidence … the window still holds the ten, and nothing has
+    // reinstated the *evidence*, so the next review withdraws it once more",
+    // and asserted the venue was withdrawn after this cycle. Those ten
+    // refusals are not fresh evidence — they are the *same* evidence the
+    // withdrawal was made on, still sitting in the window the signatures did
+    // not reach. So a reinstatement had never survived a single cycle in
+    // this platform's history: two people signed, and the machine reverted
+    // them before anybody could place a second order. A control the system
+    // undoes by itself is the `MaxExpectedShortfall` shape this repository
+    // names, and a test asserting the revert pinned the defect in place.
+    //
+    // What two signatures mean is that the accumulated evidence no longer
+    // binds this venue (`venue_review::pardon`), so the venue must earn a
+    // fresh cluster before it goes again — which the half below proves it
+    // still can.
     platform.run_cycle(now);
+    assert!(
+        platform.withdrawn_venues().is_empty(),
+        "the platform withdrew a venue two operators had just reinstated, on the very evidence \
+         they signed away: {:?}",
+        platform.withdrawn_venues()
+    );
+    assert_eq!(
+        withdrawals_recorded(&platform)?,
+        1,
+        "a second withdrawal record was written for a venue that has refused nothing since"
+    );
+
+    // The admitting half, without which everything above passes against a
+    // reinstatement that disables the control for ever. Ten *new* off-lot
+    // refusals at the reinstated venue are evidence nobody signed away, and
+    // they withdraw it again, with its own record on its own cluster.
+    withdraw_the_desk_venue(&mut platform)?;
     assert_eq!(
         platform.withdrawn_venues().iter().collect::<Vec<_>>(),
         vec!["simulated-venue"],
-        "the standing cluster did not withdraw the reinstated venue again"
+        "a venue that was once reinstated could never be withdrawn again, whatever it refused"
+    );
+    assert_eq!(
+        withdrawals_recorded(&platform)?,
+        2,
+        "the second withdrawal is not on the record as its own finding"
     );
     Ok(())
+}
+
+/// How many `venue.withdrawn` records the log holds.
+fn withdrawals_recorded(platform: &Platform) -> Result<usize> {
+    Ok(platform
+        .replay_journal(&qip_events::EventFilter::new().topic(qip_events::Topic::VenueWithdrawn))?
+        .len())
 }
 
 #[test]
