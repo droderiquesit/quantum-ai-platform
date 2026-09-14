@@ -44,6 +44,12 @@ qip-api.workspace = true
 # arbitrage pipeline, and the quantum port that reports itself unavailable.
 # These are in-tree crates; the workspace's two-dependency rule is untouched.
 qip-numerics.workspace = true
+# The streaming-estimator suite additionally reaches the training crate, which
+# is where the drift index that consumes those estimators' declared bounds
+# lives. §21.1's "one that drifts past it marks every model depending on it as
+# degraded" spans both crates and neither can assert it alone. In-tree; the
+# workspace's two-dependency rule is untouched.
+qip-training.workspace = true
 qip-quantum.workspace = true
 qip-sequencing.workspace = true
 qip-orderbook.workspace = true

@@ -64,6 +64,7 @@ dependencies = [
  "qip-simulation-engine",
  "qip-storage",
  "qip-strategy",
+ "qip-training",
  "qip-transport",
  "qip-twin",
  "qip-world-model",

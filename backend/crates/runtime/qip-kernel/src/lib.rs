@@ -31,11 +31,13 @@
 //! capital demand forecaster, and the cost meter that charges every cycle for
 //! having been run. See [`platform`].
 
+pub mod capacity_review;
 pub mod central;
 pub mod config;
 pub mod cycle;
 pub mod fabric_declaration;
 pub mod family_review;
+pub mod feature_statistics;
 pub mod platform;
 pub mod references;
 pub mod rule_review;
