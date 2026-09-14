@@ -539,6 +539,12 @@ fn queue_position(platform: &Platform, object_id: &str, book: Option<&OrderBook>
 
 #[cfg(test)]
 mod tests {
+    // The one `f64` compared exactly below is a skew of zero on a flat book —
+    // the identity of the arithmetic, not a rounded result. A tolerance there
+    // would admit a skew that was merely small on a book with nothing in it,
+    // which is the premise the test beside it rests on.
+    #![allow(clippy::float_cmp)]
+
     use super::*;
     use crate::config::PlatformConfig;
     use crate::cycle::Stage;
