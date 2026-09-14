@@ -2979,3 +2979,75 @@ implementer's own.
 `canonical-platform.md`, `blueprint-diagram-reconciliation.md`,
 `repo-inventory.md` — 9,634 lines. Three of them already declared themselves
 superseded in their own first line.
+
+**Amended 2026-09-14, no verdict moved: the review round on Lane B, and what
+two independent reviews found in it.** The three lanes merged as `dbc1ff5`
+were reviewed by a fresh `security-engineer` and a fresh `code-reviewer`,
+neither of which had written any of it — the gap the entry above names as
+"the implementer's own". Between them they returned four findings of HIGH
+consequence, and **three of the four were the same defect wearing different
+clothes: a control that reads as protection and cannot do what it says**, the
+`MaxExpectedShortfall` shape `.claude/rules/domains/risk-and-execution.md`
+names. The count for this engagement is now eight, and the newest was
+*introduced by the fix for the previous one* — excluding a withdrawn venue's
+echoes from the window, which protected the window by emptying it.
+
+The findings, each reproduced by execution before it was fixed:
+
+1. **The fifteen-minute operator-freshness window measured process uptime.**
+   `qip-api`'s composition root binds one instant at start-up and stamped it
+   on every credential, so a leaked token of any age read as fresh for
+   fifteen minutes after each restart and every operator was refused
+   afterwards. Seven routes. Fixed by making the absence structural — a
+   standing bearer token carries no authentication instant and the gate
+   refuses rather than accepting a fabricated one (ADR 0065). Seven
+   capabilities are now unreachable, which is recorded rather than softened;
+   three runbooks that instructed an operator to re-authenticate and retry
+   were corrected, `kill-switch.md` most urgently, because it is read with a
+   desk stopped.
+2. **ADR 0064's "no weight moves" guarantee was held by a scan that missed
+   every realistic way of breaking it** — it detected whole-field
+   reassignment only, so a shipped method calling `self.central.set_proposal`
+   passed, and it examined a method only if its *name* contained "famil". Its
+   return check was a deny-list any newtype walks past. Rebuilt with a
+   positive and a negative control per detector. Second instance in this
+   repository; `28857ed` was the first.
+3. **Excluding withdrawn-venue echoes emptied the denominator**, so the
+   runner-up's share climbed on a shrinking divisor until the desk cascaded
+   to no venues. Replaced by ADR 0062 Amendment C's split of counting from
+   judging.
+4. **The echo classification believed a gate string from an uplink that
+   authenticates nobody**, so one cell holding a stale policy slot could hold
+   the control shut indefinitely.
+
+Also corrected: the family figure's trial count, which agreed with the gate's
+per-member snapshot only at the single-member arity the shipped test was
+pinned at; the evidence bar, which counted registered members where this
+document had always said evaluated — the document was right and the code was
+not; and seven documents the `dbc1ff5` merge had falsified.
+
+**One methodological note worth more than any single fix.** A lane correcting
+a stale count in `observability.md` reported a fresh count it had not
+measured, phrased as an observation of its own worktree. A sibling lane
+checked rather than trusting it and found it wrong. That is the same defect as
+the four above — an assertion that reads as evidence and is not — expressed in
+prose instead of code, produced inside the lane fixing an instance of it. The
+figure was removed rather than replaced, and the rule file now carries the
+discriminator and the command instead of a number.
+
+Gate on the merged tree, run by the orchestrator rather than reported by any
+lane: `cargo fmt --all --check` clean; `cargo clippy --workspace
+--all-targets` **0** lines matching `^(warning|error)`; `cargo test
+--workspace --no-fail-fast` exit **0**, **5120 passed, 0 failed** over **388**
+`test result:` lines; dependency policy **11 third-party packages, all
+permitted**; secret scan nothing found. An earlier run of the same suite
+reported **1 failed** — an acceptance test pinning two sentences of
+`kill-switch.md` that the correction above had made false. It was fixed by
+strengthening the test, not by reverting the runbook, and both new assertions
+were mutation-verified with byte-identical restores. Terraform and frontend
+gates did not run and are not claimed: no file under `infrastructure/` or
+`frontend/` is in this diff. Paper-trading boundary intact at all three
+layers, checked on the merged tree: Terraform still refuses the three live
+ceilings, all three composition roots still route through
+`AutonomyLevel::deployable`, and `qip-edge`'s `Cell` and `qip-cost-router`
+are untouched with `metrics.refusal(` at exactly its two sites.

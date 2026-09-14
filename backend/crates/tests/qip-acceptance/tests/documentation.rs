@@ -722,12 +722,33 @@ fn the_runbook_states_the_freshness_and_the_record_that_lifting_a_halt_requires(
     // against a second copy of the prose, because prose is what drifts.
     let runbook = read("docs/operations/kill-switch.md");
     assert!(
-        runbook.contains("15 minutes"),
+        runbook.contains("fifteen minutes"),
         "the kill-switch runbook does not state the credential freshness"
     );
     assert!(
-        runbook.contains("Every lift is recorded"),
+        runbook.contains("is recorded: who did it"),
         "the kill-switch runbook does not say that lifting a halt is recorded"
+    );
+
+    // These two assertions read `"15 minutes"` and `"Every lift is recorded"`
+    // until 2026-09-14, and both were pinning sentences that had become
+    // actively harmful. `DELETE /kill-switch` now refuses every caller
+    // (ADR 0065: the fifteen-minute window measured the API process's uptime,
+    // not when anybody authenticated), so the runbook's old instruction to
+    // re-authenticate and retry could not succeed, and the only lift left is a
+    // process restart — which writes no `KillSwitchClearance` at all. The old
+    // assertions would have passed on a runbook that still sent an operator
+    // with a halted platform around a loop that cannot terminate, which is why
+    // the two below are added rather than the two above merely reworded.
+    assert!(
+        runbook.contains("refuses every caller"),
+        "the kill-switch runbook does not say the clearance route refuses, so an operator with a \
+         halted platform is still being told to retry a call that cannot succeed"
+    );
+    assert!(
+        runbook.contains("KillSwitchClearance"),
+        "the kill-switch runbook does not name the record a restart loses, so an incident review \
+         would read its absence as nobody having looked"
     );
 
     let now = qip_core::Timestamp::from_secs(1_000_000);
