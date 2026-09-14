@@ -29,6 +29,13 @@
 //!   for the remainder only after the cancel is acknowledged, under requote
 //!   budgets that stop it chasing a fast market.
 //!
+//! * **How a whole cycle will be executed.** [`path`] is blueprint §30.2's
+//!   path router: it assigns one of the eight named execution paths from the
+//!   classes of a candidate cycle's edges and the facts about the venues they
+//!   touch, and refuses a cycle no row of that table covers rather than
+//!   picking the nearest one. [`pathcycle::CycleRouter`] reads a cycle the
+//!   arbitrage search found. Neither can produce an order; both classify.
+//!
 //! [`gateway::Gateway`] is the venue-facing surface.
 //! [`gateway::SimulatedGateway`] implements it against a book;
 //! [`gateway::NativeGateway`] is the shape of the real adapter and reports
@@ -44,6 +51,8 @@ pub mod children;
 pub mod gateway;
 pub mod health;
 pub mod ordertype;
+pub mod path;
+pub mod pathcycle;
 pub mod reprice;
 pub mod router;
 pub mod venue;
@@ -58,6 +67,12 @@ pub use ordertype::{
     OrderTypeKind, OrderTypeSelection, PegReference, RoutedOrderType, Touch, Urgency,
     select_order_type,
 };
+pub use path::{
+    Composition, CompositionEdge, Coordination, EdgeClass, ExecutionPath, MAX_COMPOSITION_EDGES,
+    MIN_COMPOSITION_EDGES, MirrorFacts, PathAssignment, PathEndpoint, PathPolicy, RegionId, assign,
+    eligible_paths,
+};
+pub use pathcycle::{CycleRouter, RepresentationClasses, VenueRegions};
 pub use reprice::{
     Drift, HoldReason, PendingReplace, RepriceDecision, RepricePolicy, Repricer, ThrottleScope,
 };
