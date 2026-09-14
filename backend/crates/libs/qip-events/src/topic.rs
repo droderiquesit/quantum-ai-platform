@@ -204,6 +204,15 @@ pub enum Topic {
     /// state changes, not on every cycle it stands. A Learn finding,
     /// retained permanently. See ADR 0063.
     SizingReviewed,
+    /// The funding standing of every strategy family the foundry has
+    /// registered, measured against the deflation the holdout gate itself
+    /// applied (blueprint §12.3, row five). Carries the per-family standing
+    /// every cycle and, where an unfunded family's evidence stands clear of
+    /// every funded family's by the review's margin, a misallocation
+    /// finding. A measurement and a finding only: no weight, budget, grant
+    /// or bound moves from either body, and nothing in the platform reads
+    /// one. A Learn finding, retained permanently. See ADR 0064.
+    FamilyAllocationReviewed,
 
     // --- SYSTEM ---
     ServiceStarted,
@@ -218,7 +227,7 @@ pub enum Topic {
 impl Topic {
     /// Every topic, in declaration order. Used by the registry, the
     /// documentation-drift test and the observability bootstrap.
-    pub const ALL: [Self; 76] = [
+    pub const ALL: [Self; 77] = [
         Self::MarketTick,
         Self::MarketQuote,
         Self::MarketTrade,
@@ -288,6 +297,7 @@ impl Topic {
         Self::RiskRuleDefended,
         Self::RiskRuleDormant,
         Self::SizingReviewed,
+        Self::FamilyAllocationReviewed,
         Self::ServiceStarted,
         Self::ServiceStopped,
         Self::KillSwitchEngaged,
@@ -370,6 +380,7 @@ impl Topic {
             Self::RiskRuleDefended => "risk.rule_defended",
             Self::RiskRuleDormant => "risk.rule_dormant",
             Self::SizingReviewed => "learning.sizing_reviewed",
+            Self::FamilyAllocationReviewed => "learning.family_allocation_reviewed",
             Self::ServiceStarted => "system.service_started",
             Self::ServiceStopped => "system.service_stopped",
             Self::KillSwitchEngaged => "system.kill_switch_engaged",
@@ -462,7 +473,8 @@ impl Topic {
             | Self::ResearchCampaignFlagged
             | Self::RiskRuleDefended
             | Self::RiskRuleDormant
-            | Self::SizingReviewed => TopicGroup::Learn,
+            | Self::SizingReviewed
+            | Self::FamilyAllocationReviewed => TopicGroup::Learn,
 
             Self::ServiceStarted
             | Self::ServiceStopped

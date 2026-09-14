@@ -1033,6 +1033,35 @@ pub mod names {
     /// when the log accepted the record.
     pub const RULE_RECALIBRATION_PROPOSED: &str = "qip_rule_recalibration_proposed_total";
 
+    /// Strategy families the foundry has registered, by `standing`: `funded`
+    /// where at least one member stands at a capital-holding rung,
+    /// `unfunded` where none does. Two fixed label values and never a family
+    /// name — the foundry mints however many families a sweep produces, and
+    /// a series keyed on one would be unbounded.
+    ///
+    /// Written on every LEARN stage **including when both arms are zero**,
+    /// the discipline [`RULE_DORMANT`] follows, and here it is the whole
+    /// point of the series rather than a nicety. Blueprint §12.3's fifth row
+    /// asks for a family whose weight should be revised; ADR 0064 records
+    /// that no weight in this platform is reachable to revise, so the honest
+    /// deliverable is the measurement. A `funded` arm that reads zero cycle
+    /// after cycle is the fact "this row has never had a subject" stated in
+    /// a series a person can chart, rather than an absence that reads
+    /// identically to a review that never ran.
+    pub const FAMILY_STANDINGS: &str = "qip_family_standings";
+    /// Misallocation findings the LEARN stage wrote — an unfunded family
+    /// whose deflated evidence stands clear of every funded family's by the
+    /// review's margin, on both sides of enough members to be a pattern.
+    /// Unlabelled: the pair of family names is in the journal record, which
+    /// is access controlled, and not in a series whose cardinality the
+    /// foundry would set.
+    ///
+    /// A record and never a weight. Nothing reads this series or the record
+    /// behind it to move a grant, a budget or a bound (ADR 0064), so it is
+    /// deliberately not in `SERIES_THAT_MUST_PAGE`: a finding nobody can act
+    /// on should not wake anybody.
+    pub const FAMILY_MISALLOCATIONS: &str = "qip_family_misallocations_total";
+
     /// Orders a cell reported *sent* — accepted by the venue, not filled —
     /// counted as the centre registers them against later fills. Kept beside
     /// [`CENTRAL_FILLS_ATTRIBUTED`] so the two can be read against each
