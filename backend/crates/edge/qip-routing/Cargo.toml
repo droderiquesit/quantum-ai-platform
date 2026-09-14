@@ -12,6 +12,12 @@ serde.workspace = true
 qip-core.workspace = true
 qip-market.workspace = true
 qip-contracts.workspace = true
+# The arbitrage graph, for `path::cycle`'s adapter only. An edge-to-edge
+# dependency in the permitted direction — `qip-arbitrage` names no crate this
+# one does, so the graph stays acyclic — and it is what keeps blueprint
+# §30.2's router from being a vocabulary with nothing to read: without it
+# every caller would have to restate a cycle it already holds.
+qip-arbitrage.workspace = true
 
 [lints]
 workspace = true

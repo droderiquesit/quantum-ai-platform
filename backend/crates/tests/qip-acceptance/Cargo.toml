@@ -52,6 +52,12 @@ qip-strategy.workspace = true
 qip-arbitrage.workspace = true
 qip-edge.workspace = true
 
+# Blueprint §30.2's path router, for `path_router.rs`. The suite already
+# reaches `qip-arbitrage`; the assertion that a cycle the search found is
+# assigned a path needs both ends of that seam in one test, and neither
+# crate's own tests can see the other.
+qip-routing.workspace = true
+
 # The security suite additionally reaches the data finder, because the
 # threat model's "unknown is not permission" property lives in its
 # three-valued legality and nowhere else.
