@@ -240,6 +240,14 @@
 //! `venue.withdrawn`, which is the one kind of fact a slot may carry without
 //! inventing anything. Read the rest as the standing refusal of the grids.
 //!
+//! Since ADR 0062's Amendment C that field is additive on the wire —
+//! `#[serde(default, skip_serializing_if = "BTreeSet::is_empty")]`, the shape
+//! `CycleWhitelist::conversions` chose first — so a slot carrying nothing
+//! withdrawn serialises to the bytes, and therefore the digest and the
+//! signature, a payload from before the field carried. The empty grids
+//! below are unaffected either way; they are stated and not skipped, because
+//! refusing to state a grid is a different claim from having none.
+//!
 //! The feasibility constraints are per venue while the only grid this platform
 //! states is per instrument — and note which installer the centre actually
 //! calls: `with_instrument_feasibility`, keyed on `object_id`, never
@@ -252,7 +260,17 @@
 //! indistinguishable from one that states `qip_financial`'s builder default,
 //! so signing it would be signing a default as a venue's grid.
 //!
-//! Re-verified 2026-09-07, and note what the centre *does* hold, because it
+//! Re-verified 2026-09-14 — the date moved because the surrounding claims
+//! did, and the three checks below were re-run rather than carried forward:
+//! `grep -rn 'with_venue_feasibility' backend/crates` still finds no caller
+//! outside the execution engine's own `tests/execution.rs` and its own
+//! doc comments; `platform.rs` still builds `instrument_grids` from
+//! `instrument_grid_of` and folds them in through
+//! `with_instrument_feasibility`, keyed on `object_id`; and
+//! `qip_edge::feasibility::effective` still resolves
+//! `policy_tick.or_else(|| model…granularity_for(object_id).tick_size())`,
+//! which is the preference this paragraph turns on. Note what the centre
+//! *does* hold, because it
 //! is the thing that most looks like a source and is not: `Platform::assemble`
 //! builds `instrument_grids` from `instrument_grid_of(object)` over the
 //! universe and installs each through `with_instrument_feasibility`, keyed on
