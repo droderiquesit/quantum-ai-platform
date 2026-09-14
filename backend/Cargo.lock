@@ -103,6 +103,7 @@ dependencies = [
  "qip-data-finder",
  "qip-edge",
  "qip-events",
+ "qip-execution-engine",
  "qip-financial",
  "qip-kernel",
  "qip-lifecycle",

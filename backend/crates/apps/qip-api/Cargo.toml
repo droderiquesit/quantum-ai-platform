@@ -60,6 +60,16 @@ qip-simulation-engine.workspace = true
 # the kernel does not re-export it. Dev-only: the serving binary builds no
 # bar of its own — what it observes comes off the feed above.
 qip-market.workspace = true
+# The venue-reinstatement route's tests have to reach the state the route
+# exists to recover from, and the only way a venue becomes withdrawn is ten
+# feasibility refusals at it followed by the LEARN stage's review — so the
+# fixture builds real orders, which names `Side`. Dev-only, and it must stay
+# that way: `api_boundary.rs` refuses a *shipped* edge from the application
+# layer to any execution, venue, capital or edge crate, precisely so that no
+# source the binary compiles can name an order constructor. It skips dev and
+# build edges, which is what makes a fixture like this reviewable rather than
+# a hole in that rule.
+qip-execution-engine.workspace = true
 
 [lints]
 workspace = true

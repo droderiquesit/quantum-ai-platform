@@ -12527,6 +12527,54 @@ impl Platform {
         &self.withdrawn_venues
     }
 
+    /// Every withdrawal record this kernel's review has written, oldest
+    /// first, with the evidence each was made on.
+    ///
+    /// Read off the log rather than off a second table, because the log is
+    /// the record: the withdrawn set above is resumed from exactly these
+    /// events at assembly, so a reader comparing the two is comparing a
+    /// cache with its source and not two independent claims.
+    pub fn venue_withdrawals(&self) -> Result<Vec<VenueWithdrawal>> {
+        Self::records_on::<VenueWithdrawal>(&self.event_log, VENUE_REVIEW_ORIGIN)
+    }
+
+    /// Every reinstatement signature this kernel has journaled, oldest
+    /// first — awaiting, reinstated and refused alike, so a reader can see
+    /// who asked and what came of it.
+    pub fn venue_reinstatements(&self) -> Result<Vec<VenueReinstatementEntry>> {
+        Self::records_on::<VenueReinstatementEntry>(&self.event_log, VENUE_REINSTATEMENT_ORIGIN)
+    }
+
+    /// The first signature standing on a venue's reinstatement, if one is.
+    ///
+    /// A signature this process is holding, not one the log merely records:
+    /// a first signature is discarded when it goes stale, and a reader asking
+    /// "is somebody waiting for a countersignature" wants the live answer.
+    pub fn pending_venue_reinstatement(
+        &self,
+        venue: &str,
+    ) -> Option<&qip_contracts::governance::Approval> {
+        self.pending_reinstatements.get(venue)
+    }
+
+    /// Decode every record of one body type written by one producer, oldest
+    /// first. Shared by the two venue readers above so they cannot come to
+    /// different conclusions about what "the log holds" means.
+    fn records_on<B: EventBody + serde::de::DeserializeOwned>(
+        log: &EventLog,
+        producer: &str,
+    ) -> Result<Vec<B>> {
+        log.by_topic(B::TOPIC)
+            .into_iter()
+            .filter(|event| event.lineage.producer == producer)
+            .map(|event| {
+                StreamEnvelope::from_frame(event)
+                    .and_then(|envelope| envelope.decode::<B>())
+                    .map(|envelope| envelope.body)
+            })
+            .collect()
+    }
+
     /// The cap on `object_id`'s weight bound from its own fill record, in
     /// `(0, 1]` — blueprint §12.3's last row, executed-order half (ADR
     /// 0063). Computed from [`Self::fill_scores`] on every call rather than

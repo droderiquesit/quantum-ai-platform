@@ -10,6 +10,7 @@ needs the first line more than the reasoning.
 * [The kill switch tripped](kill-switch.md)
 * [A risk limit is breached](limit-breach.md)
 * [Recalibrating a risk limit](recalibrating-a-limit.md) — the platform proposes a loosening from counterfactual regret, two people sign, and what the second signature produces is a file a deployment mounts; nothing changes a bound in a running process (ADR 0061)
+* [A venue was withdrawn, and putting it back](reinstating-a-venue.md) — the platform stops using a venue that clusters its feasibility refusals, which on a one-broker desk stops the desk; what the cluster says to check, and the two signatures that put it back (ADR 0062)
 * [Enabling live trading](enabling-live-trading.md)
 * [An agent attempted an ungranted capability](permission-violation.md)
 * [The book and the venue disagree](reconciliation-break.md)

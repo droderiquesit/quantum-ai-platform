@@ -55,6 +55,7 @@ pub mod self_model_views;
 pub mod statement;
 pub mod stream;
 pub mod trust;
+pub mod venue_views;
 pub mod web;
 
 pub use auth::{Authenticator, Credential, Principal, RateLimiter, Role};

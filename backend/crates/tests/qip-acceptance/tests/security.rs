@@ -2469,45 +2469,38 @@ fn no_code_path_assigns_a_limit_set_after_boot_and_no_root_reads_one_from_anywhe
     }
 }
 
-// --- the dual-signature identity invariant, documented where nothing yet enforces it ---
+// --- the dual-signature identity invariant, now exercised end to end ---
 
 #[test]
-fn every_operatoridentity_is_built_from_the_principals_durable_subject_not_a_session_value() {
-    // What this documents, and does not fix: the "two distinct people"
-    // guarantee behind every dual-signature control — a promotion, a
-    // recalibration, and (per ADR 0062) a venue reinstatement once it has a
-    // route — rests entirely on `OperatorIdentity::subject()` being a
+fn every_operatoridentity_is_built_from_the_principals_durable_subject_not_a_session_value()
+-> Result<()> {
+    // The "two distinct people" guarantee behind every dual-signature control
+    // — a promotion, a recalibration, and since ADR 0062's follow-on a venue
+    // reinstatement — rests entirely on `OperatorIdentity::subject()` being a
     // durable, per-human identifier. `Platform::reinstate_venue`'s check
     // (`first.approver == operator.subject()`) compares *subjects*, not
-    // people; if whatever builds `OperatorIdentity::verified(...)` were ever
-    // changed to key on something session- or request-scoped instead — a
-    // token id, a request id — one person could countersign their own
-    // reinstatement in a second session and this check would not catch it.
-    // That is a fact about the type, not about this crate, and redesigning
-    // `OperatorIdentity` is out of scope here: the field is a `String` by
-    // its own doc comment's admission ("the operator's identifier from the
-    // authentication system"), and nothing short of a new type distinguishes
-    // a durable subject from a session token at compile time.
+    // people; if whatever builds `OperatorIdentity::verified(...)` were keyed
+    // on something session- or request-scoped instead — a token id, a request
+    // id — one person could countersign their own reinstatement in a second
+    // session and no check would catch it. Nothing in the type system stops
+    // that: the field is a `String` by its own doc comment's admission ("the
+    // operator's identifier from the authentication system"), and telling a
+    // durable subject from a session token at compile time would take a new
+    // type.
     //
-    // `reinstate_venue` has no HTTP route yet — ADR 0062 says so directly,
-    // and the assertion just below this comment re-checks it rather than
-    // taking the ADR's word for it — so there is nothing to exercise end to
-    // end. What this test holds instead: every *existing* dual-signature route —
-    // the ones a future reinstatement route would be modelled on — builds
-    // its `OperatorIdentity` from `principal.subject`, the field the
-    // authentication middleware populates from the verified credential, and
-    // not from anything narrower. A future PR that wires the reinstatement
-    // route by copying one of these call sites inherits a correct one; a
-    // reviewer who instead reaches for a session or request identifier will
-    // fail this test, or should extend it, before shipping a second
-    // signature that cannot actually tell two sessions from two people.
+    // **This test used to assert that no reinstatement route existed**, on
+    // the ground that the finding was unreachable without one, and said in
+    // its own failure message that the premise would be stale the day one
+    // landed. It has. Three things hold the property in its place: every
+    // `OperatorIdentity::verified` call site in `routes.rs` is built from
+    // `principal.subject`; that subject is the *credential's* and survives
+    // re-authentication, so two sessions of one holder are one subject; and
+    // the reinstatement route is reachable, so the kernel's comparison is a
+    // live control rather than a dormant one. The countersignature refusal
+    // itself is driven over HTTP in `qip-api/tests/venues.rs::one_operator_
+    // signing_twice_is_one_person_and_two_operators_put_the_venue_back`,
+    // which is where the withdrawal fixture lives.
     let routes = read("backend/crates/apps/qip-api/src/routes.rs");
-    assert!(
-        !routes.contains("reinstate_venue"),
-        "a reinstatement route now exists; it must build its `OperatorIdentity` the same way \
-         every call site below does, and this test's premise (nothing to exercise end to end) \
-         is stale and should be rewritten to call the route directly"
-    );
     let mut call_sites = 0usize;
     let mut lines = routes.lines().enumerate().peekable();
     while let Some((index, line)) = lines.next() {
@@ -2533,4 +2526,60 @@ fn every_operatoridentity_is_built_from_the_principals_durable_subject_not_a_ses
         "no `OperatorIdentity::verified` call site was found in routes.rs; the walk is not \
          reaching the file and this test proves nothing"
     );
+
+    // And the subject those call sites read is durable. Two authentications
+    // of one credential, a quarter of an hour apart, are two sessions; if the
+    // subject were minted per session or per request they would differ, and
+    // every dual-signature control would read one person as two. Premise
+    // first: both authentications succeeded, so what follows compares two
+    // subjects rather than two failures.
+    let authenticator = Authenticator::new(credentials());
+    let bearer = format!("Bearer {}", token(Role::Operator));
+    let first = authenticator.authenticate(Some(&bearer), now())?;
+    let second = authenticator.authenticate(Some(&bearer), later(900))?;
+    assert_eq!(
+        first.subject, second.subject,
+        "one credential produced two subjects across two sessions; the two-distinct-people \
+         check compares subjects, so that is one person counting as two"
+    );
+    assert_eq!(
+        first.subject, "operator@example.com",
+        "the subject is not the durable one the credential was configured with"
+    );
+
+    // The other half, so the control can pass as well as refuse: two
+    // different credentials are two subjects. A subject that collapsed to one
+    // value for every caller would make every dual signature unobtainable,
+    // which is a different defect and equally invisible without this line.
+    let other = format!("Bearer {}", token(Role::Viewer));
+    let viewer = authenticator.authenticate(Some(&other), now())?;
+    assert_ne!(
+        first.subject, viewer.subject,
+        "two credentials share one subject, so no two callers could ever be two people"
+    );
+
+    // And the route is reachable, which is what made this finding live. The
+    // platform here has withdrawn nothing, so the honest answer is 404 — but
+    // it is a 404 from the *kernel*, past authentication and past the role
+    // check, which is what proves the identity built above reaches the
+    // comparison at all. A 401 or a 403 would mean this test asserted a
+    // property of a route nobody can call.
+    let api = api()?;
+    let mut signature = request(
+        Method::Post,
+        "/api/v1/venues/simulated-venue/reinstatements",
+        Some(&token(Role::Operator)),
+    );
+    signature.body = br#"{"rationale": "the venue's grid was re-read by the desk"}"#.to_vec();
+    let response = api.handle(&signature);
+    let body = String::from_utf8_lossy(&response.body).into_owned();
+    assert_eq!(
+        response.status, 404,
+        "the reinstatement route did not reach the kernel: {body}"
+    );
+    assert!(
+        body.contains("is not withdrawn"),
+        "the refusal did not come from the kernel's own check: {body}"
+    );
+    Ok(())
 }

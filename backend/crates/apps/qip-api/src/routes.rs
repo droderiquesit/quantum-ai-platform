@@ -551,6 +551,34 @@ pub const ROUTES: &[Route] = &[
                   — the running process keeps the limits it booted with",
         success: 200,
     },
+    // The venue-withdrawal surface (ADR 0062). The platform withdraws a venue
+    // from its own feasibility evidence, in LEARN, after journaling the
+    // record; these two routes are how a desk sees that it happened and how
+    // two people put the venue back. Until they existed the withdrawal was
+    // recoverable only with direct access to the kernel, which is the state
+    // in which a fail-closed control gets recovered from by means nobody
+    // audited.
+    Route {
+        method: Method::Get,
+        pattern: "/venues/withdrawals",
+        required_role: Role::Viewer,
+        summary: "the venues the platform withdrew on feasibility evidence, each with the \
+                  cluster it was withdrawn on — the dominating constraint, the count, the \
+                  sample and the seams — and whether a first reinstatement signature is \
+                  standing; who signed is on the event log and not on this list",
+        success: 200,
+    },
+    Route {
+        method: Method::Post,
+        pattern: "/venues/:venue/reinstatements",
+        required_role: Role::Operator,
+        summary: "sign the authenticated operator's name to the reinstatement of a venue the \
+                  platform withdrew; the first signature is held and a second, from a \
+                  different person, puts the venue back at both seams — a venue the platform \
+                  did not withdraw is refused as not found, and nothing here can permit a \
+                  venue configuration did not already permit",
+        success: 200,
+    },
     // --- the live surface ---------------------------------------------------
     //
     // In the same table as everything else, so a security review reads one
@@ -1344,6 +1372,59 @@ impl Api {
                             500,
                             crate::registration_views::refusal(&error.to_string()),
                         ),
+                    },
+                    Err(error) => Response::json(
+                        crate::registration_views::refusal_status(&error),
+                        crate::registration_views::refusal(error.message()),
+                    ),
+                }
+            }
+            (Method::Get, "/venues/withdrawals") => {
+                let (status, body) = crate::ledger_views::render_fallible(
+                    crate::venue_views::withdrawals(&platform),
+                );
+                Response::json(status, body)
+            }
+            (Method::Post, "/venues/:venue/reinstatements") => {
+                let Some(venue) = path_segment(&request.path, 1) else {
+                    return Response::json(404, r#"{"error":"no such route"}"#);
+                };
+                let body = match request
+                    .body_as_str()
+                    .map_err(|error| error.message().to_string())
+                    .and_then(crate::venue_views::VenueReinstatementRequest::parse)
+                {
+                    Ok(body) => body,
+                    Err(reason) => {
+                        return Response::json(400, crate::registration_views::refusal(&reason));
+                    }
+                };
+                // The approver is the authenticated principal and never the
+                // body — the rule the promotion and recalibration signatures
+                // above keep, and the one that makes this an approval rather
+                // than a claim to have been approved. The kernel's "two
+                // distinct people" check compares this subject against the
+                // one holding the first signature, so what is passed here is
+                // the whole of that guarantee.
+                //
+                // `issued_at`, never `now`: passing `now` here would make the
+                // kernel's freshness check compute an age of zero on every
+                // call and the fifteen-minute window a control that cannot
+                // fire. That exact defect has already been fixed once on the
+                // registration route below; it is written here so it is not
+                // introduced a third time, on the route that puts a venue the
+                // platform stopped trading at back into use.
+                let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
+                    principal.subject.clone(),
+                    "api-bearer-token",
+                    principal.issued_at,
+                );
+                match platform.reinstate_venue(venue, &operator, &body.rationale, now) {
+                    Ok(entry) => match crate::venue_views::rendered(&entry) {
+                        Ok(rendered) => Response::json(200, rendered),
+                        Err(error) => {
+                            Response::json(500, crate::registration_views::refusal(&error))
+                        }
                     },
                     Err(error) => Response::json(
                         crate::registration_views::refusal_status(&error),
