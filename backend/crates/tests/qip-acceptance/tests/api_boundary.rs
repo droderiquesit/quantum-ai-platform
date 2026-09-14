@@ -856,6 +856,23 @@ fn every_mutating_route_is_reviewed_here_and_each_raises_a_typed_intent() {
     // process. It emits the limit set with the one bound replaced, as an
     // artefact for a deployment to commit and mount, and `Platform` has no
     // method that installs a set after boot — `security.rs` scans for one.
+    //
+    // The ninth is the venue reinstatement (ADR 0062), and it is admitted on
+    // the promotion's four grounds with one more that is particular to it, in
+    // the *opposite* direction from the recalibration's. The approver is the
+    // session and `VenueReinstatementRequest` takes a rationale and refuses
+    // every other key by position. Two distinct people are required, held and
+    // refused in the kernel exactly as the promotion is. The subject is a
+    // venue *the platform itself withdrew* from its own feasibility evidence
+    // — one that is not withdrawn is refused as not found, so nothing a
+    // caller sends can name a venue into the set. And the fifth ground: what
+    // two signatures do is remove a name from a *subtractive* set. The
+    // withdrawn set is read in exactly two places, the order manager's step
+    // five and `cycle_whitelist_for`'s `retain`, and both of them read it to
+    // refuse. There is no path on which it admits, so the most a
+    // reinstatement can restore is what `QIP_VENUES`, the arbitrage policy's
+    // venue map and the grant's terms already permitted. A route that could
+    // *widen* what the platform may trade would not be admitted here at all.
     let expected: BTreeSet<(String, String)> = [
         ("Post", "/cycle"),
         ("Post", "/kill-switch"),
@@ -865,6 +882,7 @@ fn every_mutating_route_is_reviewed_here_and_each_raises_a_typed_intent() {
         ("Post", "/risk/recalibrations/:rule/approvals"),
         ("Post", "/ledger/users/:user/eligibility"),
         ("Post", "/ledger/users/:user/investment-requests"),
+        ("Post", "/venues/:venue/reinstatements"),
     ]
     .into_iter()
     .map(|(method, pattern)| (method.to_string(), pattern.to_string()))
@@ -920,6 +938,14 @@ fn every_mutating_route_is_reviewed_here_and_each_raises_a_typed_intent() {
         routes_text.contains("platform.approve_recalibration(")
             && routes_text.contains("crate::rule_views::RecalibrationApprovalRequest::parse"),
         "the recalibration signature no longer screens its body and raises the kernel's intent"
+    );
+    // The venue reinstatement: the same pairing again. The screen here is
+    // what keeps the approver out of the body on the one route that puts a
+    // venue the platform stopped trading at back into use.
+    assert!(
+        routes_text.contains("platform.reinstate_venue(")
+            && routes_text.contains("crate::venue_views::VenueReinstatementRequest::parse"),
+        "the venue reinstatement no longer screens its body and raises the kernel's intent"
     );
     // And it must take the session's issue time, not `now`. Passing `now`
     // makes the kernel's freshness window compute an age of zero and become a
@@ -1120,6 +1146,22 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
         // pending-signature table and closing the proposal.
         "approve_recalibration",
         "approve_registration",
+        // `reinstate_venue` — the operator signature that puts a venue the
+        // platform withdrew on its own feasibility evidence back into use
+        // (ADR 0062), admitted on the same terms as `approve_promotion` and
+        // one narrower than either of the signatures above it. It takes the
+        // approver from the session and the body cannot carry one; it needs
+        // two different people, held and refused in the kernel; its subject
+        // can only be a venue `Platform::review_venues` withdrew, and one
+        // that is not withdrawn is not found. What it changes is a *removal*
+        // from a subtractive set: the withdrawn set is read only to refuse
+        // — the order manager's step five and `cycle_whitelist_for`'s
+        // `retain` — so no signature here can make reachable a venue that
+        // `QIP_VENUES`, the policy's venue map and the grant did not already
+        // permit. `&mut` is for the journal, the pending-signature table and
+        // the removal itself, and every signature is journaled before
+        // anything moves.
+        "reinstate_venue",
         "decide_eligibility",
         // `decide_investment` — §40.9's `investment-api` intent, and the one
         // the blueprint gives it. It is `&mut` for the journal append: the

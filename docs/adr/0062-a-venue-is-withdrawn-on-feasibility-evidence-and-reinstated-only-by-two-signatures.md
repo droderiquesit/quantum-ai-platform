@@ -58,7 +58,12 @@ The mechanism, in the order it runs:
   the desk, `capture_submission`'s refusal arm sets `venue` for a refusal
   whose `feasibility_gate()` is `Some` — the venue is `Broker::name()`, the
   same string the accepted arm reads from `result.venue`, so a refusal and a
-  fill on one order cannot be charged to different venues — and `None` for
+  fill on one order cannot be charged to different venues
+  (**superseded in part, 2026-09-14 — see Amendment A**: the value is
+  unchanged and where it is read from is not. `capture_submission` read
+  `self.broker.name()` at the capture site because the refusal carried no
+  venue; it now reads `RefusalReason::Infeasible`'s own `venue` field, which
+  `OrderManager::submit` filled from that same `Broker::name`) — and `None` for
   every posture refusal, which is about the platform and not about where the
   order was going. At the cell, `admit_feasible` records the intent's venue
   beside the refusal it just pushed, keyed by index; `state_delta` joins the
@@ -148,7 +153,10 @@ The mechanism, in the order it runs:
   are not: the subject is a venue the platform withdrew, and one that is not
   withdrawn is refused as not found. Every signature is journaled under
   `venue.reinstated` before anything changes; the countersignature's record
-  is written before the venue is put back. No HTTP route exposes it yet.
+  is written before the venue is put back. ~~No HTTP route exposes it yet.~~
+  **Superseded 2026-09-14 — see Amendment B.** `POST
+  /venues/:venue/reinstatements` exposes it at the operator role, and `GET
+  /venues/withdrawals` lists what is withdrawn at the viewer role.
 
 ## Why evidence can never add a venue
 
@@ -420,6 +428,18 @@ reinstatement on the next pass.
   which is out of this record's scope and is not claimed here. Until then,
   this is a structural raise of the bar, not a proof the bar cannot be
   cleared by one attacker.
+- **The signing subject is durable by convention, and role-scoped in this
+  deployment** (added 2026-09-14 with Amendment B, which argues it at
+  length). `OperatorIdentity::subject()` is a `String`; nothing in the type
+  system distinguishes a durable per-human identifier from a session token,
+  and the reinstatement route's "two distinct people" check compares
+  subjects. The composition root mints one credential per *role*, so today
+  two humans holding the operator token are one subject and a
+  countersignature is refused — closed rather than open, and identical for
+  the two signature routes that shipped before this one. It becomes wrong in
+  the dangerous direction only if something ever populates `subject` from a
+  session or request value; an acceptance test holds every call site to
+  `principal.subject` for exactly that reason.
 
 ## Consequences
 
@@ -431,14 +451,112 @@ reinstatement on the next pass.
   Decide and retained permanently; `Topic::ALL` is 75.
 - Two central series, documented with grep commands in
   `.claude/rules/domains/observability.md` and `docs/ops/observability/README.md`.
-- Follow-on work: a `qip-api` route for reinstatement; ~~slot 11 with a
-  withdrawn set, for the edge limit~~ **(done 2026-09-14 — see "the edge
-  limit, stated", amended in place)**; and a structured `Infeasible { venue,
+- Follow-on work: ~~a `qip-api` route for reinstatement~~; ~~slot 11 with a
+  withdrawn set, for the edge limit~~; and ~~a structured `Infeasible { venue,
   gate, detail }` refusal reason in place of the `Malformed` prefix, which
   this lane left alone because ADR 0061's lane was editing `RefusalReason`
-  concurrently.
+  concurrently~~. **All three are done, 2026-09-14** — the edge limit in the
+  amendment immediately below, the other two in Amendments A and B. They were
+  built in three parallel lanes on one afternoon, which is why the strikings
+  arrived separately; the bullet is struck once here rather than three times.
 - **Amended 2026-09-14.** §12.3's fourth row moves `PARTIAL → REACHED` on
   the withdrawal mechanism: slot 11 is produced, the cells refuse a withdrawn
   venue at pass time, and an installed desk no longer outlives a withdrawal.
   `EDGE_GATES` is nine rather than eight, and the ninth is deliberately not
   admitted to the window. `docs/DELIVERY-STATUS.md` carries the same words.
+
+## Amendment A — the structured refusal reason (2026-09-14)
+
+`RefusalReason::Infeasible { venue, gate, detail }` replaces the `Malformed`
+variant with an `infeasible (<gate>):` prefix on its detail string.
+`feasibility_gate()` reads the `gate` field instead of parsing that prefix.
+
+The prefix was matched exactly against the four `GATE_*` constants and was
+never wrong. What was wrong was the shape: a key recovered from a sentence
+written for a person. ADR 0061 §1 had already found the same shape one level
+up and said why a rule tally must never be keyed on a refusal's wording; here
+the failure would have been quieter, because a reworded detail string would
+have charted every off-lot order under `order-validation` again, stopped
+§12.3's fourth row seeing the venue's refusals, and failed no test.
+
+Four things are deliberately unchanged, and each was checked rather than
+assumed:
+
+- **The gate literals.** `feasibility_gate()` still *resolves* its answer
+  against the four constants rather than returning the field as found, so
+  the value remains a bounded metric label and attribution key; a gate the
+  four do not name charts as `order-validation` and attributes to no rule,
+  which is what the prefix match did with a sentence it did not recognise.
+  `gate_of` maps to the same literals and no metric label value moved.
+- **The sentence.** `describe()` produces the same string byte for byte.
+  It is what reaches the `Action::Rejected` record, and the hash-chained log
+  holds refusals written on both sides of the change; an operator reading it
+  for a venue's vetoes must find one vocabulary there. Nothing parses it.
+- **The venue.** The value on `DeclinedPath` and `DeclinedScore` is the same
+  string as before — only where it is read from moved, from
+  `self.broker.name()` at the capture site to the field the refusing code
+  filled. The two cannot differ while the desk has one broker, which is the
+  point: a second broker would have made them differ silently.
+- **Sizing evidence.** `is_sizing_evidence` is a `matches!` and not an
+  exhaustive match, so the split could have dropped every feasibility veto
+  out of ADR 0055's declined queue without a compile error. The new variant
+  is listed by hand and the enumerating test holds every variant to its side.
+
+**Nothing in the workspace serialises or deserialises a `SubmissionResult`.**
+It is not an `EventBody`, no route or store encodes one, and the API renders
+refusals through `describe()` and `is_safety_control()`; the only durable
+record of a refusal is `Action::Rejected`'s two strings. The change is
+additive on the wire regardless — a record tagged `malformed` still decodes
+as `Malformed` — but the compatibility question has no production instance.
+
+## Amendment B — the reinstatement route (2026-09-14)
+
+`POST /venues/:venue/reinstatements` at the operator role, cloned from the
+promotion approval, with `VenueReinstatementRequest::parse` cloned from
+`PromotionApprovalRequest::parse`: a rationale and nothing else, every other
+key refused by position without being echoed, the same `MAX_RATIONALE`. The
+approver is the authenticated session's subject and never the body;
+`OperatorIdentity::verified` takes `principal.issued_at` and not `now`,
+because `now` would make the kernel's freshness window compute an age of zero
+and become a control that cannot fire. Beside it, `GET /venues/withdrawals`
+at the viewer role lists what is withdrawn, the cluster each was withdrawn on
+and whether a first signature stands — a boolean and not a name, because who
+acted is on the event log at the authority that reads the log.
+
+Why a route at all, given the record above argues the withdrawal should stop
+the desk: because a fail-closed control whose *audited* recovery path does not
+exist gets recovered from by one nobody audited. Before this, putting a venue
+back needed direct access to the kernel. The runbook is
+`docs/operations/reinstating-a-venue.md`.
+
+The route can only subtract from a subtractive set, and that remains
+structural: the withdrawn set is read in exactly two places and both read it
+to refuse, so "Why evidence can never add a venue" above is unchanged and a
+signature restores only what `QIP_VENUES`, the policy's venue map and the
+grant already permitted. There is deliberately no route that *withdraws* a
+venue.
+
+**The durable-subject residual, stated honestly.** A security review flagged,
+as latent and unreachable precisely because no route existed, that the "two
+distinct people" guarantee rests on `OperatorIdentity::subject()` being a
+durable per-human identifier by convention rather than by type. This route
+makes it reachable, so the source was traced rather than assumed:
+`principal.subject` is `Credential::subject`, fixed when the composition root
+mints the credential and copied unchanged on every authentication. **It is
+not session-scoped and not request-scoped**, and
+`every_operatoridentity_is_built_from_the_principals_durable_subject_not_a_session_value`
+now holds that directly — one credential yields one subject across two
+authentications fifteen minutes apart, two credentials yield two, and the
+route reaches the kernel's comparison.
+
+What remains true, and is the residual: in the shipped composition root every
+credential is minted as `<role>@env`, one per role, from one
+`QIP_TOKEN_OPERATOR`. So two humans holding that token present **one** subject
+and the countersignature is refused — the control fails closed rather than
+open, and a reinstatement is unobtainable in that deployment until per-human
+operator credentials exist. That is identical for the promotion and
+recalibration signatures already shipped, it is a deployment change rather
+than a code one, and it is written here rather than fixed so that nobody reads
+the route's existence as a claim that two people can sign today. The type-level
+fix — a `Subject` newtype a session value cannot inhabit — is still not built,
+and the convention is still a convention.

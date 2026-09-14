@@ -14,13 +14,15 @@
 //!    venue's grid, and it is refused here rather than allowed to ride a
 //!    profitable strategy's order through pre-trade risk and out to a venue
 //!    that would reject it, or silently trade a size nobody reasoned about.
-//!    It reports through [`RefusalReason::Malformed`] rather than a variant
-//!    of its own, naming the gate in the detail text: `RefusalReason` is
-//!    matched exhaustively in `qip-kernel`, outside this crate's own scope,
-//!    and a fourth field there is the same shape of defect a guessed grid
-//!    would be — a fact invented at the point of use instead of asked for
-//!    where it is owned. An infeasible order *is* malformed for the venue it
-//!    named, which is the same reading the edge crate gives its own vetoes.
+//!    It reports through [`RefusalReason::Infeasible`], which names the venue
+//!    and the gate in fields of their own. It reported through
+//!    [`RefusalReason::Malformed`] with the gate written into the detail text
+//!    as `infeasible (<gate>):` until ADR 0062's follow-on, and
+//!    [`RefusalReason::feasibility_gate`] recovered the gate by parsing that
+//!    prefix back out of a sentence written for a person — the exact defect
+//!    ADR 0061 had already named one level up, where a rule tally keyed on a
+//!    refusal's wording fragments the moment the wording changes. A sentence
+//!    is not a key.
 //! 3. The kill switch must not be tripped for its scope.
 //! 4. The autonomy level must permit execution at all.
 //! 5. The venue must not have been withdrawn on feasibility evidence
@@ -64,12 +66,42 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum RefusalReason {
-    /// The order was not well formed — including, since `qip-edge`'s
-    /// feasibility gate was mirrored onto this path, an order that cannot be
-    /// expressed at the venue: off its lot or tick grid, or below a minimum
-    /// it states. `detail` is prefixed `infeasible (<gate>):` in that case,
-    /// naming the same `feasibility_*` gate literal the edge crate uses.
+    /// The order was not well formed: it does not validate, or it traces to
+    /// no proposal and no hypothesis.
+    ///
+    /// A feasibility veto used to arrive here too, with the gate written into
+    /// `detail` as an `infeasible (<gate>):` prefix. It has its own variant
+    /// now — see [`Self::Infeasible`].
     Malformed { detail: String },
+    /// The venue named cannot express the order: it is off the lot or tick
+    /// grid, or below a minimum the venue states.
+    ///
+    /// Added by ADR 0062's follow-on, replacing the `infeasible (<gate>):`
+    /// prefix on [`Self::Malformed`]. Two facts were being carried in a
+    /// sentence and are now carried in fields:
+    ///
+    /// * `gate` is one of the `crate::feasibility::GATE_*` literals, the same
+    ///   vocabulary the edge plane charts its own vetoes under, and it is the
+    ///   label `qip-kernel`'s `gate_of` puts on `qip_orders_refused_total`.
+    ///   Reading it out of the detail text worked until somebody reworded the
+    ///   detail text, and the platform has already been bitten once by
+    ///   attribution parsed from prose (ADR 0061 §1).
+    /// * `venue` is [`crate::broker::Broker::name`] as `submit` saw it — the
+    ///   same string the accepted path puts on `SubmissionResult::venue`, so
+    ///   a refusal and a fill on one order can never be charged to different
+    ///   venues. Blueprint §12.3's fourth row is keyed on it, and until this
+    ///   variant existed the kernel had to re-read the broker's name at the
+    ///   capture site because the refusal itself did not say where the order
+    ///   had been going.
+    ///
+    /// Additive on the wire: the tag is `infeasible`, and a
+    /// [`SubmissionResult`] serialised before this variant existed still
+    /// decodes, as the `malformed` it was written as.
+    Infeasible {
+        venue: String,
+        gate: String,
+        detail: String,
+    },
     /// The kill switch is tripped.
     Halted { scope: String, detail: String },
     /// The autonomy level does not permit execution.
@@ -109,6 +141,17 @@ impl RefusalReason {
     pub fn describe(&self) -> String {
         match self {
             Self::Malformed { detail } => format!("malformed: {detail}"),
+            // Byte-for-byte the sentence the `Malformed` arm produced for a
+            // feasibility veto before this variant existed, and deliberately
+            // so: this string is what `Platform::capture_submission` writes
+            // into the `Action::Rejected` record, and the hash-chained log
+            // holds refusals written on both sides of the change. An operator
+            // reading the log for a venue's vetoes must find one vocabulary
+            // there, not two. Nothing parses it — the fields above are what
+            // code reads now, which is the whole point of the variant.
+            Self::Infeasible { gate, detail, .. } => {
+                format!("malformed: infeasible ({gate}): {detail}")
+            }
             Self::Halted { scope, detail } => {
                 format!("trading is halted for {scope}: {detail}")
             }
@@ -138,10 +181,11 @@ impl RefusalReason {
     /// anything. The set is bounded: a `RiskRejected` name comes from the
     /// boot-frozen `LimitSet` through the breach the checker wrote, and a
     /// feasibility veto names one of the four `feasibility::GATE_*` constants
-    /// through [`Self::feasibility_gate`]. A structured field on `Malformed`
-    /// is the eventual fix for the second half; until then the prefix match
-    /// is exact against the constants, so a reworded reason cannot mint a
-    /// rule.
+    /// through [`Self::feasibility_gate`], which since ADR 0062's follow-on
+    /// reads [`Self::Infeasible`]'s own `gate` field and resolves it against
+    /// those four constants. It used to read a prefix off the refusal's
+    /// sentence; a name a tally is kept under is a key, and a key parsed out
+    /// of prose is one rewording away from fragmenting.
     ///
     /// Two rules on one refusal are two names, sorted and deduplicated, so a
     /// path refused by both counts for each. Every other refusal — halted,
@@ -172,11 +216,16 @@ impl RefusalReason {
                 .collect::<BTreeSet<String>>()
                 .into_iter()
                 .collect(),
-            Self::Malformed { .. } => self
+            Self::Infeasible { .. } => self
                 .feasibility_gate()
                 .map(|gate| vec![gate.to_string()])
                 .unwrap_or_default(),
-            Self::Halted { .. }
+            // An order that does not validate is charged to no rule: there is
+            // no bound in the limit set it could propose anything about, and
+            // §12.3's per-rule rows would be counting order-validation
+            // failures under a name nobody configured.
+            Self::Malformed { .. }
+            | Self::Halted { .. }
             | Self::AutonomyTooLow { .. }
             | Self::LiveVenueBelowLiveAutonomy { .. }
             | Self::VenueUnavailable { .. }
@@ -187,10 +236,11 @@ impl RefusalReason {
     /// Whether the refusal is a safety control rather than a transient fault.
     ///
     /// Distinguished because a safety refusal must never be retried
-    /// automatically, and a transient one may be. `Malformed` — including a
-    /// feasibility veto — is not a safety control by the same reasoning it
-    /// already carried: the order itself needs to change, not the platform's
-    /// posture, so there is nothing here for an automatic retry to trip over.
+    /// automatically, and a transient one may be. Neither `Malformed` nor
+    /// `Infeasible` is a safety control, by the reasoning the single
+    /// `Malformed` arm carried before the two were split: the order itself
+    /// needs to change, not the platform's posture, so there is nothing here
+    /// for an automatic retry to trip over.
     pub const fn is_safety_control(&self) -> bool {
         matches!(
             self,
@@ -217,10 +267,11 @@ impl RefusalReason {
     /// do with whether the order was well sized, and could halve its sizing
     /// confidence for a reason no rule found.
     ///
-    /// [`Self::Malformed`] (the order's own shape — off its lot or tick
-    /// grid, or traced to no hypothesis) and [`Self::RiskRejected`] (a
-    /// control weighed the book and said no) are judgments about *this*
-    /// order and stay evidence. [`Self::Halted`], [`Self::AutonomyTooLow`],
+    /// [`Self::Malformed`] (the order traced to no hypothesis),
+    /// [`Self::Infeasible`] (the order's own shape — off its lot or tick
+    /// grid, or below a minimum) and [`Self::RiskRejected`] (a control
+    /// weighed the book and said no) are judgments about *this* order and
+    /// stay evidence. [`Self::Halted`], [`Self::AutonomyTooLow`],
     /// [`Self::LiveVenueBelowLiveAutonomy`], [`Self::VenueUnavailable`] and
     /// [`Self::VenueRejected`] are about the platform's posture or a
     /// venue's state — the same order submitted a moment earlier or later,
@@ -228,25 +279,43 @@ impl RefusalReason {
     /// reasons that have nothing to do with its size — and none of them
     /// reach the queue [`Self::rule_names`]'s doc comment already calls
     /// "not a rule": a posture is not sizing evidence either.
+    ///
+    /// `Infeasible` is named here explicitly because splitting it out of
+    /// `Malformed` is exactly the change that could have dropped it: this is
+    /// a `matches!` and not an exhaustive match, so a new variant is admitted
+    /// to no arm and returns `false` without the compiler saying anything. A
+    /// feasibility veto was sizing evidence before the split and is sizing
+    /// evidence after it; `only_a_judgment_about_the_order_itself_is_sizing_
+    /// evidence` holds every variant to its side.
     pub const fn is_sizing_evidence(&self) -> bool {
-        matches!(self, Self::Malformed { .. } | Self::RiskRejected { .. })
+        matches!(
+            self,
+            Self::Malformed { .. } | Self::Infeasible { .. } | Self::RiskRejected { .. }
+        )
     }
 
     /// The `feasibility_*` gate literal this refusal names, if it is a
-    /// feasibility veto rather than any other malformation.
+    /// feasibility veto rather than any other refusal.
     ///
-    /// Read back from the prefix [`OrderManager::submit`] wrote, and matched
-    /// against the four literals exactly — `infeasible (<gate>):` with both
-    /// delimiters — so that a counter keyed on the answer is bounded by the
-    /// gate constants and cannot be minted by a reworded reason. It exists
-    /// because the kernel counts refusals by the control that made them, and
-    /// until it did an off-lot order and an order tracing to no hypothesis
-    /// were the same bar on the same chart: `order-validation`. The edge plane
-    /// charts its own feasibility vetoes under the gate literal, and a
-    /// central refusal that could not be correlated with it was a control
-    /// whose firing rate nobody could read.
+    /// Read from [`Self::Infeasible`]'s own `gate` field, and still resolved
+    /// *against* the four constants rather than returned as it was found: the
+    /// answer is a metric label value and an attribution key, so its
+    /// cardinality must be the gate constants' and not whatever string a
+    /// decoded record happens to carry. A `gate` that matches none of the
+    /// four is no gate — the refusal charts under `order-validation` like any
+    /// other malformation and attributes to no rule — which is the same
+    /// fail-closed answer the prefix match gave a sentence it did not
+    /// recognise.
+    ///
+    /// It read that prefix out of `detail` until ADR 0062's follow-on. The
+    /// prefix was exact, so it was never wrong; it was a key recovered from a
+    /// sentence written for a person, and the day somebody improved the
+    /// sentence the key would have gone silently missing — the kernel would
+    /// have charted every off-lot order under `order-validation` again, and
+    /// §12.3's fourth row would have stopped seeing a venue's refusals
+    /// without a single test failing.
     pub fn feasibility_gate(&self) -> Option<&'static str> {
-        let Self::Malformed { detail } = self else {
+        let Self::Infeasible { gate, .. } = self else {
             return None;
         };
         [
@@ -256,7 +325,7 @@ impl RefusalReason {
             feasibility::GATE_TICK,
         ]
         .into_iter()
-        .find(|gate| detail.starts_with(&format!("infeasible ({gate}):")))
+        .find(|known| known == gate)
     }
 }
 
@@ -525,8 +594,16 @@ impl OrderManager {
         {
             let result = refuse(
                 &order,
-                RefusalReason::Malformed {
-                    detail: format!("infeasible ({}): {}", infeasible.gate, infeasible.reason),
+                RefusalReason::Infeasible {
+                    // The broker's name, not the order's idea of where it was
+                    // going: this is the string `SubmissionResult::venue`
+                    // carries on the accepted path a few lines down, and one
+                    // order's refusal and one order's fill charged to
+                    // different venues would make §12.3's fourth row count
+                    // refusals at a venue that never saw the order.
+                    venue: broker.name().to_string(),
+                    gate: infeasible.gate.to_string(),
+                    detail: infeasible.reason,
                 },
             );
             self.record_refusal(order, at, result.clone());

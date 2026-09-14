@@ -254,15 +254,27 @@ fn an_off_lot_order_is_refused_at_the_venue_gate_before_it_ever_reaches_the_brok
     assert!(!result.accepted);
     assert!(result.fills.is_empty());
     match result.refusal.as_ref().unwrap() {
-        // The gate reports through `Malformed` rather than a variant of its
-        // own — see the module comment on why — naming the gate literal in
-        // the detail text instead of a structured field.
-        RefusalReason::Malformed { detail } => {
-            let expected_prefix = format!("infeasible ({}):", feasibility::GATE_LOT);
-            assert!(detail.starts_with(&expected_prefix), "{detail}");
+        // The gate reports through `Infeasible`, which names the venue and
+        // the gate in fields rather than in the sentence. It reported through
+        // `Malformed` with an `infeasible (<gate>):` prefix until ADR 0062's
+        // follow-on; `detail` is what is left once the two facts that were
+        // being smuggled through it have their own fields.
+        RefusalReason::Infeasible {
+            venue,
+            gate,
+            detail,
+        } => {
+            assert_eq!(gate, feasibility::GATE_LOT);
+            // The broker's own name, so the refusal and a fill on the same
+            // order cannot be charged to different venues.
+            assert_eq!(venue, broker.name());
             assert!(detail.contains("not a whole number of lots"), "{detail}");
+            assert!(
+                !detail.contains("infeasible ("),
+                "the gate is still being carried in the sentence: {detail}"
+            );
         }
-        other => panic!("expected a malformed (infeasible) refusal, got {other:?}"),
+        other => panic!("expected an infeasible refusal, got {other:?}"),
     }
     // The broker was never asked: the gate refused before submission, not
     // after a rejected send.
@@ -764,15 +776,33 @@ fn only_a_judgment_about_the_order_itself_is_sizing_evidence() {
     // used to queue *every* refusal for the twin's counterfactual pricing,
     // including an administrative one — a withdrawn venue, a halt, an
     // autonomy gate — that says nothing about whether the order itself was
-    // well sized. `Malformed` (the order's own shape) and `RiskRejected` (a
-    // control weighed the book and said no) are judgments about the order;
-    // the other five name the platform's posture or a venue's state, and a
-    // future ninth variant landing in the wrong arm below is a compile
-    // error here, not a silent gap, because the match is exhaustive.
+    // well sized. `Malformed` (the order traced to nothing), `Infeasible`
+    // (the order's own shape at the venue) and `RiskRejected` (a control
+    // weighed the book and said no) are judgments about the order; the
+    // other five name the platform's posture or a venue's state.
+    //
+    // This comment used to claim a new variant in the wrong arm would be a
+    // compile error "because the match is exhaustive". It is not:
+    // `is_sizing_evidence` is a `matches!`, so an unlisted variant is
+    // silently `false`. Splitting `Infeasible` out of `Malformed` is exactly
+    // the change that claim would have covered for and did not, which is why
+    // both halves are enumerated below by hand.
     let sizing_evidence = RefusalReason::Malformed {
-        detail: "infeasible (feasibility_lot): 10.5 is not a whole number of lots".to_string(),
+        detail: "the order traces to no hypothesis".to_string(),
     };
     assert!(sizing_evidence.is_sizing_evidence());
+
+    // And the feasibility veto, which was one of the two arms while it was a
+    // `Malformed` and must still be one now it is its own variant. This is a
+    // `matches!` rather than an exhaustive match, so splitting the variant
+    // out without adding it here would have dropped every feasibility veto
+    // out of ADR 0055's declined queue with nothing failing to say so.
+    let infeasible = RefusalReason::Infeasible {
+        venue: "simulated-venue".to_string(),
+        gate: feasibility::GATE_LOT.to_string(),
+        detail: "10.5 is not a whole number of lots".to_string(),
+    };
+    assert!(infeasible.is_sizing_evidence());
 
     let risk_rejected = RefusalReason::RiskRejected {
         reasons: vec!["over the position cap".to_string()],
@@ -1548,10 +1578,11 @@ fn a_zero_equity_books_uncomparable_ratio_breaches_are_attributed_to_no_rule() {
 
 #[test]
 fn a_feasibility_veto_is_attributed_to_its_gate_constant() {
-    // A feasibility veto is carried as `Malformed` and the gate is named in
-    // the detail text — see the module comment on why there is no variant —
-    // so attribution has to read the prefix and match it against the four
-    // constants exactly. Any other malformation attributes to nothing: an
+    // A feasibility veto is carried as `Infeasible` and names its gate in a
+    // field of its own, matched against the four constants exactly. It was
+    // carried as `Malformed` with the gate written into the detail text
+    // until ADR 0062's follow-on, and attribution read the prefix back out
+    // of the sentence. Any other malformation attributes to nothing: an
     // order tracing to no hypothesis is not a rule that fired.
     let mut manager = manager().with_venue_feasibility(
         "simulated-venue",
@@ -1571,12 +1602,28 @@ fn a_feasibility_veto_is_attributed_to_its_gate_constant() {
         .as_ref()
         .expect("an off-lot order is refused");
     assert!(
-        matches!(refusal, RefusalReason::Malformed { .. }),
-        "premise: the veto is carried as Malformed, got {refusal:?}"
+        matches!(refusal, RefusalReason::Infeasible { .. }),
+        "premise: the veto is carried as Infeasible, got {refusal:?}"
     );
     assert_eq!(
         refusal.rule_names(),
         vec![feasibility::GATE_LOT.to_string()]
+    );
+
+    // And a gate string the constants do not name is charged to nothing. The
+    // resolution is against the four literals rather than a pass-through of
+    // whatever the field holds, so a decoded record cannot mint a rule name
+    // or a metric label value — the property the prefix match used to hold
+    // and that a bare field would have quietly dropped.
+    let unknown_gate = RefusalReason::Infeasible {
+        venue: "simulated-venue".to_string(),
+        gate: "feasibility_something_nobody_declared".to_string(),
+        detail: "a gate this build does not know".to_string(),
+    };
+    assert_eq!(unknown_gate.feasibility_gate(), None);
+    assert!(
+        unknown_gate.rule_names().is_empty(),
+        "a gate outside the four constants was charged to a rule"
     );
 
     let other_malformation = RefusalReason::Malformed {
