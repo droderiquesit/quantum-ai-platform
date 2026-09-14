@@ -149,7 +149,10 @@
 pub mod families;
 pub mod horizons;
 pub mod problem;
+pub mod regime;
 pub mod router;
+pub mod tiers;
+pub mod universe;
 
 pub use families::{
     Diagnostics, FamilyAssignment, FamilyClustering, FamilyId, Linkage, StrategyReturns,
@@ -161,4 +164,7 @@ pub use horizons::{
     family_horizons_settled, reconcile,
 };
 pub use problem::{Objective, PortfolioConstraint, PortfolioProblem, QuboEncoding};
+pub use regime::{AllocationRegime, Stance};
 pub use router::{ComputeRouter, RoutingDecision, RoutingPolicy, Solver, SolverRun};
+pub use tiers::{EvaluationTier, HOT_TIER_CAP, TierCadence, TierPlan};
+pub use universe::AlphaFamily;
