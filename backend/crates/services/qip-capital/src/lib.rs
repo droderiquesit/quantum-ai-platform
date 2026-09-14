@@ -103,6 +103,7 @@
 
 pub mod allocation;
 pub mod capacity;
+pub mod compounding;
 pub mod envelope;
 pub mod exposure;
 pub mod ledger;
@@ -115,6 +116,10 @@ pub use allocation::{
     StrategyProposal,
 };
 pub use capacity::{Capacity, CapacityBound, CapacityModel};
+pub use compounding::{
+    CapitalThreshold, CompoundingPolicy, FeeVolumeLedger, ReinvestmentDecision, ReinvestmentPlan,
+    ThresholdLadder,
+};
 pub use envelope::{EnvelopeIssuer, EnvelopeTerms, MAXIMUM_ENVELOPE_VALIDITY};
 pub use exposure::{
     AggregateExposure, CellPosition, ConcentrationFinding, ConcentrationLimits, CrowdedPosition,
