@@ -64,11 +64,24 @@ is the point:
 ## Recording a decision
 
 Consequential decisions go in `docs/adr/` as a numbered ADR, following the
-existing ones — **fifty on 2026-09-06**, counted with
-`ls docs/adr/ | grep -c '^0[0-9][0-9][0-9]-'`. This sentence said "the
-existing twelve" until then, understating the register by thirty-eight and
-telling a reader the corpus was small enough to have read. Run the command
-rather than trusting this number; it moves every time a decision is
-recorded, which is the point of it. They do not live in chat history, a commit message, or an
-agent's memory. If you find yourself explaining an architectural choice in a
+existing ones — counted with
+`ls docs/adr/ | grep -c '^0[0-9][0-9][0-9]-'`, and **no figure is written
+here**. This sentence said "the existing twelve" until 2026-09-06,
+understating the register by thirty-eight and telling a reader the corpus was
+small enough to have read; it was corrected to a dated "fifty", and the
+command printed **74** on 2026-09-14. Two corrections, both stale inside
+days. They do not live in chat history, a commit message, or an
+agent's memory.
+
+**Allocating the number is a separate problem from counting them, and it has
+already cost a day's work.** On 2026-09-14 six lanes running in parallel each
+read the register, each found the same highest number, and each wrote the same
+next one; six ADRs collided and had to be renumbered to 0065–0074 across 74
+files and 74 index rows. Counting is not allocating: the count answers "how
+many exist", and every concurrent reader gets the same true answer and the
+same wrong conclusion. So when work may be running in parallel — and in this
+repository it usually is — **claim the number in the shared index first**, in
+its own commit, before writing the ADR body, and re-read the index immediately
+before you claim. A number derived from a count you took earlier is a number
+somebody else has taken since. If you find yourself explaining an architectural choice in a
 PR comment, it needed an ADR.

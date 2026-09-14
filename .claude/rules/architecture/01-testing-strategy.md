@@ -8,12 +8,21 @@
 | Crate contract | `backend/crates/<group>/<crate>/tests/` |
 | Cross-cutting behaviour | `backend/crates/tests/qip-acceptance/tests/` |
 
-There are **21** acceptance suites on 2026-09-06 —
+Count the acceptance suites rather than reading a number here —
 `ls backend/crates/tests/qip-acceptance/tests/*.rs | wc -l`, and
 `ls backend/crates/tests/qip-acceptance/tests/*.rs | xargs -n1 basename` for
-the names. Adding a twenty-second is fine; putting a cross-cutting assertion
-in a crate's own tests is not, because nothing there can see the other side of
-the seam.
+the names. Adding one more is fine; putting a cross-cutting assertion in a
+crate's own tests is not, because nothing there can see the other side of the
+seam.
+
+**No figure is given, and that is the second correction this paragraph has
+needed.** It said thirteen, was wrong by eight, and was corrected to a dated
+**21 on 2026-09-06**; the command printed **30** on 2026-09-14, so the
+correction had drifted by nine in eight days while staying technically true,
+because a date makes a stale number unfalsifiable rather than accurate. The
+phrasing it carried — "adding a twenty-second is fine" — is what makes a
+figure here load-bearing: it invites a reader to act on the number instead of
+on the command. So the number is gone and the sentence no longer counts.
 
 **This paragraph listed thirteen suites and said "adding a fourteenth is
 fine", and it was wrong by eight.** The eight it never named are
