@@ -44,7 +44,7 @@ use qip_core::error::{Error, Result};
 use qip_core::hash::{sha256_hex, to_hex};
 use qip_core::{Decimal, Duration, Timestamp, hmac_sha256};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The twelve items of blueprint §41.5, in its order.
 ///
@@ -360,14 +360,36 @@ pub struct InventoryTargets {
     pub reference_prices: BTreeMap<String, Decimal>,
 }
 
-/// Feasibility constraints per venue: minimum order, fee floor, tick. Exact,
-/// because every one of them bounds money.
+/// Feasibility constraints per venue: minimum order, fee floor, tick, and the
+/// venues the centre has withdrawn. The three grids are exact, because every
+/// one of them bounds money.
+///
+/// # `withdrawn_venues` only ever subtracts
+///
+/// A name here is a venue the centre has already withdrawn on feasibility
+/// evidence and journaled (ADR 0062), and the only thing a cell may do with
+/// it is refuse. There is deliberately no "permitted venues" field beside it:
+/// a cell's venue list comes from its own configuration, checked at
+/// `Cell::install_arbitrage` and again at the node's `graph_from_whitelist`,
+/// and a payload that could name a venue *into* either would move the
+/// paper-trading and capital boundaries onto a wire that authenticates
+/// nobody. Subtraction is safe in the direction this travels for exactly
+/// that reason — the worst a forged or replayed payload can do with this set
+/// is stop a cell trading somewhere it was configured to trade.
+///
+/// Read whatever its freshness at the cell: a stale withdrawal is still the
+/// last thing the centre said, and re-admitting a venue because the centre
+/// went quiet is the one direction this field must never move in.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FeasibilityConstraints {
     pub minimum_order: BTreeMap<String, Decimal>,
     pub fee_floor: BTreeMap<String, Decimal>,
     pub tick: BTreeMap<String, Decimal>,
+    /// Venue ids the centre has withdrawn. `BTreeSet` because the slot is
+    /// digested and signed, and a set that serialised in two orders would
+    /// sign as two payloads.
+    pub withdrawn_venues: BTreeSet<String>,
 }
 
 /// Per-venue adversary posture, as the adversary monitor's opaque summary.

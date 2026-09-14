@@ -41,10 +41,10 @@ use qip_compliance::approval::{ApprovedCapital, CapitalRequest, OperatorCredenti
 use qip_compliance::incident::{HaltScope, Incident, ResponsePolicy};
 use qip_compliance::plane::{CompliancePlane, ComplianceReport};
 use qip_compliance::signing::SigningKey;
-use qip_contracts::feasibility::EDGE_GATES;
+use qip_contracts::feasibility::{EDGE_GATES, is_withdrawal_evidence};
 use qip_contracts::governance::{Approval, Severity};
 use qip_contracts::message::BookSide;
-use qip_contracts::policy::CycleWhitelist;
+use qip_contracts::policy::{CycleWhitelist, FeasibilityConstraints};
 use qip_contracts::signal::StrategyId;
 use qip_contracts::wire::{CrossRecord, FillRecord};
 use qip_contracts::{CapitalEnvelope, Utilisation};
@@ -413,6 +413,15 @@ pub struct CellIngestion {
     /// admitted: a window entry under a cause nobody established would be
     /// a withdrawal nobody could explain.
     pub feasibility_refusals_unattributed: Vec<(String, String)>,
+    /// The report's refusals the centre attributed *in full* — real venue,
+    /// declared gate — and deliberately kept out of the window, as the
+    /// `(venue, constraint)` label pair each is counted under. Today that is
+    /// exactly `feasibility::GATE_WITHDRAWN_VENUE`: the echo of a withdrawal
+    /// already made, which would otherwise evict the window it was derived
+    /// from. See `qip_contracts::feasibility::is_withdrawal_evidence` for
+    /// why admitting it would leave the withdrawal control unable to fire a
+    /// second time.
+    pub feasibility_refusals_echoed: Vec<(String, String)>,
 }
 
 /// What settling one report's interval to the strategy books produced.
@@ -905,6 +914,35 @@ impl CentralPlane {
     /// The venues this plane omits from every whitelist, in name order.
     pub fn withdrawn_venues(&self) -> &BTreeSet<String> {
         &self.withdrawn_venues
+    }
+
+    /// Policy slot 11 as this plane can honestly fill it: the withdrawn set
+    /// it is *applying*, and three empty grids.
+    ///
+    /// **Why the grids stay empty.** `central::whitelist`'s register argues
+    /// the refusal at length and it still holds: the slot's grids are keyed
+    /// by venue, the only grids this platform states are keyed by instrument
+    /// (`Platform::assemble` installs them through
+    /// `with_instrument_feasibility`), and `qip_edge::feasibility::effective`
+    /// takes a slot grid in *preference* to the cell's own — so an
+    /// instrument's tick filed under a venue key would not sit beside the
+    /// right number, it would replace it for every instrument at that venue.
+    /// An empty map resolves to `None` at that lookup and leaves the cell's
+    /// own grid in force, which is the same thing an unproduced slot did.
+    ///
+    /// **Why the set is what is applied, not what is intended.** This reads
+    /// `withdrawn_venues`, the single field `Platform::withdraw_venue` writes
+    /// *after* the `venue.withdrawn` record is in the log and the same field
+    /// [`Self::cycle_whitelist_for`] `retain`s against. The cells therefore
+    /// refuse on exactly the set the centre's own whitelist omits on, and a
+    /// withdrawal the log does not hold reaches neither.
+    pub fn feasibility_constraints(&self) -> FeasibilityConstraints {
+        FeasibilityConstraints {
+            minimum_order: BTreeMap::new(),
+            fee_floor: BTreeMap::new(),
+            tick: BTreeMap::new(),
+            withdrawn_venues: self.withdrawn_venues.clone(),
+        }
     }
 
     /// Count every strategy move the plane's ledger records, and every
@@ -1711,7 +1749,7 @@ impl CentralPlane {
             .exposure
             .crowded(self.config.minimum_cells_for_crowding);
         let recalls = self.recall_for(&concentrations, now)?;
-        let (feasibility_refusals, feasibility_refusals_unattributed) =
+        let (feasibility_refusals, feasibility_refusals_unattributed, feasibility_refusals_echoed) =
             self.attribute_refusals(&report, now);
 
         Ok(CellIngestion {
@@ -1724,13 +1762,14 @@ impl CentralPlane {
             settlement,
             feasibility_refusals,
             feasibility_refusals_unattributed,
+            feasibility_refusals_echoed,
         })
     }
 
     /// Admit the report's venue-bearing refusals to the feasibility window,
     /// or say why each could not be.
     ///
-    /// A refusal is admitted when its gate is one of the eight
+    /// A refusal is admitted when its gate is one of the nine
     /// `qip_contracts::feasibility::EDGE_GATES` **and** its venue is one
     /// the centre knows — a key of the arbitrage policy's venue map, or a
     /// venue on a grant live at `now`. Both are checked against the source
@@ -1752,21 +1791,44 @@ impl CentralPlane {
     /// verified fact, but the only key `venue_review::assess` has to require
     /// more than one cell before edge-only evidence withdraws a venue. See
     /// `VENUE_WITHDRAWAL_MIN_CELLS`.
+    ///
+    /// One gate is attributed in full and still refused admission: a refusal
+    /// under `feasibility::GATE_WITHDRAWN_VENUE` is the cell enforcing a
+    /// withdrawal this plane already decided, not an observation about the
+    /// venue. It comes back on its own vector, counted under its real venue
+    /// and its real gate and never put in the window — otherwise a desk a
+    /// cell installed before the withdrawal would refill a 256-entry rate
+    /// window with the platform's own decision every pass, and no second
+    /// venue could reach the share bar again.
+    #[allow(clippy::type_complexity)]
     fn attribute_refusals(
         &self,
         report: &CellReport,
         now: Timestamp,
-    ) -> (Vec<FeasibilityRefusal>, Vec<(String, String)>) {
+    ) -> (
+        Vec<FeasibilityRefusal>,
+        Vec<(String, String)>,
+        Vec<(String, String)>,
+    ) {
         let known = self.known_venues(now);
         let mut admitted = Vec::new();
         let mut unattributed = Vec::new();
+        let mut echoed = Vec::new();
         for refusal in &report.refusals {
             let Some(venue) = &refusal.venue else {
                 continue;
             };
             let gate_known = EDGE_GATES.contains(&refusal.gate.as_str());
             let venue_known = known.contains(venue);
-            if gate_known && venue_known {
+            if gate_known && venue_known && !is_withdrawal_evidence(&refusal.gate) {
+                // Attributed in full and still not evidence: this is the
+                // cell refusing an order because of a withdrawal the centre
+                // already made, so counting it as a reason to withdraw would
+                // be the platform citing itself. Kept out of the window
+                // rather than out of the series — an operator can still see
+                // the withdrawal biting at the edge.
+                echoed.push((venue.clone(), refusal.gate.clone()));
+            } else if gate_known && venue_known {
                 admitted.push(FeasibilityRefusal {
                     venue: venue.clone(),
                     constraint: refusal.gate.clone(),
@@ -1789,7 +1851,7 @@ impl CentralPlane {
                 ));
             }
         }
-        (admitted, unattributed)
+        (admitted, unattributed, echoed)
     }
 
     /// Every venue the centre has told a cell it may trade at: the arbitrage

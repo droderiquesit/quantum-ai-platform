@@ -69,13 +69,15 @@
 //! afterwards, which is exactly the failure a command avoids and a figure
 //! does not.
 //!
-//! The four are also asserted rather than only counted:
-//! `a_shipped_payload_produces_exactly_the_four_slots_the_register_names` in
+//! The produced slots are also asserted rather than only counted:
+//! `a_shipped_payload_produces_exactly_the_five_slots_the_register_names` in
 //! `qip-api/tests/mesh.rs` reads a payload `pending_policy` really built and
-//! refuses a fifth. It is meant to be edited by whoever produces the fifth,
-//! in the same change that strikes that slot's paragraph from below — the
+//! refuses one more. It is meant to be edited by whoever produces the next
+//! one, in the same change that amends that slot's paragraph below — the
 //! failure it exists to catch is a slot quietly filled from a default while
-//! this register still explains why it cannot be.
+//! this register still explains why it cannot be. It has done its job once
+//! already: it named four and failed the moment slot 11 gained a producer,
+//! which is how the amendment below came to be written rather than skipped.
 //!
 //! # The audit, re-run rather than inherited
 //!
@@ -97,7 +99,11 @@
 //! One structural check reinforces every refusal below and is cheaper than
 //! reading the producers: six of the eight — every one but the compiled plan
 //! and the feasibility constraints — have no non-test reader anywhere under
-//! `backend/crates/edge` or `backend/crates/apps/qip-edge-node`. Confirm with
+//! `backend/crates/edge` or `backend/crates/apps/qip-edge-node`. The
+//! feasibility constraints were one of the two exceptions when this was
+//! written and are now produced (see the amendment below), which is the
+//! order this check predicts: a slot earns a producer after something at the
+//! edge reads it, never before. Confirm with
 //! `grep -rn '<slot>' backend/crates/edge backend/crates/apps/qip-edge-node
 //! --include=*.rs | grep -v /tests/`. Producing one of those six would ship a
 //! signed value no cell reads, except through
@@ -220,6 +226,19 @@
 //! platform never computes and never acts on. And `InventoryTargets` has no
 //! band field at all despite its own doc naming mirror bands, so a producer
 //! would be filling two thirds of a type whose third is undefined.
+//!
+//! **The feasibility constraints are half produced since ADR 0062's follow-on
+//! lane, and the paragraph below is kept rather than struck because the half
+//! it refuses is still refused.** Slot 11 now ships from
+//! `Platform::feasibility_constraints`, carrying the venues the platform has
+//! withdrawn on feasibility evidence and three *empty* grid maps. The grids
+//! stay empty for exactly the reason that follows, unchanged: re-keying an
+//! instrument's grid under a venue is the fabrication. What changed is that
+//! the slot gained a field that is not a grid at all — a set of names a cell
+//! may only refuse against — so producing it asserts no number nobody
+//! computed. It asserts a decision this platform made and journaled under
+//! `venue.withdrawn`, which is the one kind of fact a slot may carry without
+//! inventing anything. Read the rest as the standing refusal of the grids.
 //!
 //! The feasibility constraints are per venue while the only grid this platform
 //! states is per instrument — and note which installer the centre actually

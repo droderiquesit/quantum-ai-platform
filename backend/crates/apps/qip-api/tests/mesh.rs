@@ -1850,7 +1850,7 @@ fn a_cycle_ships_slot_four_stamped_with_the_memorys_instant_and_the_pause_return
 // it refuses is a fifth slot appearing while the register still explains why
 // it cannot exist.
 #[test]
-fn a_shipped_payload_produces_exactly_the_four_slots_the_register_names() -> Result<()> {
+fn a_shipped_payload_produces_exactly_the_five_slots_the_register_names() -> Result<()> {
     let (mut platform, _resolved_at, asked_at) = remembering_platform()?;
     let pending = qip_api::mesh::pending_policy(
         &mut platform,
@@ -1915,11 +1915,29 @@ fn a_shipped_payload_produces_exactly_the_four_slots_the_register_names() -> Res
         "slot 10 shipped inventory targets; the centre's targets are its own book (ADR 0008) \
          and `InventoryTargets` has no band field at all"
     );
+    // Slot 11 is produced since ADR 0062's follow-on lane, and what it may
+    // carry is narrower than the type. The grids stay empty for the reason
+    // that used to keep the whole slot unproduced — the centre's grids are
+    // keyed by instrument and the slot is keyed by venue, which
+    // `feasibility::effective` prefers over the cell's own grid, so a
+    // re-keyed grid would replace the right number rather than sit beside
+    // it. What it does carry is the withdrawn set, which a cell may only
+    // refuse against. This is the assertion that fails if a producer ever
+    // starts filling a grid from a fact the centre does not hold.
+    let constraints = payload
+        .feasibility_constraints
+        .value()
+        .expect("slot 11 shipped unproduced; the withdrawn set reaches no installed desk");
     assert!(
-        payload.feasibility_constraints.value().is_none(),
-        "slot 11 shipped feasibility constraints; the centre's grids are keyed by instrument \
-         and the slot is keyed by venue, which `feasibility::effective` prefers over the \
-         cell's own grid"
+        constraints.minimum_order.is_empty()
+            && constraints.fee_floor.is_empty()
+            && constraints.tick.is_empty(),
+        "slot 11 shipped a per-venue grid the centre does not hold: {constraints:?}"
+    );
+    assert!(
+        constraints.withdrawn_venues.is_empty(),
+        "this fixture withdrew nothing, so an inhabited set is a venue nobody withdrew: {:?}",
+        constraints.withdrawn_venues
     );
     assert!(
         payload.adversary_profiles.value().is_none(),
@@ -1928,9 +1946,11 @@ fn a_shipped_payload_produces_exactly_the_four_slots_the_register_names() -> Res
 
     // And the catch-all, read through the accessor a *cell* uses rather than
     // through the values above: whatever the twelve become, the set a payload
-    // carries is the four the register names and no other. This is the line
+    // carries is the five the register names and no other. This is the line
     // that fails if a thirteenth item is added and produced, or if a slot is
-    // filled by some route the eight assertions above do not name.
+    // filled by some route the assertions above do not name. It was four
+    // until ADR 0062's follow-on lane produced slot 11, and the edit landed
+    // in that same change, which is what this line exists to force.
     let produced: Vec<&'static str> = PolicyItem::all()
         .into_iter()
         .filter(|item| payload.freshness(*item, asked_at) != Freshness::Unavailable)
@@ -1943,8 +1963,9 @@ fn a_shipped_payload_produces_exactly_the_four_slots_the_register_names() -> Res
             "capital_grants",
             "cycle_whitelist",
             "risk_envelope",
+            "feasibility_constraints",
         ],
-        "the produced set is not the four the register names; if a producer was added, say so \
+        "the produced set is not the five the register names; if a producer was added, say so \
          in `qip-kernel/src/central/whitelist.rs` and edit this test in the same change"
     );
 

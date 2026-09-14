@@ -208,7 +208,19 @@ from the start. It said "two lines" until an independent code review ran
 the command and found three; a fourth site would be a refusal that reached
 the window by a path the ADR does not describe. `venue` is bounded by
 the desk broker's name, the configured and granted venue list and `unknown`;
-`constraint` by the eight gate literals and `other`. Beside it,
+`constraint` by the **nine** gate literals and `other` — eight until
+2026-09-14, when ADR 0062's follow-on lane added
+`feasibility_withdrawn_venue`, and this sentence said eight until the same
+day. Recount rather than quoting either number:
+`sed -n '/^pub const EDGE_GATES/,/^];/p' backend/crates/libs/qip-contracts/src/feasibility.rs | grep -c '^    GATE_'`
+printed 9 on 2026-09-14. Not a bare `grep -c '^    GATE_'` over the file,
+which prints 13 — it also counts `DESK_GATES`' four, and a count of the
+wrong array is the exact shape of error this file exists to stop. Note the one thing a count does not say: the
+ninth literal is charted on this series and is deliberately **not**
+admitted to the window a venue is withdrawn on
+(`qip_contracts::feasibility::is_withdrawal_evidence`), because it is the
+echo of a withdrawal already made and would evict the window it came
+from. Beside it,
 `qip_venue_fill_error_bps{venue}` is a histogram on
 `Histogram::signed_basis_points` — bounds straddling zero because the sign is
 the finding, negative meaning the twin filled better than reality on the side

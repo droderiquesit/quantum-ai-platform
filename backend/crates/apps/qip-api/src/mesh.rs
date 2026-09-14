@@ -658,16 +658,33 @@ pub struct PendingPolicy {
 
 /// The policy payloads one cycle should ship, one per configured cell.
 ///
-/// Built from what the platform actually has, which today is four of the
-/// twelve items: the grant manifest — the signatures of every live envelope
-/// for the cell, so a dropped grant becomes visible — the risk envelope, as
-/// the limit set the monitor really enforces, the cycle whitelist, as
-/// [`Platform::issue_cycle_whitelist`] produces and journals it, and the
-/// episodic digest, as [`Platform::issue_episodic_digest`] takes it over the
-/// LEARN stage's own memory. Every other slot ships unproduced and reads as
-/// unavailable at the cell, which narrows it; that is the fail-closed design,
-/// not an omission. The halted flag mirrors the central kill switch, so a
-/// cell that missed the halt broadcast converges at the next payload.
+/// Built from what the platform actually has. Do not quote a count from this
+/// comment; the assignments are the enumeration and
+/// `grep -n 'Slot::produced\|= episodic' backend/crates/apps/qip-api/src/mesh.rs`
+/// is how to read it. What each produced slot carries: the grant manifest —
+/// the signatures of every live envelope for the cell, so a dropped grant
+/// becomes visible — the risk envelope, as the limit set the monitor really
+/// enforces, the cycle whitelist, as [`Platform::issue_cycle_whitelist`]
+/// produces and journals it, the episodic digest, as
+/// [`Platform::issue_episodic_digest`] takes it over the LEARN stage's own
+/// memory, and the feasibility constraints, as
+/// [`Platform::feasibility_constraints`] reports the venues the platform has
+/// withdrawn. Every other slot ships unproduced and reads as unavailable at
+/// the cell, which narrows it; that is the fail-closed design, not an
+/// omission. The halted flag mirrors the central kill switch, so a cell that
+/// missed the halt broadcast converges at the next payload.
+///
+/// **Slot 11 is the one slot that ships to take something away.** Its three
+/// grid maps are empty and stay empty for the reason `central::whitelist`'s
+/// register gives — the centre's grids are keyed by instrument and the slot
+/// is keyed by venue, and `qip_edge::feasibility::effective` prefers a slot
+/// grid to the cell's own, so a re-keyed grid would replace the right number
+/// rather than sit beside it. What it does carry is the withdrawn set, which
+/// a cell may only refuse against. Nothing in the payload can widen what a
+/// cell trades: the node re-checks `QIP_VENUES` in `graph_from_whitelist`,
+/// the cell re-checks its own venue list in `Cell::install_arbitrage`, and
+/// the centre only ever emits conversions `ArbitragePolicy::whitelist_for`
+/// built under `envelope.permits_venue`.
 ///
 /// **Slot 4 widens what a cell may do, and the widening is bounded here.**
 /// [`qip_contracts::degradation::DegradationState::pauses`] pauses
@@ -809,6 +826,15 @@ pub fn pending_policy(
         // unproduced slot left alone and the reader should not have to work
         // out which path left it.
         payload.episodic_digest = episodic.clone();
+        // Slot 11, assigned unconditionally and to every cell, including
+        // when nothing is withdrawn. An empty set is a statement — "the
+        // centre is applying no withdrawal" — and a cell that could not tell
+        // that from a centre that had stopped speaking would have to guess.
+        // It cannot widen anything: `PolicyItem::capability` maps this slot
+        // to no §6.2 capability, so producing it changes no sizing
+        // multiplier and lifts no pause, and its only reader,
+        // `qip_edge::feasibility::assess`, reads it to refuse.
+        payload.feasibility_constraints = Slot::produced(platform.feasibility_constraints(), now);
         pending.payloads.push((cell, payload));
     }
     pending

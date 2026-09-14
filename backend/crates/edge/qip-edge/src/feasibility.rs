@@ -35,8 +35,16 @@
 //!   venue, its gas cost per order.
 //! * The centre's [`FeasibilityConstraints`] — item 11 of the policy payload,
 //!   shipped on change — which overrides the tick, the minimum notional and
-//!   the fee floor per venue whenever the slot is produced. This is that
-//!   slot's first consumer; until now it was shipped and read by nothing.
+//!   the fee floor per venue whenever the slot is produced, and names the
+//!   venues the centre has withdrawn. This is that slot's first consumer;
+//!   until now it was shipped and read by nothing.
+//!
+//! The withdrawn set is the one input here that is not a fact about an
+//! order, and it is the one that can only subtract: a venue named in it is
+//! refused under [`GATE_WITHDRAWN_VENUE`] before any other rule runs, and
+//! there is no field on the slot, and no branch in this module, by which a
+//! payload could make a venue reachable. What the cell may trade is its own
+//! configuration's business, checked at `Cell::install_arbitrage`.
 //!
 //! A venue with neither is checked for depth alone. That is stated rather
 //! than hidden: the depth rule needs only the book, and the other rules need
@@ -85,6 +93,7 @@ pub const GATE_DEPTH: &str = qip_contracts::feasibility::GATE_DEPTH;
 pub const GATE_FEE_FLOOR: &str = qip_contracts::feasibility::GATE_FEE_FLOOR;
 pub const GATE_GAS_FLOOR: &str = qip_contracts::feasibility::GATE_GAS_FLOOR;
 pub const GATE_CONSTRAINT: &str = qip_contracts::feasibility::GATE_CONSTRAINT;
+pub const GATE_WITHDRAWN_VENUE: &str = qip_contracts::feasibility::GATE_WITHDRAWN_VENUE;
 
 /// The grids an instrument's order must sit on, and the least it may be.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -353,6 +362,35 @@ pub fn assess(
     let price = intent.reference_price;
     let venue = intent.venue.as_str();
     let object = intent.object_id.as_str();
+
+    // First, and ahead of every rule that asks a question about the order,
+    // because this one is not about the order at all. The failure it closes
+    // is named in ADR 0062 and was real: a venue withdrawn at the centre was
+    // omitted from the next `CycleWhitelist`, which takes effect for a desk
+    // installed *after* the withdrawal — and `Cell::install_arbitrage`
+    // refuses a second desk, nothing clears `self.desk`, and
+    // `ArbitrageDesk::refresh` re-quotes existing edges without adding or
+    // removing any. So a cell that had already installed the desk kept
+    // trading the withdrawn venue until its process restarted. Reading the
+    // set here puts the withdrawal on the next pass instead.
+    //
+    // Refused, never re-routed: sending the same intent to a different venue
+    // would be the gate choosing a venue, and this module's whole discipline
+    // is that it refuses and names the rule rather than repairing the
+    // caller's decision.
+    if let Some(constraints) = constraints
+        && constraints.withdrawn_venues.contains(venue)
+    {
+        return Err(Infeasible {
+            gate: GATE_WITHDRAWN_VENUE,
+            reason: format!(
+                "{venue} is withdrawn on feasibility evidence, so {object} is not routed there; \
+                 the venue returns only when two operators countersign its reinstatement at the \
+                 centre, and the whitelist the centre already ships omits it"
+            ),
+        });
+    }
+
     let effective = effective(model, constraints, intent.venue.as_str(), &intent.object_id)?;
 
     if let Some(model) = model {
@@ -664,6 +702,7 @@ mod tests {
             minimum_order: [(venue.to_string(), parse(minimum))].into_iter().collect(),
             fee_floor: [(venue.to_string(), parse(fee))].into_iter().collect(),
             tick: [(venue.to_string(), parse(tick))].into_iter().collect(),
+            withdrawn_venues: std::collections::BTreeSet::new(),
         }
     }
 

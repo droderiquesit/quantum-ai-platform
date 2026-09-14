@@ -96,6 +96,7 @@ use qip_chain::{
 use qip_contracts::edge::Deduction;
 use qip_contracts::governance::Usage;
 use qip_contracts::message::BookSide;
+use qip_contracts::policy::FeasibilityConstraints;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::{VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
@@ -3822,6 +3823,36 @@ impl Platform {
 
     /// Produce one cell's cycle whitelist and journal what was produced.
     ///
+    /// Policy slot 11 for every cell this cycle: the venues this platform
+    /// has withdrawn, and nothing else.
+    ///
+    /// **What this closes.** Omitting a withdrawn venue from the cycle
+    /// whitelist takes effect only for a desk a cell installs *afterwards*.
+    /// `Cell::install_arbitrage` refuses a second desk ("a second would reset
+    /// the capital the first has committed"), nothing clears the installed
+    /// one, and `ArbitrageDesk::refresh` re-quotes the edges it already holds
+    /// without adding or removing any — so a cell that installed its desk
+    /// before the withdrawal kept trading the withdrawn venue until its
+    /// process restarted. ADR 0062 named that limit rather than hiding it and
+    /// named this as the closure. With the set on the payload,
+    /// `qip_edge::feasibility::assess` refuses every intent bound for a
+    /// withdrawn venue under `GATE_WITHDRAWN_VENUE`, and the withdrawal
+    /// reaches an installed desk on its next pass.
+    ///
+    /// **It can only subtract.** The slot carries a set of names to refuse
+    /// and no field by which a venue could be added; what a cell may trade
+    /// stays its own configuration's business, re-checked at
+    /// `graph_from_whitelist` and `Cell::install_arbitrage`, and what the
+    /// centre may offer stays `ArbitragePolicy::whitelist_for` under
+    /// `envelope.permits_venue`. Not journaled here, because there is nothing
+    /// new to journal: every name in the set is already on the log under
+    /// `venue.withdrawn`, written before `withdraw_venue` was allowed to
+    /// touch the set at all, and a second record of one fact is the second
+    /// source of truth ADR 0016 refuses.
+    pub fn feasibility_constraints(&self) -> FeasibilityConstraints {
+        self.central.feasibility_constraints()
+    }
+
     /// The plane derives the whitelist (`CentralPlane::cycle_whitelist_for`);
     /// this is the entry point a shipper uses, because the journal is the
     /// platform's and a whitelist that reached a cell without a record here
@@ -4057,6 +4088,22 @@ impl Platform {
             );
         }
         for (venue, constraint) in &ingestion.feasibility_refusals_unattributed {
+            self.telemetry.metrics.count(
+                names::FEASIBILITY_REFUSALS,
+                labels([
+                    ("venue", venue.as_str()),
+                    ("constraint", constraint.as_str()),
+                ]),
+            );
+        }
+        // And the echoes: a cell refusing an order at a venue this platform
+        // has already withdrawn. Counted under its real venue and its real
+        // gate, so an operator can see the withdrawal taking effect at the
+        // edge, and never put in the window — the window is the evidence a
+        // withdrawal is *made* on, and a decision that fed itself back into
+        // its own evidence would evict every genuine refusal and leave the
+        // control unable to fire a second time.
+        for (venue, constraint) in &ingestion.feasibility_refusals_echoed {
             self.telemetry.metrics.count(
                 names::FEASIBILITY_REFUSALS,
                 labels([
