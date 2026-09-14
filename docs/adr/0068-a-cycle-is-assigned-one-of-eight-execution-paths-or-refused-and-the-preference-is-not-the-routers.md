@@ -95,16 +95,36 @@ a carry check instead of a Greeks gate.
 
 ## The paper-trading boundary
 
-Unchanged at all three layers, and the change touches none of them.
+Intact at all three layers. The record originally said the change "touches
+none of them", which stopped being true when the router gained its caller: one
+of the three layers is a file this change edits, and the correction is in
+point 3 rather than left as a softened adjective.
 
 1. **Terraform.** `infrastructure/terraform/variables.tf` is untouched; no file
    under `infrastructure/` is in this change.
 2. **The composition roots.** `AutonomyLevel::deployable` is untouched; no file
    under `backend/crates/apps/` is in this change.
-3. **The type system.** `qip-edge`'s `Cell` is untouched, and the router cannot
-   reach it: `qip-routing` does not depend on `qip-edge`, `PathAssignment`
+3. **The type system.** `qip-edge`'s `Cell` **is** touched now — this
+   paragraph said it was untouched, and that was true only while the router had
+   no caller. What holds the layer is unchanged and is worth restating
+   precisely. `Cell` still has no constructor taking a ceiling other than paper
+   trading; `Cell::send` is still the one place a `Placer` is called and still
+   refuses a live-class gateway unconditionally, before the order sequence
+   advances; and the router cannot reach either, because `PathAssignment`
    carries an enum, a set and a string, and nothing in `path.rs` or
-   `pathcycle.rs` can construct an order. `qip-cost-router` is not involved.
+   `pathcycle.rs` can construct an order, name a venue class, or hold a
+   `Decimal`. An assignment can stop an order existing and can do nothing else
+   to one. `qip-cost-router` is not involved.
+
+   The new risk the caller creates is not the router but the **dependency
+   edge**: `qip-edge → qip-routing` makes `qip_routing::gateway`,
+   `qip_routing::router` and `qip_routing::children` importable from `cell.rs`
+   for the first time, which would be a second order path beside the `Placer`
+   seam. `path_router.rs::the_edge_cell_reaches_the_path_vocabulary_and_no_other_part_of_the_routing_crate`
+   refuses all six of the routing crate's other modules in `qip-edge`'s shipped
+   source, with a vacuity guard requiring each to be a module that exists and a
+   positive half requiring `path` and `pathcycle` to be reached — so the test
+   cannot be satisfied by a cell that reaches nothing.
 
 Additionally, the router names no venue class at all. A live class cannot enter
 through a type the router does not mention, and
@@ -116,9 +136,21 @@ findable by the same scan elsewhere in the tree.
 
 ## Dependencies
 
-No third-party crate. Two workspace-member edges: `qip-routing → qip-arbitrage`
-and, as a dev-dependency, `qip-acceptance → qip-routing`. The lock diff is two
-added member names. ADR 0002 and ADR 0009 are untouched.
+No third-party crate, and none is added by the caller either. Three
+workspace-member edges now: `qip-routing → qip-arbitrage`, `qip-edge →
+qip-routing`, and, as a dev-dependency, `qip-acceptance → qip-routing`. The
+second was added when the router gained its caller and this paragraph named
+only two until then.
+
+`qip-edge → qip-routing` is acyclic and points the permitted way.
+`qip-routing`'s whole dependency closure is `serde`, `qip-core`, `qip-market`,
+`qip-contracts` and `qip-arbitrage`; none of the five names `qip-edge`, four are
+under `libs/` and the fifth is the edge crate `qip-edge` already depended on.
+`architecture.rs::the_dependency_graph_is_acyclic` is the check, read from what
+cargo resolved rather than from this sentence. `./scripts/check-dependencies.sh`
+still counts eleven permitted third-party packages, because a workspace member
+is not a dependency in the sense ADR 0002 and ADR 0009 bound. Both are
+untouched.
 
 ## Consequences
 
@@ -128,12 +160,48 @@ has private fields and one fallible constructor for that reason. §33.1 can
 dispatch a per-path check on `PathAssignment::assigned` and will get a compile
 error for any path it forgets.
 
-**The honest limit.** As of this record the router has **no production
-caller**. It is built, tested and mutation-verified, and §30.2 is therefore not
-`REACHED` until one line is added at a seam that holds a found cycle — see the
-integration note in the lane's handoff. A capability with no caller is a
-capability nobody can rely on, and this paragraph exists so that nobody reads
-the ADR as a claim that it ships.
+**The caller, and what the caller can actually reach.** This paragraph read
+"as of this record the router has **no production caller**" until 2026-09-14.
+It now has one: `qip_edge::Cell` builds a `CycleRouter` in `install_arbitrage`,
+beside the arbitrage desk and from nothing but the cell's own region and its
+own venue list, and `Cell::scan_cycles` routes every cycle the scan finds. The
+assignment goes onto the `WorkReport` as a `RoutedCycle` and onto the cell's
+hash-chained journal as `Decision::CyclePathAssigned`; a cycle §30.2 assigns no
+path is refused whole under the `path_router` gate, counted on
+`qip_edge_refusals_total{gate="path_router"}` like every other pass-time gate,
+and none of its legs is sent.
+
+**Two of the eight rows are reachable in a deployment, and the other six are
+not.** Saying so is the point of this paragraph, because a table with eight
+rows and two implementations reads as eight delivered rows, and every row of
+§30.2 carries a coordination model and a latency budget somebody will
+eventually plan against.
+
+- **Rows 1 and 2 are reachable and proven.** `path_assignment.rs` drives a
+  one-venue triangle to row 1 and a two-venue cycle inside one region to row 2,
+  through real `Cell::work` passes over real books.
+- **Rows 3 to 6 are unreachable.** `VenueRegions::all_in` places every venue the
+  cell may trade in the cell's own region, so a transfer edge is always a
+  transport edge and a composition never holds a mirror edge. Reaching them
+  needs four things §31.1 owns: a whitelist naming venues outside the cell's
+  region, a region map built from more than the cell's own region, real
+  inventory, hedge, resting-support and firm-quote facts per mirror edge, and
+  the direction-gating table. Until all four exist a cross-region cycle would be
+  **refused**, not mis-assigned, which is the fail-closed answer and not a
+  delivered row.
+- **Rows 7 and 8 are unreachable one layer earlier than the router.**
+  `ArbitrageDesk::new` already refuses a graph holding any synthetic edge,
+  because the cell has no book to re-quote a synthetic from. The cell therefore
+  supplies `RepresentationClasses::new()` — empty — and the router's refusal of
+  an unclassified synthetic is the second of two refusals rather than the first.
+
+**What the gate can refuse today.** Exactly one class of input a cell's own
+configuration can present: a cycle longer than `MAX_COMPOSITION_EDGES`, reached
+by a desk whose `SearchSettings::max_cycle_edges` is above eight. That is not a
+hypothetical arm — `path_assignment.rs` builds a nine-hop ring, watches the
+cycle be refused and no leg reach the gateway, and then builds an eight-hop ring
+and watches it be assigned, because a bound that refused everything would prove
+nothing.
 
 ## What it costs
 

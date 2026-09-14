@@ -134,6 +134,39 @@ pub enum Decision {
         bought: Vec<String>,
         sold: Vec<String>,
     },
+    /// A found cycle was assigned one of blueprint §30.2's eight execution
+    /// paths (ADR 0068).
+    ///
+    /// Recorded at the router's own seam rather than at the send, and for
+    /// every cycle the router assigned rather than for every cycle that
+    /// traded, so the chain holds the classification whether or not a later
+    /// gate vetoed the cycle. The pairing is the point: a cycle that reached
+    /// the router leaves either this entry or a [`Self::Refused`] under the
+    /// `path_router` gate, and never neither. An assignment that appeared
+    /// only for cycles that traded would answer "how did this execute" and
+    /// not "what did the router think of what it saw", and the second is the
+    /// question asked when the cell is quiet.
+    ///
+    /// An entry here is **not** a claim that anything was sent. §30.2's
+    /// assignment is a classification — which coordination mechanism and
+    /// which latency budget the cycle would be executed under — and nothing
+    /// in `qip-routing`'s path vocabulary can name a venue or produce an
+    /// order.
+    ///
+    /// `path` is §30.2's own row number and `path_name` the identifier, both,
+    /// because an operator reads the table by number and everything else here
+    /// by name. `eligible` is every path the composition admitted, in order,
+    /// so a replay can tell a cycle that had one possible path from one where
+    /// the preference chose between several — and the preference is the
+    /// caller's, which is exactly the fact a later argument about routing will
+    /// turn on.
+    CyclePathAssigned {
+        cycle_id: String,
+        path: u8,
+        path_name: String,
+        eligible: Vec<String>,
+        rationale: String,
+    },
     /// Every leg of an arbitrage cycle was sent (§30, §27.2).
     ///
     /// Recorded once the last leg is past the venue call, naming the orders
@@ -195,6 +228,7 @@ impl Decision {
             Self::PolicyApplied { .. } => "policy_applied",
             Self::CapitalRenewed { .. } => "capital_renewed",
             Self::CrossedInternally { .. } => "crossed_internally",
+            Self::CyclePathAssigned { .. } => "cycle_path_assigned",
             Self::CycleCommitted { .. } => "cycle_committed",
             Self::StrategyWithdrawn { .. } => "strategy_withdrawn",
             Self::RegionShareApplied { .. } => "region_share_applied",

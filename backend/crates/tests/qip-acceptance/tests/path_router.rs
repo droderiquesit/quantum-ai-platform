@@ -17,9 +17,21 @@
 //! and `qip-routing`'s own tests build their graphs by hand, so it lives
 //! here.
 //!
-//! The third test is the paper-trading boundary as it applies to this
+//! The third seam is the paper-trading boundary as it applies to this
 //! change: a router that selects a path must not become a router that
 //! selects a venue or produces an order.
+//!
+//! The fourth seam appeared when the router gained a production caller. The
+//! ADR that recorded it shipped saying, in as many words, that nothing called
+//! it, and a capability with no caller is one nobody can rely on — the shape
+//! it fails in being that every test in `qip-routing` keeps passing while the
+//! platform never assigns a path to anything. Two tests hold the caller: one
+//! that the edge cell really does reach the router and carry what it decided
+//! out of a pass, and one that the *new dependency edge* did not quietly make
+//! `qip-routing`'s gateway, its venue selection and its child orders reachable
+//! from the file the paper-trading boundary rests on. The second is the one
+//! that would not have existed before this change, because before it there was
+//! no edge from `qip-edge` to `qip-routing` at all.
 
 use qip_arbitrage::graph::{ArbitrageGraph, Node, VenueFacts};
 use qip_arbitrage::search::{SearchSettings, search_candidates};
@@ -418,4 +430,138 @@ fn the_same_found_cycle_is_assigned_a_cross_region_path_when_its_venues_sit_in_t
         checked += 1;
     }
     assert_eq!(checked, candidates.len());
+}
+
+/// Every shipped source file of a crate, joined, with doc comments removed.
+///
+/// `tests/` is excluded deliberately: a test may name whatever it needs to
+/// prove a refusal, and a scan that read them would be asserting a property
+/// of the test suite rather than of the platform.
+fn shipped_code(crate_relative: &str) -> String {
+    let root = qip_acceptance::repository_root();
+    qip_acceptance::files_with_extension(&format!("{crate_relative}/src"), "rs")
+        .into_iter()
+        .map(|path| {
+            let relative = path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned();
+            code_lines(&relative)
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+#[test]
+fn the_edge_cell_calls_the_path_router_and_carries_what_it_decided_out_of_a_pass() {
+    // ADR 0068 shipped recording that the router had **no production
+    // caller**, and said so explicitly so that nobody would read the record
+    // as a claim that it ships. This is the test that would fail if the
+    // caller were removed again, and it lives here rather than in `qip-edge`
+    // because the property spans two crates: that the edge's own pass report
+    // carries the routing crate's own decision type.
+    //
+    // The compile-time half first. These bind nothing and assert what a grep
+    // cannot: `qip_edge::RoutedCycle` really is built out of `qip_routing`'s
+    // assignment, so the two crates cannot drift apart while a source scan
+    // keeps matching. If `WorkReport::paths` were removed or retyped, this
+    // stops compiling.
+    let _: fn(&qip_edge::RoutedCycle) -> ExecutionPath = qip_edge::RoutedCycle::path;
+    let report = qip_edge::WorkReport::default();
+    let _: &Vec<qip_edge::RoutedCycle> = &report.paths;
+
+    // And the call itself, in shipped code rather than in a test. The
+    // compile-time half above would still hold if `Cell::work` never routed
+    // anything, because a type can be carried and never filled — which is
+    // exactly the failure mode this whole lane exists to close.
+    let cell = code_lines("backend/crates/edge/qip-edge/src/cell.rs");
+    // Premise: the file loaded and holds code. A scan over an empty string
+    // proves nothing, forever.
+    assert!(
+        cell.contains("pub fn work("),
+        "the cell's source did not load; the scan below would pass over nothing"
+    );
+    for named in ["CycleRouter", "GATE_PATH_ROUTER"] {
+        assert!(
+            cell.contains(named),
+            "the edge cell no longer names {named}; §30.2's router has lost its production \
+             caller and is built-and-uncalled again"
+        );
+    }
+    assert!(
+        cell.contains(".route("),
+        "the edge cell holds a CycleRouter and never calls it; a router constructed and not \
+         consulted is worse than none, because it reads in the source as a control"
+    );
+}
+
+#[test]
+fn the_edge_cell_reaches_the_path_vocabulary_and_no_other_part_of_the_routing_crate() {
+    // What this change actually risked. Before it, `qip-edge` did not depend
+    // on `qip-routing` at all; now it does, and `qip-routing` is the crate
+    // that holds `Gateway`, `NativeGateway`, venue selection and child
+    // orders. The dependency the path router needed also made every one of
+    // those importable from `cell.rs` — the one file of the three the
+    // paper-trading boundary structurally rests on.
+    //
+    // The cell must send through its own `Placer` seam and nowhere else.
+    // `Cell::send` is the single place a `Placer` is called and the single
+    // place a live venue is refused at the wire; a second order path reached
+    // through this new edge would be a second place that refusal has to hold,
+    // and the second place is always the one nobody adds it to.
+    const PERMITTED: [&str; 2] = ["qip_routing::path", "qip_routing::pathcycle"];
+    const FORBIDDEN: [&str; 6] = [
+        "qip_routing::gateway",
+        "qip_routing::router",
+        "qip_routing::children",
+        "qip_routing::reprice",
+        "qip_routing::ordertype",
+        "qip_routing::venue",
+    ];
+
+    let edge = shipped_code("backend/crates/edge/qip-edge");
+    // Premise: the crate's shipped source loaded, and it really does reach
+    // the routing crate. Without this the whole scan passes over a crate that
+    // names `qip_routing` nowhere, which is true of most of the workspace.
+    assert!(
+        edge.contains("pub fn work("),
+        "the edge cell's source did not load; the scan below would pass over nothing"
+    );
+    assert!(
+        edge.contains("qip_routing::"),
+        "qip-edge names qip_routing nowhere in shipped code, so this scan asserts nothing about \
+         which part of it the cell may reach"
+    );
+
+    // Vacuity guard. Every named path must be a module that actually exists,
+    // or a typo above is a gate that can never fire.
+    let routing = code_lines("backend/crates/edge/qip-routing/src/lib.rs");
+    for named in FORBIDDEN.iter().chain(PERMITTED.iter()) {
+        let module = named.rsplit_once("::").map_or(*named, |(_, module)| module);
+        assert!(
+            routing.contains(&format!("pub mod {module};")),
+            "{named} names no module of qip-routing, so naming it here proves nothing"
+        );
+    }
+
+    for forbidden in FORBIDDEN {
+        assert!(
+            !edge.contains(forbidden),
+            "qip-edge reaches {forbidden}; the path router is a classification and the cell \
+             sends through its own Placer seam, so nothing here may name the routing crate's \
+             order path or its venue selection"
+        );
+    }
+
+    // And the positive half, so the test is not satisfied by a cell that
+    // reaches nothing: the two permitted modules are the ones it does reach.
+    for permitted in PERMITTED {
+        assert!(
+            edge.contains(permitted),
+            "qip-edge no longer reaches {permitted}; §30.2's router is the only reason this \
+             dependency edge exists, so an edge that reaches neither module should be removed \
+             rather than left as a pinned claim"
+        );
+    }
 }

@@ -47,8 +47,9 @@ pub mod telemetry;
 
 pub use arbitrage::ArbitrageDesk;
 pub use cell::{
-    Cell, CellConfig, ConfirmedFill, CrossingInterval, ExecutionReport, MAX_OPEN_ORDERS, OpenOrder,
-    PlacedOrder, Placer, PolledHalt, PricingPolicy, WorkReport,
+    Cell, CellConfig, ConfirmedFill, CrossingInterval, ExecutionReport, GATE_LIVE_VENUE,
+    GATE_PATH_ROUTER, MAX_OPEN_ORDERS, OpenOrder, PlacedOrder, Placer, PolledHalt, PricingPolicy,
+    RoutedCycle, WorkReport,
 };
 pub use dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 pub use envelope::{VerifiedEnvelope, sign_payload};

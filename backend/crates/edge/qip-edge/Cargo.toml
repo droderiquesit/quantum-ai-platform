@@ -18,6 +18,17 @@ qip-orderbook.workspace = true
 qip-feature-dag.workspace = true
 qip-strategy.workspace = true
 qip-arbitrage.workspace = true
+# Blueprint §30.2's path router, for `Cell::install_arbitrage` and the cycle
+# scan. An edge-to-edge edge in the permitted direction: `qip-routing` names
+# serde, `qip-core`, `qip-market`, `qip-contracts` and `qip-arbitrage`, none of
+# which names this crate, so the graph stays acyclic and
+# `architecture.rs::the_dependency_graph_is_acyclic` is the check rather than
+# this comment. The cell uses `pathcycle::CycleRouter` and the `path`
+# vocabulary only; `qip-routing`'s gateway, its venue selection and its child
+# orders stay unreachable from here, because the cell sends through its own
+# `Placer` seam and a second order path would be a second place the
+# paper-trading boundary has to hold.
+qip-routing.workspace = true
 # Named by no source file in this crate: the cell sends through its own
 # `Placer` seam and never constructs the order manager. The edge stays because
 # the architecture suite's `only_the_edge_cell_itself_holds_an_order_manager`

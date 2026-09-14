@@ -33,6 +33,8 @@ use qip_feature_dag::engine::FeatureEngine;
 use qip_orderbook::venue::VenueState;
 use qip_protocols::registry::{FeedKey, ProtocolRegistry};
 use qip_risk_engine::autonomy::{AutonomyController, AutonomyLevel};
+use qip_routing::path::{ExecutionPath, MirrorFacts, PathAssignment, PathPolicy, RegionId};
+use qip_routing::pathcycle::{CycleRouter, RepresentationClasses, VenueRegions};
 use qip_sequencing::tracker::{ReorderPolicy, Sequencer};
 use qip_strategy::compile::CompiledStrategy;
 use qip_strategy::program::Program;
@@ -47,6 +49,43 @@ use std::collections::{BTreeMap, VecDeque};
 /// were reworded, and the two sites are the pass gate and the send gate for
 /// the same fact. `qip_edge_refusals_total{gate="live_venue"}` is the series.
 pub const GATE_LIVE_VENUE: &str = "live_venue";
+
+/// The gate a cell refuses a found cycle under when blueprint §30.2's path
+/// router assigns it no execution path (ADR 0068).
+///
+/// A refusal, not a default. §30.2's eight rows each carry a coordination
+/// mechanism and a latency budget that differ by three orders of magnitude,
+/// so a cycle routed under the nearest row rather than its own is a cycle
+/// sized for one process and executed over minutes. A cycle the table has no
+/// row for is one the cell cannot say how it would execute, and a cell that
+/// cannot say that sends nothing.
+///
+/// A literal like every other gate name, refused through [`Cell::refuse`] and
+/// therefore counted at the one pass-time recording site rather than a new
+/// one, so `qip_edge_refusals_total{gate}` gains a value and no seam.
+pub const GATE_PATH_ROUTER: &str = "path_router";
+
+/// What a cell supplies as mirror-edge facts: nothing, and it can never need
+/// to.
+///
+/// [`Cell::install_arbitrage`] builds the router's region map with
+/// [`VenueRegions::all_in`], which places every venue the cell may trade in
+/// the cell's own region. A mirror edge is by definition a transfer whose two
+/// ends sit in *different* regions, so no composition this cell can build
+/// holds one, and `eligible_paths` never asks for a fact that is not here.
+///
+/// **This is why §30.2's rows 3 to 6 are unreachable from an edge cell
+/// today**, and it is stated as a constant rather than an inline
+/// `BTreeMap::new()` so the next reader finds the reason rather than
+/// inferring an oversight. Reaching them is §31.1's work: it needs a
+/// whitelist naming venues outside the cell's region, a region map built from
+/// something richer than the cell's own region, and real inventory, hedge,
+/// resting-support and firm-quote facts per mirror edge. Until all four
+/// exist, a cross-region cycle would be refused here rather than
+/// mis-assigned — which is the fail-closed answer, not a delivered row.
+fn no_mirror_facts() -> BTreeMap<usize, MirrorFacts> {
+    BTreeMap::new()
+}
 
 /// How a cell is identified and what it is allowed to reach.
 #[derive(Clone, Debug)]
@@ -281,7 +320,49 @@ pub struct WorkReport {
     /// than merely journaled so a caller can see it without replaying the
     /// chain.
     pub crosses: Vec<InternalCross>,
+    /// The execution path blueprint §30.2 assigned each cycle the scan found,
+    /// in the scan's own order (ADR 0068).
+    ///
+    /// An entry here is **not** an order and **not** a trade. It says how the
+    /// cell would execute the cycle if every later gate admits it; the
+    /// feasibility gate, the capital envelope and the region allocation all
+    /// run afterwards and any of them may still veto it, in which case
+    /// [`Self::refusals`] names which. The alternative — reporting only the
+    /// cycles that survived — would answer "how did this execute" and leave
+    /// "what did the router make of what the scan found" unanswerable, and
+    /// the second is the question asked about a cell that is quiet.
+    ///
+    /// A cycle the router **refused** appears in [`Self::refusals`] under
+    /// [`GATE_PATH_ROUTER`] and not here. Every cycle the scan surfaced
+    /// therefore leaves exactly one of the two marks, and never neither.
+    pub paths: Vec<RoutedCycle>,
     pub halted: bool,
+}
+
+/// One found cycle and the execution path §30.2 assigns it.
+///
+/// Carries the whole [`PathAssignment`] rather than only
+/// [`PathAssignment::assigned`], because the eligible set and the rationale
+/// are what separate "this cycle had one possible path" from "a preference
+/// chose between four" — and §30.2 is explicit that the preference is the
+/// caller's rather than the router's, so which of the two happened is the
+/// fact an argument about routing will turn on.
+///
+/// Inert, like everything in `qip_routing::path`: an `ExecutionPath`, a set
+/// of them and a string. It names no venue, carries no size and cannot be
+/// turned into an order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoutedCycle {
+    pub cycle_id: String,
+    pub assignment: PathAssignment,
+}
+
+impl RoutedCycle {
+    /// The path assigned, for a caller that wants the decision without the
+    /// evidence.
+    pub const fn path(&self) -> ExecutionPath {
+        self.assignment.assigned()
+    }
 }
 
 /// One offsetting portion crossed inside the cell rather than at a venue.
@@ -550,7 +631,7 @@ pub struct Cell {
     /// a cell that runs strategy programs and scans no graph, which is every
     /// cell before this field existed and every test that does not ask for
     /// one.
-    desk: Option<ArbitrageDesk>,
+    desk: Option<InstalledDesk>,
     journal: Journal,
     /// Orders the venue accepted and the cell has not settled, by order id.
     /// Bounded by [`MAX_OPEN_ORDERS`]; see the constant for the refusal at
@@ -802,7 +883,44 @@ impl Cell {
                 }
             }
         }
-        self.desk = Some(desk);
+        // §30.2's path router, built from what the cell already knows and
+        // nothing else (ADR 0068): its own region, and the venues it may
+        // trade. Built *before* the desk is stored, so a router that cannot
+        // be built stops the desk installing rather than leaving a cell that
+        // scans cycles it can never classify. That is the pairing
+        // `path_router`'s own comment names, and it is the only place either
+        // field is written.
+        //
+        // Two refusals travel out of here that did not before, and both are
+        // configuration errors rather than market facts. `RegionId::new`
+        // refuses a region id with surrounding whitespace — `CellConfig`'s
+        // own check is `trim().is_empty()`, which admits `" us-east "`, and
+        // two ids differing by a space are two regions to a mirror edge, so
+        // the router will not normalise one away. `VenueRegions::all_in`
+        // refuses an empty venue list, which `CellConfig::validate` already
+        // rejects, so it is the belt to that braces.
+        //
+        // `RepresentationClasses::new()` is deliberately empty, and **§30.2's
+        // rows 7 and 8 are therefore unreachable from a cell — but one layer
+        // earlier than this**, which is the thing to get right before anybody
+        // reads the empty map as the gate. `ArbitrageDesk::new` already
+        // refuses a graph holding any synthetic edge outright: the cell has no
+        // book to re-quote a synthetic from, so a cycle through one would be
+        // priced on a template rate nobody observed. No desk a cell can hold
+        // reaches a synthetic, so no composition this router sees carries a
+        // basis or an equivalence edge.
+        //
+        // The empty map is therefore the second of two refusals, not the
+        // first, and it is still worth supplying empty: if the desk ever
+        // learns to price a synthetic, the router refuses it until somebody
+        // states whether it is a basis or an equivalence, rather than routing
+        // an options structure under a carry check. A default here would be
+        // the guess ADR 0068 exists to refuse. See `no_mirror_facts` for why
+        // rows 3 to 6 are unreachable, which is a different reason again.
+        let region = RegionId::new(self.config.region.as_str())?;
+        let regions = VenueRegions::all_in(region, &self.config.venues)?;
+        let router = CycleRouter::new(PathPolicy::default(), regions, RepresentationClasses::new());
+        self.desk = Some(InstalledDesk { desk, router });
         Ok(())
     }
 
@@ -849,7 +967,7 @@ impl Cell {
 
     /// The installed arbitrage desk, if any.
     pub fn arbitrage(&self) -> Option<&ArbitrageDesk> {
-        self.desk.as_ref()
+        self.desk.as_ref().map(|installed| &installed.desk)
     }
 
     /// Publish the halt state as it now stands.
@@ -3014,7 +3132,8 @@ impl Cell {
         narrowing: &DegradationState,
         report: &mut WorkReport,
     ) -> Result<Vec<AdmittedCycle>> {
-        let Some((cap, validity, strategy)) = self.desk.as_ref().map(|desk| {
+        let Some((cap, validity, strategy)) = self.desk.as_ref().map(|installed| {
+            let desk = &installed.desk;
             (
                 desk.max_cycles_per_pass(),
                 desk.leg_validity(),
@@ -3048,11 +3167,53 @@ impl Cell {
             // Two fields of `self`, borrowed disjointly: the desk re-quotes
             // its graph from the liquidity it is handed and never reaches
             // for it.
-            let Some(desk) = self.desk.as_mut() else {
+            let Some(desk) = self.desk.as_mut().map(|installed| &mut installed.desk) else {
                 return Ok(Vec::new());
             };
             desk.refresh(&self.liquidity)?;
             desk.scan(&self.liquidity, now)
+        };
+
+        // §30.2's path router, over every cycle this scan found and in the
+        // scan's own order (ADR 0068). Computed here, in one place, because
+        // the loop below takes `&mut self` to journal and to refuse while the
+        // router and the graph are two immutable borrows of `self` that have
+        // to be live at the same time.
+        //
+        // One entry per opportunity, always, so the `zip` below cannot pair a
+        // cycle with another cycle's assignment: a shorter vector would
+        // silently drop the tail of the scan, and a cycle that reached a venue
+        // carrying a path nobody assigned it is the failure this whole
+        // classification exists to prevent.
+        //
+        // The router classifies and never routes. It names no venue, it
+        // produces no order, and it cannot make a venue reachable that the
+        // cell is not configured for — `install_arbitrage` has already refused
+        // a graph touching a venue outside `config.venues`, and `Cell::send`
+        // remains the one place a `Placer` is called.
+        let routed: Vec<Result<PathAssignment>> = match self.desk.as_ref() {
+            Some(installed) => {
+                let facts = no_mirror_facts();
+                scanned
+                    .opportunities
+                    .iter()
+                    .map(|opportunity| {
+                        installed.router.route(
+                            installed.desk.graph(),
+                            &opportunity.candidate.edges,
+                            &facts,
+                        )
+                    })
+                    .collect()
+            }
+            // The desk was read at the top of this function and nothing since
+            // could have removed it, so this arm is the `Option`'s shape and
+            // not a state a pass can be in. Empty is safe here and only here:
+            // the `zip` below is over the same `scanned` that a cell with no
+            // desk cannot have filled, so there is no cycle to send
+            // unclassified. There is deliberately no second arm asking whether
+            // a router exists — `InstalledDesk` is why one cannot be missing.
+            None => Vec::new(),
         };
 
         for rejection in &scanned.rejections {
@@ -3075,7 +3236,15 @@ impl Cell {
         // Notional admitted against the desk's envelope so far this pass, so
         // the second cycle is judged against what the first will spend.
         let mut pending = Decimal::ZERO;
-        for (position, opportunity) in scanned.opportunities.iter().enumerate() {
+        // Zipped rather than indexed. `routed` is built with one entry per
+        // opportunity immediately above, so pairing them structurally removes
+        // the index arithmetic that could pair a cycle with a neighbour's
+        // assignment — and removes the out-of-range arm that would otherwise
+        // be a branch no input reaches, reading as a control and guarding
+        // nothing.
+        for (position, (opportunity, routing)) in
+            scanned.opportunities.iter().zip(routed).enumerate()
+        {
             let cycle_id = opportunity.cycle_id(now);
             self.journal.record(
                 Decision::EdgePriced {
@@ -3108,6 +3277,52 @@ impl Cell {
                 );
                 continue;
             }
+            // §30.2's assignment, before a leg is planned. Placed after the
+            // cap and autonomy gates so those keep the credit for the cycles
+            // they bound — a past-cap cycle refused here instead would tell an
+            // operator the router was the constraint when the cap was — and
+            // before leg planning, because a cycle the platform cannot say how
+            // it would execute is one no planning work should be spent on.
+            //
+            // The assignment is *used*: recorded on the chain and pushed onto
+            // the report. A classification computed and dropped would be worse
+            // than none, because a reader of this loop would take it for a
+            // control.
+            let assignment = match routing {
+                Ok(assignment) => assignment,
+                Err(refusal) => {
+                    self.refuse(
+                        report,
+                        GATE_PATH_ROUTER,
+                        &format!(
+                            "cycle {cycle_id} is assigned no execution path and is refused \
+                             whole: {}",
+                            refusal.message()
+                        ),
+                        now,
+                    );
+                    continue;
+                }
+            };
+            self.journal.record(
+                Decision::CyclePathAssigned {
+                    cycle_id: cycle_id.clone(),
+                    path: assignment.assigned().number(),
+                    path_name: assignment.assigned().as_str().to_string(),
+                    eligible: assignment
+                        .eligible()
+                        .iter()
+                        .map(|path| path.as_str().to_string())
+                        .collect(),
+                    rationale: assignment.rationale().to_string(),
+                },
+                now,
+            );
+            report.paths.push(RoutedCycle {
+                cycle_id: cycle_id.clone(),
+                assignment,
+            });
+
             let legs = match opportunity.cycle_legs(&strategy, now, now.saturating_add(validity)) {
                 Ok(legs) => legs,
                 Err(error) => {
@@ -3323,7 +3538,8 @@ impl Cell {
             return None;
         };
 
-        let grant = self.desk.as_ref().map(|desk| {
+        let grant = self.desk.as_ref().map(|installed| {
+            let desk = &installed.desk;
             if !desk.envelope().is_live(now) {
                 return None;
             }
@@ -3488,7 +3704,7 @@ impl Cell {
             );
             let confirmed = self.confirm_execution_reports(gateway, now);
             report.fills.extend(confirmed);
-            if let Some(desk) = self.desk.as_mut() {
+            if let Some(desk) = self.desk.as_mut().map(|installed| &mut installed.desk) {
                 let utilisation = desk.utilisation_mut();
                 utilisation.gross_committed += quantity * price;
                 utilisation.orders_sent += 1;
@@ -4277,11 +4493,16 @@ impl Cell {
                 })
                 // The desk spends an envelope too, and the centre that issued
                 // it hears how much the same way.
-                .chain(self.desk.as_ref().map(|desk| StrategyUtilisation {
-                    strategy: desk.strategy().clone(),
-                    utilisation: desk.utilisation().clone(),
-                    envelope_expires_at: desk.envelope().expires_at(),
-                }))
+                .chain(
+                    self.desk
+                        .as_ref()
+                        .map(|installed| &installed.desk)
+                        .map(|desk| StrategyUtilisation {
+                            strategy: desk.strategy().clone(),
+                            utilisation: desk.utilisation().clone(),
+                            envelope_expires_at: desk.envelope().expires_at(),
+                        }),
+                )
                 .collect(),
             orders: report
                 .orders
@@ -4407,7 +4628,7 @@ impl Cell {
         let key = envelope.strategy().as_str().to_string();
         let approver = envelope.approver().to_string();
         let expires_at = envelope.expires_at();
-        if let Some(desk) = self.desk.as_mut()
+        if let Some(desk) = self.desk.as_mut().map(|installed| &mut installed.desk)
             && desk.strategy().as_str() == key
         {
             // The desk is renewed by the same rules as a strategy: the grant
@@ -4620,6 +4841,27 @@ struct CrossingWindow {
     /// The history was truncated at its bound, so these totals understate
     /// the window and the cap must refuse rather than measure.
     full: bool,
+}
+
+/// An arbitrage desk and the path router built for it, as one thing.
+///
+/// A pair rather than two `Option` fields on the cell, and that is the whole
+/// point of the type: a desk without a router would be a cell that scans
+/// cycles it cannot classify, and the only honest thing such a cell could do
+/// is refuse every cycle it finds — a branch no input could reach, reading in
+/// the source as a control and guarding nothing. Holding both in one `Option`
+/// makes the pairing something the type system keeps rather than something
+/// [`Cell::install_arbitrage`] is trusted to have kept.
+///
+/// The router is built once, where the desk is installed. Rebuilding it per
+/// pass would re-read configuration on the hot path, and configuration read on
+/// the hot path is how a pass comes to depend on when it ran.
+#[derive(Debug)]
+struct InstalledDesk {
+    desk: ArbitrageDesk,
+    /// Blueprint §30.2's path router (ADR 0068). It classifies and cannot
+    /// route: it names no venue, produces no order, and holds no `Decimal`.
+    router: CycleRouter,
 }
 
 /// A cycle past every gate and waiting for the nets to go out first.
