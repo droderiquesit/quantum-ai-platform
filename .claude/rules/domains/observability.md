@@ -208,7 +208,19 @@ paragraph on the ninth gate literal below says why, and it is not the reason
 this file gave until 2026-09-14.
 
 Recount with
-`grep -n 'names::FEASIBILITY_REFUSALS' backend/crates/runtime/qip-kernel/src/platform.rs`.
+`grep -c 'names::FEASIBILITY_REFUSALS,' backend/crates/runtime/qip-kernel/src/platform.rs`
+— **note the trailing comma, and do not drop it.** Every real recording site
+passes the constant as an argument and so is followed by one; without the
+comma the command also matches the prose that quotes it, including this
+paragraph's own citation once it is pasted into a doc comment in that file.
+That is not hypothetical: on 2026-09-14 the comma-less form printed four and
+then five within the same day, the fifth hit being a doc comment in
+`platform.rs` quoting the command, inside the file the command searches. **A
+recount command that matches its own citation is a measurement instrument
+that reads itself**, and it is the failure mode of this file's own remedy —
+cite the command rather than the number — so the remedy needs the command to
+exclude prose.
+
 **No number is given here, and the reason is a live one rather than a
 principle.** This paragraph has been wrong about that count twice — it said
 "two lines" until an independent review ran the command and found three, then
@@ -216,10 +228,10 @@ said three *and* that "a fourth site would be a refusal that reached the
 window by a path the ADR does not describe", which was the dangerous half: a
 legitimate fourth site had shipped, and an agent following that sentence would
 have reported a violation that did not exist. Since then a lane reworking the
-echo arm reported the command printing three lines in its own worktree; run in
-that worktree on 2026-09-14 it printed four, the same as the main checkout. A
-count taken from a report is not a measurement, which is the whole argument of
-this file, and a count written down here is a count of somebody's tree at some
+echo arm reported the command printing three lines in its own worktree without
+having run it; run there it printed the same as the main checkout. A count
+taken from a report is not a measurement, which is the whole argument of this
+file, and a count written down here is a count of somebody's tree at some
 hour. Run it in the tree you are about to change and say which tree that was.
 
 What **would** be an alarm is a second writer of the window: a path by which a

@@ -145,7 +145,9 @@ Enumerate them yourself rather than trusting the number; this paragraph said
 "exactly two places" until 2026-09-14, when the third shipped and the sentence
 outlived it by a merge. `grep -rn 'withdrawn_venues'
 backend/crates/runtime/qip-kernel/src backend/crates/services/qip-execution-engine/src
-backend/crates/edge/qip-edge/src` printed 32 lines on 2026-09-14; the three
+backend/crates/edge/qip-edge/src` printed 35 lines on 2026-09-14 (it read 32
+until later the same day, when the fix for the reinstatement defect below added
+three; run it rather than trusting either figure); the three
 above are the ones that refuse, and the rest are the writers, the accessors,
 the constructors and the replay that rebuilds the set from the log.
 

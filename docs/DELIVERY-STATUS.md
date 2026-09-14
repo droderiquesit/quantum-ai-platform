@@ -2855,7 +2855,7 @@ reconfirmed passing:
 `the_withdrawn_venue_gate_is_vocabulary_the_centre_admits_but_never_evidence`
 (`qip-contracts`, fired on `is_withdrawal_evidence` widened to admit the
 gate — both the test and the function it exercised were replaced later the
-same day, by `slot_elevens_withdrawn_set_is_additive_on_the_wire_in_both_directions`
+same day, by `the_withdrawn_venue_gate_is_vocabulary_the_centre_admits_and_an_echo_only_the_centre_names`
 and `is_withdrawal_echo`; this list is the record of what was verified then,
 not a list of tests that exist now), `a_desk_installed_before_a_withdrawal_stops_trading_the_withdrawn_venue_on_its_next_pass`
 (`qip-edge`, fired on the withdrawn-set lookup neutered in `assess` — three

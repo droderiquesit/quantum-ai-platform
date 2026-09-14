@@ -161,8 +161,12 @@ log, so restarting the process still lifts it — a deployment action with its
 own audit trail. What is lost is the `KillSwitchClearance` record naming who
 lifted it, which was obtainable only during the first fifteen minutes of a
 process's life. `docs/operations/kill-switch.md` describes the API route and is
-now describing a path that refuses; correcting it is outside this lane's
-territory and is named in the handoff.
+now describing a path that refuses. **Corrected in the same merge, by the
+integrator rather than by this lane** — the sentence above said correcting it
+was outside this lane's territory and named it in a handoff, and it was still
+saying that after the handoff had been actioned. The runbook now says the
+route refuses, that a process restart is the only lift, and that the restart
+writes no clearance record.
 
 **Two behaviours lose their only caller.** `Api::readmit_connector`, which
 re-runs the licensing gate on the record an approval just wrote, and the
