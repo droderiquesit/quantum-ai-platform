@@ -591,6 +591,22 @@ impl MisallocationFinding {
 
 impl EventBody for MisallocationFinding {
     const TOPIC: Topic = Topic::FamilyAllocationReviewed;
+    /// Still `1` after `unfunded_members`/`funded_members` were renamed to
+    /// `unfunded_evaluated`/`funded_evaluated` on 2026-09-14, and the argument
+    /// is recorded here rather than only in the commit that did it, because
+    /// this constant is where the next person will look.
+    ///
+    /// A version exists so that a reader meeting an older record knows which
+    /// shape it is. Nothing is deployed and no process has ever written one of
+    /// these records, so no stored bytes carry the old field names and none
+    /// can be misdecoded. The only readers are in this workspace, and a rename
+    /// makes each of them fail to *compile* rather than silently decode a
+    /// field that is no longer there — which is the failure a version bump
+    /// buys, already bought by the type system.
+    ///
+    /// That argument expires the moment one of these records is written by a
+    /// deployed process. Renaming a field after that is a bump, and a reader
+    /// of both versions.
     const SCHEMA_VERSION: u32 = 1;
 
     fn idempotency_key(&self) -> Option<String> {
