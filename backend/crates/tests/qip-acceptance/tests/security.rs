@@ -2267,6 +2267,190 @@ fn assigns_field(body: &str, field: &str) -> bool {
     false
 }
 
+/// The types a family finding could reach a weight through, and the fields on
+/// them that *are* a weight.
+///
+/// `Platform` holds the review; `CentralPlane` holds the envelopes and the
+/// allocator's proposals; `StrategyFactory` holds the population the review
+/// reads. A method that moved capital from a family finding would have to be
+/// on one of the three.
+const FAMILY_WEIGHT_HOLDERS: [&str; 3] = ["Platform", "CentralPlane", "StrategyFactory"];
+
+/// Fields whose assignment is a weight moving: the allocator's proposal book,
+/// the issued envelopes and the grant ledger. Found with
+/// `grep -n 'proposals:\|envelopes:\|grants:' backend/crates/runtime/qip-kernel/src/central/plane.rs`.
+const FAMILY_WEIGHT_FIELDS: [&str; 4] = ["proposals", "envelopes", "grants", "central"];
+
+/// ADR 0064's guarantee, held the way ADR 0061's is: on every shipped `impl`
+/// rather than by nobody having written the method yet.
+///
+/// Blueprint §12.3's fifth row asks for an allocator objective revised when a
+/// strategy family underperforms. The platform now *measures* which families
+/// stand where — `Platform::family_standings`, journaled and charted every
+/// cycle — and moves nothing, because every weight it could narrow sits behind
+/// a writer with no production caller and a cap built on one would be a
+/// control that cannot fire. This repository records what that costs under
+/// `MaxExpectedShortfall`.
+///
+/// The obvious next change is `fn discount_family(&mut self, family: &str)` —
+/// "the finding is already computed, it just needs wiring" — and nothing in
+/// the type system stops it. So the absence is asserted here, by the same
+/// tokeniser the limit-set scan uses and with the same two-sided vacuity
+/// guards, because a scan that read nothing would pass while proving nothing.
+#[test]
+fn no_code_path_in_the_kernel_moves_a_capital_allocation_from_a_family_finding() {
+    let mut scanned = 0usize;
+    let mut blocks_read = 0usize;
+    let mut mut_self_methods_seen = 0usize;
+    let mut movers = Vec::new();
+    let mut returns_a_multiplier = Vec::new();
+
+    for file in files_with_extension("backend/crates", "rs") {
+        if file
+            .components()
+            .any(|component| component.as_os_str() == "tests")
+        {
+            continue;
+        }
+        let content = std::fs::read_to_string(&file).expect("readable source");
+        let shipped = match content.find("#[cfg(test)]") {
+            Some(cut) => &content[..cut],
+            None => &content[..],
+        };
+        scanned += 1;
+        let relative = file
+            .strip_prefix(repository_root().join("backend/crates"))
+            .expect("under backend/crates")
+            .to_string_lossy()
+            .to_string();
+
+        // The review module itself: no exported function may return a money
+        // type. A `Decimal` coming out of here is a multiplier whatever it is
+        // called, and the finding's whole shape is that there is not one.
+        if relative.ends_with("family_review.rs") {
+            for (at, _) in shipped.match_indices("pub fn ") {
+                let rest = &shipped[at..];
+                let signature: String = rest.chars().take_while(|c| *c != '{').collect();
+                if signature.contains("Decimal") || signature.contains("Money") {
+                    returns_a_multiplier.push(format!("{relative}: {}", signature.trim()));
+                }
+            }
+        }
+
+        for holder in FAMILY_WEIGHT_HOLDERS {
+            let marker = format!("impl {holder} {{");
+            for (index, _) in shipped.match_indices(&marker) {
+                let brace = index + marker.len() - 1;
+                let Some(block) = bracketed(shipped, brace, b'{', b'}') else {
+                    continue;
+                };
+                blocks_read += 1;
+                for (at, _) in block.match_indices("fn ") {
+                    let rest = &block[at + 3..];
+                    let name: String = rest
+                        .chars()
+                        .take_while(|c| is_identifier_char(*c))
+                        .collect();
+                    if name.is_empty() {
+                        continue;
+                    }
+                    let after_name = at + 3 + name.len();
+                    let leading_ws =
+                        block[after_name..].len() - block[after_name..].trim_start().len();
+                    let paren = after_name + leading_ws;
+                    if block.as_bytes().get(paren) != Some(&b'(') {
+                        continue;
+                    }
+                    let Some(params) = bracketed(block, paren, b'(', b')') else {
+                        continue;
+                    };
+                    if !params.trim_start().starts_with("&mut self") {
+                        continue;
+                    }
+                    mut_self_methods_seen += 1;
+
+                    // A method is a mover when it names a family — in its own
+                    // name or its parameter list — *and* its body assigns one
+                    // of the fields a weight lives in. Both halves, because
+                    // `CentralPlane` legitimately assigns `proposals` in
+                    // `set_proposal`, which names no family and is not this;
+                    // and `Platform::family_standings` names a family and
+                    // assigns nothing, which is also not this.
+                    let names_a_family =
+                        name.to_lowercase().contains("famil") || params.contains("StrategyFamily");
+                    if !names_a_family {
+                        continue;
+                    }
+                    let after_params = paren + 1 + params.len() + 1;
+                    if let Some(offset) = block[after_params..].find('{') {
+                        let body_open = after_params + offset;
+                        if let Some(body) = bracketed(block, body_open, b'{', b'}')
+                            && FAMILY_WEIGHT_FIELDS
+                                .iter()
+                                .any(|field| assigns_field(body, field))
+                        {
+                            movers.push(format!(
+                                "{relative}: {holder}::{name}(&mut self, …) names a family and \
+                                 assigns a field capital lives in"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // The vacuity guards. Every assertion below is about absence.
+    assert!(
+        scanned > 300,
+        "only {scanned} shipped Rust files were scanned; the walk is not reaching the crates"
+    );
+    assert!(
+        blocks_read >= 3,
+        "only {blocks_read} `impl` block(s) of the three weight holders were read; the block \
+         scan has stopped matching the form they are written in"
+    );
+    assert!(
+        mut_self_methods_seen > 0,
+        "no `&mut self` method was found on any of the three weight holders; both scans below \
+         would pass on a walk that matched nothing"
+    );
+    // The positive control on the family half of the tokeniser: the review
+    // *is* found by it — it takes `&mut self` and names a family — and is not
+    // flagged, because it assigns nothing capital lives in. Without this, a
+    // tokeniser that never matched the word would satisfy the assertion below
+    // by finding nothing to look at.
+    let platform = read("backend/crates/runtime/qip-kernel/src/platform.rs");
+    assert!(
+        platform.contains("fn review_family_allocation(&mut self, now: Timestamp)"),
+        "the positive control has moved; the family review no longer takes `&mut self` where \
+         this test looks for it, so the scan below is reading a platform that has no family \
+         method at all"
+    );
+    // And the module the review lives in is present and was walked, so the
+    // `Decimal` scan above had something to read.
+    assert!(
+        read("backend/crates/runtime/qip-kernel/src/family_review.rs").contains("pub fn "),
+        "family_review.rs exports nothing; the multiplier scan read an empty module"
+    );
+
+    assert!(
+        movers.is_empty(),
+        "a `&mut self` method naming a family now assigns a field capital lives in: {movers:?}. \
+         ADR 0064: the family review measures and allocates nothing, because every weight it \
+         could narrow sits behind a writer with no production caller — a cap built on one would \
+         be a control that cannot fire, which this repository records under \
+         `MaxExpectedShortfall` as the template for what not to add. Move the weight only after \
+         the writer that funds a family has a caller, and record that decision first."
+    );
+    assert!(
+        returns_a_multiplier.is_empty(),
+        "an exported function in `family_review` returns a money type: {returns_a_multiplier:?}. \
+         The finding may be a record and never a number a caller can size with; the guarantee is \
+         that no such function exists, not that nobody calls one."
+    );
+}
+
 #[test]
 fn no_code_path_assigns_a_limit_set_after_boot_and_no_root_reads_one_from_anywhere_but_its_configuration()
  {
