@@ -525,8 +525,20 @@ fn the_kernels_venue_admission_review_names_a_reachable_venue_that_never_earned_
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(problems[0].contains("XSTRANGER"), "{}", problems[0]);
     assert!(
-        problems[0].contains("holds no record of it at all"),
+        problems[0].contains("holds no record of it"),
         "{}",
+        problems[0]
+    );
+    // And the distinction that keeps this a problem rather than noise: the
+    // ladder holds a venue, so this one was *missed* rather than never
+    // configured. An empty ladder is the platform's state today — nothing
+    // declares a venue to it — and reporting that as a problem put one on
+    // every cycle of every deployment, which is how an operator learns that
+    // problems are noise. It is reported in the summary instead, and the
+    // second half below asserts that it still reaches a surface.
+    assert!(
+        problems[0].contains("other venue(s)"),
+        "the problem does not distinguish a missed venue from an unconfigured ladder: {}",
         problems[0]
     );
     // The restraint: the review returns strings and nothing else. There is no
@@ -535,6 +547,25 @@ fn the_kernels_venue_admission_review_names_a_reachable_venue_that_never_earned_
         !problems[0].contains("enable"),
         "the review suggested enabling something: {}",
         problems[0]
+    );
+
+    // The other branch, which is the one every deployment is actually in: an
+    // empty ladder raises no problem and is still said out loud. A review that
+    // fell silent here would be indistinguishable from one nobody wired in.
+    let (empty_summary, empty_problems) =
+        qip_kernel::venue_admission::review(&VenueLadder::new(), &reachable);
+    assert!(
+        empty_problems.is_empty(),
+        "an unconfigured ladder raised a problem on a cycle nobody can act on: {empty_problems:?}"
+    );
+    let empty_summary = empty_summary.expect("an empty ladder is reported, not passed over");
+    assert!(
+        empty_summary.contains("empty promotion ladder"),
+        "the summary does not say the ladder is empty: {empty_summary}"
+    );
+    assert!(
+        empty_summary.contains('2'),
+        "the summary does not say how many venues stand against it: {empty_summary}"
     );
     Ok(())
 }

@@ -669,6 +669,24 @@ impl VenueLadder {
         Self::default()
     }
 
+    /// How many venues the ladder holds a rung for.
+    ///
+    /// Exists so a reader can tell an *unconfigured* ladder from a configured
+    /// one with a gap in it, and those deserve different treatment: an empty
+    /// ladder is this platform's state today — nothing declares a venue to it —
+    /// while a ladder holding four venues and not the fifth is somebody's
+    /// oversight. Reporting both as the same finding put a problem on every
+    /// cycle of every deployment, which is how an operator learns that problems
+    /// are noise.
+    pub fn len(&self) -> usize {
+        self.stages.len()
+    }
+
+    /// Whether the ladder holds no venue at all. See [`Self::len`].
+    pub fn is_empty(&self) -> bool {
+        self.stages.is_empty()
+    }
+
     /// Where a venue stands. A venue nobody has promoted is registered, which
     /// is the bottom rung and not an error: §34.4's first rung is the one an
     /// adapter arrives at.

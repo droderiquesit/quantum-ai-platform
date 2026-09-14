@@ -358,7 +358,13 @@ impl CountMinSketch {
 
 /// FNV-1a over the key bytes: a fast, well-distributed 64-bit digest that
 /// every row then mixes with its own multiplier.
-fn fnv1a(bytes: &[u8]) -> u64 {
+///
+/// `pub(crate)` rather than private since [`crate::streaming`] arrived: the
+/// HyperLogLog there needs a 64-bit digest of a key, and a second
+/// implementation of one would be a second answer to the question "what is
+/// this key's hash" — exactly the disagreement two sketches counting the same
+/// stream must not have.
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xCBF2_9CE4_8422_2325;
     for byte in bytes {
         hash ^= u64::from(*byte);
@@ -369,7 +375,13 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 
 /// The splitmix64 finaliser, for turning a row index into a multiplier that
 /// shares no low-bit structure with its neighbours.
-fn splitmix64(mut x: u64) -> u64 {
+///
+/// `pub(crate)` for [`crate::streaming`], which needs it twice over: to
+/// avalanche an FNV-1a digest before a HyperLogLog counts its leading zeros —
+/// FNV-1a's top bits move too little with the key for a leading-zero count to
+/// be usable on them directly — and as the deterministic uniform stream a
+/// weighted reservoir draws its keys from.
+pub(crate) fn splitmix64(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);

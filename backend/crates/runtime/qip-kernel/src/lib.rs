@@ -33,6 +33,7 @@
 
 pub mod adaptive_cadence;
 pub mod adversary_review;
+pub mod capacity_review;
 pub mod causal_review;
 pub mod central;
 pub mod config;
@@ -40,6 +41,7 @@ pub mod cross_margin;
 pub mod cycle;
 pub mod fabric_declaration;
 pub mod family_review;
+pub mod feature_statistics;
 pub mod platform;
 pub mod quote_loop;
 pub mod references;

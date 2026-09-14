@@ -101,23 +101,50 @@ pub fn review(ladder: &VenueLadder, reachable: &BTreeSet<String>) -> (Option<Str
                  verified against measurement and a replay has reconciled",
                 standing.venue, standing.rung
             ));
+        } else if ladder.is_empty() {
+            // An entirely empty ladder is this platform's configured state, not
+            // a fault: nothing feeds `VenueLadder` yet, because the measurement
+            // lives in the adapter layer and no composition root carries venue
+            // declarations. Reporting it as a *problem* put one on every cycle
+            // of every deployment, which is how an operator learns that
+            // problems are noise — and both
+            // `a_platform_with_no_data_is_legible_rather_than_merely_quiet` and
+            // the strategy-retirement test failed on exactly that when this
+            // review was first wired. It belongs in the summary below, where it
+            // is visible and is not an alarm.
+            continue;
         } else {
+            // A ladder that holds *something* and not this venue is different
+            // in kind: somebody has begun declaring venues and this one was
+            // missed, which is a person's oversight rather than an unbuilt
+            // feature. That is worth a problem.
             problems.push(format!(
-                "venue {} is reachable and the promotion ladder holds no record of it at all; \
-                 it is being used on its own documentation, which is the one thing §34.4 says \
-                 never to do",
-                standing.venue
+                "venue {} is reachable and the promotion ladder holds no record of it, though it \
+                 holds {} other venue(s); §34.4 admits a venue on measurement and this one is \
+                 being used on its own documentation",
+                standing.venue,
+                ladder.len()
             ));
         }
     }
-    let summary = if admitted == 0 {
-        None
+    // Never `None`. A review that says nothing when nothing has been admitted
+    // is indistinguishable from a review nobody wired in, and with an empty
+    // ladder that silence would be every cycle of every deployment — the
+    // failure three modules shipped in one day earlier in this wave.
+    let summary = Some(if standings.is_empty() {
+        "no venue is reachable, so none was assessed against the promotion ladder".to_string()
+    } else if ladder.is_empty() {
+        format!(
+            "{} reachable venue(s) stand against an empty promotion ladder: §34.4's gates are \
+             built and nothing declares a venue to them yet",
+            standings.len()
+        )
     } else {
-        Some(format!(
+        format!(
             "{admitted} of {} reachable venue(s) have cleared the simulated rung",
             standings.len()
-        ))
-    };
+        )
+    });
     (summary, problems)
 }
 
@@ -196,13 +223,16 @@ mod tests {
         // wired.
         let ladder = VenueLadder::new();
         let (summary, problems) = review(&ladder, &reachable(&["XPOOL"]));
-        assert_eq!(summary, None);
-        assert_eq!(problems.len(), 1);
-        assert!(
-            problems[0].contains("holds no record of it at all"),
-            "{}",
-            problems[0]
-        );
+        // This asserted `None` and one problem until the review was wired into
+        // `stage_learn`. Both were wrong in the same way: an empty ladder is
+        // this platform's configured state — nothing declares a venue to it —
+        // so a problem here landed on every cycle of every deployment, and a
+        // `None` summary meant the review reached no surface at all in that
+        // same state. Two acceptance tests failed on the first and nothing
+        // would have caught the second.
+        assert!(problems.is_empty(), "{problems:?}");
+        let summary = summary.expect("an empty ladder is reported, not passed over");
+        assert!(summary.contains("empty promotion ladder"), "{summary}");
     }
 
     #[test]
@@ -220,7 +250,14 @@ mod tests {
         .expect("the premise: it clears the observed rung");
         assert_eq!(ladder.stage_of("XPOOL"), GateStage::Holdout);
         let (summary, problems) = review(&ladder, &reachable(&["XPOOL"]));
-        assert_eq!(summary, None);
+        // The summary asserted `None` here because nothing had been *admitted*.
+        // Counting zero out of one is the fact, and saying nothing was the
+        // defect: it made a review that ran indistinguishable from one nobody
+        // called.
+        assert_eq!(
+            summary.as_deref(),
+            Some("0 of 1 reachable venue(s) have cleared the simulated rung")
+        );
         assert_eq!(problems.len(), 1);
         assert!(
             problems[0].contains("stands at the observed rung"),
@@ -277,8 +314,12 @@ mod tests {
         let mut ladder = VenueLadder::new();
         admit(&mut ladder, "AAAA");
         let (summary, problems) = review(&ladder, &BTreeSet::new());
-        assert_eq!(summary, None, "a venue nothing can reach was counted");
         assert!(problems.is_empty());
+        let summary = summary.expect("a cycle that assessed nothing says so");
+        assert!(
+            summary.contains("no venue is reachable"),
+            "a venue nothing can reach was counted, or the review fell silent: {summary}"
+        );
         // The premise: the same ladder does report when the venue is
         // reachable.
         assert!(review(&ladder, &reachable(&["AAAA"])).0.is_some());

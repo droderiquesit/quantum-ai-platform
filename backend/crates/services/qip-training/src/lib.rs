@@ -124,6 +124,7 @@
 pub mod cadence;
 pub mod dataset;
 pub mod distill;
+pub mod estimators;
 pub mod job;
 pub mod local;
 pub mod vertex;

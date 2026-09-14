@@ -16,6 +16,7 @@ pub mod qp;
 pub mod search;
 pub mod sketch;
 pub mod stats;
+pub mod streaming;
 pub mod vector;
 
 pub use matrix::Matrix;
