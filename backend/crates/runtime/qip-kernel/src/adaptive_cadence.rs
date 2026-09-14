@@ -277,7 +277,26 @@ pub fn review(platform: &Platform) -> (Option<String>, Vec<String>) {
     };
     let plan = plan(&signals, &policy);
     if plan.is_saving() {
-        return (None, Vec::new());
+        // A saving cycle says so, naming what it held and why, rather than
+        // returning nothing.
+        //
+        // This returned `(None, Vec::new())` until 2026-09-14 and that was
+        // inconsistent with this lane's own argument one module over: §19.2's
+        // tier gauge is written *every* cycle including when every arm is
+        // zero, precisely so that "this has never had a subject" is a fact
+        // somebody can read rather than a silence. A cadence that skips
+        // silently fails the same way — an operator reading a LEARN detail
+        // cannot tell a review that ran and found nothing due from a review
+        // that was never wired in, and on today's platform every cycle is a
+        // saving cycle, because no strategy is registered under an alpha
+        // family and no profit has been realised. So the wiring would have
+        // been unobservable in every state a deployment reaches, which is the
+        // condition under which a call site rots unnoticed.
+        //
+        // `held` is bounded: one entry per `Work` arm, both of them literals
+        // built here, so this cannot grow with the book.
+        let summary = format!("cadence saving: {}", plan.held().join("; "));
+        return (Some(summary), Vec::new());
     }
 
     let mut parts = Vec::new();

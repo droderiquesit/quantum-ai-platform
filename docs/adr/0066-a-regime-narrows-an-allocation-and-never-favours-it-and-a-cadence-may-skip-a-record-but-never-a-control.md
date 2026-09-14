@@ -1,4 +1,4 @@
-# ADR 0065: A regime narrows an allocation and never favours it, and a cadence may skip a record but never a control
+# ADR 0066: A regime narrows an allocation and never favours it, and a cadence may skip a record but never a control
 
 - **Status**: Proposed
 - **Date**: 2026-09-14

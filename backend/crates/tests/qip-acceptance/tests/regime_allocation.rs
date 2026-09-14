@@ -158,7 +158,8 @@ fn the_compounding_policy_is_built_from_the_desks_own_mandate_and_not_from_a_sec
 }
 
 #[test]
-fn a_freshly_opened_book_runs_no_cadence_work_and_says_nothing_about_it() -> Result<()> {
+fn a_freshly_opened_book_runs_no_cadence_work_and_says_so_rather_than_falling_silent() -> Result<()>
+{
     // §23.6's last row against a real platform: no strategy is registered
     // and no profit has been realised, so neither item has a subject and the
     // cycle entry gains nothing. The premise is asserted first — this is the
@@ -174,7 +175,29 @@ fn a_freshly_opened_book_runs_no_cadence_work_and_says_nothing_about_it() -> Res
     assert_eq!(signals.undeployed_profit, Decimal::ZERO);
 
     let (summary, problems) = adaptive_cadence::review(&platform);
-    assert_eq!(summary, None, "work ran on a book with nothing to work on");
+    // This asserted `summary == None` — that a saving cycle says nothing at
+    // all — until 2026-09-14. That assertion was wrong, and the test's own
+    // name carried the error. `adaptive_cadence` records **no metric**
+    // (`grep -cE 'metrics\.|names::' adaptive_cadence.rs` prints 0), so a
+    // saving cycle that also produced no stage detail reached no surface
+    // whatsoever; and since a freshly opened book holds both arms, that was
+    // every cycle any deployment reaches. An operator could not tell a review
+    // that ran and found nothing due from a review nobody had wired in, which
+    // is the condition under which a call site rots unnoticed — and it is the
+    // same argument this lane made one module over for writing the tier gauge
+    // every cycle including when every arm is zero.
+    //
+    // What is unchanged is the property this test exists for, asserted below:
+    // the silence is a *saving* and not a review that can never fire.
+    let summary = summary.expect("a saving cycle names what it held");
+    assert!(
+        summary.starts_with("cadence saving:"),
+        "a saving cycle did not say it was saving: {summary}"
+    );
+    assert!(
+        summary.contains("nothing to tier") && summary.contains("no realised profit"),
+        "a saving cycle did not name both held items: {summary}"
+    );
     assert!(
         problems.is_empty(),
         "the saving reported problems: {problems:?}"
@@ -287,5 +310,45 @@ fn the_regime_reader_narrows_a_bound_in_every_regime_and_widens_one_in_none() ->
             "a favoured family was handed more than the mandate's cap"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn the_learn_stage_carries_the_cadence_review_so_the_wiring_and_not_only_the_module_is_proven()
+-> Result<()> {
+    // Every other test in this file calls `adaptive_cadence::review` directly.
+    // That proves the module and says nothing about whether a deployed process
+    // ever reaches it — which is exactly the difference between `UNREACHED`
+    // and `REACHED` on this repository's bar, and the difference §19.2, §18.4
+    // and §23.6 turn on. So this one runs a cycle and reads the stage.
+    //
+    // It asserts its premise first, because a cycle that never ran LEARN would
+    // satisfy any `contains` below by producing no detail at all.
+    let mut platform = platform()?;
+    let report = platform.run_cycle(start());
+    let learn = report
+        .stage(qip_kernel::Stage::Learn)
+        .expect("the premise failed: the cycle did not run the LEARN stage");
+
+    // A bare platform registers no strategy under an alpha family and has
+    // realised no profit, so the cadence holds both arms — which is the state
+    // every cycle of a deployment reaches today, and therefore the only state
+    // in which this wiring can be proven at all. It says so rather than
+    // falling silent; that is the assertion.
+    assert!(
+        learn.detail.contains("cadence saving:"),
+        "the LEARN stage does not carry the cadence review, so `adaptive_cadence::review` is \
+         reached only by tests and §19.2/§18.4/§23.6 are UNREACHED whatever their own suites \
+         say: {}",
+        learn.detail
+    );
+    // And the reason is named, not just the fact — an operator who cannot see
+    // *why* nothing ran learns nothing from the fact that nothing ran.
+    assert!(
+        learn.detail.contains("nothing to tier")
+            || learn.detail.contains("no realised profit to redeploy"),
+        "the cadence held its work without saying why: {}",
+        learn.detail
+    );
     Ok(())
 }

@@ -9040,6 +9040,18 @@ impl Platform {
                 ));
             }
         }
+        // ADR 0066's regime narrowing, applied to the same caps map and
+        // compounding with the fill-record cap above by multiplication —
+        // both live in `(0, 1]`, so the order of the two is immaterial and
+        // neither can raise a bound. `Stance::multiplier` has no arm above
+        // one, which is what makes that true structurally rather than by
+        // this comment. Production resolves an unattributed instrument to
+        // the minimum over the regime table: no path attributes an alpha
+        // family today, and reading "unattributed" as unaffected would have
+        // left the reader invisible in the only state a deployment reaches.
+        crate::regime_allocation::narrow(&mut caps, &mut capped, theses, |subject| {
+            self.market_regime(subject)
+        });
         let outcome = self.constructor.construct_capped(
             theses,
             &covariance,
@@ -10485,6 +10497,25 @@ impl Platform {
         // else. The cap DECIDE reads is computed from the scores on every
         // construction — this pass only puts the change on the record.
         let (reviewed, problems) = self.review_sizing(now);
+        if let Some(reviewed) = reviewed {
+            let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
+        // ADR 0066's cadence, evaluation tiers and compounding plan, in the
+        // same `(summary, problems)` shape and for the same reason: three
+        // subjects asking one question — does this run now? — answered once
+        // against the platform's own cycle count rather than three times
+        // against three clocks that would drift apart. `review` takes
+        // `&Platform`, writes nothing and journals nothing: it decides what
+        // may be *skipped*, and a cadence here may skip work that produces a
+        // record and never a control. That is why the regime narrowing above
+        // is recomputed on every construction and is deliberately absent from
+        // this plan — a control that runs on a schedule is a control with
+        // gaps somebody has to reason about.
+        let (reviewed, problems) = crate::adaptive_cadence::review(self);
         if let Some(reviewed) = reviewed {
             let detail = format!("{}; {reviewed}", outcome.detail);
             outcome = StageOutcome { detail, ..outcome };

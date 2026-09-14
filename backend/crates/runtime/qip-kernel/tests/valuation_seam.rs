@@ -776,9 +776,22 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
         .iter()
         .find(|leg| leg.object_id == object("AAA"))
         .expect("the reference sized AAA");
+    // 0.04, not the mandate's 0.08: ADR 0066 narrows every sized name by the
+    // regime, and on this synthetic tape no regime is nameable, so the
+    // unattributed multiplier — the minimum over the table, 0.5 — applies.
+    // This premise read 0.08 until 2026-09-14 and the wiring of that
+    // narrowing moved it. It is restated rather than relaxed: the property
+    // this test exists to prove is that ADR 0055's budget halving and
+    // ADR 0063's bound halving *compound* to a quarter, and the regime
+    // multiplier is a common factor across the reference arm and the
+    // evidenced arm — same instrument, same tape, same regime — so it
+    // divides out of that ratio and changes nothing about the claim. What it
+    // does change is the absolute figure, and a premise asserting an
+    // absolute figure has to be told.
     assert!(
-        (reference_leg.target_weight - 0.08).abs() < 1e-9,
-        "the premise failed: the reference leg is not at the mandate's 8% cap: {}",
+        (reference_leg.target_weight - 0.04).abs() < 1e-9,
+        "the premise failed: the reference leg is not at the mandate's 8% cap narrowed by the \
+         regime's unattributed 0.5: {}",
         reference_leg.target_weight
     );
 
