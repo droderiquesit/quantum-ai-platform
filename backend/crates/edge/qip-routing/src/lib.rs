@@ -35,6 +35,15 @@
 //!   touch, and refuses a cycle no row of that table covers rather than
 //!   picking the nearest one. [`pathcycle::CycleRouter`] reads a cycle the
 //!   arbitrage search found. Neither can produce an order; both classify.
+//! * **Whether a cross-region side may trade at all.** [`mirror`] is
+//!   blueprint §31.1's direction-gating table: a region below its inventory
+//!   target may only buy and one above it may only sell, so two regions can
+//!   never take the same side of one mirrored asset and neither has to ask
+//!   the other. [`extension`] is §33.1's per-path check, one arm per path,
+//!   refusing when the fact a row needs is absent. Both are checks: neither
+//!   can name a venue, choose a path or raise a size, and a caller that
+//!   ignores a refusal from either has skipped a check rather than gained a
+//!   permission.
 //!
 //! [`gateway::Gateway`] is the venue-facing surface.
 //! [`gateway::SimulatedGateway`] implements it against a book;
@@ -48,8 +57,10 @@
 //! the same history route the same way on a replay.
 
 pub mod children;
+pub mod extension;
 pub mod gateway;
 pub mod health;
+pub mod mirror;
 pub mod ordertype;
 pub mod path;
 pub mod pathcycle;
@@ -58,11 +69,19 @@ pub mod router;
 pub mod venue;
 
 pub use children::{ChildOrder, ChildState, ParentOrder};
+pub use extension::{
+    AnchorExtension, BasisExtension, ExtensionVerdict, FirmQuoteExtension, HedgeExtension,
+    MirrorExtension, PathExtensions, PayoffExtension, check,
+};
 pub use gateway::{
     Gateway, GatewayAck, GatewayCredential, GatewayEvent, GatewaySettings, NativeGateway,
     NativeGatewayConfig, SimulatedGateway, WorkingOrder,
 };
 pub use health::{HealthAssessment, HealthPolicy, HealthTracker, HealthVerdict, VenueHealth};
+pub use mirror::{
+    Direction, DistributedReference, InventoryBand, MirrorPermission, PermittedDirection,
+    RegionPosture, RegionState, SizeDiscipline, direction_gate,
+};
 pub use ordertype::{
     OrderTypeKind, OrderTypeSelection, PegReference, RoutedOrderType, Touch, Urgency,
     select_order_type,

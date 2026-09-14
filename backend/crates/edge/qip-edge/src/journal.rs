@@ -167,6 +167,24 @@ pub enum Decision {
         eligible: Vec<String>,
         rationale: String,
     },
+    /// Blueprint §33.1's extension for the assigned path held (§31.1, §33.1).
+    ///
+    /// §33.1: *"Every verdict, including silence, is logged."* This is the
+    /// half that held; the half that refused is a `Refused` entry under the
+    /// `path_extension` gate, so both outcomes are on the chain and neither
+    /// has to be inferred from the other's absence.
+    ///
+    /// `has_row` is the fact a count of these entries would otherwise hide:
+    /// §33.1's table starts at path 3, so for paths 1 and 2 the honest
+    /// record is that the blueprint asks for no additional check — which is
+    /// a different thing from a check that passed, and reads identically in
+    /// any log that stores only success.
+    PathExtensionChecked {
+        cycle_id: String,
+        path: u8,
+        has_row: bool,
+        rationale: String,
+    },
     /// Every leg of an arbitrage cycle was sent (§30, §27.2).
     ///
     /// Recorded once the last leg is past the venue call, naming the orders
@@ -229,6 +247,7 @@ impl Decision {
             Self::CapitalRenewed { .. } => "capital_renewed",
             Self::CrossedInternally { .. } => "crossed_internally",
             Self::CyclePathAssigned { .. } => "cycle_path_assigned",
+            Self::PathExtensionChecked { .. } => "path_extension_checked",
             Self::CycleCommitted { .. } => "cycle_committed",
             Self::StrategyWithdrawn { .. } => "strategy_withdrawn",
             Self::RegionShareApplied { .. } => "region_share_applied",

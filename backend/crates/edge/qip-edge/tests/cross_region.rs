@@ -1,0 +1,1011 @@
+//! Blueprint §31.1's cross-region solve and §33.1's path-3 extension, as the
+//! cell actually runs them.
+//!
+//! # What was blocking rows 3 to 6, and what these tests hold
+//!
+//! ADR 0068 landed §30.2's path router with a caller, and rows 3 to 6 stayed
+//! out of reach for one reason: `Cell::install_arbitrage` built the router's
+//! region map by putting *every* venue the cell may trade in the cell's own
+//! region, so a transfer was always a transport edge and a cross-region cycle
+//! could not be composed at all. These tests are about that seam being open
+//! and about what now stands behind it — not about the vocabulary, which
+//! `qip-routing`'s own tests hold.
+//!
+//! Three properties, each asserted separately because each fails separately:
+//!
+//! * a cell told that one of its venues is abroad composes **mirror edges**
+//!   and is assigned §30.2's **path 3**, which no cell could reach before;
+//! * the two gates behind it refuse under **different** names —
+//!   `path_router` when the platform cannot say how it would execute the
+//!   cycle at all, `path_extension` when it can and §31.1's conditions do not
+//!   hold — because the first is a configuration fault and the second is a
+//!   market or inventory state, and an operator reading one series for both
+//!   cannot tell them apart;
+//! * none of it sends anything. Every refusal test asserts the gateway saw
+//!   nothing, and the one cycle that is assigned a path is still stopped by
+//!   the extension.
+//!
+//! # The honest bound, asserted rather than left as prose
+//!
+//! A cell that holds no inventory cannot complete a cross-region cycle, and
+//! that is §31.1 working rather than §31.1 missing. Every closed mirror cycle
+//! has exactly one object this region acquires and one it disposes of, so one
+//! of the two legs is always a local **sell** — and a region holding nothing
+//! is never above its target, so its band never permits one. The blueprint
+//! says the same thing in its SETUP line: *"hold asset X in BOTH regions"*.
+//! `a_region_holding_nothing_cannot_sell_the_leg_it_would_have_to_sell` is
+//! that bound, named so nobody reads the refusal as a defect.
+
+// In a test the assertion is the deliverable; the workspace denies
+// `panic_in_result_fn` for production code, where it would be a bug.
+#![allow(clippy::panic_in_result_fn)]
+
+use qip_arbitrage::{
+    ArbitrageGraph, EdgeAssumptions, Node, OpportunityScanner, PlanSettings, SearchSettings,
+    SizePolicy, VenueFacts,
+};
+use qip_contracts::capital::CapitalEnvelope;
+use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
+use qip_contracts::policy::{
+    BeliefPriors, CausalDigest, EpisodicDigest, InventoryTargets, PolicyPayload, Slot,
+};
+use qip_contracts::signal::StrategyId;
+use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
+use qip_core::error::Result;
+use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
+use qip_edge::arbitrage::ArbitrageDesk;
+use qip_edge::cell::{Cell, CellConfig, GATE_PATH_EXTENSION, GATE_PATH_ROUTER, Placer, WorkReport};
+use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
+use qip_edge::journal::Decision;
+use qip_edge::mirror::{MirrorArrangement, MirroredInstrument};
+use qip_edge::policy::VerifiedPolicy;
+use qip_feature_dag::engine::FeatureEngine;
+use qip_feature_dag::state::MarketState;
+use qip_observability::metrics::{Metrics, labels, names};
+use qip_orderbook::venue::VenueState;
+use qip_routing::path::ExecutionPath;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+const CELL: &str = "london-1";
+const REGION: &str = "europe-west2";
+/// The local venue.
+const VENUE: &str = "CX";
+/// The second venue. Unlike `tests/path_assignment.rs`, this one is placed in
+/// **another region**, which is the whole subject of this file.
+const VENUE_TWO: &str = "DX";
+const REGION_TWO: &str = "us-east1";
+const DESK: &str = "arb-desk";
+const ENVELOPE_KEY: &[u8] = b"a-cell-envelope-key-for-tests";
+const POLICY_KEY: &[u8] = b"a-cell-policy-key-for-tests";
+
+/// See `tests/path_assignment.rs` for why a transfer edge declares
+/// observations at all: the net-edge calculator haircuts a cycle by its
+/// fewest-observed edge, and a transfer's rate is one by definition.
+const TRANSFER_OBSERVATIONS: u32 = 512;
+
+fn t(secs: i64) -> Timestamp {
+    Timestamp::from_secs(1_760_000_000 + secs)
+}
+
+fn object(name: &str) -> ObjectId {
+    ObjectId::from_string(name)
+}
+
+fn venue() -> VenueId {
+    VenueId::new(VENUE)
+}
+
+fn venue_two() -> VenueId {
+    VenueId::new(VENUE_TWO)
+}
+
+fn d(literal: &str) -> Decimal {
+    Decimal::parse(literal).expect("a decimal literal")
+}
+
+fn book_at(at: &VenueId, market: &str, bid: (&str, &str), ask: (&str, &str)) -> Result<VenueState> {
+    let mut state = VenueState::aggregated(object(market), at.clone(), VenueStatus::Open);
+    for (index, (side, (price, size))) in [(BookSide::Bid, bid), (BookSide::Ask, ask)]
+        .into_iter()
+        .enumerate()
+    {
+        let when = t(index as i64);
+        state.apply(&MarketMessage::new(
+            object(market),
+            Origin::new(at.clone(), "feed-a", 0, index as u64),
+            MessageBody::LevelSet {
+                side,
+                price: d(price),
+                quantity: d(size),
+                order_count: None,
+            },
+            when,
+            when,
+        ))?;
+    }
+    Ok(state)
+}
+
+/// BTC is ten per cent dearer at the foreign venue, and the local cell also
+/// holds a book for the cash leg — which it needs, because §31.1 compares the
+/// region's *own* price against the distributed reference and a mirrored
+/// instrument with no local book has no price to compare.
+fn books() -> Result<Vec<VenueState>> {
+    Ok(vec![
+        book_at(&venue(), "BTCUSDT", ("59999", "10"), ("60000", "10"))?,
+        book_at(&venue_two(), "BTCUSDT", ("66000", "10"), ("66001", "10"))?,
+        book_at(
+            &venue(),
+            "USDTUSD",
+            ("0.9999", "1000000"),
+            ("1.0001", "1000000"),
+        )?,
+    ])
+}
+
+/// Buy BTC locally, move it abroad, sell it there, move the cash home. Both
+/// transfers cross a region boundary, so both are mirror edges — which is not
+/// a property of this graph but of the region map the cell supplies.
+fn cross_region_graph() -> Result<ArbitrageGraph> {
+    let mut graph = ArbitrageGraph::new();
+    for at in [venue(), venue_two()] {
+        graph.register_venue(
+            at,
+            VenueFacts::new(VenueClass::CryptoExchange, VenueStatus::Open),
+        );
+    }
+    graph.add_trade(
+        Node::new(object("USDT"), venue()),
+        Node::new(object("BTC"), venue()),
+        Decimal::ONE,
+        Decimal::ZERO,
+        object("BTCUSDT"),
+        BookSide::Ask,
+        t(0),
+        0,
+    )?;
+    graph.add_transfer(
+        object("BTC"),
+        venue(),
+        venue_two(),
+        Decimal::ZERO,
+        t(1),
+        TRANSFER_OBSERVATIONS,
+    )?;
+    graph.add_trade(
+        Node::new(object("BTC"), venue_two()),
+        Node::new(object("USDT"), venue_two()),
+        Decimal::ONE,
+        Decimal::ZERO,
+        object("BTCUSDT"),
+        BookSide::Bid,
+        t(0),
+        0,
+    )?;
+    graph.add_transfer(
+        object("USDT"),
+        venue_two(),
+        venue(),
+        Decimal::ZERO,
+        t(1),
+        TRANSFER_OBSERVATIONS,
+    )?;
+    Ok(graph)
+}
+
+fn sizes() -> SizePolicy {
+    SizePolicy::uniform(d("10000")).with(object("BTC"), d("0.16"))
+}
+
+fn scanner() -> OpportunityScanner {
+    OpportunityScanner::new(
+        SearchSettings {
+            max_cycle_edges: 4,
+            ..SearchSettings::default()
+        },
+        EdgeAssumptions::default(),
+        PlanSettings::with_budget(d("500000")),
+    )
+}
+
+fn signed_envelope() -> Result<VerifiedEnvelope> {
+    let build = |signature: &str| {
+        CapitalEnvelope::new(
+            StrategyId::new(DESK),
+            CELL,
+            dec!("1000000"),
+            dec!("100000"),
+            dec!("50000"),
+            vec![venue(), venue_two()],
+            t(0),
+            t(3600),
+            "alice@example.com",
+            signature,
+        )
+    };
+    let unsigned = build("unsigned")?;
+    let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
+    VerifiedEnvelope::verify(build(&signature)?, ENVELOPE_KEY, CELL, t(1))
+}
+
+fn desk() -> Result<ArbitrageDesk> {
+    ArbitrageDesk::new(
+        StrategyId::new(DESK),
+        scanner(),
+        cross_region_graph()?,
+        sizes(),
+        signed_envelope()?,
+        8,
+        Duration::from_secs(30),
+    )
+}
+
+/// What the centre distributes for §31.1: a target and a reference price per
+/// mirrored instrument. `None` is the platform as it stands — the tenth slot
+/// has no producer, which the kernel's whitelist module argues at length —
+/// and is the input the router refusal below is driven with.
+struct Distributed {
+    btc_target: &'static str,
+    btc_reference: &'static str,
+    usdt_target: &'static str,
+    usdt_reference: &'static str,
+}
+
+impl Distributed {
+    /// A target this region is below on BTC, and a reference above the local
+    /// BTC mid so §31.1 indicates a local buy — which is the direction the
+    /// cycle takes.
+    const fn workable() -> Self {
+        Self {
+            btc_target: "10",
+            btc_reference: "60500",
+            usdt_target: "0",
+            usdt_reference: "0.99",
+        }
+    }
+
+    fn slot(&self, produced_at: Timestamp) -> Slot<InventoryTargets> {
+        Slot::produced(
+            InventoryTargets {
+                targets: BTreeMap::from([
+                    ("BTC".to_string(), d(self.btc_target)),
+                    ("USDT".to_string(), d(self.usdt_target)),
+                ]),
+                reference_prices: BTreeMap::from([
+                    ("BTC".to_string(), d(self.btc_reference)),
+                    ("USDT".to_string(), d(self.usdt_reference)),
+                ]),
+            },
+            produced_at,
+        )
+    }
+}
+
+/// A payload whose capability slots are fresh, so the sizing multiplier is
+/// one and the desk scans rather than refusing to.
+///
+/// `targets` carries §31.1's tenth slot and `targets_produced_at` is when the
+/// centre produced it, which is deliberately separate from `issued_at`: the
+/// §33.1 extension measures the reference's window from the instant the fact
+/// was produced, not from when the payload shipped.
+fn policy(
+    issued_at: Timestamp,
+    targets: Option<(&Distributed, Timestamp)>,
+) -> Result<VerifiedPolicy> {
+    let mut payload = PolicyPayload::unproduced(1, CELL, issued_at);
+    payload.belief_priors = Slot::produced(
+        BeliefPriors {
+            priors: BTreeMap::new(),
+        },
+        issued_at,
+    );
+    payload.causal_digest = Slot::produced(
+        CausalDigest {
+            active_edges: Vec::new(),
+        },
+        issued_at,
+    );
+    payload.episodic_digest = Slot::produced(
+        EpisodicDigest {
+            digest: "d".to_string(),
+            episodes: 0,
+        },
+        issued_at,
+    );
+    if let Some((distributed, produced_at)) = targets {
+        payload.inventory_targets = distributed.slot(produced_at);
+    }
+    VerifiedPolicy::verify(payload.signed(POLICY_KEY)?, POLICY_KEY, CELL, issued_at)
+}
+
+/// The operator's half of §31.1: the band widths and the dislocation
+/// threshold, neither of which arrives on the wire.
+fn arrangement() -> Result<MirrorArrangement> {
+    MirrorArrangement::new()
+        .with_instrument(
+            object("BTC"),
+            MirroredInstrument::new(d("1"), d("20"), object("BTCUSDT"), d("100"))?,
+        )
+        .with_instrument(
+            object("USDT"),
+            MirroredInstrument::new(d("1000"), d("50000"), object("USDTUSD"), d("0.005"))?,
+        )
+        .with_round_trip(REGION_TWO, Duration::from_millis(28))
+}
+
+/// A cell whose second venue is abroad, unless `abroad` says otherwise.
+fn cell_with(
+    abroad: bool,
+    mirror: Option<MirrorArrangement>,
+    policy: VerifiedPolicy,
+) -> Result<(Cell, Arc<Metrics>)> {
+    let metrics = Arc::new(Metrics::new("qip-edge-node"));
+    let config = CellConfig::new(CELL, REGION).with_venue(venue());
+    let config = if abroad {
+        config.with_venue_in_region(venue_two(), REGION_TWO)?
+    } else {
+        config.with_venue(venue_two())
+    };
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?
+        .with_metrics(Arc::clone(&metrics))
+        .with_arbitrage(desk()?)?;
+    if let Some(mirror) = mirror {
+        cell.install_mirror(mirror)?;
+    }
+    cell.apply_policy(policy, t(5))?;
+    for state in books()? {
+        cell.track(state);
+    }
+    Ok((cell, metrics))
+}
+
+#[derive(Debug, Default)]
+struct RecordingGateway {
+    placed: Vec<String>,
+}
+
+impl Placer for RecordingGateway {
+    fn is_simulated(&self) -> bool {
+        true
+    }
+
+    fn place(
+        &mut self,
+        order_id: &str,
+        _object_id: &ObjectId,
+        _venue: &VenueId,
+        _side: BookSide,
+        _quantity: Decimal,
+        _price: Decimal,
+        _at: Timestamp,
+    ) -> Result<()> {
+        self.placed.push(order_id.to_string());
+        Ok(())
+    }
+}
+
+fn refusals_under<'a>(report: &'a WorkReport, gate: &str) -> Vec<&'a str> {
+    report
+        .refusals
+        .iter()
+        .filter(|(g, _)| g == gate)
+        .map(|(_, reason)| reason.as_str())
+        .collect()
+}
+
+fn refusals_counted(metrics: &Metrics, gate: &str) -> u64 {
+    metrics.snapshot().counter(
+        names::EDGE_REFUSALS,
+        &labels([("cell", CELL), ("region", REGION), ("gate", gate)]),
+    )
+}
+
+/// The premise every test below rests on: the fixture really does hold one
+/// profitable cycle, so an empty report is evidence about the change and not
+/// about the books.
+fn assert_one_opportunity(cell: &Cell) {
+    let scanned = cell
+        .arbitrage()
+        .expect("the desk was installed")
+        .scan(cell.liquidity(), t(10));
+    assert_eq!(
+        scanned.opportunities.len(),
+        1,
+        "the premise failed: the cross-region books hold {} cycles",
+        scanned.opportunities.len()
+    );
+}
+
+#[test]
+fn a_cell_told_one_of_its_venues_is_abroad_composes_mirror_edges_and_is_assigned_path_three()
+-> Result<()> {
+    // The row this lane exists to open. Before §31.1 the region map put
+    // every venue the cell may trade in the cell's own region, so this exact
+    // cycle composed two *transport* edges and was assigned path 2 —
+    // latency-equalised parallel dispatch, whose whole premise is one
+    // process — for two legs on opposite sides of an ocean. The only thing
+    // that differs between this test and the one below it is which region
+    // the second venue is placed in.
+    let (mut cell, _) = cell_with(
+        true,
+        Some(arrangement()?),
+        policy(t(5), Some((&Distributed::workable(), t(5))))?,
+    )?;
+    let mut gateway = RecordingGateway::default();
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_one_opportunity(&cell);
+
+    assert_eq!(
+        report.paths.len(),
+        1,
+        "a cross-region cycle was assigned no path: {:?}",
+        report.refusals
+    );
+    let routed = &report.paths[0];
+    assert_eq!(routed.path(), ExecutionPath::MirroredInventory);
+    assert_eq!(routed.assignment.assigned().number(), 3);
+    // The half that carries the meaning: path 2 was not merely out-ranked,
+    // it was never eligible, because the composition holds no transport edge
+    // at all.
+    assert!(
+        !routed
+            .assignment
+            .eligible()
+            .contains(&ExecutionPath::CrossVenue),
+        "a cycle across two regions was eligible for the single-region path"
+    );
+    assert!(
+        routed.assignment.rationale().contains("across 2 region(s)"),
+        "the rationale should say the cycle spans two regions: {}",
+        routed.assignment.rationale()
+    );
+    // And the assignment reached the chain, so the decision is replayable
+    // rather than only present in a report the caller happens to hold.
+    let assigned: Vec<&Decision> = cell
+        .journal()
+        .entries()
+        .iter()
+        .map(|entry| &entry.decision)
+        .filter(|decision| matches!(decision, Decision::CyclePathAssigned { .. }))
+        .collect();
+    assert_eq!(assigned.len(), 1, "the assignment did not reach the chain");
+    match assigned[0] {
+        Decision::CyclePathAssigned {
+            path, path_name, ..
+        } => {
+            assert_eq!(*path, 3);
+            assert_eq!(path_name, "mirrored_inventory");
+        }
+        other => panic!("the wrong decision was matched: {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn the_same_cell_with_both_venues_at_home_is_assigned_path_two_exactly_as_before() -> Result<()> {
+    // The control for the test above, and the regression guard for every
+    // cell that has no region annotation at all — which is every deployed
+    // one. An empty `venue_regions` must leave `Cell::install_arbitrage`
+    // building precisely the map ADR 0068 shipped.
+    let (mut cell, _) = cell_with(
+        false,
+        Some(arrangement()?),
+        policy(t(5), Some((&Distributed::workable(), t(5))))?,
+    )?;
+    let report = cell.work(t(10), &mut RecordingGateway::default())?;
+    assert_one_opportunity(&cell);
+    assert_eq!(
+        report.paths.len(),
+        1,
+        "a single-region cycle was assigned no path: {:?}",
+        report.refusals
+    );
+    assert_eq!(report.paths[0].path(), ExecutionPath::CrossVenue);
+    assert!(
+        refusals_under(&report, GATE_PATH_EXTENSION).is_empty(),
+        "§33.1 names no row for path 2 and the extension refused anyway: {:?}",
+        report.refusals
+    );
+    // §33.1's table starts at path 3, so the honest record for path 2 is
+    // that the blueprint asked for nothing — which is a different fact from
+    // a check that passed, and the chain carries which.
+    let checked: Vec<(u8, bool)> = cell
+        .journal()
+        .entries()
+        .iter()
+        .filter_map(|entry| match &entry.decision {
+            Decision::PathExtensionChecked { path, has_row, .. } => Some((*path, *has_row)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(checked, vec![(2, false)]);
+    Ok(())
+}
+
+#[test]
+fn a_region_holding_nothing_cannot_sell_the_leg_it_would_have_to_sell() -> Result<()> {
+    // §31.1's SETUP is "hold asset X in BOTH regions", and this is what that
+    // line costs a region that holds nothing. Every closed mirror cycle has
+    // one object this region acquires and one it disposes of; the cell buys
+    // BTC locally, which its band permits because it is below target, and
+    // spends USDT locally, which its band does not, because a region holding
+    // zero against a target of zero is at target and §31.1's third row
+    // permits either direction only at reduced size — a size nothing in this
+    // gate can produce.
+    //
+    // The refusal is the control working. It is asserted here, under its own
+    // name, so that nobody reading `path_extension` in a refusal series
+    // takes it for a defect.
+    let (mut cell, metrics) = cell_with(
+        true,
+        Some(arrangement()?),
+        policy(t(5), Some((&Distributed::workable(), t(5))))?,
+    )?;
+    assert_eq!(
+        cell.position(&venue(), &object("USDT")),
+        Decimal::ZERO,
+        "the premise is a cell that holds nothing"
+    );
+    let mut gateway = RecordingGateway::default();
+    let report = cell.work(t(10), &mut gateway)?;
+
+    // The path was assigned — this is not the router refusing.
+    assert_eq!(report.paths.len(), 1);
+    assert_eq!(report.paths[0].path(), ExecutionPath::MirroredInventory);
+    assert!(
+        refusals_under(&report, GATE_PATH_ROUTER).is_empty(),
+        "the router refused a cycle it had a row for: {:?}",
+        report.refusals
+    );
+
+    let refused = refusals_under(&report, GATE_PATH_EXTENSION);
+    assert_eq!(
+        refused.len(),
+        1,
+        "the extension did not refuse: {refused:?}"
+    );
+    // The BTC leg is checked first and clears its band; the USDT leg is the
+    // one that does not, and the refusal names it. Without the instrument in
+    // the message an operator would have two bands and no way to tell which.
+    assert!(
+        refused[0].contains("the mirrored leg in USDT"),
+        "the refusal should name the leg that failed: {}",
+        refused[0]
+    );
+    assert!(
+        refused[0].contains("at-target row permits either direction at reduced size"),
+        "the refusal should name §31.1's row: {}",
+        refused[0]
+    );
+    // The admitting half, and the reason this refusal is evidence of a gate
+    // rather than of a gate that refuses everything. The BTC leg is checked
+    // first — mirror edges are walked in traversal order — and it cleared
+    // §33.1 in full: the reference was inside its window, the local price
+    // against it indicated a buy, and the band permitted one. Only the cash
+    // leg did not. A refusal naming BTC as well would mean nothing here had
+    // passed anything.
+    assert!(
+        !refused[0].contains("the mirrored leg in BTC"),
+        "the BTC leg should have cleared the extension: {}",
+        refused[0]
+    );
+    // The consequence, which is the point: nothing of that cycle was sent.
+    assert!(
+        gateway.placed.is_empty(),
+        "legs of a cycle the extension refused reached the venue: {:?}",
+        gateway.placed
+    );
+    // Charted under its own gate and not the router's, because the two are
+    // different findings about a cell.
+    assert_eq!(refusals_counted(&metrics, GATE_PATH_EXTENSION), 1);
+    assert_eq!(refusals_counted(&metrics, GATE_PATH_ROUTER), 0);
+    Ok(())
+}
+
+#[test]
+fn a_cross_region_cycle_at_a_cell_with_no_mirror_arrangement_is_refused_whole_by_the_router()
+-> Result<()> {
+    // Fail closed at the first of the two gates: a cell that was told a
+    // venue is abroad and given no §31.1 discipline cannot say what
+    // inventory it is meant to hold, so it cannot supply a mirror fact and
+    // §30.2 assigns nothing. The alternative — treating a missing
+    // arrangement as no constraint — would route a cross-ocean cycle under
+    // whatever row happened to be left.
+    let (mut cell, metrics) = cell_with(
+        true,
+        None,
+        policy(t(5), Some((&Distributed::workable(), t(5))))?,
+    )?;
+    let mut gateway = RecordingGateway::default();
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_one_opportunity(&cell);
+
+    assert!(
+        report.paths.is_empty(),
+        "a cycle with no mirror discipline was assigned a path: {:?}",
+        report.paths
+    );
+    let refused = refusals_under(&report, GATE_PATH_ROUTER);
+    assert_eq!(refused.len(), 1, "the router did not refuse: {refused:?}");
+    assert!(
+        refused[0].contains("no §31.1 mirror arrangement is installed"),
+        "the refusal should name what is missing: {}",
+        refused[0]
+    );
+    assert!(gateway.placed.is_empty());
+    assert_eq!(refusals_counted(&metrics, GATE_PATH_ROUTER), 1);
+    assert_eq!(
+        refusals_counted(&metrics, GATE_PATH_EXTENSION),
+        0,
+        "a cycle the router refused was also charted against the extension"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_mirror_the_centre_named_no_inventory_target_for_is_not_an_established_mirror() -> Result<()> {
+    // The tenth policy slot has no producer in this platform — the kernel's
+    // whitelist module argues why at length — so this is the state every
+    // deployed cell would be in today. §30.2's row 3 turns on the mirror
+    // being *established*, which is the centre's target plus the operator's
+    // band, and with the target absent no row of the table admits the cycle.
+    //
+    // It is refused rather than assigned a nearest row, and the message is
+    // the table's own rather than a missing-fact message, because the
+    // missing fact is upstream of the table.
+    let (mut cell, _) = cell_with(true, Some(arrangement()?), policy(t(5), None)?)?;
+    assert!(
+        cell.inventory_targets().is_none(),
+        "the premise is a payload with no tenth slot"
+    );
+    let mut gateway = RecordingGateway::default();
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_one_opportunity(&cell);
+
+    assert!(report.paths.is_empty());
+    let refused = refusals_under(&report, GATE_PATH_ROUTER);
+    assert_eq!(refused.len(), 1, "the router did not refuse: {refused:?}");
+    assert!(
+        refused[0].contains("no execution path is eligible"),
+        "the refusal should be the table's own: {}",
+        refused[0]
+    );
+    assert!(gateway.placed.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_reference_the_centre_stopped_republishing_refuses_at_the_extension_and_not_at_the_router()
+-> Result<()> {
+    // §31.1: "A stale reference can cost one side's band, never both." The
+    // window is the tenth slot's own time to live, measured from when the
+    // centre produced the fact. `Cell::inventory_targets` deliberately does
+    // not pre-filter on freshness, precisely so this arm can fire — a cell
+    // that filtered first would leave §33.1's "reference inside TTL" a check
+    // no input could reach, and would report a stale reference as a missing
+    // band.
+    let produced_at = t(5);
+    let (mut cell, metrics) = cell_with(
+        true,
+        Some(arrangement()?),
+        policy(t(5), Some((&Distributed::workable(), produced_at)))?,
+    )?;
+    // Sixty seconds is `PolicyItem::InventoryTargets::time_to_live`. One
+    // second short of it the reference still gates; at it, it does not.
+    let report = cell.work(t(64), &mut RecordingGateway::default())?;
+    assert_one_opportunity(&cell);
+    assert!(
+        refusals_under(&report, GATE_PATH_EXTENSION)
+            .iter()
+            .all(|reason| !reason.contains("stopped republishing")),
+        "a reference inside its window was read as stale: {:?}",
+        report.refusals
+    );
+
+    let (mut cell, _) = cell_with(
+        true,
+        Some(arrangement()?),
+        policy(t(5), Some((&Distributed::workable(), produced_at)))?,
+    )?;
+    let mut gateway = RecordingGateway::default();
+    let report = cell.work(t(65), &mut gateway)?;
+    assert_eq!(
+        report.paths.len(),
+        1,
+        "the router refused a cycle it had a row for: {:?}",
+        report.refusals
+    );
+    let refused = refusals_under(&report, GATE_PATH_EXTENSION);
+    assert_eq!(
+        refused.len(),
+        1,
+        "the extension did not refuse: {refused:?}"
+    );
+    assert!(
+        refused[0].contains("stopped republishing"),
+        "the refusal should name the stale reference: {}",
+        refused[0]
+    );
+    assert!(
+        refused[0].contains("the mirrored leg in BTC"),
+        "the first leg checked is the one that should be named: {}",
+        refused[0]
+    );
+    assert!(gateway.placed.is_empty());
+    assert_eq!(refusals_counted(&metrics, GATE_PATH_ROUTER), 0);
+    Ok(())
+}
+
+#[test]
+fn a_region_whose_own_price_puts_it_on_the_other_side_of_the_reference_may_not_take_the_cycle()
+-> Result<()> {
+    // §31.1's construction, at the cell: the direction a region may take is
+    // decided by its own price against the distributed reference, so two
+    // regions can never be permitted the same side. Here the reference is
+    // put *below* the local BTC mid, which permits this region only to sell
+    // BTC — and the cycle buys it. Nothing about the inventory band changed
+    // between this test and the one above; only the reference did.
+    let distributed = Distributed {
+        btc_reference: "50000",
+        ..Distributed::workable()
+    };
+    let (mut cell, _) = cell_with(
+        true,
+        Some(arrangement()?),
+        policy(t(5), Some((&distributed, t(5))))?,
+    )?;
+    let mut gateway = RecordingGateway::default();
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_one_opportunity(&cell);
+
+    assert_eq!(report.paths.len(), 1, "the router should still assign");
+    let refused = refusals_under(&report, GATE_PATH_EXTENSION);
+    assert_eq!(
+        refused.len(),
+        1,
+        "the extension did not refuse: {refused:?}"
+    );
+    assert!(
+        refused[0].contains("permits only sell"),
+        "the refusal should name the direction the reference permits: {}",
+        refused[0]
+    );
+    assert!(
+        refused[0].contains("the mirrored leg in BTC"),
+        "the refusal should name the leg: {}",
+        refused[0]
+    );
+    assert!(gateway.placed.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_region_annotation_for_a_venue_the_cell_may_not_trade_is_refused_at_installation() -> Result<()>
+{
+    // The guard that keeps §31.1 from widening anything. A region annotation
+    // says *where* a venue is and never that the cell may reach it, and this
+    // is the runtime half of that: `CellConfig::with_venue_in_region` cannot
+    // produce such an entry, but the field is `pub` and the builder is
+    // skippable, so the check is not redundant with it.
+    let mut config = CellConfig::new(CELL, REGION)
+        .with_venue(venue())
+        .with_venue_in_region(venue_two(), REGION_TWO)?;
+    // A *third* venue, named only by the annotation. The desk's own graph
+    // touches only the two above, so the older guard —
+    // `install_arbitrage` refusing a graph edge at a venue outside
+    // `config.venues` — has nothing to say about it, and this check is the
+    // only thing that does.
+    config
+        .venue_regions
+        .insert("EX".to_string(), "ap-south1".to_string());
+    // Premise: the venue really is absent from the list the cell may trade,
+    // and the two the graph reaches really are present.
+    assert!(!config.venues.contains(&VenueId::new("EX")));
+    assert!(config.venues.contains(&venue()) && config.venues.contains(&venue_two()));
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?;
+    let refusal = cell
+        .install_arbitrage(desk()?)
+        .expect_err("a region annotation cannot place a venue the cell may not trade");
+    assert_eq!(refusal.code(), "denied");
+    assert!(
+        refusal
+            .message()
+            .contains("venue EX is placed in region ap-south1"),
+        "the refusal should name the venue and the region: {}",
+        refusal.message()
+    );
+    assert!(
+        refusal.message().contains("is not one this cell may trade"),
+        "the refusal should say why: {}",
+        refusal.message()
+    );
+    // The half that proves the check admits a good configuration: the same
+    // cell without the third annotation installs.
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut good = Cell::new(
+        CellConfig::new(CELL, REGION)
+            .with_venue(venue())
+            .with_venue_in_region(venue_two(), REGION_TWO)?,
+        features,
+    )?;
+    assert!(good.install_arbitrage(desk()?).is_ok());
+    Ok(())
+}
+
+#[test]
+fn a_region_id_with_surrounding_whitespace_is_refused_rather_than_trimmed() -> Result<()> {
+    // Two region ids differing by a space are two regions to a mirror edge,
+    // so a value corrected here would be a configuration bug that survived
+    // into every later pass — a venue placed in a region the router never
+    // produces, and every cycle through it refused for a reason naming the
+    // venue rather than the typo.
+    let refusal = CellConfig::new(CELL, REGION)
+        .with_venue_in_region(venue_two(), " us-east1")
+        .expect_err("whitespace makes it a different region");
+    assert_eq!(refusal.code(), "invalid");
+    assert!(
+        refusal.message().contains("surrounding whitespace"),
+        "the refusal should say why: {}",
+        refusal.message()
+    );
+    // The half that proves it admits a good value.
+    assert!(
+        CellConfig::new(CELL, REGION)
+            .with_venue_in_region(venue_two(), REGION_TWO)
+            .is_ok()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_mirror_arrangement_naming_this_cells_own_region_is_refused_as_a_measurement_nothing_reads()
+-> Result<()> {
+    // A mirror edge is one asset in two regions and the router refuses one
+    // whose ends share a region, so a round trip recorded to the cell's own
+    // region could never be looked up. Refusing it names the configuration
+    // error instead of leaving a number that reads as a measurement.
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(CellConfig::new(CELL, REGION).with_venue(venue()), features)?;
+    let refusal = cell
+        .install_mirror(
+            MirrorArrangement::new()
+                .with_instrument(
+                    object("BTC"),
+                    MirroredInstrument::new(d("1"), d("20"), object("BTCUSDT"), d("100"))?,
+                )
+                .with_round_trip(REGION, Duration::from_millis(28))?,
+        )
+        .expect_err("a round trip to one's own region reaches no mirror edge");
+    assert_eq!(refusal.code(), "denied");
+    assert!(
+        refusal.message().contains("own region"),
+        "the refusal should say why: {}",
+        refusal.message()
+    );
+    // And an arrangement naming another region installs, so the check is not
+    // refusing everything.
+    assert!(cell.install_mirror(arrangement()?).is_ok());
+    assert!(
+        cell.install_mirror(arrangement()?).is_err(),
+        "a second arrangement would move a band under a cycle gated against the first"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_mirror_arrangement_naming_no_instrument_is_refused_at_installation() -> Result<()> {
+    // An arrangement with no instrument gates nothing, and a cell that
+    // installed one would look configured for §31.1 while refusing every
+    // cross-region cycle for a missing band. The refusal names the
+    // configuration rather than letting the first cycle report a market
+    // problem that is not one.
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(CellConfig::new(CELL, REGION).with_venue(venue()), features)?;
+    let empty = MirrorArrangement::new().with_round_trip(REGION_TWO, Duration::from_millis(28))?;
+    // Premise: it really does carry the round trip, so this is not an
+    // entirely empty value being refused for some other reason.
+    assert!(empty.round_trip(REGION_TWO).is_ok());
+    assert_eq!(empty.len(), 0);
+    let refusal = cell
+        .install_mirror(empty)
+        .expect_err("an arrangement naming no instrument gates nothing");
+    assert_eq!(refusal.code(), "invalid");
+    assert!(
+        refusal.message().contains("naming no instrument"),
+        "the refusal should say why: {}",
+        refusal.message()
+    );
+    // The half that proves it admits a good value.
+    assert!(cell.install_mirror(arrangement()?).is_ok());
+    Ok(())
+}
+
+#[test]
+fn a_cross_region_cycle_whose_remote_region_nobody_measured_a_round_trip_to_is_refused()
+-> Result<()> {
+    // `MirrorFacts::new` refuses a round trip of zero because it makes every
+    // remote quote look like it outlasts the wire, and a default here would
+    // be a number nobody measured sitting where §30.2's row 6 is decided.
+    let arrangement = MirrorArrangement::new()
+        .with_instrument(
+            object("BTC"),
+            MirroredInstrument::new(d("1"), d("20"), object("BTCUSDT"), d("100"))?,
+        )
+        .with_instrument(
+            object("USDT"),
+            MirroredInstrument::new(d("1000"), d("50000"), object("USDTUSD"), d("0.005"))?,
+        )
+        .with_round_trip("ap-south1", Duration::from_millis(120))?;
+    let (mut cell, _) = cell_with(
+        true,
+        Some(arrangement),
+        policy(t(5), Some((&Distributed::workable(), t(5))))?,
+    )?;
+    let mut gateway = RecordingGateway::default();
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_one_opportunity(&cell);
+
+    assert!(report.paths.is_empty());
+    let refused = refusals_under(&report, GATE_PATH_ROUTER);
+    assert_eq!(refused.len(), 1, "the router did not refuse: {refused:?}");
+    assert!(
+        refused[0].contains("no round trip to region us-east1"),
+        "the refusal should name the unmeasured region: {}",
+        refused[0]
+    );
+    assert!(gateway.placed.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_mirrored_instrument_with_no_local_book_is_refused_rather_than_priced_on_one_side() -> Result<()>
+{
+    // §31.1 compares this region's *own* price against the distributed
+    // reference. A cell whose book for the mirrored instrument's market is
+    // one-sided has no mid, and taking whichever side exists would compare a
+    // touch against a reference struck on a mid and read every thin moment
+    // as a dislocation.
+    let (mut cell, _) = cell_with(
+        true,
+        Some(arrangement()?),
+        policy(t(5), Some((&Distributed::workable(), t(5))))?,
+    )?;
+    // Replace the cash book with a bid-only one. The premise is that the
+    // cycle is otherwise unchanged: the BTC books are untouched, so the scan
+    // still finds it.
+    let mut one_sided = VenueState::aggregated(object("USDTUSD"), venue(), VenueStatus::Open);
+    one_sided.apply(&MarketMessage::new(
+        object("USDTUSD"),
+        Origin::new(venue(), "feed-a", 0, 9),
+        MessageBody::LevelSet {
+            side: BookSide::Bid,
+            price: d("0.9999"),
+            quantity: d("1000000"),
+            order_count: None,
+        },
+        t(2),
+        t(2),
+    ))?;
+    cell.track(one_sided);
+    let mut gateway = RecordingGateway::default();
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_one_opportunity(&cell);
+
+    assert_eq!(report.paths.len(), 1, "the router should still assign");
+    let refused = refusals_under(&report, GATE_PATH_EXTENSION);
+    assert_eq!(
+        refused.len(),
+        1,
+        "the extension did not refuse: {refused:?}"
+    );
+    assert!(
+        refused[0].contains("is not two-sided"),
+        "the refusal should name the one-sided book: {}",
+        refused[0]
+    );
+    assert!(gateway.placed.is_empty());
+    Ok(())
+}

@@ -35,12 +35,24 @@
 //! it can widen what the platform will *consider*; it cannot widen what the
 //! platform can *send*, because nothing here can produce an order.
 //!
-//! # Designed to be extended by somebody else
+//! # Designed to be extended by somebody else, and since extended
 //!
-//! §31.1 (the cross-region solve) refines [`MirrorFacts::both_sides_at_target`]
-//! into the four-row direction-gating table, and §33.1 (path extensions)
-//! adds a per-path check to the unified risk gate. Both attach to
-//! [`PathAssignment::assigned`].
+//! §31.1 (the cross-region solve) is [`crate::mirror`] and §33.1 (path
+//! extensions) is [`crate::extension`]; both attach to
+//! [`PathAssignment::assigned`], which is what this module produces.
+//!
+//! The extension did **not** land where this paragraph predicted, and the
+//! prediction is left here corrected rather than deleted, because the reason
+//! is the load-bearing part. It said §31.1 would refine
+//! [`MirrorFacts::both_sides_at_target`] into the four-row direction-gating
+//! table. It could not: `both_sides_at_target` is a claim about two regions
+//! and an edge cell can measure only one, so refining it in place would have
+//! made every cell assert a fact it cannot hold. §31.1's whole construction
+//! is that neither side needs the other's holding, so the table went beside
+//! this module rather than inside it, and what arrived here instead is
+//! [`MirrorFacts::established_mirror`] — a setup fact a cell can honestly
+//! state. The direction gating runs *after* assignment, in §33.1's
+//! extension, which is where the blueprint puts it.
 //!
 //! Three decisions exist for their benefit:
 //!
@@ -422,6 +434,7 @@ pub struct MirrorFacts {
     remote_accepts_resting: bool,
     firm_quote_window: Option<Duration>,
     round_trip: Duration,
+    established_mirror: bool,
 }
 
 impl MirrorFacts {
@@ -460,13 +473,58 @@ impl MirrorFacts {
             remote_accepts_resting,
             firm_quote_window,
             round_trip,
+            established_mirror: false,
         })
     }
 
+    /// §31.1's SETUP, as the only side that can see it says so: this
+    /// instrument is *established* as a mirror — the asset is held in both
+    /// regions under one distributed target, as a standing arrangement.
+    ///
+    /// # Why this exists beside [`Self::both_sides_at_target`] instead of
+    /// replacing it
+    ///
+    /// A cell can never measure the remote region's inventory, and setting
+    /// `both_sides_at_target` from its own book alone would be a claim about
+    /// a fact it does not hold. §31.1's construction is precisely that it
+    /// does not need to: each region gates its own direction from its own
+    /// band, and "a region below target may only buy" against "a region
+    /// above target may only sell" makes same-side trading impossible
+    /// without either side knowing the other's holding.
+    ///
+    /// So the two facts answer two different questions and both are kept.
+    /// `both_sides_at_target` is a caller that has measured both sides —
+    /// the centre could, an edge cell cannot. This is a caller saying the
+    /// mirror exists, which is a setup fact rather than a measurement, and
+    /// which is what an edge cell can honestly assert from a distributed
+    /// inventory target it holds and a band its own operator configured.
+    ///
+    /// Either one makes §30.2's row 3 eligible. Neither says the cycle may
+    /// be executed: that is §33.1's extension
+    /// ([`crate::extension::check`]), which asks §31.1's direction question
+    /// after the path is assigned, because §30.2 assigns and §33.1 gates.
+    pub const fn established_mirror(mut self, established: bool) -> Self {
+        self.established_mirror = established;
+        self
+    }
+
     /// Inventory of the mirrored asset is at target on both sides, so each
-    /// region can trade its own side independently. §30.2's path 3 row.
+    /// region can trade its own side independently. §30.2's path 3 row, in
+    /// the coarse form a caller that can see both regions supplies.
     pub const fn both_sides_at_target(&self) -> bool {
         self.both_sides_at_target
+    }
+
+    /// Whether the mirror §30.2's rows 3 and 4 turn on is in place at all,
+    /// by either of the two facts that can establish it.
+    ///
+    /// Row 4's "one side lacks inventory" is read as the negation of this,
+    /// and deliberately not as a finer statement about where in its band
+    /// each side sits: at assignment time the question is whether the mirror
+    /// exists to be traded, and where the local side sits inside its band is
+    /// §31.1's question, asked by §33.1's extension once a path is assigned.
+    pub const fn mirror_is_in_place(&self) -> bool {
+        self.both_sides_at_target || self.established_mirror
     }
 
     /// A local instrument that offsets the exposure is available now. §30.2's
@@ -833,7 +891,7 @@ pub fn eligible_paths(
                 .iter()
                 .all(|index| facts.get(index).is_some_and(predicate))
         };
-        if all(&MirrorFacts::both_sides_at_target) {
+        if all(&MirrorFacts::mirror_is_in_place) {
             eligible.insert(ExecutionPath::MirroredInventory);
         }
         // §30.2's row 4 is "one side lacks inventory, hedge available
@@ -841,7 +899,7 @@ pub fn eligible_paths(
         // and is kept: without it a cycle with inventory on both sides and a
         // hedge to hand would be eligible for a path that exists to cover
         // the case where inventory is missing.
-        if !all(&MirrorFacts::both_sides_at_target) && all(&MirrorFacts::local_hedge_available) {
+        if !all(&MirrorFacts::mirror_is_in_place) && all(&MirrorFacts::local_hedge_available) {
             eligible.insert(ExecutionPath::HedgedBridging);
         }
         if all(&MirrorFacts::remote_accepts_resting) {
@@ -1471,6 +1529,57 @@ mod tests {
             refusal.message()
         );
         assert!(RegionId::new("us-east").is_ok());
+    }
+
+    #[test]
+    fn a_mirror_a_cell_can_only_say_is_established_is_enough_for_row_three_and_shuts_out_row_four()
+    {
+        // §31.1's SETUP is a standing arrangement, and an edge cell can say
+        // it exists without measuring the remote region's book — which it
+        // never can. The failure this prevents is the one that made rows 3
+        // to 6 unreachable from a cell: the only fact that opened row 3 was
+        // a claim about both regions, so a cell either lied or refused every
+        // cross-region cycle.
+        let composition = mirrored();
+        let established = facts_for(
+            &composition,
+            MirrorFacts::new(false, true, false, None, Duration::from_millis(28))
+                .expect("a measured round trip with a local hedge")
+                .established_mirror(true),
+        );
+        // Premise: the coarse fact really is false, so this is not the
+        // both-sides-at-target arm passing under a new name.
+        assert!(
+            established
+                .values()
+                .all(|fact| !fact.both_sides_at_target()),
+            "the premise is that no side was measured"
+        );
+        let eligible = eligible_paths(&composition, &established).expect("the cycle routes");
+        assert!(eligible.contains(&ExecutionPath::MirroredInventory));
+        assert!(
+            !eligible.contains(&ExecutionPath::HedgedBridging),
+            "row 4 covers a mirror that is not in place, and this one is: {eligible:?}"
+        );
+
+        // And with the mirror not established, the same facts fall to row 4,
+        // so the new fact discriminates rather than merely widening.
+        let unestablished = facts_for(
+            &composition,
+            MirrorFacts::new(false, true, false, None, Duration::from_millis(28))
+                .expect("valid facts"),
+        );
+        let eligible = eligible_paths(&composition, &unestablished).expect("the cycle routes");
+        assert!(!eligible.contains(&ExecutionPath::MirroredInventory));
+        assert!(eligible.contains(&ExecutionPath::HedgedBridging));
+    }
+
+    #[test]
+    fn mirror_facts_default_to_an_unestablished_mirror_so_a_caller_must_say_so() {
+        // Fail closed: a caller that never mentions the mirror gets no row 3.
+        let fact = bare_facts();
+        assert!(!fact.mirror_is_in_place());
+        assert!(fact.established_mirror(true).mirror_is_in_place());
     }
 
     #[test]
