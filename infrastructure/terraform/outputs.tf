@@ -353,3 +353,25 @@ output "image_bake" {
     builder_tag     = module.image_bake[0].builder_tag
   }
 }
+
+output "public_edge" {
+  description = <<-EOT
+    The customer-facing edge (§40.5, §40.14): whether it exists at all, the
+    global address its hostnames must resolve to, the Cloud Armor policy its
+    backends are attached to, and the bucket the static shell is published to.
+
+    `exists` is false in every environment and the other fields are null,
+    because no environment declares a hostname. Surfaced anyway, and named
+    `exists` rather than left to be inferred from a null address: "there is no
+    public edge here" is a fact an operator should be able to read, and an
+    empty output reads identically to an apply that failed halfway.
+  EOT
+
+  value = {
+    exists          = module.public_edge.enabled
+    address         = module.public_edge.address
+    hostnames       = module.public_edge.hostnames
+    security_policy = module.public_edge.security_policy
+    shell_bucket    = module.public_edge.static_shell_bucket
+  }
+}

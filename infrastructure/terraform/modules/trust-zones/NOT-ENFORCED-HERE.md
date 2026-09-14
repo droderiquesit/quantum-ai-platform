@@ -8,7 +8,7 @@ worse than a gap somebody is tracking.
 
 Read it before citing this module as evidence for anything.
 
-## Wired, and not validated
+## Wired, and now planned — and the planning found two things
 
 The module is instantiated from `infrastructure/terraform/main.tf` under ADR
 0024, with the zones, paths, allowlist and ingress read from each
@@ -16,15 +16,50 @@ environment's tfvars. Every Cloud Run workload in the catalogue attaches to
 its zone's subnet and carries its zone's network tag on its VPC interface, so
 the rules here bind those instances.
 
-`terraform` is not installed in the environment this was written in, so
-`terraform fmt -check`, `terraform validate` and `terraform plan` have **not
-been run** against it, before or after the wiring. The first person with a
-Terraform binary runs all three before trusting any refusal below, and starts
-with the `lifecycle.precondition` blocks in `main.tf`: those are where the
-zone model is enforced, and an unrun precondition is an assertion about an
-assertion. The plan to show is the two-sided one the infrastructure rules
-require — an `ibm-quantum` entry on any zone but `optimisation` refused, then
-the same entry on `optimisation` admitted.
+This section said, until 2026-09-14, that `terraform` was not installed where
+the module was written and that `fmt -check`, `validate` and `plan` had
+therefore **never been run** against it — so every `lifecycle.precondition`
+below was an assertion about an assertion. All three have now been run.
+`tests/zone-model.tftest.hcl` is a real plan of this module against a mocked
+provider: it needs no credential, reaches no project, creates nothing, and it
+exercises every precondition here from both sides, which is what the
+infrastructure rules ask for and what could not be produced against a torn-down
+project any other way. `terraform test` from this directory runs it.
+
+Two findings, because a precondition nobody has run is a precondition nobody
+has tested:
+
+  * **The Cloud NAT precondition could not fire in the case it was written
+    for.** It refuses a zone that declares external egress from a region other
+    than this module's, and both NAT resources counted on `local.nat_zones` —
+    the egress zones *narrowed to this region*. One out-of-region zone empties
+    that list, `count` goes to zero, and a precondition on a resource that is
+    never planned is never evaluated: the zone would have received its egress
+    firewall rules, no translation at all, and the message explaining exactly
+    that would never have been printed. It fired only when a second, in-region
+    zone happened to be declared beside it. Both counts now read
+    `local.egress_zones`, so the resource is planned whenever any zone asks
+    for egress and the precondition gets to speak.
+  * **A sibling module's variable validation could not run at all.**
+    `modules/network`'s `console_egress_cidr` guard handed a null to `split`,
+    and Terraform evaluates both operands of `||`. That is not this module,
+    but it is the same lesson and it is why this section changed: the value is
+    null in three of the four environments, so `terraform plan` was impossible
+    in all three, and a Rust acceptance test asserting the rule "fires and
+    admits" passed throughout because it proved the rule by re-implementing
+    the arithmetic in Rust. A mirror of an expression is not the expression.
+
+The two-sided pair the infrastructure rules name specifically — an
+`ibm-quantum` entry on any zone but `optimisation` refused, then the same
+entry on `optimisation` admitted — is
+`an_ibm_destination_on_cognition_is_refused` and
+`an_ibm_destination_on_optimisation_is_admitted` in that file.
+
+What a plan still cannot prove is an apply. Nothing in this module has been
+created in any project; the dev environment was torn down on 2026-09-13 and
+`docs/DELIVERY-STATUS.md` is the register of what remains. A mocked plan says
+the configuration is coherent and the refusals fire. It does not say Google
+accepted a single one of these resources.
 
 ## Three zones hold workloads; ten hold nothing
 

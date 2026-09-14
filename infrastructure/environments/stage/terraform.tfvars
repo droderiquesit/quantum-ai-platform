@@ -111,3 +111,8 @@ enable_security_command_center = false
 
 # The only repository whose pipeline may deploy into this project.
 github_repository = "droderiquesit/quantum-ai-platform"
+
+# No public edge. See dev/terraform.tfvars for why an absent Cloud Armor
+# policy, load balancer and CDN is a decision here rather than an omission:
+# there is no customer surface deployed to put behind one, and an edge in
+# front of nothing is a public address nobody opened on purpose.

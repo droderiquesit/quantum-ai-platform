@@ -8,7 +8,29 @@ terraform fmt -check -recursive .
 terraform validate                       # needs `terraform init -backend=false` first
 terraform fmt -check -recursive environments   # the tfvars; run from infrastructure/
 make infra                               # all three of the above, from the repo root
+terraform test                           # the gates, planned; from each directory below
 ```
+
+**`terraform test` is the fourth gate and `make infra` does not run it.** Say
+so out loud because the gap is the kind that gets missed: `ci.yml`'s
+infrastructure job discovers every `*.tftest.hcl` under `infrastructure/` and
+runs it, and the Makefile's `infra` target does not. Four directories hold one
+today — `terraform/`, `terraform/modules/{network,public-edge,trust-zones}` —
+and each needs its own `terraform init -backend=false` first.
+
+What it buys is the thing the other three cannot give. `validate` checks that
+the configuration parses and that its references resolve; it evaluates no
+`validation` block and no `lifecycle.precondition`, which is where every
+safety refusal here lives. Those were asserted only as text until 2026-09-14,
+and text cannot tell a rule that works from a rule that cannot run: the prefix
+check on `console_egress_cidr` read correctly, had a Rust test asserting it
+"both fires and admits", and killed the plan outright by handing a null to
+`split` — in the three environments where the value is null, which is three of
+the four. See ADR 0069.
+
+Every harness mocks its providers and runs `command = plan`, so none needs a
+credential, reaches a project or creates anything — which is the only way to
+plan a configuration whose environments have been torn down.
 
 The third is a separate command because the first two do not reach the tfvars:
 `fmt` above is scoped to `terraform/`, and `validate` checks the configuration
@@ -40,6 +62,7 @@ Rules: `.claude/rules/domains/infrastructure.md`.
 | `terraform/modules/execution-node` | One Compute Engine machine per region under systemd — no external address, no container runtime, shadow mode by default |
 | `terraform/modules/egress-proxy` | The TLS-terminating proxy, rendered from `egress/envoy.yaml` as a loopback sidecar and as the node's unit |
 | `terraform/modules/trust-zones` | The thirteen zones, default deny in both directions; the management zone may reach GitHub and nothing else outside the VPC |
+| `terraform/modules/public-edge` | Cloud Armor, the global HTTPS load balancer, Cloud CDN (§40.5, §40.14). Creates nothing in any environment — `hostnames` is empty in all four. Its content is refusals: a backend may front only `public-edge` or `application-identity`, and there is no listener on port 80. `README.md` beside it says what it does not hold |
 | `environments/<env>/terraform.tfvars` | dev, test, stage, prod — the only per-environment inputs. There is no `images.tfvars` any more: what an environment serves is `gitops/envs/<env>/kustomization.yaml` |
 | `gitops/` | ADR 0036's delivery path: vendored controller manifests under `bootstrap/`, one `RunService` per catalogue workload under `envs/<env>/`, the Argo CD project and Applications, the Kargo chain — `gitops/README.md` |
 | `egress/` | The one Envoy bootstrap and the vendored-images list the pipeline mirrors and attests — ten images now, eight of them the control plane's |
@@ -81,7 +104,14 @@ refusing a `qip-*` image in any Pod spec. Terraform's provider set is still
   found. It absorbed the missing-infrastructure register on 2026-09-07,
   and this line pointed at the deleted path until 2026-09-08.
 - `autonomy_ceiling` may not name a live level. `variables.tf` refuses all
-  three at plan time; that validation is load-bearing and mutation-tested.
+  three at plan time; that validation is load-bearing and mutation-tested, and
+  since 2026-09-14 it is also *planned*: `terraform/tests/paper-boundary.tftest.hcl`
+  runs a plan per live rung — one each, because
+  `contains("autonomous_live")` is true of `"limited_autonomous_live"` and a
+  single case can pass with two of the three admitted — and plans
+  `paper_trading` and `observation` to the end, asserting the `live_capable`
+  output stays false. That is the admitting half, which no evidence for this
+  gate had before.
 - **`modules/execution-node/templates/startup.sh.tftpl` runs as root on the
   node and `templatefile` escapes nothing.** Every `${...}` in it is a
   substitution into a systemd `EnvironmentFile`, a unit file, a YAML label
@@ -94,6 +124,9 @@ refusing a `qip-*` image in any Pod spec. Terraform's provider set is still
   Adding a substitution without adding its validation reopens the hole.
 - No service-account keys. Workload Identity Federation only.
 - A validation change needs a real plan proving the gate fires on a bad value
-  **and admits a good one**.
+  **and admits a good one**. Add the pair to the module's harness; if the
+  module has none, `terraform/modules/network/tests/` is the smallest example
+  to copy. `qip-acceptance`'s `terraform_plan` suite fails a harness that
+  proves only one of the two halves.
 - `.terraform/` and `*.tfstate` are denied to reads by `.claude/settings.json`.
   They hold resource topology and secret references.

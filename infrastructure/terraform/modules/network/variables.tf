@@ -36,7 +36,21 @@ variable "console_egress_cidr" {
     # prefix cannot be read out of a value the syntax check above has not
     # already proven well-formed — `split` on a malformed string would be the
     # error the reader sees instead of the one they caused.
-    condition     = var.console_egress_cidr == null || tonumber(split("/", var.console_egress_cidr)[1]) <= 26
+    #
+    # The `try` is the whole reason this line is worth reading twice. Terraform
+    # evaluates *both* operands of `||`, so the guard on the left does not stop
+    # `split` being handed the null on the right, and `split` refuses a null
+    # argument with an error the validation cannot catch: the plan dies on
+    # "Invalid value for \"str\" parameter: argument must not be null" before
+    # any error_message here is reached. This variable is null by default and
+    # null in three of the four environments, so the shape below made
+    # `terraform plan` impossible in test, stage and prod — a gate that refused
+    # every good value and could never have reported the bad one it was written
+    # for. It went unseen because the module had never been planned; the first
+    # plan ever run against it found this in its first second. `try` returning
+    # false for a value the syntax check above has already refused keeps the
+    # malformed case failing on the message it earned.
+    condition     = var.console_egress_cidr == null || try(tonumber(split("/", var.console_egress_cidr)[1]) <= 26, false)
     error_message = "console_egress_cidr must be a /26 or larger (a prefix of /26 or lower). Google refuses direct VPC egress on anything smaller, and reserves addresses in it as instances scale."
   }
 }

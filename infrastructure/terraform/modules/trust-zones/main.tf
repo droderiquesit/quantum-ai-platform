@@ -491,8 +491,21 @@ resource "google_compute_firewall" "public_ingress" {
 # translation and therefore no route out at all — which is a second, separate
 # statement from the firewall rules above, and the one that still holds if a
 # rule is widened by hand.
+#
+# Counted on `egress_zones` — every zone that declared an allowlist entry —
+# rather than on `nat_zones`, which is that list narrowed to this region. The
+# difference is the whole of the precondition below, and counting on the
+# narrowed list made that precondition unable to fire in the one case it was
+# written for. A single zone declaring egress from another region empties
+# `nat_zones`, `count` goes to zero, the resource is never planned, and a
+# precondition on a resource that does not exist is never evaluated: the zone
+# would have got its egress firewall rules, no translation at all, and the
+# error message explaining exactly that would never have been printed. It
+# fired when a second, in-region zone happened to be declared beside it and
+# not otherwise — a control that works only when it is not the only thing
+# needed. Found by the first plan ever run against this module.
 resource "google_compute_router" "egress" {
-  count = length(local.nat_zones) > 0 ? 1 : 0
+  count = length(local.egress_zones) > 0 ? 1 : 0
 
   project = var.project_id
   name    = "qip-${var.environment}-tz-router"
@@ -501,7 +514,7 @@ resource "google_compute_router" "egress" {
 }
 
 resource "google_compute_router_nat" "egress" {
-  count = length(local.nat_zones) > 0 ? 1 : 0
+  count = length(local.egress_zones) > 0 ? 1 : 0
 
   project = var.project_id
   name    = "qip-${var.environment}-tz-nat"

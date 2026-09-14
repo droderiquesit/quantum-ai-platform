@@ -944,3 +944,34 @@ module "identity" {
   authorized_domains = var.identity_authorized_domains
   mfa_state          = var.identity_mfa_state
 }
+
+# The public edge (blueprint §40.5, §40.14, §45.1): Cloud Armor, the global
+# HTTPS load balancer, Cloud CDN for the static shell.
+#
+# Instantiated unconditionally and creating nothing, because `public_edge`
+# defaults to no hostnames and no environment declares one. That is the shape
+# `execution_nodes` already has: the configuration exists, is planned, and is
+# empty until somebody decides otherwise — rather than being absent, which is
+# the state that produces a module written under time pressure on the day a
+# customer surface is first deployed.
+#
+# The module is where §40.5's load-bearing sentence is enforced: customer
+# traffic and trading traffic never share a load balancer. A backend naming
+# any zone but `public-edge` or `application-identity` is refused at plan time
+# by a precondition inside the module, not narrowed by a review comment here.
+module "public_edge" {
+  source = "./modules/public-edge"
+
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
+
+  project_id  = var.project_id
+  environment = var.environment
+  region      = var.region
+  labels      = local.labels
+
+  hostnames                      = var.public_edge.hostnames
+  application_backend            = var.public_edge.application_backend
+  rate_limit_requests_per_minute = var.public_edge.rate_limit_requests_per_minute
+  permitted_regions              = var.public_edge.permitted_regions
+}

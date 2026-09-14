@@ -1147,3 +1147,62 @@ variable "image_bake_subnet_cidr" {
   type    = string
   default = null
 }
+
+# --- The public edge (blueprint §40.5, §40.14) --------------------------------
+
+variable "public_edge" {
+  description = <<-EOT
+    The customer-facing edge: Cloud Armor, the global HTTPS load balancer and
+    Cloud CDN, and the hostnames they answer on.
+
+    No hostnames by default, and no hostnames means `modules/public-edge`
+    creates nothing at all — no address, no certificate, no forwarding rule,
+    no policy and no bucket. Every environment leaves it that way, because no
+    customer surface is deployed anywhere: an edge created because a variable
+    had a default is a public address on the internet that nobody decided to
+    open, and it would be reachable before anything was behind it.
+
+    An object rather than four loose variables so that the decision is one
+    thing a reviewer reads in one place. Its default is the off state rather
+    than `null`, deliberately: a null here would make every reference to it a
+    guarded dereference, and this repository has already shipped one guard
+    that Terraform evaluated through anyway — see the note on
+    `console_egress_cidr` in `modules/network/variables.tf`.
+
+      * `hostnames` is the switch and the certificate's domain list. Google
+        will not issue until each name resolves to the address the module
+        allocates, so a name here is a commitment to a DNS record.
+      * `application_backend` names the one Cloud Run service the edge may
+        proxy to and the trust zone the catalogue places it in. The module
+        refuses, at plan time, any zone but the two §46.1 marks
+        client-reachable. Omit it for an edge that serves only the static
+        shell.
+      * `rate_limit_requests_per_minute` is §40.14's rate limit, per client
+        address.
+      * `permitted_regions` is §40.14's geographic policy, as ISO 3166-1
+        alpha-2 codes. Empty means geography is not a control here, which is
+        an honester state than an allowlist somebody guessed.
+  EOT
+
+  type = object({
+    hostnames = optional(list(string), [])
+    application_backend = optional(object({
+      service_name = string
+      trust_zone   = string
+    }))
+    rate_limit_requests_per_minute = optional(number, 600)
+    permitted_regions              = optional(list(string), [])
+  })
+
+  default = {}
+
+  validation {
+    # The one rule this root holds rather than the module: an edge with a
+    # backend and no hostnames is a backend service, a network endpoint group
+    # and a security policy that no listener reaches. The module would create
+    # none of them and the declaration would read, in the tfvars, as an API
+    # that had been published.
+    condition     = var.public_edge.application_backend == null || length(var.public_edge.hostnames) > 0
+    error_message = "public_edge names an application backend and no hostnames. Nothing would be created and the tfvars would read as though the API were published. Declare the hostnames the edge answers on, or remove the backend."
+  }
+}

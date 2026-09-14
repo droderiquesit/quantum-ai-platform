@@ -322,11 +322,55 @@ jobs:
         run: |
           terraform -chdir=infrastructure/terraform init -backend=false
           terraform -chdir=infrastructure/terraform validate
+      # The gates, planned.
+      #
+      # `validate` checks that the configuration parses and that its references
+      # resolve. It does not evaluate a single `validation` block or a single
+      # `lifecycle.precondition`, which is where every safety refusal in this
+      # repository lives — the autonomy ceiling, the zone model, the public
+      # edge's refusal to front a trading zone. Those were asserted only as
+      # text until 2026-09-14, by Rust tests reading the HCL, and text cannot
+      # tell a rule that works from a rule that cannot run: `modules/network`'s
+      # prefix check on `console_egress_cidr` read correctly, had a Rust test
+      # asserting it both fires and admits, and killed the plan outright by
+      # handing a null to `split`. The variable is null in three of the four
+      # environments, so `terraform plan` was impossible in all three and
+      # nothing noticed, because nothing planned.
+      #
+      # `terraform test` plans. Every harness mocks its provider, so this needs
+      # no credential, reaches no project and creates nothing — which is the
+      # only way to plan a configuration whose environments have been torn
+      # down. `qip-acceptance`'s `terraform_plan` suite holds the other half:
+      # that each harness proves a refusal *and* an admission, because a gate
+      # proven only to refuse may refuse everything.
+      - name: plan the gates
+        run: |
+          set -euo pipefail
+          # `terraform test` runs from the configuration's directory and finds
+          # its harnesses under `tests/`, so the module root is what -chdir
+          # needs — not the directory the file was found in.
+          directories=$(find infrastructure -name '*.tftest.hcl' -printf '%h\n' | sed 's|/tests$||' | sort -u)
+          if [ -z "$directories" ]; then
+            echo "no terraform test harness was found under infrastructure/." >&2
+            echo "Every variable validation and lifecycle precondition in this repository is" >&2
+            echo "asserted by a plan in a *.tftest.hcl file; with none present, the refusals" >&2
+            echo "are checked only as text and a rule that cannot run reads exactly like one" >&2
+            echo "that works." >&2
+            exit 1
+          fi
+          for directory in $directories; do
+            echo "::group::terraform test $directory"
+            terraform -chdir="$directory" init -backend=false -input=false
+            terraform -chdir="$directory" test
+            echo "::endgroup::"
+          done
       # `validate` accepts a module using a provider it never declared; only
-      # `plan` refuses it, and `plan` needs credentials CI does not have. So
-      # that class of error passes here and fails on the day somebody applies
-      # — which is exactly what happened with `modules/ai` and `google-beta`.
-      # This is the static check that closes it.
+      # `plan` refuses it, and a plan of the whole root against real providers
+      # needs credentials CI does not have. The mocked plans above declare the
+      # providers they mock, so they do not close this either. That class of
+      # error passes here and fails on the day somebody applies — which is
+      # exactly what happened with `modules/ai` and `google-beta`. This is the
+      # static check that closes it.
       - name: provider declarations
         run: ./scripts/check-terraform-providers.sh
 
