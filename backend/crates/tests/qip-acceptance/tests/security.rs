@@ -2267,15 +2267,6 @@ fn assigns_field(body: &str, field: &str) -> bool {
     false
 }
 
-/// The types a family finding could reach a weight through, and the fields on
-/// them that *are* a weight.
-///
-/// `Platform` holds the review; `CentralPlane` holds the envelopes and the
-/// allocator's proposals; `StrategyFactory` holds the population the review
-/// reads. A method that moved capital from a family finding would have to be
-/// on one of the three.
-const FAMILY_WEIGHT_HOLDERS: [&str; 3] = ["Platform", "CentralPlane", "StrategyFactory"];
-
 /// Fields whose contents are a weight: the allocator's proposal book, the
 /// issued envelopes, the grant ledger, and the plane that owns all three.
 /// Found with
@@ -2302,30 +2293,14 @@ const WEIGHT_WRITERS: [&str; 4] = [
 /// `get_mut` and `entry` are here because neither writes anything by itself
 /// and both hand out the thing that does — `self.proposals.get_mut(id).weight
 /// = w` assigns no field of `self` at all, which is exactly how it walked
-/// past the scan this replaces.
+/// past the first version of this scan.
 const WEIGHT_FIELD_MUTATORS: [&str; 7] = [
     "insert", "remove", "get_mut", "entry", "clear", "retain", "extend",
 ];
 
-/// Type names that make a method a family method whatever it is called.
-///
-/// The scan this replaces examined a method only when its own name contained
-/// `famil` or its parameters named `StrategyFamily`, so
-/// `fn apply_misallocation(&mut self, finding: &MisallocationFinding)` was
-/// never looked at — the one signature the lane's own ADR predicts somebody
-/// will write. Matched as whole identifiers: `Misallocation` is a prefix of
-/// `MisallocationFinding` and a substring scan could not tell a type from a
-/// type that merely starts the same way.
-const FAMILY_FINDING_TYPES: [&str; 4] = [
-    "StrategyFamily",
-    "Misallocation",
-    "MisallocationFinding",
-    "FamilyStanding",
-];
-
 /// Every type `family_review` is permitted to export, by name.
 ///
-/// A deny-list of `Decimal` and `Money` was the previous rule, and
+/// A deny-list of `Decimal` and `Money` was the first rule, and
 /// `pub fn family_cap(…) -> FamilyWeight` — a newtype over `Decimal` — passes
 /// it. There is no way to tell from a signature that a name is a newtype over
 /// money, so the list is inverted: the return types this module may name are
@@ -2333,13 +2308,25 @@ const FAMILY_FINDING_TYPES: [&str; 4] = [
 /// deliberately. The same reviewed-exception shape as
 /// [`CONSERVATIVE_DEFAULT_SITES`].
 ///
-/// `f64` is deliberately absent. ADR 0064's guarantee is that the *finding*
-/// carries no number and that no exported function hands a caller one to size
-/// with; `FamilyStanding::deflated_excess` is a public `f64` field and is the
-/// stated exception, because the magnitude has to live somewhere a person can
-/// read and the ADR puts it on the measurement rather than the finding. A
-/// *function* returning a bare number is the next step from there and is the
-/// one this refuses.
+/// **This list bounds the name in return position and nothing beyond it, and
+/// the next person adding a type needs to know that before they add one.**
+/// `FamilyStanding` is permitted and carries a public `f64`
+/// `deflated_excess`, so `pub fn family_cap(&self) -> FamilyStanding` passes
+/// this check and a caller reads the field and sizes with it. That is
+/// accepted rather than closed, for a reason and at a stated cost. The reason
+/// is that `family_review::standings` — the module's whole point — already
+/// returns `BTreeMap<String, FamilyStanding>`, so every `FamilyStanding` a
+/// function here could hand out is a number the module publishes anyway; a
+/// transitive rule would have to forbid the measurement itself, and a
+/// magnitude nobody can read is not a measurement. The cost is that this list
+/// cannot answer "can a caller obtain a number from this module" — it can,
+/// deliberately — only "does this module hand out a number that is *shaped*
+/// like a multiplier", which is `Decimal`, `Money`, a newtype over either, or
+/// a bare `f64`. What stops a number reaching a weight is
+/// [`every_shipped_function_that_moves_a_capital_weight_is_one_of_the_reviewed_ones`]
+/// and the review it forces, not this array. Adding a type here that carries
+/// a `Decimal` field is therefore a real change of posture and belongs in ADR
+/// 0064, not in a commit that was making a red test green.
 const FAMILY_REVIEW_RETURN_TYPES: [&str; 7] = [
     "BTreeMap",
     "String",
@@ -2430,14 +2417,8 @@ fn calls_a_weight_writer(body: &str) -> Option<String> {
 
 /// How `body` moves a weight, if it does.
 ///
-/// Three shapes, and only the first was detected before `dbc1ff5`: the field
-/// reassigned outright, a mutating method called on the field, and a
-/// weight-writing method called on anything. A probe added during review —
-/// `Platform::discount_family` calling `self.central.set_proposal(existing)`,
-/// which is the exact call ADR 0064's module doc names as the allocator's
-/// reachable writer — passed the old scan. `cargo test -p qip-acceptance
-/// --test security no_code_path_in_the_kernel_moves` printed
-/// `test result: ok. 1 passed` with it in the tree.
+/// Three shapes: the field reassigned outright, a mutating method called on
+/// the field, and a weight-writing method called on anything.
 fn writes_a_weight(body: &str) -> Option<String> {
     let body = code_only(body);
     for field in FAMILY_WEIGHT_FIELDS {
@@ -2451,33 +2432,115 @@ fn writes_a_weight(body: &str) -> Option<String> {
     calls_a_weight_writer(&body).map(|writer| format!("calls `{writer}(…)`"))
 }
 
-/// Whether a method is one this scan examines at all.
+/// Every `fn` in `code` that has a body, as `(name, body)`, innermost
+/// included.
 ///
-/// Either half is enough: the name, or a family or finding type anywhere in
-/// the parameter list. Dropping the name half entirely was the alternative
-/// and would have been worse — a method that takes a `&str` family name and
-/// is called `defund_family` names no type at all.
-fn names_a_family_or_finding(name: &str, params: &str) -> bool {
-    let lowered = name.to_lowercase();
-    if lowered.contains("famil") || lowered.contains("misalloc") || lowered.contains("standing") {
-        return true;
-    }
-    let bytes = params.as_bytes();
+/// `code` must already have been through [`code_only`], so that a brace in a
+/// comment or a string cannot end a body early.
+///
+/// The walk resumes *inside* each body it finds, so a `fn` nested in a `fn`
+/// is reported as well as the one containing it. Double attribution is the
+/// safe direction here: the caller compares what it finds against a reviewed
+/// list, so an extra entry is a review to be done and a missing one is a hole.
+fn functions_with_bodies(code: &str) -> Vec<(String, String)> {
+    let bytes = code.as_bytes();
+    let mut found = Vec::new();
     let mut index = 0usize;
     while index < bytes.len() {
-        if is_identifier_char(bytes[index] as char) {
-            let start = index;
-            while index < bytes.len() && is_identifier_char(bytes[index] as char) {
-                index += 1;
-            }
-            if FAMILY_FINDING_TYPES.contains(&&params[start..index]) {
-                return true;
-            }
-        } else {
+        if !is_identifier_char(bytes[index] as char) {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len() && is_identifier_char(bytes[index] as char) {
             index += 1;
         }
+        if &code[start..index] != "fn" {
+            continue;
+        }
+        let mut cursor = index;
+        while cursor < bytes.len() && (bytes[cursor] as char).is_ascii_whitespace() {
+            cursor += 1;
+        }
+        // `fn(&str) -> bool` is a function *type* and names nothing.
+        if cursor >= bytes.len() || !is_identifier_char(bytes[cursor] as char) {
+            continue;
+        }
+        let name_start = cursor;
+        while cursor < bytes.len() && is_identifier_char(bytes[cursor] as char) {
+            cursor += 1;
+        }
+        let name = code[name_start..cursor].to_string();
+        // Forward to the body's opening brace, or to the `;` that says there
+        // is no body. Depth-counted over `(` and `[` so that the `;` in
+        // `buf: [u8; 32]` is not read as a declaration, which would attribute
+        // the *next* method's body to this one.
+        let mut depth = 0usize;
+        let mut open = None;
+        while cursor < bytes.len() {
+            match bytes[cursor] {
+                b'(' | b'[' => {
+                    depth += 1;
+                    cursor += 1;
+                }
+                b')' | b']' => {
+                    depth = depth.saturating_sub(1);
+                    cursor += 1;
+                }
+                b'{' if depth == 0 => {
+                    open = Some(cursor);
+                    break;
+                }
+                b';' if depth == 0 => break,
+                _ => cursor = next_lexical_unit(bytes, cursor).max(cursor + 1),
+            }
+        }
+        let Some(open) = open else {
+            index = cursor.max(index);
+            continue;
+        };
+        if let Some(body) = bracketed(code, open, b'{', b'}') {
+            found.push((name, body.to_string()));
+        }
+        index = open + 1;
     }
-    false
+    found
+}
+
+/// Every shipped function in the workspace whose body moves a weight, as
+/// `(path under backend/crates, function name, how)`, with the number of
+/// files the walk read.
+fn weight_moving_functions() -> (Vec<(String, String, String)>, usize) {
+    let mut sites = Vec::new();
+    let mut scanned = 0usize;
+    for file in files_with_extension("backend/crates", "rs") {
+        if file
+            .components()
+            .any(|component| component.as_os_str() == "tests")
+        {
+            continue;
+        }
+        let content = std::fs::read_to_string(&file).expect("readable source");
+        let shipped = match content.find("#[cfg(test)]") {
+            Some(cut) => &content[..cut],
+            None => &content[..],
+        };
+        scanned += 1;
+        let relative = file
+            .strip_prefix(repository_root().join("backend/crates"))
+            .expect("under backend/crates")
+            .to_string_lossy()
+            .to_string();
+        let code = code_only(shipped);
+        for (name, body) in functions_with_bodies(&code) {
+            if let Some(how) = writes_a_weight(&body) {
+                sites.push((relative.clone(), name, how));
+            }
+        }
+    }
+    sites.sort();
+    sites.dedup();
+    (sites, scanned)
 }
 
 /// The type named in `signature`'s return position that
@@ -2521,9 +2584,9 @@ fn returns_an_unreviewed_type(signature: &str) -> Option<String> {
 /// Bodies [`writes_a_weight`] must flag, and the shape each one is.
 ///
 /// The positive controls. Every one of these is a mutation a reviewer
-/// demonstrated by execution against the scan this replaces; three of the
-/// four went undetected. Asserted inside the test so that a tokeniser which
-/// stops matching fails loudly rather than passing on an empty search.
+/// demonstrated by execution against an earlier version of this scan; three
+/// of the four went undetected. Asserted inside the test so that a tokeniser
+/// which stops matching fails loudly rather than passing on an empty search.
 const WEIGHT_WRITING_BODIES: [(&str, &str); 5] = [
     (
         "{ self.central.set_proposal(existing); }",
@@ -2565,29 +2628,43 @@ const INERT_BODIES: [(&str, &str); 3] = [
     ),
 ];
 
-/// Signatures [`names_a_family_or_finding`] must and must not examine.
-const EXAMINATION_PROBES: [(&str, &str, bool); 5] = [
+/// Source [`functions_with_bodies`] must decompose, and the names it must
+/// report for each.
+///
+/// The function walk is the whole precondition of the reviewed-site scan: a
+/// walk that missed a shape would report no site inside it and the absence
+/// would read as a clean tree. Rows two to four are the shapes that break a
+/// naive "find the next `{`" — a generic list, a `;` inside an array type,
+/// and an `Fn(..)` bound whose parentheses arrive before the argument list.
+/// Row three's array is in the **return** position and not only in the
+/// parameter list, and that is the whole of what makes it a control: with the
+/// array type only in the parameters, the `;` sits inside the argument
+/// list's own parentheses, so deleting the `[`/`]` half of the depth count
+/// leaves the probe passing and the detector broken. It was written that
+/// weaker way first and the mutation did not fire. Row five is a nested `fn`,
+/// which must yield both. Rows
+/// six and seven are the negatives: a trait method with no body, and a
+/// function *type*, neither of which is a site at all.
+const FUNCTION_WALK_PROBES: [(&str, &[&str]); 7] = [
+    ("fn plain() { let x = 1; }", &["plain"]),
     (
-        "review_family_allocation",
-        "&mut self, now: Timestamp",
-        true,
+        "fn generic<T: Into<String>>(t: T) -> Option<T> { Some(t) }",
+        &["generic"],
     ),
     (
-        "apply_misallocation",
-        "&mut self, finding: &MisallocationFinding",
-        true,
-    ),
-    ("adopt", "&mut self, standing: FamilyStanding", true),
-    (
-        "set_proposal",
-        "&mut self, proposal: StrategyProposal",
-        false,
+        "fn arrayed(buf: [u8; 4]) -> [u8; 32] { let _ = buf; [0u8; 32] }",
+        &["arrayed"],
     ),
     (
-        "submit_order",
-        "&mut self, order: Order, now: Timestamp",
-        false,
+        "fn bounded<F: Fn(u32) -> u32>(f: F) -> u32 { f(1) }",
+        &["bounded"],
     ),
+    (
+        "fn outer() { fn inner() { let _ = 1; } inner(); }",
+        &["outer", "inner"],
+    ),
+    ("trait T { fn declared(&self) -> bool; }", &[]),
+    ("type Callback = fn(&str) -> bool;", &[]),
 ];
 
 /// Signatures [`returns_an_unreviewed_type`] must and must not refuse.
@@ -2606,39 +2683,156 @@ const RETURN_TYPE_PROBES: [(&str, bool); 6] = [
     ),
 ];
 
-/// ADR 0064's guarantee, held the way ADR 0061's is: on every shipped `impl`
-/// rather than by nobody having written the method yet.
+/// Every shipped function that moves one of the quantities a capital
+/// allocation is held in, with the reason each is not a family finding
+/// reaching a weight.
 ///
-/// Blueprint §12.3's fifth row asks for an allocator objective revised when a
-/// strategy family underperforms. The platform now *measures* which families
-/// stand where — `Platform::family_standings`, journaled and charted every
-/// cycle — and moves nothing, because every weight it could narrow sits behind
-/// a writer with no production caller and a cap built on one would be a
-/// control that cannot fire. This repository records what that costs under
-/// `MaxExpectedShortfall`.
+/// **This array is the review, and the test is only what forces it to
+/// happen.** Reviewed on 2026-09-14 against `26eacf2`. Adding a row is a
+/// decision about capital and belongs in a commit message that argues for it;
+/// deleting one because the test went red is the failure the array exists to
+/// make visible.
 ///
-/// The obvious next change is `fn discount_family(&mut self, family: &str)` —
-/// "the finding is already computed, it just needs wiring" — and nothing in
-/// the type system stops it. So the absence is asserted here, by the same
-/// tokeniser the limit-set scan uses and with the same two-sided vacuity
-/// guards, because a scan that read nothing would pass while proving nothing.
+/// Two rows are here because the detector cannot tell them from the thing it
+/// is looking for, and both are kept rather than excluded in code. An
+/// exclusion is invisible at review time — it is how the three previous
+/// versions of this scan came to guard nothing — whereas a row with a wrong
+/// reason is something a reader can argue with.
+const REVIEWED_WEIGHT_MOVERS: [(&str, &str, &str); 11] = [
+    (
+        "apps/qip-cli/src/demo/mod.rs",
+        "cycle",
+        "the offline demo issuing its own envelope inside its own process; no platform path \
+         reaches it and it holds no book that outlives the command",
+    ),
+    (
+        "apps/qip-edge-node/src/strategies.rs",
+        "offer",
+        "holds an envelope the centre already issued, under `MAX_HELD_GRANTS`; the installer \
+         originates no capital and the book is keyed by strategy, never by family",
+    ),
+    (
+        "apps/qip-edge-node/src/strategies.rs",
+        "install",
+        "drops a held grant once the strategy it funds is deployed; a removal that can only \
+         reduce what the cell holds",
+    ),
+    (
+        "apps/qip-edge-node/src/strategies.rs",
+        "withdraw",
+        "returns a grant to the held book when a deployment is withdrawn, for the same envelope \
+         the cell was already given",
+    ),
+    (
+        "runtime/qip-kernel/src/central/learning.rs",
+        "resize",
+        "ADR 0064's named exception: re-sizes a proposal that must already exist, on the \
+         realised performance of that one strategy and on no family figure",
+    ),
+    (
+        "runtime/qip-kernel/src/central/plane.rs",
+        "set_proposal",
+        "the writer itself — the only place an allocator proposal is registered or replaced",
+    ),
+    (
+        "runtime/qip-kernel/src/central/plane.rs",
+        "issue",
+        "the only writer of a capital envelope, refusing a rung that holds no capital and a \
+         strategy with no proposal; ADR 0064's first blocker is that it is reached from nothing \
+         but a test",
+    ),
+    (
+        "runtime/qip-kernel/src/central/plane.rs",
+        "recall_for",
+        "calls `RecallRegister::issue`, which mints a recall *order* and not an envelope, and a \
+         recall can only reduce exposure. Listed rather than excluded: the `issue` token cannot \
+         tell the two writers apart, and an exclusion nobody can see is how this scan was \
+         bypassed before",
+    ),
+    (
+        "runtime/qip-kernel/src/config.rs",
+        "with_central",
+        "a builder assigning a `CentralConfig`, matched only because the field is named \
+         `central`; configuration read at a composition root, holding no weight at all",
+    ),
+    (
+        "runtime/qip-kernel/src/platform.rs",
+        "set_central",
+        "swaps the whole plane in at composition time, before the first cycle; it replaces the \
+         holder of the book rather than any entry in it",
+    ),
+    (
+        "services/qip-optimization-engine/src/horizons.rs",
+        "family_horizons_settled",
+        "calls `family_horizons`; both are the family budget with no caller outside their own \
+         suite, which is the second of ADR 0064's three blockers",
+    ),
+];
+
+/// **What this test holds, and what it does not.** Read both before trusting
+/// it, because three earlier versions of it claimed the second.
 ///
-/// **This scan shipped in `dbc1ff5` catching only one of the four shapes a
-/// reviewer could write.** It decided a mover by `assigns_field`, which
-/// requires a literal `self.<field> =`, so `self.central.set_proposal(…)`,
-/// `self.proposals.get_mut(…).weight = …` and `self.envelopes.insert(…)` all
-/// walked past it; and it examined a method only when the method's own name
-/// contained `famil`, so `apply_misallocation(&mut self, &MisallocationFinding)`
-/// was never read. The repository has shipped this class once before and
-/// fixed it in `28857ed`, where an acceptance scan matched method *names* and
-/// a working `adopt(&mut self, LimitSet)` passed. A scan whose detector is
-/// narrower than the thing it forbids reads as a guarantee and is a comment.
+/// It holds one thing, completely, over direct calls: **every shipped
+/// function whose body moves a weight is on [`REVIEWED_WEIGHT_MOVERS`]**. A
+/// new one fails this test until a person adds a row saying why it is not a
+/// family finding reaching a weight. That is a tripwire over an enumerable
+/// set, and its failure direction is closed: the way to make it pass is to
+/// write the argument down.
+///
+/// It does **not** hold ADR 0064's claim that no code path moves a capital
+/// allocation from a family finding. Nothing in the text of a Rust file says
+/// where a value came from, so no scan over source can decide whether a
+/// reviewed write is fed by a family standing. That step is held by review,
+/// and this test's job is to force the review to happen rather than to
+/// replace it. Saying otherwise is not a small overstatement: a reader who
+/// takes the guarantee for a mechanical one stops looking.
+///
+/// The history is why the claim is now written this narrowly. Three rounds of
+/// this scan each decided a mover by a *precondition on names*, and each was
+/// defeated by ordinary code an independent review compiled into the tree and
+/// ran:
+///
+/// - Round 1 matched a deny-list of `Decimal`/`Money`, which any newtype
+///   walks past.
+/// - Round 2 matched method names and detected only whole-field
+///   reassignment, so `Platform::discount_family` calling
+///   `self.central.set_proposal(…)` passed — the same class as `28857ed`.
+/// - Round 3 added call-shaped detection and parameter-type matching. It is
+///   the version that first caught a field mutation:
+///   `CentralPlane::apply_misallocation_probe(&mut self, &FamilyStanding) {
+///   self.proposals.clear(); }` was reported as *names a family and calls
+///   `self.proposals.clear(…)`*. It was then defeated twice by shapes with no
+///   family name on the writing method — a family-named entry point that
+///   writes nothing calling a neutrally named private helper that does, and a
+///   plain `fn defund_group(&mut self, group: &str)` calling `set_proposal` —
+///   each of which compiled and left the test printing `ok. 1 passed`.
+///
+/// That is the discriminator. Round 3's detector was genuinely better; its
+/// *precondition* was the part that could not work, and no narrowing fixes a
+/// precondition whose job is to guess which of two identical-looking writes
+/// came from a family finding. So the precondition is deleted rather than
+/// narrowed a fourth time — the resolution `ca3d581` reached for
+/// `redact_for_echo` after five rounds of the same shape, recorded in ADR
+/// 0057: no predicate over a string's own shape can distinguish two cases
+/// when nothing in the string says which it is. With no precondition left,
+/// what remains is an enumeration, and an enumeration is checkable.
+///
+/// The cost is stated rather than discovered: this refuses more than its
+/// predecessor did, including writes that have nothing to do with a family,
+/// and the reviewed list carries them with their reasons. That is the
+/// intended posture — "who can move a weight" is answerable by reading one
+/// array instead of trusting a heuristic.
+///
+/// Four limits remain and none is closed here: a call reached through a trait
+/// object, a function pointer or an alias; a weight held in a field this scan
+/// does not name; a call generated by a macro; and, the one that matters
+/// most, whether any reviewed site is fed by a family finding. ADR 0064
+/// records all four.
 #[test]
-fn no_code_path_in_the_kernel_moves_a_capital_allocation_from_a_family_finding() {
+fn every_shipped_function_that_moves_a_capital_weight_is_one_of_the_reviewed_ones() {
     // The detectors, before the walk. Each is exercised against fixtures it
-    // must flag and fixtures it must not, so that the assertions at the end —
-    // all of which are about *absence* — rest on a tokeniser proven to be
-    // matching something.
+    // must flag and fixtures it must not, so that the comparison below rests
+    // on a tokeniser proven to be matching something.
     for (body, shape) in WEIGHT_WRITING_BODIES {
         assert!(
             writes_a_weight(body).is_some(),
@@ -2652,13 +2846,83 @@ fn no_code_path_in_the_kernel_moves_a_capital_allocation_from_a_family_finding()
             "the weight detector flags {shape}, which moves nothing: {body}"
         );
     }
-    for (name, params, examined) in EXAMINATION_PROBES {
+    for (source, expected) in FUNCTION_WALK_PROBES {
+        let names: Vec<String> = functions_with_bodies(&code_only(source))
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
         assert_eq!(
-            names_a_family_or_finding(name, params),
-            examined,
-            "the examination precondition reads `fn {name}({params})` wrongly"
+            names, expected,
+            "the function walk decomposes `{source}` wrongly"
         );
     }
+
+    let (found, scanned) = weight_moving_functions();
+
+    assert!(
+        scanned > 300,
+        "only {scanned} shipped Rust files were scanned; the walk is not reaching the crates"
+    );
+
+    let reviewed: Vec<(String, String)> = REVIEWED_WEIGHT_MOVERS
+        .iter()
+        .map(|(file, function, _)| ((*file).to_string(), (*function).to_string()))
+        .collect();
+
+    let unreviewed: Vec<String> = found
+        .iter()
+        .filter(|(file, function, _)| !reviewed.contains(&(file.clone(), function.clone())))
+        .map(|(file, function, how)| format!("{file}: {function}(…) {how}"))
+        .collect();
+    // The other direction, and it is the vacuity guard rather than tidiness.
+    // The refusal below is about a set being *empty*, and a walk that silently
+    // stopped matching would report nothing found and satisfy it for ever. A
+    // reviewed row with no site behind it is either a scan that broke or a
+    // list that rotted, and a person has to say which.
+    let vanished: Vec<String> = REVIEWED_WEIGHT_MOVERS
+        .iter()
+        .filter(|(file, function, _)| {
+            !found
+                .iter()
+                .any(|(at, name, _)| at == file && name == function)
+        })
+        .map(|(file, function, _)| format!("{file}: {function}"))
+        .collect();
+
+    assert!(
+        vanished.is_empty(),
+        "a reviewed weight-moving function was not found by the scan: {vanished:?}. Either the \
+         function walk has stopped matching the form these are written in — in which case the \
+         refusal below is the absence of a scan and not of a mover — or the function was renamed \
+         or deleted and this list was not updated. Do not delete the row to make this pass \
+         without establishing which."
+    );
+    assert!(
+        unreviewed.is_empty(),
+        "a shipped function moves a capital weight and is not on the reviewed list: \
+         {unreviewed:?}. This test does not claim the write is wrong; it claims nobody has \
+         written down why it is right. ADR 0064: the family review measures and allocates \
+         nothing, and the absence of a path from a family finding to a weight is held by review \
+         of exactly this list — not by this test, which cannot see where a value came from. Add \
+         the function to `REVIEWED_WEIGHT_MOVERS` with the reason it is not a family finding \
+         reaching a weight, and if it is one, record the decision in ADR 0064 first: a cap built \
+         on a writer with no production caller is a control that cannot fire, which this \
+         repository records under `MaxExpectedShortfall` as the template for what not to add."
+    );
+}
+
+/// The shape of `family_review`'s exports, which is structural where the scan
+/// above is not.
+///
+/// `Misallocation` and `MisallocationFinding` carry `String`, `usize` and
+/// `Timestamp` and nothing else, so a caller who wants to size by how far
+/// ahead a family stands has no field to reach for on the record that names
+/// the two families. That much a type holds. What no type holds is the next
+/// edit adding one, so the module's exported return types are enumerated and
+/// anything else is refused — see [`FAMILY_REVIEW_RETURN_TYPES`] for what
+/// this bounds and, more importantly, what it does not.
+#[test]
+fn no_function_exported_by_the_family_review_returns_a_type_outside_its_reviewed_list() {
     for (signature, refused) in RETURN_TYPE_PROBES {
         assert_eq!(
             returns_an_unreviewed_type(signature).is_some(),
@@ -2667,160 +2931,39 @@ fn no_code_path_in_the_kernel_moves_a_capital_allocation_from_a_family_finding()
         );
     }
 
-    let mut scanned = 0usize;
-    let mut blocks_read = 0usize;
-    let mut mut_self_methods_seen = 0usize;
-    let mut examined = Vec::new();
-    let mut movers = Vec::new();
-    let mut returns_a_multiplier = Vec::new();
-
-    for file in files_with_extension("backend/crates", "rs") {
-        if file
-            .components()
-            .any(|component| component.as_os_str() == "tests")
-        {
-            continue;
-        }
-        let content = std::fs::read_to_string(&file).expect("readable source");
-        let shipped = match content.find("#[cfg(test)]") {
-            Some(cut) => &content[..cut],
-            None => &content[..],
-        };
-        scanned += 1;
-        let relative = file
-            .strip_prefix(repository_root().join("backend/crates"))
-            .expect("under backend/crates")
-            .to_string_lossy()
-            .to_string();
-
-        // The review module itself: every exported function's return type is
-        // checked against the reviewed list. A `Decimal` coming out of here is
-        // a multiplier whatever it is called, and so is a newtype over one,
-        // which is why this is an allow-list and not a search for the word.
-        if relative.ends_with("family_review.rs") {
-            for (at, _) in shipped.match_indices("pub fn ") {
-                let rest = &shipped[at..];
-                let signature: String = rest.chars().take_while(|c| *c != '{').collect();
-                if let Some(refused) = returns_an_unreviewed_type(&signature) {
-                    returns_a_multiplier.push(format!(
-                        "{relative}: {} returns {refused}",
-                        signature.trim()
-                    ));
-                }
-            }
-        }
-
-        for holder in FAMILY_WEIGHT_HOLDERS {
-            let marker = format!("impl {holder} {{");
-            for (index, _) in shipped.match_indices(&marker) {
-                let brace = index + marker.len() - 1;
-                let Some(block) = bracketed(shipped, brace, b'{', b'}') else {
-                    continue;
-                };
-                blocks_read += 1;
-                for (at, _) in block.match_indices("fn ") {
-                    let rest = &block[at + 3..];
-                    let name: String = rest
-                        .chars()
-                        .take_while(|c| is_identifier_char(*c))
-                        .collect();
-                    if name.is_empty() {
-                        continue;
-                    }
-                    let after_name = at + 3 + name.len();
-                    let leading_ws =
-                        block[after_name..].len() - block[after_name..].trim_start().len();
-                    let paren = after_name + leading_ws;
-                    if block.as_bytes().get(paren) != Some(&b'(') {
-                        continue;
-                    }
-                    let Some(params) = bracketed(block, paren, b'(', b')') else {
-                        continue;
-                    };
-                    if !params.trim_start().starts_with("&mut self") {
-                        continue;
-                    }
-                    mut_self_methods_seen += 1;
-
-                    // A method is a mover when it names a family or one of the
-                    // finding types — in its own name or its parameter list —
-                    // *and* its body moves a weight. Both halves, because
-                    // `CentralPlane` legitimately writes `proposals` in
-                    // `set_proposal`, which names no family and is not this;
-                    // and `Platform::review_family_allocation` names a family
-                    // and writes nothing, which is also not this.
-                    if !names_a_family_or_finding(&name, params) {
-                        continue;
-                    }
-                    examined.push(format!("{holder}::{name}"));
-                    let after_params = paren + 1 + params.len() + 1;
-                    if let Some(offset) = block[after_params..].find('{') {
-                        let body_open = after_params + offset;
-                        if let Some(body) = bracketed(block, body_open, b'{', b'}')
-                            && let Some(how) = writes_a_weight(body)
-                        {
-                            movers.push(format!(
-                                "{relative}: {holder}::{name}(&mut self, …) names a family and \
-                                 {how}"
-                            ));
-                        }
-                    }
-                }
-            }
+    let module = read("backend/crates/runtime/qip-kernel/src/family_review.rs");
+    let shipped = match module.find("#[cfg(test)]") {
+        Some(cut) => &module[..cut],
+        None => &module[..],
+    };
+    let mut examined = 0usize;
+    let mut refused = Vec::new();
+    for (at, _) in shipped.match_indices("pub fn ") {
+        let rest = &shipped[at..];
+        let signature: String = rest.chars().take_while(|c| *c != '{').collect();
+        examined += 1;
+        if let Some(name) = returns_an_unreviewed_type(&signature) {
+            refused.push(format!("{} returns {name}", signature.trim()));
         }
     }
 
-    // The vacuity guards. Every assertion below is about absence.
+    // The vacuity guard. The refusal below is about absence, and a module this
+    // walk read as empty would satisfy it while proving nothing.
     assert!(
-        scanned > 300,
-        "only {scanned} shipped Rust files were scanned; the walk is not reaching the crates"
-    );
-    assert!(
-        blocks_read >= 3,
-        "only {blocks_read} `impl` block(s) of the three weight holders were read; the block \
-         scan has stopped matching the form they are written in"
-    );
-    assert!(
-        mut_self_methods_seen > 0,
-        "no `&mut self` method was found on any of the three weight holders; both scans below \
-         would pass on a walk that matched nothing"
-    );
-    // The positive control on the walk itself, and it is deliberately not a
-    // `contains` over the file. The previous version asserted that
-    // `platform.rs` held the text `fn review_family_allocation(&mut self, now:
-    // Timestamp)`, which proves the method exists and says nothing about
-    // whether the loop above ever reached it — a tokeniser that matched no
-    // method at all would have satisfied it. This asserts the loop put the
-    // method in `examined`, which it can only do by having tokenised the
-    // `impl` block, the signature, the receiver and the name.
-    assert!(
-        examined.contains(&"Platform::review_family_allocation".to_string()),
-        "the walk did not examine `Platform::review_family_allocation`; it examined {examined:?}, \
-         so the absence asserted below is the absence of a scan and not of a mover"
-    );
-    // And the module the review lives in is present and was walked, so the
-    // return-type scan above had something to read.
-    assert!(
-        read("backend/crates/runtime/qip-kernel/src/family_review.rs").contains("pub fn "),
-        "family_review.rs exports nothing; the multiplier scan read an empty module"
+        examined >= 4,
+        "only {examined} exported function(s) were read out of `family_review.rs`; the module \
+         has at least `standings`, `misallocation`, `record_standings` and `describe`, so the \
+         signature walk is not matching the form they are written in"
     );
 
     assert!(
-        movers.is_empty(),
-        "a `&mut self` method naming a family now moves a weight: {movers:?}. \
-         ADR 0064: the family review measures and allocates nothing, because every weight it \
-         could narrow sits behind a writer with no production caller — a cap built on one would \
-         be a control that cannot fire, which this repository records under \
-         `MaxExpectedShortfall` as the template for what not to add. Move the weight only after \
-         the writer that funds a family has a caller, and record that decision first."
-    );
-    assert!(
-        returns_a_multiplier.is_empty(),
+        refused.is_empty(),
         "an exported function in `family_review` returns a type the module's reviewed list does \
-         not permit: {returns_a_multiplier:?}. A `Decimal`, a `Money`, a newtype over either or \
-         a bare number is a multiplier whatever it is called; the finding may be a record and \
-         never a number a caller can size with. Add the type to `FAMILY_REVIEW_RETURN_TYPES` \
-         only if it is genuinely not one."
+         not permit: {refused:?}. A `Decimal`, a `Money`, a newtype over either or a bare number \
+         is a multiplier whatever it is called; the finding may be a record and never a number a \
+         caller can size with. Add the type to `FAMILY_REVIEW_RETURN_TYPES` only if it is \
+         genuinely not one, and read that array's own doc first — it bounds the name in return \
+         position and nothing the name carries."
     );
 }
 

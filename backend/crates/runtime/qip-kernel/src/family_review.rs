@@ -3,8 +3,16 @@
 //!
 //! The row asks for two things: measure which families are earning their
 //! funding, and revise the weights of the ones that are not. This module does
-//! the first and **deliberately does not do the second**, and the absence is
-//! the guarantee rather than an omission (ADR 0064).
+//! the first and **deliberately does not do the second** (ADR 0064).
+//!
+//! Be exact about what holds the absence, because this line said "the absence
+//! is the guarantee" until 2026-09-14 and three rounds of an acceptance scan
+//! were built on that reading. It is held by **review**, recorded in
+//! `REVIEWED_WEIGHT_MOVERS` in `qip-acceptance`'s `security.rs`, and the scan
+//! beside it is the tripwire that forces the review rather than a proof that
+//! replaces it. An independent review defeated each of the three rounds by
+//! compiling an ordinary weight-mover into the tree; ADR 0064 records the two
+//! shapes and why no scan over source text can decide the question.
 //!
 //! # Why no weight moves
 //!
@@ -29,7 +37,9 @@
 //! enumerates the return types this module may name rather than searching for
 //! the word `Decimal`, because a newtype over one would pass that search.
 //! A later edit cannot "wire it up" without first writing the weight it would
-//! move.
+//! move — and writing one is what the reviewed list catches, by refusing any
+//! function that moves a weight until somebody has written down why it is not
+//! a family finding doing it.
 //!
 //! Be precise about the scope of that, because it is narrower than it reads
 //! and a reviewer found the gap. [`FamilyStanding::deflated_excess`] is a
@@ -759,8 +769,32 @@ mod tests {
                     strategy: &self.strategies[i],
                     stage: self.stages[i],
                     evidence: &self.evidence[i],
-                    // The book's own count, exactly as `Platform::family_standings`
-                    // resolves it.
+                    // The book's own count. **A copy of what
+                    // `Platform::family_standings` does, not a call to it**,
+                    // and the difference is the honest limit of every test
+                    // below that turns on the count: if the production
+                    // resolver were changed to a per-member snapshot,
+                    // nothing here would fail, because nothing here touches
+                    // it. This comment said "exactly as
+                    // `Platform::family_standings` resolves it" until
+                    // 2026-09-14, which read as a guarantee of agreement that
+                    // no assertion held — the same shape as the family-weight
+                    // scan this lane rebuilt, a check that reads as
+                    // protection over a production path it never executes.
+                    // The resolver is correct today (`platform.rs`,
+                    // `family_standings`, reading `TrialBook::lifetime_trials`
+                    // once per family and never charging it), so this is a
+                    // limit and not a defect. Closing it means the production
+                    // path and this fixture calling one resolver, which is a
+                    // change in `platform.rs` and is recorded in ADR 0064
+                    // rather than guessed at here.
+                    //
+                    // One deliberate difference: production scores a family
+                    // the book does not know against zero trials and lets
+                    // `standings` refuse it, where this fixture refuses to
+                    // build such a member at all, because a fixture that
+                    // silently enrolled an unknown family would be testing
+                    // the refusal rather than the arithmetic.
                     lifetime_trials: self
                         .book
                         .lifetime_trials(&self.families[i])
@@ -1023,7 +1057,8 @@ mod tests {
             .expect("the gate reads the same evidence");
         assert_eq!(
             deflated.trials, members[0].lifetime_trials as usize,
-            "the premise: at one member the gate's snapshot and the family's current total are              the same count, which is what makes the bit equality below meaningful"
+            "the premise: at one member the gate's snapshot and the family's current total are \
+             the same count, which is what makes the bit equality below meaningful"
         );
         // Compared as bits rather than as floats. "To the bit" is the claim
         // — that the review reads the gate's arithmetic rather than an

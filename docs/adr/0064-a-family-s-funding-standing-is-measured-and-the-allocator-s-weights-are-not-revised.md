@@ -3,7 +3,19 @@
 - **Status**: Proposed
 - **Date**: 2026-09-14
 - **Supersedes**: nothing
-- **Related**: ADR 0055 (a counterfactual result narrows sizing and only narrows it), ADR 0061 (rule regret is a proposal, a defence or a dormancy finding), ADR 0062 (a venue is withdrawn on feasibility evidence), ADR 0063 (a sizing cap is the second consequence of counterfactual scores)
+- **Related**: ADR 0055 (a counterfactual result narrows sizing and only narrows it), ADR 0057 (round five: a predicate deleted rather than narrowed a sixth time), ADR 0061 (rule regret is a proposal, a defence or a dormancy finding), ADR 0062 (a venue is withdrawn on feasibility evidence), ADR 0063 (a sizing cap is the second consequence of counterfactual scores)
+
+**Amended in place, 2026-09-14, after a fourth round on the family-weight
+scan.** The amendment changes what this record *claims*, not what the code
+does: the sentence "the guarantee is the absence of a code path" appeared four
+times here and in `family_review.rs`, and it was an overclaim. Three
+successive versions of the acceptance scan were each defeated by ordinary code
+an independent security review compiled into the tree and ran. What holds the
+absence is **review**, against an enumerated list, with a scan that forces the
+review to happen. Downgrading the claim is the substance of the amendment; the
+scan was also rebuilt, and the rebuild is what makes the smaller claim
+checkable. Every paragraph below that said otherwise is corrected in place
+rather than argued with.
 
 ## Context
 
@@ -143,6 +155,29 @@ than remembered. What is not reproducible is one member's figure compared
 across cycles, and nothing here invites that comparison: the finding names
 families, never members.
 
+**The arithmetic is biased toward producing findings, and the bias is bounded
+only by the fact that a finding moves nothing.** Deflating every family
+against its own *current* total penalises the family that has searched more.
+The review's direction is "an unfunded family beats the best funded one", and
+unfunded families are systematically the younger ones with the smaller
+searches — so the correction is systematically lighter on exactly the side of
+the comparison a finding is raised for. This is not a rounding detail: it is a
+structural tilt in the test statistic, in the direction of the alarm. It is
+accepted here because the preceding paragraph's argument is the stronger one —
+a cross-family comparison drawn now must correct each family for the search it
+has actually done, and the alternative tilt (grading a young family on twelve
+configurations while an old one is graded on ten thousand) is the bias the
+deflation exists to remove, arriving on the review's own axis. Two things
+follow and both belong on the record. First, the margin bar is doing more work
+than a symmetric statistic's bar would, which is another reason the "too many
+findings" half of the bar's revisit test below is the likely one. Second, and
+this is why the tilt is tolerable at all, **the finding is a record and moves
+no weight** — so a biased statistic produces reading matter rather than a
+biased allocation. That makes this bullet an argument *for* this record's
+central decision rather than an exception to it: the day a weight moves on
+this figure, the tilt stops being bounded, and the decision that wires it must
+either correct the statistic or state why it does not.
+
 Both sides of the comparison are the same measure. A realised return over a
 grant and a backtested holdout series are different quantities; comparing them
 would be a finding about regime wearing a finding about allocation's clothes.
@@ -183,7 +218,14 @@ we are paying for" is true of almost any population.
 
 ## Why no weight moves, and what would have to exist before one could
 
-The guarantee is the **absence of a code path**, not a check.
+**No weight moves, and what holds that is review against an enumerated list.**
+This heading's first line read "the guarantee is the absence of a code path,
+not a check" until 2026-09-14. That sentence was doing real damage: it told
+three successive implementations that a scan over source text could establish
+the absence, and each of the three was defeated by ordinary code.
+
+Two of the four supports below *are* structural and survive the correction.
+The third and fourth are not, and are now described as what they are.
 
 - `family_review` exports no function returning a `Decimal` or any multiplier.
   Enforced by an allow-list of the return types the module may name, not by a
@@ -203,31 +245,114 @@ The guarantee is the **absence of a code path**, not a check.
   the record that names two families. A Sharpe excess is also not a multiplier
   in any case: unbounded, routinely negative, and a caller that scaled a
   notional by it would be inventing a unit conversion nobody recorded.
-- `qip-acceptance/tests/security.rs` scans every shipped `impl` of `Platform`,
-  `CentralPlane` and `StrategyFactory` for a `&mut self` method that names a
-  family — in its own name *or* in a parameter of type `StrategyFamily`,
-  `Misallocation`, `MisallocationFinding` or `FamilyStanding` — and whose body
-  moves a weight by any of three shapes: reassigning a weight field, calling a
-  mutating method on one, or calling `set_proposal`, `issue` or
-  `family_horizons` anywhere. The same shape ADR 0061's limit-set scan takes,
-  and for the same reason: the guarantee is held on every shipped `impl`
-  rather than by nobody having written the method yet.
+- **The return-type allow-list does not bound transitively, and the next
+  person adding a type to it needs to know that before they do.**
+  `FAMILY_REVIEW_RETURN_TYPES` permits `FamilyStanding`, which carries the
+  public `f64` above, so `pub fn family_cap(&self) -> FamilyStanding` passes
+  the list and a caller reads the field and sizes with it. That is accepted
+  rather than closed. Closing it would mean forbidding the module's own
+  `standings()`, which returns `BTreeMap<String, FamilyStanding>` and is the
+  point of the module; a magnitude nobody can read is not a measurement. So
+  the list answers "does this module hand out something *shaped* like a
+  multiplier — a `Decimal`, a `Money`, a newtype over either, a bare number" —
+  and it does not and cannot answer "can a caller obtain a number here". A
+  caller can, deliberately. The statement is written where the array is
+  defined as well as here, because the next person to add a type will be
+  reading the array and not this record. Adding one that carries a `Decimal`
+  field is a change of posture and belongs in an amendment to this record, not
+  in the commit that was making a red test green.
+- **`qip-acceptance/tests/security.rs` enumerates every shipped function in
+  the workspace that moves a weight, and refuses one that is not on a reviewed
+  list.** That is a tripwire over an enumerable set, not a proof. It is the
+  fourth version of this check and the first that does not claim to be the
+  guarantee.
 
-**The first version of that scan detected one of those shapes and was
-demonstrated bypassed by execution.** It decided a mover with a search for a
-literal `self.<field> =`, so `self.central.set_proposal(…)` — the call this
-record's own argument names as the allocator's reachable writer —
-`self.proposals.get_mut(…).weight = …` and `self.envelopes.insert(…)` all
-passed; and it examined a method only when the method's *own name* contained
-`famil`, so `apply_misallocation(&mut self, &MisallocationFinding)` was never
-read. This repository shipped that class once before and fixed it in
-`28857ed`, where an acceptance scan matched method names and a working
-`adopt(&mut self, LimitSet)` passed. Every detector now carries its own
-positive and negative controls asserted inside the test, and the control that
-the walk reached the shipped review is the walk's own record of what it
-examined rather than a string search over the file — the previous one proved
-the method existed and said nothing about whether the tokeniser had matched
-it.
+### The three rounds, and why the method changed rather than the predicate
+
+Each of the first three rounds decided what to look at with a **precondition
+on names**, and each was defeated by code an independent review compiled into
+the tree and ran, leaving the test printing `ok. 1 passed`.
+
+- **Round 1** matched a deny-list of `Decimal` and `Money` in a return
+  position. Any newtype walks past it.
+- **Round 2** matched method *names* containing `famil`, and detected only
+  whole-field reassignment (`self.proposals = …`). So
+  `Platform::discount_family` calling `self.central.set_proposal(…)` — the
+  call this record's own argument names as the allocator's reachable writer —
+  passed, as did `self.proposals.get_mut(…).weight = …` and
+  `self.envelopes.insert(…)`. This repository shipped that class once before
+  and fixed it in `28857ed`, where an acceptance scan matched method names and
+  a working `adopt(&mut self, LimitSet)` passed.
+- **Round 3** added call-shaped detection, parameter-type matching and
+  comment/literal blanking, and each detector gained a positive and a negative
+  control asserted inside the test. It was real progress: it is the first
+  version that caught a field mutation, reporting
+  `CentralPlane::apply_misallocation_probe(&mut self, &FamilyStanding) {
+  self.proposals.clear(); }` as *names a family and calls
+  `self.proposals.clear(…)`*. It was then defeated twice over, by two shapes
+  with no family name on the writing method:
+  - **one-hop delegation** — a family-named entry point that writes nothing,
+    `pub fn apply_family_finding(&mut self, finding: &MisallocationFinding) {
+    self.rebalance_book(&finding.unfunded) }`, calling a neutrally named
+    private helper that does the write;
+  - **neutral naming** — `pub fn defund_group(&mut self, group: &str)` calling
+    `set_proposal`, which trips neither the name half nor the parameter-type
+    half of the precondition, so its body is never read.
+
+  Both were compiled into `impl Platform` and both left the scan green. Round
+  3's own documentation named the intraprocedural limit of round 2 as the
+  defect and then reproduced it one level out.
+
+**The discriminator is not the detector, it is the precondition.** Round 3's
+detector was better than round 2's and would have caught both probes had it
+been allowed to look at them. What could not work is the step before it: a
+guess, from a method's name and its parameter types, about whether a write
+came from a family finding. Nothing in the text of a Rust file records where a
+value came from, so `self.central.set_proposal(p)` inside
+`discount_family(&str)` and inside `resize(&StrategyId, …)` are the same
+bytes. Narrowing the guess a fourth time would be the fourth round of the
+shape this repository already resolved once: ADR 0057's redaction predicate
+went five rounds of narrowing a host-shape test and round five (`ca3d581`)
+**deleted the predicate** rather than narrowing it, on the finding that no
+predicate over a string's own shape can distinguish two cases when nothing in
+the string says which it is. The same conclusion applies here and the same
+resolution is taken.
+
+### What the fourth round does instead
+
+The precondition is deleted. The scan walks every `fn` with a body in every
+shipped file under `backend/crates` — no `impl` marker, no holder list, no
+family test — and reports every one whose body reassigns a weight field, calls
+a mutating method on one, or calls `set_proposal`, `issue`, `family_horizons`
+or `family_horizons_settled`. What it finds is compared, in both directions,
+against `REVIEWED_WEIGHT_MOVERS`: eleven functions on 2026-09-14, each with a
+written reason it is not a family finding reaching a weight. A twelfth fails
+the test until somebody writes the reason down, and a reviewed row with no
+site behind it fails it too, because that is either a scan that broke or a
+list that rotted and a person has to say which.
+
+Three things change as a result. It **fails closed**: the way to make it pass
+is to write an argument, not to rename a method. It closes both probes —
+verified by re-compiling them into `impl Platform` and re-running, which
+reported `probe_defund_group(…) calls set_proposal(…)` and
+`probe_rebalance_book(…) calls set_proposal(…)` — and the two further holes
+the reviewer named, a weight-mover on a type outside the holder list and an
+`impl Platform` written with generics or a `where` clause, since neither the
+type name nor the `impl` form is read any more. And it **refuses more than its
+predecessor**, deliberately: four of the eleven reviewed rows have nothing to
+do with families, including a builder that assigns a `CentralConfig` and the
+edge node's held-grant book. Those are kept as rows with reasons rather than
+excluded in code, because an exclusion is invisible at review time and an
+invisible exclusion is how the previous three rounds came to guard nothing.
+
+**Four limits remain, and none of them is closed.** A call reached through a
+trait object, a function pointer or an alias. A weight held in a field the
+scan does not name. A call generated by a macro. And the one that matters
+most: **the scan cannot tell whether a reviewed site is fed by a family
+finding**, because that is a dataflow question and this is a text scan. That
+step is held by a person reading the eleven rows. Saying so is the point of
+this amendment — a reader who takes the check for a mechanical guarantee stops
+looking, and three rounds of this scan are the evidence that they do.
 
 Before a weight could honestly move, three things would have to exist that do
 not: a production caller for `CentralPlane::issue` (so that "funded" means
@@ -301,6 +426,34 @@ replacing it, precisely so that skim fails.
   `a_family_whose_evidence_beats_every_funded_family_moves_no_weight_anywhere`
   asserts the record's field count and refuses a fractional number on it. That
   test failing is the intended alarm, not an inconvenience.
+- **`REVIEWED_WEIGHT_MOVERS` grows without anyone arguing about it.** The
+  whole of what this record now claims rests on eleven rows being read by a
+  person. A row added with a reason that restates the code — "writes the
+  proposal book" — is the same failure as the three bypassed scans wearing
+  different clothes: something that reads as review and is not. The reason on
+  a row must say why the write is *not* a family finding reaching a weight.
+- **The scan is cited as the guarantee again.** The sentence "the guarantee is
+  the absence of a code path" is the one this amendment removed, and it will
+  be tempting to restore it the next time somebody reads the test passing and
+  wants a stronger claim in a status document. It is false and was false when
+  first written. What is true is the smaller sentence: no shipped function
+  moves a weight except eleven that have been read.
+- **A test that proves a property of a copy of the production path.** The
+  fixture `Population::members` in `family_review.rs` resolves a family's
+  lifetime trial count the same way `Platform::family_standings` does, by
+  duplication and not by calling it, so every test here that turns on the
+  count would keep passing if the production resolver were changed to a
+  per-member snapshot. The resolver is correct today — `family_standings`
+  reads `TrialBook::lifetime_trials` once per family and never charges it — so
+  this is a limit, not a defect, and it is the same class of thing as the
+  bypassed scans: a check that reads as protection over a path it does not
+  touch. **Closing it is a change in `platform.rs`**: both the production
+  resolver and the fixture should call one function, which
+  `family_review` should export and `family_standings` should use in place of
+  its inline `trial_counts` map. That was not done in this amendment because
+  `platform.rs` belonged to another lane at the time, and it is recorded here
+  rather than left in a comment so that the next person to touch either side
+  finds it.
 
 ## Consequences
 
