@@ -2276,10 +2276,335 @@ fn assigns_field(body: &str, field: &str) -> bool {
 /// on one of the three.
 const FAMILY_WEIGHT_HOLDERS: [&str; 3] = ["Platform", "CentralPlane", "StrategyFactory"];
 
-/// Fields whose assignment is a weight moving: the allocator's proposal book,
-/// the issued envelopes and the grant ledger. Found with
+/// Fields whose contents are a weight: the allocator's proposal book, the
+/// issued envelopes, the grant ledger, and the plane that owns all three.
+/// Found with
 /// `grep -n 'proposals:\|envelopes:\|grants:' backend/crates/runtime/qip-kernel/src/central/plane.rs`.
 const FAMILY_WEIGHT_FIELDS: [&str; 4] = ["proposals", "envelopes", "grants", "central"];
+
+/// Methods whose call moves a weight wherever it is called.
+///
+/// ADR 0064's own argument enumerates them: `CentralPlane::set_proposal` is
+/// the only writer of an allocator proposal, `CentralPlane::issue` the only
+/// writer of a capital envelope, and `optimization_engine::family_horizons`
+/// the family budget nothing calls. A body that calls one of these has moved
+/// capital whether or not it ever names a field.
+const WEIGHT_WRITERS: [&str; 4] = [
+    "set_proposal",
+    "issue",
+    "family_horizons",
+    "family_horizons_settled",
+];
+
+/// Methods that, called on one of [`FAMILY_WEIGHT_FIELDS`], change what that
+/// field holds.
+///
+/// `get_mut` and `entry` are here because neither writes anything by itself
+/// and both hand out the thing that does — `self.proposals.get_mut(id).weight
+/// = w` assigns no field of `self` at all, which is exactly how it walked
+/// past the scan this replaces.
+const WEIGHT_FIELD_MUTATORS: [&str; 7] = [
+    "insert", "remove", "get_mut", "entry", "clear", "retain", "extend",
+];
+
+/// Type names that make a method a family method whatever it is called.
+///
+/// The scan this replaces examined a method only when its own name contained
+/// `famil` or its parameters named `StrategyFamily`, so
+/// `fn apply_misallocation(&mut self, finding: &MisallocationFinding)` was
+/// never looked at — the one signature the lane's own ADR predicts somebody
+/// will write. Matched as whole identifiers: `Misallocation` is a prefix of
+/// `MisallocationFinding` and a substring scan could not tell a type from a
+/// type that merely starts the same way.
+const FAMILY_FINDING_TYPES: [&str; 4] = [
+    "StrategyFamily",
+    "Misallocation",
+    "MisallocationFinding",
+    "FamilyStanding",
+];
+
+/// Every type `family_review` is permitted to export, by name.
+///
+/// A deny-list of `Decimal` and `Money` was the previous rule, and
+/// `pub fn family_cap(…) -> FamilyWeight` — a newtype over `Decimal` — passes
+/// it. There is no way to tell from a signature that a name is a newtype over
+/// money, so the list is inverted: the return types this module may name are
+/// enumerated, and anything else is refused until somebody adds it here
+/// deliberately. The same reviewed-exception shape as
+/// [`CONSERVATIVE_DEFAULT_SITES`].
+///
+/// `f64` is deliberately absent. ADR 0064's guarantee is that the *finding*
+/// carries no number and that no exported function hands a caller one to size
+/// with; `FamilyStanding::deflated_excess` is a public `f64` field and is the
+/// stated exception, because the magnitude has to live somewhere a person can
+/// read and the ADR puts it on the measurement rather than the finding. A
+/// *function* returning a bare number is the next step from there and is the
+/// one this refuses.
+const FAMILY_REVIEW_RETURN_TYPES: [&str; 7] = [
+    "BTreeMap",
+    "String",
+    "FamilyStanding",
+    "Option",
+    "Misallocation",
+    "bool",
+    "Self",
+];
+
+/// `text` with every comment and string literal blanked to spaces of the same
+/// length.
+///
+/// A detector that reads prose flags a method for the comment explaining why
+/// it does not do the thing, and — worse — is satisfied by a commented-out
+/// write. Blanked rather than removed so nothing matches across the hole.
+fn code_only(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let next = next_lexical_unit(bytes, index);
+        // A single byte is an ordinary one: every literal and comment this
+        // walker recognises is at least two bytes long.
+        if next > index + 1 {
+            out.extend(std::iter::repeat_n(b' ', next - index));
+            index = next;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The identifier that follows `self.{field}.`, if the next thing after the
+/// field is a method call at all.
+fn method_called_on_field(body: &str, field: &str) -> Option<String> {
+    let needle = format!("self.{field}");
+    let mut search_from = 0;
+    while let Some(relative) = body[search_from..].find(needle.as_str()) {
+        let start = search_from + relative;
+        let end = start + needle.len();
+        let boundary = match body.as_bytes().get(end) {
+            Some(&byte) => !is_identifier_char(byte as char),
+            None => true,
+        };
+        if boundary && body.as_bytes().get(end) == Some(&b'.') {
+            let method: String = body[end + 1..]
+                .chars()
+                .take_while(|c| is_identifier_char(*c))
+                .collect();
+            if WEIGHT_FIELD_MUTATORS.contains(&method.as_str()) {
+                return Some(method);
+            }
+        }
+        search_from = end;
+    }
+    None
+}
+
+/// The [`WEIGHT_WRITERS`] name this body calls, if any.
+///
+/// Tokenised and required to be immediately followed by `(`, so a doc
+/// reference to `set_proposal` is not a call and `reissue(` is not `issue(`.
+fn calls_a_weight_writer(body: &str) -> Option<String> {
+    let bytes = body.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if is_identifier_char(bytes[index] as char) {
+            let start = index;
+            while index < bytes.len() && is_identifier_char(bytes[index] as char) {
+                index += 1;
+            }
+            let token = &body[start..index];
+            if WEIGHT_WRITERS.contains(&token)
+                && bytes.get(index) == Some(&b'(')
+                && (start == 0 || bytes[start - 1] != b'_')
+            {
+                return Some(token.to_string());
+            }
+        } else {
+            index += 1;
+        }
+    }
+    None
+}
+
+/// How `body` moves a weight, if it does.
+///
+/// Three shapes, and only the first was detected before `dbc1ff5`: the field
+/// reassigned outright, a mutating method called on the field, and a
+/// weight-writing method called on anything. A probe added during review —
+/// `Platform::discount_family` calling `self.central.set_proposal(existing)`,
+/// which is the exact call ADR 0064's module doc names as the allocator's
+/// reachable writer — passed the old scan. `cargo test -p qip-acceptance
+/// --test security no_code_path_in_the_kernel_moves` printed
+/// `test result: ok. 1 passed` with it in the tree.
+fn writes_a_weight(body: &str) -> Option<String> {
+    let body = code_only(body);
+    for field in FAMILY_WEIGHT_FIELDS {
+        if assigns_field(&body, field) {
+            return Some(format!("assigns `self.{field}`"));
+        }
+        if let Some(method) = method_called_on_field(&body, field) {
+            return Some(format!("calls `self.{field}.{method}(…)`"));
+        }
+    }
+    calls_a_weight_writer(&body).map(|writer| format!("calls `{writer}(…)`"))
+}
+
+/// Whether a method is one this scan examines at all.
+///
+/// Either half is enough: the name, or a family or finding type anywhere in
+/// the parameter list. Dropping the name half entirely was the alternative
+/// and would have been worse — a method that takes a `&str` family name and
+/// is called `defund_family` names no type at all.
+fn names_a_family_or_finding(name: &str, params: &str) -> bool {
+    let lowered = name.to_lowercase();
+    if lowered.contains("famil") || lowered.contains("misalloc") || lowered.contains("standing") {
+        return true;
+    }
+    let bytes = params.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if is_identifier_char(bytes[index] as char) {
+            let start = index;
+            while index < bytes.len() && is_identifier_char(bytes[index] as char) {
+                index += 1;
+            }
+            if FAMILY_FINDING_TYPES.contains(&&params[start..index]) {
+                return true;
+            }
+        } else {
+            index += 1;
+        }
+    }
+    false
+}
+
+/// The type named in `signature`'s return position that
+/// [`FAMILY_REVIEW_RETURN_TYPES`] does not permit, if there is one.
+///
+/// `signature` is a `pub fn …` up to but not including its body.
+fn returns_an_unreviewed_type(signature: &str) -> Option<String> {
+    let open = signature.find('(')?;
+    let params = bracketed(signature, open, b'(', b')')?;
+    let after = &signature[open + 1 + params.len() + 1..];
+    let Some(arrow) = after.find("->") else {
+        // No return type at all: the unit, which carries nothing.
+        return None;
+    };
+    let returned = &after[arrow + 2..];
+    let returned = match returned.find("where") {
+        Some(cut) => &returned[..cut],
+        None => returned,
+    };
+    let bytes = returned.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if is_identifier_char(bytes[index] as char) {
+            let start = index;
+            while index < bytes.len() && is_identifier_char(bytes[index] as char) {
+                index += 1;
+            }
+            // A lifetime is not a type: `&'a FamilyStanding` names one type.
+            let is_lifetime = start > 0 && bytes[start - 1] == b'\'';
+            let token = &returned[start..index];
+            if !is_lifetime && !FAMILY_REVIEW_RETURN_TYPES.contains(&token) {
+                return Some(token.to_string());
+            }
+        } else {
+            index += 1;
+        }
+    }
+    None
+}
+
+/// Bodies [`writes_a_weight`] must flag, and the shape each one is.
+///
+/// The positive controls. Every one of these is a mutation a reviewer
+/// demonstrated by execution against the scan this replaces; three of the
+/// four went undetected. Asserted inside the test so that a tokeniser which
+/// stops matching fails loudly rather than passing on an empty search.
+const WEIGHT_WRITING_BODIES: [(&str, &str); 5] = [
+    (
+        "{ self.central.set_proposal(existing); }",
+        "the allocator's own writer, called through the plane",
+    ),
+    (
+        "{ self.proposals = rebuilt; }",
+        "the proposal book replaced outright",
+    ),
+    (
+        "{ if let Some(p) = self.proposals.get_mut(id) { p.weight = w; } }",
+        "a proposal reached through `get_mut` and written in place",
+    ),
+    (
+        "{ self.envelopes.insert(key, envelope); }",
+        "an envelope inserted into the grant map",
+    ),
+    ("{ self.grants.remove(&key); }", "a grant taken away"),
+];
+
+/// Bodies [`writes_a_weight`] must **not** flag.
+///
+/// The other half of the control. A detector that flagged everything would
+/// satisfy the list above and refuse the shipped review, so both directions
+/// are asserted. The third is the reason [`code_only`] exists: a scan that
+/// read comments would be satisfied by a write that is not there.
+const INERT_BODIES: [(&str, &str); 3] = [
+    (
+        "{ let standings = self.family_standings(); record(&standings); }",
+        "the shipped review, which reads and writes nothing",
+    ),
+    (
+        "{ self.family_findings_open.insert(key); }",
+        "the open-finding set, which holds two family names",
+    ),
+    (
+        "{\n// self.proposals = rebuilt;\nlet _ = 1;\n}",
+        "the same write, commented out",
+    ),
+];
+
+/// Signatures [`names_a_family_or_finding`] must and must not examine.
+const EXAMINATION_PROBES: [(&str, &str, bool); 5] = [
+    (
+        "review_family_allocation",
+        "&mut self, now: Timestamp",
+        true,
+    ),
+    (
+        "apply_misallocation",
+        "&mut self, finding: &MisallocationFinding",
+        true,
+    ),
+    ("adopt", "&mut self, standing: FamilyStanding", true),
+    (
+        "set_proposal",
+        "&mut self, proposal: StrategyProposal",
+        false,
+    ),
+    (
+        "submit_order",
+        "&mut self, order: Order, now: Timestamp",
+        false,
+    ),
+];
+
+/// Signatures [`returns_an_unreviewed_type`] must and must not refuse.
+const RETURN_TYPE_PROBES: [(&str, bool); 6] = [
+    ("pub fn family_cap(&self) -> FamilyWeight ", true),
+    ("pub fn family_cap(&self) -> Decimal ", true),
+    ("pub fn family_share(&self) -> f64 ", true),
+    (
+        "pub fn misallocation(standings: &BTreeMap<String, FamilyStanding>) -> Option<Misallocation> ",
+        false,
+    ),
+    ("pub fn describe(&self) -> String ", false),
+    (
+        "pub fn record_standings(metrics: &Metrics, standings: &BTreeMap<String, FamilyStanding>) ",
+        false,
+    ),
+];
 
 /// ADR 0064's guarantee, held the way ADR 0061's is: on every shipped `impl`
 /// rather than by nobody having written the method yet.
@@ -2297,11 +2622,55 @@ const FAMILY_WEIGHT_FIELDS: [&str; 4] = ["proposals", "envelopes", "grants", "ce
 /// the type system stops it. So the absence is asserted here, by the same
 /// tokeniser the limit-set scan uses and with the same two-sided vacuity
 /// guards, because a scan that read nothing would pass while proving nothing.
+///
+/// **This scan shipped in `dbc1ff5` catching only one of the four shapes a
+/// reviewer could write.** It decided a mover by `assigns_field`, which
+/// requires a literal `self.<field> =`, so `self.central.set_proposal(…)`,
+/// `self.proposals.get_mut(…).weight = …` and `self.envelopes.insert(…)` all
+/// walked past it; and it examined a method only when the method's own name
+/// contained `famil`, so `apply_misallocation(&mut self, &MisallocationFinding)`
+/// was never read. The repository has shipped this class once before and
+/// fixed it in `28857ed`, where an acceptance scan matched method *names* and
+/// a working `adopt(&mut self, LimitSet)` passed. A scan whose detector is
+/// narrower than the thing it forbids reads as a guarantee and is a comment.
 #[test]
 fn no_code_path_in_the_kernel_moves_a_capital_allocation_from_a_family_finding() {
+    // The detectors, before the walk. Each is exercised against fixtures it
+    // must flag and fixtures it must not, so that the assertions at the end —
+    // all of which are about *absence* — rest on a tokeniser proven to be
+    // matching something.
+    for (body, shape) in WEIGHT_WRITING_BODIES {
+        assert!(
+            writes_a_weight(body).is_some(),
+            "the weight detector no longer flags {shape}: {body}"
+        );
+    }
+    for (body, shape) in INERT_BODIES {
+        assert_eq!(
+            writes_a_weight(body),
+            None,
+            "the weight detector flags {shape}, which moves nothing: {body}"
+        );
+    }
+    for (name, params, examined) in EXAMINATION_PROBES {
+        assert_eq!(
+            names_a_family_or_finding(name, params),
+            examined,
+            "the examination precondition reads `fn {name}({params})` wrongly"
+        );
+    }
+    for (signature, refused) in RETURN_TYPE_PROBES {
+        assert_eq!(
+            returns_an_unreviewed_type(signature).is_some(),
+            refused,
+            "the return-type allow-list reads `{signature}` wrongly"
+        );
+    }
+
     let mut scanned = 0usize;
     let mut blocks_read = 0usize;
     let mut mut_self_methods_seen = 0usize;
+    let mut examined = Vec::new();
     let mut movers = Vec::new();
     let mut returns_a_multiplier = Vec::new();
 
@@ -2324,15 +2693,19 @@ fn no_code_path_in_the_kernel_moves_a_capital_allocation_from_a_family_finding()
             .to_string_lossy()
             .to_string();
 
-        // The review module itself: no exported function may return a money
-        // type. A `Decimal` coming out of here is a multiplier whatever it is
-        // called, and the finding's whole shape is that there is not one.
+        // The review module itself: every exported function's return type is
+        // checked against the reviewed list. A `Decimal` coming out of here is
+        // a multiplier whatever it is called, and so is a newtype over one,
+        // which is why this is an allow-list and not a search for the word.
         if relative.ends_with("family_review.rs") {
             for (at, _) in shipped.match_indices("pub fn ") {
                 let rest = &shipped[at..];
                 let signature: String = rest.chars().take_while(|c| *c != '{').collect();
-                if signature.contains("Decimal") || signature.contains("Money") {
-                    returns_a_multiplier.push(format!("{relative}: {}", signature.trim()));
+                if let Some(refused) = returns_an_unreviewed_type(&signature) {
+                    returns_a_multiplier.push(format!(
+                        "{relative}: {} returns {refused}",
+                        signature.trim()
+                    ));
                 }
             }
         }
@@ -2369,29 +2742,26 @@ fn no_code_path_in_the_kernel_moves_a_capital_allocation_from_a_family_finding()
                     }
                     mut_self_methods_seen += 1;
 
-                    // A method is a mover when it names a family — in its own
-                    // name or its parameter list — *and* its body assigns one
-                    // of the fields a weight lives in. Both halves, because
-                    // `CentralPlane` legitimately assigns `proposals` in
+                    // A method is a mover when it names a family or one of the
+                    // finding types — in its own name or its parameter list —
+                    // *and* its body moves a weight. Both halves, because
+                    // `CentralPlane` legitimately writes `proposals` in
                     // `set_proposal`, which names no family and is not this;
-                    // and `Platform::family_standings` names a family and
-                    // assigns nothing, which is also not this.
-                    let names_a_family =
-                        name.to_lowercase().contains("famil") || params.contains("StrategyFamily");
-                    if !names_a_family {
+                    // and `Platform::review_family_allocation` names a family
+                    // and writes nothing, which is also not this.
+                    if !names_a_family_or_finding(&name, params) {
                         continue;
                     }
+                    examined.push(format!("{holder}::{name}"));
                     let after_params = paren + 1 + params.len() + 1;
                     if let Some(offset) = block[after_params..].find('{') {
                         let body_open = after_params + offset;
                         if let Some(body) = bracketed(block, body_open, b'{', b'}')
-                            && FAMILY_WEIGHT_FIELDS
-                                .iter()
-                                .any(|field| assigns_field(body, field))
+                            && let Some(how) = writes_a_weight(body)
                         {
                             movers.push(format!(
                                 "{relative}: {holder}::{name}(&mut self, …) names a family and \
-                                 assigns a field capital lives in"
+                                 {how}"
                             ));
                         }
                     }
@@ -2415,20 +2785,21 @@ fn no_code_path_in_the_kernel_moves_a_capital_allocation_from_a_family_finding()
         "no `&mut self` method was found on any of the three weight holders; both scans below \
          would pass on a walk that matched nothing"
     );
-    // The positive control on the family half of the tokeniser: the review
-    // *is* found by it — it takes `&mut self` and names a family — and is not
-    // flagged, because it assigns nothing capital lives in. Without this, a
-    // tokeniser that never matched the word would satisfy the assertion below
-    // by finding nothing to look at.
-    let platform = read("backend/crates/runtime/qip-kernel/src/platform.rs");
+    // The positive control on the walk itself, and it is deliberately not a
+    // `contains` over the file. The previous version asserted that
+    // `platform.rs` held the text `fn review_family_allocation(&mut self, now:
+    // Timestamp)`, which proves the method exists and says nothing about
+    // whether the loop above ever reached it — a tokeniser that matched no
+    // method at all would have satisfied it. This asserts the loop put the
+    // method in `examined`, which it can only do by having tokenised the
+    // `impl` block, the signature, the receiver and the name.
     assert!(
-        platform.contains("fn review_family_allocation(&mut self, now: Timestamp)"),
-        "the positive control has moved; the family review no longer takes `&mut self` where \
-         this test looks for it, so the scan below is reading a platform that has no family \
-         method at all"
+        examined.contains(&"Platform::review_family_allocation".to_string()),
+        "the walk did not examine `Platform::review_family_allocation`; it examined {examined:?}, \
+         so the absence asserted below is the absence of a scan and not of a mover"
     );
     // And the module the review lives in is present and was walked, so the
-    // `Decimal` scan above had something to read.
+    // return-type scan above had something to read.
     assert!(
         read("backend/crates/runtime/qip-kernel/src/family_review.rs").contains("pub fn "),
         "family_review.rs exports nothing; the multiplier scan read an empty module"
@@ -2436,7 +2807,7 @@ fn no_code_path_in_the_kernel_moves_a_capital_allocation_from_a_family_finding()
 
     assert!(
         movers.is_empty(),
-        "a `&mut self` method naming a family now assigns a field capital lives in: {movers:?}. \
+        "a `&mut self` method naming a family now moves a weight: {movers:?}. \
          ADR 0064: the family review measures and allocates nothing, because every weight it \
          could narrow sits behind a writer with no production caller — a cap built on one would \
          be a control that cannot fire, which this repository records under \
@@ -2445,9 +2816,11 @@ fn no_code_path_in_the_kernel_moves_a_capital_allocation_from_a_family_finding()
     );
     assert!(
         returns_a_multiplier.is_empty(),
-        "an exported function in `family_review` returns a money type: {returns_a_multiplier:?}. \
-         The finding may be a record and never a number a caller can size with; the guarantee is \
-         that no such function exists, not that nobody calls one."
+        "an exported function in `family_review` returns a type the module's reviewed list does \
+         not permit: {returns_a_multiplier:?}. A `Decimal`, a `Money`, a newtype over either or \
+         a bare number is a multiplier whatever it is called; the finding may be a record and \
+         never a number a caller can size with. Add the type to `FAMILY_REVIEW_RETURN_TYPES` \
+         only if it is genuinely not one."
     );
 }
 

@@ -4587,6 +4587,95 @@ fn one_signature_does_not_promote_and_a_second_from_the_same_person_is_refused()
 }
 
 #[test]
+fn the_two_promotion_signatures_are_held_to_one_rationale_floor() -> Result<()> {
+    // The defect this prevents, and it shipped. `Approval::new` refuses a
+    // first rationale under ten trimmed characters. `Approval::countersigned_by`
+    // checks none — it cannot, it is never handed the second rationale — and
+    // the countersigning arm wrote the second signer's string onto
+    // `PromotionApprovalEntry.rationale` and passed it down through
+    // `factory().promote` to the lifecycle ledger, neither of which validates
+    // it either. So the first signer had to argue and the second could write
+    // "x", on the act that puts capital behind a strategy, and the second
+    // signer's text is the one the record keeps.
+    //
+    // Found while fixing the same defect on `reinstate_venue` and then again
+    // on `approve_recalibration`. Three sites, one check.
+    let mut platform = platform()?;
+    let id = StrategyId::new("dual-approval-rationale");
+    walk_to_shadow(&mut platform, &id)?;
+    // Premise: the strategy is at the rung where a signature is what moves it,
+    // so a refusal below is about the rationale and not about the ladder.
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Shadow,
+        "premise: the strategy is one rung below the first that needs signing"
+    );
+
+    // Premise: the floor is real on the *first* signature and it is ten
+    // trimmed characters. Asserted against `Approval::new`'s own refusal
+    // rather than against the kernel's mirrored constant, so the two signers
+    // cannot silently come to be held to different numbers.
+    let short = platform
+        .approve_promotion(&id, &operator("ops-dana", start()), "  fine  ", start())
+        .expect_err("a nine-character rationale signed the first half");
+    assert!(
+        short
+            .message()
+            .contains("state a rationale somebody can review later"),
+        "the first signature was refused for some other reason: {}",
+        short.message()
+    );
+
+    platform.approve_promotion(&id, &operator("ops-dana", start()), WHY, start())?;
+
+    // The countersignature, below the same floor. Trimmed, so padding it with
+    // spaces does not buy a signer past the bar.
+    let thin = platform
+        .approve_promotion(&id, &operator("ops-ravi", start()), "   x   ", start())
+        .expect_err("a one-character countersignature put capital behind a strategy");
+    assert!(
+        thin.message().contains("must state a rationale"),
+        "the countersignature was refused for some other reason: {}",
+        thin.message()
+    );
+    assert!(
+        thin.message().contains("promotion"),
+        "the refusal does not name which signature is short: {}",
+        thin.message()
+    );
+
+    // The consequence, which is the half that matters. A test asserting only
+    // the refusal would pass against an implementation that promoted first
+    // and complained afterwards.
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Shadow,
+        "a countersignature with an unreviewable rationale promoted the strategy anyway"
+    );
+    assert!(
+        !platform.central().factory().holds_capital(&id),
+        "a refused countersignature put the strategy on a capital-holding rung"
+    );
+    // The admitting half, which does double duty. Without it this test passes
+    // against an `approve_promotion` that refuses every countersignature —
+    // a floor nobody can clear rather than a floor. And because it *promotes*
+    // rather than reporting `awaiting_countersignature`, it also proves the
+    // first signature survived the refusal above: a refusal on the floor is
+    // not a refusal of the pair, so the second signer restates their reason
+    // rather than sending the first back to sign again.
+    let done = platform.approve_promotion(&id, &operator("ops-ravi", start()), WHY, start())?;
+    assert_eq!(done.outcome, "promoted", "detail: {:?}", done.detail);
+    assert_eq!(
+        done.approver, "ops-dana",
+        "the first signature was discarded by the refused countersignature and this is a \
+         fresh pair"
+    );
+    assert_eq!(done.second_approver.as_deref(), Some("ops-ravi"));
+    assert!(done.rationale.trim().len() >= 10);
+    Ok(())
+}
+
+#[test]
 fn two_operators_carry_the_strategy_onto_the_rung_and_the_gate_still_rules() -> Result<()> {
     // The pass half. Without it every test here would be satisfied by a route
     // that refuses everything, which is the failure a veto-only fixture

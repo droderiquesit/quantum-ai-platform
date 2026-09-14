@@ -1083,6 +1083,101 @@ fn reinstatement_needs_two_different_fresh_operators_and_is_journaled_at_each_si
 }
 
 #[test]
+fn the_two_reinstatement_signatures_are_held_to_one_rationale_floor() -> Result<()> {
+    // The record of why a venue the platform stopped using was put back is
+    // the *second* signer's text — `reinstate_venue` writes `rationale` into
+    // the entry on the countersignature — and until 2026-09-14 only the first
+    // signature was held to a floor. `Approval::new` refuses a rationale
+    // under ten trimmed characters; `Approval::countersigned_by` checks
+    // nothing, and the countersigning arm wrote the string straight onto the
+    // entry. So the first signer had to state a reviewable reason and the
+    // second could write "x", which is the one that survives on the record.
+    let mut platform = platform()?;
+    platform.observe(quiet_bars("AAA", 30));
+    let now = start();
+    withdraw_the_desk_venue(&mut platform)?;
+
+    // The premise: the floor is real on the first signature, and it is ten
+    // trimmed characters. Asserted against `Approval` itself rather than
+    // assumed, because `REINSTATEMENT_RATIONALE_FLOOR` is a constant mirroring
+    // a number the contracts crate does not export — a mirror that drifts
+    // would hold the two signers to different floors and nobody would know.
+    let too_short = platform
+        .reinstate_venue("simulated-venue", &operator("alice", now), "  fine  ", now)
+        .expect_err("a nine-character rationale signed the first half");
+    assert!(
+        too_short
+            .message()
+            .contains("state a rationale somebody can review later"),
+        "{}",
+        too_short.message()
+    );
+    assert!(
+        reinstatements(&platform)?.is_empty(),
+        "a refused first signature was journaled"
+    );
+
+    let first = platform.reinstate_venue(
+        "simulated-venue",
+        &operator("alice", now),
+        "the venue's grid was corrected in the catalogue",
+        now,
+    )?;
+    assert_eq!(first.outcome, "awaiting_countersignature");
+
+    // The countersignature, one character short of the same floor. Trimmed,
+    // so padding it with spaces does not buy a signer past the bar either.
+    let thin = platform
+        .reinstate_venue("simulated-venue", &operator("bram", now), "   x   ", now)
+        .expect_err("a one-character countersignature reinstated a withdrawn venue");
+    assert!(
+        thin.message()
+            .contains("must state a rationale somebody can review later"),
+        "the countersignature was refused for some other reason: {}",
+        thin.message()
+    );
+    assert!(
+        thin.message().contains("reinstatement"),
+        "the refusal does not name which signature is short: {}",
+        thin.message()
+    );
+    assert_eq!(
+        platform.withdrawn_venues().iter().collect::<Vec<_>>(),
+        vec!["simulated-venue"],
+        "a refused countersignature reinstated the venue anyway"
+    );
+    assert_eq!(
+        reinstatements(&platform)?.len(),
+        1,
+        "a refused countersignature was journaled"
+    );
+    // And the first signature is still standing: a refusal on the floor is
+    // not a refusal of the pair, so the second signer can restate their
+    // reason rather than sending the first back to sign again.
+    assert!(
+        platform
+            .pending_venue_reinstatement("simulated-venue")
+            .is_some(),
+        "a rationale too short discarded the first signature"
+    );
+
+    // The admitting half. Without it this test passes against a
+    // `reinstate_venue` that refuses every countersignature, which is a floor
+    // nobody can clear rather than a floor.
+    let second = platform.reinstate_venue(
+        "simulated-venue",
+        &operator("bram", now),
+        "confirmed against the venue's own specification",
+        now,
+    )?;
+    assert_eq!(second.outcome, "reinstated");
+    assert_eq!(second.second_approver.as_deref(), Some("bram"));
+    assert!(second.rationale.trim().len() >= 10);
+    assert!(platform.withdrawn_venues().is_empty());
+    Ok(())
+}
+
+#[test]
 fn a_larger_size_pattern_journals_a_sizing_proposal_and_leaves_every_bound_where_it_was()
 -> Result<()> {
     // ADR 0063's loosening direction. Ten filled buys before a tape that
