@@ -332,141 +332,230 @@ fn the_approver_of_a_reinstatement_is_the_session_and_never_the_body() -> Result
 }
 
 #[test]
-fn no_venue_the_platform_did_not_withdraw_can_be_reinstated() -> Result<()> {
-    // A good body, a good operator, and a venue nothing withdrew: not found,
-    // because a reinstatement signs a withdrawal *the platform made*. The
-    // distinction from a 400 matters — the request was well formed; the thing
-    // it names does not exist — and the refusal is what stops this route
-    // being a way to name a venue into the platform's vocabulary.
+fn a_reinstatement_is_refused_before_the_kernel_is_asked_because_nothing_attests_a_person()
+-> Result<()> {
+    // This test used to be called
+    // `no_venue_the_platform_did_not_withdraw_can_be_reinstated` and asserted
+    // the kernel's 404 for a venue nothing withdrew. The old assertion was
+    // true of the kernel and is no longer reachable over HTTP, and the reason
+    // is the point of this change: the route now refuses before the kernel is
+    // consulted, because it cannot date an operator identity. A standing
+    // bearer token mounted from Secret Manager attests possession and never
+    // presence, and the kernel's fifteen-minute window is entitled to a number
+    // that means something. The kernel's own not-found remains proven where it
+    // always was, against the kernel:
+    // `qip-kernel/tests/learning.rs::reinstatement_needs_two_different_fresh_
+    // operators_and_is_journaled_at_each_signature`.
     let rig = rig()?;
+
+    // Premise: the route is reachable at the operator role and the credential
+    // authenticates, so what follows is this gate and not a 401 or a 403 from
+    // the role check. A viewer on the same path answers 403 too, which is why
+    // the premise is asserted with a *readable* route rather than by trusting
+    // the status code alone.
+    let (premise, _) = body_of(rig.call(Method::Get, LIST_PATH, OPERATOR_TOKEN, ""));
+    assert!(
+        premise.contains("withdrawals_recorded"),
+        "the operator credential does not authenticate, so the refusal below proves nothing:          {premise}"
+    );
+
     let response = rig.call(Method::Post, SIGN_PATH, OPERATOR_TOKEN, GOOD_BODY);
     assert_eq!(
         response.status,
-        404,
+        403,
         "{}",
         String::from_utf8_lossy(&response.body)
     );
     let (text, body) = body_of(response);
+    let error = body["error"].as_str().unwrap_or_default();
     assert!(
-        body["error"]
-            .as_str()
-            .is_some_and(|error| error.contains("is not withdrawn")),
-        "the refusal does not say the venue was never withdrawn: {text}"
+        error.contains("a standing bearer token cannot carry it"),
+        "the refusal does not say why no instant is available: {text}"
+    );
+    assert!(
+        error.contains("per-request proof of recency"),
+        "a refusal must name what would be required instead: {text}"
     );
 
-    // And an unrelated name is refused the same way, rather than being
-    // treated as a venue with no withdrawal to sign.
+    // And the refusal does not echo the caller's path segment. The old
+    // not-found refusal was careful about this and the new one inherits the
+    // care: a venue name a caller invented, repeated back, is a reflection
+    // this route has no reason to offer.
     let response = rig.call(
         Method::Post,
         "/venues/XZZZ/reinstatements",
         OPERATOR_TOKEN,
         GOOD_BODY,
     );
-    assert_eq!(response.status, 404);
+    assert_eq!(response.status, 403);
+    let (text, _) = body_of(response);
+    assert!(
+        !text.contains("XZZZ"),
+        "the refusal echoed the path: {text}"
+    );
     Ok(())
 }
 
 #[test]
-fn one_operator_signing_twice_is_one_person_and_two_operators_put_the_venue_back() -> Result<()> {
-    // The security review's finding, now reachable. Every dual-signature
-    // control on this platform rests on `OperatorIdentity::subject()` being
-    // durable per human rather than per session: the kernel's countersignature
-    // check compares *subjects*, so a subject sourced from anything
-    // session- or request-scoped — a token id, a request id — would let one
-    // person countersign their own reinstatement by opening a second session,
-    // and the check would not notice. Until this route existed there was
-    // nothing to exercise that against.
+fn no_pair_of_operators_can_put_a_venue_back_while_the_credential_attests_nobody() -> Result<()> {
+    // This test used to be
+    // `one_operator_signing_twice_is_one_person_and_two_operators_put_the_venue_
+    // _back` and drove the whole dual-signature flow over HTTP: first
+    // signature held, same credential refused as one person, second credential
+    // completes, venue trades again. Every one of those assertions was true of
+    // the kernel and *none* of them was true of a deployment, for two
+    // independent reasons that this fixture hid.
     //
-    // Here it is exercised as an operator would hit it: two separate HTTP
-    // requests, on the same credential, are two sessions and must be refused
-    // as one person; a second credential with a different subject is a second
-    // person and completes the reinstatement.
+    // The first is the one this change fixes. The route dated the operator
+    // identity at the credential record's minting instant, which for a
+    // standing secret is when the process started; the fixture minted its
+    // credentials at `start()` and drove at `start()`, so the kernel's
+    // fifteen-minute window computed an age of zero and passed. In the shipped
+    // binary that same window measured the pod's uptime: any copy of the token,
+    // however old, passed for fifteen minutes after a restart, and the operator
+    // actually at the keyboard was refused for ever after. The fixture proved
+    // a property of the fixture.
+    //
+    // The second is why refusing costs nothing that worked. This rig holds two
+    // operator credentials with *different* subjects. A deployment holds one:
+    // the composition root mints `format!("{}@env", role.as_str())`, so both
+    // humans sharing `QIP_TOKEN_OPERATOR` present `operator@env` and the
+    // kernel refuses the countersignature as one person signing twice. ADR
+    // 0062 Amendment B records that; ADR 0065 records this.
+    //
+    // So what is asserted here is the refusal, from both subjects, with the
+    // venue still withdrawn and no signature held. The kernel's countersignature
+    // arithmetic — held first signature, refused same subject, completed pair —
+    // is proven against the kernel in
+    // `qip-kernel/tests/learning.rs::reinstatement_needs_two_different_fresh_
+    // operators_and_is_journaled_at_each_signature`, which is where it can be
+    // proven honestly.
     let rig = rig()?;
     rig.withdraw_the_desk_venue()?;
 
-    // The first signature is held, and the venue stays withdrawn.
-    let first = rig.call(Method::Post, SIGN_PATH, OPERATOR_TOKEN, GOOD_BODY);
-    assert_eq!(
-        first.status,
-        200,
-        "{}",
-        String::from_utf8_lossy(&first.body)
-    );
-    let (text, entry) = body_of(first);
-    assert_eq!(entry["outcome"], "awaiting_countersignature", "{text}");
-    assert_eq!(entry["approver"], "operator-one@example.com", "{text}");
-    assert!(entry["second_approver"].is_null(), "{text}");
-    let (_, view) = body_of(rig.call(Method::Get, LIST_PATH, VIEWER_TOKEN, ""));
-    assert_eq!(
-        view["withdrawn"].as_array().map(Vec::len),
-        Some(1),
-        "a single signature reinstated the venue"
-    );
-    assert_eq!(view["withdrawn"][0]["awaiting_countersignature"], true);
-
-    // The same credential again: a second request, a second session, and the
-    // same person. Refused, and the venue is still withdrawn.
-    let same_again = rig.call(Method::Post, SIGN_PATH, OPERATOR_TOKEN, GOOD_BODY);
-    assert_eq!(
-        same_again.status,
-        409,
-        "a second session of one operator countersigned its own reinstatement: {}",
-        String::from_utf8_lossy(&same_again.body)
-    );
-    let (text, body) = body_of(same_again);
-    assert!(
-        body["error"]
-            .as_str()
-            .is_some_and(|error| error.contains("a second session is not a second person")),
-        "{text}"
-    );
-    let (_, view) = body_of(rig.call(Method::Get, LIST_PATH, VIEWER_TOKEN, ""));
-    assert_eq!(
-        view["withdrawn"].as_array().map(Vec::len),
-        Some(1),
-        "the refused countersignature reinstated the venue anyway"
-    );
-
-    // A different subject is a different person, so the pair completes and
-    // the venue comes back at both seams.
-    let second = rig.call(Method::Post, SIGN_PATH, SECOND_OPERATOR_TOKEN, GOOD_BODY);
-    assert_eq!(
-        second.status,
-        200,
-        "{}",
-        String::from_utf8_lossy(&second.body)
-    );
-    let (text, entry) = body_of(second);
-    assert_eq!(entry["outcome"], "reinstated", "{text}");
-    assert_eq!(entry["approver"], "operator-one@example.com", "{text}");
-    assert_eq!(
-        entry["second_approver"], "operator-two@example.com",
-        "{text}"
-    );
-
+    // Premise: there is a withdrawal to sign. Without this the refusals below
+    // would be indistinguishable from a route with nothing to act on.
     let (text, view) = body_of(rig.call(Method::Get, LIST_PATH, VIEWER_TOKEN, ""));
     assert_eq!(
         view["withdrawn"].as_array().map(Vec::len),
-        Some(0),
-        "two signatures did not put the venue back: {text}"
+        Some(1),
+        "{text}"
     );
-    // The withdrawal record stays on the log: a venue put back is not a
-    // venue that was never withdrawn, and the difference is the whole reason
-    // the record exists.
-    assert_eq!(view["withdrawals_recorded"], 1, "{text}");
+    assert_eq!(view["withdrawn"][0]["awaiting_countersignature"], false);
 
-    // And the desk trades there again — the seam the withdrawal actually
-    // closed, checked rather than inferred from the list.
-    let mut platform = rig.platform.lock().expect("the platform lock");
-    let order = platform.order_from(
-        object("AAA"),
-        qip_execution_engine::order::Side::Buy,
-        dec!("10"),
-        dec!("100"),
-        "prop-after-reinstatement",
-        vec!["hyp-after-reinstatement".to_string()],
-        start(),
+    for (label, token) in [("first", OPERATOR_TOKEN), ("second", SECOND_OPERATOR_TOKEN)] {
+        let response = rig.call(Method::Post, SIGN_PATH, token, GOOD_BODY);
+        assert_eq!(
+            response.status,
+            403,
+            "the {label} operator signed on a credential that attests nobody: {}",
+            String::from_utf8_lossy(&response.body)
+        );
+        let (text, body) = body_of(response);
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("a standing bearer token cannot carry it")),
+            "the {label} refusal is not this gate: {text}"
+        );
+    }
+
+    // Nothing was held and nothing moved: no first signature stands, so a
+    // later change that made the second signature complete a pair the platform
+    // never recorded would fail here rather than in production.
+    let (text, view) = body_of(rig.call(Method::Get, LIST_PATH, VIEWER_TOKEN, ""));
+    assert_eq!(
+        view["withdrawn"].as_array().map(Vec::len),
+        Some(1),
+        "{text}"
     );
-    platform.submit_order(order, start())?;
+    assert_eq!(
+        view["withdrawn"][0]["awaiting_countersignature"], false,
+        "a refused signature was held anyway: {text}"
+    );
+
+    // And the platform's own set still holds it, read off the platform rather
+    // than off the view, so a list that had merely stopped rendering the row
+    // would not pass for a venue still withdrawn.
+    let platform = rig.platform.lock().expect("the platform lock");
+    assert_eq!(
+        platform.withdrawn_venues().iter().collect::<Vec<_>>(),
+        vec!["simulated-venue"],
+        "two refused signatures put the venue back anyway"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_reinstatement_path_served_to_an_operator_is_a_path_the_router_matches() -> Result<()> {
+    // The failure this prevents, named in `venue_views.rs`'s own comment and
+    // not prevented by it: "a path served to an operator and a path the router
+    // matches that disagreed would send the person holding the second
+    // signature to a 404 in the middle of recovering a venue". The comment
+    // claimed one constant was read by the view and by the route table. It was
+    // not — the table had its own literal, the handler arm a third, this file a
+    // fourth, and the `/api/v1` half was hand-typed rather than taken from
+    // `VERSION_PREFIX` — so a rename would have produced exactly that 404 with
+    // the comment still asserting it could not.
+    //
+    // Asserted by *driving* the served string rather than comparing it to a
+    // copy. A comparison against a constant this file also imports would pass
+    // for ever if both moved together, which is the trap the testing rules
+    // name.
+    let rig = rig()?;
+    let (text, view) = body_of(rig.call(Method::Get, LIST_PATH, VIEWER_TOKEN, ""));
+    let served = view["reinstatement_path"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+
+    // Premise: something was served, and it is a full path rather than a bare
+    // pattern. A blank string would satisfy every `strip_prefix` below.
+    assert!(
+        served.starts_with("/api/v1/") && served.len() > "/api/v1/".len(),
+        "no usable reinstatement path was served: {text}"
+    );
+
+    // The router's own table names it, under the prefix the router strips.
+    let pattern = served
+        .strip_prefix(qip_api::routes::VERSION_PREFIX)
+        .expect("the served path sits under the version prefix");
+    assert!(
+        ROUTES
+            .iter()
+            .any(|route| route.method == Method::Post && route.pattern == pattern),
+        "the path served to an operator, {served}, is not a POST route the table declares"
+    );
+
+    // And the router actually matches it, with the parameter filled in as an
+    // operator would fill it.
+    //
+    // Asserted on the router's *own* refusal body rather than on a status
+    // code, and the distinction is not pedantry: an unmatched path and a venue
+    // the platform never withdrew are both 404s, so a status-code assertion
+    // would pass or fail for either reason and tell the reader nothing about
+    // which. `{"error":"no such route"}` is the one answer only the router
+    // produces.
+    const UNMATCHED: &str = "no such route";
+    let concrete = pattern.replace(":venue", "simulated-venue");
+    let response = rig.call(Method::Post, &concrete, OPERATOR_TOKEN, GOOD_BODY);
+    let served_answer = String::from_utf8_lossy(&response.body).into_owned();
+    assert!(
+        !served_answer.contains(UNMATCHED),
+        "the path the list serves is a path the router does not match: {served_answer}"
+    );
+
+    // The other half, without which the line above would pass against a
+    // router that matched everything: a path this table does not declare is
+    // refused as unmatched, by the same call through the same rig.
+    let nonsense = concrete.replace("reinstatements", "reinstatement");
+    let missing = rig.call(Method::Post, &nonsense, OPERATOR_TOKEN, GOOD_BODY);
+    assert_eq!(missing.status, 404);
+    assert!(
+        String::from_utf8_lossy(&missing.body).contains(UNMATCHED),
+        "a path the table does not declare was not refused as unmatched, so the assertion above \
+         proves nothing: {}",
+        String::from_utf8_lossy(&missing.body)
+    );
     Ok(())
 }

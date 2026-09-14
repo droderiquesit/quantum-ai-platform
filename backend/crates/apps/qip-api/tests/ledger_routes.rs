@@ -248,6 +248,24 @@ impl Rig {
     }
 
     /// One user's row out of `GET /ledger/users`, read as an analyst.
+    /// Take an eligibility decision by calling the kernel directly.
+    ///
+    /// `POST /ledger/users/:user/eligibility` refuses every caller now: it
+    /// needs an authentication instant and a standing bearer token attests
+    /// nobody's presence, so there is none to give (ADR 0065). The assertions
+    /// below whose subject is the *ledger's* behaviour once a decision stands
+    /// still need one to stand, and arranging it here says so plainly rather
+    /// than dressing a fixture up as a route. The identity carries an explicit
+    /// instant, which is precisely what the composition root no longer
+    /// fabricates and a test legitimately may.
+    fn decide_in_kernel(&self, user: &str, decision: EligibilityDecision, why: &str) -> Result<()> {
+        self.with_platform(|platform| -> Result<()> {
+            let operator = OperatorIdentity::verified("ops-carol", "oidc", start());
+            platform.decide_eligibility(&UserId::new(user)?, decision, &operator, why, start())?;
+            Ok(())
+        })?
+    }
+
     fn row(&self, user: &str) -> serde_json::Value {
         let (text, body) = body_of(self.get("/ledger/users"));
         body["users"]
@@ -1163,19 +1181,30 @@ fn each_user_row_says_whether_the_ledger_would_fund_them_and_names_the_refusal()
 // --- POST /ledger/users/{user}/eligibility ------------------------------------
 
 #[test]
-fn an_operator_grants_eligibility_the_row_reads_eligible_and_a_revocation_takes_it_back()
+fn an_eligibility_decision_is_refused_at_the_route_and_only_the_kernel_still_takes_one()
 -> Result<()> {
-    // The failure this guards: the ledger refuses to fund a user until an
-    // operator has decided their eligibility, and until this route existed
-    // the only ways to take that decision were the deployment's committed
-    // configuration and a test. A gate that nobody a running process can
-    // name is able to open is a gate the desk works around, not one it uses.
+    // This test was
+    // `an_operator_grants_eligibility_the_row_reads_eligible_and_a_revocation_
+    // takes_it_back` and drove a grant and a revocation over HTTP. Both
+    // succeeded, and both succeeded for a reason that held in the rig and
+    // nowhere else: the route dated its `OperatorIdentity` at
+    // `principal.issued_at`, the rig minted its credential at `start()` and
+    // decided at `start()`, so the kernel's fifteen-minute window computed an
+    // age of zero. In the shipped binary that number is the instant the
+    // process read `QIP_TOKEN_OPERATOR` out of its mount — the boot instant —
+    // so the window measured uptime, admitted a six-week-old copy of the token
+    // for fifteen minutes after every restart, and refused the operator at the
+    // keyboard from minute sixteen onward. ADR 0065.
+    //
+    // What is asserted now is the refusal, that nothing reaches the log
+    // through it, and — so this is not mistaken for a ledger that has stopped
+    // working — that the ledger still records a decision the kernel is given
+    // an honest instant for.
     let rig = rig_with(
         PlatformConfig::default().with_user_mandates(vec![enrolment("alice", dec!("1000"))?]),
     )?;
 
-    // Premise: nobody has decided alice, and the ledger says so by name — so
-    // the change below is this route's and not a state the rig started in.
+    // Premise: nobody has decided alice, and the ledger says so by name.
     let before = rig.row("alice");
     assert_eq!(before["eligibility"]["eligible"], serde_json::json!(false));
     assert_eq!(
@@ -1183,111 +1212,88 @@ fn an_operator_grants_eligibility_the_row_reads_eligible_and_a_revocation_takes_
         serde_json::json!("unknown_user"),
         "{before}"
     );
+    // Premise two: the operator credential authenticates and holds the role,
+    // so the refusal below is this gate and not a 401 or the role check.
+    assert_eq!(
+        rig.call(Method::Get, "/ledger/users", OPERATOR_TOKEN)
+            .status,
+        200
+    );
 
     let response = rig.decide("alice", OPERATOR_TOKEN, &grant_body());
     assert_eq!(
         response.status,
-        200,
+        403,
         "{}",
         String::from_utf8_lossy(&response.body)
     );
-    let (text, decided) = body_of(response);
-    assert_eq!(decided["posture"], serde_json::json!(POSTURE), "{text}");
-    assert_eq!(
-        decided["served_at"],
-        serde_json::json!(start().to_rfc3339()),
-        "{text}"
-    );
-    assert_eq!(
-        decided["user"]["user_id"],
-        serde_json::json!("alice"),
-        "{text}"
-    );
-    assert_eq!(
-        decided["user"]["eligibility"]["eligible"],
-        serde_json::json!(true),
-        "{text}"
-    );
-    assert_eq!(
-        decided["user"]["eligibility"]["can_invest"],
-        serde_json::json!(true),
-        "{text}"
-    );
-    assert_eq!(
-        decided["user"]["eligibility"]["jurisdiction"],
-        serde_json::json!("GB"),
-        "{text}"
-    );
-    assert_eq!(
-        decided["user"]["eligibility"]["expires_at"],
-        serde_json::json!(
-            start()
-                .saturating_add(Duration::from_days(365))
-                .to_rfc3339()
-        ),
-        "{text}"
-    );
+    let (text, refusal) = body_of(response);
     assert!(
-        decided["user"]["eligibility"]["refused"].is_null(),
-        "{text}"
-    );
-    // No withdrawal field arrived with the terms, on the surface or under it.
-    assert!(
-        !text.contains("can_withdraw\":true"),
-        "a granted withdrawal reached the answer: {text}"
+        refusal["error"].as_str().is_some_and(|reason| reason
+            .contains("a standing bearer token cannot carry it")
+            && reason.contains("per-request proof of recency")),
+        "the refusal does not name the gate or what would satisfy it: {text}"
     );
 
-    // The answer is the ledger's row, not the route's account of it: the
-    // list agrees, key for key.
-    assert_eq!(rig.row("alice"), decided["user"], "{text}");
-
-    // And the platform acted on nothing the log does not hold: the registry
-    // rebuilt from the event log alone is the one the ledger is using.
+    // Nothing reached the log, and the row is unchanged. The gate is before
+    // the kernel, so a record here would mean it fired after the act.
+    assert_eq!(
+        rig.row("alice")["eligibility"]["refused"],
+        serde_json::json!("unknown_user"),
+        "a refused decision moved the row anyway"
+    );
     rig.with_platform(|platform| -> Result<()> {
-        assert_eq!(
-            &platform.replay_eligibility()?,
-            platform.user_ledger().eligibility(),
-            "the eligibility the ledger holds is not the one the log replays"
-        );
-        assert!(
-            platform
-                .user_ledger()
-                .eligibility()
-                .record(&UserId::new("alice")?)
-                .is_some_and(|record| record.by.subject() == OPERATOR_SUBJECT),
-            "the decision names somebody other than the authenticated operator"
-        );
+        assert_eq!(platform.replay_eligibility()?.records().len(), 0);
         Ok(())
     })??;
+
+    // And the ledger itself still decides, given an identity with a real
+    // instant — otherwise every assertion above would also pass against a
+    // ledger that had simply stopped accepting decisions.
+    rig.decide_in_kernel(
+        "alice",
+        EligibilityDecision::Granted {
+            eligibility: Eligibility::new(EligibilityTerms {
+                verified_at: start(),
+                can_invest: true,
+                jurisdiction: Jurisdiction::new("GB")?,
+                expires_at: start().saturating_add(Duration::from_days(365)),
+            })?,
+        },
+        "identity verified against the passport on file",
+    )?;
+    let granted = rig.row("alice");
+    assert_eq!(
+        granted["eligibility"]["eligible"],
+        serde_json::json!(true),
+        "{granted}"
+    );
+    assert_eq!(
+        granted["eligibility"]["jurisdiction"],
+        serde_json::json!("GB"),
+        "{granted}"
+    );
 
     // A revocation takes it back, and the row says `revoked` rather than
     // reverting to `unknown_user`: "never verified" and "verified and then
     // revoked" are different answers and the registry keeps them apart.
-    let revoked = rig.decide(
+    rig.decide_in_kernel(
         "alice",
-        OPERATOR_TOKEN,
-        &serde_json::json!({
-            "decision": "revoked",
-            "reason": "the passport on file expired and has not been renewed",
-        })
-        .to_string(),
-    );
+        EligibilityDecision::Revoked {
+            reason: "the passport on file expired and has not been renewed".to_string(),
+        },
+        "the passport on file expired and has not been renewed",
+    )?;
+    let revoked = rig.row("alice");
     assert_eq!(
-        revoked.status,
-        200,
-        "{}",
-        String::from_utf8_lossy(&revoked.body)
-    );
-    let (text, revoked) = body_of(revoked);
-    assert_eq!(
-        revoked["user"]["eligibility"]["eligible"],
+        revoked["eligibility"]["eligible"],
         serde_json::json!(false),
-        "{text}"
+        "{revoked}"
     );
     assert_eq!(
-        revoked["user"]["eligibility"]["refused"],
+        revoked["eligibility"]["refused"],
         serde_json::json!("revoked"),
-        "{text}"
+        "{revoked}"
     );
     Ok(())
 }
@@ -1441,30 +1447,48 @@ fn an_eligibility_body_naming_a_withdrawal_capability_is_refused_as_a_key_this_r
     }
 
     // Premise, asserted last so the refusals above are about what changed:
-    // the same body without the offending key is admitted.
+    // the same body without the offending key gets *past* the screen. It is
+    // then refused by the operator gate, which is a different refusal at a
+    // different status — a 403 naming the credential class rather than a 400
+    // naming a key. If the screen were refusing everything, this would be a
+    // 400 like the rows above.
+    let past_the_screen = rig.decide("alice", OPERATOR_TOKEN, &grant_body());
     assert_eq!(
-        rig.decide("alice", OPERATOR_TOKEN, &grant_body()).status,
-        200
+        past_the_screen.status,
+        403,
+        "{}",
+        String::from_utf8_lossy(&past_the_screen.body)
+    );
+    let (text, refusal) = body_of(past_the_screen);
+    assert!(
+        refusal["error"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("a standing bearer token cannot carry it")),
+        "a clean body was refused by the body screen rather than the operator gate: {text}"
     );
     Ok(())
 }
 
 #[test]
-fn an_operator_credential_older_than_the_kernel_accepts_decides_nothing() -> Result<()> {
-    // The kernel holds an eligibility decision to a credential authenticated
-    // within fifteen minutes, on the ground that a session token from this
-    // morning is not evidence that anyone is at the keyboard now. The route
-    // therefore dates the operator identity at the instant the *credential*
-    // was issued: stamped with `now` instead, the identity would be fresh by
-    // construction and the kernel's rule would be a control that cannot
-    // fire.
+fn no_operator_credential_of_any_age_decides_an_eligibility() -> Result<()> {
+    // This test was `an_operator_credential_older_than_the_kernel_accepts_
+    // decides_nothing`, and it asserted both halves of a window: a stale
+    // credential refused, a fresh one admitted. The window was real in this
+    // rig and was uptime in the binary — `principal.issued_at` is when the
+    // process minted its record of a standing secret, not when a person
+    // authenticated — so the admitted half was the dangerous one: any copy of
+    // the token, of any age, was "fresh" for fifteen minutes after a restart.
+    //
+    // The property now is that age does not enter into it. Both credentials
+    // are refused, for the same reason, and the reason is the credential
+    // *class* rather than its age.
     let rig = rig_with(
         PlatformConfig::default().with_user_mandates(vec![enrolment("alice", dec!("1000"))?]),
     )?;
 
-    // Premise: the stale token is a live operator credential — it is
-    // recognised, unexpired and holds the role — so the refusal below is the
-    // credential's age and not its authority.
+    // Premise: the route exists at the operator role and both tokens are live
+    // operator credentials — recognised, unexpired and holding the role — so
+    // what follows is neither a 401 nor the role check.
     let route = ROUTES
         .iter()
         .find(|route| {
@@ -1472,38 +1496,39 @@ fn an_operator_credential_older_than_the_kernel_accepts_decides_nothing() -> Res
         })
         .expect("the eligibility route is in the table");
     assert_eq!(route.required_role, Role::Operator);
-    assert_eq!(
-        rig.call(Method::Get, "/ledger/users", STALE_OPERATOR_TOKEN)
-            .status,
-        200,
-        "the stale token is not a working credential, so the 409 below would prove nothing"
-    );
+    for token in [OPERATOR_TOKEN, STALE_OPERATOR_TOKEN] {
+        assert_eq!(
+            rig.call(Method::Get, "/ledger/users", token).status,
+            200,
+            "a token that is not a working credential would make the refusal below prove nothing"
+        );
+    }
 
-    let response = rig.decide("alice", STALE_OPERATOR_TOKEN, &grant_body());
-    assert_eq!(
-        response.status,
-        409,
-        "{}",
-        String::from_utf8_lossy(&response.body)
-    );
-    let (text, refusal) = body_of(response);
-    assert!(
-        refusal["error"]
-            .as_str()
-            .is_some_and(|reason| reason.contains("re-authenticate")),
-        "the refusal does not say what to do instead: {text}"
-    );
+    for token in [OPERATOR_TOKEN, STALE_OPERATOR_TOKEN] {
+        let response = rig.decide("alice", token, &grant_body());
+        assert_eq!(
+            response.status,
+            403,
+            "{}",
+            String::from_utf8_lossy(&response.body)
+        );
+        let (text, refusal) = body_of(response);
+        let reason = refusal["error"].as_str().unwrap_or_default();
+        assert!(
+            reason.contains("a standing bearer token cannot carry it"),
+            "the refusal is not the credential class: {text}"
+        );
+        // And it is not an *age*: a message that named a window would mean the
+        // old gate is still in place behind a new status code.
+        assert!(
+            !reason.contains("ago"),
+            "the refusal still reports an age, so something is still dating this identity: {text}"
+        );
+    }
     assert_eq!(
         rig.row("alice")["eligibility"]["refused"],
         serde_json::json!("unknown_user"),
-        "a stale credential decided an eligibility"
-    );
-
-    // Premise on the other side: the fresh credential of the same role is
-    // admitted, so the rule refuses an age and not every operator.
-    assert_eq!(
-        rig.decide("alice", OPERATOR_TOKEN, &grant_body()).status,
-        200
+        "a refused decision was recorded anyway"
     );
     Ok(())
 }
@@ -1616,76 +1641,96 @@ impl Rig {
 }
 
 #[test]
-fn an_operator_raises_an_investment_request_and_the_route_answers_the_limit_that_refused_it()
+fn an_investment_request_is_refused_at_the_route_and_the_mandate_still_decides_in_the_kernel()
 -> Result<()> {
-    // The failure this closes: §40.9 gives `investment-api` one intent — an
-    // investment request — and this API raised none at all, while the mandate
-    // gate that would decide one (`UserLedger::admit`: eligibility,
-    // entitlement, currency, investable capital net of what is at work, and
-    // the share tolerated at one strategy) sat in the tree reachable from
-    // nothing a deployed process ran.
-    //
-    // Premise first, because a route that refused everything would pass a
-    // refusal assertion on its own: the same user and strategy admit a
-    // request inside the mandate.
+    // This test was
+    // `an_operator_raises_an_investment_request_and_the_route_answers_the_limit_
+    // that_refused_it`. What it proved about the *mandate* — that the ledger
+    // admits inside the mandate, refuses outside it, names the limit as a
+    // value a page can group on, and funds nothing either way — is still
+    // proved below, against the kernel. What it proved about the *route* was
+    // an artefact of the fixture: the rig minted its operator credential at
+    // `start()` and raised at `start()`, so the kernel's fifteen-minute
+    // freshness window computed an age of zero. In the binary that number was
+    // the instant the process read `QIP_TOKEN_OPERATOR` out of its mount, so
+    // the window measured uptime and a token of any age passed for the first
+    // fifteen minutes after a restart. The route now refuses instead of
+    // offering an instant it does not have. ADR 0065.
     let rig = rig_ready_for_requests(dec!("1000"))?;
-    let admitted = rig.raise("alice", OPERATOR_TOKEN, &request_body(FAMILY, "400"));
-    assert_eq!(admitted.status, 200);
-    let (text, body) = body_of(admitted);
-    assert_eq!(body["admitted"], serde_json::json!(true), "{text}");
-    assert_eq!(body["posture"], serde_json::json!(POSTURE), "{text}");
-    assert!(body["refused_limit"].is_null(), "{text}");
+
+    // Premise: the operator credential authenticates and holds the role.
     assert_eq!(
-        body["request"]["amount"],
-        serde_json::json!("400"),
-        "the answer echoes the ledger's own record of the request: {text}"
+        rig.call(Method::Get, "/ledger/users", OPERATOR_TOKEN)
+            .status,
+        200
     );
-    assert_eq!(body["request"]["user_id"], serde_json::json!("alice"));
-    // The property that separates this from an order path, asserted rather
-    // than assumed: an admitted request moved nothing.
+
+    let response = rig.raise("alice", OPERATOR_TOKEN, &request_body(FAMILY, "400"));
     assert_eq!(
-        body["funded"],
-        serde_json::json!(false),
-        "an admitted request claimed to have funded: {text}"
+        response.status,
+        403,
+        "{}",
+        String::from_utf8_lossy(&response.body)
+    );
+    let (text, refusal) = body_of(response);
+    assert!(
+        refusal["error"].as_str().is_some_and(|reason| reason
+            .contains("a standing bearer token cannot carry it")
+            && reason.contains("per-request proof of recency")),
+        "the refusal does not name the gate or what would satisfy it: {text}"
+    );
+    // A refusal is not a verdict, and must not be dressed as one: a body
+    // carrying `admitted` would be read by a page as the mandate's answer.
+    assert!(
+        refusal.get("admitted").is_none(),
+        "the refusal is shaped like a mandate verdict: {text}"
     );
     assert_eq!(
         rig.row("alice")["balances"],
         serde_json::json!([]),
-        "an admitted request opened a book"
+        "a refused request opened a book"
     );
 
-    // The refusal, and the limit named as a value a page can group on rather
-    // than a sentence it would have to parse.
-    let refused = rig.raise("alice", OPERATOR_TOKEN, &request_body(FAMILY, "5000"));
-    assert_eq!(
-        refused.status, 200,
-        "a refusal is a decision the platform took, not an error"
-    );
-    let (text, body) = body_of(refused);
-    assert_eq!(body["admitted"], serde_json::json!(false), "{text}");
-    assert_eq!(
-        body["refused_limit"],
-        serde_json::json!("InvestableCapital"),
-        "{text}"
-    );
+    // And the mandate arithmetic the route can no longer reach still works,
+    // both ways, so none of this reads as a ledger that has stopped deciding.
+    let operator = OperatorIdentity::verified("ops-carol", "oidc", start());
+    let request = |amount: Decimal| -> Result<qip_capital::ledger::InvestmentRequest> {
+        Ok(qip_capital::ledger::InvestmentRequest {
+            user: UserId::new("alice")?,
+            strategy: qip_contracts::StrategyId::new(REGISTERED_STRATEGY),
+            family: FAMILY.to_string(),
+            currency: qip_core::Currency::USD,
+            amount,
+            requested_at: start(),
+        })
+    };
+    let inside = rig.with_platform(|platform| {
+        platform.decide_investment(
+            request(dec!("400"))?,
+            &operator,
+            "the client asked for this in writing on the dated instruction",
+            start(),
+        )
+    })??;
     assert!(
-        body["detail"]
-            .as_str()
-            .is_some_and(|detail| detail.contains("investable")),
-        "the refusal does not say what would have to change: {text}"
+        inside.is_admitted(),
+        "the mandate refused a request inside it: {inside:?}"
     );
-    // The row the verdict was reached against travels with it, so the
-    // figures behind the refusal are readable beside it.
+    let outside = rig.with_platform(|platform| {
+        platform.decide_investment(
+            request(dec!("5000"))?,
+            &operator,
+            "the client asked for this in writing on the dated instruction",
+            start(),
+        )
+    })??;
     assert_eq!(
-        body["user"]["user_id"],
-        serde_json::json!("alice"),
-        "{text}"
+        outside.refused_by(),
+        Some(qip_capital::ledger::RefusedLimit::InvestableCapital),
+        "the mandate admitted a request five times its investable capital, or refused it for \
+         some other reason: {outside:?}"
     );
-    assert_eq!(
-        body["user"]["mandate"]["investable"],
-        serde_json::json!("1000"),
-        "{text}"
-    );
+    // Neither moved money: an investment request decides and never funds.
     assert_eq!(rig.row("alice")["balances"], serde_json::json!([]));
     Ok(())
 }
@@ -1709,18 +1754,34 @@ fn a_viewer_cannot_raise_an_investment_request_and_a_user_with_no_mandate_is_not
         .expect("the route is in the table");
     assert_eq!(route.method, Method::Post);
     assert_eq!(route.required_role, Role::Operator);
-    assert_eq!(
-        rig.raise("alice", OPERATOR_TOKEN, &request_body(FAMILY, "100"))
-            .status,
-        200
+    // The operator reaches the route — past authentication, past the role
+    // check — and is refused by the credential-class gate that refuses every
+    // caller (ADR 0065). Both refusals below are 403, so the *reason* is what
+    // distinguishes them, and asserting the status alone would no longer
+    // separate "wrong role" from "this deployment cannot authorise anyone".
+    let operator = rig.raise("alice", OPERATOR_TOKEN, &request_body(FAMILY, "100"));
+    assert_eq!(operator.status, 403);
+    let (text, refused) = body_of(operator);
+    assert!(
+        refused["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("a standing bearer token cannot carry it")),
+        "the operator was refused by something other than the credential gate: {text}"
     );
 
     for token in [VIEWER_TOKEN, ANALYST_TOKEN] {
+        let response = rig.raise("alice", token, &request_body(FAMILY, "100"));
         assert_eq!(
-            rig.raise("alice", token, &request_body(FAMILY, "100"))
-                .status,
-            403,
+            response.status, 403,
             "a credential below the operator role raised a request"
+        );
+        let (text, refused) = body_of(response);
+        assert!(
+            refused["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("requires the operator role")),
+            "a credential below the operator role was refused for some other reason, so the \
+             route table is not what stopped it: {text}"
         );
     }
 
@@ -1749,10 +1810,18 @@ fn an_investment_request_amount_sent_as_a_number_or_carrying_a_funding_field_is_
     // Premise: the same request with the amount as a string is decided, so
     // what follows is the screening and not a route that refuses everything.
     let rig = rig_ready_for_requests(dec!("1000"))?;
-    assert_eq!(
-        rig.raise("alice", OPERATOR_TOKEN, &request_body(FAMILY, "100"))
-            .status,
-        200
+    // The same request with the amount as a string gets *past* the screen and
+    // is then refused by the operator gate every caller meets (ADR 0065) — a
+    // 403 naming the credential class, not a 400 naming a key. A screen that
+    // refused everything would answer 400 here too.
+    let clean = rig.raise("alice", OPERATOR_TOKEN, &request_body(FAMILY, "100"));
+    assert_eq!(clean.status, 403);
+    let (text, refused) = body_of(clean);
+    assert!(
+        refused["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("a standing bearer token cannot carry it")),
+        "a clean body was refused by the screen rather than the operator gate: {text}"
     );
 
     let numeric = serde_json::json!({
@@ -1796,20 +1865,34 @@ fn an_investment_request_amount_sent_as_a_number_or_carrying_a_funding_field_is_
     );
 
     // A family the factory did not register the strategy under is refused by
-    // the kernel rather than re-labelled, and the refusal reaches the caller
-    // as theirs to fix.
-    let response = rig.raise(
-        "alice",
-        OPERATOR_TOKEN,
-        &request_body("another-family", "100"),
-    );
-    assert_eq!(response.status, 400);
-    let (text, body) = body_of(response);
+    // the kernel rather than re-labelled. That refusal is the kernel's and
+    // sits behind the operator gate, so it is asserted against the kernel:
+    // over HTTP every caller now meets the credential-class refusal first
+    // (ADR 0065), and a 403 there would say nothing about the family check.
+    let operator = OperatorIdentity::verified("ops-carol", "oidc", start());
+    let wrong_family = rig.with_platform(|platform| {
+        platform.decide_investment(
+            qip_capital::ledger::InvestmentRequest {
+                user: UserId::new("alice")?,
+                strategy: qip_contracts::StrategyId::new(REGISTERED_STRATEGY),
+                family: "another-family".to_string(),
+                currency: qip_core::Currency::USD,
+                amount: dec!("100"),
+                requested_at: start(),
+            },
+            &operator,
+            "the client asked for this in writing on the dated instruction",
+            start(),
+        )
+    })?;
+    let error = wrong_family
+        .expect_err("a strategy claimed under a family it is not registered in is refused");
     assert!(
-        body["error"]
-            .as_str()
-            .is_some_and(|error| error.contains(&format!("registered under {FAMILY}"))),
-        "{text}"
+        error
+            .message()
+            .contains(&format!("registered under {FAMILY}")),
+        "the refusal does not name the family the strategy is registered under: {}",
+        error.message()
     );
     Ok(())
 }

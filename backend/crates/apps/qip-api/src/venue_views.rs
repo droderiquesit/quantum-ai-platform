@@ -42,7 +42,14 @@ pub struct WithdrawnVenuesView {
     /// The path a signature is posted to, with `:venue` as the route table
     /// spells it. Served rather than left to a runbook because the operator
     /// reading this list is the one about to call it.
-    pub reinstatement_path: &'static str,
+    ///
+    /// A `String` rather than a `&'static str` because it is *composed* — the
+    /// version prefix the router strips and the pattern the router matches,
+    /// both read from `crate::routes` — and this workspace has no const string
+    /// concatenation without a dependency. The cost of the allocation is one
+    /// per call of a route an operator reads; the cost of the third hand-typed
+    /// copy it replaces was a 404 in the middle of a recovery.
+    pub reinstatement_path: String,
 }
 
 /// One withdrawn venue and where its reinstatement stands.
@@ -91,18 +98,28 @@ pub fn withdrawals(platform: &Platform) -> Result<WithdrawnVenuesView, String> {
     Ok(WithdrawnVenuesView {
         withdrawn,
         withdrawals_recorded: records.len(),
-        reinstatement_path: REINSTATEMENT_PATTERN,
+        reinstatement_path: reinstatement_path(),
     })
 }
 
-/// The route pattern a reinstatement is signed at, exactly as
-/// `crate::routes::ROUTES` spells it.
+/// The full path a reinstatement is signed at, composed from `crate::routes`
+/// rather than written out here.
 ///
-/// One constant read by the view and by the route table, because a path
-/// served to an operator and a path the router matches that disagreed would
-/// send the person holding the second signature to a 404 in the middle of
-/// recovering a venue.
-pub const REINSTATEMENT_PATTERN: &str = "/api/v1/venues/:venue/reinstatements";
+/// This module used to declare its own
+/// `REINSTATEMENT_PATTERN = "/api/v1/venues/:venue/reinstatements"` under a
+/// comment claiming it was the one constant the route table read. It was not,
+/// and the claim is gone rather than restated: see
+/// [`crate::routes::REINSTATEMENT_PATTERN`] for which copies can share a
+/// constant, which cannot and why, and for the test that holds all of them
+/// together by driving this string through the router instead of comparing it
+/// to another copy of itself.
+pub fn reinstatement_path() -> String {
+    format!(
+        "{}{}",
+        crate::routes::VERSION_PREFIX,
+        crate::routes::REINSTATEMENT_PATTERN
+    )
+}
 
 /// What a reinstatement signature answers with: the entry the kernel
 /// journaled, and nothing this layer invented.

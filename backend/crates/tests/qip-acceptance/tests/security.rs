@@ -3115,12 +3115,36 @@ fn every_operatoridentity_is_built_from_the_principals_durable_subject_not_a_ses
         "two credentials share one subject, so no two callers could ever be two people"
     );
 
-    // And the route is reachable, which is what made this finding live. The
-    // platform here has withdrawn nothing, so the honest answer is 404 — but
-    // it is a 404 from the *kernel*, past authentication and past the role
-    // check, which is what proves the identity built above reaches the
-    // comparison at all. A 401 or a 403 would mean this test asserted a
-    // property of a route nobody can call.
+    // And the route is reachable past authentication and past the role check,
+    // which is what made this finding live.
+    //
+    // **This block used to assert a 404 from the kernel** — the platform here
+    // has withdrawn nothing — on the ground that a 404 proved the identity
+    // built above reached the kernel's comparison, and that "a 401 or a 403
+    // would mean this test asserted a property of a route nobody can call".
+    // That assertion was correct about the code and wrong about the
+    // deployment, and it is the second of the two halves of ADR 0065's
+    // finding.
+    //
+    // The identity reached the kernel by carrying `principal.issued_at` as its
+    // authentication instant. That field is the moment *this process* minted
+    // its record of a standing bearer token — `qip-api`'s composition root
+    // reads `QIP_TOKEN_OPERATOR` once at start-up — so the kernel's
+    // fifteen-minute freshness window measured the pod's uptime. In this
+    // fixture the credential is minted at `now()` and the call is made at
+    // `now()`, so the window computed zero and the kernel was reached. In a
+    // deployment the same arithmetic admitted a six-week-old copy of the token
+    // for fifteen minutes after every restart and refused everyone
+    // afterwards. The route now refuses rather than offering an instant it
+    // does not have, so a 403 is the correct answer and a 404 would mean the
+    // fabrication is back.
+    //
+    // The subject walk above is untouched and is still the point of this
+    // test: whatever instant a credential class may one day carry, the subject
+    // must stay the durable one. What is asserted here is that the request
+    // gets past authentication and the role check and is refused by the route's
+    // own gate — distinguished from the role check's 403 by its message, since
+    // both are now 403.
     let api = api()?;
     let mut signature = request(
         Method::Post,
@@ -3131,12 +3155,30 @@ fn every_operatoridentity_is_built_from_the_principals_durable_subject_not_a_ses
     let response = api.handle(&signature);
     let body = String::from_utf8_lossy(&response.body).into_owned();
     assert_eq!(
-        response.status, 404,
-        "the reinstatement route did not reach the kernel: {body}"
+        response.status, 403,
+        "the reinstatement route answered something other than its credential gate: {body}"
     );
     assert!(
-        body.contains("is not withdrawn"),
-        "the refusal did not come from the kernel's own check: {body}"
+        body.contains("a standing bearer token cannot carry it"),
+        "the refusal is not the credential-class gate — a role refusal is also a 403 and says \
+         `requires the operator role`, which would mean this walk never reached the route: {body}"
+    );
+    // A viewer on the same path is refused by the *table*, and says so
+    // differently. Without this the assertion above could be satisfied by an
+    // API that refused every caller of every route for one reason.
+    let mut viewer = request(
+        Method::Post,
+        "/api/v1/venues/simulated-venue/reinstatements",
+        Some(&token(Role::Viewer)),
+    );
+    viewer.body = br#"{"rationale": "the venue's grid was re-read by the desk"}"#.to_vec();
+    let refused = api.handle(&viewer);
+    let refused_body = String::from_utf8_lossy(&refused.body).into_owned();
+    assert_eq!(refused.status, 403);
+    assert!(
+        refused_body.contains("requires the operator role"),
+        "a viewer reached the credential gate, so the role check is not in front of it: \
+         {refused_body}"
     );
     Ok(())
 }

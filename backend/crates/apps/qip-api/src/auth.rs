@@ -92,8 +92,61 @@ pub struct Principal {
     /// Who they are, from the credential.
     pub subject: String,
     pub role: Role,
-    /// When the credential was issued.
+    /// When **this process** minted the credential record the caller's token
+    /// matched — and nothing else.
+    ///
+    /// It is not when anybody authenticated, and the difference is the whole
+    /// of [`Self::presence`]. `qip-api`'s composition root reads
+    /// `QIP_TOKEN_OPERATOR` once at start-up and mints one [`Credential`] from
+    /// it with the start-up instant, so for the life of the process every
+    /// caller presenting that standing secret carries the same value here.
+    /// Read as an authentication instant it says that whoever is holding the
+    /// token authenticated exactly when the pod booted, which is false in both
+    /// directions at once: a six-week-old copy of the token scraped out of a
+    /// shell history looks five minutes old at 09:05, and the operator who is
+    /// genuinely at the keyboard is refused from 09:15 onwards with
+    /// re-authentication changing nothing. Nothing may pass this to a
+    /// freshness check; [`Self::authentication_instant`] is the only way to
+    /// ask for one and it refuses.
     pub issued_at: Timestamp,
+}
+
+/// What the platform knows about whether a person was at the keyboard.
+///
+/// One variant, and the single variant is the finding rather than an
+/// unfinished enum. Every credential this API accepts is a standing bearer
+/// token: a value sitting in Secret Manager, mounted as a file, presented by
+/// whoever holds a copy of it. Possession of it proves possession and nothing
+/// about *when* — there is no interactive authentication step anywhere in this
+/// platform for a token to be the residue of, so there is no instant to
+/// report. The type says so rather than a comment saying so, because the
+/// previous shape — a bare `Timestamp` the routes could read — was believed by
+/// seven freshness gates for as long as it existed.
+///
+/// A credential class that genuinely carried an authentication instant would
+/// be a second variant here, and the `None` below would become a `Some` for
+/// it alone. That is the shape a real fix takes; see ADR 0065.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Presence {
+    /// Nobody's presence was ever established. The credential is a standing
+    /// secret, and the instant carried is when this process minted its record
+    /// of it — kept so a refusal can name the number a reader might otherwise
+    /// mistake for an authentication.
+    Unattested { credential_minted_at: Timestamp },
+}
+
+impl Presence {
+    /// The instant a person proved they were present, if that ever happened.
+    ///
+    /// An `Option` rather than a sentinel, so a caller that wants an instant
+    /// has to say what it does without one. A sentinel — epoch, or the
+    /// start-up instant this type carries — is exactly what the defect this
+    /// type replaces looked like from the reading side.
+    pub fn attested_at(&self) -> Option<Timestamp> {
+        match self {
+            Self::Unattested { .. } => None,
+        }
+    }
 }
 
 impl Principal {
@@ -111,6 +164,57 @@ impl Principal {
             required.as_str()
         )))
     }
+
+    /// What this caller's credential establishes about human presence.
+    pub fn presence(&self) -> Presence {
+        Presence::Unattested {
+            credential_minted_at: self.issued_at,
+        }
+    }
+
+    /// The instant to date an operator identity at, or the refusal that says
+    /// why this deployment cannot produce one.
+    ///
+    /// This is the narrow seam every signature-gated route goes through, and
+    /// it fails closed. The alternative that shipped until now was to date the
+    /// identity at [`Self::issued_at`], which made the fifteen-minute windows
+    /// in `qip_risk_engine::autonomy`, `qip_compliance::incident` and the
+    /// kernel measure *process uptime*: inside the first fifteen minutes of a
+    /// pod's life every token however old was fresh, and after them no token
+    /// however new ever was again. Both halves are wrong, and the first is the
+    /// dangerous one — a control that reads as protection and admits the thing
+    /// it names.
+    ///
+    /// Refusing is not a loss of a working capability. The operator credential
+    /// is minted per *role*, not per person (`format!("{}@env", …)` in the
+    /// composition root), so the two holders of `QIP_TOKEN_OPERATOR` present
+    /// one subject and every countersignature is already refused as one person
+    /// signing twice — ADR 0062 Amendment B, and ADR 0065 §Consequences.
+    /// What this removes is the fifteen-minute window in which a stale copy of
+    /// a standing secret was admitted.
+    ///
+    /// `action` names the act in the refusal, because an operator reading
+    /// "refused" on a venue reinstatement needs to know it is this gate and
+    /// not the kernel's not-found.
+    pub fn authentication_instant(&self, action: &str) -> Result<Timestamp> {
+        let presence = self.presence();
+        presence.attested_at().ok_or_else(|| {
+            let Presence::Unattested {
+                credential_minted_at,
+            } = presence;
+            Error::denied(format!(
+                "{action} needs evidence that a person authenticated within the last fifteen \
+                 minutes, and a standing bearer token cannot carry it: the credential for {} is a \
+                 secret this deployment mounts from Secret Manager, and the only instant on it is \
+                 {credential_minted_at}, when this process minted its record of it. That is \
+                 process start-up, not an authentication, and presenting the token again does not \
+                 refresh it. Nothing you can set will satisfy this route; it needs an interactive \
+                 authentication step or a per-request proof of recency, neither of which this \
+                 platform has (ADR 0065)",
+                self.subject
+            ))
+        })
+    }
 }
 
 /// A credential the API will accept.
@@ -123,6 +227,12 @@ pub struct Credential {
     pub role: Role,
     /// SHA-256 of the token, hex-encoded.
     pub token_hash: String,
+    /// When this *record* was minted, which for a standing secret is when the
+    /// process read it out of its mount. Not when the secret was created, not
+    /// when it was last rotated, and above all not when anyone authenticated —
+    /// see [`Principal::issued_at`], which this becomes, and
+    /// [`Principal::authentication_instant`], which refuses to treat it as an
+    /// authentication.
     pub issued_at: Timestamp,
     /// When the credential stops working. Every credential expires: one that
     /// does not is one nobody will ever get around to rotating.
@@ -134,6 +244,11 @@ impl Credential {
     ///
     /// The token is taken by value and dropped here, so it does not linger in
     /// the caller's frame by accident.
+    ///
+    /// `issued_at` is the record's minting instant and is never read as
+    /// evidence of a human. It cannot be: the only thing that reads a
+    /// timestamp off the resulting [`Principal`] is
+    /// [`Principal::authentication_instant`], which refuses whatever is in it.
     pub fn from_token(
         subject: impl Into<String>,
         role: Role,

@@ -34,6 +34,41 @@ pub const DISCOVERY_PATH: &str = VERSION_PREFIX;
 /// Where the generated OpenAPI document is served.
 pub const OPENAPI_PATH: &str = "/api/v1/openapi.json";
 
+/// The pattern a venue reinstatement is signed at, without [`VERSION_PREFIX`].
+///
+/// Three places name this path and only one of them can read a constant, which
+/// is worth stating plainly because the arrangement it replaces claimed the
+/// opposite. `venue_views.rs` used to declare
+/// `REINSTATEMENT_PATTERN = "/api/v1/venues/:venue/reinstatements"` under a
+/// comment saying it was "one constant read by the view **and by the route
+/// table**, because a path served to an operator and a path the router matches
+/// that disagreed would send the person holding the second signature to a 404
+/// in the middle of recovering a venue". The route table read no such thing: it
+/// carried its own literal, the handler arm a third, `tests/venues.rs` a
+/// fourth, and the `/api/v1` half was typed out rather than taken from
+/// [`VERSION_PREFIX`]. Every one of them would have survived a rename in
+/// agreement about a stale value, producing exactly the 404 the comment named.
+///
+/// **[`ROUTES`] and the handler arm below deliberately keep their literals**,
+/// and this is the honest half of the fix rather than an oversight.
+/// `qip-acceptance` reads `routes.rs` as *text*: `api_boundary.rs` parses the
+/// table's `pattern:` lines into the set of mutating routes it reviews, and
+/// `security.rs` locates each handler arm by building `(Method::Post,
+/// "<pattern>") => {` and searching for it. A named constant in either place
+/// makes those suites blind — the first reports a route called
+/// `REINSTATEMENT_PATTERN`, the second reports the arm as renamed away — and a
+/// security walk that cannot see a route is worse than a duplicated literal.
+///
+/// So what holds the four copies together is not a constant, it is
+/// `qip-api/tests/venues.rs::a_reinstatement_path_served_to_an_operator_is_a_
+/// path_the_router_matches`, which takes the string the view actually serves,
+/// checks [`ROUTES`] declares it, and drives it through the router. A test that
+/// compares a copy to a copy would pass a rename; that one would not.
+///
+/// What this constant does fix is the half that was never load-bearing for the
+/// suites: the view no longer hand-writes `/api/v1`.
+pub const REINSTATEMENT_PATTERN: &str = "/venues/:venue/reinstatements";
+
 /// The one route that answers in Prometheus text exposition rather than JSON.
 ///
 /// Named once so the handler and the generated OpenAPI document cannot come to
@@ -1184,20 +1219,38 @@ impl Api {
                     }
                 };
                 // The operator is the authenticated principal, as clearing
-                // the kill switch establishes one — and dated at the instant
-                // the *credential* was issued rather than at `now`. The
-                // kernel refuses a decision taken on a credential older than
-                // fifteen minutes, and an identity stamped `now` is fresh by
-                // construction: the check would then be a control that
-                // cannot fire, which reads as protection and is not. What it
-                // costs is that a long-lived deployment token stops being
-                // able to decide eligibility fifteen minutes after the
-                // process started, which is the kernel's rule actually
-                // applied rather than defeated.
+                // the kill switch establishes one. This comment used to argue
+                // for dating the identity at `principal.issued_at` rather than
+                // `now`, on the ground that `now` would make the kernel's
+                // fifteen-minute check a control that cannot fire. The
+                // argument was right and the remedy was not: `issued_at` is
+                // the instant this *process* minted its record of a standing
+                // secret, so the window it produced measured uptime — every
+                // token, however old, passed for the first fifteen minutes and
+                // none passed afterwards.
+                // The instant to date the identity at, asked for rather
+                // than taken off the principal. There is none: every
+                // credential this API accepts is a standing secret and a
+                // standing secret attests nobody's presence, so this refuses
+                // and the act does not happen. See
+                // `crate::auth::Principal::authentication_instant` for why the
+                // refusal is here — the credential class is the API's own
+                // fact, and a kernel gate can only judge the number it is
+                // handed.
+                let authenticated_at =
+                    match principal.authentication_instant("deciding a user's eligibility") {
+                        Ok(instant) => instant,
+                        Err(refusal) => {
+                            return Response::json(
+                                403,
+                                crate::registration_views::refusal(refusal.message()),
+                            );
+                        }
+                    };
                 let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
                     principal.subject.clone(),
                     "api-bearer-token",
-                    principal.issued_at,
+                    authenticated_at,
                 );
                 match platform.decide_eligibility(&held, decision, &operator, decided.reason(), now)
                 {
@@ -1263,15 +1316,32 @@ impl Api {
                         return Response::json(400, crate::registration_views::refusal(&reason));
                     }
                 };
-                // The operator is the authenticated principal, dated at the
-                // instant the credential was issued rather than at `now`, for
-                // the reason the eligibility route gives: an identity stamped
-                // `now` is fresh by construction and the kernel's freshness
-                // rule would be a control that cannot fire.
+                // The operator is the authenticated principal, for the
+                // reason the eligibility route gives, and dated the way that
+                // route dates it: by asking, and being refused.
+                // The instant to date the identity at, asked for rather
+                // than taken off the principal. There is none: every
+                // credential this API accepts is a standing secret and a
+                // standing secret attests nobody's presence, so this refuses
+                // and the act does not happen. See
+                // `crate::auth::Principal::authentication_instant` for why the
+                // refusal is here — the credential class is the API's own
+                // fact, and a kernel gate can only judge the number it is
+                // handed.
+                let authenticated_at =
+                    match principal.authentication_instant("deciding an investment request") {
+                        Ok(instant) => instant,
+                        Err(refusal) => {
+                            return Response::json(
+                                403,
+                                crate::registration_views::refusal(refusal.message()),
+                            );
+                        }
+                    };
                 let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
                     principal.subject.clone(),
                     "api-bearer-token",
-                    principal.issued_at,
+                    authenticated_at,
                 );
                 match platform.decide_investment(investment, &operator, raised.reason(), now) {
                     Ok(decision) => {
@@ -1349,16 +1419,36 @@ impl Api {
                 // the one that makes this an approval rather than a claim to
                 // have been approved.
                 //
-                // `issued_at`, never `now`: passing `now` here would make the
-                // kernel's freshness check compute an age of zero on every
-                // call and the fifteen-minute window a control that cannot
-                // fire. That exact defect has already been fixed once on the
-                // registration route below; it is written here so it is not
-                // introduced a second time on the route that moves capital.
+                // Neither `now` nor `principal.issued_at`. `now` would make
+                // the kernel's freshness check compute an age of zero on
+                // every call; `issued_at` made it compute the process's
+                // uptime, which admitted a six-week-old copy of the token for
+                // the first fifteen minutes after every restart. On the route
+                // that moves capital, the honest answer is that this
+                // deployment cannot date an operator identity at all.
+                // The instant to date the identity at, asked for rather
+                // than taken off the principal. There is none: every
+                // credential this API accepts is a standing secret and a
+                // standing secret attests nobody's presence, so this refuses
+                // and the act does not happen. See
+                // `crate::auth::Principal::authentication_instant` for why the
+                // refusal is here — the credential class is the API's own
+                // fact, and a kernel gate can only judge the number it is
+                // handed.
+                let authenticated_at =
+                    match principal.authentication_instant("signing a strategy promotion") {
+                        Ok(instant) => instant,
+                        Err(refusal) => {
+                            return Response::json(
+                                403,
+                                crate::registration_views::refusal(refusal.message()),
+                            );
+                        }
+                    };
                 let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
                     principal.subject.clone(),
                     "api-bearer-token",
-                    principal.issued_at,
+                    authenticated_at,
                 );
                 match platform.approve_promotion(
                     &qip_contracts::StrategyId::new(strategy),
@@ -1407,17 +1497,35 @@ impl Api {
                 // one holding the first signature, so what is passed here is
                 // the whole of that guarantee.
                 //
-                // `issued_at`, never `now`: passing `now` here would make the
-                // kernel's freshness check compute an age of zero on every
-                // call and the fifteen-minute window a control that cannot
-                // fire. That exact defect has already been fixed once on the
-                // registration route below; it is written here so it is not
-                // introduced a third time, on the route that puts a venue the
-                // platform stopped trading at back into use.
+                // Neither `now` nor `principal.issued_at`, for the reason
+                // the promotion signature above gives: the first computes an
+                // age of zero, the second computes process uptime, and on a
+                // route that puts a venue the platform stopped trading at
+                // back into use both are a control that reads as protection
+                // and admits what it names.
+                // The instant to date the identity at, asked for rather
+                // than taken off the principal. There is none: every
+                // credential this API accepts is a standing secret and a
+                // standing secret attests nobody's presence, so this refuses
+                // and the act does not happen. See
+                // `crate::auth::Principal::authentication_instant` for why the
+                // refusal is here — the credential class is the API's own
+                // fact, and a kernel gate can only judge the number it is
+                // handed.
+                let authenticated_at =
+                    match principal.authentication_instant("signing a venue reinstatement") {
+                        Ok(instant) => instant,
+                        Err(refusal) => {
+                            return Response::json(
+                                403,
+                                crate::registration_views::refusal(refusal.message()),
+                            );
+                        }
+                    };
                 let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
                     principal.subject.clone(),
                     "api-bearer-token",
-                    principal.issued_at,
+                    authenticated_at,
                 );
                 match platform.reinstate_venue(venue, &operator, &body.rationale, now) {
                     Ok(entry) => match crate::venue_views::rendered(&entry) {
@@ -1457,16 +1565,34 @@ impl Api {
                 // the one that makes this an approval rather than a claim to
                 // have been approved.
                 //
-                // `issued_at`, never `now`: passing `now` here would make the
-                // kernel's freshness check compute an age of zero on every
-                // call and the fifteen-minute window a control that cannot
-                // fire. That exact defect has already been fixed once on the
-                // registration route below; it is written here so it is not
-                // introduced a second time on the route that loosens a limit.
+                // Neither `now` nor `principal.issued_at`, for the reason
+                // the promotion signature above gives. On the route that
+                // loosens a limit, a window that measured this process's
+                // uptime is worse than no window: it read as fifteen minutes
+                // of operator presence and was fifteen minutes of pod age.
+                // The instant to date the identity at, asked for rather
+                // than taken off the principal. There is none: every
+                // credential this API accepts is a standing secret and a
+                // standing secret attests nobody's presence, so this refuses
+                // and the act does not happen. See
+                // `crate::auth::Principal::authentication_instant` for why the
+                // refusal is here — the credential class is the API's own
+                // fact, and a kernel gate can only judge the number it is
+                // handed.
+                let authenticated_at =
+                    match principal.authentication_instant("signing a risk recalibration") {
+                        Ok(instant) => instant,
+                        Err(refusal) => {
+                            return Response::json(
+                                403,
+                                crate::registration_views::refusal(refusal.message()),
+                            );
+                        }
+                    };
                 let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
                     principal.subject.clone(),
                     "api-bearer-token",
-                    principal.issued_at,
+                    authenticated_at,
                 );
                 match platform.approve_recalibration(rule, &operator, &body.rationale, now) {
                     Ok(entry) => match serde_json::to_string(&entry) {
@@ -1507,18 +1633,40 @@ impl Api {
                 // the record's operator from this identity and from nothing
                 // the body says.
                 //
-                // `authenticated_at` is when the session was issued, never
-                // `now`. Passing `now` here made `is_fresh(now,
+                // Passing `now` here once made `is_fresh(now,
                 // REGISTRATION_CREDENTIAL_AGE)` compute an age of zero on
                 // every call, so the kernel's fifteen-minute gate was a
                 // control that could not fire — the `MaxExpectedShortfall`
-                // shape the risk rules name by example. The remedy for a
-                // session older than the window is that the operator signs in
-                // again, not that the window grows to fit the session.
+                // shape the risk rules name by example. The fix was
+                // `principal.issued_at`, and it was the same defect wearing a
+                // different number: a standing secret's record is minted at
+                // start-up, so the gate measured the pod's age. There is no
+                // third number. The remedy a session older than the window
+                // wants is that the operator signs in again, and this platform
+                // has nowhere for them to do it.
+                // The instant to date the identity at, asked for rather
+                // than taken off the principal. There is none: every
+                // credential this API accepts is a standing secret and a
+                // standing secret attests nobody's presence, so this refuses
+                // and the act does not happen. See
+                // `crate::auth::Principal::authentication_instant` for why the
+                // refusal is here — the credential class is the API's own
+                // fact, and a kernel gate can only judge the number it is
+                // handed.
+                let authenticated_at =
+                    match principal.authentication_instant("approving a venue registration") {
+                        Ok(instant) => instant,
+                        Err(refusal) => {
+                            return Response::json(
+                                403,
+                                crate::registration_views::refusal(refusal.message()),
+                            );
+                        }
+                    };
                 let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
                     principal.subject.clone(),
                     "api-bearer-token",
-                    principal.issued_at,
+                    authenticated_at,
                 );
                 match platform.approve_registration(
                     source_id,
@@ -1748,17 +1896,38 @@ impl Api {
                 )
             }
             (Method::Delete, "/kill-switch") => {
-                // Clearing a halt needs an operator identity, which is what
-                // the Operator role on this route establishes. As on the two
-                // routes above, `authenticated_at` is when the session was
-                // issued and not `now`: an identity that claims to have
-                // authenticated at the instant it is used is fresh by
-                // construction, and any caller downstream that asks how old
-                // this credential is gets the answer zero forever.
+                // Clearing a halt needs an operator identity, which the
+                // Operator role on this route establishes — and an
+                // authentication instant, which nothing in this deployment
+                // establishes. An identity stamped `now` is fresh by
+                // construction and answers zero forever; one stamped with the
+                // credential record's minting instant answers the process's
+                // uptime. `KillSwitch::clear_global` holds a fifteen-minute
+                // window and it is entitled to a number that means something,
+                // so it is handed none and the halt stands.
+                // The instant to date the identity at, asked for rather
+                // than taken off the principal. There is none: every
+                // credential this API accepts is a standing secret and a
+                // standing secret attests nobody's presence, so this refuses
+                // and the act does not happen. See
+                // `crate::auth::Principal::authentication_instant` for why the
+                // refusal is here — the credential class is the API's own
+                // fact, and a kernel gate can only judge the number it is
+                // handed.
+                let authenticated_at =
+                    match principal.authentication_instant("clearing the kill switch") {
+                        Ok(instant) => instant,
+                        Err(refusal) => {
+                            return Response::json(
+                                403,
+                                crate::registration_views::refusal(refusal.message()),
+                            );
+                        }
+                    };
                 let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
                     principal.subject.clone(),
                     "api-bearer-token",
-                    principal.issued_at,
+                    authenticated_at,
                 );
                 match platform
                     .autonomy_mut()
