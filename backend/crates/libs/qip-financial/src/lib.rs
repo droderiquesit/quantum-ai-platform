@@ -28,6 +28,7 @@ pub mod intelligence;
 pub mod ladder;
 pub mod manifest;
 pub mod object;
+pub mod pool;
 pub mod quality;
 pub mod risk_profile;
 pub mod universe;
@@ -51,6 +52,9 @@ pub use ladder::{
 };
 pub use manifest::SourceManifest;
 pub use object::{FinancialObject, ObjectBuilder};
+pub use pool::{
+    BlockExecution, ContractRisk, DexModel, DexQuote, MevEstimate, PoolCurve, PoolQuote, PoolState,
+};
 pub use quality::{DataQuality, LicensingClass, Provenance};
 pub use risk_profile::{FactorExposures, Greeks, RiskCharacteristics};
 pub use universe::{CatalogueOrigin, Universe};
