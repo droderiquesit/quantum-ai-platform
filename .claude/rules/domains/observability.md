@@ -191,22 +191,46 @@ before quoting either line.
 **Two central series from lane B-2 of §12.3 (ADR 0062), located by symbol.**
 `qip_feasibility_refusals_total{venue,constraint}` counts every feasibility
 refusal from both seams — the desk's order manager and the cells' reports —
-and is the window a venue is withdrawn on. It has exactly two recording
-sites, both in `platform.rs`: `record_feasibility_refusal`, which every
-*admitted* refusal goes through and which also writes the window, and the
-unattributed arm in `ingest_cell_report`, which counts a carried refusal
-under the literals `unknown` (a venue neither the arbitrage policy nor a live
-grant names) and `other` (a gate outside
-`qip_contracts::feasibility::EDGE_GATES`) and never writes the window.
+and is the window a venue is withdrawn on. **The number of recording sites is
+not the invariant here; the discriminator is.** Every site in `platform.rs`
+either writes the window or deliberately only counts, and there is exactly one
+of the first kind: `record_feasibility_refusal`, which every *admitted*
+refusal goes through and which is the only place `self.feasibility_refusals`
+grows. The counting-only sites are arms of `ingest_cell_report` — the
+unattributed arm, which counts a carried refusal under the literals `unknown`
+(a venue neither the arbitrage policy nor a live grant names) and `other` (a
+gate outside `qip_contracts::feasibility::EDGE_GATES`), and, since
+2026-09-14, the echo arm, which counts a refusal the central plane attributed
+in full and still kept out of the window because its gate is not withdrawal
+evidence (`qip_contracts::feasibility::is_withdrawal_evidence`).
+
 Recount with
 `grep -n 'names::FEASIBILITY_REFUSALS' backend/crates/runtime/qip-kernel/src/platform.rs`,
-which printed three lines on 2026-09-13: the constant's `metrics.describe(...)`
-registration call, first, and then the two recording sites above — the same
-shape `VENUE_FILL_ERROR_BPS` is stated in two paragraphs below ("one
-recording line plus its `describe`"), and this paragraph should have used
-from the start. It said "two lines" until an independent code review ran
-the command and found three; a fourth site would be a refusal that reached
-the window by a path the ADR does not describe. `venue` is bounded by
+which printed four lines on 2026-09-14: the constant's `metrics.describe(...)`
+registration call, first, then the two counting arms, then
+`record_feasibility_refusal`. **This paragraph has now been wrong about that
+number twice, and the second time it was wrong in a way that would have made
+an agent raise a false alarm.** It said "two lines" until an independent code
+review ran the command and found three; it then said three *and* that "a
+fourth site would be a refusal that reached the window by a path the ADR does
+not describe" — until 2026-09-14, by which time a fourth site had shipped in
+the same merge that corrected the gate-literal count in the sentence below.
+The fourth site is legitimate: it never writes the window. The count is
+deliberately not offered as a bound, and it must be re-run after the lanes
+currently reworking how the echo arm classifies a refusal land, because one of
+them may add, move or remove a counting site without touching the invariant at
+all.
+
+What **would** be an alarm is a second writer of the window: a path by which a
+refusal enters the evidence a venue is withdrawn on without going through
+`record_feasibility_refusal`, or an echo admitted to the window at all. That
+is the thing to check, with
+`grep -n 'feasibility_refusals\.push\|feasibility_refusals\.drain' backend/crates/runtime/qip-kernel/src/platform.rs`,
+which printed one `drain` and one `push` on 2026-09-14, both inside
+`record_feasibility_refusal`. A window with two writers is the
+`MaxExpectedShortfall` failure in a new place: the echo of a withdrawal would
+evict the evidence the next withdrawal needs, and the control would read as
+protection while being unable to fire a second time. `venue` is bounded by
 the desk broker's name, the configured and granted venue list and `unknown`;
 `constraint` by the **nine** gate literals and `other` — eight until
 2026-09-14, when ADR 0062's follow-on lane added
