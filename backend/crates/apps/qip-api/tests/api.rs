@@ -923,15 +923,21 @@ struct Assembled {
 }
 
 fn assemble() -> Result<Assembled> {
+    assemble_with(qip_kernel::PlatformConfig::default())
+}
+
+/// The same assembly over a stated configuration, for a test whose subject is
+/// a route that refuses before it reaches its gate unless the platform holds
+/// something first.
+fn assemble_with(config: qip_kernel::PlatformConfig) -> Result<Assembled> {
     use qip_financial::asset_class::{InstrumentType, Sector};
     use qip_financial::object::FinancialObject;
     use qip_financial::quality::Provenance;
     use qip_financial::universe::Universe;
-    use qip_kernel::{Platform, PlatformConfig};
+    use qip_kernel::Platform;
     use qip_observability::Telemetry;
     use qip_risk::limits::LimitSet;
 
-    let config = PlatformConfig::default();
     let clock = Arc::new(ManualClock::new(now()));
     let context = Context::new(clock.clone(), config.seed);
 
@@ -2061,4 +2067,190 @@ fn the_overview_renders_the_instruments_the_platform_found_unfit_and_says_what_i
     }
     assert!(page.contains(">PAPER TRADING<"), "{page}");
     Ok(())
+}
+// --- an eighth signature route inherits the guard ---------------------------
+
+/// A concrete call for every mutating route an operator may make: the path
+/// with its parameters filled in, and a body the route's own parser accepts.
+///
+/// A body that fails to parse is refused with a 400 before the route reaches
+/// any gate, so a table of empty bodies would assert nothing about presence
+/// while looking as though it did.
+const OPERATOR_CALLS: &[(Method, &str, &str)] = &[
+    (Method::Post, "/kill-switch", ""),
+    (Method::Delete, "/kill-switch", ""),
+    (
+        Method::Post,
+        "/ledger/users/user-1/eligibility",
+        r#"{"decision":"revoked","reason":"the mandate holder asked to stop"}"#,
+    ),
+    (
+        Method::Post,
+        "/ledger/users/user-1/investment-requests",
+        r#"{"strategy":"strat-1","family":"fam-1","currency":"USD","amount":"1000.00","reason":"rebalancing into the family"}"#,
+    ),
+    (
+        Method::Post,
+        "/registrations/a-source/approve",
+        r#"{"terms":"https://example.test/terms","secret":"QIP_SOURCE_SECRET"}"#,
+    ),
+    (
+        Method::Post,
+        "/strategies/strat-1/promotion-approvals",
+        r#"{"rationale":"the shadow run cleared every gate and the evidence is filed"}"#,
+    ),
+    (
+        Method::Post,
+        "/risk/recalibrations/max-leverage/approvals",
+        r#"{"rationale":"the bound was measured against three months of realised gross"}"#,
+    ),
+    (
+        Method::Post,
+        "/venues/simulated-venue/reinstatements",
+        r#"{"rationale":"the venue's lot grid was re-read and the desk's sizing corrected"}"#,
+    ),
+];
+
+/// The mutating operator routes that deliberately do **not** need a person to
+/// have authenticated, and why.
+///
+/// One, and the reason is the whole of the asymmetry ADR 0065 records:
+/// engaging the kill switch is the platform's safe direction, and a halt
+/// gated on a control that always refuses is a platform nobody can stop.
+/// Clearing it is the unsafe direction and is gated.
+const NO_PRESENCE_NEEDED: &[(Method, &str)] = &[(Method::Post, "/kill-switch")];
+
+#[test]
+fn every_mutating_operator_route_is_either_gated_on_presence_or_named_as_needing_none() -> Result<()>
+{
+    // **What an eighth signature route inherits, and until now it inherited
+    // nothing.** Seven routes date an operator identity from
+    // `Principal::authentication_instant`, which refuses because a standing
+    // bearer token attests nobody. Each has a behavioural test of its own,
+    // and the only cross-cutting guard was textual: a count of
+    // `OperatorIdentity::verified(` against a count of
+    // `principal.authentication_instant(` in `routes.rs`. A review defeated
+    // it by putting a free helper in `auth.rs` that read `principal.issued_at`
+    // — neither string appeared at the compromised site, the counts stayed
+    // equal, and the acceptance suite stayed green.
+    //
+    // This walks the route table instead. Every mutating route an operator
+    // may call must either refuse for want of attested presence or be named
+    // above as needing none. A route added to the table and to neither list
+    // fails here, and the failure names it — so the next signature route
+    // cannot ship guarded by nothing, and cannot ship *exempt* without
+    // somebody writing down why.
+    // A mandate for the user the ledger routes name, because two of them
+    // refuse with a 404 before they reach any gate when nobody is enrolled —
+    // and a 404 would satisfy a test that merely asserted "not a success"
+    // while proving nothing about presence.
+    let assembled = assemble_with(
+        qip_kernel::PlatformConfig::default().with_user_mandates(vec![enrolled_mandate()?]),
+    )?;
+    let api = assembled.api.clone();
+
+    for route in ROUTES
+        .iter()
+        .filter(|route| route.method.is_mutating() && route.required_role == Role::Operator)
+    {
+        let call = OPERATOR_CALLS
+            .iter()
+            .find(|(method, path, _)| *method == route.method && route.pattern == pattern_of(path))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} {} is a mutating operator route with no call in `OPERATOR_CALLS`; add \
+                     one, so this test can say whether it is gated on presence",
+                    route.method.as_str(),
+                    route.pattern
+                )
+            });
+        let exempt = NO_PRESENCE_NEEDED
+            .iter()
+            .any(|(method, pattern)| *method == route.method && *pattern == route.pattern);
+        let response = api.handle(&with_body(
+            call.0,
+            &format!("/api/v1{}", call.1),
+            Some("operator-token"),
+            call.2,
+        ));
+        let body = String::from_utf8_lossy(&response.body).into_owned();
+        if exempt {
+            // The admitting half. Without it every assertion below is
+            // satisfied by an API that refuses everything, which is not a
+            // gate — and this particular route refusing would mean the
+            // platform could not be halted.
+            assert_eq!(
+                response.status,
+                200,
+                "{} {} is named as needing no attested presence and did not succeed: {body}",
+                route.method.as_str(),
+                route.pattern
+            );
+            continue;
+        }
+        assert_eq!(
+            response.status,
+            403,
+            "{} {} mutates state at the operator role, is not named in `NO_PRESENCE_NEEDED`, \
+             and did not refuse for want of an attested person: {body}",
+            route.method.as_str(),
+            route.pattern
+        );
+        assert!(
+            body.contains(NO_PRESENCE),
+            "{} {} refused, but not on the presence gate — so it is refusing for some other \
+             reason and this test would not notice the gate being removed: {body}",
+            route.method.as_str(),
+            route.pattern
+        );
+    }
+    Ok(())
+}
+
+/// The route pattern a concrete path belongs to: every segment that is not a
+/// fixed part of some declared pattern is a parameter.
+///
+/// Matched against the table by walking it rather than by parsing the path,
+/// so a pattern this test cannot find is a loud failure and not a silent
+/// mismatch.
+fn pattern_of(path: &str) -> &'static str {
+    let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    ROUTES
+        .iter()
+        .map(|route| route.pattern)
+        .find(|pattern| {
+            let declared: Vec<&str> = pattern.trim_start_matches('/').split('/').collect();
+            declared.len() == segments.len()
+                && declared
+                    .iter()
+                    .zip(&segments)
+                    .all(|(declared, actual)| declared.starts_with(':') || declared == actual)
+        })
+        .unwrap_or_else(|| panic!("`{path}` matches no route the table declares"))
+}
+
+/// The one enrolled mandate the ledger routes in `OPERATOR_CALLS` name.
+fn enrolled_mandate() -> Result<qip_kernel::config::UserMandate> {
+    use qip_capital::ledger::{
+        Jurisdiction, Mandate, MandateId, MandateTerms, PermittedFamilies, UserId,
+    };
+    Ok(qip_kernel::config::UserMandate {
+        user: UserId::new("user-1")?,
+        id: MandateId::new("mandate-user-1")?,
+        mandate: Mandate::new(MandateTerms {
+            capital: qip_core::Decimal::from_int(1_000),
+            currency: qip_core::Currency::USD,
+            risk_tolerance: qip_core::Decimal::ONE,
+            permitted_families: PermittedFamilies::Any,
+            liquidity_floor: qip_core::Decimal::ZERO,
+            exploration_share: qip_core::Decimal::ZERO,
+            jurisdiction: Jurisdiction::new("GB")?,
+        })?,
+    })
+}
+
+fn with_body(method: Method, path: &str, token: Option<&str>, body: &str) -> Request {
+    let mut request = request(method, path, token);
+    request.body = body.as_bytes().to_vec();
+    request
 }

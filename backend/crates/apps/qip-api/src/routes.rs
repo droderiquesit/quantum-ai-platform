@@ -1470,8 +1470,18 @@ impl Api {
                 }
             }
             (Method::Get, "/venues/withdrawals") => {
+                // The refusal this caller would get at the signature route,
+                // obtained by making the same call that route makes rather
+                // than by asserting what it would answer. A reader of this
+                // list is the person about to sign, and ADR 0065 means the
+                // signature cannot be taken; saying so here costs one call
+                // and saves an operator discovering it mid-recovery.
+                let reinstatement_refusal = principal
+                    .authentication_instant("signing a venue reinstatement")
+                    .err()
+                    .map(|refusal| refusal.message().to_string());
                 let (status, body) = crate::ledger_views::render_fallible(
-                    crate::venue_views::withdrawals(&platform),
+                    crate::venue_views::withdrawals(&platform, reinstatement_refusal),
                 );
                 Response::json(status, body)
             }

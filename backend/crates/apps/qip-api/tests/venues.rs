@@ -559,3 +559,63 @@ fn a_reinstatement_path_served_to_an_operator_is_a_path_the_router_matches() -> 
     );
     Ok(())
 }
+#[test]
+fn the_list_that_serves_a_reinstatement_path_says_the_same_thing_the_path_will() -> Result<()> {
+    // **An operator was handed a path the platform would refuse, and told
+    // nothing.** `WithdrawnVenuesView::reinstatement_path` documents itself
+    // as "served rather than left to a runbook because the operator reading
+    // this list is the one about to call it" — and since ADR 0065 every
+    // credential this API accepts is a standing bearer token, so that call
+    // cannot be taken at all. The only place saying so was the runbook,
+    // which is exactly what serving the path was meant to make unnecessary.
+    //
+    // Asserted by *driving both routes with the same token and comparing
+    // their answers*, not by matching either against a phrase this file
+    // keeps. A literal here would be a second claim about one fact, and this
+    // platform's rule is that two such claims disagree eventually and the
+    // louder one is wrong. If the presence gate ever starts admitting
+    // somebody, the list stops warning in the same release and this test
+    // follows it without being edited.
+    let rig = rig()?;
+    rig.withdraw_the_desk_venue()?;
+
+    // Premise: the list answers at all, and there is something on it — a
+    // withdrawn venue, so the reader is genuinely mid-recovery rather than
+    // reading an empty page.
+    let (text, view) = body_of(rig.call(Method::Get, LIST_PATH, OPERATOR_TOKEN, ""));
+    assert!(
+        !view["withdrawn"]
+            .as_array()
+            .map(Vec::is_empty)
+            .unwrap_or(true),
+        "the premise failed: no venue is withdrawn, so nobody is reading this list to sign: \
+         {text}"
+    );
+
+    let served = view["reinstatement_refusal"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        !served.is_empty(),
+        "the list served a reinstatement path and no word that the path refuses: {text}"
+    );
+
+    // And it is the refusal this caller would actually receive, taken from
+    // the route itself.
+    let response = rig.call(Method::Post, SIGN_PATH, OPERATOR_TOKEN, GOOD_BODY);
+    assert_eq!(
+        response.status,
+        403,
+        "the premise failed: the signature route did not refuse, so there is nothing for the \
+         list to warn about: {}",
+        String::from_utf8_lossy(&response.body)
+    );
+    let (signed_text, signed) = body_of(response);
+    assert_eq!(
+        signed["error"].as_str().unwrap_or_default(),
+        served,
+        "the list warns an operator of one refusal and the route gives another: {signed_text}"
+    );
+    Ok(())
+}
