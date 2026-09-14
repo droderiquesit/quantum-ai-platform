@@ -60,6 +60,7 @@ dependencies = [
  "qip-reasoning-engine",
  "qip-risk",
  "qip-risk-engine",
+ "qip-routing",
  "qip-sequencing",
  "qip-simulation-engine",
  "qip-storage",
@@ -727,6 +728,7 @@ dependencies = [
 name = "qip-routing"
 version = "0.1.0"
 dependencies = [
+ "qip-arbitrage",
  "qip-contracts",
  "qip-core",
  "qip-market",
