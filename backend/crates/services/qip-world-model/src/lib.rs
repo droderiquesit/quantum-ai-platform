@@ -17,6 +17,8 @@
 //! evidence behind it. Conflating the two is how a correlation becomes a thesis.
 
 pub mod causal;
+pub mod confounder;
+pub mod exposure;
 pub mod features;
 pub mod granger;
 pub mod graph;
@@ -26,7 +28,12 @@ pub mod state;
 pub mod vocabulary;
 pub mod world;
 
-pub use causal::{CausalEdge, CausalGraph, Effect, Mechanism, PropagationResult};
+pub use causal::{CausalEdge, CausalGraph, EdgeStanding, Effect, Mechanism, PropagationResult};
+pub use confounder::{Confounder, ConfounderSet, ConfounderStanding};
+pub use exposure::{
+    ConcentrationReport, Exposure, ExposureSet, SharedDriver, hidden_concentration,
+    instruments_exposed_to, unheld_dependencies,
+};
 pub use features::{FEATURE_HISTORY, Feature, FeatureLookup, FeatureStore, FeatureValue};
 pub use graph::{Fact, KnowledgeGraph, Node, NodeKind};
 pub use liquidity::{
