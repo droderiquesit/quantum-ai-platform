@@ -16,6 +16,8 @@
 //! Literals, so every series keyed on a gate stays bounded by the source
 //! and never by the market.
 
+use std::collections::BTreeSet;
+
 /// The order is not a whole number of the venue's minimum quantity, or is
 /// below it.
 pub const GATE_MINIMUM_QUANTITY: &str = "feasibility_minimum_quantity";
@@ -56,28 +58,37 @@ pub const EDGE_GATES: [&str; 9] = [
     GATE_WITHDRAWN_VENUE,
 ];
 
-/// Whether a refusal under `gate` may enter the window a venue is withdrawn
-/// on, or is only the echo of a withdrawal already made.
+/// Whether a carried refusal is the echo of a withdrawal the **centre
+/// itself holds** — the platform's own decision arriving back at it — rather
+/// than an observation about a venue.
 ///
-/// **The control this keeps able to fire.** Every gate but one answers a
-/// question about an order at a venue, so a cluster of them is evidence the
-/// venue is the problem. [`GATE_WITHDRAWN_VENUE`] answers no question: it
-/// reports the platform's own earlier decision back to itself, once per
-/// intent per pass, for as long as an already-installed desk keeps offering
-/// cycles through the withdrawn venue. Admitted to a 256-entry rate window
-/// those echoes would evict every genuine refusal within a few passes and
-/// then hold the denominator every other venue's share is measured against,
-/// so no second venue could ever reach three in four and no second
-/// withdrawal could ever happen. That is the `MaxExpectedShortfall` failure
-/// this repository names as the template for what not to ship — a control
-/// that reads as protection and cannot fire — so the echo is counted on the
-/// series under its own venue and its own gate, and kept out of the window.
+/// **Why the centre's set and not the gate alone.** This took `gate` only
+/// until a security review of ADR 0062's edge closure: whether a refusal
+/// counted as "the platform citing itself" was then decided by a string on a
+/// report arriving over a wire `qip-edge/src/mesh.rs` says authenticates
+/// nobody. A cell holding a stale slot 11 — the centre stopped shipping
+/// policy, or two operators reinstated the venue and the cell never heard —
+/// refuses every intent at a venue *currently in use* under
+/// [`GATE_WITHDRAWN_VENUE`], and the centre believed it. Those refusals then
+/// reached no evidence window, so the venue could not be withdrawn a second
+/// time on edge evidence for as long as the slot stayed stale: a control
+/// that reads as protection and cannot fire. So the centre's own withdrawn
+/// set decides, and a cell citing a withdrawal the centre does not hold is
+/// an ordinary refusal at a venue in use.
 ///
-/// The desk seam has the same shape by a different route: a withdrawn venue
-/// refuses there under `RefusalReason::VenueUnavailable`, which is not a
-/// feasibility gate at all and so never reached the window either.
-pub fn is_withdrawal_evidence(gate: &str) -> bool {
-    gate != GATE_WITHDRAWN_VENUE
+/// **What an echo is for, given it is not evidence.** It is still a refusal,
+/// and the venue it names is one the platform is still attempting. A share
+/// test whose denominator dropped that venue the moment it was withdrawn
+/// would make the runner-up a cluster of whatever remained — which is the
+/// cascade `venue_review::assess` exists to refuse. So an echo is admitted
+/// to the window as a denominator entry and can never be a numerator: the
+/// candidate filter in `assess` is the withdrawn set, and a withdrawn venue
+/// is never a candidate. What stops it holding the window hostage is
+/// `venue_review`'s weighting — an echo may *sustain* a withdrawn venue's
+/// weight up to the genuine evidence that venue still holds and never beyond
+/// — and the centre admitting at most one echo per venue per report.
+pub fn is_withdrawal_echo(gate: &str, venue: &str, withdrawn: &BTreeSet<String>) -> bool {
+    gate == GATE_WITHDRAWN_VENUE && withdrawn.contains(venue)
 }
 
 /// Every gate the desk's feasibility module can refuse under: the four the
@@ -138,31 +149,46 @@ mod tests {
     }
 
     #[test]
-    fn the_withdrawn_venue_gate_is_vocabulary_the_centre_admits_but_never_evidence() {
-        // Two halves, and each guards a different failure. If the literal
+    fn the_withdrawn_venue_gate_is_vocabulary_the_centre_admits_and_an_echo_only_the_centre_names()
+    {
+        // Three halves, and each guards a different failure. If the literal
         // ever left `EDGE_GATES`, `CentralPlane::attribute_refusals` would
         // file every withdrawal echo under the `other` constraint, which is
         // the label that means "a cell used a gate name this build does not
         // know" — a drift alarm firing on a gate this build declares. If
-        // `is_withdrawal_evidence` ever admitted it, the echoes would fill
-        // the 256-entry window and no second venue could reach the share
-        // bar again.
+        // `is_withdrawal_echo` ever answered on the gate alone, a cell
+        // holding a stale slot 11 would decide, by a string on an
+        // unauthenticated wire, that its refusals may not be evidence — the
+        // security finding this signature exists to close. And if it
+        // answered true for a gate that asks a question about an *order*,
+        // that order's refusal would be weighed as the platform citing
+        // itself.
+        let withdrawn: BTreeSet<String> = ["XLON".to_string()].into_iter().collect();
         assert!(
             EDGE_GATES.contains(&GATE_WITHDRAWN_VENUE),
-            "the premise: the centre must recognise the gate it is about to refuse as evidence"
+            "the premise: the centre must recognise the gate it is about to weigh as an echo"
         );
         assert!(
-            !is_withdrawal_evidence(GATE_WITHDRAWN_VENUE),
-            "a withdrawal's own echo was admitted to the window it would then dominate"
+            is_withdrawal_echo(GATE_WITHDRAWN_VENUE, "XLON", &withdrawn),
+            "a refusal citing a withdrawal the centre itself holds was not read as its own echo"
+        );
+        assert!(
+            !is_withdrawal_echo(GATE_WITHDRAWN_VENUE, "XNYS", &withdrawn),
+            "a cell citing a withdrawal of a venue the centre has not withdrawn was believed, so \
+             a stale slot decides what counts as evidence"
+        );
+        assert!(
+            !is_withdrawal_echo(GATE_WITHDRAWN_VENUE, "XLON", &BTreeSet::new()),
+            "with nothing withdrawn anywhere the centre still read a refusal as its own echo"
         );
         for gate in EDGE_GATES {
             if gate == GATE_WITHDRAWN_VENUE {
                 continue;
             }
             assert!(
-                is_withdrawal_evidence(gate),
-                "{gate} asks a question about an order at a venue and was excluded from the \
-                 window anyway"
+                !is_withdrawal_echo(gate, "XLON", &withdrawn),
+                "{gate} asks a question about an order at a venue and was weighed as the \
+                 platform citing itself anyway"
             );
         }
     }

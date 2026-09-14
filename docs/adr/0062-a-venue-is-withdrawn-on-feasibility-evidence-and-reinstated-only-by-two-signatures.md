@@ -43,7 +43,11 @@ decision:
 3. **An installed desk keeps its graph.** `Cell::install_arbitrage` refuses a
    second desk ("a second would reset the capital the first has
    committed"), nothing sets `self.desk = None`, and policy slot 11 — the
-   only per-venue pass-time channel — is `Slot::unproduced()` at the centre.
+   only per-venue pass-time channel — **was** `Slot::unproduced()` at the
+   centre when this record was written. The amendment below closes that
+   half; the stale graph itself is unchanged. The past tense is deliberate:
+   read on its own, a present-tense Context is the one part of a superseded
+   record a reader takes for a current fact.
 
 ## Decision
 
@@ -264,14 +268,16 @@ Four things about the shape are decisions rather than details.
   Producing it widens nothing: `PolicyItem::capability` maps slot 11 to no
   §6.2 capability, so it moves no sizing multiplier and lifts no pause, unlike
   the three slots `central::whitelist` refuses on precisely that ground.
-- **The new gate is vocabulary the centre admits and never evidence.**
+- **The new gate is vocabulary the centre admits and never evidence** —
+  **first half stands; second half superseded 2026-09-14 by Amendment C.**
   `GATE_WITHDRAWN_VENUE` joins `EDGE_GATES`, so `attribute_refusals`
   recognises it and a refusal under it is counted on
   `qip_feasibility_refusals_total{venue,constraint}` under its real venue and
   its real gate rather than under `other`, which is the label that means a
-  cell used a name this build does not know. But it is **kept out of the
-  window**, through `qip_contracts::feasibility::is_withdrawal_evidence` and
-  a third return vector on `CellIngestion`. This is not tidiness. A desk
+  cell used a name this build does not know. But it was **kept out of the
+  window** — decided by the gate string alone, on a predicate over `gate`,
+  and carried on a third return vector on `CellIngestion`. This is not
+  tidiness. A desk
   installed before a withdrawal reports one such refusal per intent per pass
   for as long as it keeps offering cycles through the venue; admitted to a
   256-entry rate window those echoes evict every genuine refusal within a few
@@ -283,8 +289,25 @@ Four things about the shape are decisions rather than details.
   the same shape by a different route: a withdrawn venue refuses there under
   `RefusalReason::VenueUnavailable`, which is not a feasibility gate and never
   reached the window either. `a_refusal_a_withdrawal_itself_caused_is_counted_and_never_lands_in_the_window`
-  withdraws one venue, sends twenty-four echoes, and then proves a second,
+  withdrew one venue, sent twenty-four echoes, and then proved a second,
   genuine cluster still withdraws its venue.
+
+  *(2026-09-14, Amendment C. The reasoning above — that an echo admitted
+  whole evicts the window it came from and leaves a control that cannot fire
+  — is right, and it stands. What it got wrong is the remedy. Total exclusion
+  took the withdrawn venue out of the denominator its own runner-up is judged
+  against, which is the opposite cascade in the same arithmetic, and on an
+  edge-only fleet it took it out the instant the venue was withdrawn. An echo
+  the centre's own set confirms now takes one window seat per venue per
+  report and is weighed no higher than the genuine evidence that venue still
+  holds, so it can sustain a denominator and can never evict one. And whether
+  a refusal is an echo at all is no longer read off the gate string a cell
+  sent — `is_withdrawal_echo(gate, venue, withdrawn)` asks the centre, so a
+  cell citing a withdrawal the centre does not hold is ordinary evidence. The
+  test named just above was replaced rather than relaxed, because its claim
+  that an echo never reaches the window was the defect and not the guarantee;
+  its closing half is kept and made harder to satisfy. Amendment C names the
+  replacements.)*
 
 The "no-cascade denominator" section above is unchanged and still governs:
 a withdrawn venue's **genuine** later feasibility refusals stay in the window
@@ -356,14 +379,22 @@ runner_up_a_cluster_of_the_remainder` walks that cascade and refuses it;
 cluster reviewed again writes no second record and cannot undo a
 reinstatement on the next pass.
 
+**Amendment C below reconciles this section with the edge seam.** The
+parenthetical above is about the *desk*, and it stayed true. It was never
+true of a cell once the amendment to "The edge limit" landed, and this
+section did not notice.
+
 ## What it costs
 
 - One more refusal step on every desk order, a set lookup on a string.
 - One `Vec` on `WorkReport` at the cell, which crossed clippy's variant-size
   bar in `qip-edge-node`'s `PassOutcome`; the report is boxed there.
 - A new shared module, `qip_contracts::feasibility`, holding the eight gate
-  literals once — nine since the 2026-09-14 amendment, and the ninth is the
-  only one `is_withdrawal_evidence` excludes from the window. `qip_edge::feasibility` aliases them; the desk's
+  literals once — nine since the 2026-09-14 amendment, and the ninth was the
+  only one excluded from the window outright. Amendment C ended that
+  exclusion: it is now the only one whose weight in the window the centre
+  decides rather than the cell, through `is_withdrawal_echo`.
+  `qip_edge::feasibility` aliases them; the desk's
   `qip_execution_engine::feasibility` does not depend on `qip-contracts` and
   keeps its four declarations, pinned equal by a kernel unit test rather than
   by an internal dependency added for the purpose.
@@ -407,12 +438,18 @@ reinstatement on the next pass.
   `a_desk_installed_before_a_withdrawal_stops_trading_the_withdrawn_venue_on_its_next_pass`
   at a cell. The second is the one that matters: a slot that exists and
   changes no pass is the failure this bullet names.)*
-- **A tenth `EDGE_GATES` member that is also not evidence.** Today exactly one
-  gate is excluded from the window and `is_withdrawal_evidence` names it by
-  a single comparison. A second exclusion would mean the window's contents
-  are no longer "every feasibility refusal the centre could attribute", and
-  the bars in this record are calibrated on that meaning. Add one only with
-  an amendment here saying what the window now measures.
+- **A tenth `EDGE_GATES` member that the window weighs differently.** When
+  this bullet was written exactly one gate was excluded from the window, by a
+  single comparison on the gate string, and the tripwire was a second
+  exclusion. Amendment C ended the exclusion, so the tripwire has moved
+  rather than gone: the ninth gate now enters the window as a seat capped by
+  the venue's own surviving evidence when the centre's set confirms it, and
+  as ordinary evidence when it does not, which restores the window's contents
+  to "every feasibility refusal the centre could attribute" — the meaning the
+  bars in this record are calibrated on. A second gate weighed as anything
+  other than one refusal, whether excluded or capped, breaks that calibration
+  again. Add one only with an amendment here saying what the window now
+  measures.
 - **Any code path that reads the withdrawn set to admit.** There is none;
   the day one appears, the "why evidence can never add a venue" section
   above is false and this record is void.
@@ -560,3 +597,121 @@ than a code one, and it is written here rather than fixed so that nobody reads
 the route's existence as a claim that two people can sign today. The type-level
 fix — a `Subject` newtype a session value cannot inhabit — is still not built,
 and the convention is still a convention.
+
+
+## Amendment C — the denominator at the edge seam, and slot 11's wire shape (2026-09-14)
+
+An independent security review of the merged edge closure found that
+"The no-cascade denominator" above had become half true, and that slot 11 had
+become a breaking wire change that documented itself as a careful one. Both
+are the same kind of defect: a guarantee stated in prose and held by the code
+on only one of the paths the prose claims it for.
+
+**The denominator.** That section reasons that a withdrawn venue's later
+refusals keep landing in the window, "the desk's feasibility gate runs before
+the withdrawal check, so the window's denominator stays honest". At the desk
+that is still exactly what happens — `OrderManager::submit` runs feasibility
+at step 2 and the withdrawn-venue check at step 5. At a cell there is no such
+ordering: the amendment above put the withdrawn-venue refusal at the *top* of
+`qip_edge::feasibility::assess`, so after a withdrawal every refusal at that
+venue arrives under `feasibility_withdrawn_venue`, and the centre routed all
+of them to a vector that never reached the window. On an edge-only fleet —
+the designed state, since `execution_nodes = {}` and the desk contributes
+nothing — a withdrawn venue therefore left the denominator the instant it was
+withdrawn, the runner-up became a cluster of what remained, and the platform
+could withdraw its way down to no venue at all. The unit test that names the
+property kept passing throughout, because it is arithmetic over a synthetic
+window and what changed was upstream of it.
+
+Two pressures point opposite ways here and the fix has to satisfy both. An
+echo must not **evict** genuine refusals from a 256-entry window: a stale desk
+reports one per intent per pass, and admitted whole they would clear the
+window in a few passes and then hold the denominator, so no second venue could
+ever reach three in four — a control that reads as protection and cannot fire.
+And a withdrawn venue must not **vanish** from the denominator, which is the
+finding above. So:
+
+* the centre seats **one** echo per venue per report — a report asserts one
+  fact, "this cell is still routing to a venue you withdrew", and repeating it
+  once per intent measures how many cycles a stale desk enumerated, not
+  anything about the venue. Every repeat is still counted on
+  `qip_feasibility_refusals_total{venue,constraint}`, so the series says how
+  hard the withdrawal is biting;
+* `venue_review::VenueTally::weight` caps what those seats are worth: an echo
+  may **sustain** a withdrawn venue's weight up to the genuine evidence that
+  venue still holds in the window, and never beyond. The platform's own
+  decision can keep a venue in the denominator for as long as the platform is
+  still attempting it, and can never amplify it past what the venue earned.
+  The cap is a `min` against the venue's own surviving refusals rather than a
+  constant, so it decays with the evidence it is anchored to instead of being
+  a floor nobody could check; when the venue's own refusals have aged out, its
+  echoes weigh nothing.
+
+A withdrawn venue is never a *candidate* under any of this — the filter is
+the withdrawn set — so nothing an echo does can withdraw a venue twice or feed
+a decision back into its own evidence.
+
+**Whose decision an echo is, is the centre's.** The classification took the
+gate string off the report, and the cell→centre wire authenticates nobody. No
+attacker is needed to exploit that: `Cell::feasibility_constraints` reads slot
+11 whatever its freshness and `self.policy` is replaced only when a new policy
+is applied, so a cell holding a stale slot after a reinstatement — or after
+the centre simply stopped shipping policy — refuses every intent at a venue
+*currently in use* under `feasibility_withdrawn_venue`, indefinitely. The
+centre charted a withdrawal that no longer existed, and none of those refusals
+reached the window, so the venue could not be withdrawn a second time on edge
+evidence for as long as the slot stayed stale. `is_withdrawal_echo(gate,
+venue, withdrawn)` replaces `is_withdrawal_evidence(gate)`: the centre's own
+`withdrawn_venues` decides, and a cell citing a withdrawal the centre does not
+hold is an ordinary refusal at a venue in use, evidence like any other.
+
+The cardinality bound on `qip_feasibility_refusals_total` is unchanged in both
+directions: `venue` is still bounded by the desk broker's name, the configured
+and granted venue list and `unknown`, and `constraint` by the nine gate
+literals and `other`. The recording sites are unchanged in number and place.
+What moved is which of `Platform::ingest_cell_report`'s two loops a given
+refusal arrives on, and both loops count the same labels.
+
+**Slot 11's wire shape.** `FeasibilityConstraints` carries
+`deny_unknown_fields` and `PolicyPayload` carries no schema version, and
+`withdrawn_venues` arrived required and always serialised. That is a breaking
+change to a signed cross-process contract, and the dangerous direction is not
+the obvious one: a *new* centre shipping the field to a cell built before it
+fails the **entire** payload, all twelve slots, on one added key — and
+`qip-api` (Cloud Run) and `qip-edge-node` (Compute Engine) deploy separately,
+so a rolling upgrade has a window in which every cell degrades every
+capability. Nothing is deployed, so this costs nothing today; it was a
+guarantee weakened without saying so, which is the part that had to be fixed
+whatever it costs.
+
+The field is now `#[serde(default, skip_serializing_if = "BTreeSet::is_empty")]`,
+which is the shape `CycleWhitelist::conversions` had already chosen in the
+same file, for the same reason, and which the sibling change in this merge
+(`RefusalReason::Infeasible`) documented and this one did not. What that buys,
+and what it deliberately does not:
+
+* an old centre's slot 11 decodes at a new cell with an empty withdrawn set,
+  which is not a guess — a centre that predates this record could not have
+  withdrawn a venue on feasibility evidence;
+* a new centre with nothing withdrawn produces byte-for-byte the pre-field
+  encoding, so an old cell accepts it and the slot digest, and the signature
+  over it, are the ones a pre-field payload carried;
+* once something **is** withdrawn the field is present and an old cell refuses
+  the whole payload. That is left fail-closed rather than papered over: the
+  cell applies no new policy, narrows on staleness per §6.2, and keeps the
+  last payload it applied, which is safer than applying eleven slots and
+  silently keeping a venue the centre stopped using. **Cells upgrade before
+  the centre**, and that is the deploy-order constraint this slot imposes.
+
+Defaulting to an empty set is not fail-open. It removes nothing and it cannot
+add anything: there is no field on `FeasibilityConstraints` by which a payload
+could make a venue reachable, the cell's venue list is its own configuration's
+business, and a withdrawal still reaches a cell by the `CycleWhitelist` the
+centre already omits the venue from — which is where this record started.
+
+Evidence: `slot_elevens_withdrawn_set_is_additive_on_the_wire_in_both_directions`
+(`qip-contracts/tests/contracts.rs`),
+`a_venue_withdrawn_on_edge_evidence_stays_in_the_denominator_the_runner_up_is_judged_against`,
+`a_repeated_echo_of_one_withdrawal_is_counted_in_full_and_seated_once` and
+`a_cell_citing_a_withdrawal_the_centre_does_not_hold_is_evidence_and_not_an_echo`
+(`qip-kernel/tests/central.rs`), and three unit tests beside `assess`.

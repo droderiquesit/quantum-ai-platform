@@ -389,6 +389,38 @@ pub struct FeasibilityConstraints {
     /// Venue ids the centre has withdrawn. `BTreeSet` because the slot is
     /// digested and signed, and a set that serialised in two orders would
     /// sign as two payloads.
+    ///
+    /// **Additive on the wire, and the deploy order that follows from it.**
+    /// This field is skipped when empty and defaults to empty when absent,
+    /// exactly as [`CycleWhitelist::conversions`] is and for the same
+    /// reasons — a payload signed before the field existed deserialises with
+    /// it empty, serialises without it, and produces the digest, and so the
+    /// signature, it always did. Without that, a code review found, the
+    /// field was a breaking change to a signed cross-process contract that
+    /// said nothing about being one: `qip-api` and `qip-edge-node` deploy
+    /// separately (Cloud Run and Compute Engine), and a new centre shipping
+    /// `withdrawn_venues` to a cell built before it fails the whole
+    /// [`PolicyPayload`] under `deny_unknown_fields` — all twelve slots
+    /// degraded, not one.
+    ///
+    /// The skew that remains is deliberate and is the fail-closed half. Once
+    /// the centre has actually withdrawn something the field is present, and
+    /// an old cell refuses the payload whole rather than applying eleven
+    /// slots and silently keeping a venue the centre stopped using. So
+    /// **cells upgrade before the centre**; between the two an old cell
+    /// applies no new policy, narrows on staleness per §6.2, and keeps the
+    /// last payload it applied. That is the safe direction, and it is the
+    /// direction `conversions` chose first.
+    ///
+    /// Defaulting to *empty* is not fail-open, because it is what the absent
+    /// field means: a centre that predates ADR 0062 could not have withdrawn
+    /// a venue on feasibility evidence, and a cell that reads no withdrawal
+    /// from it behaves as the platform did before the slot had a consumer —
+    /// the withdrawal still reaches the cell by the `CycleWhitelist` the
+    /// centre already omits the venue from. An empty set here removes
+    /// nothing; it can never *add* a venue, because there is no field on
+    /// this struct by which a payload could.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub withdrawn_venues: BTreeSet<String>,
 }
 
