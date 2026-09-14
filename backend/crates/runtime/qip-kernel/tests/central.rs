@@ -1522,20 +1522,14 @@ fn report_with_lot_refusal(venue: &str) -> CellReport {
     report_with_lot_refusal_from(CELL, venue)
 }
 
-/// A cell report carrying one refusal under the withdrawn-venue gate at
-/// `venue` — what a desk installed before a withdrawal reports on every pass
-/// afterwards, once `qip_edge::feasibility::assess` reads slot 11.
-fn report_with_withdrawn_venue_refusal(cell: &str, venue: &str) -> CellReport {
-    CellReport::new(cell, start()).with_refusals(vec![qip_mesh::delta::DeltaRefusal {
-        gate: qip_contracts::feasibility::GATE_WITHDRAWN_VENUE.to_string(),
-        reason: format!("{venue} is withdrawn on feasibility evidence"),
-        venue: Some(venue.to_string()),
-    }])
-}
-
 /// `count` refusals under the withdrawn-venue gate at `venue`, all on one
-/// report — what one pass of a stale desk that still offers several cycles
-/// through the withdrawn venue puts on the wire.
+/// report — what one pass of a desk installed before a withdrawal puts on
+/// the wire once `qip_edge::feasibility::assess` reads slot 11, one refusal
+/// per intent it still offers through the withdrawn venue.
+///
+/// `count` is a parameter because the two things a caller wants to say are
+/// different facts: `1` is a cell still routing there, and `8` is a pass's
+/// whole intent fan-out, which is what must not buy eight window seats.
 fn report_with_withdrawn_venue_refusals(cell: &str, venue: &str, count: usize) -> CellReport {
     CellReport::new(cell, start()).with_refusals(
         (0..count)
