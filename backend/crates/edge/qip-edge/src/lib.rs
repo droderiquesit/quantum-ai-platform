@@ -40,6 +40,7 @@ pub mod envelope;
 pub mod feasibility;
 pub mod journal;
 pub mod mesh;
+pub mod mirror;
 pub mod policy;
 pub mod reservation;
 pub mod seam;
@@ -48,8 +49,8 @@ pub mod telemetry;
 pub use arbitrage::ArbitrageDesk;
 pub use cell::{
     Cell, CellConfig, ConfirmedFill, CrossingInterval, ExecutionReport, GATE_LIVE_VENUE,
-    GATE_PATH_ROUTER, MAX_OPEN_ORDERS, OpenOrder, PlacedOrder, Placer, PolledHalt, PricingPolicy,
-    RoutedCycle, WorkReport,
+    GATE_PATH_EXTENSION, GATE_PATH_ROUTER, MAX_OPEN_ORDERS, OpenOrder, PlacedOrder, Placer,
+    PolledHalt, PricingPolicy, RoutedCycle, WorkReport,
 };
 pub use dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 pub use envelope::{VerifiedEnvelope, sign_payload};
@@ -61,6 +62,7 @@ pub use mesh::{
     PolicyDownlinkStats, PolicyPayloadTopic, RefusedGrant, RefusedPolicy, StrategyUtilisation,
     UplinkConfig, UplinkStats,
 };
+pub use mirror::{MirrorArrangement, MirroredInstrument};
 pub use policy::{VerifiedHalt, VerifiedPolicy};
 pub use reservation::{Rebase, RegionAllocation, RegionTable};
 pub use seam::{CellLiquidity, value_kind, value_type};

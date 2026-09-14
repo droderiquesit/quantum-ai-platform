@@ -16,10 +16,12 @@ use crate::envelope::VerifiedEnvelope;
 use crate::feasibility::{self, VenueModel};
 use crate::journal::{Decision, Journal, Mirror};
 use crate::mesh::{CellStateDelta, DeltaOrder, DeltaRefusal, StrategyUtilisation};
+use crate::mirror::MirrorArrangement;
 use crate::policy::{VerifiedHalt, VerifiedPolicy};
 use crate::reservation::RegionTable;
 use crate::seam::CellLiquidity;
 use crate::telemetry::{CellMetrics, RegionShareOutcome};
+use qip_arbitrage::liquidity::LiquiditySource;
 use qip_arbitrage::scan::{Opportunity, RejectionStage};
 use qip_contracts::capital::{CapitalGrant, Utilisation};
 use qip_contracts::degradation::{DegradationState, StrategyClass};
@@ -33,7 +35,14 @@ use qip_feature_dag::engine::FeatureEngine;
 use qip_orderbook::venue::VenueState;
 use qip_protocols::registry::{FeedKey, ProtocolRegistry};
 use qip_risk_engine::autonomy::{AutonomyController, AutonomyLevel};
-use qip_routing::path::{ExecutionPath, MirrorFacts, PathAssignment, PathPolicy, RegionId};
+use qip_routing::extension::{
+    ExtensionVerdict, MirrorExtension, PathExtensions, check as check_extension,
+};
+use qip_routing::mirror::Direction;
+use qip_routing::path::{
+    Composition, CompositionEdge, ExecutionPath, MirrorFacts, PathAssignment, PathEndpoint,
+    PathPolicy, RegionId,
+};
 use qip_routing::pathcycle::{CycleRouter, RepresentationClasses, VenueRegions};
 use qip_sequencing::tracker::{ReorderPolicy, Sequencer};
 use qip_strategy::compile::CompiledStrategy;
@@ -65,26 +74,49 @@ pub const GATE_LIVE_VENUE: &str = "live_venue";
 /// one, so `qip_edge_refusals_total{gate}` gains a value and no seam.
 pub const GATE_PATH_ROUTER: &str = "path_router";
 
-/// What a cell supplies as mirror-edge facts: nothing, and it can never need
-/// to.
+/// The gate a cell refuses a routed cycle under when blueprint §33.1's
+/// extension for the assigned path does not hold (§31.1, §33.1).
 ///
-/// [`Cell::install_arbitrage`] builds the router's region map with
-/// [`VenueRegions::all_in`], which places every venue the cell may trade in
-/// the cell's own region. A mirror edge is by definition a transfer whose two
-/// ends sit in *different* regions, so no composition this cell can build
-/// holds one, and `eligible_paths` never asks for a fact that is not here.
+/// Distinct from [`GATE_PATH_ROUTER`] on purpose, and the distinction is the
+/// operational one: the router gate says the platform cannot say **how** it
+/// would execute this cycle, and this one says it knows how and the
+/// conditions that path needs are not met right now. The first is a
+/// configuration or a whitelist problem and does not change between passes;
+/// the second is a market or an inventory fact and may be true on the next
+/// pass. An operator reading one series for both would be unable to tell a
+/// mis-configured cell from a cell correctly waiting for its band.
 ///
-/// **This is why §30.2's rows 3 to 6 are unreachable from an edge cell
-/// today**, and it is stated as a constant rather than an inline
-/// `BTreeMap::new()` so the next reader finds the reason rather than
-/// inferring an oversight. Reaching them is §31.1's work: it needs a
-/// whitelist naming venues outside the cell's region, a region map built from
-/// something richer than the cell's own region, and real inventory, hedge,
-/// resting-support and firm-quote facts per mirror edge. Until all four
-/// exist, a cross-region cycle would be refused here rather than
-/// mis-assigned — which is the fail-closed answer, not a delivered row.
-fn no_mirror_facts() -> BTreeMap<usize, MirrorFacts> {
-    BTreeMap::new()
+/// A literal like every other gate name, refused through [`Cell::refuse`] and
+/// therefore counted at the one pass-time recording site rather than a new
+/// one, so `qip_edge_refusals_total{gate}` gains a value and no seam.
+pub const GATE_PATH_EXTENSION: &str = "path_extension";
+
+/// What the two routing gates made of one found cycle.
+///
+/// Three arms rather than a `Result`, because a refusal from §30.2's router
+/// and a refusal from §33.1's extension are charted under different gates and
+/// the second still carries the assignment that was made — see
+/// [`GATE_PATH_EXTENSION`] for why an operator needs to tell them apart.
+enum RoutedOutcome {
+    Assigned(PathAssignment, ExtensionVerdict),
+    RouterRefused(Error),
+    ExtensionRefused(PathAssignment, Error),
+}
+
+/// The chain entry for an assignment, written from the two places that make
+/// one so the record is identical whichever gate ran next.
+fn path_assigned(cycle_id: &str, assignment: &PathAssignment) -> Decision {
+    Decision::CyclePathAssigned {
+        cycle_id: cycle_id.to_string(),
+        path: assignment.assigned().number(),
+        path_name: assignment.assigned().as_str().to_string(),
+        eligible: assignment
+            .eligible()
+            .iter()
+            .map(|path| path.as_str().to_string())
+            .collect(),
+        rationale: assignment.rationale().to_string(),
+    }
 }
 
 /// How a cell is identified and what it is allowed to reach.
@@ -105,6 +137,24 @@ pub struct CellConfig {
     /// see [`crate::feasibility`] for why that is stated rather than
     /// defaulted.
     pub feasibility: BTreeMap<String, VenueModel>,
+    /// Which region each venue sits in, for the venues that are not in this
+    /// cell's own (blueprint §31.1).
+    ///
+    /// Keyed by venue id. **A venue absent here is in the cell's own
+    /// region**, which is what every cell did before §31.1 and is still the
+    /// default, so an empty map is exactly the behaviour ADR 0068 shipped.
+    ///
+    /// # This can never widen what the cell may reach
+    ///
+    /// It says *where* a venue is, never *whether* the cell may trade there.
+    /// That is `venues` alone, and [`Cell::install_arbitrage`] refuses an
+    /// entry here naming a venue `venues` does not, so the map is a strict
+    /// annotation of a list the operator already wrote. A venue that is not
+    /// in `venues` is unreachable whatever this says, and a venue that is in
+    /// `venues` is reachable whether or not this says anything — all this
+    /// decides is whether a hop to it is a transport edge or a mirror edge,
+    /// which is the difference between §30.2's row 2 and its rows 3 to 6.
+    pub venue_regions: BTreeMap<String, String>,
     /// The interval §27.1's forty percent crossing cap is measured over, if
     /// the owner of the cap has chosen one.
     ///
@@ -153,6 +203,7 @@ impl CellConfig {
             max_staleness: Duration::from_secs(5),
             strategy_budget: 4_096,
             feasibility: BTreeMap::new(),
+            venue_regions: BTreeMap::new(),
             crossing_interval: None,
         }
     }
@@ -270,6 +321,40 @@ impl CellConfig {
         self
     }
 
+    /// Name a venue this cell may trade **and** say it sits in another
+    /// region (§31.1).
+    ///
+    /// Both halves in one call on purpose: the venue is pushed onto
+    /// `venues` by this method, so there is no way to annotate a region for
+    /// a venue the cell was not configured for. That is the structural half
+    /// of the guarantee; [`Cell::install_arbitrage`] holds the other half at
+    /// runtime, for the caller that set the `pub` field directly.
+    ///
+    /// Refused when `region` is empty or carries surrounding whitespace, and
+    /// **not trimmed**: `RegionId::new` refuses the same thing at the
+    /// router, two ids differing by a space are two regions to a mirror
+    /// edge, and a value corrected here is a configuration bug that survives
+    /// into every later pass.
+    pub fn with_venue_in_region(
+        mut self,
+        venue: VenueId,
+        region: impl Into<String>,
+    ) -> Result<Self> {
+        let region = region.into();
+        if region.is_empty() || region.trim() != region {
+            return Err(Error::invalid(format!(
+                "region id {region:?} for venue {} is empty or carries surrounding whitespace; \
+                 two region ids differing by a space are two regions to a mirror edge, so \
+                 supply it exactly rather than relying on this to trim",
+                venue.as_str()
+            )));
+        }
+        self.venue_regions
+            .insert(venue.as_str().to_string(), region);
+        self.venues.push(venue);
+        Ok(self)
+    }
+
     /// Install the feasibility model for a venue.
     ///
     /// The model is keyed by the venue's id and read on every intent for that
@@ -334,7 +419,16 @@ pub struct WorkReport {
     ///
     /// A cycle the router **refused** appears in [`Self::refusals`] under
     /// [`GATE_PATH_ROUTER`] and not here. Every cycle the scan surfaced
-    /// therefore leaves exactly one of the two marks, and never neither.
+    /// therefore leaves at least one of the two marks, and never neither.
+    ///
+    /// "At least", not "exactly", and the difference is §33.1's extension.
+    /// A cycle the router assigned and [`GATE_PATH_EXTENSION`] then refused
+    /// leaves **both**: the assignment here, because the platform did decide
+    /// how it would execute the cycle, and the refusal there, because the
+    /// conditions that path needs were not met. Collapsing the two would
+    /// lose the distinction between a cell that cannot route a cycle and one
+    /// correctly waiting for its inventory band, which are a configuration
+    /// fault and a normal market state respectively.
     pub paths: Vec<RoutedCycle>,
     pub halted: bool,
 }
@@ -698,6 +792,15 @@ pub struct Cell {
     /// registry nobody reads, which is what every test in the tree does. See
     /// [`crate::telemetry`] for why nothing here can block or fail the pass.
     metrics: CellMetrics,
+    /// The §31.1 cross-region mirrors this cell takes part in, if an
+    /// operator installed any.
+    ///
+    /// `None` is every cell before §31.1 and is still the default. It is not
+    /// a permissive default: without it `mirror_facts_for` supplies no facts
+    /// for a mirror edge and `eligible_paths` refuses the cycle whole, which
+    /// is what a cell that cannot say how it would execute a cross-region
+    /// cycle should do.
+    mirror: Option<MirrorArrangement>,
     /// The capital this cell's region may commit, if a composition root gave
     /// it a table, and every hold against it — this cell's and, when the
     /// table is shared, its siblings'.
@@ -756,6 +859,7 @@ impl Cell {
             pass: 0,
             crossing_history: BTreeMap::new(),
             metrics: CellMetrics::silent(),
+            mirror: None,
             region_allocation: None,
             config,
         })
@@ -915,13 +1019,97 @@ impl Cell {
         // learns to price a synthetic, the router refuses it until somebody
         // states whether it is a basis or an equivalence, rather than routing
         // an options structure under a carry check. A default here would be
-        // the guess ADR 0068 exists to refuse. See `no_mirror_facts` for why
-        // rows 3 to 6 are unreachable, which is a different reason again.
-        let region = RegionId::new(self.config.region.as_str())?;
-        let regions = VenueRegions::all_in(region, &self.config.venues)?;
+        // the guess ADR 0068 exists to refuse. See `mirror_facts_for` for
+        // what rows 3 to 6 now need instead.
+        //
+        // **The region map is no longer every venue in the cell's own
+        // region** (§31.1). It still starts that way — `VenueRegions::all_in`
+        // is kept precisely for its refusal of an empty venue list, which is
+        // the belt to `CellConfig::validate`'s braces — and then each venue
+        // the operator annotated is moved to the region they named. The
+        // annotation is checked against `self.config.venues` first, and that
+        // check is the one thing standing between "this venue is abroad" and
+        // "this venue exists": a `venue_regions` entry naming a venue the
+        // cell may not trade is refused here rather than silently placing a
+        // venue the cell has no book for. `CellConfig::with_venue_in_region`
+        // cannot produce one, but the field is `pub` and the builder is
+        // skippable, so the runtime check is not redundant with it.
+        let home = RegionId::new(self.config.region.as_str())?;
+        let mut regions = VenueRegions::all_in(home, &self.config.venues)?;
+        for (venue, region) in &self.config.venue_regions {
+            let venue = VenueId::new(venue.as_str());
+            if !self.config.venues.contains(&venue) {
+                return Err(Error::denied(format!(
+                    "venue {} is placed in region {region} and is not one this cell may trade; \
+                     a region annotation says where a venue is and never that the cell may \
+                     reach it, so add it to QIP_VENUES deliberately or remove the annotation",
+                    venue.as_str()
+                )));
+            }
+            regions = regions.with(venue, RegionId::new(region.as_str())?);
+        }
         let router = CycleRouter::new(PathPolicy::default(), regions, RepresentationClasses::new());
         self.desk = Some(InstalledDesk { desk, router });
         Ok(())
+    }
+
+    /// Install the §31.1 mirror arrangement this cell takes part in.
+    ///
+    /// Refused twice over rather than replaced: a second arrangement would
+    /// move a band under a cycle already priced against the first, and an
+    /// arrangement naming a round trip to the cell's own region describes a
+    /// mirror edge that cannot exist — `CompositionEdge::new` refuses a
+    /// mirror whose ends share a region, so the entry could only ever be
+    /// looked up by a lookup that never happens.
+    pub fn install_mirror(&mut self, arrangement: MirrorArrangement) -> Result<()> {
+        if self.mirror.is_some() {
+            return Err(Error::denied(
+                "this cell already holds a mirror arrangement; a second would move a band under \
+                 a cycle already gated against the first",
+            ));
+        }
+        if arrangement.is_empty() {
+            return Err(Error::invalid(
+                "a mirror arrangement naming no instrument gates nothing and would leave every \
+                 cross-region cycle refused for a missing band; name the instruments this \
+                 region mirrors, or install no arrangement at all",
+            ));
+        }
+        if arrangement.round_trip(self.config.region.as_str()).is_ok() {
+            return Err(Error::denied(format!(
+                "a round trip to this cell's own region {} was recorded; a mirror edge is one \
+                 asset in two regions and the router refuses one whose ends share a region, so \
+                 that measurement could never be read",
+                self.config.region
+            )));
+        }
+        self.mirror = Some(arrangement);
+        Ok(())
+    }
+
+    /// The mirror arrangement, if one is installed.
+    pub const fn mirror(&self) -> Option<&MirrorArrangement> {
+        self.mirror.as_ref()
+    }
+
+    /// The tenth policy slot's inventory targets and the instant they were
+    /// produced, **whatever their freshness**.
+    ///
+    /// Deliberately unlike [`Self::cycle_whitelist`], which reads stale as
+    /// none. The window this slot is read under is §33.1's own
+    /// "reference inside TTL" check, which
+    /// `qip_routing::extension::check` performs on the
+    /// `DistributedReference` built from `produced_at`. Filtering here as
+    /// well would mean the extension's window arm could never be reached
+    /// from a cell — a control that reads as protection and cannot fire —
+    /// and would replace a refusal naming a stale reference with one naming
+    /// a missing band.
+    pub fn inventory_targets(
+        &self,
+    ) -> Option<(&qip_contracts::policy::InventoryTargets, Timestamp)> {
+        let policy = self.policy.as_ref()?;
+        let slot = &policy.payload().inventory_targets;
+        Some((slot.value()?, slot.produced_at()?))
     }
 
     /// The cycle whitelist the applied policy carries, while it is fresh.
@@ -3125,6 +3313,320 @@ impl Cell {
     /// no longer close on what was priced. Stopping is the fail-closed
     /// reading of §6.2 for a family whose trades cannot be scaled after the
     /// fact.
+    /// Route one found cycle through §30.2's router and then §33.1's
+    /// extension for whatever path it was assigned.
+    ///
+    /// `&self` throughout, deliberately: this reads the graph, the cell's own
+    /// book, its confirmed positions, its installed mirror arrangement and
+    /// the last policy payload, and writes none of them. Nothing here can
+    /// name a venue the desk's graph does not already reach —
+    /// [`Self::install_arbitrage`] refused that graph if it did — and nothing
+    /// here can produce an order.
+    fn route_one(
+        &self,
+        installed: &InstalledDesk,
+        edges: &[usize],
+        now: Timestamp,
+    ) -> RoutedOutcome {
+        // The composition is built twice, deliberately, and the second one is
+        // the router's own.
+        //
+        // This one exists because the mirror facts are keyed by a mirror
+        // edge's position *in the composition's traversal*, so they cannot be
+        // built until the composition is. The second is inside
+        // [`CycleRouter::route`], which stays the single entry point by which
+        // an assignment leaves the router: reaching past it to
+        // `qip_routing::path::assign` would give this file a second way to
+        // produce one, and the router's own entry point is where a later
+        // change to how a cycle is assigned will land. `composition` is a
+        // pure function of the graph, the edge list and the region map — all
+        // three unchanged between the two calls — so the two are the same
+        // composition by construction rather than by coincidence. The cost is
+        // one extra walk of at most `MAX_COMPOSITION_EDGES` edges per cycle.
+        let composition = match installed.router.composition(installed.desk.graph(), edges) {
+            Ok(composition) => composition,
+            Err(refusal) => return RoutedOutcome::RouterRefused(refusal),
+        };
+        let facts = match self.mirror_facts_for(&composition) {
+            Ok(facts) => facts,
+            Err(refusal) => return RoutedOutcome::RouterRefused(refusal),
+        };
+        let assignment = match installed
+            .router
+            .route(installed.desk.graph(), edges, &facts)
+        {
+            Ok(assignment) => assignment,
+            Err(refusal) => return RoutedOutcome::RouterRefused(refusal),
+        };
+        match self.check_extension_for(&composition, assignment.assigned(), now) {
+            Ok(verdict) => RoutedOutcome::Assigned(assignment, verdict),
+            Err(refusal) => RoutedOutcome::ExtensionRefused(assignment, refusal),
+        }
+    }
+
+    /// Which end of a mirror edge this cell is standing on, and which way it
+    /// therefore trades the mirrored asset locally.
+    ///
+    /// The direction is read off the traversal and is not a guess. A mirror
+    /// edge whose `from` is local is the asset **leaving** this region, and
+    /// it got here by being acquired — the conversion before it bought it —
+    /// so locally this region buys. A mirror edge whose `to` is local is the
+    /// asset **arriving**, and the conversion after it spends it, so locally
+    /// this region sells. Inverting that inverts every band gate, which is
+    /// why it is derived from the edge rather than configured.
+    fn mirror_ends<'a>(&self, edge: &'a CompositionEdge) -> Result<(&'a PathEndpoint, Direction)> {
+        let home = self.config.region.as_str();
+        match (
+            edge.from().region.as_str() == home,
+            edge.to().region.as_str() == home,
+        ) {
+            (true, false) => Ok((edge.from(), Direction::Buy)),
+            (false, true) => Ok((edge.to(), Direction::Sell)),
+            // Neither end local is the reachable case: a whitelist naming
+            // two foreign venues. Both ends local cannot happen —
+            // `CompositionEdge::new` refuses a mirror whose ends share a
+            // region — and the two share an arm rather than giving the
+            // impossible one a branch no input reaches.
+            (false, false) | (true, true) => Err(Error::denied(format!(
+                "mirror edge {} -> {} has no end in this cell's region {home}; §31.1 gates each \
+                 region's own side and this cell is on neither, so it cannot say which \
+                 direction its band permits — route the cycle at a cell that is on one",
+                edge.from().label(),
+                edge.to().label()
+            ))),
+        }
+    }
+
+    /// The mirror-edge facts §30.2 tells rows 3 to 6 apart by, as this cell
+    /// can honestly state them.
+    ///
+    /// Four of the five are `false` or `None` and each is a statement rather
+    /// than a placeholder. A cell measures no hedge book beside the cycle's
+    /// own instruments, so it cannot say a local hedge is available (row 4);
+    /// it holds no connectivity fact about whether a remote venue accepts a
+    /// resting order (row 5); and it receives no firm quote from one (row 6).
+    /// **Rows 4, 5 and 6 are therefore unreachable from a cell**, and that is
+    /// the fail-closed answer rather than a delivered row: a cycle whose only
+    /// possible path was one of the three is refused whole by the router.
+    ///
+    /// Row 3 is the one a cell can reach, through
+    /// `MirrorFacts::established_mirror`: the centre named an inventory
+    /// target for the mirrored instrument and this cell's operator configured
+    /// a band for it, which together are §31.1's SETUP. Where the local side
+    /// sits inside that band is not asked here — that is §33.1's extension,
+    /// after the path is assigned.
+    fn mirror_facts_for(&self, composition: &Composition) -> Result<BTreeMap<usize, MirrorFacts>> {
+        let mirrors = composition.mirror_edges();
+        if mirrors.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let Some(arrangement) = self.mirror.as_ref() else {
+            return Err(Error::denied(
+                "this cycle crosses a region boundary and no §31.1 mirror arrangement is \
+                 installed; a cell with none cannot say what inventory it is meant to hold on \
+                 its own side, so install the arrangement or do not place a venue in another \
+                 region",
+            ));
+        };
+        let targets = self.inventory_targets();
+        let mut facts = BTreeMap::new();
+        for index in mirrors {
+            let Some(edge) = composition.edges().get(index) else {
+                return Err(Error::invalid(format!(
+                    "the composition reports a mirror edge at {index} and holds {} edges; route \
+                     the cycle against the composition it was built from",
+                    composition.edges().len()
+                )));
+            };
+            let (local, _) = self.mirror_ends(edge)?;
+            // The remote region is whichever end is not the local one, and
+            // the round trip to it must have been measured. Refused rather
+            // than defaulted: `MirrorFacts::new` refuses a round trip of
+            // zero, and a default here would be a number nobody measured
+            // sitting where §30.2's row 6 is decided.
+            let remote = if local == edge.from() {
+                edge.to()
+            } else {
+                edge.from()
+            };
+            let round_trip = arrangement.round_trip(remote.region.as_str())?;
+            let established = arrangement.instrument(&local.object).is_some()
+                && targets.is_some_and(|(targets, _)| {
+                    targets.targets.contains_key(local.object.as_str())
+                });
+            facts.insert(
+                index,
+                MirrorFacts::new(false, false, false, None, round_trip)?
+                    .established_mirror(established),
+            );
+        }
+        Ok(facts)
+    }
+
+    /// §33.1's extension for the assigned path, over every mirror edge the
+    /// cycle carries.
+    ///
+    /// Every mirror edge, not the first: a cycle with two mirrored legs is
+    /// two sides of two bands, and passing on the easier one would gate the
+    /// cycle against half of itself — the same argument `eligible_paths`
+    /// makes for requiring every mirror edge to admit a path.
+    fn check_extension_for(
+        &self,
+        composition: &Composition,
+        path: ExecutionPath,
+        now: Timestamp,
+    ) -> Result<ExtensionVerdict> {
+        let mut verdict = None;
+        for index in composition.mirror_edges() {
+            let extensions =
+                PathExtensions::new().with_mirror(self.mirror_extension_for(composition, index)?);
+            // The mirrored instrument is prefixed onto the refusal here and
+            // not inside the gate, because the gate is handed one side's
+            // facts and does not know which of a cycle's legs they came from.
+            // A cycle with two mirrored legs that refuses without naming one
+            // leaves an operator re-deriving which band was the problem from
+            // the band figures alone.
+            let one = check_extension(path, &extensions, now).map_err(|refusal| {
+                let named = composition.edges().get(index).map_or_else(
+                    || format!("edge {index}"),
+                    |edge| edge.from().object.as_str().to_string(),
+                );
+                Error::denied(format!(
+                    "the mirrored leg in {named} does not clear it: {}",
+                    refusal.message()
+                ))
+            })?;
+            if verdict.is_none() {
+                verdict = Some(one);
+            }
+        }
+        match verdict {
+            Some(verdict) => Ok(verdict),
+            // No mirror edge: the path's own facts, none of which a cell
+            // holds. Paths 1 and 2 return their no-row verdict here — which
+            // is every cycle a single-region cell finds — and paths 4 to 8
+            // refuse for facts nobody supplied.
+            None => check_extension(path, &PathExtensions::new(), now),
+        }
+    }
+
+    /// Everything §33.1's path-3 row needs for one mirror edge, assembled
+    /// from the centre's tenth policy slot and this cell's own configuration
+    /// and book.
+    ///
+    /// Every absence is a refusal. The failure this shape prevents is the
+    /// one the risk rules name: a gate assembled from optional facts, each of
+    /// which defaults to something permissive, reads as a control and admits
+    /// everything.
+    fn mirror_extension_for(
+        &self,
+        composition: &Composition,
+        index: usize,
+    ) -> Result<MirrorExtension> {
+        let Some(edge) = composition.edges().get(index) else {
+            return Err(Error::invalid(format!(
+                "the composition reports a mirror edge at {index} and holds {} edges",
+                composition.edges().len()
+            )));
+        };
+        let (local, intended) = self.mirror_ends(edge)?;
+        let Some(arrangement) = self.mirror.as_ref() else {
+            return Err(Error::denied(
+                "this cycle crosses a region boundary and no §31.1 mirror arrangement is \
+                 installed",
+            ));
+        };
+        let object = local.object.as_str();
+        let discipline = arrangement.instrument(&local.object).ok_or_else(|| {
+            Error::denied(format!(
+                "{object} crosses a region boundary in this cycle and this cell holds no \
+                 inventory band for it; §31.1 gates the direction from the band, and a mirrored \
+                 asset with no band is one this region has no discipline for — configure the \
+                 band or do not mirror it"
+            ))
+        })?;
+        let (targets, produced_at) = self.inventory_targets().ok_or_else(|| {
+            Error::denied(
+                "no inventory targets have been applied, so this cell has no distributed target \
+                 or reference for the asset it would mirror; §31.1 distributes both, and a \
+                 region trading a mirror against neither is trading against its own opinion",
+            )
+        })?;
+        let target = targets.targets.get(object).copied().ok_or_else(|| {
+            Error::denied(format!(
+                "the applied inventory targets name no target for {object}; the band is centred \
+                 on the centre's target, and a region that invented its own would drift away \
+                 from the one the other side is holding to"
+            ))
+        })?;
+        let price = targets
+            .reference_prices
+            .get(object)
+            .copied()
+            .ok_or_else(|| {
+                Error::denied(format!(
+                    "the applied inventory targets name no reference price for {object}; §31.1's \
+                 direction gating compares this region's own price against the distributed \
+                 reference, and without one the two regions could read the same dislocation the \
+                 same way and both take it"
+                ))
+            })?;
+        let band = discipline.band_around(target)?;
+        // The window is the slot's own — `PolicyItem::InventoryTargets`'
+        // time to live — measured from when the centre produced it rather
+        // than when it shipped. `Cell::inventory_targets` deliberately does
+        // not pre-filter on freshness, so this is the one place the window is
+        // checked and §33.1's "reference inside TTL" can actually fire.
+        let reference = discipline.reference_at(
+            price,
+            produced_at,
+            qip_contracts::policy::PolicyItem::InventoryTargets.time_to_live(),
+        )?;
+        let held = self.position(&local.venue, &local.object);
+        let local_price = self.local_mid(&local.venue, discipline.market())?;
+        Ok(MirrorExtension::new(
+            band,
+            held,
+            reference,
+            local_price,
+            intended,
+        ))
+    }
+
+    /// The mid of this cell's own book, for the market a mirrored instrument
+    /// is priced on.
+    ///
+    /// Refused when either side is missing rather than falling back to the
+    /// one that is there: a one-sided book has no mid, and taking the side
+    /// that exists would compare a bid against a reference struck on a mid
+    /// and read every thin book as a dislocation.
+    fn local_mid(&self, venue: &VenueId, market: &ObjectId) -> Result<Decimal> {
+        let missing = || {
+            Error::denied(format!(
+                "this cell's book for {} at {} is not two-sided, so it has no mid to compare \
+                 against the distributed reference; a one-sided book read as a price would make \
+                 every thin moment look like a dislocation",
+                market.as_str(),
+                venue.as_str()
+            ))
+        };
+        let (bid, _) = self
+            .liquidity
+            .touch(venue, market, BookSide::Bid)
+            .ok_or_else(missing)?;
+        let (ask, _) = self
+            .liquidity
+            .touch(venue, market, BookSide::Ask)
+            .ok_or_else(missing)?;
+        bid.checked_add(ask)
+            .and_then(|sum| sum.checked_div(Decimal::from_int(2)))
+            .ok_or_else(|| {
+                Error::numeric(format!(
+                    "the mid of {bid} and {ask} at {} does not fit a Decimal",
+                    venue.as_str()
+                ))
+            })
+    }
     fn scan_cycles(
         &mut self,
         now: Timestamp,
@@ -3191,21 +3693,12 @@ impl Cell {
         // cell is not configured for — `install_arbitrage` has already refused
         // a graph touching a venue outside `config.venues`, and `Cell::send`
         // remains the one place a `Placer` is called.
-        let routed: Vec<Result<PathAssignment>> = match self.desk.as_ref() {
-            Some(installed) => {
-                let facts = no_mirror_facts();
-                scanned
-                    .opportunities
-                    .iter()
-                    .map(|opportunity| {
-                        installed.router.route(
-                            installed.desk.graph(),
-                            &opportunity.candidate.edges,
-                            &facts,
-                        )
-                    })
-                    .collect()
-            }
+        let routed: Vec<RoutedOutcome> = match self.desk.as_ref() {
+            Some(installed) => scanned
+                .opportunities
+                .iter()
+                .map(|opportunity| self.route_one(installed, &opportunity.candidate.edges, now))
+                .collect(),
             // The desk was read at the top of this function and nothing since
             // could have removed it, so this arm is the `Option`'s shape and
             // not a state a pass can be in. Empty is safe here and only here:
@@ -3288,9 +3781,9 @@ impl Cell {
             // the report. A classification computed and dropped would be worse
             // than none, because a reader of this loop would take it for a
             // control.
-            let assignment = match routing {
-                Ok(assignment) => assignment,
-                Err(refusal) => {
+            let (assignment, extension) = match routing {
+                RoutedOutcome::Assigned(assignment, extension) => (assignment, extension),
+                RoutedOutcome::RouterRefused(refusal) => {
                     self.refuse(
                         report,
                         GATE_PATH_ROUTER,
@@ -3303,18 +3796,49 @@ impl Cell {
                     );
                     continue;
                 }
+                // §33.1's extension refused. The assignment still happened
+                // and still reaches the chain and the report below, because
+                // "the router had no row for this" and "the router assigned
+                // path 3 and this region's band forbade the direction" are
+                // different findings and an operator needs to see which.
+                // This is the one way a cycle leaves *both* marks, and the
+                // `paths` field's own documentation says so.
+                RoutedOutcome::ExtensionRefused(assignment, refusal) => {
+                    let path = assignment.assigned();
+                    self.journal
+                        .record(path_assigned(&cycle_id, &assignment), now);
+                    report.paths.push(RoutedCycle {
+                        cycle_id: cycle_id.clone(),
+                        assignment,
+                    });
+                    self.refuse(
+                        report,
+                        GATE_PATH_EXTENSION,
+                        &format!(
+                            "cycle {cycle_id} is assigned path {} ({}) and blueprint §33.1's \
+                             extension for it does not hold: {}",
+                            path.number(),
+                            path.as_str(),
+                            refusal.message()
+                        ),
+                        now,
+                    );
+                    continue;
+                }
             };
+            self.journal
+                .record(path_assigned(&cycle_id, &assignment), now);
+            // §33.1: "Every verdict, including silence, is logged." The
+            // verdict that *held* is chained here; the verdict that refused
+            // is journaled by `Cell::refuse` in the arm above, so both
+            // outcomes reach the chain and neither is inferable from the
+            // absence of the other.
             self.journal.record(
-                Decision::CyclePathAssigned {
+                Decision::PathExtensionChecked {
                     cycle_id: cycle_id.clone(),
                     path: assignment.assigned().number(),
-                    path_name: assignment.assigned().as_str().to_string(),
-                    eligible: assignment
-                        .eligible()
-                        .iter()
-                        .map(|path| path.as_str().to_string())
-                        .collect(),
-                    rationale: assignment.rationale().to_string(),
+                    has_row: extension.has_row(),
+                    rationale: extension.rationale(),
                 },
                 now,
             );
