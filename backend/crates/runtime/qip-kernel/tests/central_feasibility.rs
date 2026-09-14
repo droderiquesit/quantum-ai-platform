@@ -20,6 +20,7 @@ use qip_core::ids::OrderId;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Decimal, ObjectId, dec};
 use qip_execution_engine::feasibility::{GATE_LOT, GATE_TICK};
+use qip_execution_engine::oms::RefusalReason;
 use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_financial::asset_class::{InstrumentType, Sector};
 use qip_financial::object::FinancialObject;
@@ -370,5 +371,76 @@ fn a_limit_price_off_the_catalogue_tick_is_refused_by_the_tick_gate() -> Result<
 
     let on_tick = limit("AAA", dec!("10"), dec!("100.01"), "ord-on-tick");
     platform.submit_order(on_tick, start())?;
+    Ok(())
+}
+
+#[test]
+fn the_venue_a_desk_feasibility_refusal_is_charged_to_is_the_one_the_refusal_carries() -> Result<()>
+{
+    // The failure this prevents. `capture_submission` learned the venue of a
+    // feasibility refusal by reading `self.broker.name()` at the capture
+    // site, because the refusal did not carry one: the gate was recoverable
+    // from an `infeasible (<gate>):` prefix on a `Malformed` detail string
+    // and the venue was recoverable from nothing at all. Two facts about one
+    // event were then sourced from two places — the refusal, and the broker
+    // the platform happens to hold when it captures it — and CLAUDE.md's
+    // sixth principle says what happens next: two independent claims about
+    // the same fact will disagree, and the louder one will be wrong. They
+    // cannot disagree today, because the desk has one broker; a second one
+    // would have made them disagree silently, with nothing in the log to say
+    // which venue actually refused.
+    //
+    // ADR 0062's follow-on gave `RefusalReason::Infeasible` a `venue` field
+    // and moved the read onto it. What must *not* have changed is the value:
+    // this test holds the same string on the same surfaces it landed on
+    // before — the window, and the score the twin writes for the declined
+    // path — and reads it out of the refusal record itself, so the chain
+    // from the refusal to the score is one fact rather than two that happen
+    // to agree.
+    let mut platform = platform()?;
+    platform.observe(flat_tape("AAA", 90, 5));
+    let off_grid = market(&mut platform, "AAA", dec!("10.5"));
+    platform
+        .submit_order(off_grid, start())
+        .expect_err("ten and a half shares of a one-lot listing reached the venue");
+
+    // Premise one: the refusal is on the manager's record, it is the
+    // structured feasibility veto rather than a bare malformation, and the
+    // venue it names is the broker the desk actually holds. Without this the
+    // assertions below would compare two derivations of the same literal.
+    let refusals = platform.orders().refusals();
+    assert_eq!(refusals.len(), 1, "the refusal was not recorded");
+    let carried = match refusals[0].refusal.as_ref() {
+        Some(RefusalReason::Infeasible { venue, gate, .. }) => {
+            assert_eq!(gate, GATE_LOT, "the veto named the wrong gate");
+            venue.clone()
+        }
+        other => panic!("the off-lot order was not refused as infeasible: {other:?}"),
+    };
+    assert_eq!(
+        carried, "simulated-venue",
+        "the refusal names a venue the desk does not trade at"
+    );
+
+    // Premise two: the refusal is queued for the twin at all. A test that
+    // asserted the score's venue without this would pass on an empty queue.
+    assert_eq!(platform.declined_awaiting_score(), 1);
+
+    // The window, keyed on the venue the refusal carried.
+    let window = platform.feasibility_refusals();
+    assert_eq!(window.len(), 1, "the refusal did not reach the window");
+    assert_eq!(window[0].venue, carried);
+    assert_eq!(window[0].constraint, GATE_LOT);
+
+    // And the declined path, through to the score the twin writes: the venue
+    // the refusal named is the venue §12.3's fourth row counts it at.
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let scores = platform.declined_scores();
+    assert_eq!(scores.len(), 1, "the refusal was not priced");
+    assert_eq!(
+        scores[0].venue.as_deref(),
+        Some(carried.as_str()),
+        "the priced refusal is charged to a venue the refusal did not name"
+    );
     Ok(())
 }

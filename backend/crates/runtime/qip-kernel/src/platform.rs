@@ -11239,23 +11239,41 @@ impl Platform {
                     .collect(),
                 _ => Vec::new(),
             };
-            // A feasibility veto is about a venue, and the venue is the
-            // desk's one broker — the same string the accepted arm reads
-            // out of `result.venue`, so the venue a refusal is charged to
-            // and the venue a fill comes back from cannot differ for one
-            // order. Every other refusal is about the platform's posture
-            // and names no venue. Blueprint §12.3's fourth row is keyed on
-            // this: until it was carried, a feasibility refusal was counted
-            // by its gate on both planes and by its venue on neither.
-            let venue = result
-                .refusal
-                .as_ref()
-                .and_then(RefusalReason::feasibility_gate)
-                .map(|gate| {
-                    let venue = self.broker.name().to_string();
-                    self.record_feasibility_refusal(&venue, gate, FeasibilitySeam::Desk, None, now);
-                    venue
-                });
+            // A feasibility veto is about a venue, and the venue is the one
+            // the refusal itself names — `RefusalReason::Infeasible`'s own
+            // field, which `OrderManager::submit` fills from the same
+            // `Broker::name` the accepted arm reads out of `result.venue`,
+            // so the venue a refusal is charged to and the venue a fill
+            // comes back from cannot differ for one order. Every other
+            // refusal is about the platform's posture and names no venue.
+            // Blueprint §12.3's fourth row is keyed on this: until it was
+            // carried, a feasibility refusal was counted by its gate on both
+            // planes and by its venue on neither.
+            //
+            // Read from the refusal rather than from `self.broker.name()`,
+            // which is what this site did until ADR 0062's follow-on gave
+            // the variant a `venue` field. The value is the same today —
+            // the desk has one broker — and the read is not: the fact is now
+            // taken from the record of the refusal that happened, instead of
+            // re-derived at the capture site from a broker that may not be
+            // the one that refused. A second desk broker would have made
+            // those two answers differ, silently, with nothing in the log to
+            // show which was true.
+            let venue = match result.refusal.as_ref() {
+                Some(refusal @ RefusalReason::Infeasible { venue, .. }) => {
+                    refusal.feasibility_gate().map(|gate| {
+                        self.record_feasibility_refusal(
+                            venue,
+                            gate,
+                            FeasibilitySeam::Desk,
+                            None,
+                            now,
+                        );
+                        venue.clone()
+                    })
+                }
+                _ => None,
+            };
             for rule in &rules {
                 self.telemetry
                     .metrics
@@ -13484,10 +13502,16 @@ impl Platform {
 /// description would fragment the moment a message was reworded.
 fn gate_of(refusal: &RefusalReason) -> String {
     match refusal {
-        // A feasibility veto is carried as `Malformed` and named by its own
-        // gate literal — the same four the edge plane charts under — so an
-        // off-lot order and an order tracing to no hypothesis are not one bar.
-        RefusalReason::Malformed { .. } => refusal.feasibility_gate().unwrap_or("order-validation"),
+        RefusalReason::Malformed { .. } => "order-validation",
+        // A feasibility veto charts under its own gate literal — the same
+        // four the edge plane charts under — so an off-lot order and an order
+        // tracing to no hypothesis are not one bar. The literal is resolved
+        // by `feasibility_gate` against those four constants, so the label's
+        // cardinality is the constants' and a gate string this build does not
+        // know charts as plain order validation rather than minting a series.
+        RefusalReason::Infeasible { .. } => {
+            refusal.feasibility_gate().unwrap_or("order-validation")
+        }
         RefusalReason::Halted { .. } => "kill-switch",
         RefusalReason::AutonomyTooLow { .. } => "autonomy",
         RefusalReason::LiveVenueBelowLiveAutonomy { .. } => "autonomy-live-venue",
