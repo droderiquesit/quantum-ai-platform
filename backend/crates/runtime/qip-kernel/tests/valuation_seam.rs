@@ -918,8 +918,17 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
         .iter()
         .find(|leg| leg.object_id == object("AAA"))
         .expect("the compounded cycle sized AAA");
+    // 0.02: the reference leg's 0.04 (the mandate's 8% under ADR 0066's
+    // unattributed regime multiplier) halved again by the fill record. This
+    // read 0.04 until the regime narrowing was wired, and the figure moved
+    // for the same reason the premise above did. The claim is unchanged and
+    // is the ratio, not the absolute: the regime multiplier is a common
+    // factor across the reference arm and this one — same instrument, same
+    // tape, same regime — so it divides out of "a quarter of the unnarrowed
+    // notional" and the compounding of ADR 0055 with ADR 0063 is what is
+    // still being asserted.
     assert!(
-        (leg.target_weight - 0.04).abs() < 1e-9,
+        (leg.target_weight - 0.02).abs() < 1e-9,
         "the weight bound was not halved by the fill record: {}",
         leg.target_weight
     );
@@ -927,7 +936,7 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
         compounded
             .compromises
             .iter()
-            .any(|c| c.starts_with("obj-AAA: sizing bound narrowed from 8.00% to 4.00%")),
+            .any(|c| c.starts_with("obj-AAA: sizing bound narrowed from 8.00% to 2.00%")),
         "the proposal does not name the cap: {:?}",
         compounded.compromises
     );

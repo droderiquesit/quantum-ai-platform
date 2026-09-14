@@ -1255,14 +1255,37 @@ fn attaching_the_central_plane_changes_no_stage_but_the_family_review_the_learn_
         "the untouched platform reviewed a family, so there is no difference to attribute: {}",
         expected_learn.detail
     );
+    // The second permitted difference, added 2026-09-14 with ADR 0066's
+    // cadence. A platform with a central plane has a registered strategy
+    // family and one without does not, so the cadence holds the evaluation-tier
+    // census for a *different stated reason* — "this is cycle 1" against "no
+    // strategy is registered under a family". Both are saving cycles and
+    // neither runs any work; what differs is the sentence naming why, which is
+    // the cadence correctly reporting a real difference in its subject rather
+    // than the central plane leaking into a second decision.
+    //
+    // It is substituted here rather than matched loosely, so this assertion
+    // stays an equality: a third difference, or a change in either clause,
+    // still fails. Relaxing it to `contains` would have retired the property
+    // the test exists for.
+    let expected_with_a_registered_family = expected_learn.detail.replace(
+        "no strategy is registered under a family, so there is nothing to tier",
+        "the evaluation-tier census runs on one cycle in 12 and this is cycle 1",
+    );
+    assert_ne!(
+        expected_with_a_registered_family, expected_learn.detail,
+        "the premise failed: the cadence clause this substitution accounts for is not in the \
+         detail, so the equality below would be comparing something else"
+    );
     let permitted = format!(
-        "{}; 1 strategy family(ies) reviewed against funding standing, 1 of them funded \
-         [central-tests (1 member(s), 1 funded)]; the review allocates nothing",
-        expected_learn.detail
+        "{expected_with_a_registered_family}; 1 strategy family(ies) reviewed against funding \
+         standing, 1 of them funded [central-tests (1 member(s), 1 funded)]; the review \
+         allocates nothing"
     );
     assert_eq!(
         actual_learn.detail, permitted,
-        "the central plane changed the LEARN stage by more than the family review it now runs"
+        "the central plane changed the LEARN stage by more than the family review it now runs \
+         and the cadence's own reason for saving"
     );
     // One extra record on the log, and one only: the family review's.
     assert_eq!(

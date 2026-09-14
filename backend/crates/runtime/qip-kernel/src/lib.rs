@@ -38,6 +38,7 @@ pub mod cycle;
 pub mod fabric_declaration;
 pub mod family_review;
 pub mod platform;
+pub mod quote_loop;
 pub mod references;
 pub mod regime_allocation;
 pub mod rule_review;

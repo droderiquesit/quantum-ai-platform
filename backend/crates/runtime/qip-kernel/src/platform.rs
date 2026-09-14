@@ -10155,7 +10155,16 @@ impl Platform {
             for problem in sign_off_problems {
                 outcome = outcome.with_problem(problem);
             }
-            return outcome;
+            // ADR 0067's quote loop on this exit too, and this is the exit
+            // that matters most. A cycle with nothing releasable is precisely
+            // the cycle a market maker is still quoting through, so wiring
+            // only the release path would have left the loop silent on every
+            // quiet cycle — and on a freshly opened book every cycle is quiet,
+            // which is the state the acceptance suite runs in and the state a
+            // deployment starts in. The call was placed only at the far exit
+            // when it was first added; disconnecting it then left this suite
+            // green, which is how the gap was found.
+            return crate::quote_loop::review(self, now, outcome);
         }
 
         // Release them. Until this loop existed the stage counted approved
@@ -10352,7 +10361,17 @@ impl Platform {
         for problem in problems {
             outcome = outcome.with_problem(problem);
         }
-        outcome
+        // ADR 0067's quote loop, last in the stage and deliberately so: it
+        // reads what ACT has already done and prices what the platform *would*
+        // quote, and it must not be able to influence what ACT sends. It takes
+        // `&Platform`, so it structurally cannot — a `QuotePair` carries two
+        // prices and a size and no venue, no side, no client id and no time in
+        // force, and no function in this workspace turns one into an `Order`.
+        // That is the fourth structural guarantee of the same family as the
+        // three the paper boundary already rests on, and `quote_loop.rs`'s
+        // acceptance suite asserts it over production source *and*
+        // behaviourally, by ending a real pass with no order and no fill.
+        crate::quote_loop::review(self, now, outcome)
     }
 
     /// The largest whole number of the instrument's lots that does not exceed

@@ -159,3 +159,74 @@ sweep harvests continuation.
   three layers — Terraform's refusal, `AutonomyLevel::deployable`, and the
   type-level absence of a live constructor in `qip-edge` and `qip-cost-router`
   — are as they were.
+
+## What it costs
+
+**Every sized name is narrowed, on every construction, in every deployment
+that exists today.** `market_regime` resolves an instrument nothing attributes
+to an alpha family, so production reads `unattributed_multiplier` — the
+minimum over the table — and the two reachable values are 0.75 and 0.5. That
+is a real reduction in gross exposure, bought for a regime signal whose family
+attribution nothing yet supplies. It was chosen over treating an unattributed
+instrument as unaffected, because unattributed is the *only* production input
+and reading it as 1.0 would have made the reader invisible in the sole state a
+deployment reaches — the `MaxExpectedShortfall` shape this repository names.
+The cost is stated rather than hidden: the platform sizes smaller than its
+mandate allows, deliberately, until something attributes a family.
+
+**The favouring half does not exist and cannot be added cheaply.**
+`Stance::multiplier` has no arm above 1.0 and `regime::favoured` returns names
+carrying no number. A later lane wanting a regime to *raise* an allocation
+cannot extend this — it has to argue for a new control and a new ADR, which is
+the intended friction.
+
+**§19.2's hot-tier cap cannot fire today.** With current family names nothing
+parses to an alpha family, so every strategy tiers to `Batch`. The cap is
+reachable through an operator's string rather than permanently dead, which is
+the difference from `MaxExpectedShortfall`, but it is not a control that fires
+on today's tape and this record does not claim otherwise.
+
+**`FeeTier` is still unreached.** §18.4's accumulator deliberately does not
+restate the fee ladder, which lives in `qip-edge/qip-routing`; closing it needs
+either an owner of that crate to compose a `FeeSchedule` or an ADR for a
+service-to-edge dependency. Withdrawal drag and minimum viable scale were not
+built at all: both need a forward growth rate the platform does not measure,
+and inventing one would be a second claim about a fact nothing establishes.
+
+**A saving cadence costs a sentence on every quiet cycle.** It returned nothing
+until the wiring exposed what that meant: `adaptive_cadence` records no metric,
+so a silent saving reached no surface at all, and since a freshly opened book
+holds both arms that was every cycle any deployment reaches. The sentence is
+the price of the subsystem being observable, and it is the same trade §19.2's
+tier gauge makes by writing zeros every cycle.
+
+## What would make this wrong
+
+**An attribution path appears and the unattributed multiplier stops being the
+production input.** The moment something attributes an instrument to an alpha
+family, the narrowing changes from a flat 0.75/0.5 on everything to a table
+applied per family, and the sizing consequences recorded here should be
+re-measured rather than assumed to carry over.
+
+**Evidence that narrowing on an unattributed instrument is worse than not
+reading the regime at all.** The choice here is deliberately conservative, but
+it is a choice: a platform sizing at half its mandate in every regime is paying
+for a signal it cannot yet use. If that cost is measured and exceeds the
+protection, the honest response is to remove the reader, not to quietly raise
+the floor toward 1.0.
+
+**A cadence that skips a control rather than a record.** The rule this record
+rests on is that a cadence may skip work producing a *record* and never work
+producing a *control*, which is why the regime narrowing is recomputed on every
+construction and is deliberately absent from the plan. A later lane adding a
+control to `CadencePlan`'s work set breaks that rule, and §23.6's own row 3 —
+"regime belief changed → trigger regime-conditional weighting" — is the exact
+shape that invites it, which is why that row is a recomputation and not a
+trigger.
+
+**The tier taxonomy turning out to be a fourth thing.** `AlphaFamily` is
+deliberately distinct from `families::FamilyId`'s correlation cluster and
+`qip_lifecycle::StrategyFamily`'s sweep key, and its module doc says which of
+the three a reader holds. If a fourth notion of "family" appears, this record's
+central claim — that §23.3 and §19.2 share one taxonomy — stops being true, and
+the two should be separated again rather than forced through one type.
