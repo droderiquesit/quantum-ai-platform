@@ -94,6 +94,7 @@ pub mod horizon;
 pub mod ledger;
 pub mod scoring;
 pub mod trials;
+pub mod venue_ladder;
 
 pub use band::{BandMethod, BandVerdict, HoldoutBand};
 pub use corridor::{

@@ -414,6 +414,17 @@ pub struct Platform {
     /// log at assembly, so a restarted process still refuses what it
     /// withdrew; a caller cannot put a name here.
     withdrawn_venues: BTreeSet<String>,
+    /// Blueprint §34.4: where each venue stands on the promotion ladder.
+    ///
+    /// Empty today and honestly so — `PlatformConfig` carries no venue
+    /// declarations and no measurement source reaches the kernel, so the
+    /// review below reports an unladdered broker rather than pretending to a
+    /// standing it has not measured. The ceiling is the simulator
+    /// (`VENUE_PROMOTION_CEILING`) and the rungs above it are refused by name
+    /// with ADR 0003 in the message; this field cannot become a fourth way to
+    /// reach a live venue, because there is no live-class adapter to promote
+    /// onto and `DexVenue::adapter_class` takes no argument.
+    venue_ladder: qip_lifecycle::venue_ladder::VenueLadder,
     /// First signatures on a venue's reinstatement waiting for a
     /// countersignature, by venue. In memory and not replayed, for exactly
     /// the reason [`Self::pending_promotions`] gives.
@@ -3399,6 +3410,7 @@ impl Platform {
             fill_scores: Vec::new(),
             feasibility_refusals: Vec::new(),
             withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
+            venue_ladder: qip_lifecycle::venue_ladder::VenueLadder::new(),
             pending_reinstatements: BTreeMap::new(),
             sizing_caps_armed: BTreeSet::new(),
             sizing_proposals_open: BTreeSet::new(),
@@ -10502,6 +10514,29 @@ impl Platform {
         // caller. What this can do is subtract a venue at both seams; it
         // cannot add one anywhere.
         let (reviewed, problems) = self.review_venues(now);
+        if let Some(reviewed) = reviewed {
+            let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
+        // Blueprint §34.4: where the venues this platform actually trades
+        // stand on the promotion ladder. Beside `review_venues` and not inside
+        // it, because they answer opposite questions — that one withdraws a
+        // venue on feasibility evidence, this one reports whether a venue was
+        // ever admitted in the first place — and folding them would give the
+        // ladder a path to withdrawal that ADR 0062 reserves for one seam.
+        //
+        // The ladder is empty and the broker is unladdered, so today this
+        // reports exactly that. Saying so is the point: an unladdered venue
+        // that read as silence would be indistinguishable from a review
+        // nobody wired in, which is the failure three modules shipped in one
+        // day earlier in this wave.
+        let (reviewed, problems) = crate::venue_admission::review(
+            &self.venue_ladder,
+            &std::iter::once(self.broker.name().to_string()).collect(),
+        );
         if let Some(reviewed) = reviewed {
             let detail = format!("{}; {reviewed}", outcome.detail);
             outcome = StageOutcome { detail, ..outcome };

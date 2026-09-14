@@ -153,6 +153,7 @@
 pub mod adapter;
 pub mod connection;
 pub mod credential;
+pub mod dex;
 pub mod exchange;
 pub mod ledger;
 pub mod matching;
@@ -167,6 +168,7 @@ pub use credential::{
     RequirementKind, Secret, VenueCredential, VenueRequirement, describe_missing,
     requirements_of_kind, standard_requirements,
 };
+pub use dex::DexVenue;
 pub use exchange::{BookableFill, ExchangeSettings, SimulatedDepth, SimulatedExchange};
 pub use ledger::{AccountLedger, MarginPolicy};
 pub use matching::{ExecutionOutcome, MatchingEngine, Participant, Resting, Trade};

@@ -12,6 +12,13 @@ serde.workspace = true
 qip-core.workspace = true
 qip-numerics.workspace = true
 qip-contracts.workspace = true
+# The venue rung of the ladder judges a decentralised venue's §34.3 model —
+# whether its pool math, block-time execution, MEV estimate and contract-risk
+# flag exist, and what the modelled cost of crossing it comes to. That model
+# is `qip_financial::pool`, a lib: the gate reads it and never builds one, so
+# the arithmetic has exactly one home and a venue cannot be admitted on a
+# second copy of it that drifted.
+qip-financial.workspace = true
 qip-ai.workspace = true
 # The holdout gate re-runs the validation the simulation engine already
 # implements — deflated Sharpe, purged k-fold, overfitting assessment — rather

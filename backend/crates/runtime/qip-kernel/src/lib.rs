@@ -45,6 +45,7 @@ pub mod regime_allocation;
 pub mod rule_review;
 pub mod sizing_review;
 pub mod valuation;
+pub mod venue_admission;
 pub mod venue_review;
 
 pub use central::{CellReport, CentralPlane, StrategyDna, StrategyFactory};
