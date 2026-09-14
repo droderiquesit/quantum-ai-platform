@@ -40,7 +40,24 @@ Neither of those asks anything of you; they are context.
    scored orders; check whether a second rule would still have refused them.
 
 3. Sign, twice, as two different people, each within fifteen minutes of
-   authenticating and the second within a day of the first:
+   authenticating and the second within a day of the first.
+
+   **This step cannot be completed on today's build and the route refuses
+   every caller with `403` (ADR 0065, 2026-09-14).** A standing bearer token
+   mounted from Secret Manager carries no instant at which anybody
+   authenticated — `qip-api` stamped process start-up on every credential, so
+   the fifteen-minute window measured the pod's uptime rather than your
+   presence — and the platform now refuses rather than offering an instant it
+   does not have. Independently of that, `QIP_TOKEN_OPERATOR` mints one
+   subject per *role*, so two people holding it present the same subject and
+   the "two different people" check refuses the second signature anyway
+   (ADR 0062 Amendment B). Both need a per-person credential with a real
+   authentication step; neither is a change you can make from this runbook.
+
+   Until then a limit is recalibrated the way it is configured: through the
+   limits file the composition roots load at boot. The command below is kept
+   because it is what the route expects and is what will work again once a
+   credential can attest a person.
    ```sh
    curl -X POST -H "Authorization: Bearer $QIP_TOKEN_OPERATOR" \
         -H "Content-Type: application/json" \

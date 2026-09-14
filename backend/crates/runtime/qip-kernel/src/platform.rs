@@ -3897,8 +3897,6 @@ impl Platform {
         &mut self.central
     }
 
-    /// Produce one cell's cycle whitelist and journal what was produced.
-    ///
     /// Policy slot 11 for every cell this cycle: the venues this platform
     /// has withdrawn, and nothing else.
     ///
@@ -3929,6 +3927,8 @@ impl Platform {
         self.central.feasibility_constraints()
     }
 
+    /// Produce one cell's cycle whitelist and journal what was produced.
+    ///
     /// The plane derives the whitelist (`CentralPlane::cycle_whitelist_for`);
     /// this is the entry point a shipper uses, because the journal is the
     /// platform's and a whitelist that reached a cell without a record here
@@ -12733,9 +12733,16 @@ impl Platform {
     /// Other sites count the series and none of them touches the window, both
     /// in [`Self::ingest_cell_report`]: the unattributed arm, which counts a
     /// carried refusal under `unknown`/`other`, and the echo arm, which counts
-    /// a refusal the central plane attributed in full and still kept out of
-    /// the window because its gate is not withdrawal evidence
-    /// (`qip_contracts::feasibility::is_withdrawal_evidence`). Deliberately
+    /// the *repeat* echoes — the second and later refusal, in one report, at a
+    /// venue the centre itself holds withdrawn
+    /// (`qip_contracts::feasibility::is_withdrawal_echo`, which consults the
+    /// plane's own withdrawn set rather than believing a gate string a cell
+    /// asserted). The *first* such echo per venue per report is admitted and
+    /// so does reach the window, through this function, because dropping a
+    /// withdrawn venue from the denominator is what made the runner-up a
+    /// cluster of whatever remained. This passage named
+    /// `is_withdrawal_evidence(gate)` until 2026-09-14; that function was
+    /// replaced, and the sentence outlived it by one merge. Deliberately
     /// stated without a count: this said "exactly one other site" until
     /// 2026-09-14, by which time the echo arm had made it two, and how a
     /// refusal is classified is live work. **This function is the only writer

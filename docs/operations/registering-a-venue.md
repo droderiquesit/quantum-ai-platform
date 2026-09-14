@@ -99,7 +99,13 @@ registration question arise.
    takes the `terms` you read and the `secret` variable name, takes the
    operator from the sealed session rather than from the body, refuses a
    credential older than fifteen minutes, and journals the record to the
-   event log before the registry adopts it. The contract is
+   event log before the registry adopts it. **As of 2026-09-14 that last
+   refusal is total: the route answers `403` to every caller (ADR 0065),
+   because the fifteen-minute window was measuring how long the `qip-api`
+   process had been up rather than when anybody authenticated, and a standing
+   bearer token has no authentication instant to offer. This step therefore
+   cannot be completed today.** The rest of this procedure is unchanged and
+   still describes what the route does once a credential can attest a person. The contract is
    `backend/crates/apps/qip-api/ROUTES-REGISTRATIONS.md`. The record it
    writes is a `RegistrationRecord` with:
    - `source_id` — the manifest's `source_id`, from the path;
