@@ -41,7 +41,7 @@ use qip_compliance::approval::{ApprovedCapital, CapitalRequest, OperatorCredenti
 use qip_compliance::incident::{HaltScope, Incident, ResponsePolicy};
 use qip_compliance::plane::{CompliancePlane, ComplianceReport};
 use qip_compliance::signing::SigningKey;
-use qip_contracts::feasibility::{EDGE_GATES, is_withdrawal_evidence};
+use qip_contracts::feasibility::{EDGE_GATES, is_withdrawal_echo};
 use qip_contracts::governance::{Approval, Severity};
 use qip_contracts::message::BookSide;
 use qip_contracts::policy::{CycleWhitelist, FeasibilityConstraints};
@@ -413,14 +413,25 @@ pub struct CellIngestion {
     /// admitted: a window entry under a cause nobody established would be
     /// a withdrawal nobody could explain.
     pub feasibility_refusals_unattributed: Vec<(String, String)>,
-    /// The report's refusals the centre attributed *in full* — real venue,
-    /// declared gate — and deliberately kept out of the window, as the
-    /// `(venue, constraint)` label pair each is counted under. Today that is
-    /// exactly `feasibility::GATE_WITHDRAWN_VENUE`: the echo of a withdrawal
-    /// already made, which would otherwise evict the window it was derived
-    /// from. See `qip_contracts::feasibility::is_withdrawal_evidence` for
-    /// why admitting it would leave the withdrawal control unable to fire a
-    /// second time.
+    /// The report's *repeat* echoes of one withdrawal: refusals attributed in
+    /// full — real venue, declared gate — under
+    /// `feasibility::GATE_WITHDRAWN_VENUE` at a venue the centre itself holds
+    /// withdrawn, beyond the first such refusal per venue in this report.
+    /// Carried as the `(venue, constraint)` label pair each is counted under,
+    /// so the series still counts every refusal the cell made, and given no
+    /// window seat.
+    ///
+    /// **Why only the repeats.** A cell whose desk was installed before the
+    /// withdrawal reports one of these per intent per pass, and the number of
+    /// intents is a fact about how many cycles that stale desk happened to
+    /// enumerate — not about the venue. Admitted whole to a 256-entry window
+    /// they would evict every genuine refusal in a few passes. Admitted at
+    /// nothing they would take the withdrawn venue out of the denominator
+    /// every other venue's share is measured against, and the runner-up
+    /// would become a cluster of the remainder. So the first per venue per
+    /// report takes a seat — one report, one assertion that this cell is
+    /// still routing there — and `venue_review::VenueTally::weight` caps
+    /// what those seats can ever be worth.
     pub feasibility_refusals_echoed: Vec<(String, String)>,
 }
 
@@ -1792,14 +1803,34 @@ impl CentralPlane {
     /// more than one cell before edge-only evidence withdraws a venue. See
     /// `VENUE_WITHDRAWAL_MIN_CELLS`.
     ///
-    /// One gate is attributed in full and still refused admission: a refusal
-    /// under `feasibility::GATE_WITHDRAWN_VENUE` is the cell enforcing a
-    /// withdrawal this plane already decided, not an observation about the
-    /// venue. It comes back on its own vector, counted under its real venue
-    /// and its real gate and never put in the window — otherwise a desk a
-    /// cell installed before the withdrawal would refill a 256-entry rate
-    /// window with the platform's own decision every pass, and no second
-    /// venue could reach the share bar again.
+    /// One gate is attributed in full and admitted at a bounded rate: a
+    /// refusal under `feasibility::GATE_WITHDRAWN_VENUE` **at a venue this
+    /// plane itself holds withdrawn** is the cell enforcing a decision the
+    /// centre already made, not an observation about the venue. The first
+    /// per venue in a report is admitted, because a venue the platform is
+    /// still attempting must stay in the denominator a share is measured
+    /// against — dropping it is how the runner-up becomes a cluster of the
+    /// remainder — and every repeat in the same report comes back on
+    /// `feasibility_refusals_echoed`, counted on the series and given no
+    /// seat, because a stale desk's intent fan-out would otherwise refill a
+    /// 256-entry window with the platform's own decision every pass.
+    /// `venue_review::VenueTally::weight` then caps what the admitted seats
+    /// can be worth, so an echo can sustain a withdrawn venue's weight and
+    /// never amplify it.
+    ///
+    /// **Whose decision that is, is the centre's.** The withdrawn set
+    /// consulted is `self.withdrawn_venues` — what this plane is applying —
+    /// and never the cell's gate string alone. A security review found the
+    /// reverse: a cell holding a stale slot 11, because the centre stopped
+    /// shipping policy or because two operators reinstated the venue and the
+    /// cell never heard, refuses every intent at a venue *currently in use*
+    /// under that gate. Believing it charted a withdrawal that no longer
+    /// existed and, worse, kept every one of those refusals out of the
+    /// window — so the venue could not be withdrawn again on edge evidence
+    /// for as long as the slot stayed stale, a control that reads as
+    /// protection and cannot fire. Such a refusal is now an ordinary
+    /// refusal at a venue in use, and reaches the window as evidence like
+    /// any other.
     #[allow(clippy::type_complexity)]
     fn attribute_refusals(
         &self,
@@ -1814,19 +1845,23 @@ impl CentralPlane {
         let mut admitted = Vec::new();
         let mut unattributed = Vec::new();
         let mut echoed = Vec::new();
+        let mut echoed_venues: BTreeSet<&str> = BTreeSet::new();
         for refusal in &report.refusals {
             let Some(venue) = &refusal.venue else {
                 continue;
             };
             let gate_known = EDGE_GATES.contains(&refusal.gate.as_str());
             let venue_known = known.contains(venue);
-            if gate_known && venue_known && !is_withdrawal_evidence(&refusal.gate) {
-                // Attributed in full and still not evidence: this is the
-                // cell refusing an order because of a withdrawal the centre
-                // already made, so counting it as a reason to withdraw would
-                // be the platform citing itself. Kept out of the window
-                // rather than out of the series — an operator can still see
-                // the withdrawal biting at the edge.
+            let echo = is_withdrawal_echo(&refusal.gate, venue, &self.withdrawn_venues);
+            if gate_known && venue_known && echo && !echoed_venues.insert(venue.as_str()) {
+                // The second and every later echo of the same withdrawal in
+                // one report. The cell is asserting one fact — it is still
+                // routing to a venue the centre withdrew — and repeating it
+                // once per intent says nothing further about the venue.
+                // Counted under its real venue and its real gate, so an
+                // operator sees the withdrawal biting at the edge, and given
+                // no window seat, so a stale desk's fan-out cannot evict the
+                // genuine refusals the next withdrawal would be made on.
                 echoed.push((venue.clone(), refusal.gate.clone()));
             } else if gate_known && venue_known {
                 admitted.push(FeasibilityRefusal {

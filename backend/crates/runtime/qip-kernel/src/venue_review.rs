@@ -34,6 +34,7 @@
 //! independently operated processes, and "more than one desk" is not a
 //! stronger form of evidence.
 
+use qip_contracts::feasibility::is_withdrawal_echo;
 use qip_core::time::Timestamp;
 use qip_events::{EventBody, Topic};
 use serde::{Deserialize, Serialize};
@@ -153,7 +154,10 @@ pub struct VenueCluster {
     pub venue: String,
     /// The gate this venue was most often refused under.
     pub constraint: String,
-    /// Refusals in the window, all venues — the denominator.
+    /// The denominator: every refusal in the window, all venues, with a
+    /// withdrawn venue's echoes weighted rather than counted whole. Not
+    /// `window.len()` — see [`assess`] for why the two differ and what
+    /// breaks when they are conflated.
     pub sample: usize,
     /// This venue's refusals in the window — the numerator.
     pub count: usize,
@@ -163,38 +167,103 @@ pub struct VenueCluster {
     pub seams: Vec<FeasibilitySeam>,
 }
 
+/// A venue's refusals in the window, split by what they are evidence of.
+///
+/// Two counts rather than one because they answer different questions and a
+/// single total conflates them: `refusals` is what the venue is *judged* on,
+/// `echoes` is what the platform said about the venue arriving back at it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct VenueTally {
+    /// Refusals that ask a question about an order at this venue.
+    refusals: usize,
+    /// Refusals under `GATE_WITHDRAWN_VENUE` at a venue the centre itself
+    /// holds withdrawn — see `qip_contracts::feasibility::is_withdrawal_echo`.
+    echoes: usize,
+}
+
+impl VenueTally {
+    /// What this venue contributes to the denominator.
+    ///
+    /// **The anti-cascade property lives in this one line, so read the two
+    /// failures it sits between.** An echo counted at full rate would let a
+    /// cell that keeps routing to a withdrawn venue hold the denominator for
+    /// ever, and no second venue could ever reach three in four — a
+    /// withdrawal control that reads as protection and cannot fire twice. An
+    /// echo counted at nothing removes the withdrawn venue from the
+    /// denominator the moment it is withdrawn, and the runner-up becomes a
+    /// cluster of whatever remains: eight refusals at a venue just withdrawn
+    /// and two at another, and the other is soon "100% of the rest", and so
+    /// on through every venue the platform has.
+    ///
+    /// So an echo may **sustain** a withdrawn venue's weight up to the
+    /// genuine evidence that venue still holds in the window, and never
+    /// beyond it. The platform's own decision can keep a venue in the
+    /// denominator for as long as the platform is still attempting it; it
+    /// can never amplify it past what the venue itself earned, and once the
+    /// venue's own refusals have aged out of the window its echoes count for
+    /// nothing. That is why this is a `min` against `refusals` and not a
+    /// constant: the bound decays with the evidence it is anchored to,
+    /// instead of being a floor somebody had to choose and nobody could
+    /// check.
+    fn weight(&self) -> usize {
+        self.refusals + self.echoes.min(self.refusals)
+    }
+}
+
 /// Find the venue, if any, that dominates the window and is not already
 /// withdrawn.
 ///
-/// Pure. The sample is the whole window, **including a withdrawn venue's
-/// entries**: a withdrawn venue's later infeasible orders keep landing here
-/// (the desk's feasibility gate runs before the withdrawal check, so the
-/// window's denominator stays honest), and excluding them would make the
-/// runner-up a cluster of whatever remained — ten refusals, eight at a
-/// venue just withdrawn, two at another, and the other would be "100% of
-/// the rest" and withdrawn next cycle, and so on through every venue the
-/// desk has. The share is computed over everything, so a venue is withdrawn
-/// only when it dominates *all* recent refusals.
+/// Pure. The denominator is the whole window, **including a withdrawn
+/// venue's entries** — both the refusals it earned before it was withdrawn
+/// and, weighted by [`VenueTally::weight`], the echoes it produces
+/// afterwards. Excluding them would make the runner-up a cluster of whatever
+/// remained — ten refusals, eight at a venue just withdrawn, two at another,
+/// and the other would be "100% of the rest" and withdrawn next cycle, and
+/// so on through every venue the desk has. The share is computed over
+/// everything, so a venue is withdrawn only when it dominates *all* recent
+/// refusals.
+///
+/// **The two seams reach that property by different routes, and a security
+/// review found the edge one broken.** At the desk a withdrawn venue's later
+/// infeasible orders keep landing in the window, because
+/// `OrderManager::submit` runs the feasibility gate before the
+/// withdrawn-venue check. At a cell there is no such ordering: since ADR
+/// 0062's edge closure a withdrawn venue's intents return at the top of
+/// `qip_edge::feasibility::assess` under `GATE_WITHDRAWN_VENUE`, so every
+/// later refusal there is an echo. Those echoes reached the centre and were
+/// dropped whole, which removed the venue from the denominator at the edge
+/// seam while the desk kept it — this very doc comment's arithmetic, not
+/// held by the code on one of the two paths it claimed it for. They are
+/// counted here now, at a weight that can sustain but not amplify.
+///
+/// A withdrawn venue is never a *candidate*, whatever its weight: the filter
+/// below is the withdrawn set, so nothing an echo does can withdraw a venue
+/// a second time or feed a decision back into its own evidence.
 ///
 /// Where two venues tie at or above the bar — impossible above one half,
 /// possible only at exactly the bar with a share of one half, which the
 /// three-in-four bar rules out — the `BTreeMap` order decides, so a replay
 /// decides the same.
 pub fn assess(window: &[FeasibilityRefusal], withdrawn: &BTreeSet<String>) -> Option<VenueCluster> {
-    let sample = window.len();
+    let mut by_venue: BTreeMap<&str, VenueTally> = BTreeMap::new();
+    for refusal in window {
+        let tally = by_venue.entry(refusal.venue.as_str()).or_default();
+        if is_withdrawal_echo(&refusal.constraint, &refusal.venue, withdrawn) {
+            tally.echoes += 1;
+        } else {
+            tally.refusals += 1;
+        }
+    }
+    let sample: usize = by_venue.values().map(VenueTally::weight).sum();
     if sample < VENUE_WITHDRAWAL_MIN_SAMPLE {
         return None;
-    }
-    let mut by_venue: BTreeMap<&str, usize> = BTreeMap::new();
-    for refusal in window {
-        *by_venue.entry(refusal.venue.as_str()).or_insert(0) += 1;
     }
     let (venue, count) = by_venue
         .iter()
         .filter(|(venue, _)| !withdrawn.contains(**venue))
-        .max_by_key(|(_, count)| **count)
-        .map(|(venue, count)| (*venue, *count))?;
-    // usize → f64: a ratio of counts, in the statistics lane.
+        .max_by_key(|(_, tally)| tally.refusals)
+        .map(|(venue, tally)| (*venue, tally.refusals))?;
+    // usize -> f64: a ratio of counts, in the statistics lane.
     let share = count as f64 / sample as f64;
     if share < VENUE_WITHDRAWAL_SHARE {
         return None;
@@ -376,6 +445,33 @@ mod tests {
         }
     }
 
+    /// `count` echoes of a withdrawal at `venue`, reported by `cell` — what
+    /// a cell whose desk was installed before the withdrawal sends once per
+    /// intent per pass, one seat per venue per report.
+    fn edge_echoes(venue: &str, cell: &str, count: usize) -> Vec<FeasibilityRefusal> {
+        (0..count)
+            .map(|_| FeasibilityRefusal {
+                venue: venue.to_string(),
+                constraint: qip_contracts::feasibility::GATE_WITHDRAWN_VENUE.to_string(),
+                seam: FeasibilitySeam::Edge,
+                cell: Some(cell.to_string()),
+                at: at(),
+            })
+            .collect()
+    }
+
+    /// `count` lot-gate refusals at `venue`, split evenly between two cells,
+    /// so an edge-only cluster clears [`VENUE_WITHDRAWAL_MIN_CELLS`].
+    fn edge_refusals_from_two_cells(venue: &str, count: usize) -> Vec<FeasibilityRefusal> {
+        let mut window = edge_refusals_from_one_cell(venue, "cell-lon-1", count / 2);
+        window.extend(edge_refusals_from_one_cell(
+            venue,
+            "cell-fra-1",
+            count - count / 2,
+        ));
+        window
+    }
+
     /// `count` refusals at `venue`, all under the lot gate, all reported by
     /// the same single cell.
     fn edge_refusals_from_one_cell(
@@ -539,6 +635,117 @@ mod tests {
         assert_eq!(second.venue, "beta");
         assert_eq!(second.sample, 40);
         assert!((second.share - 0.8).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn an_echo_holds_a_withdrawn_venue_in_the_denominator_the_runner_up_is_judged_against() {
+        // The finding this closes, from the seam that had it. The doc on
+        // `assess` has always said a withdrawn venue's later refusals keep
+        // the denominator honest, and at the desk they do: the feasibility
+        // gate runs before the withdrawn-venue check, so those refusals
+        // still arrive under their own gates. At a cell they do not — since
+        // ADR 0062's edge closure every later refusal at a withdrawn venue
+        // returns under `feasibility_withdrawn_venue` — and the centre
+        // dropped all of them, so on an edge-only fleet the withdrawn venue
+        // left the denominator the instant it was withdrawn and the
+        // runner-up became a cluster of the remainder.
+        //
+        // Premise first, and it is the whole point: with the echoes absent,
+        // beta *is* found. So the `None` below is the echo weight and not
+        // some unrelated bar refusing every second withdrawal.
+        let withdrawn = BTreeSet::from(["alpha".to_string()]);
+        let mut without = edge_refusals_from_two_cells("alpha", 8);
+        without.extend(edge_refusals_from_two_cells("beta", 24));
+        let cascaded = assess(&without, &withdrawn).expect("the premise: beta clears the bar");
+        assert_eq!(cascaded.venue, "beta", "the premise failed");
+        assert_eq!(cascaded.sample, 32, "the premise failed: {cascaded:?}");
+
+        let mut with = without.clone();
+        with.extend(edge_echoes("alpha", "cell-lon-1", 8));
+        assert_eq!(
+            assess(&with, &withdrawn),
+            None,
+            "the runner-up was read as a cluster of what remained: the venue the platform is \
+             still attempting, and still refusing at, left the denominator"
+        );
+    }
+
+    #[test]
+    fn an_echo_can_sustain_a_withdrawn_venues_weight_and_never_amplify_it() {
+        // The other half of the same seam, and the failure the cap refuses.
+        // A cell whose desk was installed before the withdrawal keeps
+        // offering cycles through the withdrawn venue for as long as the
+        // desk stands, so the echoes are unbounded in a way the venue's own
+        // evidence never was. Counted whole they would hold the denominator
+        // for ever and no second venue could reach three in four — a
+        // withdrawal control that reads as protection and cannot fire twice,
+        // which is the `MaxExpectedShortfall` shape this repository names as
+        // the template for what not to ship.
+        //
+        // So an echo may sustain the withdrawn venue up to the genuine
+        // evidence it still holds and no further: eight genuine refusals
+        // carry at most eight echoes' worth, whether two hundred arrive or
+        // eight do. Forty-eight against that weight of sixteen is three in
+        // four and is found.
+        let withdrawn = BTreeSet::from(["alpha".to_string()]);
+        let mut window = edge_refusals_from_two_cells("alpha", 8);
+        window.extend(edge_echoes("alpha", "cell-lon-1", 200));
+        window.extend(edge_refusals_from_two_cells("beta", 48));
+        let found = assess(&window, &withdrawn)
+            .expect("a venue dominating every recent refusal was not withdrawn");
+        assert_eq!(found.venue, "beta");
+        assert_eq!(
+            found.sample, 64,
+            "the sample is not beta's forty-eight and alpha's capped sixteen, so two hundred \
+             echoes bought more denominator than the evidence they echo: {found:?}"
+        );
+        assert!((found.share - 0.75).abs() < f64::EPSILON, "{found:?}");
+
+        // And the anchor decays with the evidence it is anchored to: once
+        // the withdrawn venue's own refusals have aged out of the window,
+        // its echoes weigh nothing at all. Otherwise a venue nobody has
+        // observed refusing anything in two hundred and fifty-six entries
+        // would still be holding the denominator down.
+        let aged_out = {
+            let mut window = edge_echoes("alpha", "cell-lon-1", 200);
+            window.extend(edge_refusals_from_two_cells("beta", 10));
+            window
+        };
+        let found =
+            assess(&aged_out, &withdrawn).expect("beta is the only venue anything was observed at");
+        assert_eq!(
+            found.sample, 10,
+            "echoes with no surviving evidence behind them still weighed in the denominator: \
+             {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_withdrawn_venue_gate_at_a_venue_the_centre_has_not_withdrawn_is_ordinary_evidence() {
+        // The security half. Whether a refusal is "the platform citing
+        // itself" is the centre's finding and never the cell's: a cell
+        // holding a stale slot 11 refuses every intent at a venue currently
+        // in use under `feasibility_withdrawn_venue`, and weighing those as
+        // echoes would let one unauthenticated report decide, by a string,
+        // that its own refusals may not be evidence — so the venue could not
+        // be withdrawn on edge evidence for as long as the slot stayed
+        // stale. With nothing withdrawn, ten such refusals from two cells
+        // are ten refusals.
+        let window = {
+            let mut window = edge_echoes("beta", "cell-lon-1", 5);
+            window.extend(edge_echoes("beta", "cell-fra-1", 5));
+            window
+        };
+        assert_eq!(window.len(), 10, "the premise is ten");
+        let found = assess(&window, &BTreeSet::new())
+            .expect("a cell's claim about a venue the centre has not withdrawn weighed nothing");
+        assert_eq!(found.venue, "beta");
+        assert_eq!(found.sample, 10, "{found:?}");
+        assert!((found.share - 1.0).abs() < f64::EPSILON, "{found:?}");
+        assert_eq!(
+            found.constraint,
+            qip_contracts::feasibility::GATE_WITHDRAWN_VENUE
+        );
     }
 
     #[test]

@@ -1533,6 +1533,21 @@ fn report_with_withdrawn_venue_refusal(cell: &str, venue: &str) -> CellReport {
     }])
 }
 
+/// `count` refusals under the withdrawn-venue gate at `venue`, all on one
+/// report — what one pass of a stale desk that still offers several cycles
+/// through the withdrawn venue puts on the wire.
+fn report_with_withdrawn_venue_refusals(cell: &str, venue: &str, count: usize) -> CellReport {
+    CellReport::new(cell, start()).with_refusals(
+        (0..count)
+            .map(|_| qip_mesh::delta::DeltaRefusal {
+                gate: qip_contracts::feasibility::GATE_WITHDRAWN_VENUE.to_string(),
+                reason: format!("{venue} is withdrawn on feasibility evidence"),
+                venue: Some(venue.to_string()),
+            })
+            .collect(),
+    )
+}
+
 /// The same report, from a named cell rather than the fixed [`CELL`] —
 /// what a second, genuinely distinct cell corroborating the same venue looks
 /// like on the wire.
@@ -5143,25 +5158,32 @@ fn the_slot_the_centre_ships_carries_the_withdrawn_set_it_applies_and_states_no_
 }
 
 #[test]
-fn a_refusal_a_withdrawal_itself_caused_is_counted_and_never_lands_in_the_window() -> Result<()> {
-    // The control this keeps able to fire, and the reason the shared
-    // vocabulary carries `is_withdrawal_evidence` rather than letting every
-    // `EDGE_GATES` member into the window.
+fn a_repeated_echo_of_one_withdrawal_is_counted_in_full_and_seated_once() -> Result<()> {
+    // Two failures this sits between, and the shape that satisfies both.
     //
     // Once the cells refuse a withdrawn venue at pass time, a desk installed
-    // before the withdrawal reports one such refusal per intent per pass, for
-    // as long as it keeps offering cycles through that venue. Those are not
-    // observations about the venue: they are this platform's own decision
-    // arriving back at it. Admitted to a 256-entry rate window they evict
-    // every genuine refusal and then hold the denominator every other venue's
-    // share is measured against, so no second venue could ever reach three in
-    // four — a withdrawal control that reads as protection and cannot fire a
-    // second time, which is exactly the `MaxExpectedShortfall` shape this
-    // repository names as the template for what not to ship.
+    // before the withdrawal reports one such refusal *per intent per pass*,
+    // for as long as it keeps offering cycles through that venue. Admitted
+    // whole to a 256-entry rate window they evict every genuine refusal in a
+    // few passes and then hold the denominator every other venue's share is
+    // measured against, so no second venue could ever reach three in four —
+    // a withdrawal control that reads as protection and cannot fire twice,
+    // which is the `MaxExpectedShortfall` shape this repository names as the
+    // template for what not to ship.
     //
-    // Premise first, in the order the platform would really reach it: a
-    // genuine cluster withdraws XNYS, the cells then echo that withdrawal,
-    // and only then does a second, genuine cluster arrive at the other venue.
+    // Kept out of the window entirely — which is what this test asserted
+    // until a security review of the merged lane — the withdrawn venue
+    // vanishes from the *denominator* instead, and the runner-up becomes a
+    // cluster of whatever remains. That is the finding
+    // `a_venue_withdrawn_on_edge_evidence_stays_in_the_denominator_the_runner_up_is_judged_against`
+    // below drives; the old assertion here ("admitted to nothing") was the
+    // defect, not the guarantee, and it is replaced rather than relaxed.
+    //
+    // So: the first echo of a venue in a report takes a window seat, because
+    // a venue the platform is still attempting belongs in the denominator;
+    // every repeat in the same report is counted on the series and seated
+    // nowhere, because the number of intents a stale desk enumerated is a
+    // fact about the desk and not about the venue.
     const OTHER_CELL: &str = "cell-fra-1";
     const FIRST: &str = "XLON";
     let now = start();
@@ -5179,39 +5201,52 @@ fn a_refusal_a_withdrawal_itself_caused_is_counted_and_never_lands_in_the_window
         vec![FIRST],
         "the premise failed: the first venue was not withdrawn, so there is no echo to make"
     );
-    let window_after_first = platform.feasibility_refusals().len();
+    let seated_before = platform.feasibility_refusals().len();
     assert_eq!(
-        window_after_first, 10,
-        "the premise failed: the first cluster is not ten entries: {window_after_first}"
+        seated_before, 10,
+        "the premise failed: the first cluster is not ten entries: {seated_before}"
     );
 
-    // The echo. Counted under its real venue and its real gate — an operator
-    // can see the withdrawal biting at the edge — and admitted to nothing.
-    for _ in 0..24 {
-        let ingestion =
-            platform.ingest_cell_report(report_with_withdrawn_venue_refusal(CELL, FIRST), now)?;
-        assert!(
-            ingestion.feasibility_refusals.is_empty(),
-            "a withdrawal's own echo was admitted to the window"
-        );
-        assert!(
-            ingestion.feasibility_refusals_unattributed.is_empty(),
-            "the echo was filed as unattributable, which is the label that means a cell used a \
-             gate name this build does not know: {:?}",
-            ingestion.feasibility_refusals_unattributed
-        );
-        assert_eq!(
-            ingestion.feasibility_refusals_echoed,
-            vec![(
-                FIRST.to_string(),
-                qip_contracts::feasibility::GATE_WITHDRAWN_VENUE.to_string()
-            )]
-        );
-    }
+    // One pass of a stale desk offering eight cycles through the withdrawn
+    // venue. Eight refusals on the wire; one seat.
+    let ingestion =
+        platform.ingest_cell_report(report_with_withdrawn_venue_refusals(CELL, FIRST, 8), now)?;
+    assert_eq!(
+        ingestion.feasibility_refusals.len(),
+        1,
+        "a pass's whole intent fan-out took a window seat each: {:?}",
+        ingestion.feasibility_refusals
+    );
+    assert_eq!(
+        ingestion.feasibility_refusals[0].venue, FIRST,
+        "the seat was charged to another venue than the one refused"
+    );
+    assert!(
+        ingestion.feasibility_refusals_unattributed.is_empty(),
+        "the echo was filed as unattributable, which is the label that means a cell used a gate \
+         name this build does not know: {:?}",
+        ingestion.feasibility_refusals_unattributed
+    );
+    assert_eq!(
+        ingestion.feasibility_refusals_echoed.len(),
+        7,
+        "the repeats were not carried, so the series under-counts what the cell refused: {:?}",
+        ingestion.feasibility_refusals_echoed
+    );
+    assert!(
+        ingestion
+            .feasibility_refusals_echoed
+            .iter()
+            .all(|(venue, gate)| {
+                venue == FIRST && gate == qip_contracts::feasibility::GATE_WITHDRAWN_VENUE
+            }),
+        "a repeat was counted under another venue or another gate: {:?}",
+        ingestion.feasibility_refusals_echoed
+    );
     assert_eq!(
         platform.feasibility_refusals().len(),
-        window_after_first,
-        "twenty-four echoes moved the window they were derived from"
+        seated_before + 1,
+        "eight refusals in one report moved the window by other than one seat"
     );
     assert_eq!(
         feasibility_refusals_under(
@@ -5219,28 +5254,170 @@ fn a_refusal_a_withdrawal_itself_caused_is_counted_and_never_lands_in_the_window
             FIRST,
             qip_contracts::feasibility::GATE_WITHDRAWN_VENUE
         ),
-        24,
-        "the echo was kept out of the series as well as out of the window, so an operator \
-         cannot see the withdrawal taking effect at all"
+        8,
+        "the series counts something other than the eight refusals the cell made, so an \
+         operator cannot see how hard the withdrawal is biting at the edge"
     );
+    Ok(())
+}
 
-    // And now the half that matters: a second, genuine cluster at the other
-    // venue still clears the bar. Forty refusals against ten surviving
-    // entries is a share of four in five; with the twenty-four echoes in the
-    // window it would be forty of seventy-four, and nothing would withdraw.
-    for _ in 0..24 {
+#[test]
+fn a_venue_withdrawn_on_edge_evidence_stays_in_the_denominator_the_runner_up_is_judged_against()
+-> Result<()> {
+    // The cascade this refuses, from the seam it was broken at. A security
+    // review of ADR 0062's edge closure found it: `venue_review::assess`
+    // documents that a withdrawn venue's later refusals keep the window's
+    // denominator honest, and at the desk they do — `OrderManager::submit`
+    // runs the feasibility gate before the withdrawn-venue check. At a cell
+    // there is no such ordering: every later refusal at the withdrawn venue
+    // comes back under `feasibility_withdrawn_venue`, and the centre dropped
+    // all of them. So on an edge-only fleet — which is the designed state,
+    // since no execution node is deployed and the desk contributes nothing —
+    // the withdrawn venue left the denominator the moment it was withdrawn,
+    // the runner-up became a cluster of what remained, and the platform
+    // withdrew its way down to no venue at all. The unit test named
+    // `withdrawing_one_venue_does_not_make_the_runner_up_a_cluster_of_the_remainder`
+    // kept passing throughout, because it is arithmetic over a synthetic
+    // window and what changed was upstream of it — which is why this one
+    // drives the window across a withdrawal from the edge seam instead.
+    const OTHER_CELL: &str = "cell-fra-1";
+    const FIRST: &str = "XLON";
+    let now = start();
+    let mut platform = platform_with_arbitrage(&[VENUE, FIRST])?;
+
+    // Sixteen refusals at XLON and four at XNYS: four in five, from two
+    // cells, so XLON is withdrawn and XNYS is the runner-up at one in five.
+    for _ in 0..10 {
+        platform.ingest_cell_report(report_with_lot_refusal(FIRST), now)?;
+    }
+    for _ in 0..6 {
+        platform.ingest_cell_report(report_with_lot_refusal_from(OTHER_CELL, FIRST), now)?;
+    }
+    for _ in 0..2 {
         platform.ingest_cell_report(report_with_lot_refusal(VENUE), now)?;
     }
-    for _ in 0..16 {
+    for _ in 0..2 {
         platform.ingest_cell_report(report_with_lot_refusal_from(OTHER_CELL, VENUE), now)?;
     }
     platform.run_cycle(now);
-    let withdrawn: Vec<&String> = platform.withdrawn_venues().iter().collect();
     assert_eq!(
-        withdrawn,
+        platform.withdrawn_venues().iter().collect::<Vec<_>>(),
+        vec![FIRST],
+        "the premise failed: the first venue was not withdrawn, so there is no denominator \
+         question to ask"
+    );
+
+    // The cells keep routing there — the stale desk ADR 0062's amendment
+    // describes — and the runner-up keeps refusing on its own account. With
+    // the echoes dropped, forty-eight further XNYS refusals would make it
+    // fifty-two of sixty-eight, three in four of "what remains", and XNYS
+    // would be withdrawn on evidence that never grew relative to the fleet's
+    // whole refusal traffic. The echoes hold XLON in the denominator, so the
+    // same forty-eight are fifty-two of eighty-four.
+    for _ in 0..16 {
+        platform.ingest_cell_report(report_with_withdrawn_venue_refusals(CELL, FIRST, 1), now)?;
+    }
+    for _ in 0..24 {
+        platform.ingest_cell_report(report_with_lot_refusal(VENUE), now)?;
+    }
+    for _ in 0..24 {
+        platform.ingest_cell_report(report_with_lot_refusal_from(OTHER_CELL, VENUE), now)?;
+    }
+    let seated = platform.feasibility_refusals().len();
+    assert_eq!(
+        seated, 84,
+        "the premise failed: the window is not the sixteen XLON refusals, the sixteen echoes \
+         and the fifty-two XNYS refusals this test reasons about: {seated}"
+    );
+    platform.run_cycle(now);
+    assert_eq!(
+        platform.withdrawn_venues().iter().collect::<Vec<_>>(),
+        vec![FIRST],
+        "the runner-up was withdrawn as a cluster of the remainder, so the platform withdrew \
+         its way down to no venue"
+    );
+
+    // And the admitting half, without which the guard above would be
+    // indistinguishable from a control that refuses every second withdrawal:
+    // XNYS genuinely dominating *all* recent refusals still withdraws it.
+    // A hundred against XLON's weight of thirty-two is better than three in
+    // four, and it is found.
+    for _ in 0..24 {
+        platform.ingest_cell_report(report_with_lot_refusal(VENUE), now)?;
+    }
+    for _ in 0..24 {
+        platform.ingest_cell_report(report_with_lot_refusal_from(OTHER_CELL, VENUE), now)?;
+    }
+    platform.run_cycle(now);
+    assert_eq!(
+        platform.withdrawn_venues().iter().collect::<Vec<_>>(),
         vec![FIRST, VENUE],
-        "the second cluster did not withdraw its venue, so the first withdrawal had disabled \
-         the control"
+        "a venue dominating every recent refusal was not withdrawn, so the first withdrawal \
+         disabled the control"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cell_citing_a_withdrawal_the_centre_does_not_hold_is_evidence_and_not_an_echo() -> Result<()> {
+    // The security finding this closes. Whether a refusal counted as "the
+    // platform citing itself" — and was therefore kept out of the evidence
+    // window — used to be decided by the gate string on a report arriving
+    // over a wire `qip-edge/src/mesh.rs` says authenticates nobody. No
+    // attacker is needed to break that: `Cell::feasibility_constraints`
+    // reads slot 11 whatever its freshness, and `self.policy` is replaced
+    // only when a new policy is applied, so a cell holding a stale slot
+    // after a reinstatement — or after the centre simply stopped shipping
+    // policy — refuses every intent at a venue *currently in use* under
+    // `feasibility_withdrawn_venue`, for ever.
+    //
+    // Three consequences followed, and the third is the one that matters:
+    // the centre charted a withdrawal that no longer existed, an operator
+    // read it as one, and none of those refusals reached the window — so the
+    // venue could not be withdrawn a second time on edge evidence for as
+    // long as the slot stayed stale. A control that reads as protection and
+    // cannot fire. The centre's own withdrawn set decides now, so a cell
+    // citing a withdrawal the centre does not hold is an ordinary refusal at
+    // a venue in use.
+    const OTHER_CELL: &str = "cell-fra-1";
+    let now = start();
+    let mut platform = platform_with_arbitrage(&[VENUE])?;
+    assert!(
+        platform.withdrawn_venues().is_empty(),
+        "the premise failed: the centre already holds a withdrawal, so the cell's claim would \
+         be true: {:?}",
+        platform.withdrawn_venues()
+    );
+
+    for cell in [CELL, OTHER_CELL] {
+        for _ in 0..5 {
+            let ingestion = platform
+                .ingest_cell_report(report_with_withdrawn_venue_refusals(cell, VENUE, 1), now)?;
+            assert_eq!(
+                ingestion.feasibility_refusals.len(),
+                1,
+                "a cell's claim about a venue the centre has not withdrawn kept its own \
+                 refusal out of the window: {ingestion:?}"
+            );
+            assert!(
+                ingestion.feasibility_refusals_echoed.is_empty(),
+                "the centre believed the cell's gate string over its own withdrawn set: {:?}",
+                ingestion.feasibility_refusals_echoed
+            );
+        }
+    }
+    assert_eq!(
+        platform.feasibility_refusals().len(),
+        10,
+        "the premise failed: the ten refusals are not all in the window"
+    );
+
+    platform.run_cycle(now);
+    assert_eq!(
+        platform.withdrawn_venues().iter().collect::<Vec<_>>(),
+        vec![VENUE],
+        "ten corroborated refusals at a venue the centre has not withdrawn withdrew nothing, \
+         so a stale slot at one cell can hold the control shut"
     );
     Ok(())
 }
