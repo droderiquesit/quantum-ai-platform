@@ -15,11 +15,13 @@ use qip_contracts::feature::{FeatureKey, FeatureValue, FeatureVector, Revision};
 use qip_contracts::gate::GateStage;
 use qip_contracts::governance::{Approval, Control, Entitlement, Provenance, Severity, Usage};
 use qip_contracts::message::{BookSide, TradeCondition};
+use qip_contracts::policy::FeasibilityConstraints;
 use qip_contracts::signal::{Conviction, StrategyId};
 use qip_contracts::time::{Stamped, Watermark};
 use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
 use qip_core::error::Result;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
+use std::collections::{BTreeMap, BTreeSet};
 
 fn t(secs: i64) -> Timestamp {
     Timestamp::from_secs(1_760_000_000 + secs)
@@ -2360,4 +2362,76 @@ fn a_shortfall_goes_to_the_lowest_strategy_id_however_the_contributors_arrived()
         .map(|(_, share)| *share)
         .fold(Decimal::ZERO, |a, b| a + b);
     assert_eq!(summed, fill);
+}
+
+#[test]
+fn slot_elevens_withdrawn_set_is_additive_on_the_wire_in_both_directions() {
+    // A code review found this was a breaking wire change on a signed
+    // cross-process contract that said nothing about being one.
+    // `FeasibilityConstraints` carries `deny_unknown_fields`, `qip-api` and
+    // `qip-edge-node` deploy separately (Cloud Run and Compute Engine), and
+    // the field arrived required and always serialised. Two directions, and
+    // the dangerous one is the second:
+    //
+    //   * an old centre's slot 11 no longer decoded at a new cell at all
+    //     ("missing field `withdrawn_venues`"), so a rolling upgrade in that
+    //     order lost the whole slot;
+    //   * a new centre's slot 11 failed `deny_unknown_fields` at an old
+    //     cell, which fails the *entire* `PolicyPayload` — all twelve slots
+    //     degraded on one added field, not one.
+    //
+    // `CycleWhitelist::conversions` had already chosen the shape for this,
+    // in the same file: default on absence, skip on empty. The three
+    // assertions below are what that buys, and each fails on a different
+    // half of it.
+    let absent = r#"{"minimum_order":{},"fee_floor":{},"tick":{}}"#;
+    let decoded: FeasibilityConstraints =
+        serde_json::from_str(absent).expect("a payload from a centre older than the field");
+    assert!(
+        decoded.withdrawn_venues.is_empty(),
+        "an absent withdrawn set decoded as something other than 'this centre withdrew nothing'"
+    );
+
+    // Skipped when empty, so a new centre with nothing withdrawn produces
+    // the bytes an old cell already accepts — and, because the slot digest
+    // is taken over exactly these bytes, the signature a pre-field payload
+    // carried.
+    let empty = FeasibilityConstraints {
+        minimum_order: BTreeMap::new(),
+        fee_floor: BTreeMap::new(),
+        tick: BTreeMap::new(),
+        withdrawn_venues: BTreeSet::new(),
+    };
+    let encoded = serde_json::to_string(&empty).expect("serialisable");
+    assert!(
+        !encoded.contains("withdrawn_venues"),
+        "an empty withdrawn set is written to the wire, so every payload from a new centre \
+         fails `deny_unknown_fields` at a cell built before the field: {encoded}"
+    );
+    assert_eq!(
+        encoded, absent,
+        "the empty-set encoding is not byte-for-byte the pre-field encoding, so the slot \
+         digest — and the signature over it — moved for payloads that say nothing new"
+    );
+
+    // And the half that keeps the deploy order honest rather than papering
+    // over it: once something *is* withdrawn the field is present, an old
+    // cell refuses the payload whole, and that is the fail-closed direction.
+    // Cells upgrade before the centre.
+    let withdrawn = FeasibilityConstraints {
+        withdrawn_venues: ["XLON".to_string()].into_iter().collect(),
+        ..empty.clone()
+    };
+    let encoded = serde_json::to_string(&withdrawn).expect("serialisable");
+    assert!(
+        encoded.contains(r#""withdrawn_venues":["XLON"]"#),
+        "a venue the centre withdrew is not on the wire, so the cell would keep routing there \
+         until its next process restart: {encoded}"
+    );
+    let round_tripped: FeasibilityConstraints =
+        serde_json::from_str(&encoded).expect("deserialisable");
+    assert_eq!(
+        round_tripped, withdrawn,
+        "the withdrawn set did not survive its own round trip"
+    );
 }
