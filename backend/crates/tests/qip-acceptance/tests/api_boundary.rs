@@ -151,8 +151,22 @@ fn package_name(package: &serde_json::Value) -> String {
 /// Only shipped code is scanned. `qip-api`'s in-file tests build genuine
 /// envelopes and orders to prove the decode against, and a scan that read
 /// them would refuse the very tests that keep the composition root honest.
-/// Every file in these two crates keeps its test module at the tail, which
-/// the cfg count in the premise below checks.
+///
+/// **What the premise below establishes, and what it does not.** It counts
+/// the `cfg(test)` attribute and refuses a file with more than one, so the
+/// cut is never ambiguous: with two test modules, everything between them
+/// would be dropped from the scan without anyone choosing that. It is a
+/// count and not a position. A single test module placed *above* real code
+/// would cut every line after it out of every scan built on this function —
+/// `the_application_layer_constructs_no_order_transfer_or_envelope` and the
+/// `qip_mesh::` scan would then pass on a file they had not read, which is
+/// the shape of a test that guards nothing.
+///
+/// That no file in `qip-api/src` or `qip-web/src` keeps anything after its
+/// test module was checked by construction, by hand, and is true today; it
+/// is not asserted here. So the cut is sound and the guarantee behind it
+/// rests on review rather than on this premise. This comment said the count
+/// checked the position, which it never did.
 fn shipped_sources(crate_dir: &str) -> Vec<(PathBuf, String)> {
     let files = files_with_extension(&format!("backend/crates/apps/{crate_dir}/src"), "rs");
     assert!(
