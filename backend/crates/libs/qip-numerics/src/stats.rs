@@ -626,11 +626,23 @@ pub fn granger_causality_controlling_for(
     // the shortest, least-noisy horizon and (at `lag == 1`, the only value
     // this crate's caller currently requests) the only one there is. Any
     // control coefficients sit after cause's and so never shift this index.
-    let coefficient = unrestricted
-        .coefficients
-        .get(1 + lag)
-        .copied()
-        .unwrap_or(0.0);
+    // Refused rather than defaulted. The index is in range by the row check
+    // above plus `ols`'s intercept, so this arm is unreachable today — but
+    // `0.0` is not a neutral fallback here: this coefficient's *sign* is what
+    // `qip_world_model::granger` turns into `TemporalPrecedence` or
+    // `InverseTemporalPrecedence`, so a default would report "no effect", a
+    // number nobody computed, to a caller that reads it as one somebody did.
+    // A dimension change that ever made the index miss must stop, not guess.
+    let coefficient = match unrestricted.coefficients.get(1 + lag).copied() {
+        Some(coefficient) => coefficient,
+        None => {
+            return Err(Error::numeric(format!(
+                "the unrestricted regression returned {} coefficients, so there is no cause-lag                  coefficient at index {}. The sign of that coefficient is the direction this                  test reports, and a missing one is not a zero effect: re-derive the regressor                  layout for lag {lag} rather than reading a default",
+                unrestricted.coefficients.len(),
+                1 + lag
+            )));
+        }
+    };
 
     Ok(GrangerCausalityTest {
         lag,

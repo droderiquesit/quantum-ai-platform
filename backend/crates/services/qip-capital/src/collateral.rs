@@ -967,6 +967,25 @@ impl CollateralGraph {
             // The first still-open domain, in venue order, that the sale just
             // put under maintenance. Venue order rather than discovery order
             // so a replay over one graph reports one contagion path.
+            // The progress measure, asserted rather than only argued. `closed`
+            // gains exactly one venue per iteration and is drawn from
+            // `self.domains`' keys, so the loop cannot exceed one pass per
+            // domain whatever the pledge topology. That argument is the whole
+            // termination proof — this module deliberately refuses a runtime
+            // iteration cap — and it rests entirely on the `!closed.contains`
+            // filter below. Dropping that filter as "redundant" does not fail a
+            // test, it hangs the suite and grows `steps` without bound, which
+            // in CI reads as a flaky job rather than as the regression it is.
+            // A debug assertion on the step count turns that into a failure with a
+            // name. The measure is `steps`, which grows once per iteration --
+            // not `closed`, whose set cannot grow when a venue is revisited and
+            // so cannot witness the very failure being guarded against.
+            debug_assert!(
+                steps.len() <= self.domains.len(),
+                "the cascade took {} steps against {} domains, so it revisited a venue",
+                steps.len(),
+                self.domains.len()
+            );
             next = self
                 .coverage_excluding(&consumed, &closed)?
                 .into_iter()

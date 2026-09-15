@@ -132,7 +132,16 @@ fn the_cause_coefficient_keeps_its_index_whatever_number_of_controls_is_passed()
     // control has a non-zero coefficient too. That is the exact class of
     // defect mutation testing exists to catch, and it is recorded here
     // because the weak version looked entirely reasonable.
-    let bars = 400;
+    // 2000 bars rather than 400. The premise below fits with only *one* of
+    // the three controls present, so the other two are omitted-variable bias
+    // on the cause's coefficient; that bias is finite-sample here because the
+    // controls are independent draws, and it shrinks with the sample. At 400
+    // bars it happened to cancel only because one control was loaded
+    // same-signed against the other two — which was exactly the weakness
+    // being removed when all three were made negative. Raising the sample
+    // buys the premise honestly instead of restoring a cancellation that the
+    // test was never relying on deliberately.
+    let bars = 2000;
     let mut noise = stream(0xDEAD_BEEF_CAFE_F00D);
     let cause: Vec<f64> = (0..bars).map(|_| noise()).collect();
     let first: Vec<f64> = (0..bars).map(|_| noise()).collect();
@@ -145,8 +154,15 @@ fn the_cause_coefficient_keeps_its_index_whatever_number_of_controls_is_passed()
             if t == 0 {
                 0.0
             } else {
-                0.8 * cause[t - 1] - 0.9 * first[t - 1] - 0.7 * second[t - 1]
-                    + 0.6 * third[t - 1]
+                // Every control loads negative and the cause positive, so a
+                // read index that slips onto *any* control block is far from
+                // +0.8 rather than near it. The third control loaded +0.6
+                // until 2026-09-14: same-signed as the cause and 0.2 away
+                // against a tolerance of 0.1, so a slip onto the last block
+                // would have failed by only 2x where a slip onto the first
+                // fails by 17x. A margin that narrow is one recalibration
+                // away from a test that passes through the bug it guards.
+                0.8 * cause[t - 1] - 0.9 * first[t - 1] - 0.7 * second[t - 1] - 0.6 * third[t - 1]
                     + 0.05 * noise()
             }
         })

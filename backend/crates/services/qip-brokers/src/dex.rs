@@ -332,6 +332,54 @@ mod tests {
     }
 
     #[test]
+    fn a_venue_whose_cost_exactly_consumes_the_budget_is_denied_and_not_reported_as_unrepresentable()
+     {
+        // The boundary a mutation survived: weakening the guard from
+        // `!remaining.is_positive()` to `remaining.is_negative()` admits
+        // exactly zero, and every other test still passed. The venue is
+        // still refused either way — `checked_div` returns `None` on a zero
+        // divisor — so this is not a capital hole. What is lost is the
+        // refusal's class and its message: an operator-actionable `denied`
+        // naming what to do instead becomes a `numeric` reading as an
+        // arithmetic defect in the platform, and the core-Rust rule requires
+        // every error here to name the alternative.
+        //
+        // The budget is measured rather than hand-solved, so the premise
+        // holds if the curve is ever recalibrated.
+        let clip = dec!("100");
+        let measured = venue("20").quote(clip).expect("a quote");
+        let exact_cost = measured.total_cost_bps().expect("a total cost");
+        let exhausted = DexVenue::new(
+            VenueId::new("XPOOL"),
+            model("20"),
+            dec!("1"),
+            exact_cost,
+            dec!("0.01"),
+        )
+        .expect("a valid venue");
+        // The premise: cost and budget really are equal, so `remaining` is
+        // exactly zero and not merely small.
+        assert_eq!(
+            exhausted
+                .quote(clip)
+                .expect("a quote")
+                .total_cost_bps()
+                .expect("a total cost"),
+            exact_cost
+        );
+
+        let refused = exhausted.feasibility_model(clip);
+        let error = refused.expect_err("a venue with no headroom is refused");
+        assert!(
+            error.message().contains("No size clears that"),
+            "a budget exactly consumed must be denied by the headroom gate, naming what to do \
+             instead, rather than falling through to the division and reporting the minimum \
+             notional as unrepresentable: {}",
+            error.message()
+        );
+    }
+
+    #[test]
     fn a_venue_whose_headroom_exhausts_the_budget_is_refused_rather_than_priced_out_of_reach() {
         // The failure this refusal prevents: a minimum notional of ten to the
         // twelve reads to an operator as "your order was too small" when the
