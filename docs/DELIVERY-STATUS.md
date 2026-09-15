@@ -87,8 +87,8 @@ moved the code. If a command returns nothing, that absence is the evidence.
 
 | Verdict | Sections | Share |
 |---|---|---|
-| `REACHED` | 32 | 18% |
-| `PARTIAL` | 133 | 73% |
+| `REACHED` | 34 | 19% |
+| `PARTIAL` | 131 | 72% |
 | `UNREACHED` | 1 | 1% |
 | `ABSENT` | 0 | 0% |
 | `NARRATIVE` | 15 | 8% |
