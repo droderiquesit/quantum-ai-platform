@@ -13,7 +13,7 @@
 //! that arithmetic is rejected rather than quietly corrected.
 
 use crate::bayes::{BeliefUpdate, EvidenceStrength, attenuate, update};
-use crate::evidence::{EvidenceSet, Stance};
+use crate::evidence::{EvidencePosture, EvidenceSet, Stance};
 use qip_core::error::{Error, Result};
 use qip_core::ids::{HypothesisId, ObjectId, OpportunityId};
 use qip_core::time::{Duration, Timestamp};
@@ -444,6 +444,11 @@ impl Hypothesis {
     ///
     /// A thesis whose support all traces to one origin is one source's opinion
     /// however many documents restate it.
+    ///
+    /// This is the number the action bar is read against — whether the thesis
+    /// is worth acting on at all. How *much* to commit to it is a second
+    /// question with a second answer: see
+    /// [`Hypothesis::confidence_for_sizing`].
     pub fn effective_confidence(&self) -> f64 {
         let concentration = self.evidence.concentration();
         // Full weight up to half the support from one origin, falling linearly
@@ -454,6 +459,48 @@ impl Hypothesis {
             1.0 - 0.8 * (concentration - 0.5)
         };
         self.confidence * penalty
+    }
+
+    /// The confidence a position is sized on, narrowed for evidence that
+    /// disagrees with itself.
+    ///
+    /// This narrowing separates two states the Bayesian update cannot.
+    /// Evidence that cancels and evidence that never existed both leave the
+    /// posterior sitting on the prior, so both reach sizing as the same small
+    /// number — and sizing them identically was the defect. An absence sizes
+    /// small because nothing is known; a conflict sizes *smaller*, because
+    /// something is known and it contradicts itself, and capital committed
+    /// into an unresolved contradiction is committed to a question the desk
+    /// has not finished asking. [`Hypothesis::evidence_posture`] names which
+    /// of the two applied so the cycle report can give the reason and not
+    /// only the number.
+    ///
+    /// Deliberately *not* folded into [`Hypothesis::effective_confidence`],
+    /// which the action bar reads. Admission and size are different
+    /// decisions, and a narrowing that quietly moved the bar as well would
+    /// turn "hold this contested thesis in small size and then score it" into
+    /// "never form a view on a contested question" — which is how a platform
+    /// stops learning anything about the cases it was least sure of.
+    ///
+    /// A statistic in `f64`; it crosses into `Decimal` downstream, where the
+    /// portfolio constructor turns a conviction into a notional.
+    pub fn confidence_for_sizing(&self) -> f64 {
+        // `1 - k*d` with `k` in `(0, 1)` and `d` in `[0, 1]` lies in
+        // `[1 - k, 1]`: this arm can only narrow. That a conflicted thesis
+        // can never size larger than the same support unopposed is therefore
+        // a property of the arithmetic rather than of this comment.
+        let dissent = 1.0 - FULL_DISAGREEMENT_PENALTY * self.evidence.net_stance_disagreement();
+        self.effective_confidence() * dissent
+    }
+
+    /// Which epistemic state the evidence is in, for the decision record.
+    ///
+    /// Reported beside [`Hypothesis::confidence_for_sizing`] rather than
+    /// stored on the hypothesis: it is derived from the evidence the record
+    /// already carries, and a second copy is a second thing that can
+    /// disagree.
+    pub fn evidence_posture(&self) -> EvidencePosture {
+        self.evidence.posture()
     }
 
     /// Whether the hypothesis meets the bar to be proposed to a portfolio.
@@ -555,6 +602,16 @@ impl Hypothesis {
         Ok(())
     }
 }
+
+/// How far evidence that is exactly evenly divided narrows what it will size.
+///
+/// At equal independent weight on both sides a thesis sizes at 40% of what
+/// the same support would size unopposed. Not zero: a contradicted thesis is
+/// still allowed to be held in small size and then scored, which is how the
+/// platform finds out which side was right. Not a cliff either — a threshold
+/// would make one marginal dissent decide between full size and none, and the
+/// number it turned on would be nobody's judgement.
+const FULL_DISAGREEMENT_PENALTY: f64 = 0.6;
 
 /// Floor on how much a weak causal chain can discount the evidence.
 ///
