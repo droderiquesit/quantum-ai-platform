@@ -30,7 +30,9 @@ pub mod state;
 pub mod vocabulary;
 pub mod world;
 
-pub use causal::{CausalEdge, CausalGraph, EdgeStanding, Effect, Mechanism, PropagationResult};
+pub use causal::{
+    CausalEdge, CausalGraph, ConditionStanding, EdgeStanding, Effect, Mechanism, PropagationResult,
+};
 pub use confounder::{Confounder, ConfounderSet, ConfounderStanding};
 pub use exposure::{
     ConcentrationReport, Exposure, ExposureSet, SharedDriver, hidden_concentration,

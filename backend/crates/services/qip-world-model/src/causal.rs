@@ -175,6 +175,57 @@ pub struct CausalEdge {
     /// instruction in the one place a reader of the edge will see it.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub suspected_confounders: BTreeSet<String>,
+    /// Regime keys under which this edge's own test has cleared its bar —
+    /// blueprint §9.1's conditions layer, "the regime under which an edge
+    /// holds", segmented from history rather than asserted.
+    ///
+    /// Empty on every edge written by a method that does not know what
+    /// regime it was in, which includes every hand-asserted mechanism claim.
+    /// Empty is "nobody asked", never "holds nowhere" — see
+    /// [`Self::in_regime`], which answers [`ConditionStanding::Untested`] for
+    /// it rather than inventing a negative from an unasked question.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub holds_in: BTreeSet<String>,
+    /// Regime keys under which the same test has been re-run and did **not**
+    /// clear that bar — §9.1's "the conditions under which it is known to
+    /// fail".
+    ///
+    /// Recorded only where a test genuinely ran: a pair with too little
+    /// history has not failed in a regime, it has not been asked about one,
+    /// and conflating the two would build exactly the control that reads as
+    /// protection and cannot fire.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub fails_in: BTreeSet<String>,
+}
+
+/// How an edge stands in one named regime — blueprint §9.1's conditions
+/// layer as a reader sees it.
+///
+/// A mark, never an attenuation, for the same reason [`EdgeStanding`] is one:
+/// silently shrinking an edge's transmission because its own test failed
+/// under today's regime would move every propagation in the platform with
+/// nothing in the record naming the number that changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConditionStanding {
+    /// The edge's test has cleared its bar in this regime and has never
+    /// failed in it.
+    Holds,
+    /// The edge's test has never been run in this regime. An unasked question
+    /// is not a negative answer.
+    Untested,
+    /// The edge's test has been run in this regime and did not clear its bar.
+    KnownToFail,
+}
+
+impl ConditionStanding {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Holds => "holds",
+            Self::Untested => "untested",
+            Self::KnownToFail => "known_to_fail",
+        }
+    }
 }
 
 /// How far an edge may be relied on — blueprint §9.4's own two words.
@@ -258,6 +309,8 @@ impl CausalEdge {
             decayed_at: None,
             adjusted_for: BTreeSet::new(),
             suspected_confounders: BTreeSet::new(),
+            holds_in: BTreeSet::new(),
+            fails_in: BTreeSet::new(),
         })
     }
 
@@ -379,6 +432,14 @@ impl CausalEdge {
             &self.effect,
             self.mechanism,
         )?;
+        // Checked here as well as in `with_conditions`, for the reason the
+        // fraction checks are: this is where every path admitting an edge to
+        // a graph meets, and an edge built by deserialising a record rather
+        // than through the builder would otherwise carry a blank condition
+        // into the graph.
+        for regime in self.holds_in.iter().chain(self.fails_in.iter()) {
+            Self::check_regime(regime, &self.cause, &self.effect, self.mechanism)?;
+        }
         Ok(())
     }
 
@@ -419,6 +480,69 @@ impl CausalEdge {
         self.adjusted_for = adjusted_for;
         self.suspected_confounders = suspected;
         self
+    }
+
+    /// Record the regimes this edge's own test has cleared its bar in, and
+    /// the regimes it has been re-run in and failed — blueprint §9.1's
+    /// conditions layer.
+    ///
+    /// Both sets at once, for the reason [`Self::with_confounders`] takes
+    /// both: an edge naming the regimes it holds in while staying silent
+    /// about the ones it is known to fail in reads *better* supported than
+    /// one naming neither, which is the wrong way round.
+    ///
+    /// Fallible, and refusing rather than dropping. A blank regime key is a
+    /// label nobody can look the edge up under and a bucket nobody can read,
+    /// and a set quietly filtered here would leave the caller believing a
+    /// condition was recorded when none was — the caller bug that survives.
+    pub fn with_conditions(
+        mut self,
+        holds_in: BTreeSet<String>,
+        fails_in: BTreeSet<String>,
+    ) -> Result<Self> {
+        for regime in holds_in.iter().chain(fails_in.iter()) {
+            Self::check_regime(regime, &self.cause, &self.effect, self.mechanism)?;
+        }
+        self.holds_in = holds_in;
+        self.fails_in = fails_in;
+        Ok(self)
+    }
+
+    /// Refuse a regime key that names nothing.
+    fn check_regime(regime: &str, cause: &str, effect: &str, mechanism: Mechanism) -> Result<()> {
+        if regime.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "a condition recorded against {cause:?} -> {effect:?} via {} names the regime                  {regime:?}, and a regime a reader cannot name is a condition nobody can check;                  label it at the segmenter that produced it rather than recording an anonymous                  one, because an edge carrying blank conditions reads as conditioned and is not",
+                mechanism.as_str()
+            )));
+        }
+        Ok(())
+    }
+
+    /// How this edge stands under `regime` — §9.1's conditions layer read
+    /// back.
+    ///
+    /// **A recorded failure wins over a recorded hold, and the order is the
+    /// safety property.** An edge that cleared its bar in a regime last
+    /// quarter and failed in the same regime last week is an edge whose test
+    /// has been refuted under those conditions; answering `Holds` because a
+    /// stale success is still on the record would be §9.4's "patched" in
+    /// place of its "retired". The failure record is historical and does not
+    /// expire on its own, so this is the fail-closed direction.
+    ///
+    /// A regime in neither set answers [`ConditionStanding::Untested`]. An
+    /// unasked question is not a negative answer — the same convention
+    /// [`Self::is_decayed`] and [`Self::standing`] already use — and a reader
+    /// that wants to know whether anything was asked at all must check, which
+    /// is why this returns three answers and not a `bool`.
+    pub fn in_regime(&self, regime: &str) -> ConditionStanding {
+        if self.fails_in.contains(regime) {
+            ConditionStanding::KnownToFail
+        } else if self.holds_in.contains(regime) {
+            ConditionStanding::Holds
+        } else {
+            ConditionStanding::Untested
+        }
     }
 
     /// Whether a plausible unobserved confounder stands against this edge.
@@ -943,6 +1067,89 @@ impl CausalGraph {
             unmatched,
             refreshed,
         })
+    }
+
+    /// Record that the test behind `cause -> effect` was re-run under
+    /// `regime` and did not clear its bar — blueprint §9.1's conditions
+    /// layer, written.
+    ///
+    /// Returns how many edges were marked. **Zero is a real and ordinary
+    /// answer**: a link nobody ever claimed has no edge to condition, and a
+    /// caller that read a zero as "marked" would be reporting a segmentation
+    /// that never happened.
+    ///
+    /// # What this deliberately does not do
+    ///
+    /// It does not drop the edge, attenuate its strength, or move
+    /// [`Self::last_updated`].
+    ///
+    /// Not dropping, for [`CausalEdge::decayed_at`]'s reason: a failed test
+    /// under one regime does not disprove a link, and deleting it would
+    /// destroy the record a later regime would be judged against.
+    ///
+    /// Not `last_updated`, and that one is the load-bearing refusal.
+    /// `qip_contracts::degradation::CausalGraphFreshness::assess` reads that
+    /// instant and narrows the platform's sizing when the graph goes stale. A
+    /// pass whose only news is that the graph's own edges are failing their
+    /// conditions must not be the thing that makes the graph read *fresh* —
+    /// that would be a degradation control switched off by the very evidence
+    /// it exists to react to.
+    ///
+    /// # Point in time
+    ///
+    /// Only edges recorded at or before `known_at` are marked. An edge that
+    /// was not yet knowable cannot have been tested, and marking it would
+    /// write a condition into the past.
+    pub fn record_condition_failure(
+        &mut self,
+        cause: &str,
+        effect: &str,
+        regime: &str,
+        known_at: Timestamp,
+    ) -> Result<usize> {
+        if regime.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "a condition failure recorded against {cause:?} -> {effect:?} names the regime                  {regime:?}; label the regime at the segmenter that produced it, because a                  failure filed under no condition is a failure no reader can ever match to one"
+            )));
+        }
+        let Some(indices) = self.by_cause.get(cause) else {
+            return Ok(0);
+        };
+        let mut marked = 0usize;
+        // Collected first so the immutable borrow of `by_cause` ends before
+        // the edges are touched.
+        let targets: Vec<usize> = indices.clone();
+        for index in targets {
+            let Some(edge) = self.edges.get_mut(index) else {
+                continue;
+            };
+            if edge.effect != effect || edge.recorded_at > known_at {
+                continue;
+            }
+            edge.fails_in.insert(regime.to_string());
+            marked += 1;
+        }
+        Ok(marked)
+    }
+
+    /// Edges known by `known_at` whose own test has failed under the regime
+    /// `regime_of` names for that edge's effect.
+    ///
+    /// The regime is asked for per effect rather than passed as one string:
+    /// the platform labels a regime per instrument, and one label applied to
+    /// a whole graph would match edges against conditions measured on
+    /// somebody else's tape.
+    pub fn failing_their_regime<F>(&self, known_at: Timestamp, regime_of: F) -> Vec<&CausalEdge>
+    where
+        F: Fn(&str) -> String,
+    {
+        self.edges
+            .iter()
+            .filter(|edge| edge.recorded_at <= known_at)
+            .filter(|edge| {
+                edge.in_regime(&regime_of(&edge.effect)) == ConditionStanding::KnownToFail
+            })
+            .collect()
     }
 
     pub fn edges(&self) -> &[CausalEdge] {

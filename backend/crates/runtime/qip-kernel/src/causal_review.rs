@@ -414,6 +414,129 @@ pub fn concentration(
     exposure::hidden_concentration(causal, held, known_at)
 }
 
+/// Everything one cycle can honestly say about the causal graph it has just
+/// written: §9.2's control audit, §9.3's hidden concentration, and §9.1's
+/// conditions layer read back.
+///
+/// One struct and one entry point because the three are read together or not
+/// at all. An operator shown a concentration without knowing that a control
+/// would remove its legs, or shown a graph without knowing that some of its
+/// edges have already failed under the regime in force, is being shown a
+/// number that reads stronger than the evidence under it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CausalReview {
+    /// §9.2's qualifier applied to the precedence edges — see
+    /// [`audit_controls`].
+    pub audit: ControlAudit,
+    /// §9.3's "positions that appear diversified but share a causal driver".
+    pub concentration: ConcentrationReport,
+    /// Edges carrying any §9.1 condition at all. **The premise of the figure
+    /// below**: with none recorded, `failing_conditions` is zero because
+    /// nothing was ever asked, not because nothing is failing, and the two
+    /// must never read alike.
+    pub conditioned_edges: usize,
+    /// Of those, the ones whose own test has been re-run under the regime
+    /// currently in force for their effect and did not clear its bar.
+    pub failing_conditions: usize,
+}
+
+impl CausalReview {
+    /// The review as a clause for the UNDERSTAND stage's detail, or an empty
+    /// string when the pass had nothing it could honestly say.
+    ///
+    /// Silence rather than a cheerful line, for [`ControlAudit::summary`]'s
+    /// reason: a pass that could not run reads identically to a clean one
+    /// unless it keeps quiet, and a stage detail is the one place an operator
+    /// looks to find out which happened.
+    pub fn detail(&self) -> String {
+        let mut detail = self.audit.summary().unwrap_or_default();
+        if self.concentration.was_answerable() {
+            if self.concentration.is_clean() {
+                detail.push_str(&format!(
+                    "; no two of {} held position(s) share an unheld causal driver across {} \
+                     causal edge(s)",
+                    self.concentration.positions_examined, self.concentration.edges_considered
+                ));
+            } else {
+                let qualifier = if concentration_rests_on_unaudited_edges(&self.concentration) {
+                    ", at least one resting on an edge carrying an unadjusted confounder"
+                } else {
+                    ""
+                };
+                let named = self
+                    .concentration
+                    .drivers
+                    .iter()
+                    .map(|driver| {
+                        format!(
+                            "{} reaches {}",
+                            driver.driver,
+                            driver
+                                .positions
+                                .iter()
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join("+")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                detail.push_str(&format!(
+                    "; {} hidden concentration(s) across {} held position(s): {named}{qualifier}",
+                    self.concentration.drivers.len(),
+                    self.concentration.positions_examined,
+                ));
+            }
+        }
+        if self.conditioned_edges > 0 {
+            detail.push_str(&format!(
+                "; {} of {} conditioned edge(s) are known to fail under the regime now in force",
+                self.failing_conditions, self.conditioned_edges
+            ));
+        }
+        detail
+    }
+}
+
+/// Run every read this module offers over one graph, at one instant.
+///
+/// `regime_of` answers the regime in force for an instrument, because the
+/// platform labels a regime per instrument and one label over a whole graph
+/// would match an edge against conditions measured on somebody else's tape.
+///
+/// # What makes this say something
+///
+/// A graph holding precedence edges whose ends are in `returns` (the audit),
+/// two or more members of `held` reached by one unheld cause (the
+/// concentration), or at least one edge carrying a §9.1 condition (the
+/// conditions line). With none of the three it returns a review whose
+/// [`CausalReview::detail`] is empty, which is the honest output for a cycle
+/// that had nothing to review.
+pub fn review<F>(
+    causal: &CausalGraph,
+    returns: &BTreeMap<String, Vec<f64>>,
+    held: &BTreeSet<String>,
+    bar_interval: Duration,
+    known_at: Timestamp,
+    regime_of: F,
+) -> CausalReview
+where
+    F: Fn(&str) -> String,
+{
+    let conditioned_edges = causal
+        .edges()
+        .iter()
+        .filter(|edge| edge.recorded_at <= known_at)
+        .filter(|edge| !edge.holds_in.is_empty() || !edge.fails_in.is_empty())
+        .count();
+    CausalReview {
+        audit: audit_controls(causal, returns, bar_interval, known_at),
+        concentration: concentration(causal, held, known_at),
+        conditioned_edges,
+        failing_conditions: causal.failing_their_regime(known_at, regime_of).len(),
+    }
+}
+
 /// Whether any finding in `report` rests on an edge the audit could not
 /// support.
 ///
