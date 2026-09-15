@@ -262,7 +262,13 @@ impl WorldModel {
         );
         let at = edge.recorded_at;
         let subject = format!("{}->{}", edge.cause, edge.effect);
-        let materiality = edge.transmission().clamp(0.0, 1.0);
+        // Not clamped, and no longer needs to be: `validate` above refuses a
+        // strength or a confidence that is not a real fraction, so their
+        // product is one too. The clamp that stood here could not have held
+        // the range anyway — it ran on a value that had already been through
+        // `f64::clamp` twice, and `NAN.clamp(0.0, 1.0)` is `NAN` — so it read
+        // as a control while passing through the one value it existed to stop.
+        let materiality = edge.transmission();
         self.retain_causal_support(
             SupportingClaim::new(
                 edge.cause.clone(),
@@ -978,8 +984,8 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
             0.45,
             Duration::from_days(3),
             known_from,
-        )
-        .with_confidence(0.75)
+        )?
+        .with_confidence(0.75)?
         .with_evidence(vec!["filing:vantage-10k-supplier-concentration".into()]),
     )?;
     model.claim_causal(
@@ -990,8 +996,8 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
             0.30,
             Duration::from_days(7),
             known_from,
-        )
-        .with_confidence(0.65)
+        )?
+        .with_confidence(0.65)?
         .with_evidence(vec!["filing:northwind-10k-input-costs".into()]),
     )?;
     model.claim_causal(
@@ -1002,8 +1008,8 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
             0.15,
             Duration::from_days(5),
             known_from,
-        )
-        .with_confidence(0.45)
+        )?
+        .with_confidence(0.45)?
         .with_evidence(vec!["research:sector-substitution-note".into()]),
     )?;
     model.claim_causal(
@@ -1014,8 +1020,8 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
             0.55,
             Duration::from_days(1),
             known_from,
-        )
-        .with_confidence(0.8)
+        )?
+        .with_confidence(0.8)?
         .with_evidence(vec!["research:bank-rate-sensitivity".into()]),
     )?;
 

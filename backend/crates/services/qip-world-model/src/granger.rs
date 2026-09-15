@@ -270,7 +270,13 @@ pub fn establish_temporal_precedence_controlling_for(
     } else {
         TEMPORAL_PRECEDENCE_SUGGESTIVE_CEILING
     };
-    let confidence = ((1.0 - test.p_value) * ceiling).clamp(0.0, 1.0);
+    // Not clamped. A p-value outside [0, 1], or one that is not a number at
+    // all, is a defect in the F distribution's tail and not a confidence to be
+    // corrected into range — and the clamp that stood here could not have
+    // corrected the case that actually reaches this line, because
+    // `NAN.clamp(0.0, 1.0)` is `NAN`. `with_confidence` refuses it below,
+    // naming the link, which is the message an operator can act on.
+    let confidence = (1.0 - test.p_value) * ceiling;
     let lag = bar_interval * TEMPORAL_PRECEDENCE_LAG as i64;
     // What was controlled for goes into the evidence string, not only into
     // the edge's own fields. An operator comparing two edges in a log reads
@@ -287,6 +293,12 @@ pub fn establish_temporal_precedence_controlling_for(
         TEMPORAL_PRECEDENCE_LAG, test.p_value, test.observations
     );
 
+    // Both fractions are refused rather than clamped, and this is the seam
+    // where that matters most: `partial_r_squared` comes out of a regression,
+    // and the `partial_r_squared < TEMPORAL_PRECEDENCE_MIN_EFFECT` guard above
+    // is `false` for a NaN — every comparison against a NaN is — so a
+    // degenerate fit does not leave by the quiet `Ok(None)` route. It arrives
+    // here, and it stops here with a message naming the pair.
     Ok(Some(
         CausalEdge::new(
             cause_id,
@@ -295,8 +307,8 @@ pub fn establish_temporal_precedence_controlling_for(
             test.partial_r_squared,
             lag,
             recorded_at,
-        )
-        .with_confidence(confidence)
+        )?
+        .with_confidence(confidence)?
         .with_evidence(vec![evidence_id])
         .with_confounders(adjusted_for, suspected),
     ))

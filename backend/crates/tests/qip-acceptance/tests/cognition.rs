@@ -326,14 +326,17 @@ fn the_factor_floor_admits_the_smallest_real_universe_and_refuses_a_thinner_one(
     // asserted, because only the second distinguishes the two.
     let big = book_driven_by_one_factor(&["AAA", "BBB", "CCC", "DDD", "EEE"], 200);
     let mut graph = CausalGraph::new();
-    graph.add(CausalEdge::new(
-        "AAA",
-        "BBB",
-        Mechanism::TemporalPrecedence,
-        0.3,
-        Duration::from_days(1),
-        at(1_000),
-    ));
+    graph.add(
+        CausalEdge::new(
+            "AAA",
+            "BBB",
+            Mechanism::TemporalPrecedence,
+            0.3,
+            Duration::from_days(1),
+            at(1_000),
+        )
+        .expect("a strength in [0, 1] is admitted"),
+    );
     let wide = causal_review::audit_controls(&graph, &big, Duration::from_days(1), at(2_000));
     assert_eq!(
         wide.edges_audited, 1,
@@ -359,22 +362,28 @@ fn every_new_cognition_surface_is_read_only_and_names_no_venue_or_order() {
     // assertion rather than a grep: the functions below return findings, and
     // there is no constructor anywhere in them that produces an order.
     let mut graph = CausalGraph::new();
-    graph.add(CausalEdge::new(
-        "DRIVER",
-        "AAA",
-        Mechanism::TemporalPrecedence,
-        0.5,
-        Duration::from_days(1),
-        at(1_000),
-    ));
-    graph.add(CausalEdge::new(
-        "DRIVER",
-        "BBB",
-        Mechanism::TemporalPrecedence,
-        0.5,
-        Duration::from_days(1),
-        at(1_000),
-    ));
+    graph.add(
+        CausalEdge::new(
+            "DRIVER",
+            "AAA",
+            Mechanism::TemporalPrecedence,
+            0.5,
+            Duration::from_days(1),
+            at(1_000),
+        )
+        .expect("a strength in [0, 1] is admitted"),
+    );
+    graph.add(
+        CausalEdge::new(
+            "DRIVER",
+            "BBB",
+            Mechanism::TemporalPrecedence,
+            0.5,
+            Duration::from_days(1),
+            at(1_000),
+        )
+        .expect("a strength in [0, 1] is admitted"),
+    );
     let held: BTreeSet<String> = ["AAA".to_string(), "BBB".to_string()].into_iter().collect();
 
     let before = graph.len();
