@@ -500,6 +500,15 @@ mod tests {
         let mut history = history()?;
         history.observe(&fast(), Duration::from_millis(-5));
         fill(&mut history, &fast(), 4, 3);
+        // The sample count, not only the median: a negative sample among
+        // three fast ones does not move the lower median, so a test that
+        // asserted the median alone passed with the guard deleted — which is
+        // what a mutation found. The count says it was never recorded at all.
+        assert_eq!(
+            history.summary()[1].samples,
+            3,
+            "the negative interval was recorded as a fill time"
+        );
         assert_eq!(
             history.median(fast().as_str()),
             Some(Duration::from_millis(4)),

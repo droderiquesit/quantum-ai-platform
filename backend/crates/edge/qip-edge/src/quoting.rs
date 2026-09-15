@@ -827,7 +827,18 @@ mod tests {
         // Each of these would produce a control that reads as protection and
         // is not, so each is refused rather than corrected to something the
         // operator did not write.
-        assert!(RateLimits::new(0, 2, 0, 0, 4, 8).is_err(), "zero capacity");
+        // The message rather than `is_err()`: a capacity of zero also
+        // trips the reserve clause below it — a reserve of zero is not
+        // smaller than a capacity of zero — so a bare `is_err()` here passed
+        // even with the capacity check deleted, which a mutation found.
+        let no_capacity = RateLimits::new(0, 2, 0, 0, 4, 8)
+            .expect_err("a capacity of zero was admitted")
+            .message()
+            .to_string();
+        assert!(
+            no_capacity.contains("capacity of zero"),
+            "a capacity of zero was refused for some other reason: {no_capacity}"
+        );
         assert!(RateLimits::new(10, 0, 4, 6, 4, 8).is_err(), "zero refill");
         assert!(
             RateLimits::new(10, 2, 10, 10, 4, 8).is_err(),
