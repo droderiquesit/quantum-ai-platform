@@ -696,6 +696,45 @@ pub mod names {
     /// A control that is not running looks exactly like a control that passed
     /// unless something says otherwise, and this is the something.
     pub const RISK_FIGURES_UNEVALUATED: &str = "qip_risk_figures_unevaluated";
+    /// Hedge proposals blueprint §31.4's DECIDE-stage survey produced, counted
+    /// as the survey produces them.
+    ///
+    /// A proposal and never a position: nothing submits a hedge, so a rise
+    /// here is an exposure a person has to decide about, not capital the
+    /// platform has committed. Read against [`HEDGE_REFUSALS`], the pair
+    /// answers the question the DECIDE line answers for one cycle only —
+    /// whether the book's declared exposures are being hedged at all, or
+    /// whether every policy has been refusing for a week.
+    ///
+    /// **Unlabelled on purpose.** The two labels a reader would reach for are
+    /// the policy's name and its hedge instrument, and both are deployment
+    /// configuration read out of a file rather than a value this source fixes
+    /// — a series keyed on either is keyed on a string nothing here bounds.
+    /// Which policy proposed what, at what beta, against which exposure, is
+    /// in the hash-chained `HedgeSurveyed` record, which carries every number
+    /// the proposal was sized on and is the thing §31.4 exists to make
+    /// re-derivable.
+    pub const HEDGE_PROPOSALS: &str = "qip_hedge_proposals_total";
+    /// Hedge outcomes the survey refused, by `reason`.
+    ///
+    /// Six values, and each is a source-file literal: five from the kernel's
+    /// exhaustive match over `qip_risk::hedge::HedgeRefusal` —
+    /// `no_instrument_declared`, `misdeclared_policy`, `unknown_instrument`,
+    /// `unusable_price`, `would_breach_limits` — plus
+    /// `exposures_unreadable`, the survey-wide refusal, where the exposure
+    /// read itself failed and **no** policy was surveyed. That last one is
+    /// recorded once per cycle rather than once per declared policy: the fact
+    /// is that one book could not be described, and multiplying it by a
+    /// deployment's policy count would make the series move when somebody
+    /// edited configuration.
+    ///
+    /// The reason is the whole value of the series. A hedge that is not
+    /// happening because the policy names an instrument the catalogue never
+    /// held and a hedge that is not happening because the platform has seen
+    /// no price in it need opposite corrections, and folded into one count
+    /// they are the same number. Neither the policy nor the instrument is a
+    /// label, for the reason [`HEDGE_PROPOSALS`] gives.
+    pub const HEDGE_REFUSALS: &str = "qip_hedge_refusals_total";
     pub const ORDERS_SUBMITTED: &str = "qip_orders_submitted_total";
     pub const ORDERS_FILLED: &str = "qip_orders_filled_total";
     /// Named by no recording site in the platform, and kept because the

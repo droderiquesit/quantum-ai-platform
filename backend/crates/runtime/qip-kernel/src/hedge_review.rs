@@ -262,6 +262,36 @@ impl HedgeReview {
     }
 }
 
+/// The `reason` label on `qip_hedge_refusals_total` for a refusal the engine
+/// or the resolver produced.
+///
+/// An exhaustive `match` over source-file literals, and both halves of that
+/// are the cardinality bound rather than a comment asserting one: nothing
+/// formats a string here, so no deployment's configuration can reach the
+/// label, and a sixth [`HedgeRefusal`] arm will not compile until somebody
+/// chooses its literal. A `Debug` rendering would have satisfied the first
+/// half and not the second, and the variants carry policy names and instrument
+/// symbols, which is exactly the unbounded label this refuses to publish.
+pub(crate) fn refusal_reason(refusal: &HedgeRefusal) -> &'static str {
+    match refusal {
+        HedgeRefusal::NoInstrumentDeclared { .. } => "no_instrument_declared",
+        HedgeRefusal::MisdeclaredPolicy { .. } => "misdeclared_policy",
+        HedgeRefusal::UnknownInstrument { .. } => "unknown_instrument",
+        HedgeRefusal::UnusablePrice { .. } => "unusable_price",
+        HedgeRefusal::WouldBreachLimits { .. } => "would_breach_limits",
+    }
+}
+
+/// The `reason` for the survey-wide refusal, where [`exposures_of`] failed and
+/// so **no** policy was surveyed at all.
+///
+/// Not one of [`refusal_reason`]'s arms because it is not one policy's
+/// refusal: it is the whole book being undescribable, which leaves every
+/// declared exposure unhedged at once. An operator who saw it folded in with
+/// the per-policy reasons would read one refusal where there are `declared` of
+/// them.
+pub(crate) const REASON_EXPOSURES_UNREADABLE: &str = "exposures_unreadable";
+
 /// Survey every declared policy against the book as it stands.
 ///
 /// Deterministic, like the engine it calls: the same state, catalogue,
@@ -449,6 +479,8 @@ mod tests {
     use qip_financial::costs::LiquidityProfile;
     use qip_financial::object::FinancialObject;
     use qip_financial::quality::Provenance;
+    use qip_financial::risk_profile::{FactorExposures, RiskCharacteristics};
+    use qip_market::quote::{Trade, TradeCondition};
 
     fn at() -> Timestamp {
         Timestamp::from_secs(1_760_000_000)
@@ -541,6 +573,266 @@ mod tests {
         assert_eq!(
             review.summary(),
             "no hedge policy is declared, so no exposure is hedged"
+        );
+    }
+
+    /// The instrument the book holds, and whose record states the loading.
+    const EXPOSED: &str = "obj-AAA";
+    /// The instrument both policies hedge with. Its own record states no
+    /// loading, so the refusals below are about the record under test.
+    const HEDGE: &str = "obj-HDG";
+    /// The factor one of the two policies names.
+    const FACTOR: &str = "momentum";
+    /// The sector the *other* policy names — an axis the factor walk never
+    /// touches, which is the whole point of declaring it.
+    const SECTOR: &str = "information_technology";
+
+    /// The same record as [`record`], with one stated factor loading.
+    ///
+    /// `RiskCharacteristics::is_coherent` — the gate `Universe::insert` and
+    /// `ObjectBuilder::build` both run — checks the volatility, the beta and
+    /// the three fractions, and does **not** look at `factor_exposures` at
+    /// all. So a loading of `NaN` is registrable, which is exactly why
+    /// [`exposures_of`] has to refuse it downstream rather than trusting the
+    /// catalogue gate to have done it.
+    fn record_loading(id: &str, loading: f64) -> FinancialObject {
+        FinancialObject::builder(
+            ObjectId::from_string(id),
+            id,
+            InstrumentType::CommonStock,
+            LiquidityProfile::listed(Decimal::from_int(1_000_000), 5.0),
+        )
+        .venue("XNAS")
+        .geography("US")
+        .sector(Sector::InformationTechnology)
+        .risk(RiskCharacteristics {
+            factor_exposures: FactorExposures::new().with(FACTOR, loading),
+            ..RiskCharacteristics::default()
+        })
+        .provenance(Provenance::synthetic("catalogue", at()))
+        .build(at())
+        .expect("a listed equity record; the coherence gate does not read loadings")
+    }
+
+    /// A catalogue over the same two instruments, differing only in the
+    /// loading the held one states.
+    fn catalogue(loading: f64) -> Universe {
+        let mut universe = Universe::new();
+        universe
+            .insert(record_loading(EXPOSED, loading))
+            .expect("a record with any loading is insertable");
+        // Deliberately outside the hedged sector, so the hedge instrument does
+        // not add to the exposure it is sized against.
+        universe
+            .insert(record(HEDGE, Sector::Financials))
+            .expect("insertable");
+        universe
+    }
+
+    /// A printed trade in the hedge instrument, so a proposal can be sized.
+    /// Without it every policy would refuse on `UnusablePrice` and the admit
+    /// half of each test below would prove nothing.
+    fn priced() -> MarketSnapshot {
+        let mut snapshot = MarketSnapshot::new(at());
+        snapshot.apply_trade(Trade {
+            object_id: ObjectId::from_string(HEDGE),
+            venue: "XNAS".into(),
+            at: at(),
+            price: dec!("100"),
+            size: Decimal::from_int(100),
+            aggressor: None,
+            condition: TradeCondition::Regular,
+            trade_id: None,
+            quality: Default::default(),
+        });
+        snapshot
+    }
+
+    /// Two policies: one on the factor axis the bad record poisons, one on a
+    /// sector axis it never touches.
+    fn two_policies() -> Vec<HedgePolicyDeclaration> {
+        vec![
+            HedgePolicyDeclaration::new(
+                "factor-hedge",
+                HedgeAxis::Factor,
+                FACTOR,
+                ObjectId::from_string(HEDGE),
+                dec!("1"),
+            ),
+            HedgePolicyDeclaration::new(
+                "sector-hedge",
+                HedgeAxis::Sector,
+                SECTOR,
+                ObjectId::from_string(HEDGE),
+                dec!("1"),
+            ),
+        ]
+    }
+
+    fn book(notional: Decimal) -> RiskState {
+        RiskState {
+            position_notionals: BTreeMap::from([(EXPOSED.to_string(), notional)]),
+            ..RiskState::default()
+        }
+    }
+
+    #[test]
+    fn a_stated_loading_that_is_not_a_number_refuses_every_policy_and_not_only_the_factor_axis() {
+        // The arm this drives had no test at all until this one: `review`'s
+        // `Err` branch on `exposures_of` was reachable from a catalogue record
+        // — `is_coherent` does not read loadings — and nothing proved it fired
+        // or that it failed closed. A refusal nothing drives reads as
+        // protection and is not; that is the `MaxExpectedShortfall` finding,
+        // and this is the same shape.
+        let snapshot = priced();
+        let limits = LimitSet::new("wide");
+        let state = book(dec!("3000"));
+
+        // The admit half, and the premise. The same book, the same two
+        // policies, the same prices — only the stated loading differs. A gate
+        // that refused every catalogue would satisfy the refusal assertions
+        // below and protect nothing.
+        let admitted = review(
+            &two_policies(),
+            &catalogue(0.5),
+            &snapshot,
+            &limits,
+            &state,
+            at(),
+        );
+        assert!(
+            admitted.exposures_refused.is_none(),
+            "a well-formed catalogue was refused: {:?}",
+            admitted.exposures_refused
+        );
+        assert_eq!(
+            admitted.proposals().len(),
+            2,
+            "the premise: over a well-formed catalogue both policies propose, so the refusal \
+             below is the loading and not an empty book: {:?}",
+            admitted.outcomes
+        );
+
+        let refused = review(
+            &two_policies(),
+            &catalogue(f64::NAN),
+            &snapshot,
+            &limits,
+            &state,
+            at(),
+        );
+        assert_eq!(
+            refused.declared, 2,
+            "the premise: the same two policies were declared"
+        );
+        // Fail closed, and the word "every" is the assertion: the sector
+        // policy names an axis the factor walk never reaches and proposed a
+        // moment ago over the same book. A survey that produced its proposal
+        // anyway would be sizing against a book this module could not finish
+        // describing.
+        assert!(
+            refused.outcomes.is_empty(),
+            "the survey produced an outcome over a book it could not read: {:?}",
+            refused.outcomes
+        );
+        assert_eq!(refused.proposals().len(), 0);
+        assert_eq!(refused.refusals().len(), 0);
+        let message = refused
+            .exposures_refused
+            .clone()
+            .expect("the exposure read was refused");
+        // The right reason, not merely a refusal. The two arms of
+        // `exposures_of` need opposite corrections and their messages are
+        // deliberately disjoint: this phrase appears in the non-finite arm
+        // only, and the overflow arm's "is not representable" appears in the
+        // other only.
+        assert!(
+            message.contains("not a number a position notional can be multiplied by"),
+            "the survey was refused for some other reason: {message}"
+        );
+        assert!(
+            message.contains(EXPOSED) && message.contains(FACTOR),
+            "the refusal names neither the record nor the factor a person must correct: {message}"
+        );
+        assert!(
+            refused.is_finding(),
+            "a book nobody could read is a finding"
+        );
+        assert!(
+            refused
+                .summary()
+                .starts_with("2 hedge policy(ies) declared and none surveyed"),
+            "the summary does not say that every declared exposure went unhedged: {}",
+            refused.summary()
+        );
+    }
+
+    #[test]
+    fn a_loading_whose_product_with_the_notional_does_not_fit_refuses_the_survey_as_unrepresentable()
+     {
+        // The second half of `exposures_of`'s crossing from a statistic to
+        // money, and a distinct arm from the one above: both operands are
+        // individually representable and their product is not. Reading it as
+        // zero would report a factor the book is running as flat, which is
+        // precisely the exposure a factor policy exists to hedge.
+        //
+        // The fixture is a corrupt record rather than a plausible one, and
+        // that is honest: a loading of 10^20 is not a number any estimator
+        // produces. It is the number a mis-scaled or mis-parsed field carries,
+        // which is the case this arm is for.
+        const HUGE: f64 = 1e20;
+        let notional = Decimal::from_int(1_000_000_000_000_000_000);
+        let snapshot = priced();
+        let limits = LimitSet::new("wide");
+        let state = book(notional);
+
+        // Premise one: the loading itself converts, so the refusal below
+        // cannot be the non-finite arm firing under another name.
+        assert!(
+            Decimal::from_f64(HUGE).is_some(),
+            "the fixture loading does not even convert, so this test would drive the other arm"
+        );
+        // Premise two: the same book with an ordinary loading is surveyed
+        // without refusal, so what is refused is the product and not the size
+        // of the position.
+        let admitted = review(
+            &two_policies(),
+            &catalogue(1.0),
+            &snapshot,
+            &limits,
+            &state,
+            at(),
+        );
+        assert!(
+            admitted.exposures_refused.is_none(),
+            "the premise: this book is readable at an ordinary loading: {:?}",
+            admitted.exposures_refused
+        );
+
+        let refused = review(
+            &two_policies(),
+            &catalogue(HUGE),
+            &snapshot,
+            &limits,
+            &state,
+            at(),
+        );
+        assert!(
+            refused.outcomes.is_empty(),
+            "the survey produced an outcome over a book it could not read: {:?}",
+            refused.outcomes
+        );
+        let message = refused
+            .exposures_refused
+            .clone()
+            .expect("the exposure read was refused");
+        assert!(
+            message.contains("is not representable"),
+            "the overflow arm did not fire; this is some other refusal: {message}"
+        );
+        assert!(
+            message.contains(EXPOSED) && message.contains(FACTOR),
+            "the refusal names neither the record nor the factor a person must correct: {message}"
         );
     }
 
