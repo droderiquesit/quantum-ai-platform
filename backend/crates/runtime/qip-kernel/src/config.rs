@@ -7,6 +7,7 @@
 //! what else is configured.
 
 use crate::central::CentralConfig;
+use crate::hedge_review::HedgePolicyDeclaration;
 use qip_capital::ledger::{DecidedBy, Eligibility, Mandate as LedgerMandate, MandateId, UserId};
 use qip_core::Decimal;
 use qip_core::error::Result;
@@ -330,6 +331,27 @@ pub struct PlatformConfig {
     #[serde(default)]
     pub venue_registrations: Vec<RegistrationRecord>,
 
+    /// The hedge policies the deployment commits, each naming an exposure,
+    /// the instrument that hedges it, and the **declared** beta between them
+    /// (blueprint §31.4).
+    ///
+    /// Governance configuration for the same reason a limit is: the place for
+    /// judgement is in setting the policy, and a hedge engine that invents its
+    /// own beta or picks its own instrument is sizing a position nobody chose.
+    /// The declaration carries judgement only — the contract multiplier and
+    /// the lot size are read from the catalogue record at survey time, because
+    /// a configured copy of either would be a second claim about a fact the
+    /// catalogue already states, and the quiet failure is a contract hedged at
+    /// a multiplier of one that reads as a working hedge.
+    ///
+    /// Empty by default, and empty means what it says: nothing is hedged, and
+    /// [`crate::hedge_review::HedgeReview::summary`] states that on every
+    /// cycle rather than letting an unhedged book look like a hedged one that
+    /// had nothing to do. `#[serde(default)]` so a configuration stored before
+    /// hedging existed keeps deserialising, to a platform that hedges nothing.
+    #[serde(default)]
+    pub hedge_policies: Vec<HedgePolicyDeclaration>,
+
     /// How deep a chain observation has to be buried before the platform will
     /// read state derived from it.
     ///
@@ -491,6 +513,7 @@ impl Default for PlatformConfig {
             user_mandates: Vec::new(),
             user_eligibilities: Vec::new(),
             venue_registrations: Vec::new(),
+            hedge_policies: Vec::new(),
             chain_confirmations: default_chain_confirmations(),
             reasoning_confidence_bar: default_reasoning_confidence_bar(),
             exploration_share: default_exploration_share(),
@@ -605,6 +628,13 @@ impl PlatformConfig {
     /// named.
     pub fn with_venue_registrations(mut self, registrations: Vec<RegistrationRecord>) -> Self {
         self.venue_registrations = registrations;
+        self
+    }
+
+    /// Commit the deployment's hedge policies. See
+    /// [`PlatformConfig::hedge_policies`] for why each is judgement only.
+    pub fn with_hedge_policies(mut self, policies: Vec<HedgePolicyDeclaration>) -> Self {
+        self.hedge_policies = policies;
         self
     }
 

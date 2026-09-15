@@ -12,19 +12,26 @@
 //!
 //! # The seam: what calls this, with what, at what cadence
 //!
-//! Nothing in this module submits an order, and nothing in it is wired yet —
-//! deliberately. The intended composition:
+//! Nothing in this module submits an order. This paragraph said "nothing in it
+//! is wired yet — deliberately" until the wiring landed, and an unwired engine
+//! is not a control however well tested it is; the composition below is now
+//! what runs, not what is intended.
 //!
-//! * **Caller**: the kernel's decide stage (or the central plane), once per
-//!   cycle, after exposures have been valued — the same cadence at which the
-//!   `RiskMonitor` already runs.
-//! * **Inputs**: a [`HedgeExposures`] built from
-//!   `Portfolio::exposures` (plus per-instrument signed notionals), the
-//!   current [`crate::limits::RiskState`], the governing
-//!   [`crate::limits::LimitSet`], a price per declared hedge instrument, and
-//!   the caller's clock. Policies come from governance configuration, exactly
-//!   as limits do.
-//! * **Output**: [`HedgeProposal`]s. A proposal enters the platform's
+//! * **Caller**: `qip_kernel::hedge_review::review`, from the kernel's DECIDE
+//!   stage, once per cycle — the same cadence at which the `RiskMonitor` runs.
+//!   Find it with
+//!   `grep -rn "hedge_review::review\|propose_hedge(" backend/crates/runtime/`.
+//! * **Inputs**: a [`HedgeExposures`] built from signed per-instrument
+//!   notionals classified through the catalogue, the current
+//!   [`crate::limits::RiskState`], the governing [`crate::limits::LimitSet`],
+//!   a price per declared hedge instrument, and the caller's clock. Policies
+//!   come from governance configuration, exactly as limits do; the kernel's
+//!   declaration carries judgement only, and reads the instrument's contract
+//!   multiplier and lot from the catalogue record rather than from
+//!   configuration, because two claims about one mechanical fact disagree and
+//!   the quiet direction is an under-sized hedge that reads as a working one.
+//! * **Output**: [`HedgeProposal`]s. A proposal is journalled and reported on
+//!   the cycle; it reaches a market only through the platform's
 //!   proposal → approval → order path — the kernel's governed submit, behind
 //!   pre-trade risk — like any other proposal. It is never an order and this module has
 //!   no way to make it one: there is no broker type here to hand it to.
@@ -380,6 +387,23 @@ pub enum HedgeRefusal {
     /// The policy's declared numbers are unusable (see
     /// [`HedgePolicy::validate`]); the detail says which and why.
     MisdeclaredPolicy { policy: String, detail: String },
+    /// The policy names a hedge instrument the caller could not resolve to a
+    /// reference record, so its contract multiplier and lot size are unknown.
+    ///
+    /// Distinct from [`Self::NoInstrumentDeclared`] because the two need
+    /// opposite corrections: that one is a policy with a blank to fill in,
+    /// this one is a policy naming something the platform was not assembled
+    /// to trade. Constructed by the caller that resolves the declaration
+    /// against its catalogue, not by [`propose_hedge`] — which is handed an
+    /// already-resolved [`HedgeInstrument`] and has no catalogue to consult.
+    /// Defaulting the multiplier to one and the lot to one would be the same
+    /// class of defect as a guessed price, and larger: a futures contract
+    /// hedged at a multiplier of one is under-sized by the multiplier.
+    UnknownInstrument {
+        policy: String,
+        instrument: String,
+        detail: String,
+    },
     /// No usable price was supplied for the declared instrument. A hedge
     /// sized against a guessed price is a guessed hedge.
     UnusablePrice {
@@ -403,6 +427,7 @@ impl HedgeRefusal {
         match self {
             Self::NoInstrumentDeclared { detail, .. }
             | Self::MisdeclaredPolicy { detail, .. }
+            | Self::UnknownInstrument { detail, .. }
             | Self::UnusablePrice { detail, .. }
             | Self::WouldBreachLimits { detail, .. } => detail,
         }
