@@ -33,6 +33,21 @@
 //! with neither is refused, because a defaulted tolerance is a number nobody
 //! decided.
 //!
+//! A holding that states its own tolerance is refused when that tolerance is
+//! not smaller than the magnitude of the quantity beside it. That is one
+//! transposed pair — `quantity` and `tolerance` swapped, ten million of each
+//! — and it is incoherent on the document's own face: no ledger is needed to
+//! see that a gap as large as the balance would never be reported as a gap.
+//! It is deliberately *not* the whole check and does not stand in for one.
+//! `ToleranceBasis::evaluate` holds the complete bound, against what the
+//! ledger expects rather than what the document claims, and it is the
+//! stricter of the two wherever they differ: it sees the accrual term, it
+//! sees a balance the venue has since moved, and it also covers the holdings
+//! this parser cannot judge — the ones taking the statement's default
+//! tolerance, where the two figures were never written side by side by
+//! anybody. A statement-wide default judged per holding would refuse a whole
+//! file over a pairing no operator wrote.
+//!
 //! The composition root reads and validates the file at start, refusing
 //! anything malformed, an `as_of` in the future, an empty statement, or more
 //! holdings than the kernel will hold — never clamping any of them — and
@@ -104,8 +119,12 @@ pub struct StatementHolding {
     /// drift from the figure it was handed. Validated as a decimal at parse
     /// and parsed again at the one place it is handed to the kernel.
     pub quantity: String,
-    /// Strictly positive, validated at parse naming the holding; the kernel
-    /// refuses anything else as well. Text for the same reason as the
+    /// Strictly positive, and — where the holding stated it rather than
+    /// taking the statement's default — smaller than the magnitude of the
+    /// quantity beside it, both validated at parse naming the holding. The
+    /// fabric's `ToleranceBasis::evaluate` holds the complete bound against
+    /// the ledger's own expectation; this field's guarantee is only that the
+    /// document did not contradict itself. Text for the same reason as the
     /// quantity.
     pub tolerance: String,
 }
@@ -233,7 +252,8 @@ impl Statement {
             let quantity_value = holding.get("quantity").ok_or_else(|| {
                 Error::invalid(format!("{at}.quantity is missing; a holding is a balance"))
             })?;
-            let quantity = decimal_text_of(quantity_value, &format!("{at}.quantity"))?;
+            let quantity_at = format!("{at}.quantity");
+            let quantity = decimal_text_of(quantity_value, &quantity_at)?;
             let tolerance = match holding.get("tolerance") {
                 Some(value) => {
                     let text = decimal_text_of(value, &format!("{at}.tolerance"))?;
@@ -242,6 +262,40 @@ impl Statement {
                         return Err(Error::invalid(format!(
                             "{at}.tolerance is not strictly positive; a tolerance is the \
                              largest gap reconciliation accepts, so write one above zero"
+                        )));
+                    }
+                    // The transposition the security review found, caught at
+                    // the door: `quantity` and `tolerance` swapped inside one
+                    // holding, ten million of each. Both figures are strictly
+                    // positive, so every check above admits them, and from
+                    // that cycle on any divergence up to the whole balance at
+                    // that venue-asset reads as within tolerance. The
+                    // complete bound is `ToleranceBasis::evaluate`, which
+                    // judges the tolerance against what the *ledger* expects
+                    // and is the only place both figures exist; this one can
+                    // only see the balance the document itself states, and
+                    // that is enough to call a pair incoherent on its face
+                    // without a ledger, a cycle, or a venue-asset the ledger
+                    // books at all. Magnitude, because a margin account in
+                    // debit is a real balance and the fabric takes the same
+                    // basis on `|expected|`.
+                    let magnitude = decimal_of(quantity_value, &quantity_at)?.abs();
+                    // A stated balance of zero is exempt, for the reason the
+                    // evaluate-time bound exempts a zero expectation: every
+                    // positive tolerance exceeds zero, so a flat comparison
+                    // would refuse the whole file over a venue reporting a
+                    // flat balance — and a refused file is no statement
+                    // observed, no wallet assembled, and no
+                    // `unrecorded_by_ledger` halt on the venue-asset the zero
+                    // is evidence about. A refusal standing in front of a
+                    // halt is the defect, not the control.
+                    if !magnitude.is_zero() && tolerance >= magnitude {
+                        return Err(Error::invalid(format!(
+                            "{at}.tolerance is not smaller than the magnitude of \
+                             {quantity_at}; the whole balance disappearing would record as \
+                             within tolerance, so this is a halt that cannot fire — check \
+                             whether a quantity and a tolerance have been transposed, and \
+                             state a tolerance below the balance it guards"
                         )));
                     }
                     text

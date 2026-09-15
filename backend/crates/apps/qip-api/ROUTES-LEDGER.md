@@ -233,11 +233,15 @@ names a JSON file — `{"as_of": <RFC 3339>, "venue": "...", "tolerance": "<deci
 decimals as strings and never JSON numbers, each holding's `tolerance` optional
 where the statement sets one. The root reads it at start and refuses to start on
 a malformed file, a future `as_of`, an empty holdings list or more than 256
-holdings, naming the field; an admitted `POST /cycle` re-reads the file when its
-modification time or length has moved, and refuses the cycle with `503` naming
-the variable if the file has gone or stopped parsing. Unset means no feed, the
-banner says so, and this body answers `assembled: false`. No deployment mounts a
-statement yet; `manifest_wiring.rs` records why.
+holdings, naming the field. A holding that states its own `tolerance` is refused
+when that figure is not smaller than the magnitude of the `quantity` beside it —
+one transposed pair, caught on the document's own face; the complete bound is
+the fabric's, against what the ledger expects, and a holding on the statement's
+default tolerance is judged only there. An admitted `POST /cycle` re-reads the
+file when its modification time or length has moved, and refuses the cycle with
+`503` naming the variable if the file has gone or stopped parsing. Unset means
+no feed, the banner says so, and this body answers `assembled: false`. No
+deployment mounts a statement yet; `manifest_wiring.rs` records why.
 
 ```json
 {
