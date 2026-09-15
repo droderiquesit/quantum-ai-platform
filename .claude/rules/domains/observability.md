@@ -83,6 +83,15 @@ still answers the JSON health body. The series and what each is keyed on:
   `qip_edge_signals_raised_total{kind}`, `qip_edge_orders_placed_total{venue}`,
   `qip_edge_intents_cancelled_total`, `qip_edge_internal_crosses_total{venue}`,
   `qip_edge_netting_ratio` (histogram), `qip_edge_reconciliation_breaks_total`.
+- From §29.2 and §32.1's quoting lane: `qip_edge_quote_budget_tokens{venue}`
+  and `qip_edge_quote_narrowed{venue}` (the message bucket and whether the
+  message-to-trade window has raised the floor a placement faces),
+  `qip_edge_orders_mass_cancelled_total` (orders withdrawn because the cell
+  halted, deliberately distinct from the expiry counter — a withdrawal on a
+  halt and a withdrawal at a time to live are different facts), and
+  `qip_edge_fill_time_unmeasured_venues`. The first two and the last are
+  written on **every** pass including a halted one, so a cell that has sent
+  nothing reports a full bucket rather than nothing at all.
 - From the node: `qip_edge_mesh_{deltas,grants,policy_frames}_total{outcome}`
   as deltas of the link's cumulative counters, and
   `qip_edge_mesh_circuit{state}`.
@@ -90,7 +99,9 @@ still answers the JSON health body. The series and what each is keyed on:
 Every label is bounded by something fixed at deployment or by an enum or a
 source-file literal: `cell` and `region` are one value per process, `venue`
 is the configured venue list, `gate` is the set of string literals
-`Cell::refuse` is called with **plus the `GATE_LIVE_VENUE` constant**, and
+`Cell::refuse` is called with **plus the constants passed at the seams that
+record directly** — `GATE_LIVE_VENUE` and, since §29.2, `GATE_QUOTE_BUDGET` —
+and
 `source`, `capability`, `kind`, `outcome` and `state` are enums. Nothing is
 labelled by instrument, strategy or order id.
 
@@ -104,13 +115,23 @@ label, and this file said it was until 2026-09-06; `telemetry.rs`'s module doc
 was corrected in `dde60ca` itself and this one was outside that lane's
 territory. Recount both sites rather than trusting the prose:
 `grep -n 'metrics\.refusal(' backend/crates/edge/qip-edge/src/cell.rs`
-printed exactly two lines on 2026-09-06 — one taking `gate` inside
-`Cell::refuse`, one naming `GATE_LIVE_VENUE` inside `Cell::send` — and
-`grep -n 'GATE_LIVE_VENUE' backend/crates/edge/qip-edge/src/cell.rs` finds the
-constant's definition. The cardinality bound still holds, because a constant is
-as fixed as a literal; what changed is where you must look to enumerate it. A
-third recording site added at a third seam would break the bound silently,
-which is why the command is here.
+printed two lines on 2026-09-06 and **three** on 2026-09-15 — the `gate`
+argument inside `Cell::refuse`, `GATE_LIVE_VENUE` inside `Cell::send`, and
+since §29.2's quoting lane `GATE_QUOTE_BUDGET` inside the withdrawal seam,
+which like `Cell::send` has no `WorkReport` to push a refusal onto and so
+records directly.
+
+The cardinality bound still holds, and the previous sentence here got the
+reason wrong in a way worth naming. It said "a third recording site added at a
+third seam would break the bound silently" — but a third site does not break
+the bound, and one has now landed without breaking it. What bounds the label
+is that **every** site passes a `pub const` or a source-file literal, never a
+runtime string; a constant is as fixed as a literal however many seams use one.
+What a third site breaks is the *enumeration*: `Cell::refuse` was once the
+whole list, then it was two places, and it is now three. So the check is not
+"are there two" but "does every site pass a constant" — count the sites to know
+where to look, and read each one to know the bound still holds. A site passing
+a formatted string would break it at any count, including two.
 
 Each recording site is proven by a test in
 `backend/crates/edge/qip-edge/tests/telemetry.rs` that drives the cell through
