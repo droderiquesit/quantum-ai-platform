@@ -55,6 +55,57 @@ Credentials in the application store only a SHA-256 hash. A test serialises a
 scanner that flags every high-entropy string produces a wall of false
 positives, and a wall of false positives is a scanner people learn to skip.
 
+## What an order-entry adapter can and cannot do
+
+Recorded 2026-09-15, after an independent review of the paper-trading boundary
+read the REST order-entry adapter as a path by which real orders could leave
+the process. It is not one, and the reasoning is written down here because the
+alarming version is the one a reader re-derives: the refusal messages in
+`qip-edge-node`'s `venue.rs` say, correctly and prominently, that nothing in
+the process can tell a venue's sandbox host from its production host. Read on
+its own, that sentence sounds like the boundary rests on an operator typing an
+endpoint twice. It does not.
+
+`QIP_VENUE_ADAPTER=rest` does construct a `RestGateway`, and that gateway does
+hold a credential and a socket. What it cannot do is place an order, and the
+guarantee is in the types rather than in a check:
+
+* `run_pass` in `qip-edge-node/src/pass.rs` takes `gateway: &mut
+  SimulatedGateway` — a concrete type, not a trait object.
+* `Cell::work` has exactly one caller anywhere in `backend/crates/apps/` and
+  `backend/crates/runtime/`, and it is inside `run_pass`. Verify with
+  `grep -rn '\.work(\|place_cycle(' --include='*.rs' backend/crates/apps
+  backend/crates/runtime | grep -v /tests/`, which printed three lines on
+  2026-09-15 — read them, do not count them: only `pass.rs`'s is a `Cell`, and
+  the two in `qip-kernel/src/adaptive_cadence.rs` are `work()` on a cadence
+  plan and are not this method at all. A count here would be the wrong
+  measurement, which is why the check is the receiver and not the number.
+* The pass runs only under `if let (Some(pass_loop), Some(simulated)) =
+  (pass_loop.as_deref_mut(), gateway.simulated_mut())`, and `simulated_mut`
+  answers `None` for the live arm.
+* `FeedChoice` has exactly one variant, `Simulated`, so the feed is either that
+  or absent; and a simulated feed on a non-simulated gateway is refused at
+  start-up, before anything is served.
+
+So the two reachable configurations are: a simulated feed, which refuses to
+come up beside a REST gateway; or no feed, in which case no pass runs and no
+order is ever built. There is no third. `Cell::send`'s own live-class refusal
+sits behind all of this as defence in depth.
+
+Two things follow that are worth stating rather than leaving implied.
+
+**A flat `qip_edge_refusals_total{gate="live_venue"}` is not evidence that the
+live-venue gate has been exercised.** Every `Placer` this workspace can build
+answers `is_simulated() == true`, because `AdapterClass` has only `Simulated`
+and `Sandbox` and `is_paper()` is true for both. The gate fires the moment a
+class exists that answers false, which is why it is there; it has never fired
+outside tests and cannot today. Do not cite a zero counter as a tested control.
+
+**The residual risk is a credential and a socket, not an order.** A node
+misconfigured with a production endpoint holds order-entry credentials it
+should not and connects to a host it should not. That is worth preventing, and
+it is a different and much smaller claim than orders being submitted.
+
 ## Reporting
 
 A vulnerability in this platform should be reported privately to the owning
