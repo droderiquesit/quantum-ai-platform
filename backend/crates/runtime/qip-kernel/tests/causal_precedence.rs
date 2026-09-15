@@ -214,3 +214,94 @@ fn two_independent_instruments_produce_no_causal_edge() -> Result<()> {
     );
     Ok(())
 }
+
+/// The same bars, with the object id the feed carried replaced by a blank one.
+///
+/// `Platform::observe` keys `price_history` on `bar.object_id.as_str()` with no
+/// validation, and `ObjectId::from_string` accepts anything, so this is the
+/// shape a real adapter produces from one malformed vendor row — not a
+/// contrivance that could only be built in a test.
+fn blank_object_id(records: Vec<SensedRecord>) -> Vec<SensedRecord> {
+    records
+        .into_iter()
+        .map(|record| match record {
+            SensedRecord::Bar(mut bar) => {
+                bar.object_id = qip_core::ObjectId::from_string("");
+                SensedRecord::Bar(bar)
+            }
+            other => other,
+        })
+        .collect()
+}
+
+#[test]
+fn a_bar_carrying_no_object_id_has_its_edge_refused_rather_than_stopping_every_order() -> Result<()>
+{
+    // A security review found this end to end, so it is not hypothetical. The
+    // pass writes an edge named by the ids `price_history` is keyed on, and
+    // those ids arrive from a feed over a wire that validates nothing. One
+    // blank id used to produce one edge with a blank cause; from the next
+    // `risk_state()` onwards `qip_risk::SharedCauseExposure::attribute`
+    // refused the blank driver, `qip_kernel::shared_cause` answered by
+    // refusing all three shared-cause levels, and `PreTradeChecker::check`
+    // turned that into a rejection of **every** order — no rate limit, no way
+    // to clear it but repairing the world model, and the cause three stages
+    // from the symptom. Fail-closed in direction and catastrophic in reach.
+    //
+    // The admitting half of this pair is
+    // `a_real_lagged_pair_of_instruments_produces_a_temporal_precedence_edge`
+    // above: it drives the same fixture with named ids and asserts the edge is
+    // written, so this test measures the blank id and not a pass that has
+    // stopped writing anything.
+    let count = 120;
+    let cause_returns = noise(11, count, 0.02);
+    let mut effect_returns = vec![0.0; count];
+    let effect_noise = noise(22, count, 0.004);
+    for t in 1..count {
+        effect_returns[t] = 0.8 * cause_returns[t - 1] + effect_noise[t];
+    }
+
+    let mut platform = platform(&["AAA", "BBB"])?;
+    platform.observe(blank_object_id(bars_from_returns(
+        "AAA",
+        &cause_returns,
+        count,
+    )));
+    platform.observe(bars_from_returns("BBB", &effect_returns, count));
+
+    assert_eq!(
+        platform.world().causal().len(),
+        0,
+        "premise: an empty graph"
+    );
+
+    let report = platform.run_cycle(start());
+    let understood = report
+        .stage(Stage::Understand)
+        .expect("UNDERSTAND always runs");
+
+    // The premise and the finding in one line: the refusal is only reported
+    // when the pass actually offered a malformed edge, so this says the
+    // blank id reached the writer *and* was turned away there.
+    assert!(
+        understood
+            .detail
+            .contains("malformed edge(s) naming no cause or no effect"),
+        "the pass reported no refusal, so either the blank id never reached the writer or it was \
+         admitted: {}",
+        understood.detail
+    );
+
+    // And nothing blank reached the graph, which is what the risk producer
+    // three stages later would have refused every order over.
+    let edges = platform.world().causal().edges().to_vec();
+    let blank: Vec<_> = edges
+        .iter()
+        .filter(|edge| edge.cause.trim().is_empty() || edge.effect.trim().is_empty())
+        .collect();
+    assert!(
+        blank.is_empty(),
+        "an edge with a blank end reached the graph: {blank:?}"
+    );
+    Ok(())
+}

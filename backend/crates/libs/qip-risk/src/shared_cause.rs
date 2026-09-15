@@ -143,11 +143,27 @@ pub fn is_shared_cause_axis(axis: &str) -> bool {
 /// axes on a kind that cannot measure it, rather than a comment asserting
 /// nobody will.
 pub fn measures_an_overlapping_axis(kind: &LimitKind) -> bool {
+    overlapping_axis_measured(kind).is_some()
+}
+
+/// The shared-cause axis `kind` measures against equity, if it measures one.
+///
+/// [`measures_an_overlapping_axis`] is defined in terms of this, so the
+/// predicate and the axis a configuration test collects can never name
+/// different sets of limit kinds. They did, and the gap was a real one rather
+/// than a tidiness: the absence test proving the shipped set caps no family
+/// exposure collected axes from [`LimitKind::MaxAxisWeight`] alone, so a
+/// `MaxBucketExposure` over the family axis would have passed it — and
+/// `MaxBucketExposure` has no early return on an absent axis. It takes its
+/// `unwrap_or(zero)` arm, compares a zero nobody computed against its bound,
+/// and never fires. That is the `MaxExpectedShortfall` defect under a new
+/// name, reachable through the one kind the test could not see.
+pub fn overlapping_axis_measured(kind: &LimitKind) -> Option<&str> {
     match kind {
         LimitKind::MaxAxisWeight { axis, .. } | LimitKind::MaxBucketExposure { axis, .. } => {
-            is_shared_cause_axis(axis)
+            is_shared_cause_axis(axis).then_some(axis.as_str())
         }
-        _ => false,
+        _ => None,
     }
 }
 
@@ -395,6 +411,10 @@ impl SharedCauseExposure {
     /// `MaxExpectedShortfall`: it reads as protection while being unable to
     /// say which producer's number the veto fired on. The refusal blocks,
     /// which is the fail-closed direction.
+    ///
+    /// An axis whose arithmetic leaves the range a notional can carry is
+    /// refused the same way, through [`charge`] — see there for why this is the
+    /// one site in the module that cannot use `Decimal`'s own operators.
     pub fn apply(&self, mut state: RiskState) -> RiskState {
         for axis in SHARED_CAUSE_AXES {
             if let Some(reason) = self.refusals.get(axis) {
@@ -418,19 +438,15 @@ impl SharedCauseExposure {
                 );
                 continue;
             }
-            let mut buckets: BTreeMap<String, Decimal> = BTreeMap::new();
-            for (driver, members) in drivers {
-                let mut charged = Decimal::ZERO;
-                for (instrument, weight) in members {
-                    let Some(notional) = state.position_notionals.get(instrument) else {
-                        continue;
-                    };
-                    charged += notional.abs() * *weight;
-                }
-                if charged.is_positive() {
-                    buckets.insert(driver.clone(), charged);
-                }
-            }
+            let Some(buckets) = charge(drivers, &state.position_notionals) else {
+                state = state.with_unevaluated(
+                    axis,
+                    format!(
+                        "charging the {axis} level against this book left the range a notional                          can carry, so no bucket on it was computed; a weight or a position on                          this level is malformed — repair it at its producer rather than                          trading on a level nobody measured"
+                    ),
+                );
+                continue;
+            };
             state.axis_exposures.insert(axis.to_string(), buckets);
         }
         state
@@ -446,4 +462,40 @@ impl SharedCauseExposure {
              replaced by a second writer is a limit that fires on a number nobody computed"
         )))
     }
+}
+
+/// Charge one axis's drivers against the book, or `None` if the arithmetic left
+/// the range a [`Decimal`] carries.
+///
+/// Checked rather than `*` and `+`, and this is the one site in this module
+/// that needs to be. `Decimal`'s operators come from a macro that panics on
+/// overflow, [`SharedCauseExposure::apply`] returns a `RiskState` rather than a
+/// `Result`, and both operands here come from outside this type — a notional
+/// the book reports and a weight a producer chose, neither bounded above.
+/// `ToleranceBasis::evaluate` and `Wallet::reconcile` already take the checked
+/// form on the same reasoning; this was the one arithmetic site on the order
+/// path that did not, and a panic on the order path is not a refusal.
+///
+/// The caller files the failure under [`RiskState::unevaluated`], which blocks
+/// every order — the same fail-closed direction a producer's own refusal takes,
+/// because a bucket that could not be summed is no more a measurement than a
+/// source that could not be read.
+fn charge(
+    drivers: &BTreeMap<String, BTreeMap<String, Decimal>>,
+    positions: &BTreeMap<String, Decimal>,
+) -> Option<BTreeMap<String, Decimal>> {
+    let mut buckets: BTreeMap<String, Decimal> = BTreeMap::new();
+    for (driver, members) in drivers {
+        let mut charged = Decimal::ZERO;
+        for (instrument, weight) in members {
+            let Some(notional) = positions.get(instrument) else {
+                continue;
+            };
+            charged = charged.checked_add(notional.abs().checked_mul(*weight)?)?;
+        }
+        if charged.is_positive() {
+            buckets.insert(driver.clone(), charged);
+        }
+    }
+    Some(buckets)
 }

@@ -229,6 +229,44 @@ impl CausalEdge {
         }
     }
 
+    /// Refuse an edge that names no cause or no effect.
+    ///
+    /// Called by [`crate::WorldModel::claim_causal`], which is the only
+    /// production path by which an edge reaches a graph — `CausalGraph::add`
+    /// is reached from there and from tests, and `CausalGraph::reestimate`
+    /// never creates an edge, only re-scores one the graph already holds.
+    ///
+    /// The failure this closes is three stages from where it would have been
+    /// read. `qip_risk::SharedCauseExposure::attribute` refuses a blank driver
+    /// — correctly, since a bucket under an empty name is a counter nobody
+    /// chose — and `qip_kernel::shared_cause`'s producer answers any such
+    /// refusal by refusing **every** shared-cause level, which
+    /// `PreTradeChecker::check` turns into a rejection of every order the
+    /// platform sends. So one empty symbol reaching `price_history`, one
+    /// `discover_temporal_precedence` pass, and one edge claimed with no
+    /// cause was a whole-platform stop with no rate limit, clearable only by
+    /// repairing the world model, and with a symptom that named none of that.
+    /// Fail-closed was the right direction and the wrong distance: the edge is
+    /// refused where it is written instead, which is the one place the caller
+    /// still knows what it was reading.
+    ///
+    /// Refused rather than dropped: a claim silently discarded leaves the
+    /// caller believing the graph holds a link it does not.
+    pub fn validate(&self) -> Result<()> {
+        if self.cause.trim().is_empty() || self.effect.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "a causal edge must name both the cause it runs from and the effect it runs to, \
+                 and this one names {:?} -> {:?} via {}; an unnamed end is a subject nobody can \
+                 look up and a bucket nobody can read, so fix the identifier at the source that \
+                 produced it rather than claiming the edge",
+                self.cause,
+                self.effect,
+                self.mechanism.as_str()
+            )));
+        }
+        Ok(())
+    }
+
     pub fn with_confidence(mut self, confidence: f64) -> Self {
         self.confidence = confidence.clamp(0.0, 1.0);
         self

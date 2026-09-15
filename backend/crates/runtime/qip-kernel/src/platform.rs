@@ -7517,8 +7517,17 @@ impl Platform {
         let precedence_detail = if precedence.tested == 0 {
             String::new()
         } else {
+            let refused = if precedence.refused == 0 {
+                String::new()
+            } else {
+                format!(
+                    ", refused {} malformed edge(s) naming no cause or no effect",
+                    precedence.refused
+                )
+            };
             format!(
-                "; temporal-precedence pass tested {} instrument pair(s), wrote {} causal edge(s)",
+                "; temporal-precedence pass tested {} instrument pair(s), wrote {} causal \
+                 edge(s){refused}",
                 precedence.tested, precedence.written
             )
         };
@@ -7609,8 +7618,20 @@ impl Platform {
                     bar_interval,
                     now,
                 ) {
-                    self.world.update(|world| world.claim_causal(edge));
-                    report.written += 1;
+                    // `claim_causal` refuses an edge naming no cause or no
+                    // effect, and the refusal is counted rather than
+                    // discarded. One such edge used to be admitted here and
+                    // read three stages later, where `qip_risk`'s
+                    // shared-cause producer refuses a blank driver and
+                    // `qip_kernel::shared_cause` answers that by refusing
+                    // every level — a rejection of every order the platform
+                    // sends, from one malformed symbol in the price history,
+                    // with no rate limit and nothing near the symptom naming
+                    // the cause.
+                    match self.world.update(|world| world.claim_causal(edge)) {
+                        Ok(()) => report.written += 1,
+                        Err(_) => report.refused += 1,
+                    }
                 }
             }
         }
@@ -9604,6 +9625,13 @@ impl Platform {
 struct TemporalPrecedenceReport {
     tested: usize,
     written: usize,
+    /// Edges the world model refused — one naming no cause or no effect.
+    ///
+    /// Counted rather than dropped, and reported in the stage detail when it
+    /// is non-zero, because the alternative is the shape this platform keeps
+    /// finding: a pass that wrote nothing and a pass whose every write was
+    /// refused read as the same silence.
+    refused: usize,
 }
 
 /// What one capacity probe against the book's most-observed instrument found,
@@ -15142,19 +15170,22 @@ mod decide_tests {
         let held = hold_equal_positions(&mut platform, 8, Decimal::from_int(700_000));
         let driver = "policy-rate-shock";
         for instrument in &held {
-            platform.world.update(|world| {
-                world.claim_causal(
-                    qip_world_model::causal::CausalEdge::new(
-                        driver,
-                        instrument,
-                        qip_world_model::causal::Mechanism::DiscountRate,
-                        1.0,
-                        Duration::from_days(1),
-                        Timestamp::from_secs(1_760_000_000),
+            platform
+                .world
+                .update(|world| {
+                    world.claim_causal(
+                        qip_world_model::causal::CausalEdge::new(
+                            driver,
+                            instrument,
+                            qip_world_model::causal::Mechanism::DiscountRate,
+                            1.0,
+                            Duration::from_days(1),
+                            Timestamp::from_secs(1_760_000_000),
+                        )
+                        .with_confidence(1.0),
                     )
-                    .with_confidence(1.0),
-                )
-            });
+                })
+                .expect("an edge naming both ends is admitted");
         }
 
         let state = platform.risk_state();
@@ -17232,7 +17263,8 @@ mod central_sizing_tests {
         let fresh = platform();
         fresh
             .world
-            .update(|world| world.claim_causal(claim(now.saturating_sub(Duration::from_days(1)))));
+            .update(|world| world.claim_causal(claim(now.saturating_sub(Duration::from_days(1)))))
+            .expect("an edge naming both ends is admitted");
         let fresh_state = fresh.central_degradation(now).expect("the table reads");
         assert_eq!(
             fresh_state.freshness(Capability::CausalGraph),
@@ -17242,7 +17274,9 @@ mod central_sizing_tests {
 
         let stale = platform();
         stale.world.update(|world| {
-            world.claim_causal(claim(now.saturating_sub(Duration::from_days(365))));
+            world
+                .claim_causal(claim(now.saturating_sub(Duration::from_days(365))))
+                .expect("an edge naming both ends is admitted");
         });
         let stale_state = stale.central_degradation(now).expect("the table reads");
         assert_eq!(

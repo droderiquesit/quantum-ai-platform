@@ -246,7 +246,14 @@ impl WorldModel {
     /// strength its evidence measured, and re-estimating it against itself
     /// would compute the number it already holds while marking every *other*
     /// link decayed on the strength of one unrelated claim.
-    pub fn claim_causal(&mut self, edge: CausalEdge) {
+    /// Refuses an edge naming no cause or no effect, before anything is
+    /// written — not the journal entry, not the supporting claim, not the edge
+    /// — so a refused claim leaves the model exactly as it was. See
+    /// [`CausalEdge::validate`] for the whole-platform order stop a blank end
+    /// caused three stages downstream, and why refusing here rather than
+    /// absorbing it is the smaller failure.
+    pub fn claim_causal(&mut self, edge: CausalEdge) -> Result<()> {
+        edge.validate()?;
         let description = format!(
             "{} affects {} via {}",
             edge.cause,
@@ -274,6 +281,7 @@ impl WorldModel {
             materiality,
             at,
         ));
+        Ok(())
     }
 
     /// Absorb evidence about a causal link, and re-estimate the causal graph
@@ -973,7 +981,7 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
         )
         .with_confidence(0.75)
         .with_evidence(vec!["filing:vantage-10k-supplier-concentration".into()]),
-    );
+    )?;
     model.claim_causal(
         CausalEdge::new(
             "ent-kestrel",
@@ -985,7 +993,7 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
         )
         .with_confidence(0.65)
         .with_evidence(vec!["filing:northwind-10k-input-costs".into()]),
-    );
+    )?;
     model.claim_causal(
         CausalEdge::new(
             "ent-northwind",
@@ -997,7 +1005,7 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
         )
         .with_confidence(0.45)
         .with_evidence(vec!["research:sector-substitution-note".into()]),
-    );
+    )?;
     model.claim_causal(
         CausalEdge::new(
             "US.CPI.YOY",
@@ -1009,7 +1017,7 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
         )
         .with_confidence(0.8)
         .with_evidence(vec!["research:bank-rate-sensitivity".into()]),
-    );
+    )?;
 
     Ok(())
 }
