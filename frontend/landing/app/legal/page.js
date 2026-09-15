@@ -1,5 +1,6 @@
 import Link from "next/link"
 import Layout from "@/components/layout/Layout"
+import { Claim } from "@/components/elements/Claim"
 import { Card, CardGrid, PostureNote, SectionTitle } from "@/components/sections/Blocks"
 
 export const metadata = {
@@ -22,7 +23,7 @@ export default function LegalIndex() {
         <div className="boxed_wrapper">
             <Layout
                 breadcrumbTitle="Legal & disclosures"
-                breadcrumbLede="Three documents. All three are drafts that have not been reviewed by counsel, and each says so at the top of itself."
+                breadcrumbLede={<Claim status="architecture">Three documents. All three are drafts that have not been reviewed by counsel, and each says so at the top of itself.</Claim>}
             >
                 <section className="about-section pt_100 pb_100">
                     <div className="auto-container">

@@ -1,6 +1,7 @@
 import Layout from "@/components/layout/Layout"
 import { Card, CardGrid, CtaBand, Figure, SectionTitle } from "@/components/sections/Blocks"
 import { CellsDiagram } from "@/components/art/Diagrams"
+import { Claim } from "@/components/elements/Claim"
 import Funfact from "@/components/sections/home1/Funfact"
 
 export const metadata = {
@@ -69,7 +70,16 @@ export default function InstitutionalPage() {
                             lede="Limits that cannot fire are not controls. Algorik's fire before an order object exists."
                         />
                         <div className="algorik-split">
-                            <Figure caption="Seven regional cells. A cell that loses contact with the centre keeps working inside its envelope — and only inside it.">
+                            {/* This read "Seven regional cells." flat, which on a public page is a
+                                claim that seven cells exist. They do not: ADR 0035 calls seven "the
+                                blueprint's target and premature", ADR 0008 calls it the steady state,
+                                and `execution_nodes = {}` in every environment, so none is deployed.
+                                The figure is a plan, it is labelled as one, and the label is visible
+                                rather than hidden in an attribute — a target that reads as an
+                                inventory is the exact over-claim §40.6 exists to stop. */}
+                            <Figure caption={<><Claim status="target">Seven regional cells</Claim> is the topology
+                                Algorik is built for; none is deployed today. A cell that loses contact with the
+                                centre keeps working inside its envelope — and only inside it.</>}>
                                 <CellsDiagram />
                             </Figure>
                             <CardGrid columns={1}>

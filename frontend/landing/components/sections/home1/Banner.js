@@ -2,6 +2,7 @@
 import { Autoplay, Navigation, Pagination } from "swiper/modules"
 import { Swiper, SwiperSlide } from "swiper/react"
 import { HeroBaseline, HeroBoundary, HeroLoop } from "@/components/art/Hero"
+import { Claim } from "@/components/elements/Claim"
 import { SIGN_UP } from "@/lib/site"
 
 const swiperOptions = {
@@ -30,7 +31,10 @@ const SLIDES = [
     {
         key: "loop",
         gradient: "linear-gradient(120deg, #050709 30%, #101433 75%, rgba(99,102,241,0.35) 130%)",
-        title: "An eight-stage loop you can audit.",
+        // The stage count is a property of the kernel's own `Stage` enum, not
+        // an observation of anything running, and the first line a visitor
+        // reads is the worst place for that distinction to be implicit.
+        title: <><Claim status="architecture">An eight-stage loop</Claim> you can audit.</>,
         body: "Sense, understand, discover, reason, simulate, decide, act, learn — each stage writes to a hash-chained record, so “why” always has an answer.",
         Art: HeroLoop,
     },

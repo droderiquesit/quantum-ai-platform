@@ -97,7 +97,10 @@ export const FOOTER_COLUMNS = [
             { label: "Paper-trading boundary", href: "/security#boundary" },
             { label: "Hash-chained audit log", href: "/security#audit" },
             { label: "A classical baseline", href: "/technology#quantum" },
-            { label: "The eight-stage loop", href: "/platform#loop" },
+            // A label that states a quantity is a claim on every page the
+            // footer renders on, so it declares its status here and the footer
+            // renders it through `Claim` (§40.6).
+            { label: "The eight-stage loop", href: "/platform#loop", claim: "architecture" },
         ],
     },
 ]

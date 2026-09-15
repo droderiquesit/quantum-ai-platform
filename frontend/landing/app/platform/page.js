@@ -1,6 +1,7 @@
 import Layout from "@/components/layout/Layout"
 import { Card, CardGrid, CtaBand, Figure, NumberedList, PostureNote, SectionTitle } from "@/components/sections/Blocks"
 import { FunnelDiagram, LoopDiagram } from "@/components/art/Diagrams"
+import { Claim } from "@/components/elements/Claim"
 import Trading from "@/components/sections/home1/Trading"
 
 export const metadata = {
@@ -37,7 +38,7 @@ export default function PlatformPage() {
                     <div className="auto-container">
                         <SectionTitle
                             eyebrow="The loop"
-                            title="Eight stages, every cycle"
+                            title={<Claim status="architecture">Eight stages, every cycle</Claim>}
                             lede="Each stage reports what it produced and why — a cycle that traded and a cycle where nothing cleared the bar are equally legible afterwards."
                         />
                         <div className="algorik-split pb_60">
@@ -57,7 +58,7 @@ export default function PlatformPage() {
                         <SectionTitle
                             eyebrow="Capabilities"
                             title="What is served today"
-                            lede="Six areas make up the working surface. Each card names its real status: served over the API now, or in research."
+                            lede={<><Claim status="architecture">Six areas</Claim> make up the working surface. Each card names its real status: served over the API now, or in research.</>}
                         />
                         <CardGrid columns={2}>
                             <Card title="Opportunities" meta="served today">
@@ -92,8 +93,9 @@ export default function PlatformPage() {
                             </Card>
                             <Card title="Data & telemetry" meta="partly in research">
                                 <p>Data sources are catalogued with their licensing posture — evaluated before a
-                                    source is used, not after — and five server-sent event streams carry market,
-                                    signal, order, position and health updates to the console.</p>
+                                    source is used, not after — and <Claim status="architecture">five server-sent
+                                    event streams</Claim> carry market, signal, order, position and health updates
+                                    to the console.</p>
                                 <p>Per-source health and provenance fields, and platform-wide metrics
                                     instrumentation, are in research. Algorik does not describe itself as fully
                                     observable until they ship.</p>

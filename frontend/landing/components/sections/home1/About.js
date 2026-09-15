@@ -1,6 +1,7 @@
 'use client'
 import { useState } from "react"
 import { LoopDiagram } from "@/components/art/Diagrams"
+import { Claim } from "@/components/elements/Claim"
 
 /**
  * What Algorik is.
@@ -13,7 +14,7 @@ import { LoopDiagram } from "@/components/art/Diagrams"
 const ITEMS = [
     ["Who we are", "A research desk’s decision loop: market sensing, an agent panel that argues before it acts, and execution against simulators only. Paper trading is the product, not a phase."],
     ["What we do", "Each cycle detects opportunities, sizes them under hard limits checked before an order exists, executes on paper, and scores its own reasoning afterwards."],
-    ["How it works", "An eight-stage loop writes every step to a hash-chained event log. If a number is on a screen, the platform can show where it came from."],
+    ["How it works", <><Claim status="architecture">An eight-stage loop</Claim> writes every step to a hash-chained event log. If a number is on a screen, the platform can show where it came from.</>],
 ]
 
 export default function About() {
@@ -56,7 +57,8 @@ export default function About() {
                     <figure className="algorik-figure">
                         <LoopDiagram />
                         <figcaption>
-                            One cycle, eight stages. Every stage reports what it produced and what it refused.
+                            One cycle, <Claim status="architecture">eight stages</Claim>. Every stage reports what it
+                            produced and what it refused.
                         </figcaption>
                     </figure>
                 </div>

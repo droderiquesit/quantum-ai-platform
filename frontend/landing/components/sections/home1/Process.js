@@ -1,4 +1,5 @@
 import { ChainDiagram } from "@/components/art/Diagrams"
+import { Claim, Numeral } from "@/components/elements/Claim"
 
 /**
  * How it works. The template put `process-1.jpg` in the right-hand column —
@@ -6,7 +7,9 @@ import { ChainDiagram } from "@/components/art/Diagrams"
  * step is the claim the picture should be making.
  */
 const STEPS = [
-    ["Create your account", "Sign up and land in a simulated desk — the full platform with zero capital at risk."],
+    // "Zero capital at risk" is a consequence of the paper-trading boundary
+    // being structural, not a figure from an account anyone holds.
+    ["Create your account", <>Sign up and land in a simulated desk — the full platform with <Claim status="architecture">zero capital at risk</Claim>.</>],
     ["Watch the loop reason", "Opportunities, agent debate, risk refusals and paper executions stream to your dashboard as they happen."],
     ["Audit every decision", "Trace any outcome back through the hash-chained log to the evidence it stood on."],
 ]
@@ -27,7 +30,7 @@ export default function Process() {
                                     <div key={title} className="process-block-one">
                                         <div className="inner-box">
                                             <div className="shape" style={{ backgroundImage: "url(/assets/images/shape/shape-3.png)" }}></div>
-                                            <span className="count-text">{index + 1}</span>
+                                            <Numeral kind="ordinal" className="count-text">{index + 1}</Numeral>
                                             <h3>{title}</h3>
                                             <p>{body}</p>
                                         </div>

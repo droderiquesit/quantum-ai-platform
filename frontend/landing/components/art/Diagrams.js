@@ -6,7 +6,16 @@
  * so the illustrated claims on this site are drawn here — as SVG, in the
  * repository, with no dependency and nothing a reader could mistake for
  * market data.
+ *
+ * The numerals these drawings do carry are positions in a sequence — the stage
+ * a circle stands for, the layer a bar is — so they are wrapped in `Numeral`,
+ * which says in the markup that they count nothing. The claim a diagram makes
+ * is in its caption and in its `aria-label`, and both are annotated: the
+ * caption by `Claim` where the page renders it, the label by
+ * `DECLARED_ATTRIBUTE_CLAIMS`, because a flat string has no element to hang an
+ * attribute on.
  */
+import { Numeral } from "@/components/elements/Claim"
 
 const GREEN = "#10b981"
 const INK = "#131615"
@@ -46,8 +55,10 @@ export function LoopDiagram() {
                 return (
                     <g key={name}>
                         <circle cx={x} cy={y} r="17" fill={i === 6 ? GREEN : "#ffffff"} stroke={i === 6 ? GREEN : INK} strokeWidth="2.5" />
-                        <text x={x} y={y + 5} textAnchor="middle" fontSize="13" fontWeight="700"
-                            fill={i === 6 ? "#ffffff" : INK}>{i + 1}</text>
+                        <Numeral kind="ordinal" svg>
+                            <text x={x} y={y + 5} textAnchor="middle" fontSize="13" fontWeight="700"
+                                fill={i === 6 ? "#ffffff" : INK}>{i + 1}</text>
+                        </Numeral>
                         <text x={labelX} y={labelY + 4} textAnchor={anchor} fontSize="14" fontWeight="600" fill={INK}>{name}</text>
                     </g>
                 )
@@ -77,7 +88,9 @@ export function BoundaryDiagram() {
                         <line x1="122" y1={y - 26} x2="122" y2={y} stroke={INK} strokeWidth="2" />
                         <rect x="28" y={y} width="584" height="62" rx="12" fill="#ffffff" stroke={LINE} strokeWidth="2" />
                         <rect x="28" y={y} width="6" height="62" rx="3" fill={GREEN} />
-                        <text x="52" y={y + 26} fontSize="15" fontWeight="700" fill={INK}>{i + 1}. {title}</text>
+                        <Numeral kind="ordinal" svg>
+                            <text x="52" y={y + 26} fontSize="15" fontWeight="700" fill={INK}>{i + 1}. {title}</text>
+                        </Numeral>
                         <text x="52" y={y + 46} fontSize="13" fill="#5d6b65">{sub}</text>
                         <g transform={`translate(556 ${y + 31})`}>
                             <circle r="17" fill={GREEN} />
@@ -254,7 +267,7 @@ export function CellsDiagram() {
         [110, 120], [230, 78], [350, 96], [470, 74], [540, 158], [400, 190], [180, 208],
     ]
     return (
-        <Canvas label="Seven regional cells, each trading inside its own capital envelope" h={280}>
+        <Canvas label="Seven regional cells is the target topology, each trading inside its own capital envelope; none is deployed" h={280}>
             <rect x="0" y="0" width="640" height="280" rx="18" fill={PAPER} />
             {cells.map(([x, y], i) => (
                 <g key={i}>

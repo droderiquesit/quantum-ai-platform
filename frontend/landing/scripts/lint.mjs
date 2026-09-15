@@ -15,6 +15,14 @@
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import {
+    CLAIM_ATTRIBUTE,
+    CLAIM_STATUS_NAMES,
+    DECLARED_ATTRIBUTE_CLAIMS,
+    NUMERAL_ATTRIBUTE,
+    NUMERAL_KIND_NAMES,
+    isQuantitative,
+} from "../lib/claims.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const SOURCE_DIRS = ["app", "components", "lib"];
@@ -133,6 +141,113 @@ for (const file of sources) {
         if (target.startsWith("/assets/")) continue;
         if (routes.has(target) || REDIRECTED.has(target)) continue;
         fail(file, lineOf(match.index), `links to ${target}, which is not a route`);
+    }
+}
+
+// --- §40.6: quantitative statements carry a status -------------------------
+//
+// The DOM sweep in `tests/claims.spec.mjs` is the enforcement for anything a
+// reader sees rendered. Two things it structurally cannot see are checked here
+// instead, and they are the two places an over-claim could otherwise hide.
+
+{
+    // 1. The annotation must come from the component that validates it.
+    //
+    // `Claim` throws on a status outside the four, and `Numeral` on a kind
+    // outside its own — that refusal is the whole reason the attribute means
+    // anything. Writing `data-claim-status="measured"` by hand on a div would
+    // put a status in the DOM that nothing checked and satisfy the sweep,
+    // which reads the attribute and does not care who wrote it.
+    // The component that writes the attribute and the module that names it are
+    // the two files allowed to spell it; everywhere else it must arrive
+    // through the component.
+    const allowed = new Set([join(ROOT, "components/elements/Claim.js"), join(ROOT, "lib/claims.mjs")]);
+    for (const file of sources) {
+        if (allowed.has(file)) continue;
+        const text = readFileSync(file, "utf8");
+        const lineOf = (index) => text.slice(0, index).split("\n").length;
+        for (const match of text.matchAll(new RegExp(`${CLAIM_ATTRIBUTE}|${NUMERAL_ATTRIBUTE}`, "g"))) {
+            fail(file, lineOf(match.index),
+                `writes ${match[0]} directly — a status must come from <Claim> or <Numeral>, which refuse an unknown one`);
+        }
+    }
+}
+
+{
+    // 2. A quantity in an attribute must be declared, and every declaration
+    //    must still be in the source.
+    //
+    // A search-result snippet and the alternative text a blind reader hears
+    // are public statements, and several of them carry numbers. Neither has an
+    // element the sweep could read an attribute off, so the status is declared
+    // in `lib/claims.mjs` and held to the source here — in both directions,
+    // because one direction alone rots. Without the first, a new undeclared
+    // claim ships; without the second, the list fills with statements the site
+    // no longer makes and a reviewer reads a register of fiction.
+    const declared = new Map(DECLARED_ATTRIBUTE_CLAIMS.map(([status, text]) => [text, status]));
+    const seen = new Set();
+    // Two shapes, kept apart on purpose. A JSX *attribute* (`label="…"`,
+    // `aria-label="…"`, `alt="…"`) never becomes a text node, so the sweep can
+    // never see it. An object *property* (`label: "…"`) usually does become
+    // one — `lib/site.js`'s navigation labels are rendered copy and are
+    // annotated where they render — so matching `label:` here would demand a
+    // second, unrenderable declaration for a string the sweep already holds.
+    // `description:` is the exception and is matched: Next's metadata never
+    // reaches the document body.
+    const ATTRIBUTE_TEXT = [
+        /(?:aria-label|label|alt)\s*=\s*"((?:[^"\\]|\\.)*)"/g,
+        /\bdescription\s*:\s*"((?:[^"\\]|\\.)*)"/g,
+    ];
+    for (const file of sources) {
+        const text = readFileSync(file, "utf8");
+        const lineOf = (index) => text.slice(0, index).split("\n").length;
+        for (const match of ATTRIBUTE_TEXT.flatMap((pattern) => [...text.matchAll(pattern)])) {
+            const value = match[1];
+            if (!isQuantitative(value)) continue;
+            const status = declared.get(value);
+            if (!status) {
+                fail(file, lineOf(match.index),
+                    `states a quantity in an attribute that DECLARED_ATTRIBUTE_CLAIMS does not declare: ${JSON.stringify(value)}`);
+                continue;
+            }
+            if (!CLAIM_STATUS_NAMES.includes(status)) {
+                fail(file, lineOf(match.index), `is declared with an unknown status: ${JSON.stringify(status)}`);
+            }
+            seen.add(value);
+        }
+    }
+    for (const [text] of declared) {
+        if (!seen.has(text)) {
+            fail(join(ROOT, "lib/claims.mjs"), null,
+                `DECLARED_ATTRIBUTE_CLAIMS declares a statement no source file makes: ${JSON.stringify(text)}`);
+        }
+    }
+}
+
+{
+    // 3. Nothing may be declared "measured".
+    //
+    // Nothing on this platform is deployed — `execution_nodes = {}` in every
+    // environment, and no process has been shown to be scraped — so there is
+    // no production observation for a public figure to be. The sweep holds the
+    // same line for rendered copy; this holds it for the declarations, which
+    // the sweep cannot reach. When a deployment does produce a figure, both
+    // gates have to be changed deliberately, in front of a reviewer.
+    for (const [status, text] of DECLARED_ATTRIBUTE_CLAIMS) {
+        if (status === "measured") {
+            fail(join(ROOT, "lib/claims.mjs"), null,
+                `declares a measured figure while nothing is deployed: ${JSON.stringify(text)}`);
+        }
+    }
+    // The statuses and kinds are enumerations; a typo in either file would
+    // otherwise be a silently unlabelled claim.
+    for (const [status] of DECLARED_ATTRIBUTE_CLAIMS) {
+        if (!CLAIM_STATUS_NAMES.includes(status)) {
+            fail(join(ROOT, "lib/claims.mjs"), null, `unknown claim status: ${JSON.stringify(status)}`);
+        }
+    }
+    if (CLAIM_STATUS_NAMES.length === 0 || NUMERAL_KIND_NAMES.length === 0) {
+        fail(join(ROOT, "lib/claims.mjs"), null, "the status vocabulary is empty — every annotation would be unchecked");
     }
 }
 
