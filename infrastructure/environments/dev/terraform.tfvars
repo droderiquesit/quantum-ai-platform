@@ -184,6 +184,12 @@ gitops_master_ipv4_cidr_block = "10.0.36.0/28"
 #     region_allocation = "<the ceiling a person chose>"
 #     default_pricing    = ""
 #     strategy_plan_path = ""
+#     # §31.1. Empty is every venue in the node's own region, which is the only
+#     # state any node has run in. A path here declares which venues are abroad
+#     # and the band this region mirrors each instrument under; it cannot widen
+#     # what the node trades, and the binary refuses at start-up a declaration
+#     # naming a venue outside `venues` above.
+#     cross_region_mirror_path = ""
 #   }
 # }
 #

@@ -295,6 +295,13 @@ variable "execution_nodes" {
     # module validates both.
     default_pricing    = optional(string, "")
     strategy_plan_path = optional(string, "")
+    # Which of this node's venues are abroad, and under what discipline this
+    # region mirrors each instrument (§31.1). Empty is every venue at home,
+    # which is what every node has run as and what a node naming no file runs
+    # as. It can never widen what the node trades: `venues` above is the only
+    # list that decides that, and the binary refuses a declaration naming a
+    # venue outside it rather than adding one.
+    cross_region_mirror_path = optional(string, "")
   }))
 
   default = {}

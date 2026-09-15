@@ -52,6 +52,7 @@ use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy, WorkReport};
 use qip_edge::telemetry::CellMetrics;
 use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::arbitrage::{ArbitrageInstaller, STRATEGY_VARIABLE};
+use qip_edge_node::cross_region::{CrossRegionMirror, MIRROR_VARIABLE, no_declaration_line};
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SIMULATED_FEED, SimulatedFeed};
 use qip_edge_node::gateway::NodeGateway;
 use qip_edge_node::halt::{FLAG_VARIABLE, HaltFlag};
@@ -160,6 +161,11 @@ struct NodeConfig {
     /// consults is a control that reads as one — see
     /// `qip_edge_node::reprice`.
     reprice: Option<RepricePolicy>,
+    /// Which of this node's venues are abroad and under what discipline this
+    /// region mirrors each instrument (§31.1). `None` is a cell all of whose
+    /// venues are at home — every node deployed so far — and is announced at
+    /// start-up rather than assumed; see `qip_edge_node::cross_region`.
+    mirror: Option<CrossRegionMirror>,
 }
 
 impl NodeConfig {
@@ -250,6 +256,16 @@ impl NodeConfig {
             _ => None,
         };
         let reprice = parse_reprice(std::env::var(REPRICE_VARIABLE).ok().as_deref())?;
+        // Read against the venue list and the region above, because both
+        // refusals it carries need them: a venue placed abroad that this cell
+        // may not trade, and a region that is the cell's own. Read here rather
+        // than after the store is opened, so a declaration nobody can satisfy
+        // stops the process before anything is bound.
+        let mirror = CrossRegionMirror::read(
+            std::env::var(MIRROR_VARIABLE).ok().as_deref(),
+            &region,
+            &venues,
+        )?;
         if reprice.is_some() && feed.is_none() {
             return Err(Error::invalid(format!(
                 "configuration: {REPRICE_VARIABLE} is set and {FEED_VARIABLE} is not; a node \
@@ -274,6 +290,7 @@ impl NodeConfig {
             pricing,
             plan_path,
             reprice,
+            mirror,
         })
     }
 }
@@ -344,7 +361,16 @@ fn run() -> Result<()> {
         features,
         Arc::clone(&clock),
         config.region_allocation,
+        config.mirror.clone(),
     )?;
+    // Said before the venue banner, because which venues are abroad changes
+    // what the venue line below means: two venues in one region compose a
+    // transport edge and two across a boundary compose a mirror edge, and an
+    // operator reading only the venue list cannot tell which this node builds.
+    match &config.mirror {
+        Some(mirror) => println!("{}", mirror.banner_line()),
+        None => println!("{}", no_declaration_line(&config.region)),
+    }
     let metrics: &Arc<Metrics> = &telemetry.metrics;
 
     // The venue seam, and the one decision in this binary that is not

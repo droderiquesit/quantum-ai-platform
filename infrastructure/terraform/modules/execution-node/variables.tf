@@ -687,6 +687,46 @@ variable "strategy_plan_path" {
   }
 }
 
+variable "cross_region_mirror_path" {
+  description = <<-EOT
+    The file the node reads its §31.1 cross-region mirror declaration from,
+    written into `node.env` as `QIP_CROSS_REGION_MIRROR_PATH`.
+
+    Empty is the default and the same as unset: every venue this node trades
+    sits in the node's own region, every hop composes a transport edge, and a
+    cycle crossing a region boundary would be refused whole. That is the state
+    every node has run in. Written even when empty, for the reason
+    `default_pricing` gives.
+
+    Set, the file names which of the node's venues are abroad, the measured
+    round trip to each region it names, and the inventory band and dislocation
+    threshold this region mirrors each instrument under. The binary refuses it
+    at start-up — before a port is bound — if it places a venue the node may
+    not trade, places one in the node's own region, places a venue in a region
+    it measures no round trip to, or measures a round trip to a region holding
+    no venue. It can never widen what the node reaches: `venues` is the only
+    list that decides that.
+  EOT
+
+  type    = string
+  default = ""
+
+  validation {
+    # Same heredoc-injection reasoning as `strategy_plan_path`: the value is
+    # interpolated unquoted into node.env, so a newline writes a second
+    # variable nobody reviewed and a `$(...)` or a backtick is expanded as root
+    # at boot. A character class, not just a prefix.
+    condition     = var.cross_region_mirror_path == "" || can(regex("^/[A-Za-z0-9._/-]*$", var.cross_region_mirror_path))
+    error_message = <<-EOT
+      cross_region_mirror_path must be absolute and may contain only letters,
+      digits, dot, underscore, dash and slash. The node's working directory is
+      systemd's, so a relative path resolves somewhere nobody chose; and the
+      value is written verbatim into node.env by an unquoted heredoc, so a
+      newline or a command substitution in it is an injection, not a path.
+    EOT
+  }
+}
+
 variable "region_allocation" {
   description = <<-EOT
     The ceiling on the capital this node may hold in reservation across all

@@ -655,6 +655,11 @@ module "execution_node" {
   default_pricing    = each.value.default_pricing
   strategy_plan_path = each.value.strategy_plan_path
 
+  # §31.1, per node for the same reason: which of a cell's venues are abroad is
+  # a property of where that cell sits, not of the environment. Empty is every
+  # venue at home, which is what every node has run as.
+  cross_region_mirror_path = each.value.cross_region_mirror_path
+
   # Per node and never defaulted; see the variable's own description.
   region_allocation = each.value.region_allocation
 

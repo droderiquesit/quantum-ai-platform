@@ -162,7 +162,7 @@ fn unfunded_node_with_feed(
     // Far above the one strategy's grant, so the pass loop is what decides;
     // the region bound has its own suite in `allocation.rs`.
     let allocation = RegionCapital::read(Some("1000000000"))?;
-    let mut node = assemble(config, features, Arc::new(SystemClock), allocation)?;
+    let mut node = assemble(config, features, Arc::new(SystemClock), allocation, None)?;
     let gateway = SimulatedGateway::new(venue(), 7, t(0))?;
     let feed = SimulatedFeed::new(venue());
     feed.attach(&mut node.cell)?;
@@ -1236,7 +1236,7 @@ fn unfunded_node_for(
     let config = CellConfig::new(cell, REGION).with_venue(venue());
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
     let allocation = RegionCapital::read(Some("1000000000"))?;
-    let mut node = assemble(config, features, Arc::new(SystemClock), allocation)?;
+    let mut node = assemble(config, features, Arc::new(SystemClock), allocation, None)?;
     let mut gateway = SimulatedGateway::new(venue(), 7, t(0))?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;

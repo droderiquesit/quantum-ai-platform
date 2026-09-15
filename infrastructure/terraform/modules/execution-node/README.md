@@ -178,6 +178,9 @@ execution_nodes = {
     region_allocation  = "250000"
     default_pricing    = ""
     strategy_plan_path = ""
+    # §31.1: which of this node's venues are abroad and the band this region
+    # mirrors each instrument under. Empty is every venue at home.
+    cross_region_mirror_path = ""
   }
 }
 ```

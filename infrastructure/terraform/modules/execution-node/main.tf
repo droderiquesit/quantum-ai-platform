@@ -402,6 +402,7 @@ resource "google_compute_instance_template" "node" {
       shadow_mode                = var.shadow_mode
       default_pricing            = var.default_pricing
       strategy_plan_path         = var.strategy_plan_path
+      cross_region_mirror_path   = var.cross_region_mirror_path
       region_allocation          = var.region_allocation
       isolated_cpus              = local.isolated_cpus
       required_hugepages_gb      = var.required_hugepages_gb
