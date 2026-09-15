@@ -955,3 +955,54 @@ fn a_breach_that_outlives_the_grace_period_halts_before_the_third_reading() -> R
     }
     Ok(())
 }
+
+// --- the shared-cause levels on the order path ------------------------------
+
+#[test]
+fn an_order_is_refused_while_a_shared_cause_level_cannot_be_read() -> Result<()> {
+    // §25.3's per-factor and per-causal-driver levels reach this check the
+    // same way the liquidity ladder does: through `RiskState::unevaluated`.
+    // The failure this prevents is the one the ladder already caused once —
+    // a level that could not be read leaves its axis absent,
+    // `LimitKind::MaxAxisWeight` takes its early-return arm on an absent axis
+    // and records nothing, and the order arrives here indistinguishable from
+    // one every control cleared.
+    let checker = PreTradeChecker::new(LimitSet::conservative_default());
+    let clean = RiskState {
+        equity: Decimal::from_int(10_000_000),
+        cash: Decimal::from_int(10_000_000),
+        liquidatable_within: BTreeMap::from([("5".to_string(), 1.0)]),
+        ..RiskState::default()
+    };
+    let order = order("AAA", "10", "100");
+
+    // The premise, before the conclusion: this order passes on a book whose
+    // levels were all read. Without it the assertion below would pass on a
+    // checker that refuses everything.
+    let admitted = checker.check(&order, &clean, now())?;
+    assert_eq!(
+        admitted.decision,
+        PreTradeDecision::Approved,
+        "the order is refused even with every level read, so the refusal below proves nothing"
+    );
+
+    let unread = clean.clone().with_unevaluated(
+        qip_risk::shared_cause::CAUSAL_DRIVER_AXIS,
+        "the causal graph could not be read",
+    );
+    let refused = checker.check(&order, &unread, now())?;
+    let PreTradeDecision::Rejected { reasons } = &refused.decision else {
+        panic!(
+            "an order was admitted against a book whose shared-cause level could not be \
+             read: {}",
+            refused.decision.describe()
+        );
+    };
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.starts_with("causal_driver could not be evaluated")),
+        "the refusal does not name the level that could not be read: {reasons:?}"
+    );
+    Ok(())
+}

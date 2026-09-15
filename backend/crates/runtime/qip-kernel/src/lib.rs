@@ -49,6 +49,7 @@ pub mod quote_loop;
 pub mod references;
 pub mod regime_allocation;
 pub mod rule_review;
+pub mod shared_cause;
 pub mod sizing_review;
 pub mod valuation;
 pub mod venue_admission;
