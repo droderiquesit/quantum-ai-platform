@@ -907,6 +907,53 @@ fn an_accepted_order_is_counted_where_it_reached_a_venue_and_its_fills_are_not_l
 }
 
 #[test]
+fn the_reason_stage_names_the_evidence_posture_so_a_small_size_can_be_told_from_an_absent_one()
+-> Result<()> {
+    // §11.2. Confidence reaches size, and a small size used to be
+    // unattributable: a belief left sitting on its prior reads identically
+    // whether nothing bore on the question or whether what bore on it
+    // cancelled. The sizing arithmetic now separates the two
+    // (`Hypothesis::confidence_for_sizing`), and this asserts the separation
+    // is *reported* rather than only computed — a narrowing an operator
+    // cannot see the reason for is a number they cannot act on.
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.observe(bars("AAA", 120));
+    let report = platform.run_cycle(start());
+
+    let reason = report.stage(Stage::Reason).expect("REASON reports");
+    // Premise: the stage actually reasoned. On an empty queue it returns
+    // before a hypothesis exists and there is no posture to name, so the
+    // assertion below would be about a sentence that was never built.
+    assert!(
+        !reason.detail.contains("nothing in the queue"),
+        "the queue was empty, so no hypothesis was formed: {}",
+        reason.detail
+    );
+    assert!(
+        reason.detail.contains("at confidence "),
+        "premise: REASON did not report a confidence, so there is no sizing \
+         number for a posture to qualify: {}",
+        reason.detail
+    );
+
+    // Matched as the whole delimited phrase, one arm at a time. A bare
+    // `contains("absent")` would be satisfied by any sentence anywhere in the
+    // detail that happened to use the word, which is the failure mode the
+    // testing rules name.
+    let named: Vec<&str> = ["absent", "unopposed", "conflicted"]
+        .into_iter()
+        .filter(|posture| reason.detail.contains(&format!(" on {posture} evidence")))
+        .collect();
+    assert_eq!(
+        named.len(),
+        1,
+        "REASON must name exactly one evidence posture beside the confidence \
+         it reported, named {named:?} in: {}",
+        reason.detail
+    );
+    Ok(())
+}
+#[test]
 fn the_reason_stage_records_where_the_router_put_the_decision_and_whether_the_panel_convened()
 -> Result<()> {
     let mut platform = platform(PlatformConfig::default())?;

@@ -17,7 +17,9 @@ use qip_core::testing::is_exactly_zero;
 use qip_core::time::{Duration, Timestamp};
 use qip_reasoning_engine::bayes::{BaseRate, EvidenceStrength, from_log_odds, to_log_odds, update};
 use qip_reasoning_engine::engine::{ReasoningEngine, SynthesisInput};
-use qip_reasoning_engine::evidence::{Evidence, EvidenceKind, EvidenceSet, Stance};
+use qip_reasoning_engine::evidence::{
+    Evidence, EvidenceKind, EvidencePosture, EvidenceSet, Stance,
+};
 use qip_reasoning_engine::hypothesis::{
     CausalChain, CausalStep, Claim, Hypothesis, HypothesisDraft, HypothesisStatus,
 };
@@ -761,6 +763,334 @@ fn concentrated_support_reduces_effective_confidence() {
     );
 }
 
+// --- absence versus conflict ------------------------------------------------
+
+/// Two supporting and two contradicting items of equal independent weight,
+/// spread over four origins so nothing here is a concentration penalty in
+/// disguise.
+fn evenly_divided() -> EvidenceSet {
+    EvidenceSet::from_items(vec![
+        evidence(
+            "c1",
+            EvidenceKind::Filing,
+            Stance::Supports,
+            "sec-edgar",
+            0.8,
+            0.5,
+        ),
+        evidence(
+            "c2",
+            EvidenceKind::Filing,
+            Stance::Contradicts,
+            "credit-model",
+            0.8,
+            0.5,
+        ),
+        evidence(
+            "c3",
+            EvidenceKind::Filing,
+            Stance::Supports,
+            "exchange",
+            0.8,
+            0.5,
+        ),
+        evidence(
+            "c4",
+            EvidenceKind::Filing,
+            Stance::Contradicts,
+            "auditor",
+            0.8,
+            0.5,
+        ),
+    ])
+}
+
+/// The same four documents, each of which turns out to bear on nothing.
+fn says_nothing() -> EvidenceSet {
+    EvidenceSet::from_items(vec![
+        evidence(
+            "n1",
+            EvidenceKind::Filing,
+            Stance::Supports,
+            "sec-edgar",
+            0.8,
+            0.0,
+        ),
+        evidence(
+            "n2",
+            EvidenceKind::Filing,
+            Stance::Contradicts,
+            "credit-model",
+            0.8,
+            0.0,
+        ),
+        evidence(
+            "n3",
+            EvidenceKind::Filing,
+            Stance::Supports,
+            "exchange",
+            0.8,
+            0.0,
+        ),
+        evidence(
+            "n4",
+            EvidenceKind::Filing,
+            Stance::Contradicts,
+            "auditor",
+            0.8,
+            0.0,
+        ),
+    ])
+}
+
+#[test]
+fn an_absence_of_evidence_and_a_conflict_of_evidence_do_not_size_the_same() {
+    // The defect this is written against, and it shipped: a Bayesian update
+    // returns the prior both when nothing bore on the question and when what
+    // bore on it cancelled out. Those arrived at position sizing as the same
+    // number, so the platform sized them identically and could not report
+    // which had happened — in a system whose purpose is saying why it did
+    // what it did.
+    let absent = Hypothesis::form(draft(says_nothing(), sound_chain())).unwrap();
+    let conflicted = Hypothesis::form(draft(evenly_divided(), sound_chain())).unwrap();
+
+    // Premise first: the two really are indistinguishable before the measure
+    // runs. Same item count, same origins, same posterior, same raw
+    // confidence, and neither is narrowed for concentration.
+    assert_eq!(absent.evidence.len(), conflicted.evidence.len());
+    assert_eq!(absent.evidence.origins(), conflicted.evidence.origins());
+    assert!(
+        (absent.belief.posterior - absent.prior).abs() < 1e-9,
+        "premise: an absence should leave the posterior on the prior, got {:.9}",
+        absent.belief.posterior
+    );
+    assert!(
+        (conflicted.belief.posterior - conflicted.prior).abs() < 1e-9,
+        "premise: evenly divided evidence should cancel to the prior, got {:.9}",
+        conflicted.belief.posterior
+    );
+    assert!(
+        (absent.confidence - conflicted.confidence).abs() < 1e-9,
+        "premise: the two states must be indistinguishable by confidence alone, \
+         got {:.9} and {:.9}",
+        absent.confidence,
+        conflicted.confidence
+    );
+
+    // The distinction, stated: not merely that both are small.
+    assert_eq!(absent.evidence_posture(), EvidencePosture::Absent);
+    assert_eq!(conflicted.evidence_posture(), EvidencePosture::Conflicted);
+    assert!(
+        is_exactly_zero(absent.evidence.net_stance_disagreement()),
+        "an absence disagrees with nothing, got {}",
+        absent.evidence.net_stance_disagreement()
+    );
+    assert!(
+        (conflicted.evidence.net_stance_disagreement() - 1.0).abs() < 1e-12,
+        "equal independent weight on both sides is total disagreement, got {}",
+        conflicted.evidence.net_stance_disagreement()
+    );
+
+    // And the distinction reaches size. This is the assertion that fails if
+    // the two states are ever collapsed back into one number.
+    assert!(
+        conflicted.confidence_for_sizing() < absent.confidence_for_sizing(),
+        "a conflict must size smaller than an absence of the same confidence: \
+         conflicted {:.9} against absent {:.9}",
+        conflicted.confidence_for_sizing(),
+        absent.confidence_for_sizing()
+    );
+
+    // And the narrowing is a sizing decision, not an admission decision. Both
+    // theses are still admissible on the same terms; what differs is how much
+    // capital each would be given. A narrowing that moved the action bar as
+    // well would stop the platform forming any view on a contested question,
+    // and so stop it ever learning which side was right.
+    assert!(
+        (conflicted.effective_confidence() - absent.effective_confidence()).abs() < 1e-9,
+        "the action bar moved: {:.9} against {:.9}",
+        conflicted.effective_confidence(),
+        absent.effective_confidence()
+    );
+}
+
+#[test]
+fn contradiction_only_ever_narrows_the_confidence_a_position_is_sized_on() {
+    // Direction, checked deliberately rather than assumed, and checked
+    // against the thesis's *own* admission confidence rather than against a
+    // different thesis. Comparing two hypotheses would pass on the belief
+    // update alone — contrary evidence already lowers a posterior — and so
+    // would keep passing with this narrowing wired backwards. A narrowing
+    // with its sign reversed reads in a diff like a control and behaves like
+    // leverage, and only this comparison can tell.
+    let mut sizes = Vec::new();
+    for (i, dissent) in [0.0_f64, 0.3, 0.6, 0.9].into_iter().enumerate() {
+        let mut set = well_supported();
+        if dissent > 0.0 {
+            set.push(evidence(
+                "against",
+                EvidenceKind::OfficialStatistic,
+                Stance::Contradicts,
+                "statistics-office",
+                0.9,
+                dissent,
+            ));
+        }
+        let hypothesis = Hypothesis::form(draft(set, sound_chain())).unwrap();
+
+        // Premise: the run really does span both postures, so the loop is
+        // not four repetitions of the undisputed case.
+        let expected = if i == 0 {
+            EvidencePosture::Unopposed
+        } else {
+            EvidencePosture::Conflicted
+        };
+        assert_eq!(hypothesis.evidence_posture(), expected);
+
+        // The property: the sizing number is the admission number narrowed,
+        // never widened. At `dissent == 0` the two coincide, which is what
+        // makes the inequality non-vacuous in the other three rows.
+        assert!(
+            hypothesis.confidence_for_sizing() <= hypothesis.effective_confidence() + 1e-12,
+            "dissent of {dissent} raised the size above the confidence the thesis              was admitted on: {:.9} against {:.9}",
+            hypothesis.confidence_for_sizing(),
+            hypothesis.effective_confidence()
+        );
+        if i == 0 {
+            assert!(
+                (hypothesis.confidence_for_sizing() - hypothesis.effective_confidence()).abs()
+                    < 1e-12,
+                "an undisputed thesis must size on exactly what admitted it"
+            );
+        } else {
+            assert!(
+                hypothesis.confidence_for_sizing() < hypothesis.effective_confidence(),
+                "dissent of {dissent} narrowed nothing: {:.9} against {:.9}",
+                hypothesis.confidence_for_sizing(),
+                hypothesis.effective_confidence()
+            );
+        }
+        sizes.push((
+            dissent,
+            hypothesis.confidence_for_sizing() / hypothesis.effective_confidence(),
+        ));
+    }
+
+    // And more dissent is never less of a narrowing.
+    for pair in sizes.windows(2) {
+        assert!(
+            pair[1].1 < pair[0].1,
+            "dissent rose from {} to {} and the narrowing loosened: {} then {}",
+            pair[0].0,
+            pair[1].0,
+            pair[0].1,
+            pair[1].1
+        );
+    }
+}
+
+#[test]
+fn evidence_that_all_points_one_way_is_not_narrowed_for_disagreement() {
+    // The other half of a control that can fire: it must also be able to not
+    // fire. A narrowing that applied to every thesis would be a constant, and
+    // a constant haircut tells an operator nothing about any thesis.
+    let agreed = Hypothesis::form(draft(well_supported(), sound_chain())).unwrap();
+
+    // Premise: there is something to disagree with, and nothing does.
+    assert!(!agreed.evidence.with_stance(Stance::Supports).is_empty());
+    assert!(agreed.evidence.with_stance(Stance::Contradicts).is_empty());
+    assert_eq!(agreed.evidence_posture(), EvidencePosture::Unopposed);
+
+    assert!(
+        is_exactly_zero(agreed.evidence.net_stance_disagreement()),
+        "undisputed evidence must measure no disagreement, got {}",
+        agreed.evidence.net_stance_disagreement()
+    );
+    assert!(
+        (agreed.confidence_for_sizing() - agreed.confidence).abs() < 1e-12,
+        "an undisputed thesis across three origins must size at its confidence: \
+         {:.9} against {:.9}",
+        agreed.confidence_for_sizing(),
+        agreed.confidence
+    );
+}
+
+#[test]
+fn one_dissenting_origin_restated_five_times_is_still_one_dissent() {
+    // The measure is built on independent weight for the same reason the
+    // belief update is: otherwise a single contrary source could manufacture
+    // a conflict — and so shrink a position — by republishing itself.
+    let mut items = vec![
+        evidence(
+            "s1",
+            EvidenceKind::Filing,
+            Stance::Supports,
+            "sec-edgar",
+            0.8,
+            0.5,
+        ),
+        evidence(
+            "s2",
+            EvidenceKind::Filing,
+            Stance::Supports,
+            "exchange",
+            0.8,
+            0.5,
+        ),
+    ];
+    for i in 0..5 {
+        items.push(evidence(
+            &format!("d{i}"),
+            EvidenceKind::Filing,
+            Stance::Contradicts,
+            "one-newsroom",
+            0.8,
+            0.5,
+        ));
+    }
+    let set = EvidenceSet::from_items(items);
+
+    // Premise: five contrary items, one contrary origin. A measure that
+    // counted items rather than origins would see the dissent outweigh the
+    // support five to two.
+    assert_eq!(set.with_stance(Stance::Contradicts).len(), 5);
+    assert_eq!(set.with_stance(Stance::Supports).len(), 2);
+    assert_eq!(
+        set.with_stance(Stance::Contradicts)
+            .iter()
+            .map(|e| e.origin.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        1
+    );
+
+    // Each item weighs 0.4. Support: two origins, 0.8. Dissent: one origin,
+    // the strongest in full and the other four at the correlated discount,
+    // 0.4 * (1 + 4 * 0.15) = 0.64. So 0.64 / 0.8 = 0.8, where a raw sum would
+    // have given 0.8 / 2.0 = 0.4 the other way up and read as the support
+    // being the minority view.
+    assert!(
+        (set.net_stance_disagreement() - 0.8).abs() < 1e-12,
+        "correlated dissent was counted as independent: {}",
+        set.net_stance_disagreement()
+    );
+}
+
+#[test]
+fn a_stack_of_documents_that_bear_on_nothing_is_an_absence_and_says_so() {
+    // An absence is not an empty set. Evidence can be entirely reliable,
+    // filed in quantity, and tell you nothing about the question in front of
+    // you; reading that as support is how a thesis reaches size on paperwork.
+    let set = says_nothing();
+
+    // Premise: the set is not empty and its items are not junk.
+    assert_eq!(set.len(), 4);
+    assert!(set.iter().all(|e| e.reliability > 0.5));
+    assert!(set.validate().is_ok());
+
+    assert_eq!(set.posture(), EvidencePosture::Absent);
+    assert!(set.iter().all(|e| is_exactly_zero(e.weight())));
+}
 // --- the red team -----------------------------------------------------------
 
 fn ids() -> impl FnMut() -> ChallengeId {

@@ -44,12 +44,16 @@
 //!
 //!   **Read this before quoting anything below as evidence about a
 //!   deployment.** Nothing in *this file* runs under a shipped configuration.
-//!   Raise [`REVIEW_FLOOR`] to 0.50 and all five tests here fail on their own
+//!   Raise [`REVIEW_FLOOR`] to 0.50 and every test here fails on its own
 //!   premise — `the listed cycle proposed no legs ... rationale: no thesis
 //!   cleared the action bar this cycle` — so what they prove is that the
 //!   narrowing arithmetic is right *if reached*. That it is reached is proved
 //!   somewhere else, and it has to be, because no synthetic tape this file can
 //!   build clears the shipped bar:
+//!   (this said "all five tests" while the file held six, which is why it now
+//!   says "every": a count written into prose beside the tests it counts goes
+//!   stale on the next commit and reads as a measurement forever. Run
+//!   `grep -c '^#\[test\]' backend/crates/runtime/qip-kernel/tests/valuation_seam.rs`.)
 //!   `qip-fastbrain/tests/tape.rs::the_shipped_review_policy_admits_a_thesis_that_reaches_the_narrowed_sizing_budget`
 //!   drives the committed demonstration tape through `PlatformConfig::default()`
 //!   with the review policy untouched, and 107 of its 600 cycles enter
@@ -1324,5 +1328,87 @@ fn a_cycle_over_a_book_that_cannot_be_exited_within_the_week_is_refused_new_risk
         assert!(!platform.orders().has_live_fills());
         assert!(!platform.is_live_capable());
     }
+    Ok(())
+}
+
+/// The number the stage reported after `marker`, so a test reads the
+/// platform's own account rather than recomputing one beside it.
+fn reported_number(detail: &str, marker: &str) -> f64 {
+    let (_, rest) = detail
+        .split_once(marker)
+        .unwrap_or_else(|| panic!("REASON reported no `{marker}` in: {detail}"));
+    let digits: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    digits.parse().unwrap_or_else(|error| {
+        panic!("`{marker}` was followed by `{digits}`, which is not a number: {error}")
+    })
+}
+
+#[test]
+fn a_thesis_whose_evidence_contradicts_itself_is_sized_on_a_narrower_conviction_than_admitted_it()
+-> Result<()> {
+    // §11.2, and the same shape as the rest of this file: the narrowing is
+    // asserted at the seam a cycle crosses, not at the accessor beside it.
+    // `qip-reasoning-engine`'s own tests prove `confidence_for_sizing`
+    // narrows a contradicted thesis; every one of them calls it directly, so
+    // all of them would still pass if `thesis_from` went on reading
+    // `effective_confidence` and no position were ever sized on the narrowed
+    // number. That is the `mark_confidence_multiplier` failure this file was
+    // written about, one level up — a control whose firing nothing checks —
+    // and the mutation was run: reverting that one call site broke nothing in
+    // this crate before this test existed.
+    //
+    // What is asserted is the platform's own two accounts of one cycle: the
+    // confidence the thesis was admitted on, and the conviction it was sized
+    // on, both read out of the stage's sentence rather than recomputed here.
+    let universe = {
+        let mut universe = Universe::new();
+        universe.insert(listed("AAA")?)?;
+        universe
+    };
+    let mut platform = platform_over(universe, leverage_only())?;
+    platform.observe(tape("AAA"));
+    let report = platform.run_cycle(start());
+    let reason = report
+        .stage(Stage::Reason)
+        .expect("every cycle records a REASON stage");
+
+    // Premise one: a thesis was approved. A rejected hypothesis is never
+    // turned into a thesis, so there would be no conviction to narrow and the
+    // assertion below would be about a sentence that was never written.
+    assert!(
+        reason.detail.contains("hypothesis approved at confidence "),
+        "the premise failed: no thesis was approved, so nothing was sized: {}",
+        reason.detail
+    );
+    // Premise two: the evidence contradicts itself. On unopposed evidence the
+    // narrowing is exactly one and the two numbers coincide *correctly* — so
+    // without this assertion a cycle that drifted to an undisputed panel
+    // would fail this test for a reason that is not a defect, and a reader
+    // would go looking for a bug in the sizing path.
+    assert!(
+        reason.detail.contains(" on conflicted evidence"),
+        "the premise failed: the panel did not contradict itself, so there was \
+         nothing for the conflict narrowing to narrow: {}",
+        reason.detail
+    );
+
+    let admitted = reported_number(&reason.detail, "hypothesis approved at confidence ");
+    let sized_on = reported_number(&reason.detail, "; sized on conviction ");
+
+    // The admission figure is reported to two decimals, so it stands for a
+    // number anywhere within half of its last place. Requiring the gap to
+    // clear that envelope is what stops this passing on rounding alone, which
+    // it would if it only asserted `sized_on < admitted`.
+    const ADMISSION_ROUNDING: f64 = 0.005;
+    assert!(
+        sized_on < admitted - ADMISSION_ROUNDING,
+        "a contested thesis was sized on {sized_on}, which is not materially below the \
+         {admitted} it was admitted on — the conflict narrowing did not reach the \
+         conviction DECIDE sizes: {}",
+        reason.detail
+    );
     Ok(())
 }

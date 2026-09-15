@@ -8424,7 +8424,7 @@ impl Platform {
                     Stage::Reason,
                     report.findings.len(),
                     format!(
-                        "{} finding(s) from {} run(s), coverage {:.0}%{}; hypothesis {} at confidence {:.2}{}",
+                        "{} finding(s) from {} run(s), coverage {:.0}%{}; hypothesis {} at confidence {:.2} on {} evidence{}",
                         report.findings.len(),
                         report.runs.len(),
                         report.coverage() * 100.0,
@@ -8435,6 +8435,14 @@ impl Platform {
                         },
                         reasoned.hypothesis.status.as_str(),
                         reasoned.hypothesis.effective_confidence(),
+                        // Which state the small number means, and not only
+                        // that it is small. `effective_confidence` above has
+                        // already narrowed the conviction this thesis will be
+                        // sized on when the evidence contradicts itself; this
+                        // is the half of the pair that lets an operator tell a
+                        // conflict from an absence, which the number alone
+                        // never could.
+                        reasoned.hypothesis.evidence_posture(),
                         match &predicted {
                             Ok(true) => format!(
                                 ", falsifiable ({} open prediction(s))",
@@ -8458,6 +8466,19 @@ impl Platform {
                 } else {
                     match self.thesis_from(&opportunity, &reasoned) {
                         Ok(thesis) => {
+                            // What DECIDE will actually size on, read off the
+                            // thesis rather than recomputed here. Two
+                            // independent claims about one number disagree
+                            // eventually and the louder one is wrong; this is
+                            // the number, not a second opinion about it. It
+                            // sits below the admission confidence above
+                            // wherever the evidence contradicts itself, and
+                            // the gap between the two lines is the conflict
+                            // narrowing an operator can see the size of.
+                            outcome.detail.push_str(&format!(
+                                "; sized on conviction {:.3}",
+                                thesis.conviction.abs()
+                            ));
                             self.pending_theses.push(thesis);
                             // Bounded like the proposal working set: an idea
                             // nobody sized for this many cycles is stale, and
@@ -9392,7 +9413,15 @@ impl Platform {
         Ok(qip_portfolio_engine::construction::ApprovedThesis {
             hypothesis_id: reasoned.hypothesis.hypothesis_id.to_string(),
             object_id: object_id.clone(),
-            conviction: sign * reasoned.hypothesis.effective_confidence(),
+            // The sizing number rather than the admission number. Both are
+            // the hypothesis's own confidence; this one is additionally
+            // narrowed where the evidence contradicts itself, so that a
+            // thesis whose support is answered by an equal dissent commits
+            // less capital than one nothing argued against. Without it a
+            // conflict of evidence and an absence of evidence arrived here as
+            // the same figure and were sized identically, with nothing in the
+            // record to say which had happened.
+            conviction: sign * reasoned.hypothesis.confidence_for_sizing(),
             // The reversion of what was measured: the anomaly observed a
             // displacement from expectation, and the thesis is that it closes.
             // Bounded to the mandate-scale range construction validates, so an

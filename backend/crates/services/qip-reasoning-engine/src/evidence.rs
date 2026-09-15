@@ -10,6 +10,12 @@
 //!   the originating source before it counts anything, because the alternative
 //!   — treating correlated reports as independent confirmations — is how a
 //!   thesis reaches high confidence on a single fact.
+//! * **Stance.** [`EvidenceSet::posture`] separates two states that a
+//!   Bayesian update collapses into one number: evidence that never existed
+//!   and evidence that cancels. Both leave a belief at its prior, so both
+//!   size small, but only one of them is a question somebody could go and
+//!   settle. A platform that cannot tell them apart cannot say why it sized
+//!   small, which is the thing this one exists to be able to say.
 //! * **Point-in-time.** Evidence carries when it became knowable, and
 //!   [`EvidenceSet::as_of`] is the only way to read a set, so a hypothesis
 //!   evaluated for last Tuesday cannot rest on Wednesday's news.
@@ -128,6 +134,51 @@ impl fmt::Display for Stance {
     }
 }
 
+/// Which epistemic state a body of evidence is in.
+///
+/// The distinction this enum exists for: **an absence of evidence is not a
+/// conflict of evidence.** Both drive a belief back towards its prior, so
+/// both arrive at the sizing stage as the same low number, and until this
+/// existed the platform sized them identically and could not report which
+/// had happened. `Absent` means nothing is known. `Conflicted` means
+/// something is known and it disagrees with itself, which is a question a
+/// desk can go and settle and a position it should not take in the meantime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidencePosture {
+    /// Nothing carries deciding weight.
+    ///
+    /// Not the same as an empty set: an item with zero diagnosticity is a
+    /// document rather than a reason, and a set of nothing but those is an
+    /// absence however many pages it runs to.
+    Absent,
+    /// Deciding weight stands on one side only.
+    Unopposed,
+    /// Deciding weight stands on both sides.
+    Conflicted,
+}
+
+impl EvidencePosture {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::Unopposed => "unopposed",
+            Self::Conflicted => "conflicted",
+        }
+    }
+
+    /// Whether the evidence contradicts itself.
+    pub const fn is_conflicted(&self) -> bool {
+        matches!(self, Self::Conflicted)
+    }
+}
+
+impl fmt::Display for EvidencePosture {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// One piece of evidence.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Evidence {
@@ -233,6 +284,14 @@ impl Evidence {
         Ok(())
     }
 }
+
+/// Independent weight at or below which a side carries no deciding weight.
+///
+/// Not a rounding tolerance. `Evidence::weight` is `reliability *
+/// diagnosticity`, so a side whose every item is undiagnostic lands exactly
+/// at zero, and that is the absence this module has to be able to name — a
+/// stack of filings that bear on nothing is not evidence for the question.
+const DECIDING_WEIGHT_FLOOR: f64 = 0.0;
 
 /// A body of evidence about one question.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -342,6 +401,52 @@ impl EvidenceSet {
             return 0.0;
         }
         by_origin.values().fold(0.0_f64, |a, b| a.max(*b)) / total
+    }
+
+    /// How far the deciding weight disagrees with itself, in `[0, 1]`.
+    ///
+    /// Zero when the deciding weight all points one way — *including* when
+    /// there is none to point, which is why this is never read without
+    /// [`EvidenceSet::posture`] beside it. One when both sides carry equal
+    /// independent weight.
+    ///
+    /// Computed on [`EvidenceSet::independent_weight`] rather than on raw
+    /// sums for the reason that function exists: one dissenting newsroom
+    /// restated five times is one dissent, and a measure built on the raw sum
+    /// would let a single contrary origin manufacture a conflict by
+    /// republishing itself.
+    ///
+    /// The ratio is `min / max` rather than a signed net, because a net of
+    /// zero is indistinguishable from no evidence at all and telling those
+    /// two apart is the whole purpose. A statistic, and so `f64`; it crosses
+    /// into `Decimal` only downstream, where the portfolio constructor turns
+    /// a conviction into money.
+    pub fn net_stance_disagreement(&self) -> f64 {
+        let supports = self.independent_weight(Stance::Supports);
+        let contradicts = self.independent_weight(Stance::Contradicts);
+        let stronger = supports.max(contradicts);
+        if stronger <= DECIDING_WEIGHT_FLOOR {
+            return 0.0;
+        }
+        // Both are non-negative sums of non-negative weights, so the quotient
+        // of the smaller by the larger is in `[0, 1]` without a clamp. A
+        // clamp here would hide an arithmetic fault rather than refuse it.
+        supports.min(contradicts) / stronger
+    }
+
+    /// Which epistemic state the set is in.
+    ///
+    /// Read this before reading [`EvidenceSet::net_stance_disagreement`]: the
+    /// measure returns zero for `Absent` and `Unopposed` alike, and it is
+    /// this function that says which of the two a zero meant.
+    pub fn posture(&self) -> EvidencePosture {
+        let supports = self.independent_weight(Stance::Supports) > DECIDING_WEIGHT_FLOOR;
+        let contradicts = self.independent_weight(Stance::Contradicts) > DECIDING_WEIGHT_FLOOR;
+        match (supports, contradicts) {
+            (false, false) => EvidencePosture::Absent,
+            (true, true) => EvidencePosture::Conflicted,
+            _ => EvidencePosture::Unopposed,
+        }
     }
 
     /// The most recent point at which any item became knowable.
