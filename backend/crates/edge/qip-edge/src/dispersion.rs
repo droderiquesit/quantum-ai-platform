@@ -442,6 +442,14 @@ mod tests {
         // A venue that was slow and is not any more must stop refusing
         // cycles, or the first bad minute of a session refuses the rest of
         // the day.
+        //
+        // Five recovered fills after eight slow ones, deliberately not eight:
+        // a window of eight then holds three slow samples and five fast, and
+        // the median is the fast one — while a window that kept everything
+        // holds thirteen samples whose median is still the slow one. Equal
+        // counts would leave the two medians identical and the test would
+        // pass against a window that never forgets anything, which is exactly
+        // what it is here to catch.
         let mut history = history()?;
         fill(&mut history, &fast(), 1, 3);
         fill(&mut history, &slow(), 500, 8);
@@ -449,7 +457,12 @@ mod tests {
             !history.assess(&[fast(), slow()]).admits(),
             "the premise failed: a half-second venue was admitted beside a one-millisecond one"
         );
-        fill(&mut history, &slow(), 2, 8);
+        fill(&mut history, &slow(), 2, 5);
+        assert_eq!(
+            history.summary()[0].samples,
+            policy()?.window() as usize,
+            "the window grew past the bound it was configured with"
+        );
         assert_eq!(
             history.median(slow().as_str()),
             Some(Duration::from_millis(2)),
