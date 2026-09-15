@@ -310,6 +310,7 @@ impl RegistrationRegistry {
                 "frankfurter-ecb-reference-rates",
                 RegistrationRequirement::Keyless,
             )
+            .with_requirement("ecb-key-interest-rates", RegistrationRequirement::Keyless)
             .with_requirement("alpaca-daily-bars", RegistrationRequirement::Account)
             .with_requirement("kalshi-markets", RegistrationRequirement::Account)
     }
@@ -670,6 +671,13 @@ mod tests {
         );
         assert_eq!(
             shipped.requirement("frankfurter-ecb-reference-rates"),
+            Some(RegistrationRequirement::Keyless)
+        );
+        // The ECB's own data portal serves its key interest rates with no
+        // account and no key, so the gate answers "keyless" rather than being
+        // satisfied by a record somebody added.
+        assert_eq!(
+            shipped.requirement("ecb-key-interest-rates"),
             Some(RegistrationRequirement::Keyless)
         );
         // The two ADR 0034 candidates need a person's account, and the table

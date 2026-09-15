@@ -26,7 +26,8 @@ use crate::connector::runtime::{ConnectorRuntime, RuntimeConfig};
 use crate::connector::transport::{HttpSourceTransport, SourceTransport};
 use crate::connector::{SourceConnector, manifest::SourceManifest};
 use crate::connectors::{
-    AlpacaBarsConnector, CoinbaseTickerConnector, FrankfurterRatesConnector, KalshiMarketsConnector,
+    AlpacaBarsConnector, CoinbaseTickerConnector, EcbKeyRatesConnector, FrankfurterRatesConnector,
+    KalshiMarketsConnector,
 };
 use qip_core::error::{Error, Result};
 use qip_core::kv::KeyValueStore;
@@ -49,6 +50,7 @@ use std::sync::Arc;
 pub const KNOWN_SOURCES: &[&str] = &[
     CoinbaseTickerConnector::SOURCE_ID,
     FrankfurterRatesConnector::SOURCE_ID,
+    EcbKeyRatesConnector::SOURCE_ID,
     KalshiMarketsConnector::SOURCE_ID,
     AlpacaBarsConnector::SOURCE_ID,
 ];
@@ -77,6 +79,7 @@ fn topic_for(source_id: &str) -> Result<Topic> {
     match source_id {
         CoinbaseTickerConnector::SOURCE_ID => Ok(Topic::MarketTick),
         FrankfurterRatesConnector::SOURCE_ID => Ok(Topic::MacroUpdated),
+        EcbKeyRatesConnector::SOURCE_ID => Ok(Topic::MacroUpdated),
         KalshiMarketsConnector::SOURCE_ID => Ok(Topic::MarketQuote),
         AlpacaBarsConnector::SOURCE_ID => Ok(Topic::MarketBar),
         other => Err(Error::invalid(format!(
@@ -97,6 +100,7 @@ pub fn shipped_manifest(source_id: &str) -> Result<SourceManifest> {
     match source_id {
         CoinbaseTickerConnector::SOURCE_ID => CoinbaseTickerConnector::shipped_manifest(),
         FrankfurterRatesConnector::SOURCE_ID => FrankfurterRatesConnector::shipped_manifest(),
+        EcbKeyRatesConnector::SOURCE_ID => EcbKeyRatesConnector::shipped_manifest(),
         KalshiMarketsConnector::SOURCE_ID => KalshiMarketsConnector::shipped_manifest(),
         AlpacaBarsConnector::SOURCE_ID => AlpacaBarsConnector::shipped_manifest(),
         other => Err(Error::invalid(format!(
@@ -184,6 +188,11 @@ impl ConnectorFeed {
                 FrankfurterRatesConnector::SOURCE_ID => {
                     let manifest = FrankfurterRatesConnector::shipped_manifest()?;
                     let connector = FrankfurterRatesConnector::new(manifest.clone())?;
+                    (Box::new(connector), manifest)
+                }
+                EcbKeyRatesConnector::SOURCE_ID => {
+                    let manifest = EcbKeyRatesConnector::shipped_manifest()?;
+                    let connector = EcbKeyRatesConnector::new(manifest.clone())?;
                     (Box::new(connector), manifest)
                 }
                 KalshiMarketsConnector::SOURCE_ID => {

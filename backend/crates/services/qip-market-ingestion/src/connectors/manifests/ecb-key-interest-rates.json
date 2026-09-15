@@ -1,0 +1,35 @@
+{
+  "source_id": "ecb-key-interest-rates",
+  "provider": "The European Central Bank's own data portal (data-api.ecb.europa.eu), serving the FM dataflow's key interest rates: the deposit facility, the marginal lending facility and the main refinancing operations fixed rate. Free, unauthenticated, no signup.",
+  "asset_class": "rates",
+  "region": "europe",
+  "protocol": "poll",
+  "schema": {
+    "version": "1.0",
+    "required_fields": [
+      { "path": "dataSets", "kind": "array" },
+      { "path": "structure", "kind": "object" }
+    ],
+    "unknown_fields": "ignore"
+  },
+  "auth": { "scheme": "none" },
+  "endpoint": {
+    "path": "/service/data/FM/D.U2.EUR.4F.KR.DFR+MLFR+MRR_FR.LEV",
+    "query": { "format": "jsondata", "lastNObservations": "1" },
+    "health_path": "/service/data/FM/D.U2.EUR.4F.KR.DFR+MLFR+MRR_FR.LEV"
+  },
+  "rate_limit": { "requests": 1, "per_ms": 60000, "burst": 2 },
+  "retry": {
+    "max_attempts": 3,
+    "initial_backoff_ms": 500,
+    "max_backoff_ms": 30000,
+    "multiplier": 4,
+    "jitter_basis_points": 2000
+  },
+  "poll_interval_ms": 3600000,
+  "freshness_sla_ms": 345600000,
+  "publication_delay_ms": 57600000,
+  "licensing": "public",
+  "max_events_per_batch": 16,
+  "category": "government_and_trade"
+}

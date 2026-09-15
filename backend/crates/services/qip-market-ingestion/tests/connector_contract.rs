@@ -24,8 +24,9 @@ use qip_market_ingestion::connector::{
     ConnectorRuntime, ContractHarness, ContractReport, RuntimeConfig, SourceConnector,
 };
 use qip_market_ingestion::connectors::{
-    AlpacaBarsConnector, CoinbaseTickerConnector, FrankfurterRatesConnector,
-    KalshiMarketsConnector, alpaca_bars, coinbase_ticker, frankfurter_rates, kalshi_markets,
+    AlpacaBarsConnector, CoinbaseTickerConnector, EcbKeyRatesConnector, FrankfurterRatesConnector,
+    KalshiMarketsConnector, alpaca_bars, coinbase_ticker, ecb_key_rates, frankfurter_rates,
+    kalshi_markets,
 };
 use qip_transport::RecordingSleeper;
 use std::collections::BTreeMap;
@@ -65,6 +66,21 @@ fn frankfurter() -> Result<(FrankfurterRatesConnector, SourceEmulator)> {
     Ok((
         connector,
         SourceEmulator::from_json(frankfurter_rates::FIXTURE)?,
+    ))
+}
+
+/// After the recorded key-rate message's observation date (2026-09-15) plus
+/// the sixteen-hour dissemination delay the manifest declares, so the three
+/// levels are knowable rather than correctly withheld.
+fn ecb_key_rates_horizon() -> Timestamp {
+    at("2026-09-16T09:00:00Z")
+}
+
+fn ecb_key_rates() -> Result<(EcbKeyRatesConnector, SourceEmulator)> {
+    let connector = EcbKeyRatesConnector::new(EcbKeyRatesConnector::shipped_manifest()?)?;
+    Ok((
+        connector,
+        SourceEmulator::from_json(ecb_key_rates::FIXTURE)?,
     ))
 }
 
@@ -599,9 +615,10 @@ fn every_known_source_opens_by_name_through_the_bridge_over_its_own_fixture() ->
     // fails at start-up with a message about a missing arm. Each is opened
     // over its recorded (or placeholder) fixture through the same
     // `over_transport` path `open` takes after it builds the transport.
-    assert_eq!(KNOWN_SOURCES.len(), 4, "{KNOWN_SOURCES:?}");
+    assert_eq!(KNOWN_SOURCES.len(), 5, "{KNOWN_SOURCES:?}");
     let (kalshi, kalshi_emulator) = kalshi()?;
     let (alpaca, alpaca_emulator) = alpaca()?;
+    let (ecb, ecb_emulator) = ecb_key_rates()?;
     let cases: Vec<(
         Box<dyn SourceConnector + Send>,
         SourceEmulator,
@@ -610,6 +627,9 @@ fn every_known_source_opens_by_name_through_the_bridge_over_its_own_fixture() ->
     )> = vec![
         (Box::new(kalshi), kalshi_emulator, kalshi_horizon(), 19),
         (Box::new(alpaca), alpaca_emulator, alpaca_horizon(), 4),
+        // Three key rates on one observation date: the deposit facility, the
+        // marginal lending facility and the main refinancing fixed rate.
+        (Box::new(ecb), ecb_emulator, ecb_key_rates_horizon(), 3),
     ];
     for (connector, emulator, horizon, expected) in cases {
         let manifest = connector.manifest().clone();
