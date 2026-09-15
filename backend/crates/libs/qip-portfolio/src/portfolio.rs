@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::exposure::ExposureBreakdown;
+use crate::lifecycle::PositionLifecycle;
 use crate::position::Position;
 
 /// A portfolio valued at a point in time.
@@ -121,6 +122,77 @@ impl Portfolio {
         self.cumulative_costs += costs;
         self.updated_at = at;
         position.quantity()
+    }
+
+    /// Raise the desk's concern against a held position: blueprint §35.1's
+    /// `Flagged`.
+    ///
+    /// The fact this records is that something has happened *to the thesis*,
+    /// not to the lot ledger — §35.1's own trigger is "the thesis weakened,
+    /// the strategy is decaying, or the horizon passed". The ledger is
+    /// untouched; a flagged position still holds exactly the lots it held.
+    ///
+    /// Returns whether this call moved the record. A position already at or
+    /// past `Flagged` on the table's one-way ladder — flagged, unwinding, or
+    /// orphaned — already carries the concern, and re-raising it is not a new
+    /// fact, so `Ok(false)` rather than a refusal a caller would have to
+    /// special-case on every pass. Everything else goes through
+    /// [`Position::move_lifecycle`] and is refused by the table if the table
+    /// says so: a `Closed` record is not flagged, and neither is an `Opened`
+    /// one with no confirmed lot. A position the book does not hold is
+    /// refused rather than created, because a concern raised against a
+    /// holding nobody has is a concern about the caller's own bookkeeping.
+    pub fn flag_position(&mut self, object_id: &ObjectId) -> Result<bool> {
+        let position = self.position_mut(object_id)?;
+        if matches!(
+            position.lifecycle(),
+            PositionLifecycle::Flagged | PositionLifecycle::Unwinding | PositionLifecycle::Orphaned
+        ) {
+            return Ok(false);
+        }
+        position.move_lifecycle(PositionLifecycle::Flagged)?;
+        Ok(true)
+    }
+
+    /// Record that the order which takes a position to flat has been sized:
+    /// blueprint §35.1's `Unwinding`.
+    ///
+    /// Called at the seam where the exit is decided and priced, before the
+    /// fill exists, so the record says the close was deliberate rather than
+    /// leaving a reader to infer it from a quantity that reached zero. A
+    /// reduction that merely trims a position is not this — §35.1 separates
+    /// "being closed deliberately" from being trimmed, and so does this
+    /// method's caller.
+    ///
+    /// **A merely `Held` position is refused.** The table has no
+    /// `Held -> Unwinding` edge on purpose: a deliberate close is preceded by
+    /// the concern that caused it, so [`Self::flag_position`] runs first or
+    /// the unwind does not start. The refusal is the table's, carried
+    /// through unchanged. A position already unwinding returns `Ok(false)` —
+    /// a resting exit order re-sized on a later pass is the same exit.
+    pub fn begin_unwind(&mut self, object_id: &ObjectId) -> Result<bool> {
+        let position = self.position_mut(object_id)?;
+        if position.lifecycle() == PositionLifecycle::Unwinding {
+            return Ok(false);
+        }
+        position.move_lifecycle(PositionLifecycle::Unwinding)?;
+        Ok(true)
+    }
+
+    /// The position under `object_id`, for the two lifecycle seams above.
+    ///
+    /// Deliberately private and deliberately not returning `&mut Position` to
+    /// anyone else: handing out a mutable position is handing out the lot
+    /// ledger and the realised P&L as well, and the whole point of
+    /// [`Position::move_lifecycle`] is that the lifecycle moves without them.
+    fn position_mut(&mut self, object_id: &ObjectId) -> Result<&mut Position> {
+        self.positions.get_mut(object_id.as_str()).ok_or_else(|| {
+            Error::not_found(format!(
+                "portfolio {} holds no position in {}, so there is nothing to move through the                  position lifecycle; book a fill in it first",
+                self.name,
+                object_id.as_str()
+            ))
+        })
     }
 
     /// Credit a dividend or coupon.

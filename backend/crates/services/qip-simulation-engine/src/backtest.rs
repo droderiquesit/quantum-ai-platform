@@ -21,6 +21,7 @@ use qip_core::time::Timestamp;
 use qip_core::{Currency, Decimal};
 use qip_financial::universe::Universe;
 use qip_numerics::stats;
+use qip_portfolio::lifecycle::PositionLifecycle;
 use qip_portfolio::portfolio::Portfolio;
 use qip_risk::metrics::RiskMetrics;
 use serde::{Deserialize, Serialize};
@@ -119,6 +120,20 @@ pub struct BacktestResult {
     /// Reads served through the point-in-time view, evidence that the strategy
     /// went through the guard rather than around it.
     pub guarded_reads: usize,
+    /// The blueprint §35.1 lifecycle each position the run touched ended in,
+    /// by object id.
+    ///
+    /// The run's own account of what became of every name it opened. A
+    /// `Closed` entry is a round trip the strategy finished; a `Flagged` one
+    /// is the state §35.2's third question is about — "a position whose
+    /// strategy has no live signal ... nothing is held by inertia" — a name
+    /// the strategy put at zero weight and the run did not manage to leave,
+    /// because the flattening order was worth less than one unit of currency
+    /// or was refused. Before this existed the two were indistinguishable
+    /// from outside the run: both showed up as a held position at the end of
+    /// the equity curve, and there was no record saying which of them the
+    /// strategy still wanted.
+    pub position_lifecycle: BTreeMap<String, PositionLifecycle>,
     /// Orders replaced by a later decision before they came due.
     ///
     /// Only one decision is held at a time, so a strategy rebalancing faster
@@ -383,6 +398,19 @@ impl Backtester {
         missing_prices.sort();
         missing_prices.dedup();
 
+        // Read off the book rather than accumulated as the run went, so what
+        // is reported is the state the positions are actually in at the end
+        // and not a log of intentions that a later fill may have overtaken.
+        let position_lifecycle = portfolio
+            .all_positions()
+            .map(|position| {
+                (
+                    position.object_id.as_str().to_string(),
+                    position.lifecycle(),
+                )
+            })
+            .collect();
+
         Ok(BacktestResult {
             strategy: strategy.name().to_string(),
             started_at,
@@ -399,6 +427,7 @@ impl Backtester {
             rebalance_count,
             superseded,
             guarded_reads,
+            position_lifecycle,
         })
     }
 
@@ -468,6 +497,33 @@ impl Backtester {
                 .position(&object_id)
                 .map(|position| position.quantity().to_f64())
                 .unwrap_or(0.0);
+
+            // Blueprint §35.1's `Flagged`, at the seam where the fact becomes
+            // known. `BacktestStrategy::target_weights` documents an empty map
+            // as "hold what you have" and a zero weight as "go to cash", so a
+            // weight of exactly zero on a name the book still holds is the
+            // strategy withdrawing the thesis that opened it — §35.1's "the
+            // thesis weakened ... or the horizon passed" — and an absent key
+            // is not, which is why this tests the weight rather than
+            // membership. Exactly zero, not a tolerance: clamping a small
+            // weight to "go to cash" would put words in the strategy's mouth.
+            //
+            // Raised before the order is sized, so the position below whose
+            // flattening order is worth less than one currency unit is left
+            // visibly flagged rather than quietly held past its thesis. That
+            // is §35.2's third question, and until now the run kept no record
+            // that could answer it.
+            let withdrawn_thesis = *weight == 0.0 && held != 0.0;
+            if withdrawn_thesis && let Err(refusal) = portfolio.flag_position(&object_id) {
+                rejected.push(RejectedOrder {
+                    at,
+                    object_id: object_key.clone(),
+                    quantity: Decimal::ZERO,
+                    reason: refusal.message().to_string(),
+                });
+                continue;
+            }
+
             let target_units = weight * equity / price;
             let delta = target_units - held;
             if delta.abs() * price < 1.0 {
@@ -486,6 +542,23 @@ impl Backtester {
                 });
                 continue;
             };
+
+            // §35.1's `Unwinding`: this order takes the position to flat, and
+            // the cost model prices it on the next line — "being closed
+            // deliberately, tax-aware and cost-aware". A reduction that only
+            // trims is deliberately not this. The table has no
+            // `Held -> Unwinding` edge, so the flag above is what makes this
+            // legal; if it did not run, this refuses and no order is sent
+            // rather than a close being booked with no record of why.
+            if withdrawn_thesis && let Err(refusal) = portfolio.begin_unwind(&object_id) {
+                rejected.push(RejectedOrder {
+                    at,
+                    object_id: object_key.clone(),
+                    quantity,
+                    reason: refusal.message().to_string(),
+                });
+                continue;
+            }
 
             match self
                 .config

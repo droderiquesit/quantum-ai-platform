@@ -53,12 +53,18 @@ pub struct Position {
     pub opened_at: Option<Timestamp>,
     pub updated_at: Timestamp,
     /// What the desk is doing about the position, independent of the lot
-    /// ledger above. `Flagged`, `Unwinding` and `Orphaned` are reachable only
-    /// through [`PositionLifecycle::transition`] — nothing in this file
-    /// assigns them directly — so a caller outside this module cannot walk
-    /// the field into one of those states without going through a move the
-    /// table actually permits.
-    pub lifecycle: PositionLifecycle,
+    /// ledger above.
+    ///
+    /// Private, and that is the guarantee rather than a comment about one.
+    /// The doc here used to say a caller outside this module "cannot walk the
+    /// field into one of those states without going through a move the table
+    /// actually permits" while the field was `pub`, which made the sentence
+    /// false for every crate in the workspace: `position.lifecycle =
+    /// PositionLifecycle::Held` on a closed record compiled. The only writer
+    /// is now [`Position::move_lifecycle`], which goes through
+    /// [`PositionLifecycle::transition`], so the terminal `Closed` arm is held
+    /// by the type system and not by everybody remembering.
+    lifecycle: PositionLifecycle,
 }
 
 impl Position {
@@ -78,12 +84,20 @@ impl Position {
         }
     }
 
+    /// Where the position sits in its life.
+    pub fn lifecycle(&self) -> PositionLifecycle {
+        self.lifecycle
+    }
+
     /// Move the lifecycle field to `next`, refusing an illegal move.
     ///
     /// This is the only path by which `Flagged`, `Unwinding` or `Orphaned`
     /// reach the field: `apply_fill` advances `Opened` -> `Held` -> `Closed`
     /// on its own, through this same refusing transition, but never assigns
-    /// any of the other three.
+    /// any of the other three. The seams that raise the other three are
+    /// [`crate::portfolio::Portfolio::flag_position`] and
+    /// [`crate::portfolio::Portfolio::begin_unwind`], which call this and
+    /// carry its refusal to their own caller.
     pub fn move_lifecycle(&mut self, next: PositionLifecycle) -> qip_core::Result<()> {
         self.lifecycle = self.lifecycle.transition(next)?;
         Ok(())
