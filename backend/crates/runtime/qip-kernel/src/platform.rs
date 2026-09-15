@@ -10054,7 +10054,29 @@ impl Platform {
             detail.push_str(&format!("; {}", capped.join(", ")));
         }
         detail.push_str(&format!("; {exploration}"));
+
+        // Blueprint §31.4's hedge survey, run against the book this stage has
+        // just sized into. In DECIDE because a hedge is a decision about the
+        // book and not an execution of one: what comes back is proposals and
+        // refusals, and no path from here reaches a broker. The line is never
+        // empty — an unhedged book says it is unhedged rather than reading
+        // like a hedged one with nothing to do.
+        let hedges = self.review_hedges(now);
+        detail.push_str(&format!("; {}", hedges.summary()));
         let mut outcome = StageOutcome::ran(Stage::Decide, legs, detail);
+        // One problem per refusal, carrying the engine's own message. Folded
+        // into a count they would tell an operator that a hedge did not happen
+        // without saying which exposure is still naked, and the exposure is
+        // the only part of it they can act on.
+        if let Some(refusal) = &hedges.exposures_refused {
+            outcome = outcome.with_problem(format!(
+                "no hedge policy could be surveyed, so every declared exposure is unhedged: \
+                 {refusal}"
+            ));
+        }
+        for refusal in hedges.refusals() {
+            outcome = outcome.with_problem(format!("a hedge was refused: {}", refusal.describe()));
+        }
         // Named, one problem per thesis. A removal folded into a count would
         // tell an operator that something was dropped without saying what, and
         // the object is the only part of it they can act on.
@@ -11432,6 +11454,58 @@ impl Platform {
     /// mark-to-market day.
     fn risk_state(&self) -> RiskState {
         self.risk_state_from(&self.aggregates)
+    }
+
+    /// Survey the declared hedge policies against the book, journal the
+    /// finding, and hand the review back to the stage that reports it.
+    ///
+    /// The production caller `qip_risk::hedge` was built without and named in
+    /// its own header as missing. What it needed was four facts a policy does
+    /// not carry — the book's exposures on every axis, the hedge instrument's
+    /// contract multiplier and lot, a price, and the live limits — and every
+    /// one of them is held here and nowhere lower: `qip-risk` is a library,
+    /// the catalogue is the market view's and the price is the snapshot's.
+    /// See [`crate::hedge_review`] for what is taken from where and, more to
+    /// the point, what is refused rather than defaulted.
+    ///
+    /// **This returns proposals and never orders.** Nothing on this path
+    /// touches a broker, and the module it calls holds no type that could: a
+    /// hedge reaches a market the way every other order does, through
+    /// proposal, approval and the governed submit behind pre-trade risk, or
+    /// it does not reach one at all.
+    ///
+    /// The read of the limits is `self.monitor.limits()` — the same set the
+    /// pre-trade veto and the monitor evaluate — rather than a copy, so a
+    /// hedge cannot be projected against bounds the desk is not actually
+    /// under. Two copies of a bound is the failure principle 6 names.
+    fn review_hedges(&mut self, now: Timestamp) -> crate::hedge_review::HedgeReview {
+        let state = self.risk_state();
+        let review = {
+            let market = self.market.read();
+            crate::hedge_review::review(
+                &self.config.hedge_policies,
+                &market.universe,
+                &market.snapshot,
+                self.monitor.limits(),
+                &state,
+                now,
+            )
+        };
+        // A cycle whose policies all found the book inside their thresholds
+        // writes nothing: the stage line already says so, and a record that
+        // says "nothing" every cycle is one nobody reads. A journal that
+        // failed is surfaced by LEARN rather than swallowed — a survey the
+        // desk was told about and the log was not is two stories about one
+        // cycle.
+        if let Some(record) = crate::hedge_review::HedgeSurveyed::of(&review, self.cycle, now)
+            && let Err(error) = self.journal_record(record, "kernel/hedge", now)
+        {
+            self.capture_problems.push(format!(
+                "the hedge survey was reported to the desk and not journalled: {}",
+                error.message()
+            ));
+        }
+        review
     }
 
     /// The risk state the checks evaluate, from a set of aggregate figures.
