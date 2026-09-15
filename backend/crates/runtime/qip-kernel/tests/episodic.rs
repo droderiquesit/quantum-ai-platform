@@ -20,6 +20,7 @@
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Decimal, ObjectId, dec};
+use qip_execution_engine::order::Side;
 use qip_financial::asset_class::{InstrumentType, Sector};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance};
@@ -701,6 +702,135 @@ fn an_episode_records_the_causal_edges_the_graph_held_into_its_instrument_when_i
         "the review rejected this hypothesis and the episode records it as {:?}; an episode that \
          cannot say the platform declined is a memory of successes",
         remembered[0].decision
+    );
+    Ok(())
+}
+#[test]
+fn a_precedent_says_what_the_platform_declined_on_the_episodes_it_recalled_and_whether_it_should_have()
+-> Result<()> {
+    // §10.3's last query — "what did we decline in situations like this, and
+    // should we have?" — as the REASON stage answers it.
+    //
+    // The failure this guards is the one the sibling lane found on the
+    // recall side and is worth stating again: every record-side test can
+    // pass while the read path asks nothing. The twin has priced declined
+    // paths since `b9e2242` and the memory has held episodes since the
+    // §10.1 lane, and until the join below existed no code could put the
+    // two in one sentence. A mutation that stops `record_precedent` calling
+    // the join, or that hands it the wrong hypotheses, leaves every other
+    // test in this file green and fails this one.
+    let (t2, t3) = resolution_instants()?;
+    let mut platform = fresh()?;
+    platform.observe(bars("AAA", 120));
+    let first = platform.run_cycle(start());
+    assert!(
+        !platform.predictions().is_empty(),
+        "premise: the first cycle made a claim:\n{}",
+        first.summarise()
+    );
+    let horizon = platform.predictions()[0].proposition.resolves_at;
+    let hypothesis = platform
+        .precedents()
+        .first()
+        .expect("premise: the first cycle recorded a precedent, so it named a hypothesis")
+        .hypothesis_id
+        .clone();
+
+    // A refused order that names that hypothesis. The quantity is far beyond
+    // anything the fixture's limits admit, so a control refuses it before it
+    // reaches a venue — which is the fact this query is about.
+    let order = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("1000000"),
+        dec!("100"),
+        "prop-declined",
+        vec![hypothesis.clone()],
+        start(),
+    );
+    let order_id = order.order_id.clone();
+    assert!(
+        platform.submit_order(order, start()).is_err(),
+        "premise: the order was refused; an accepted one is not a decline"
+    );
+    assert_eq!(
+        platform.declined_awaiting_score(),
+        1,
+        "premise: the refusal is queued for the twin, so there will be a score to join"
+    );
+
+    // The cycle that resolves the claim also prices the refusal.
+    platform.observe(swings("AAA", horizon));
+    let second = platform.run_cycle(t2);
+    let learn = second.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        learn.detail.contains("episode(s) remembered"),
+        "premise: LEARN remembered the resolved thesis as an episode: {}",
+        learn.detail
+    );
+    let scores = platform.declined_scores();
+    assert_eq!(
+        scores.len(),
+        1,
+        "premise: the twin priced the refusal:\n{}",
+        second.summarise()
+    );
+    assert_eq!(
+        scores[0].order_id, order_id,
+        "premise: the score is the one for the order that named the hypothesis"
+    );
+    let gate = scores[0].gate.clone();
+    let regretted = usize::from(scores[0].regret);
+
+    // And the next REASON recalls that episode and says what was declined on
+    // it.
+    let third = platform.run_cycle(t3);
+    let episode_id = format!("ep-{hypothesis}");
+    let precedent = platform
+        .precedents()
+        .iter()
+        .find(|precedent| {
+            precedent.cycle == 3
+                && precedent
+                    .nearest
+                    .iter()
+                    .any(|entry| entry.episode_id == episode_id)
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "premise: the third cycle recalled {episode_id} as a precedent:\n{}",
+                third.summarise()
+            )
+        });
+
+    assert_eq!(
+        precedent.declines.analogues,
+        precedent.nearest.len(),
+        "the join was asked about a different set of analogues than the one recalled"
+    );
+    assert_eq!(
+        precedent.declines.declines, 1,
+        "the refusal scored on the recalled episode's own hypothesis was not joined to it: {:?}",
+        precedent.declines
+    );
+    assert_eq!(precedent.declines.analogues_matched, 1);
+    assert_eq!(
+        precedent.declines.regretted, regretted,
+        "the twin's regret bit and the precedent's disagree about the same refusal"
+    );
+    assert_eq!(
+        precedent
+            .declines
+            .by_gate
+            .get(&gate)
+            .map(|charged| charged.declines),
+        Some(1),
+        "the refusal is not charged to {gate}, the control that made it: {:?}",
+        precedent.declines.by_gate
+    );
+    assert!(
+        precedent.declines.was_answerable(),
+        "a join that found a refusal must read as answerable"
     );
     Ok(())
 }
