@@ -19,6 +19,7 @@
 pub mod causal;
 pub mod confounder;
 pub mod exposure;
+pub mod falsification;
 pub mod features;
 pub mod granger;
 pub mod graph;
@@ -33,6 +34,10 @@ pub use confounder::{Confounder, ConfounderSet, ConfounderStanding};
 pub use exposure::{
     ConcentrationReport, Exposure, ExposureSet, SharedDriver, hidden_concentration,
     instruments_exposed_to, unheld_dependencies,
+};
+pub use falsification::{
+    Breach, FalsificationPass, Falsifier, HeldOut, HypothesisSource, Inadmissible, LeakageTally,
+    SourceCensus, SourceStanding, TrialLedger, Verdict, rolling_statistic,
 };
 pub use features::{FEATURE_HISTORY, Feature, FeatureLookup, FeatureStore, FeatureValue};
 pub use graph::{Fact, KnowledgeGraph, Node, NodeKind};
