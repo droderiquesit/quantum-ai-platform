@@ -1071,6 +1071,20 @@ pub mod names {
     /// people signed for and a deployment mounted (ADR 0061). Counted only
     /// when the log accepted the record.
     pub const RULE_RECALIBRATION_PROPOSED: &str = "qip_rule_recalibration_proposed_total";
+    /// Counterfactual findings put through the §12.4 trial gate, by
+    /// `outcome` — `admitted`, `refused` or `uncharged`. The count of looks
+    /// is the number a fixed threshold could never show: a platform that
+    /// tests the same bar on every rule every cycle will eventually see one
+    /// clear it by chance, and only the ratio of refused to admitted says
+    /// how hard it was looking when it did. `uncharged` is the family's
+    /// quarterly trial budget being spent, which reads as a silence on the
+    /// other two arms and is a different fact from a finding that was tested
+    /// and failed. Bounded by the three literals in
+    /// `qip_kernel::counterfactual_trial::outcome`; nothing a finding
+    /// carries can mint a value, and the subject is deliberately not a label
+    /// because a rule name or an instrument is exactly the unbounded
+    /// cardinality this module refuses.
+    pub const COUNTERFACTUAL_TRIALS: &str = "qip_counterfactual_trials_total";
 
     /// Strategy families the foundry has registered, by `standing`: `funded`
     /// where at least one member stands at a capital-holding rung,

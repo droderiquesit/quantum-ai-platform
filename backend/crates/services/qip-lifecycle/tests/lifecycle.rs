@@ -41,7 +41,8 @@ use qip_lifecycle::horizon::{
 use qip_lifecycle::ledger::{AuthorisedPromotion, LifecycleLedger, attempt_promotion};
 use qip_lifecycle::scoring::{annualised_sharpe, periodic_sharpe};
 use qip_lifecycle::trials::{
-    DEFAULT_QUARTERLY_BUDGET, JOURNAL_PREFIX, Quarter, StrategyFamily, TrialBook,
+    COUNTERFACTUAL_FAMILY, COUNTERFACTUAL_SUBJECT_PREFIX, DEFAULT_QUARTERLY_BUDGET, JOURNAL_PREFIX,
+    Quarter, StrategyFamily, TrialBook,
 };
 use qip_observability::metrics::{Metrics, labels, names};
 use qip_simulation_engine::validation::{
@@ -1530,6 +1531,107 @@ fn a_trial_book_replays_its_journal_from_the_store_and_refuses_a_tampered_one() 
     store.put(&middle, first_charge)?;
     let error = TrialBook::open(as_port(&store)).expect_err("still tampered");
     assert!(error.message().contains("does not hash"), "{error:?}");
+    Ok(())
+}
+
+/// Blueprint §12.4's third guardrail shares the book with §20.1's promotion
+/// accounting and must not share its budget.
+///
+/// The failure this prevents, stated as a sequence somebody would otherwise
+/// have had to live through: a quarter of rule reviews spends the trial
+/// budget, and the next candidate the foundry wants to promote is refused —
+/// not on its evidence, but because a counterfactual review ran. Or the
+/// mirror: a sweep of five hundred configurations lands, and every
+/// counterfactual finding for the rest of the quarter goes untested and so
+/// unproposed. Both are one subject eating the other's budget, and the only
+/// thing that stops them is that `TrialBook` budgets per *family* and the
+/// counterfactual family is reserved.
+#[test]
+fn a_quarter_of_counterfactual_trials_leaves_a_strategy_familys_budget_untouched() -> Result<()> {
+    let mut book = opened_book()?;
+    let counterfactual = StrategyFamily::new(COUNTERFACTUAL_FAMILY)?;
+    let quarter = Quarter::of(start());
+    // The premise: both budgets start clear, and the counterfactual family
+    // does not exist until a finding is charged.
+    assert_eq!(book.quarter_trials(&family()?, quarter), Some(0));
+    assert_eq!(
+        book.quarter_trials(&counterfactual, quarter),
+        None,
+        "unknown, not zero: no finding has been charged yet"
+    );
+
+    // Spend the counterfactual family's whole quarter.
+    for look in 0..DEFAULT_QUARTERLY_BUDGET {
+        book.charge_counterfactual(&format!("rule-{look}"), start())?;
+    }
+    assert_eq!(
+        book.quarter_trials(&counterfactual, quarter),
+        Some(DEFAULT_QUARTERLY_BUDGET)
+    );
+    let spent = book
+        .charge_counterfactual("one-look-too-many", start())
+        .expect_err("the counterfactual budget is a budget");
+    assert_eq!(spent.code(), "denied");
+    assert!(
+        spent.message().contains(COUNTERFACTUAL_FAMILY),
+        "the refusal does not name the family whose budget is spent: {spent:?}"
+    );
+
+    // And the strategy family's quarter has not moved at all: a sweep of
+    // five hundred still charges.
+    assert_eq!(book.quarter_trials(&family()?, quarter), Some(0));
+    let account = book.charge(&strategy(), 500, start())?;
+    assert_eq!(account.quarter_trials(), 500);
+    assert_eq!(account.family(), &family()?);
+    Ok(())
+}
+
+/// The reservation is held by the book, not by the discipline of its callers.
+///
+/// Without both halves the budgets can cross by accident: a strategy enrolled
+/// in the counterfactual family spends the findings' budget, and a finding
+/// whose subject is named like a strategy spends that strategy's family's.
+/// The second is the one that would actually happen — an instrument and a
+/// strategy sharing a ticker is ordinary.
+#[test]
+fn neither_kind_of_subject_can_be_enrolled_in_the_others_family() -> Result<()> {
+    let mut book = opened_book()?;
+    let counterfactual = StrategyFamily::new(COUNTERFACTUAL_FAMILY)?;
+    book.open_family(&counterfactual, start())?;
+    // The premise: enrolling an ordinary strategy in its own family is fine,
+    // so the refusals below are about the reservation and not about enrolment
+    // being broken.
+    book.enrol(&StrategyId::new("momentum-v4"), &family()?, start())?;
+
+    let strayed = book
+        .enrol(&strategy(), &counterfactual, start())
+        .expect_err("a strategy was enrolled in the counterfactual family");
+    assert_eq!(strayed.code(), "denied");
+    assert!(
+        strayed.message().contains("not a counterfactual subject"),
+        "{strayed:?}"
+    );
+
+    let subject = TrialBook::counterfactual_subject("order-notional")?;
+    assert!(
+        subject.as_str().starts_with(COUNTERFACTUAL_SUBJECT_PREFIX),
+        "the premise failed: the subject carries no prefix to recognise it by"
+    );
+    let crossed = book
+        .enrol(&subject, &family()?, start())
+        .expect_err("a counterfactual subject was enrolled in a strategy family");
+    assert_eq!(crossed.code(), "denied");
+    assert!(
+        crossed.message().contains("charge_counterfactual"),
+        "the refusal does not name the call to use instead: {crossed:?}"
+    );
+
+    // And a subject whose name cannot be carried is refused rather than
+    // rewritten: two subjects sanitised to one name would charge one account.
+    let bad = TrialBook::counterfactual_subject("order notional/v2")
+        .expect_err("a subject with a separator in it was accepted");
+    assert_eq!(bad.code(), "invalid");
+    assert!(bad.message().contains("only letters"), "{bad:?}");
     Ok(())
 }
 

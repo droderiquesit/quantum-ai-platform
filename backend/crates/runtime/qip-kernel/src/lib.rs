@@ -37,6 +37,7 @@ pub mod capacity_review;
 pub mod causal_review;
 pub mod central;
 pub mod config;
+pub mod counterfactual_trial;
 pub mod cross_margin;
 pub mod cycle;
 pub mod exploration;

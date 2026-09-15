@@ -40,6 +40,7 @@ use crate::central::{
     WhitelistIssue,
 };
 use crate::config::PlatformConfig;
+use crate::counterfactual_trial::{CounterfactualTrial, outcome as trial_outcome};
 use crate::cycle::{CycleReport, Stage, StageOutcome};
 use crate::family_review::{
     FAMILY_FINDING_PROPOSED, FAMILY_FINDING_WITHDRAWN, FamilyAllocationReview, FamilyMember,
@@ -3993,6 +3994,12 @@ impl Platform {
             names::RULE_RECALIBRATION_PROPOSED,
             "recalibration proposals written for a rule that vetoed mostly profitable paths, by \
              rule; a proposal, never a change",
+        );
+        metrics.describe(
+            names::COUNTERFACTUAL_TRIALS,
+            "counterfactual findings charged to the trial book and judged against the corrected \
+             bar, by outcome; `uncharged` is the quarterly budget spent and not a finding that \
+             was tested",
         );
         metrics.describe(
             names::FAMILY_STANDINGS,
@@ -13531,6 +13538,41 @@ impl Platform {
                 (false, true) => Some(SIZING_PROPOSAL_WITHDRAWN),
                 _ => None,
             };
+            // §12.4's third guardrail on ADR 0063's loosening half. Only the
+            // *proposed* transition is charged and judged: a withdrawal must
+            // never be blocked, because a proposal left standing on evidence
+            // that has evaporated is a signature page still open on nothing,
+            // and refusing to withdraw it would be the one direction this
+            // gate must not be able to take.
+            let proposal_state = match proposal_state {
+                Some(SIZING_PROPOSAL_PROPOSED) => {
+                    match self.counterfactual_trial(
+                        &object,
+                        regret.sample,
+                        regret.larger_favoured,
+                        now,
+                    ) {
+                        Ok(trial) if trial.admitted => Some(SIZING_PROPOSAL_PROPOSED),
+                        Ok(trial) => {
+                            problems.push(format!(
+                                "the larger-size finding on {object} is not proposed: the \
+                                 evidence does not clear the trial gate — {}",
+                                trial.describe()
+                            ));
+                            None
+                        }
+                        Err(error) => {
+                            problems.push(format!(
+                                "the larger-size finding on {object} is not proposed: the \
+                                 finding could not be charged a trial — {}",
+                                error.message()
+                            ));
+                            None
+                        }
+                    }
+                }
+                other => other,
+            };
             if let Some(outcome) = proposal_state {
                 let proposal = SizingProposal {
                     object_id: object.clone(),
@@ -13978,6 +14020,50 @@ impl Platform {
         Ok(withdrawn)
     }
 
+    /// Put one counterfactual finding through blueprint §12.4's third
+    /// guardrail: charge it a trial and judge it against the bar that trial
+    /// count corrects to.
+    ///
+    /// The one seam that spends a counterfactual trial. Charging first and
+    /// judging second is the whole discipline — a failed test that cost
+    /// nothing is how "look until one clears" survives an accounting that
+    /// bills only what passed — and the outcome is counted on
+    /// `qip_counterfactual_trials_total` either way, including the arm where
+    /// no trial could be charged at all, because a budget spent reads as
+    /// silence on the other two and is a different fact from a finding that
+    /// was tested and failed.
+    ///
+    /// Returns the trial, admitted or not. An `Err` is a finding that could
+    /// not be *tested* — the quarterly budget is spent, the subject cannot be
+    /// named, no book is attached — and every caller treats it as the
+    /// refusal it is, which leaves the control it would have moved exactly
+    /// where it was. See [`crate::counterfactual_trial`] for why this sits in
+    /// front of the two proposals and deliberately not in front of the
+    /// narrowing multipliers.
+    fn counterfactual_trial(
+        &mut self,
+        subject: &str,
+        sample: usize,
+        supporting: usize,
+        now: Timestamp,
+    ) -> Result<CounterfactualTrial> {
+        let charged = self
+            .central
+            .factory_mut()
+            .charge_counterfactual_trial(subject, now)
+            .and_then(|account| {
+                crate::counterfactual_trial::verdict(subject, sample, supporting, &account)
+            });
+        let outcome = match &charged {
+            Ok(trial) => trial.outcome(),
+            Err(_) => trial_outcome::UNCHARGED,
+        };
+        self.telemetry
+            .metrics
+            .count(names::COUNTERFACTUAL_TRIALS, labels([("outcome", outcome)]));
+        charged
+    }
+
     /// The LEARN stage's rule review: blueprint §12.3's three rule rows,
     /// read from the twin's scores and the activity table.
     ///
@@ -14048,6 +14134,36 @@ impl Platform {
                 ));
                 continue;
             };
+            // §12.4's third guardrail, and the only counterfactual finding
+            // in this tree that can end in a loosened risk bound. The fixed
+            // bar above — ten scores, three quarters of them regretted — is
+            // free to re-run on every rule on every cycle, so a platform that
+            // looks often enough finds a rule clearing it on noise and puts
+            // two operators in front of a signature page holding it. The
+            // trial the gate charges is what makes looking cost something.
+            // A refusal leaves the bound where it is, which is the closed
+            // direction, and is reported as a problem on the cycle rather
+            // than swallowed, so an operator can see the review happened and
+            // found the evidence wanting.
+            match self.counterfactual_trial(rule, regret.sample, regret.regrets, now) {
+                Ok(trial) if trial.admitted => {}
+                Ok(trial) => {
+                    problems.push(format!(
+                        "{rule} vetoed mostly profitable paths and no recalibration is proposed: \
+                         the evidence does not clear the trial gate — {}",
+                        trial.describe()
+                    ));
+                    continue;
+                }
+                Err(error) => {
+                    problems.push(format!(
+                        "{rule} vetoed mostly profitable paths and no recalibration is proposed: \
+                         the finding could not be charged a trial — {}",
+                        error.message()
+                    ));
+                    continue;
+                }
+            }
             let proposal = match RecalibrationProposal::new(
                 rule,
                 &kind,
@@ -20285,6 +20401,341 @@ mod rule_review_tests {
         );
 
         let _ = std::fs::remove_dir_all(path.parent().expect("the log path has a parent"));
+    }
+}
+
+#[cfg(test)]
+mod counterfactual_trial_seam_tests {
+    //! Blueprint §12.4's third guardrail at the two seams that reach it, and
+    //! nowhere else.
+    //!
+    //! Every test here drives `review_rules` or `review_sizing` — the two
+    //! production methods `stage_learn` calls on every cycle — rather than
+    //! `counterfactual_trial::verdict` directly. That is deliberate: a
+    //! sibling lane once shipped a gate whose arithmetic was proven ten ways
+    //! and whose seam was entirely unwired, because every test called the
+    //! logic and nothing called the platform. Removing the
+    //! `self.counterfactual_trial(...)` call from either review must fail a
+    //! test in this module.
+
+    use super::*;
+    use crate::counterfactual_trial::outcome as trial_outcome;
+    use qip_core::dec;
+    use qip_financial::universe::Universe;
+    use qip_lifecycle::trials::DEFAULT_QUARTERLY_BUDGET;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    const RULE: &str = "order-notional";
+    const OBJECT: &str = "obj-AAA";
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn platform() -> Platform {
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    fn score(index: usize, regret: bool) -> DeclinedScore {
+        DeclinedScore {
+            order_id: OrderId::from_string(format!("ord-trial-{index}")),
+            object_id: ObjectId::from_string(OBJECT),
+            gate: "pre-trade-risk".to_string(),
+            declined_at: start(),
+            scored_at: start().saturating_add(Duration::from_secs(index as i64)),
+            would_have_earned: Simulated::of(if regret { dec!("500") } else { dec!("-100") }),
+            regret,
+            alternatives: 4,
+            rules: vec![RULE.to_string()],
+            readings: vec![RuleReading {
+                rule: RULE.to_string(),
+                observed: 300_000.0,
+                bound: 250_000.0,
+            }],
+            venue: None,
+        }
+    }
+
+    fn fill(index: usize, larger_favoured: bool) -> FillScore {
+        FillScore {
+            order_id: OrderId::from_string(format!("ord-fill-trial-{index}")),
+            object_id: ObjectId::from_string(OBJECT),
+            venue: "simulated-venue".to_string(),
+            filled_at: start(),
+            scored_at: start().saturating_add(Duration::from_secs(index as i64)),
+            smaller_favoured: false,
+            larger_favoured,
+            trade_error_bps: None,
+        }
+    }
+
+    fn proposals(platform: &Platform) -> Vec<RecalibrationProposal> {
+        platform
+            .recalibration_history()
+            .expect("the recalibration record reads")
+    }
+
+    fn trials_counted(platform: &Platform, outcome: &str) -> u64 {
+        platform.telemetry.metrics.snapshot().counter(
+            names::COUNTERFACTUAL_TRIALS,
+            &labels([("outcome", outcome)]),
+        )
+    }
+
+    /// Charge `looks` trials to the counterfactual family before the review
+    /// runs, so the corrected bar the review faces is the one a platform that
+    /// has already looked that often faces.
+    fn look_away(platform: &mut Platform, looks: u64) {
+        for index in 0..looks {
+            platform
+                .central
+                .factory_mut()
+                .charge_counterfactual_trial(&format!("elsewhere-{index}"), start())
+                .expect("a look is charged");
+        }
+    }
+
+    #[test]
+    fn a_rule_whose_regret_clears_the_fixed_bar_on_ten_paths_is_refused_by_the_trial_gate() {
+        // The premise first, and it is the whole point of the test: eight of
+        // ten regretted is exactly what ADR 0055's fixed threshold admitted —
+        // sample at the bar, fraction 0.8 over 0.75 — so before this gate the
+        // platform proposed a loosening of a risk rule on evidence that lands
+        // by chance about once in nineteen. A platform reviewing seven rules
+        // every cycle sees "once in nineteen" several times an hour.
+        let mut platform = platform();
+        for index in 0..8 {
+            platform.declined_scores.push(score(index, true));
+        }
+        for index in 8..10 {
+            platform.declined_scores.push(score(index, false));
+        }
+        let regret = crate::rule_review::regret_by_rule(&platform.declined_scores);
+        let entry = regret.get(RULE).expect("the premise failed: no regret row");
+        assert!(
+            entry.is_too_tight(),
+            "the premise failed: eight of ten does not clear ADR 0055's fixed bar, so this test \
+             proves nothing about the trial gate"
+        );
+
+        let (summary, problems) = platform.review_rules(start());
+        assert_eq!(
+            summary, None,
+            "a refused finding was journaled: {summary:?}"
+        );
+        assert!(
+            proposals(&platform).is_empty(),
+            "a recalibration was proposed on evidence the trial gate refuses"
+        );
+        assert!(platform.open_recalibrations().is_empty());
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("does not clear the trial gate"),
+            "the refusal is not attributed to the gate: {}",
+            problems[0]
+        );
+        assert!(
+            problems[0].contains("8 of 10 scored path(s)"),
+            "the refusal does not carry the evidence it weighed: {}",
+            problems[0]
+        );
+        assert_eq!(trials_counted(&platform, trial_outcome::REFUSED), 1);
+        assert_eq!(trials_counted(&platform, trial_outcome::ADMITTED), 0);
+    }
+
+    #[test]
+    fn a_rule_whose_regret_is_unanimous_across_twelve_paths_is_admitted_and_proposed() {
+        // The admitting half, and without it every assertion above is
+        // satisfied by a gate that refuses everything — which would be the
+        // `MaxExpectedShortfall` defect with the sign reversed: a control
+        // that reads as discipline and is a stop.
+        let mut platform = platform();
+        for index in 0..12 {
+            platform.declined_scores.push(score(index, true));
+        }
+        let (summary, problems) = platform.review_rules(start());
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(
+            summary.as_deref().is_some_and(|s| s.contains("proposed")),
+            "the review did not report the proposal: {summary:?}"
+        );
+        let written = proposals(&platform);
+        assert_eq!(written.len(), 1, "{written:?}");
+        assert_eq!(written[0].rule, RULE);
+        assert_eq!(trials_counted(&platform, trial_outcome::ADMITTED), 1);
+        assert_eq!(trials_counted(&platform, trial_outcome::REFUSED), 0);
+    }
+
+    #[test]
+    fn the_same_unanimous_evidence_proposes_nothing_on_a_platform_that_has_already_looked_a_hundred_times()
+     {
+        // The multiple-comparisons correction, at the seam. Same evidence,
+        // same rule, same fixed bar cleared — and the platform has spent a
+        // hundred looks this quarter, so the bar it must clear is a
+        // hundredth of the alpha. This is the difference between a threshold
+        // and a statistical gate, and it is the whole of what §12.4's row
+        // asks for.
+        let mut platform = platform();
+        look_away(&mut platform, 100);
+        for index in 0..12 {
+            platform.declined_scores.push(score(index, true));
+        }
+        let regret = crate::rule_review::regret_by_rule(&platform.declined_scores);
+        assert!(
+            regret
+                .get(RULE)
+                .is_some_and(crate::rule_review::RuleRegret::is_too_tight),
+            "the premise failed: twelve of twelve does not clear the fixed bar"
+        );
+        let (summary, problems) = platform.review_rules(start());
+        assert_eq!(summary, None);
+        assert!(
+            proposals(&platform).is_empty(),
+            "a hundred looks did not raise the bar the finding faced"
+        );
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("101 look(s) charged this quarter"),
+            "the refusal does not say how often the platform had looked: {}",
+            problems[0]
+        );
+    }
+
+    #[test]
+    fn a_finding_that_arrives_with_the_quarters_trial_budget_spent_is_refused_without_being_tested()
+    {
+        // Fail closed on exhaustion, and say which kind of silence it is. A
+        // budget spent and a finding tested-and-failed read identically on a
+        // single counter, and an operator who cannot tell them apart will
+        // read a quarter of silence as "nothing found".
+        let mut platform = platform();
+        look_away(&mut platform, DEFAULT_QUARTERLY_BUDGET);
+        for index in 0..12 {
+            platform.declined_scores.push(score(index, true));
+        }
+        let (summary, problems) = platform.review_rules(start());
+        assert_eq!(summary, None);
+        assert!(proposals(&platform).is_empty());
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("could not be charged a trial"),
+            "the refusal does not say the finding went untested: {}",
+            problems[0]
+        );
+        assert!(
+            problems[0].contains("past the budget"),
+            "the refusal does not name the budget: {}",
+            problems[0]
+        );
+        assert_eq!(trials_counted(&platform, trial_outcome::UNCHARGED), 1);
+        assert_eq!(trials_counted(&platform, trial_outcome::REFUSED), 0);
+        assert_eq!(trials_counted(&platform, trial_outcome::ADMITTED), 0);
+    }
+
+    #[test]
+    fn a_larger_size_finding_is_proposed_when_it_clears_the_gate_and_not_when_it_does_not() {
+        // ADR 0063's loosening half, both directions in one test because
+        // either alone is satisfied by a seam that is stuck.
+        let mut clears = platform();
+        for index in 0..10 {
+            clears.fill_scores.push(fill(index, true));
+        }
+        let regret = crate::sizing_review::size_regret(&clears.fill_scores, OBJECT);
+        assert!(
+            crate::sizing_review::larger_size_finding(&clears.fill_scores, OBJECT).is_some(),
+            "the premise failed: ten of ten does not clear ADR 0063's fixed bar"
+        );
+        assert_eq!(regret.sample, 10);
+        let (summary, problems) = clears.review_sizing(start());
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(
+            summary
+                .as_deref()
+                .is_some_and(|s| s.contains("larger-size proposal")),
+            "the admitted finding was not proposed: {summary:?}"
+        );
+        assert!(clears.sizing_proposals_open.contains(OBJECT));
+        assert_eq!(trials_counted(&clears, trial_outcome::ADMITTED), 1);
+
+        // The same evidence on a platform that has looked a hundred times.
+        let mut refused = platform();
+        look_away(&mut refused, 100);
+        for index in 0..10 {
+            refused.fill_scores.push(fill(index, true));
+        }
+        let (summary, problems) = refused.review_sizing(start());
+        assert_eq!(
+            summary, None,
+            "a refused finding was journaled: {summary:?}"
+        );
+        assert!(
+            refused.sizing_proposals_open.is_empty(),
+            "a proposal stands on evidence the trial gate refused"
+        );
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("does not clear the trial gate"),
+            "the refusal is not attributed to the gate: {}",
+            problems[0]
+        );
+        assert_eq!(trials_counted(&refused, trial_outcome::REFUSED), 1);
+    }
+
+    #[test]
+    fn a_larger_size_proposal_is_withdrawn_even_when_the_gate_would_refuse_a_new_one() {
+        // The direction this gate must never be able to take. A proposal
+        // standing on evidence that has since evaporated is an open
+        // signature page on nothing; if the trial gate could block the
+        // withdrawal, exhausting the quarter's budget would pin every open
+        // proposal in place, which is a loosening path bought with a refusal.
+        let mut platform = platform();
+        for index in 0..10 {
+            platform.fill_scores.push(fill(index, true));
+        }
+        platform.review_sizing(start());
+        assert!(
+            platform.sizing_proposals_open.contains(OBJECT),
+            "the premise failed: no proposal stands to withdraw"
+        );
+
+        // The evidence evaporates and the budget is spent in the same breath.
+        platform.fill_scores.clear();
+        for index in 10..20 {
+            platform.fill_scores.push(fill(index, false));
+        }
+        // One short of the budget, because the proposal above already spent
+        // one — the whole quarter, counting what the review itself charged.
+        look_away(&mut platform, DEFAULT_QUARTERLY_BUDGET - 1);
+        assert!(
+            platform
+                .central
+                .factory_mut()
+                .charge_counterfactual_trial("one-look-too-many", start())
+                .is_err(),
+            "the premise failed: the quarter's trial budget is not spent"
+        );
+        let (summary, problems) = platform.review_sizing(start());
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(
+            summary
+                .as_deref()
+                .is_some_and(|s| s.contains("larger-size proposal")),
+            "the withdrawal did not happen: {summary:?}"
+        );
+        assert!(
+            platform.sizing_proposals_open.is_empty(),
+            "a spent trial budget kept a proposal standing"
+        );
     }
 }
 

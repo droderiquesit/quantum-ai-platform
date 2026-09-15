@@ -68,6 +68,30 @@ const GENESIS: &str = "000000000000000000000000000000000000000000000000000000000
 /// and per family rather than per run.
 pub const DEFAULT_QUARTERLY_BUDGET: u64 = 500;
 
+/// The one family every counterfactual finding's trial is charged to.
+///
+/// A reserved name rather than a strategy family, and the reservation is the
+/// whole point. [`TrialBook`] budgets **per family per quarter**, so a subject
+/// charged here can exhaust this family's [`DEFAULT_QUARTERLY_BUDGET`] and
+/// cannot touch any strategy family's, and a sweep of a thousand
+/// configurations cannot leave the counterfactual review with no budget to
+/// test a finding against. Sharing the *book* — one store, one hash chain,
+/// one replay — while separating the *budget* is what the accounting already
+/// makes possible: two books over one store would each replay the other's
+/// records and then append at colliding sequences, which fails
+/// [`TrialBook::verify`] as tampering, and a second store would need a
+/// composition root to open it.
+pub const COUNTERFACTUAL_FAMILY: &str = "counterfactual-findings";
+
+/// The prefix every counterfactual subject's id carries.
+///
+/// [`TrialBook::enrol`] refuses a prefixed id in any other family and an
+/// unprefixed id in [`COUNTERFACTUAL_FAMILY`], so the separation above is
+/// held by the book rather than by the discipline of its callers. Without it
+/// an instrument named the same as a strategy would silently charge that
+/// strategy's family — the very crossing the two budgets exist to prevent.
+pub const COUNTERFACTUAL_SUBJECT_PREFIX: &str = "counterfactual.";
+
 /// A calendar quarter, in UTC.
 ///
 /// Derived from an instant and never stored on its own: the year and month
@@ -536,6 +560,35 @@ impl TrialBook {
         Ok(())
     }
 
+    /// The counterfactual family holds counterfactual subjects and nothing
+    /// else, and a counterfactual subject charges nowhere else.
+    ///
+    /// Both halves, because either one alone leaves the budgets able to
+    /// cross. Without the first, a strategy enrolled in
+    /// [`COUNTERFACTUAL_FAMILY`] spends the budget the counterfactual review
+    /// needs to test a finding; without the second, a finding whose subject
+    /// happens to be named like a strategy spends that strategy family's, and
+    /// a sweep is refused because a rule review ran. The refusals name the
+    /// call to use instead.
+    fn check_reservation(strategy: &StrategyId, family: &StrategyFamily) -> Result<()> {
+        let reserved_family = family.as_str() == COUNTERFACTUAL_FAMILY;
+        let reserved_subject = strategy.as_str().starts_with(COUNTERFACTUAL_SUBJECT_PREFIX);
+        match (reserved_family, reserved_subject) {
+            (true, false) => Err(Error::denied(format!(
+                "{strategy} is not a counterfactual subject and cannot be enrolled in \
+                 {COUNTERFACTUAL_FAMILY}, whose quarterly budget exists so that a counterfactual \
+                 finding and a strategy sweep cannot exhaust each other; enrol it in its own \
+                 family"
+            ))),
+            (false, true) => Err(Error::denied(format!(
+                "{strategy} is a counterfactual subject and cannot be enrolled in {family}; \
+                 charge it with `TrialBook::charge_counterfactual`, which files it under \
+                 {COUNTERFACTUAL_FAMILY} and that family's own budget"
+            ))),
+            _ => Ok(()),
+        }
+    }
+
     fn check_membership(
         members: &BTreeMap<StrategyId, StrategyFamily>,
         strategy: &StrategyId,
@@ -577,6 +630,7 @@ impl TrialBook {
         family: &StrategyFamily,
         at: Timestamp,
     ) -> Result<()> {
+        Self::check_reservation(strategy, family)?;
         Self::check_membership(&self.members, strategy, family)?;
         if self.members.get(strategy) == Some(family) {
             return Ok(());
@@ -700,6 +754,66 @@ impl TrialBook {
             quarter_trials: record.quarter_after,
             quarterly_budget: self.quarterly_budget,
         })
+    }
+
+    /// The journal id a counterfactual subject charges under.
+    ///
+    /// Prefixed so [`Self::check_reservation`] can tell the two kinds of
+    /// subject apart structurally, and restricted to the same character set
+    /// as a family name so the id that enters the record hash is legible and
+    /// cannot be confused with a punctuated strategy name. Refuses rather
+    /// than sanitising: a subject whose name this cannot carry is a finding
+    /// that goes untested, which is the closed direction, and a silently
+    /// rewritten name would charge two subjects to one account.
+    pub fn counterfactual_subject(subject: &str) -> Result<StrategyId> {
+        if subject.trim().is_empty() {
+            return Err(Error::invalid(
+                "a counterfactual finding needs a subject; the trial count is keyed on it",
+            ));
+        }
+        if let Some(bad) = subject
+            .chars()
+            .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+        {
+            return Err(Error::invalid(format!(
+                "counterfactual subject {subject:?} contains {bad:?}; only letters, digits, '.', \
+                 '_' and '-' are allowed, because the subject enters the record hash and a \
+                 rewritten one would charge two subjects to one account"
+            )));
+        }
+        Ok(StrategyId::new(format!(
+            "{COUNTERFACTUAL_SUBJECT_PREFIX}{subject}"
+        )))
+    }
+
+    /// Charge one look at one counterfactual finding to
+    /// [`COUNTERFACTUAL_FAMILY`], and return the account the finding must be
+    /// judged against.
+    ///
+    /// One trial per look, because a look is what the multiple-comparisons
+    /// correction has to count: a platform that tests the same fixed
+    /// threshold on every rule on every cycle will find a rule clearing it by
+    /// chance, and the count of looks is the only thing that says how hard it
+    /// looked. The charge happens before the verdict and stays charged when
+    /// the verdict refuses — an unpaid-for failed test is how "keep trying
+    /// until one passes" survives an accounting that only bills successes.
+    ///
+    /// The family is opened on first use, which [`Self::open_family`]
+    /// deliberately refuses to do twice and which the promotion path
+    /// deliberately does not do at all. The refusal there guards a sweep
+    /// laundered by renaming a family; there is exactly one counterfactual
+    /// family, its name is a `pub const` in this file, and there is no second
+    /// name to launder into — so the act it guards cannot happen here, and
+    /// requiring a composition root to open it would leave the gate unarmed
+    /// in every deployment that forgot, which is a control that cannot fire.
+    pub fn charge_counterfactual(&mut self, subject: &str, at: Timestamp) -> Result<TrialAccount> {
+        let family = StrategyFamily::new(COUNTERFACTUAL_FAMILY)?;
+        let id = Self::counterfactual_subject(subject)?;
+        if !self.journals.contains_key(&family) {
+            self.open_family(&family, at)?;
+        }
+        self.enrol(&id, &family, at)?;
+        self.charge(&id, 1, at)
     }
 
     /// A family's journal, oldest first.
