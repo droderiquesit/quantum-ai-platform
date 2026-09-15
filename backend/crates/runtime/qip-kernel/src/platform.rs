@@ -1907,6 +1907,13 @@ pub struct HypothesisPrecedent {
     pub nearest: Vec<PrecedentEntry>,
     /// The share of the nearest whose outcome went the claim's way.
     pub digest: PrecedentDigest,
+    /// Blueprint §10.3's last query — what the platform declined in the
+    /// situations this recall returned, and whether the twin says it should
+    /// have — joined on the hypothesis id the episode and the refused order
+    /// both carry. Evidence beside the precedent and nothing more: see
+    /// [`crate::precedent_declines`] for why it may never become a bound.
+    #[serde(default)]
+    pub declines: crate::precedent_declines::PrecedentDeclines,
 }
 
 /// One recalled episode, as the precedent record keeps it.
@@ -9001,6 +9008,21 @@ impl Platform {
                     .and_then(|outcome| outcome.agrees_with(direction)),
             })
             .collect();
+        // §10.3's "what did we decline in situations like this, and should we
+        // have?", on the recall this stage has just made. Joined here rather
+        // than at resolution because this is the one instant the platform
+        // holds both halves — the analogues it recalled and the scores the
+        // twin has produced — and a query nothing asks is a query the
+        // blueprint may as well not have listed.
+        let declines = {
+            let orders = &self.orders;
+            crate::precedent_declines::join(&recall.nearest, &self.declined_scores, |order_id| {
+                orders
+                    .order(order_id)
+                    .map(|order| order.hypotheses.clone())
+                    .unwrap_or_default()
+            })
+        };
         self.precedents.push(HypothesisPrecedent {
             hypothesis_id: hypothesis.hypothesis_id.as_str().to_string(),
             cycle: self.cycle,
@@ -9009,6 +9031,7 @@ impl Platform {
             memory_size: self.episodes.len(),
             nearest,
             digest: digest.clone(),
+            declines,
         });
         if self.precedents.len() > PREDICTION_HISTORY {
             self.precedents
@@ -15205,10 +15228,20 @@ fn central_signing_secret(seed: u64) -> [u8; 32] {
 /// A volume spike is a fact about volume; it does not on its own imply a
 /// direction, and mapping it to one would be inventing a mechanism to fill a
 /// gap — which is exactly what the reasoning stage exists to prevent.
+/// What every episode id this platform writes begins with.
+///
+/// Named rather than spelled twice, because
+/// [`crate::precedent_declines::hypothesis_of`] reads the id back the other
+/// way to join an episode to what was declined on its hypothesis. Two
+/// literals — one to write the prefix and one to strip it — would be two
+/// claims about one fact, and the day either moved the join would return
+/// nothing and look exactly like a situation in which nothing was declined.
+pub(crate) const EPISODE_ID_PREFIX: &str = "ep-";
+
 /// The episode id a hypothesis's episode is kept under, on both sides of
 /// the resolve seam.
 fn episode_id_for(hypothesis_id: &str) -> String {
-    format!("ep-{hypothesis_id}")
+    format!("{EPISODE_ID_PREFIX}{hypothesis_id}")
 }
 
 fn mechanism_for(

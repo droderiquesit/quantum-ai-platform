@@ -69,7 +69,13 @@ history.
       "examined": 0,
       "memory_size": 1,
       "nearest": [],
-      "digest": { "nearest": 0, "resolved": 0, "agreeing": 0, "agreement": null }
+      "digest": {
+        "nearest": 0, "resolved": 0, "agreeing": 0, "agreement": null,
+        "surprising": 0, "worst_surprise_bps": null
+      },
+      "declines": {
+        "analogues": 0, "analogues_matched": 0, "declines": 0, "regretted": 0, "by_gate": {}
+      }
     }
   ]
 }
@@ -89,6 +95,14 @@ history.
 | `digest.resolved` | integer | Of those, episodes with an outcome that has a sign. |
 | `digest.agreeing` | integer | Of those, outcomes that went the claim's way. |
 | `digest.agreement` | number in `[0, 1]` or `null` | `agreeing / resolved`, or `null` where nothing resolved has a sign — a share of nothing is not zero agreement, it is no evidence. |
+| `digest.surprising` | integer | Of the recalled episodes, those that can state a surprise at all: an outcome, and an expectation to measure it against. A different denominator from `resolved`, which counts outcomes with a *sign* — a claim can be gradeable for surprise while agreeing with nothing because the move came out at exactly zero. |
+| `digest.worst_surprise_bps` | number or `null` | The largest absolute surprise across those episodes, in basis points, reported signed so a reader sees whether the worst neighbour overshot its claim or fell short of it. `null` where none could state one. The largest and not the mean: a mean over five neighbours buries the rare one, which is the reading this exists to surface. |
+| `precedents[].declines` | object | What the platform declined on the recalled episodes' **own hypotheses**, and whether the twin says it should have — blueprint §10.3's last query. Joined on the hypothesis id the episode and the refused order both carry, never on instrument or a time window. |
+| `declines.analogues` | integer | Episodes recalled. The premise of the three figures below: with none recalled, they are zero because nothing was asked, not because nothing was declined. |
+| `declines.analogues_matched` | integer | Of those, the ones at least one scored refusal names. |
+| `declines.declines` | integer | Scored refusals joined to them. A refused order naming two analogues is one refusal, counted once. |
+| `declines.regretted` | integer | Of those, the ones the twin says would have beaten standing aside. |
+| `declines.by_gate` | object | The same split per control: `{"pre-trade-risk": {"declines": 1, "regretted": 0}}`, in control order. Evidence a person reads — nothing in this body loosens a rule, and §12.4 forbids anything that would. |
 
 ## Errors
 

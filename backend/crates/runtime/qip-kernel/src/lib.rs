@@ -47,6 +47,7 @@ pub mod family_review;
 pub mod feature_statistics;
 pub mod hedge_review;
 pub mod platform;
+pub mod precedent_declines;
 pub mod quote_loop;
 pub mod references;
 pub mod regime_allocation;
