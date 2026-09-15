@@ -117,6 +117,239 @@ fn three_distinct() -> Result<EnforcementPoints> {
     Ok(points)
 }
 
+// --- §38.3 the basis as it arrives in a record ------------------------------
+
+#[test]
+fn a_basis_whose_class_forbids_its_rate_is_refused_when_it_arrives_in_a_record() -> Result<()> {
+    // The failure this prevents, found by reading the code rather than by an
+    // incident: `ToleranceBasis` derived `Deserialize` straight onto its
+    // private fields, so every refusal in `ToleranceBasis::new` guarded the
+    // constructor and nothing else. A basis is journalled — the `Reconcile`
+    // command carries a whole schedule of them — and a replay re-runs the
+    // real control against whatever the record decodes to. So a hand-edited
+    // record could name a combination `new` refuses *by name*, and a
+    // shortfall recorded as a halt would replay as within tolerance with a
+    // derivation that reads like a configured control.
+    //
+    // Equity with a rate of nine tenths is that combination: §38.3 gives
+    // equity "zero beyond dust", so any rate on it is refused.
+    let smuggled = r#"{"class":"equity","dust":"0.01","rate":"0.9"}"#;
+    // Premise one: the bytes are well-formed JSON with all three fields, so a
+    // refusal below is the control refusing and not the parser.
+    let raw: serde_json::Value = serde_json::from_str(smuggled)?;
+    assert_eq!(raw["class"], "equity");
+    assert_eq!(raw["rate"], "0.9");
+    // Premise two: the constructor refuses exactly this, so the record is
+    // being judged against the same rule a caller faces.
+    assert!(matches!(
+        ToleranceBasis::new(ToleranceClass::Equity, dec!("0.01"), dec!("0.9")),
+        Err(Error::Invalid(_))
+    ));
+
+    let decoded: std::result::Result<ToleranceBasis, _> = serde_json::from_str(smuggled);
+    assert!(
+        decoded.is_err(),
+        "a record rebuilt a basis the constructor refuses: {decoded:?}"
+    );
+    // And through the shape the journal actually carries, which is the
+    // schedule rather than the bare basis: `ToleranceSchedule`'s own
+    // `TryFrom` only ever refused a duplicate venue-asset, so this is the
+    // path a tampered `Reconcile` command would have taken. Built by
+    // serialising a real schedule and editing the one field, which is what a
+    // hand-edited record is, rather than by guessing the wire shape.
+    let honest = ToleranceSchedule::new().with_basis(
+        key("XNAS", "AAPL")?,
+        ToleranceBasis::dust_only(ToleranceClass::Equity, dec!("0.01"))?,
+    );
+    let recorded = serde_json::to_string(&honest)?;
+    assert!(
+        recorded.contains(r#""rate":"0""#),
+        "premise: an equity basis is recorded with a zero rate: {recorded}"
+    );
+    let tampered = recorded.replace(r#""rate":"0""#, r#""rate":"0.9""#);
+    assert_ne!(tampered, recorded, "premise: the record was edited");
+    let rebuilt: std::result::Result<ToleranceSchedule, _> = serde_json::from_str(&tampered);
+    assert!(
+        rebuilt.is_err(),
+        "a schedule rebuilt a basis the constructor refuses: {rebuilt:?}"
+    );
+    // The untampered record still replays, so the refusal is of the edit and
+    // not of the schedule.
+    let replayed: ToleranceSchedule = serde_json::from_str(&recorded)?;
+    assert_eq!(replayed, honest);
+    Ok(())
+}
+
+#[test]
+fn a_declared_basis_still_round_trips_through_a_record_unchanged() -> Result<()> {
+    // The other half of the gate, and the half that makes it a gate: a
+    // decode path that refused everything would be as broken as one that
+    // refused nothing, and it would refuse the replay of every honest
+    // reconciliation ever journalled. Every field is distinct and non-default
+    // so that a round trip which dropped or defaulted one is caught.
+    let basis = ToleranceBasis::new(ToleranceClass::PerpetualFuture, dec!("0.25"), dec!("0.002"))?;
+    assert_ne!(basis.dust(), Decimal::ZERO);
+    assert_ne!(basis.rate(), Decimal::ZERO);
+    assert_ne!(basis.class(), ToleranceClass::Undeclared);
+
+    let text = serde_json::to_string(&basis)?;
+    let restored: ToleranceBasis = serde_json::from_str(&text)?;
+    assert_eq!(restored, basis);
+    assert_eq!(restored.class(), ToleranceClass::PerpetualFuture);
+    assert_eq!(restored.dust(), dec!("0.25"));
+    assert_eq!(restored.rate(), dec!("0.002"));
+    // The wire form is still the three named fields, not a tuple or a
+    // wrapper: a record written before the decode path was closed must still
+    // decode, or closing it would have orphaned the journal.
+    let wire: serde_json::Value = serde_json::from_str(&text)?;
+    assert_eq!(wire["class"], "perpetual_future");
+    assert_eq!(wire["dust"], "0.25");
+    assert_eq!(wire["rate"], "0.002");
+    Ok(())
+}
+
+#[test]
+fn an_interval_rate_a_hair_under_one_is_refused_and_a_real_one_is_admitted() -> Result<()> {
+    // The ceiling was `rate < 1`, argued as "one interval cannot accrue the
+    // entire balance". It admitted 0.999999999 — the entire balance to within
+    // one unit in the last place — which is the `MaxExpectedShortfall` defect
+    // wearing a bound's clothes: a control that reads as a limit and stops
+    // nothing.
+    assert!(matches!(
+        ToleranceBasis::new(
+            ToleranceClass::PerpetualFuture,
+            dec!("1"),
+            dec!("0.999999999")
+        ),
+        Err(Error::Invalid(_))
+    ));
+    // Just above the ceiling is refused, and the ceiling itself is admitted,
+    // so the bound is where it says it is rather than approximately there.
+    assert!(
+        ToleranceBasis::new(
+            ToleranceClass::PerpetualFuture,
+            dec!("1"),
+            Decimal::from_raw(ToleranceBasis::MAX_INTERVAL_RATE.raw() + 1)
+        )
+        .is_err()
+    );
+    assert!(
+        ToleranceBasis::new(
+            ToleranceClass::PerpetualFuture,
+            dec!("1"),
+            ToleranceBasis::MAX_INTERVAL_RATE
+        )
+        .is_ok()
+    );
+    // And every rate §38.3 actually describes is still admitted: a day's
+    // interest, a funding interval, a mark's confidence band. A ceiling that
+    // refused these would have moved the defect rather than fixed it.
+    for rate in [dec!("0.0003"), dec!("0.0075"), dec!("0.05")] {
+        assert!(
+            ToleranceBasis::new(ToleranceClass::FiatAtBrokerOrBank, dec!("1"), rate).is_ok(),
+            "an interval rate §38.3 names was refused: {rate}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_floor_as_large_as_the_balance_it_judges_is_refused_and_a_smaller_one_is_admitted() -> Result<()>
+{
+    // The failure this prevents, reachable today with no attacker: a mounted
+    // statement file with `quantity` and `tolerance` transposed — ten million
+    // of each. Ten million is strictly positive, so the parser admits it and
+    // `ToleranceBasis::new` admits it; neither can see the balance. From that
+    // cycle on, any divergence up to the whole balance records as within
+    // tolerance, and the record is indistinguishable from a deliberately wide
+    // control. The module already argued that a rate of one is "a halt that
+    // can never fire"; the dust term had the same shape and no such bound.
+    let transposed = ToleranceBasis::dust_only(ToleranceClass::Undeclared, dec!("10000000"))?;
+    // Premise: every declaration-time refusal admits it, so what follows is a
+    // refusal that exists nowhere else.
+    assert_eq!(transposed.dust(), dec!("10000000"));
+
+    let refused = transposed.evaluate(dec!("10000000"));
+    assert!(
+        matches!(refused, Err(Error::Invalid(_))),
+        "a tolerance equal to the balance it judges was admitted: {refused:?}"
+    );
+    // Both figures are named, because an operator reading this has to find a
+    // transposed field in a file, not re-derive the formula.
+    let message = match refused {
+        Err(Error::Invalid(ref m)) => m.clone(),
+        other => panic!("expected an invalid refusal: {other:?}"),
+    };
+    assert!(message.contains("10000000"), "{message}");
+
+    // And the admit half, which is what distinguishes a working bound from
+    // one that refuses everything: the same class and the same balance, with
+    // a floor below it, still evaluates — and still halts on a real break.
+    let sane = ToleranceBasis::dust_only(ToleranceClass::Undeclared, dec!("1"))?;
+    let evaluated = sane.evaluate(dec!("10000000"))?;
+    assert_eq!(evaluated.tolerance, dec!("1"));
+    // A floor one unit under the balance is admitted too, so the bound is
+    // strictly where it says it is.
+    let edge = ToleranceBasis::dust_only(ToleranceClass::Undeclared, dec!("9999999.999999999"))?;
+    assert!(edge.evaluate(dec!("10000000")).is_ok());
+    Ok(())
+}
+
+#[test]
+fn an_accrual_that_pushes_the_tolerance_up_to_the_balance_is_refused_too() -> Result<()> {
+    // The bound is on the tolerance, not on the dust floor alone. A floor
+    // comfortably under the balance plus one interval's accrual can still
+    // reach it, and the result is the same unfireable halt by a longer route
+    // — so checking only `dust` would have left the rate arm holding the
+    // defect the rate ceiling was tightened to stop.
+    let basis = ToleranceBasis::new(ToleranceClass::PerpetualFuture, dec!("95"), dec!("0.05"))?;
+    // Premise: the floor alone is well inside the balance.
+    assert!(basis.dust() < dec!("100"));
+    // 95 + 0.05 x 100 = 100, exactly the balance.
+    let refused = basis.evaluate(dec!("100"));
+    assert!(
+        matches!(refused, Err(Error::Invalid(_))),
+        "an accrual carried the tolerance up to the whole balance: {refused:?}"
+    );
+    // The same basis on a larger book is admitted: 95 + 10 = 105 against 200.
+    let evaluated = basis.evaluate(dec!("200"))?;
+    assert_eq!(evaluated.tolerance, dec!("105"));
+    assert!(evaluated.accrual_applied());
+    Ok(())
+}
+
+#[test]
+fn a_venue_asset_the_ledger_does_not_book_is_still_halted_rather_than_refused() -> Result<()> {
+    // The exemption the bound above needs, and the reason it is written as
+    // "non-zero expectation" rather than as a flat comparison. A venue-asset
+    // the ledger books nothing at has an expectation of zero, every positive
+    // floor exceeds it, and a bound applied there would refuse the whole pass
+    // — standing in front of the `unrecorded_by_ledger` halt it was written
+    // to protect and turning a halt into a refusal.
+    let wallet = Wallet::assemble(
+        vec![observed("custodian-x", "USD", dec!("250"))?],
+        Vec::new(),
+        freshness(),
+        now(),
+    )?;
+    // Premise: the ledger books nothing for it.
+    assert!(wallet.ledger_view(&key("custodian-x", "USD")?).is_none());
+
+    let outcomes = wallet.reconcile(&floors(&[("custodian-x", "USD", dec!("1000"))])?)?;
+    assert_eq!(outcomes.len(), 1);
+    assert!(
+        outcomes[0].is_halt(),
+        "a balance the ledger never booked must halt: {outcomes:?}"
+    );
+    match &outcomes[0] {
+        ReconciliationOutcome::Halt { alert, .. } => {
+            assert_eq!(alert.cause, BreakCause::UnrecordedByLedger);
+        }
+        other => panic!("expected a halt: {other:?}"),
+    }
+    Ok(())
+}
+
 // --- §38.3 arithmetic --------------------------------------------------------
 
 #[test]
@@ -736,10 +969,13 @@ fn an_asset_without_a_tolerance_is_refused_rather_than_guessed() -> Result<()> {
         Err(Error::Invalid(ref m)) if m.contains("COIN/BTC")
     ));
     // And a schedule that does name it admits it, which is what distinguishes
-    // a working refusal from one that refuses everything.
+    // a working refusal from one that refuses everything. The floor is below
+    // the balance it judges on purpose: this half asserted a floor of ten on a
+    // book of one, which `evaluate` now refuses as a halt that cannot fire, so
+    // an arbitrary figure here would have been asserting the wrong refusal.
     assert!(
         wallet
-            .reconcile(&floors(&[("COIN", "BTC", dec!("10"))])?)
+            .reconcile(&floors(&[("COIN", "BTC", dec!("0.1"))])?)
             .is_ok()
     );
     Ok(())

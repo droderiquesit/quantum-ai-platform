@@ -1218,6 +1218,53 @@ impl StressReport {
 /// bound is refused by name.
 const MAX_OBSERVED_VENUE_ASSETS: usize = 256;
 
+/// Whether the LEARN stage judged a balance this cycle, or had none to judge.
+///
+/// Two states rather than `()`, and the reason is the whole point of the
+/// type. `Platform::reconcile_wallet` returned `Ok(())` both when it had
+/// reconciled every observed venue-asset and when it held no statement at
+/// all and returned early, so the two were indistinguishable at the one call
+/// site that could have said which. `Wallet::reconcile` refuses an empty
+/// wallet in exactly those words — but the early return meant the kernel
+/// never reached it, so the refusal guarded a path production could not take
+/// and the silence it was written against was still total. A deployment with
+/// no statement file mounted, or one whose venue never reports, ran eight
+/// stages a cycle indefinitely while no balance was checked against any
+/// custodian, and nothing said so.
+///
+/// It is a sentence on the stage rather than a problem on it, deliberately.
+/// A desk that has handed in nothing has not broken anything; it has simply
+/// not been reconciled, and filing that as a fault would make every cold
+/// start read as one — which `a_platform_with_no_data_is_legible_rather_than_merely_quiet`
+/// in the acceptance suite refuses, and rightly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WalletJudgement {
+    /// No venue-asset has been observed, so no balance was judged.
+    NothingObserved,
+    /// The wallet was assembled and reconciled through the fabric journal,
+    /// whose record says what each venue-asset came to.
+    Judged,
+}
+
+impl WalletJudgement {
+    /// What the stage says about a cycle that judged nothing, or `None` when
+    /// the fabric record already says what happened.
+    ///
+    /// `None` rather than a second sentence in the judged case on purpose:
+    /// the journal's own record is the account of a reconciliation, and a
+    /// stage sentence restating it would be a second claim about one fact.
+    const fn unjudged(self) -> Option<&'static str> {
+        match self {
+            Self::NothingObserved => Some(
+                "no balance was judged: no venue-asset has been observed, so §38.3's \
+                 reconciliation had nothing to run against — hand in a custodian statement \
+                 before reading this cycle as a reconciled book",
+            ),
+            Self::Judged => None,
+        }
+    }
+}
+
 /// How old a statement may be when the wallet is assembled against it.
 ///
 /// A custodian's, bank's or administrator's statement is a daily document,
@@ -5560,7 +5607,11 @@ impl Platform {
     /// Reached from the LEARN stage, after ACT has moved cash, so the
     /// ledger view is the book the cycle left. Nothing is assembled while no
     /// statement is held — a wallet of zero holdings reads as an empty
-    /// account rather than an unobserved one. The ledger's view is one
+    /// account rather than an unobserved one — and that case returns
+    /// [`WalletJudgement::NothingObserved`] rather than the bare `Ok(())`
+    /// that made it indistinguishable from a book that reconciled clean.
+    /// The caller is required to say which happened, because the type gives
+    /// it no way to ignore the difference. The ledger's view is one
     /// entry, the desk's cash at the broker's venue, with the capital
     /// ledger's reservations against it; it is supplied only when a
     /// statement names that venue-asset, because the wallet refuses a
@@ -5570,9 +5621,9 @@ impl Platform {
     /// refused record, which the journal keeps; reconciliation then finds
     /// no wallet and is a refused record too. Both are decisions the log
     /// shows rather than a stage failure.
-    fn reconcile_wallet(&mut self, now: Timestamp) -> Result<()> {
+    fn reconcile_wallet(&mut self, now: Timestamp) -> Result<WalletJudgement> {
         if self.holdings_observed.is_empty() {
-            return Ok(());
+            return Ok(WalletJudgement::NothingObserved);
         }
         let observations: Vec<HoldingObservation> =
             self.holdings_observed.values().cloned().collect();
@@ -5608,7 +5659,7 @@ impl Platform {
             }),
             now,
         )?;
-        Ok(())
+        Ok(WalletJudgement::Judged)
     }
 
     /// Declare the corridors the Intelligence layer sets policy for, and emit
@@ -10605,12 +10656,16 @@ impl Platform {
         // a record the journal keeps; an error here is the journal or the
         // log refusing the record, which is a problem on the cycle's record
         // rather than a reason to skip scoring what resolved.
-        if let Err(error) = self.reconcile_wallet(now) {
-            self.capture_problems.push(format!(
-                "the wallet was not journalled this cycle: {}",
-                error.message()
-            ));
-        }
+        let judgement = match self.reconcile_wallet(now) {
+            Ok(judgement) => Some(judgement),
+            Err(error) => {
+                self.capture_problems.push(format!(
+                    "the wallet was not journalled this cycle: {}",
+                    error.message()
+                ));
+                None
+            }
+        };
         let (outcome, by_hypothesis) = self.attribute(now);
         // What the platform did and what it declined, side by side. The tally
         // is the answer to the question a report of trades alone cannot
@@ -10627,6 +10682,22 @@ impl Platform {
             );
             StageOutcome { detail, ..outcome }
         };
+        // A cycle that judged no balance says so, in the stage's own sentence.
+        // Without this the wallet's silence was total: `reconcile_wallet`
+        // returned `Ok(())` whether it had reconciled every venue-asset or
+        // never been handed a statement at all, and a deployment with no
+        // statement file mounted completed eight stages a cycle, forever,
+        // while no balance anywhere was being checked against a custodian.
+        // That is not a fault: a desk is entitled to hand in nothing, and a
+        // cold start is a normal state that must read as one. So it is a
+        // sentence on the record rather than a problem on the stage — the
+        // distinction the cold-start acceptance test insists on, and the
+        // reason this is not the outright refusal it might look like it
+        // should be.
+        if let Some(unjudged) = judgement.and_then(WalletJudgement::unjudged) {
+            let detail = format!("{}; {unjudged}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
         // Score whatever resolved, and say how calibrated the platform is on
         // everything that has. This is the seam where the fact becomes known:
         // the platform's own series are the only source it holds for the

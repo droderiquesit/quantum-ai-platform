@@ -2287,3 +2287,142 @@ fn a_statement_whose_floor_is_not_strictly_positive_stops_at_the_kernel() -> Res
     assert_eq!(platform.holdings_observed().len(), 1);
     Ok(())
 }
+
+#[test]
+fn a_statement_whose_floor_swallows_its_own_balance_cannot_reconcile_a_shortfall_as_clean()
+-> Result<()> {
+    // The failure this prevents, found by reading the code and reachable
+    // today with no attacker: a mounted statement file with `quantity` and
+    // `tolerance` transposed. Ten million is strictly positive, so the
+    // parser admits it and `ToleranceBasis::dust_only` admits it — neither
+    // can see the balance the floor will judge. From that cycle on, every
+    // divergence up to the entire book recorded as `WithinTolerance`, and the
+    // record read exactly like a deliberately wide control rather than a
+    // broken one. `MaxExpectedShortfall` again: a control that reads as
+    // protection and cannot fire.
+    let mut wide = platform(PlatformConfig::default())?;
+    let initial_equity = wide.config().initial_equity;
+    let key = desk_cash()?;
+    let shortfall = dec!("750000");
+    // Premise: the transposed figure is admitted at the door, so the refusal
+    // under test is one that exists nowhere earlier in the path.
+    wide.observe_statement(
+        key.venue.clone(),
+        "USD",
+        initial_equity - shortfall,
+        initial_equity,
+        start(),
+    )?;
+    assert_eq!(wide.holdings_observed().len(), 1);
+
+    let report = wide.run_cycle(start().saturating_add(Duration::from_secs(60)));
+    assert!(report.stage(Stage::Learn).is_some(), "premise: LEARN ran");
+    // Premise: the wallet was assembled and books an expectation the floor is
+    // not smaller than — otherwise the pass would be refused for some other
+    // reason and this test would prove nothing.
+    let expected = wide
+        .fabric_state()
+        .wallet()
+        .and_then(|wallet| wallet.ledger_view(&key))
+        .expect("the wallet was assembled and books the desk's cash")
+        .expected()?;
+    assert!(
+        expected <= initial_equity,
+        "premise: the floor is at least the balance it judges ({expected} against \
+         {initial_equity})"
+    );
+
+    // The pass is refused, so nothing is recorded about this venue-asset at
+    // all — and in particular not a three-quarter-million shortfall dressed
+    // as a balance inside tolerance.
+    let judged = wide.fabric_state().reconciliations().get(&key);
+    assert!(
+        judged.is_none(),
+        "a floor as wide as the book judged it anyway: {judged:?}"
+    );
+
+    // And the admit half. The same shortfall, the same venue-asset, a floor
+    // below the balance: judged, and judged a halt. A bound that refused this
+    // too would have replaced an unfireable control with an unusable one.
+    let mut sane = platform(PlatformConfig::default())?;
+    sane.observe_statement(
+        key.venue.clone(),
+        "USD",
+        initial_equity - shortfall,
+        dec!("1"),
+        start(),
+    )?;
+    sane.run_cycle(start().saturating_add(Duration::from_secs(60)));
+    let outcome = sane
+        .fabric_state()
+        .reconciliations()
+        .get(&key)
+        .expect("a floor below the balance still judges the desk's cash");
+    assert!(
+        outcome.is_halt(),
+        "a three-quarter-million shortfall against a floor of one must halt: {outcome:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cycle_that_has_observed_no_balance_says_so_rather_than_completing_quietly() -> Result<()> {
+    // The failure this prevents: `Wallet::reconcile` refuses an empty wallet
+    // in as many words, and `reconcile_wallet` returned `Ok(())` before ever
+    // reaching it, so that refusal guarded a path production could not take.
+    // A deployment with no statement file mounted — or one whose venue never
+    // reports — ran every stage of every cycle indefinitely while no balance
+    // anywhere was checked against a custodian, and nothing on the record
+    // said so. The silence read as health, which is the same defect the
+    // wallet's own refusal was written against, one layer up.
+    let mut platform = platform(PlatformConfig::default())?;
+    // Premise: nothing observed, and nothing reconciled.
+    assert!(platform.holdings_observed().is_empty());
+    assert!(platform.fabric_state().reconciliations().is_empty());
+
+    let report = platform.run_cycle(start());
+    let learn = report
+        .stage(Stage::Learn)
+        .ok_or_else(|| qip_core::Error::not_found("the LEARN stage ran"))?;
+    assert!(
+        learn.detail.contains("no balance was judged"),
+        "a cycle that judged no balance said nothing about it: {}",
+        learn.detail
+    );
+    // A sentence on the stage, not a problem on it. A desk that has handed in
+    // no statement has broken nothing, and filing it as a fault would make
+    // every cold start read as one.
+    assert!(
+        learn.problems.is_empty(),
+        "an unobserved book is not a stage fault: {:?}",
+        learn.problems
+    );
+
+    // The counterpart, which is what makes the sentence mean something: hand
+    // in one statement and the stage stops saying it, because the fabric
+    // record now says what the venue-asset came to. A sentence written on
+    // every cycle regardless would be wallpaper.
+    let initial_equity = platform.config().initial_equity;
+    let key = desk_cash()?;
+    platform.observe_statement(
+        key.venue.clone(),
+        "USD",
+        initial_equity + dec!("0.25"),
+        dec!("1"),
+        start(),
+    )?;
+    let second = platform.run_cycle(start().saturating_add(Duration::from_secs(60)));
+    let learn = second
+        .stage(Stage::Learn)
+        .ok_or_else(|| qip_core::Error::not_found("the second LEARN stage ran"))?;
+    assert!(
+        !learn.detail.contains("no balance was judged"),
+        "a cycle that judged a balance still claimed it had judged none: {}",
+        learn.detail
+    );
+    assert!(
+        platform.fabric_state().reconciliations().contains_key(&key),
+        "premise: the second cycle actually judged the desk's cash"
+    );
+    Ok(())
+}
