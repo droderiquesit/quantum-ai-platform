@@ -11,6 +11,7 @@
 //! somebody already approved, for as long as the envelope has left to run.
 
 use crate::arbitrage::ArbitrageDesk;
+use crate::dispersion::{DispersionPolicy, DispersionVerdict, FillTimes};
 use crate::dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 use crate::envelope::VerifiedEnvelope;
 use crate::feasibility::{self, VenueModel};
@@ -18,6 +19,7 @@ use crate::journal::{Decision, Journal, Mirror};
 use crate::mesh::{CellStateDelta, DeltaOrder, DeltaRefusal, StrategyUtilisation};
 use crate::mirror::MirrorArrangement;
 use crate::policy::{VerifiedHalt, VerifiedPolicy};
+use crate::quoting::{Admission, MessageKind, QuoteBudget, RateLimits};
 use crate::reservation::RegionTable;
 use crate::seam::CellLiquidity;
 use crate::telemetry::{CellMetrics, RegionShareOutcome};
@@ -118,6 +120,35 @@ fn path_assigned(cycle_id: &str, assignment: &PathAssignment) -> Decision {
         rationale: assignment.rationale().to_string(),
     }
 }
+/// The gate a cell refuses under when a venue's message budget cannot fund
+/// what the pass wants to send (§29.2).
+///
+/// A constant for the same reason as [`GATE_LIVE_VENUE`], and for one more:
+/// it too is recorded at two seams. The placement seam goes through
+/// [`Cell::refuse`] like every other pass gate; the withdrawal seam is
+/// [`Cell::withdraw_expired`], which has no [`WorkReport`] to push a refusal
+/// onto and records the series directly. `qip_edge_refusals_total{gate=\"quote_budget\"}`
+/// is therefore the sum of a refused quote and a cancel the budget could not
+/// fund, which are the same fact about the same bucket seen from the two
+/// sides that matter.
+pub const GATE_QUOTE_BUDGET: &str = "quote_budget";
+
+/// The gate a cell refuses a cycle under when its legs' venues fill too far
+/// apart in time (§32.1). Refused through [`Cell::refuse`] like every other
+/// pass gate, so the label needs no second enumeration.
+pub const GATE_FILL_DISPERSION: &str = "fill_dispersion";
+
+/// The gate a halted cell journals under when it holds resting orders and
+/// the gateway it was handed cannot withdraw them (§29.2).
+///
+/// Journaled and deliberately **not** counted on
+/// `qip_edge_refusals_total`: it is a statement about the gateway a
+/// composition root supplied rather than a gate a pass met, it can only be
+/// true for as long as that gateway is attached, and counting it would add
+/// a per-pass series that rises for a configuration fact. The journal is
+/// the record; the chain says it once per halted pass with the order count
+/// in it.
+pub const GATE_MASS_CANCEL: &str = "mass_cancel";
 
 /// How a cell is identified and what it is allowed to reach.
 #[derive(Clone, Debug)]
@@ -167,6 +198,19 @@ pub struct CellConfig {
     /// control fires, so the default does not guess one, and setting this is
     /// the owner's decision (completion plan D3), not this crate's.
     pub crossing_interval: Option<CrossingInterval>,
+    /// The venue message limits this cell quotes within (§29.2).
+    ///
+    /// Not an `Option`, and that is the decision: a rate limit that
+    /// defaults to absent fires in no deployment that forgot to set it,
+    /// which is the shape of control this repository has already shipped
+    /// once and the rules name by name. Every [`RateLimits`] is built by a
+    /// constructor that refuses an incoherent one, so this field being
+    /// public cannot smuggle a budget past the checks the way
+    /// `crossing_interval` can — the fields inside it are private.
+    pub quote_limits: RateLimits,
+    /// The spread in fill time a multi-venue cycle may carry (§32.1).
+    /// Always in force, for the reason above.
+    pub dispersion: DispersionPolicy,
 }
 
 /// The rolling window §27.1's crossing cap is evaluated against.
@@ -205,6 +249,8 @@ impl CellConfig {
             feasibility: BTreeMap::new(),
             venue_regions: BTreeMap::new(),
             crossing_interval: None,
+            quote_limits: RateLimits::default(),
+            dispersion: DispersionPolicy::default(),
         }
     }
 
@@ -814,6 +860,22 @@ pub struct Cell {
     /// its own amount would be deciding how much it may risk, which is the
     /// one thing ADR 0008 says it never does.
     region_allocation: Option<RegionTable>,
+    /// What this cell may still say to each venue this second (§29.2).
+    ///
+    /// One bucket per configured venue, fixed at assembly. A venue enforces
+    /// a message rate and disconnects a session that exceeds it — at a
+    /// moment nobody chose, leaving resting orders the cell can then no
+    /// longer withdraw. The cell runs out of budget deliberately instead,
+    /// keeping [`RateLimits::withdrawal_reserve`] back so that the mass
+    /// cancel below is fundable after a burst of quoting.
+    budget: QuoteBudget,
+    /// How long each venue has taken from this cell's send to the venue's
+    /// own confirmed fill, and the spread between them (§32.1).
+    ///
+    /// Measured from the cell's own orders and nothing else. Read by
+    /// [`Cell::admit_cycle`], which refuses a cycle whose legs would arrive
+    /// too far apart to be one position.
+    fill_times: FillTimes,
 }
 
 /// How many reconciliation breaks a cell keeps for reporting.
@@ -834,6 +896,14 @@ impl Cell {
     /// unexamined, so no input could make assembly refuse.
     pub fn new(config: CellConfig, features: FeatureEngine) -> Result<Self> {
         config.validate()?;
+        // Both are built from the validated venue list, so the bucket set
+        // and the fill-time history are exactly the venues this cell may
+        // reach: neither can be grown by an admission naming a venue the
+        // cell was never configured for, which would be an unbounded label
+        // as well as a venue with a fresh full budget every time its name
+        // changed.
+        let budget = QuoteBudget::new(config.quote_limits, &config.venues);
+        let fill_times = FillTimes::new(config.dispersion, &config.venues);
         Ok(Self {
             protocols: ProtocolRegistry::new(),
             sequencer: Sequencer::new(ReorderPolicy::default()),
@@ -861,6 +931,8 @@ impl Cell {
             metrics: CellMetrics::silent(),
             mirror: None,
             region_allocation: None,
+            budget,
+            fill_times,
             config,
         })
     }
@@ -2092,6 +2164,22 @@ impl Cell {
         // its region has left rather than going dark on the number.
         self.metrics
             .region_allocation(self.region_allocation.as_ref().map(RegionTable::free));
+        // §29.2 and §32.1, published before the halt check for the reason
+        // the region allocation above is: a halted cell that goes dark on
+        // its own limits reads exactly like a cell that has none. Accrued
+        // first, so the headroom on the gauge is what this pass holds
+        // rather than what the last pass that sent something left behind —
+        // a cell quiet for an hour would otherwise publish the bucket it
+        // drained an hour ago and an operator would read a spent budget as
+        // the cause of the silence it is not.
+        self.budget.refill_all(now);
+        self.metrics.quote_budget(&self.budget.summary());
+        // The number that says the dispersion gate has nothing to judge
+        // with. Every venue unmeasured is the state in which that gate
+        // admits every cycle, and it looks identical to a gate that is
+        // passing unless this is on a chart.
+        self.metrics
+            .fill_time_unmeasured(self.fill_times.unmeasured());
 
         self.record_halt();
 
@@ -2613,6 +2701,25 @@ impl Cell {
             return Ok(None);
         };
 
+        // §29.2's token bucket, immediately before the one call that speaks
+        // to the venue and after every gate that could still refuse. Here
+        // rather than earlier because a token spent on an order the pricing
+        // gate then refused would be a message billed that never ran, and
+        // the budget is the cell's account of what it said to the venue.
+        // No order object exists yet: this is a price and a quantity.
+        //
+        // Placements stop at the withdrawal reserve, so a cell that has
+        // quoted its rate away can still pull its resting orders back. That
+        // is the whole reason the reserve exists.
+        if let Admission::Refused { reason } =
+            self.budget.admit(&venue, MessageKind::Placement, now)
+        {
+            self.refuse(report, GATE_QUOTE_BUDGET, &reason, now);
+            self.release_region_holds(&net_intent.contributors);
+            return Ok(None);
+        }
+        self.metrics.message_sent(&venue, MessageKind::Placement);
+
         let (order_id, simulated) = self.send(
             &net_intent.object_id,
             &venue,
@@ -2989,7 +3096,8 @@ impl Cell {
         })
     }
 
-    /// Withdraw every resting order whose time to live has elapsed.
+    /// Withdraw every resting order whose time to live has elapsed — or, when
+    /// the cell is halted, every resting order it holds.
     ///
     /// Returns the ids withdrawn. The cancel goes through the gateway to
     /// the venue and the venue's answer — what was still open — closes the
@@ -2998,7 +3106,21 @@ impl Cell {
     /// A fill that landed between the last report and the cancel is
     /// confirmed straight afterwards, so the order settles with everything
     /// the venue did to it.
+    ///
+    /// **The halted arm is §29.2's mass cancel, and this is where it is
+    /// wired.** A halted cell places nothing, and until this existed it also
+    /// withdrew nothing but the orders whose own clock happened to run out —
+    /// so the kill switch stopped the cell from adding exposure and left
+    /// every order already resting at a venue to be filled by a market the
+    /// cell had stopped watching. This is the seam because it is the one the
+    /// composition root calls on every pass including the halted ones
+    /// (`qip-edge-node`'s `run_pass` returns before `Cell::work` when the cell
+    /// is halted, and calls this first): a mass cancel that only ran inside
+    /// `work` would never run at all in the state it exists for.
     pub fn withdraw_expired(&mut self, gateway: &mut dyn Placer, now: Timestamp) -> Vec<String> {
+        if self.is_halted() {
+            return self.mass_cancel(gateway, now);
+        }
         let due: Vec<String> = self
             .working
             .values()
@@ -3011,6 +3133,64 @@ impl Cell {
             })
             .map(|working| working.order.order_id.clone())
             .collect();
+        self.withdraw_all(due, gateway, now)
+    }
+
+    /// Withdraw every order this cell has resting, whatever its time to live
+    /// (§29.2).
+    ///
+    /// One withdrawal per resting order rather than one venue-wide message,
+    /// because the `Placer` seam has no venue-wide cancel and inventing one
+    /// would be a venue capability the cell asserts and the gateway does not
+    /// have. Each still costs a message, and each is drawn from the part of
+    /// the budget placements may not touch — which is what the withdrawal
+    /// reserve is for, and why quoting narrows before cancelling does.
+    ///
+    /// A gateway with no cancel path withdraws nothing and says so in the
+    /// chain. That is not a silent no-op: it is the cell stating that it is
+    /// halted and cannot reduce its own exposure, which is the single fact an
+    /// operator most needs from a halted cell. Calling `cancel` on such a
+    /// gateway would instead turn every halted pass into a reconciliation
+    /// break, which halts a cell that is already halted and buries the real
+    /// finding under repetition.
+    pub fn mass_cancel(&mut self, gateway: &mut dyn Placer, now: Timestamp) -> Vec<String> {
+        let open: Vec<String> = self
+            .working
+            .values()
+            .filter(|working| working.order.closed.is_none())
+            .map(|working| working.order.order_id.clone())
+            .collect();
+        if open.is_empty() {
+            return Vec::new();
+        }
+        if !gateway.can_cancel() {
+            self.journal.record(
+                Decision::Refused {
+                    gate: GATE_MASS_CANCEL.to_string(),
+                    reason: format!(
+                        "the cell holds {} resting order(s) and the gateway it was handed has no \
+                         cancel path to the venue, so a mass cancel withdraws nothing; the \
+                         exposure stands until the venue closes those orders itself",
+                        open.len()
+                    ),
+                },
+                now,
+            );
+            return Vec::new();
+        }
+        self.withdraw_all(open, gateway, now)
+    }
+
+    /// Withdraw `due`, whatever put each of them on the list.
+    ///
+    /// The one place a cancel is sent, so the budget is spent once per message
+    /// and the two entry points cannot disagree about what a withdrawal costs.
+    fn withdraw_all(
+        &mut self,
+        due: Vec<String>,
+        gateway: &mut dyn Placer,
+        now: Timestamp,
+    ) -> Vec<String> {
         let mut withdrawn = Vec::new();
         let mut venue_left_open = Vec::new();
         for order_id in due {
@@ -3019,28 +3199,76 @@ impl Cell {
             };
             let venue = working.order.venue.clone();
             let object_id = working.order.object_id.clone();
-            match gateway.cancel(&order_id, &object_id, &venue, now) {
-                Ok(remaining) => {
-                    if let Some(working) = self.working.get_mut(&order_id) {
-                        working.order.closed = Some("expired".to_string());
-                    }
+            // An order past its own time to live is journaled as expired
+            // whatever else is going on, because that is what happened to it;
+            // everything else on the list during a halt was pulled by the
+            // halt. Two causes, two entries, and an incident review can tell
+            // routine housekeeping from a kill switch emptying the book.
+            let expired = working
+                .order
+                .expires_at
+                .is_some_and(|expires_at| expires_at <= now);
+            // §29.2: a cancel is a message the venue's rate limit counts, and
+            // it is drawn from the reserve placements may not spend. A cancel
+            // the budget cannot fund leaves the order open and is journaled
+            // as such — the order is withdrawn on a later pass, which is the
+            // honest answer, where quietly sending it anyway would be the
+            // cell deciding the venue's limit does not apply to it.
+            match self.budget.admit(&venue, MessageKind::Withdrawal, now) {
+                Admission::Admitted { .. } => {
+                    self.metrics.message_sent(&venue, MessageKind::Withdrawal);
+                }
+                Admission::Refused { reason } => {
+                    // Recorded directly rather than through `Cell::refuse`:
+                    // there is no `WorkReport` on this path. See
+                    // [`GATE_QUOTE_BUDGET`] for the enumeration this makes a
+                    // constant necessary for.
+                    self.metrics.refusal(GATE_QUOTE_BUDGET);
                     self.journal.record(
-                        Decision::OrderExpired {
-                            order_id: order_id.clone(),
-                            venue: venue.as_str().to_string(),
-                            withdrawn: remaining.to_string(),
+                        Decision::Refused {
+                            gate: GATE_QUOTE_BUDGET.to_string(),
+                            reason,
                         },
                         now,
                     );
-                    self.metrics.order_expired(&venue);
+                    continue;
+                }
+            }
+            match gateway.cancel(&order_id, &object_id, &venue, now) {
+                Ok(remaining) => {
+                    if let Some(working) = self.working.get_mut(&order_id) {
+                        working.order.closed =
+                            Some(if expired { "expired" } else { "mass_cancel" }.to_string());
+                    }
+                    if expired {
+                        self.journal.record(
+                            Decision::OrderExpired {
+                                order_id: order_id.clone(),
+                                venue: venue.as_str().to_string(),
+                                withdrawn: remaining.to_string(),
+                            },
+                            now,
+                        );
+                        self.metrics.order_expired(&venue);
+                    } else {
+                        self.journal.record(
+                            Decision::MassCancelled {
+                                order_id: order_id.clone(),
+                                venue: venue.as_str().to_string(),
+                                withdrawn: remaining.to_string(),
+                            },
+                            now,
+                        );
+                        self.metrics.order_mass_cancelled(&venue);
+                    }
                     venue_left_open.push((order_id.clone(), remaining));
                     withdrawn.push(order_id);
                 }
                 Err(error) => {
                     self.break_on(
                         format!(
-                            "order {order_id} on {} passed its time to live and the venue refused \
-                             to withdraw it: {}; whether it is still working is unknown",
+                            "order {order_id} on {} was withdrawn and the venue refused to \
+                             withdraw it: {}; whether it is still working is unknown",
                             venue.as_str(),
                             error.message()
                         ),
@@ -3182,7 +3410,14 @@ impl Cell {
         // The fill is booked whatever the size check below says: the venue
         // reports it traded, and a position the cell refuses to believe in
         // is the position nobody is watching.
+        let sent_at = working.order.sent_at;
+        let was_complete = working.order.filled >= working.order.quantity;
         working.order.filled += execution.quantity;
+        // §32.1's measurement is of a *completed* order: the leg stops
+        // being an exposure when the last of it has traded, and a first
+        // partial report would time how long the venue took to start
+        // rather than how long the cell was exposed.
+        let completed = !was_complete && working.order.filled >= working.order.quantity;
         let overfilled = working.order.filled > working.order.quantity;
         if working.order.filled >= working.order.quantity {
             working.order.closed = Some("filled".to_string());
@@ -3232,6 +3467,20 @@ impl Cell {
             now,
         );
         self.metrics.fill_confirmed(&fill.venue);
+        // §29.2's denominator. A trade is what the venue says filled and
+        // nothing else — an order the cell sent is a message, and counting
+        // it as its own trade would make every message-to-trade ratio read
+        // as healthy by construction.
+        self.budget.observe_trade(&fill.venue);
+        if completed {
+            // The venue's own instant for the fill against the cell's own
+            // instant for the send. A report claiming to predate its order
+            // is counted as an anomaly by `FillTimes` rather than recorded
+            // as a fast venue.
+            let taken = fill.at.since(sent_at);
+            self.fill_times.observe(&fill.venue, taken);
+            self.metrics.fill_time(&fill.venue, taken);
+        }
         self.confirmed.push(fill.clone());
         if let Some(detail) = overfill_detail {
             self.break_on(detail, now);
@@ -3882,12 +4131,51 @@ impl Cell {
         now: Timestamp,
         report: &mut WorkReport,
     ) -> Option<AdmittedCycle> {
-        let mut intents: Vec<Intent> = Vec::with_capacity(legs.len());
+        // The legs as intents up front, so the venues are known before any
+        // of them is admitted: §32.1's gate is about the set, and a set
+        // cannot be judged one member at a time.
+        let proposed: Vec<Intent> = legs.into_iter().map(Into::into).collect();
+        let venues: Vec<VenueId> = proposed.iter().map(|leg| leg.venue.clone()).collect();
+        // §32.1, before a leg exists. A cycle is one position until its last
+        // leg fills, so the spread between its venues' fill times is the
+        // window the cell is exposed for and the unwind cost is whatever the
+        // market did inside it. Refused whole rather than sized down: a
+        // cycle re-priced at a smaller size is a different cycle, which is
+        // the same argument `scan_cycles` makes about the degradation
+        // multiplier.
+        //
+        // An unmeasured set admits, and the crate documentation says why at
+        // length: a venue has no fill times until it fills something, so
+        // refusing on absence is the one place the cell's fail-closed rule
+        // would close a loop on itself and stop a new cell trading forever.
+        // `qip_edge_fill_time_unmeasured_venues` is what makes that silence
+        // visible instead.
+        if let DispersionVerdict::Exceeds {
+            spread,
+            bound,
+            fastest,
+            slowest,
+        } = self.fill_times.assess(&venues)
+        {
+            self.refuse(
+                report,
+                GATE_FILL_DISPERSION,
+                &format!(
+                    "cycle {cycle_id} is refused whole: {slowest} fills {} ms after \
+                     {fastest} typically, past the {} ms this desk will carry, and the \
+                     cycle would be an open position for the difference",
+                    spread.as_millis(),
+                    bound.as_millis()
+                ),
+                now,
+            );
+            return None;
+        }
+        let mut intents: Vec<Intent> = Vec::with_capacity(proposed.len());
         let mut fixed_cost = Decimal::ZERO;
         let mut on_chain = false;
         let mut notional = Decimal::ZERO;
-        for leg in legs {
-            let intent: Intent = leg.into();
+        for intent in proposed {
             if !self.admit_feasible(&intent, now, report) {
                 self.veto_cycle(cycle_id, &intent, "is infeasible at its size", now, report);
                 return None;
@@ -3977,6 +4265,21 @@ impl Cell {
                 now,
             );
             return None;
+        }
+        // §29.2's budget, last and all-or-nothing. A cycle short one leg is a
+        // position rather than a smaller cycle, so a rate limit that funded
+        // three legs of four would convert a message budget into an open
+        // position — which is the failure this gate exists to prevent, not a
+        // side effect of it. Spent here, past every gate that could still
+        // refuse, so the bucket records messages that ran; the region hold
+        // taken above is given back when it cannot.
+        if let Admission::Refused { reason } = self.budget.admit_all(&venues, now) {
+            self.refuse(report, GATE_QUOTE_BUDGET, &reason, now);
+            self.release_cycle_hold(cycle_id);
+            return None;
+        }
+        for venue in &venues {
+            self.metrics.message_sent(venue, MessageKind::Placement);
         }
         Some(AdmittedCycle {
             cycle_id: cycle_id.to_string(),
@@ -5193,6 +5496,21 @@ impl Cell {
     }
 
     /// Reconciliation breaks this cell has recorded, oldest first.
+    /// What each venue's message budget holds, in venue order (§29.2).
+    ///
+    /// The idle reading is the point: a cell that has sent nothing reports
+    /// a full bucket, an unnarrowed monitor and zero messages, which is a
+    /// different state from a cell that has spent its rate limit and a
+    /// different state again from one with no venue at all.
+    pub fn quote_budget(&self) -> Vec<crate::quoting::VenueBudgetState> {
+        self.budget.summary()
+    }
+
+    /// What each venue's fill-time history holds, in venue order (§32.1).
+    pub fn fill_times(&self) -> Vec<crate::dispersion::VenueFillTimeState> {
+        self.fill_times.summary()
+    }
+
     pub fn reconciliation_breaks(&self) -> &[String] {
         &self.breaks
     }
