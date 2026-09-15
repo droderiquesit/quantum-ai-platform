@@ -1144,6 +1144,16 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
         // for the journal append alone. Nothing a caller of the API sends can
         // widen what a cell may do with it.
         "issue_episodic_digest",
+        // `issue_belief_priors` — the same class as `issue_episodic_digest`
+        // and admitted on the same terms. `pending_policy` asks the platform
+        // for slot 3 once per cycle as it builds the payloads, and the API
+        // supplies nothing to it but the instant: the priors are over the
+        // REASON stage's own open drafts, the slot it returns is stamped with
+        // the *oldest* retained belief's instant and never with the issue
+        // instant, and `&mut` is for the journal append alone. A cell reads
+        // the slot's freshness and not its values, so nothing a caller of the
+        // API sends can widen what a cell may do with it.
+        "issue_belief_priors",
         "observe",
         "observe_statement",
         "approve_promotion",
