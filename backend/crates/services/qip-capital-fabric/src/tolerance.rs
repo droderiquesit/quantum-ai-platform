@@ -52,14 +52,25 @@
 //!   control and are neither.
 //! * A negative rate, which would shrink the tolerance below the dust floor
 //!   the operator set.
-//! * A rate of one or more. One interval cannot accrue the entire balance,
-//!   and a tolerance of the whole book is a halt that can never fire — the
-//!   `MaxExpectedShortfall` defect wearing the opposite sign.
+//! * A rate above [`ToleranceBasis::MAX_INTERVAL_RATE`]. One interval cannot
+//!   accrue a tenth of the balance, let alone the whole of it, and a tolerance
+//!   of the whole book is a halt that can never fire — the
+//!   `MaxExpectedShortfall` defect wearing the opposite sign. The ceiling was
+//!   `< 1` until a review pointed out that `0.999999999` passed it, which is
+//!   the same defect one unit in the last place away from the bound that was
+//!   supposed to stop it.
 //! * A rate on a class §38.3 gives no accrual to. Crypto spot settles
 //!   instantly and equity's unsettled positions are already in the timeline;
 //!   the section's words are "dust floor only" and "zero beyond dust". A
 //!   fraction of the book smuggled onto either arm is not a dust floor, and
 //!   [`ToleranceBasis::new`] refuses it by name.
+//! * A tolerance that is not strictly smaller than the balance it judges, at
+//!   the instant it is evaluated. Every refusal above is on the
+//!   *declaration*, and a declaration cannot see the balance it will be
+//!   applied to; a dust floor of ten million on a book of ten million is
+//!   three strictly-positive figures that pass all of them and still admit
+//!   the entire balance vanishing as noise. [`ToleranceBasis::evaluate`]
+//!   refuses it where the balance is finally in scope.
 //!
 //! None of these is clamped. A tolerance quietly corrected into range is a
 //! caller's mistake that survives into the record as though it were a
@@ -200,17 +211,95 @@ impl fmt::Display for ToleranceClass {
 /// Immutable after construction, and every constructor is fallible, so a
 /// basis that exists is a basis whose three parts were checked against each
 /// other.
+///
+/// # Why this is not a plain derived `Deserialize`
+///
+/// It was one, and that made every refusal in [`Self::new`] a refusal of the
+/// *constructor* rather than of the type. A basis is journalled and replayed
+/// — [`crate::journal::WalletCommand::Reconcile`] carries a whole schedule of
+/// them — and a replay re-runs the real control against whatever the record
+/// decoded to. So a hand-edited record naming `{"class":"equity","rate":"0.9"}`
+/// — a combination `new` refuses by name, because §38.3 gives equity no
+/// accrual at all — rebuilt a basis that had never been checked, and a
+/// shortfall recorded as a halt replayed as within tolerance with a
+/// [`EvaluatedTolerance::derivation`] that reads like a configured control.
+/// A validating constructor beside a derived `Deserialize` is not a control;
+/// it is a control and a door beside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(into = "RawBasis", try_from = "RawBasis")]
 pub struct ToleranceBasis {
     class: ToleranceClass,
     dust: Decimal,
     rate: Decimal,
 }
 
+/// A basis's three fields as they travel in a record, before anything has
+/// been checked about them.
+///
+/// Private, and the only way in or out of [`ToleranceBasis`]'s wire form, so
+/// that the decode path cannot skip [`ToleranceBasis::new`]. The field names
+/// and their order are the derived ones this replaced, so a record written
+/// before the door was shut still decodes — and is now checked.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+struct RawBasis {
+    class: ToleranceClass,
+    dust: Decimal,
+    rate: Decimal,
+}
+
+impl From<ToleranceBasis> for RawBasis {
+    fn from(basis: ToleranceBasis) -> Self {
+        Self {
+            class: basis.class,
+            dust: basis.dust,
+            rate: basis.rate,
+        }
+    }
+}
+
+impl TryFrom<RawBasis> for ToleranceBasis {
+    type Error = Error;
+
+    /// Every field a record supplies, through the same refusals a caller
+    /// constructing one faces. There is deliberately no second statement of
+    /// those rules here: two statements of one rule disagree eventually, and
+    /// the one that disagreed would be the one guarding the replayed record.
+    fn try_from(raw: RawBasis) -> Result<Self> {
+        Self::new(raw.class, raw.dust, raw.rate)
+    }
+}
+
 impl ToleranceBasis {
+    /// The widest fractional movement one interval of any §38.3 class may be
+    /// declared to accrue: a tenth of the balance.
+    ///
+    /// Argued rather than round, because the bound this replaced was argued
+    /// too and still stopped nothing. It was `rate < 1`, on the reasoning that
+    /// one interval cannot accrue the entire balance — true, and it admits
+    /// `0.999999999`, which *is* the entire balance to within one unit in the
+    /// last place. A ceiling one unit away from the value it exists to refuse
+    /// is the `MaxExpectedShortfall` defect wearing a bound's clothes.
+    ///
+    /// A tenth is above every interval the section names by more than an order
+    /// of magnitude. One day's interest on fiat at a hundred percent a year is
+    /// under three tenths of a percent. A perpetual funding interval is a few
+    /// basis points, and the widest cap venues publish is three quarters of a
+    /// percent. A mark-to-market interval on a dated future or a margin book
+    /// is one session's move. The widest of the six is a private position's
+    /// mark confidence band at statement cadence, and the headroom a tenth
+    /// leaves that row is deliberate rather than accidental. Above a tenth,
+    /// one interval is not accruing on the balance — it is a different
+    /// balance, and that is a halt to investigate rather than a tolerance to
+    /// widen.
+    pub const MAX_INTERVAL_RATE: Decimal = Decimal::from_raw(100_000_000);
+
     /// Declare a basis, refusing a dust floor that is not strictly positive,
-    /// a negative rate, a rate of one or more, and any rate at all on a class
-    /// §38.3 gives no accrual to.
+    /// a negative rate, a rate above [`Self::MAX_INTERVAL_RATE`], and any rate
+    /// at all on a class §38.3 gives no accrual to.
+    ///
+    /// What it cannot refuse is a floor too wide for the balance it will
+    /// judge, because no balance is in scope here. [`Self::evaluate`] holds
+    /// that half.
     pub fn new(class: ToleranceClass, dust: Decimal, rate: Decimal) -> Result<Self> {
         if !dust.is_positive() {
             return Err(Error::invalid(format!(
@@ -226,11 +315,13 @@ impl ToleranceBasis {
                  no interval accrues"
             )));
         }
-        if rate >= Decimal::ONE {
+        if rate > Self::MAX_INTERVAL_RATE {
             return Err(Error::invalid(format!(
-                "the interval rate for a {class} tolerance is {rate}; {} cannot accrue the \
-                 whole balance, and a tolerance of the entire book is a halt that can never \
-                 fire — state the fraction one interval actually moves",
+                "the interval rate for a {class} tolerance is {rate}, above the ceiling of {}; \
+                 {} cannot accrue a tenth of the balance, and a tolerance approaching the \
+                 whole book is a halt that can never fire — state the fraction one interval \
+                 actually moves",
+                Self::MAX_INTERVAL_RATE,
                 class.interval()
             )));
         }
@@ -283,6 +374,32 @@ impl ToleranceBasis {
     /// stated rather than corrected: a truncating multiply written here would
     /// be a second statement of `Decimal`'s rounding rule, and two statements
     /// of one rule disagree eventually.
+    ///
+    /// # The refusal this is the only place that can make
+    ///
+    /// A tolerance must be strictly smaller than the balance it judges, and
+    /// this is the first moment both figures exist. [`Self::new`] bounds the
+    /// rate and demands a positive floor, and neither check can see a balance;
+    /// three strictly-positive figures that pass all of them still produce a
+    /// control that cannot fire, because `|delta|` on a venue-asset that
+    /// simply *vanished* is exactly the expected magnitude. If the tolerance
+    /// reaches that, the whole balance disappearing records as within
+    /// tolerance, and the record reads like a deliberately wide control rather
+    /// than a broken one.
+    ///
+    /// This is reachable today with no attacker. A statement file whose
+    /// `tolerance` and `quantity` fields were transposed — ten million of
+    /// each — passes the parser (strictly positive), passes `new` (strictly
+    /// positive), and from that cycle on nothing at that venue-asset can
+    /// halt. So it is refused here, naming both figures, rather than clamped:
+    /// a floor quietly narrowed to fit the book is the operator's transposed
+    /// field surviving into the record as a decision.
+    ///
+    /// A zero expectation is exempt, and must be. A venue-asset the ledger
+    /// does not book has an expectation of zero, every positive floor exceeds
+    /// it, and refusing there would refuse the pass instead of letting
+    /// `BreakCause::UnrecordedByLedger` halt it — a refusal standing in front
+    /// of the halt it was written to protect.
     pub fn evaluate(&self, expected: Decimal) -> Result<EvaluatedTolerance> {
         let basis_quantity = expected.abs();
         let accrual = self.rate.checked_mul(basis_quantity).ok_or_else(|| {
@@ -298,6 +415,16 @@ impl ToleranceBasis {
                 self.class, self.dust
             ))
         })?;
+        if !basis_quantity.is_zero() && tolerance >= basis_quantity {
+            return Err(Error::invalid(format!(
+                "a {} tolerance of {tolerance} (dust floor {} + accrual {accrual}) is not \
+                 smaller than the expected magnitude {basis_quantity} it judges; the whole \
+                 balance disappearing would record as within tolerance, so this is a halt \
+                 that cannot fire — state a floor below the balance it guards, and check \
+                 whether a quantity and a tolerance have been transposed",
+                self.class, self.dust
+            )));
+        }
         Ok(EvaluatedTolerance {
             class: self.class,
             dust: self.dust,
