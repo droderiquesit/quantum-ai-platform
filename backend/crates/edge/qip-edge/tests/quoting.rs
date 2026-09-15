@@ -23,7 +23,8 @@ use qip_contracts::venue::{Origin, VenueId, VenueStatus};
 use qip_core::error::Result;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::cell::{
-    Cell, CellConfig, GATE_MASS_CANCEL, GATE_QUOTE_BUDGET, Placer, PricingPolicy, WorkReport,
+    Cell, CellConfig, ExecutionReport, GATE_MASS_CANCEL, GATE_QUOTE_BUDGET, Placer, PricingPolicy,
+    WorkReport,
 };
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::quoting::{MessageKind, RateLimits};
@@ -575,6 +576,87 @@ fn a_halted_cell_that_cannot_withdraw_says_so_in_the_chain_rather_than_withdrawi
             .counter(EDGE_ORDERS_MASS_CANCELLED, &base()),
         0,
         "a withdrawal that never happened was charted"
+    );
+    Ok(())
+}
+
+/// A venue that fills everything in full the moment it accepts it.
+#[derive(Debug, Default)]
+struct FillingVenue {
+    pending: Vec<ExecutionReport>,
+}
+
+impl Placer for FillingVenue {
+    fn is_simulated(&self) -> bool {
+        true
+    }
+
+    fn place(
+        &mut self,
+        order_id: &str,
+        _object_id: &ObjectId,
+        venue: &VenueId,
+        _side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+        at: Timestamp,
+    ) -> Result<()> {
+        self.pending.push(ExecutionReport {
+            order_id: order_id.to_string(),
+            venue: venue.clone(),
+            quantity,
+            price,
+            at,
+        });
+        Ok(())
+    }
+
+    fn execution_reports(&mut self) -> Vec<ExecutionReport> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+#[test]
+fn only_a_fill_the_venue_reported_counts_as_a_trade_against_the_message_to_trade_ratio()
+-> Result<()> {
+    // The denominator has to come from the venue. If an order the cell sent
+    // counted as its own trade, every message-to-trade ratio would read as
+    // healthy by construction and the monitor would narrow nothing, ever —
+    // a control that cannot fire, which is the failure this repository names
+    // by name.
+    let (mut cell, _) = cell_under(limits(8, 2)?, PricingPolicy::Marketable)?;
+    let mut resting = RestingVenue::default();
+
+    let quiet = cell.work(t(10), &mut resting)?;
+    assert_eq!(
+        quiet.orders.len(),
+        1,
+        "the premise failed: nothing was sent: {:?}",
+        quiet.refusals
+    );
+    let after_sending = cell.quote_budget();
+    assert_eq!(
+        after_sending[0].placements, 1,
+        "the premise failed: the message was not billed"
+    );
+    assert_eq!(
+        after_sending[0].trades, 0,
+        "an order the venue never reported filled was counted as a trade"
+    );
+
+    let mut filling = FillingVenue::default();
+    let traded = cell.work(t(11), &mut filling)?;
+    assert_eq!(
+        traded.fills.len(),
+        1,
+        "the premise failed: the venue reported no fill: {:?}",
+        traded.refusals
+    );
+    assert_eq!(
+        cell.quote_budget()[0].trades,
+        1,
+        "the venue's own fill did not reach the message-to-trade monitor, so the ratio is \
+         measured against a denominator that never moves"
     );
     Ok(())
 }
