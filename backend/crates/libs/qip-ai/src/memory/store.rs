@@ -114,6 +114,24 @@ pub struct PrecedentDigest {
     /// `agreeing / resolved`, or `None` where nothing resolved has a sign —
     /// a share of nothing is not zero agreement, it is no evidence.
     pub agreement: Option<f64>,
+    /// Of the recalled episodes, those that can state a surprise at all: an
+    /// outcome, and an expectation to measure it against.
+    ///
+    /// A separate denominator from `resolved` on purpose. `resolved` counts
+    /// outcomes with a *sign*, and a claim can be gradeable for surprise —
+    /// it predicted a magnitude and a magnitude arrived — while agreeing
+    /// with nothing because the move came out at exactly zero. One count
+    /// standing for both would make the mean below a mean over a set nobody
+    /// could name.
+    pub surprising: usize,
+    /// The largest absolute surprise across those episodes, in basis points,
+    /// or `None` where none could state one.
+    ///
+    /// The largest and not the mean. §10.2 calls high-surprise moments "the
+    /// most informative and the rarest"; a mean over five neighbours buries
+    /// exactly the one that was rare, which is the reading this statistic
+    /// exists to surface.
+    pub worst_surprise_bps: Option<f64>,
 }
 
 impl PrecedentDigest {
@@ -121,6 +139,8 @@ impl PrecedentDigest {
     pub fn of(recalled: &[Recalled], direction: f64) -> Self {
         let mut resolved = 0usize;
         let mut agreeing = 0usize;
+        let mut surprising = 0usize;
+        let mut worst_surprise_bps: Option<f64> = None;
         for entry in recalled {
             if let Some(agreed) = entry
                 .episode
@@ -131,6 +151,15 @@ impl PrecedentDigest {
                 resolved += 1;
                 agreeing += usize::from(agreed);
             }
+            if let Some(surprise) = entry.episode.surprise_bps() {
+                surprising += 1;
+                // Compared on magnitude and reported signed, so a reader can
+                // still see whether the worst neighbour overshot its claim or
+                // fell short of it.
+                if worst_surprise_bps.is_none_or(|worst: f64| surprise.abs() > worst.abs()) {
+                    worst_surprise_bps = Some(surprise);
+                }
+            }
         }
         Self {
             nearest: recalled.len(),
@@ -138,6 +167,8 @@ impl PrecedentDigest {
             agreeing,
             // Count to statistic: the share is a float from here on.
             agreement: (resolved > 0).then(|| agreeing as f64 / resolved as f64),
+            surprising,
+            worst_surprise_bps,
         }
     }
 }
@@ -237,6 +268,11 @@ impl EpisodicMemory {
     /// The bucket an embedding hashes to in each table, in table order.
     /// Exposed so a test can prove two constructions agree on the index and
     /// not only on the answer.
+    ///
+    /// Over the leading [`super::episode::EPISODE_INDEX_DIMENSIONS`] of the
+    /// vector, because that is how long each plane is; the trailing state and
+    /// causal blocks reach the exact cosine in [`Self::recall`] and not the
+    /// bucket.
     pub fn buckets_of(&self, embedding: &Embedding) -> Vec<u32> {
         self.tables
             .iter()
@@ -397,13 +433,18 @@ fn probe_order(homes: &[u32]) -> Vec<(usize, u32)> {
 
 /// The fixed hyperplanes, components uniform in `[-1, 1]` from a splitmix64
 /// stream seeded with [`LSH_SEED`], drawn table by table then plane by plane.
+///
+/// Each plane spans [`EPISODE_INDEX_DIMENSIONS`] and not the whole vector, so
+/// [`EpisodicMemory::buckets_of`]'s dot product runs over the leading block
+/// only — `zip` stops at the shorter of the two. That constant's own
+/// documentation carries the argument for where the line sits.
 fn hyperplanes() -> Vec<Vec<Vec<f32>>> {
     let mut state = LSH_SEED;
     (0..TABLES)
         .map(|_| {
             (0..BITS)
                 .map(|_| {
-                    (0..super::episode::EPISODE_DIMENSIONS)
+                    (0..super::episode::EPISODE_INDEX_DIMENSIONS)
                         .map(|_| {
                             let word = splitmix64(&mut state);
                             // Top 24 bits to a float in [0, 1), then to [-1, 1).

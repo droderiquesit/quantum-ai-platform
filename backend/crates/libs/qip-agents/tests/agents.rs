@@ -1049,6 +1049,8 @@ fn precedent() -> BriefPrecedent {
             resolved: 2,
             agreeing: 1,
             agreement: Some(0.5),
+            surprising: 0,
+            worst_surprise_bps: None,
         },
         0.93,
         Some(false),
@@ -1108,6 +1110,8 @@ fn a_precedent_knowable_at_or_after_the_question_is_refused_rather_than_briefed(
         resolved: 1,
         agreeing: 1,
         agreement: Some(1.0),
+        surprising: 0,
+        worst_surprise_bps: None,
     };
     assert!(
         BriefPrecedent::new(digest.clone(), 0.5, Some(true), Duration::from_secs(1)).is_ok(),

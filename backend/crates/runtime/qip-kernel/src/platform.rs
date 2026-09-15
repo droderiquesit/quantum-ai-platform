@@ -63,8 +63,9 @@ use qip_agents::runtime::{Reading, Upstream};
 use qip_agents::{Budget, RunStatus};
 use qip_ai::language::{DeterministicModel, LanguageModel};
 use qip_ai::memory::{
-    AnalystStance, ClaimRecord, DecisionTaken, Episode, EpisodeOutcome, EpisodeQuery,
-    EpisodicMemory, FindingsSummary, PrecedentDigest, Recall, RegimeLabel, StanceDirection,
+    AnalystStance, CausalContextEdge, ClaimRecord, DecisionTaken, Episode, EpisodeOutcome,
+    EpisodeQuery, EpisodicMemory, FindingsSummary, MarketState, PrecedentDigest, Recall,
+    RegimeLabel, StanceDirection,
 };
 use qip_ai::retrieval::SearchIndex;
 use qip_capital::ledger::{
@@ -1833,6 +1834,19 @@ impl RecordedPrediction {
 /// by exact cosine, so these are the five nearest of the bounded candidate
 /// set, not the first five found.
 const PRECEDENT_K: usize = 5;
+
+/// How many causal edges an episode records as the context it was formed in.
+///
+/// A bound rather than the whole in-edge set, because an episode is
+/// compressed meaning and a graph's every incoming claim is retained
+/// observation — the distinction blueprint §10.1 opens with. The graph ranks
+/// by effective transmission and ties by cause name, so these are the
+/// strongest few deterministically, and a replay records the same ones.
+///
+/// The same five as [`PRECEDENT_K`] and for a related reason: this is what a
+/// reader asking "what was the platform's picture of this name" can hold in
+/// their head at once. It is not a threshold and nothing fires on it.
+const CAUSAL_CONTEXT_LIMIT: usize = 5;
 
 /// The precedent as the panel is briefed on it, from what REASON recalled.
 ///
@@ -4148,6 +4162,19 @@ impl Platform {
         self.event_log.append(&envelope.to_frame()?)?;
         self.journal.publish(envelope, now)?;
         Ok(issue)
+    }
+
+    /// Every episode memory holds that was knowable at `now`, oldest-known
+    /// first.
+    ///
+    /// Takes `now` and hands the store's own filter straight back, because
+    /// this is a read path and the store has exactly one rule about read
+    /// paths: nothing sees an episode before its `known_at`. An accessor that
+    /// returned the whole store would be the leak the memory's own plain
+    /// iterator once was, and it would be a leak in the crate that composes
+    /// the backtest.
+    pub fn remembered_episodes(&self, now: Timestamp) -> impl Iterator<Item = &Episode> {
+        self.episodes.episodes(now)
     }
 
     /// Produce the cycle's episodic digest — payload slot 4 — and journal it.
@@ -8071,46 +8098,64 @@ impl Platform {
     /// would call every digital asset extreme and every government bond low,
     /// which says something about the asset class and nothing about the day.
     fn volatility_regime(&self, subject: &str) -> VolatilityRegime {
-        let Some(values) = self.observation_history.get(subject) else {
-            return VolatilityRegime::Normal;
-        };
-        if values.len() <= REGIME_WINDOW + 1 {
+        let Some(ratio) = Self::deviation_ratio(self.observation_history.get(subject)) else {
             // Not enough history to compare a window against. `Normal` is the
             // answer that claims least: it neither excuses spending on a quiet
             // tape nor refuses it on a violent one.
             return VolatilityRegime::Normal;
-        }
-        let returns = Self::returns_of(values);
-        let long_run = Self::deviation(&returns);
-        let recent = Self::deviation(&returns[returns.len().saturating_sub(REGIME_WINDOW)..]);
-        if long_run <= 0.0 {
-            return VolatilityRegime::Normal;
-        }
-        let ratio = recent / long_run;
+        };
         VOLATILITY_BANDS
             .iter()
             .find(|(ceiling, _)| ratio < *ceiling)
             .map_or(VolatilityRegime::Extreme, |(_, band)| *band)
     }
 
+    /// A series' recent realised deviation over its own long-run deviation,
+    /// or `None` where there is not enough of it to form the quotient.
+    ///
+    /// One function over an arbitrary series rather than one per series,
+    /// because [`Self::volatility_regime`] takes it over the surprise series
+    /// and an episode's state takes it over the closes, and two hand-written
+    /// copies of one construction drift until the two readings are no longer
+    /// comparable to each other at all.
+    fn deviation_ratio(values: Option<&Vec<f64>>) -> Option<f64> {
+        let values = values?;
+        if values.len() <= REGIME_WINDOW + 1 {
+            return None;
+        }
+        let returns = Self::returns_of(values);
+        let long_run = Self::deviation(&returns);
+        let recent = Self::deviation(&returns[returns.len().saturating_sub(REGIME_WINDOW)..]);
+        if long_run <= 0.0 {
+            return None;
+        }
+        Some(recent / long_run)
+    }
+
     /// Whether the subject's recent quoted spread sits far enough above its own
     /// median that the price should be treated as an opinion.
     fn spread_has_widened(&self, subject: &str) -> bool {
-        let Some(series) = self.spread_history.get(subject) else {
-            return false;
-        };
+        self.spread_ratio(subject)
+            .is_some_and(|ratio| ratio >= ILLIQUID_SPREAD_MULTIPLE)
+    }
+
+    /// The subject's latest quoted spread over its own median, or `None`
+    /// where too little has been quoted to have a median worth dividing by.
+    ///
+    /// Split out of [`Self::spread_has_widened`] for the same reason
+    /// [`Self::volatility_ratio`] is split out of the regime that reads it.
+    fn spread_ratio(&self, subject: &str) -> Option<f64> {
+        let series = self.spread_history.get(subject)?;
         if series.len() < 3 {
-            return false;
+            return None;
         }
         let mut sorted = series.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let median = sorted[sorted.len() / 2];
         if median <= 0.0 {
-            return false;
+            return None;
         }
-        series
-            .last()
-            .is_some_and(|latest| latest / median >= ILLIQUID_SPREAD_MULTIPLE)
+        series.last().map(|latest| latest / median)
     }
 
     /// The subject's most recent returns, or `None` where nothing has been
@@ -8595,6 +8640,18 @@ impl Platform {
                             "; precedent: {} nearest, {} resolved, {} agreed",
                             digest.nearest, digest.resolved, digest.agreeing
                         ));
+                        // §10.3's "was this surprising last time too?" — the
+                        // worst gap between claim and outcome among the
+                        // neighbours, stated where the stage's own record can
+                        // be read. A surprise computed and never surfaced
+                        // would be a statistic nobody could act on, which is
+                        // the same defect as a control that cannot fire.
+                        if let Some(worst) = digest.worst_surprise_bps {
+                            outcome.detail.push_str(&format!(
+                                ", worst surprise {worst:.0}bp over {} gradeable",
+                                digest.surprising
+                            ));
+                        }
                     }
                     Ok(None) => {}
                     Err(error) => {
@@ -8633,6 +8690,81 @@ impl Platform {
             market: self.market_regime(subject).as_str().to_string(),
             volatility: self.volatility_regime(subject).as_str().to_string(),
         }
+    }
+
+    /// The compressed market and world state for `subject` — blueprint
+    /// §10.1's `state_vector`, as the quantities it is computed from.
+    ///
+    /// Every figure is one this platform already measures for its own regime
+    /// decisions, read from the same helper the regime reads, so an episode
+    /// cannot be stamped `high` while carrying a ratio that says otherwise.
+    /// Each is optional where its own history is too thin to form it: an
+    /// absent ratio is the platform saying it did not measure, and a `1.0`
+    /// there would be the platform saying the market was ordinary. A cold
+    /// start read as a calm day is how an encoding quietly makes every
+    /// unfamiliar name look like every other.
+    ///
+    /// The drawdown is the one figure that is never absent, because the book
+    /// always has one, and it is the "world" half of the pair: the same tape
+    /// met from a full book and from a drawn-down one is not the same
+    /// situation, and an episode that recorded only the tape would recall the
+    /// two as twins.
+    fn market_state(&self, subject: &str) -> MarketState {
+        // Already a statistic on the capital side — a fraction of the
+        // high-water mark, not an amount — so no money crosses this line.
+        let drawdown = self.capital.drawdown();
+        let closes = self.price_history.get(subject);
+        let recent_return_bps = closes.and_then(|values| {
+            let returns = Self::returns_of(values);
+            if returns.is_empty() {
+                return None;
+            }
+            // Compounded over the window rather than summed: a sum of simple
+            // returns is not a return, and over a violent window the two
+            // differ by enough to place the episode in a different
+            // neighbourhood from the one it belongs in.
+            let window = &returns[returns.len().saturating_sub(REGIME_WINDOW)..];
+            let growth = window.iter().fold(1.0_f64, |acc, r| acc * (1.0 + r));
+            Some((growth - 1.0) * 10_000.0)
+        });
+        MarketState {
+            drawdown,
+            // Over the closes, not over the surprise series
+            // `volatility_regime` reads. The two are different facts about
+            // different series and the episode records the tape; the regime
+            // label beside it records what the regime machinery saw, and a
+            // reader comparing them is comparing two real readings rather
+            // than one reading written down twice.
+            volatility_ratio: Self::deviation_ratio(closes),
+            spread_ratio: self.spread_ratio(subject),
+            recent_return_bps,
+            observations: closes.map_or(0, Vec::len),
+        }
+    }
+
+    /// The causal edges the graph held into `subject` at `now` — blueprint
+    /// §10.1's `causal_context`, "which edges were active and their
+    /// strength".
+    ///
+    /// Point-in-time through the graph's own `explanations`, which filters on
+    /// each edge's `recorded_at`: an episode formed on Monday must not record
+    /// a relationship the platform only claimed on Tuesday, or every backtest
+    /// over the memory would be reasoning from a graph it did not have.
+    /// Strongest first, bounded by [`CAUSAL_CONTEXT_LIMIT`].
+    fn causal_context(&self, subject: &str, now: Timestamp) -> Vec<CausalContextEdge> {
+        self.world
+            .read()
+            .causal()
+            .explanations(subject, now)
+            .into_iter()
+            .take(CAUSAL_CONTEXT_LIMIT)
+            .map(|edge| CausalContextEdge {
+                cause: edge.cause.clone(),
+                mechanism: edge.mechanism.as_str().to_string(),
+                transmission: edge.transmission(),
+                established: edge.standing() == qip_world_model::causal::EdgeStanding::Established,
+            })
+            .collect()
     }
 
     /// The regime `subject` is in right now, as one stable key a meta-learning
@@ -8675,6 +8807,13 @@ impl Platform {
         let query = EpisodeQuery {
             instrument: subject.as_str().to_string(),
             regime: self.regime_label(subject.as_str()),
+            // The state and the causal picture are known *before* the panel
+            // reports, unlike the findings and the stances, so the query
+            // carries them. A query that left them at zero would rank every
+            // stored episode down by however much state it held, and the
+            // richest episodes would be the least recallable.
+            state: Some(self.market_state(subject.as_str())),
+            causal_context: self.causal_context(subject.as_str(), now),
             claim,
             findings: None,
             stances: Vec::new(),
@@ -8784,6 +8923,15 @@ impl Platform {
             episode_id: episode_id_for(hypothesis.hypothesis_id.as_str()),
             instrument: subject.as_str().to_string(),
             regime: self.regime_label(subject.as_str()),
+            // §10.1's `state_vector` and `causal_context`, measured at
+            // formation rather than reconstructed at resolution. Reconstructed
+            // is what they would be if LEARN wrote them: the tape and the
+            // graph have both moved by then, and an episode recording the
+            // state at resolution would answer "what did it look like when we
+            // found out" to a reader asking "what did it look like when we
+            // decided".
+            state: Some(self.market_state(subject.as_str())),
+            causal_context: self.causal_context(subject.as_str(), now),
             findings: FindingsSummary {
                 runs: report.runs.len(),
                 findings: report.findings.len(),
@@ -8818,7 +8966,25 @@ impl Platform {
     /// as stale, or formed before this field existed — is skipped: memory
     /// holds what was reasoned, and a record reconstructed from the claim
     /// alone would not be that. Returns how many entered memory.
-    fn remember_resolved(&mut self, outcomes: &[ThesisOutcome], now: Timestamp) -> Result<usize> {
+    ///
+    /// `claims` is what each thesis said would happen, and it is what makes
+    /// §10.1's `surprise` computable at all: surprise is the gap between the
+    /// expectation and the outcome, and this is the one instant the platform
+    /// holds both. Matched by hypothesis id rather than by position, because
+    /// the two vectors are built in lockstep today and a filter added to
+    /// either one later would silently pair every episode with the next
+    /// thesis's expectation — a surprise figure that is wrong and looks
+    /// exactly like one that is right.
+    fn remember_resolved(
+        &mut self,
+        outcomes: &[ThesisOutcome],
+        claims: &[ThesisClaim],
+        now: Timestamp,
+    ) -> Result<usize> {
+        let expected: BTreeMap<&str, f64> = claims
+            .iter()
+            .map(|claim| (claim.hypothesis_id.as_str(), claim.expected_move_bps))
+            .collect();
         let mut remembered = 0usize;
         for outcome in outcomes {
             let wanted = episode_id_for(&outcome.hypothesis_id);
@@ -8834,6 +9000,7 @@ impl Platform {
                 resolved_at: outcome.observed_at,
                 realised_move_bps: outcome.realised_move_bps,
                 realised_pnl: outcome.realised_pnl,
+                expected_move_bps: expected.get(outcome.hypothesis_id.as_str()).copied(),
             });
             episode.known_at = now;
             self.episodes.remember(episode)?;
@@ -11386,7 +11553,7 @@ impl Platform {
         }
         // Each resolved thesis's episode enters memory here, knowable from
         // now, so the next REASON can recall it as precedent.
-        let remembered = self.remember_resolved(&outcomes, now)?;
+        let remembered = self.remember_resolved(&outcomes, &claims, now)?;
         if remembered > 0 {
             summary.push_str(&format!("; {remembered} episode(s) remembered"));
         }
@@ -20775,6 +20942,8 @@ mod episodic_slot_tests {
                 market: "calm".to_string(),
                 volatility: "low".to_string(),
             },
+            state: None,
+            causal_context: Vec::new(),
             findings: FindingsSummary {
                 runs: 1,
                 findings: 1,
@@ -20794,6 +20963,7 @@ mod episodic_slot_tests {
                 resolved_at: known_at,
                 realised_move_bps: 12.0,
                 realised_pnl: 250.0,
+                expected_move_bps: None,
             }),
             at: known_at.saturating_sub(Duration::from_hours(24)),
             known_at,

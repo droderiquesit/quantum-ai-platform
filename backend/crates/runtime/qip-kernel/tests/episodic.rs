@@ -188,6 +188,142 @@ fn three_cycles(second_at: Timestamp, third_at: Timestamp) -> Result<(Platform, 
     Ok((platform, horizon))
 }
 
+/// The two instants `three_cycles` is driven with: the resolving cycle a
+/// minute past the first claim's horizon, and the next REASON a second later.
+fn resolution_instants() -> Result<(Timestamp, Timestamp)> {
+    let probe = {
+        let mut platform = fresh()?;
+        platform.observe(bars("AAA", 120));
+        platform.run_cycle(start());
+        platform.predictions()[0].proposition.resolves_at
+    };
+    let t2 = probe.saturating_add(Duration::from_mins(1));
+    Ok((t2, t2.saturating_add(Duration::from_secs(1))))
+}
+
+#[test]
+fn an_episode_the_cycle_wrote_carries_the_market_and_world_state_measured_when_it_reasoned()
+-> Result<()> {
+    // §10.1's `state_vector`. The failure this guards: a `MarketState` type
+    // that exists, validates and encodes, and that nothing in the cycle ever
+    // fills — the `MaxExpectedShortfall` shape, where a field reads as a
+    // record of the situation and is `None` on every episode the platform
+    // ever wrote. So this asserts against the episode the production cycle
+    // put into memory, not against one the test built.
+    let (t2, t3) = resolution_instants()?;
+    let (platform, _) = three_cycles(t2, t3)?;
+
+    let remembered: Vec<_> = platform.remembered_episodes(t3).collect();
+    assert_eq!(
+        remembered.len(),
+        1,
+        "premise: LEARN moved exactly one resolved episode into memory"
+    );
+    let state = remembered[0]
+        .state
+        .as_ref()
+        .expect("the cycle wrote an episode with no state at all");
+
+    // The platform observed 120 bars of AAA before the first cycle, so every
+    // figure the state names was formable. A `None` here is the wiring gone,
+    // not a thin tape.
+    assert!(
+        state.observations >= 120,
+        "the state rests on {} observations though the fixture fed 120 bars",
+        state.observations
+    );
+    let volatility = state
+        .volatility_ratio
+        .expect("120 bars is enough history to form a volatility ratio");
+    assert!(
+        volatility > 0.0 && volatility.is_finite(),
+        "the volatility ratio is {volatility}, which no series produces"
+    );
+    assert!(
+        state
+            .recent_return_bps
+            .is_some_and(|bps| bps.is_finite() && bps != 0.0),
+        "the window's return is {:?}; the fixture's tape moves, so a zero or an absence here \
+         is the measurement not happening",
+        state.recent_return_bps
+    );
+    assert!(
+        (0.0..=1.0).contains(&state.drawdown),
+        "the drawdown is {}, outside the fraction it is defined as",
+        state.drawdown
+    );
+
+    // And it is the state at formation, not at resolution. `three_cycles`
+    // feeds twenty bars swinging between 100 and 150 before the resolving
+    // cycle, so a state measured at LEARN would carry a volatility ratio
+    // from that tape rather than from the quiet 120 that preceded the claim.
+    let at_resolution = platform
+        .remembered_episodes(t3)
+        .next()
+        .and_then(|episode| episode.state.as_ref())
+        .and_then(|state| state.volatility_ratio);
+    assert_eq!(
+        at_resolution,
+        Some(volatility),
+        "the episode's state must be the one instant it was reasoned at"
+    );
+    assert!(
+        remembered[0].at < remembered[0].known_at,
+        "premise: the episode was true before it was knowable, so formation and resolution are \
+         different instants and the assertion above is not vacuous"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_resolved_episode_records_how_far_the_outcome_was_from_what_the_claim_expected() -> Result<()> {
+    // §10.1's `surprise`. The failure: LEARN writes the outcome and drops the
+    // expectation, so the platform can say what happened and can never say
+    // whether it was surprised — which is the one thing §10.2 calls the most
+    // informative and the rarest. The expectation exists at exactly one
+    // instant, beside the outcome in `calibrate_resolved`, and this asserts it
+    // survived the journey onto the record.
+    let (t2, t3) = resolution_instants()?;
+    let (platform, _) = three_cycles(t2, t3)?;
+
+    let remembered: Vec<_> = platform.remembered_episodes(t3).collect();
+    assert_eq!(remembered.len(), 1, "premise: one episode was remembered");
+    let outcome = remembered[0]
+        .outcome
+        .as_ref()
+        .expect("premise: a remembered episode is a resolved one");
+    let expected = outcome
+        .expected_move_bps
+        .expect("the claim stated a magnitude and the episode did not keep it");
+    assert!(
+        expected.is_finite() && expected != 0.0,
+        "the expectation is {expected}; a claim written with no magnitude cannot be graded and \
+         should not have been recorded as one"
+    );
+
+    let surprise = remembered[0]
+        .surprise_bps()
+        .expect("an episode holding both an outcome and an expectation must state a surprise");
+    assert_eq!(
+        surprise,
+        outcome.realised_move_bps - expected,
+        "the surprise is not the gap between the two numbers on the record"
+    );
+
+    // The expectation must be *this* thesis's, which is what the id match in
+    // `remember_resolved` is for. The claim the learning engine graded is the
+    // same one, so the two figures have to agree.
+    let claim = platform.predictions()[0]
+        .claim
+        .as_ref()
+        .expect("premise: the first cycle's claim was written down");
+    assert_eq!(
+        claim.expected_move_bps, expected,
+        "the episode kept an expectation that is not the one the claim stated"
+    );
+    Ok(())
+}
+
 #[test]
 fn the_kernel_records_precedents_on_a_hypothesis_once_prior_episodes_resolved_and_leaves_the_confidence_alone()
 -> Result<()> {
@@ -394,6 +530,177 @@ fn the_panel_is_briefed_on_the_recalled_precedent_through_the_typed_field_and_on
     assert!(
         control.iter().all(|run| run.brief.precedent.is_none()),
         "a brief carried a precedent that was not knowable before the question"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_question_reason_asks_is_encoded_in_the_state_it_is_asked_in_and_not_only_in_the_claim()
+-> Result<()> {
+    // The half of §10.1 a record-side test cannot see. An episode may carry a
+    // state block while the *query* leaves it at zero, and nothing about the
+    // stored record would look wrong: recall would still return the episode,
+    // the precedent would still be recorded, and every assertion about what
+    // memory holds would pass. What would be silently true is that cosine
+    // counted every state dimension against every candidate, so the episodes
+    // richest in state ranked worst — retrieval made worse by the field added
+    // to improve it.
+    //
+    // So this drives two platforms that differ only in the tape seen *after*
+    // the episode was written, and asserts the recorded similarity moved. In
+    // this fixture the regime label cannot move — `market_regime` falls
+    // through to `Quiet` with no fundamentals and no spreads, and
+    // `volatility_regime` to `Normal` — so a difference here is the state
+    // block and not the one-hots, which the premises below check rather than
+    // assume.
+    let (t2, t3) = resolution_instants()?;
+    let (quiet, _) = three_cycles(t2, t3)?;
+
+    let violent = {
+        let mut platform = fresh()?;
+        platform.observe(bars("AAA", 120));
+        platform.run_cycle(start());
+        let horizon = platform.predictions()[0].proposition.resolves_at;
+        platform.observe(swings("AAA", horizon));
+        platform.run_cycle(t2);
+        // The extra tape: a hundred more swings between the resolution and
+        // the question, which moves every figure the state names and nothing
+        // else the encoding reads.
+        for step in 0..5 {
+            platform.observe(swings("AAA", t2.saturating_add(Duration::from_mins(step))));
+        }
+        platform.run_cycle(t3);
+        platform
+    };
+
+    let (left, right) = (&quiet.precedents()[2], &violent.precedents()[2]);
+    assert!(
+        !left.nearest.is_empty() && !right.nearest.is_empty(),
+        "premise: both platforms recalled the episode, so the comparison below is between two \
+         similarities and not between a similarity and nothing"
+    );
+    assert_eq!(
+        left.nearest[0].episode_id, right.nearest[0].episode_id,
+        "premise: both recalled the same episode"
+    );
+    assert_eq!(
+        left.nearest[0].claim, right.nearest[0].claim,
+        "premise: the recalled episode's claim block is identical, so a difference in similarity \
+         is not the claim"
+    );
+    assert_ne!(
+        left.nearest[0].similarity, right.nearest[0].similarity,
+        "the same episode was equally similar to a question asked on a quiet tape and to one \
+         asked after a hundred swings; the query is not encoding the state it is asked in"
+    );
+    Ok(())
+}
+
+/// A tape for `symbol` that leads `bars("AAA", count)` by one step: its
+/// return at `i` is AAA's return at `i + 1`, so AAA is a lagged copy of it
+/// and the temporal-precedence pass has a real relationship to find.
+fn leading_bars(symbol: &str, count: usize) -> Vec<SensedRecord> {
+    let aaa_return = |i: usize| {
+        let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
+        let jump = if i == count * 2 / 3 { 0.09 } else { 0.0 };
+        noise + jump
+    };
+    let mut price = 100.0_f64;
+    (0..count)
+        .map(|i| {
+            let open = price;
+            price *= 1.0
+                + if i + 1 < count {
+                    aaa_return(i + 1)
+                } else {
+                    0.0
+                };
+            let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+            bar(symbol, at, open, price)
+        })
+        .collect()
+}
+
+#[test]
+fn an_episode_records_the_causal_edges_the_graph_held_into_its_instrument_when_it_was_reasoned()
+-> Result<()> {
+    // §10.1's `causal_context`, "which edges were active and their strength".
+    // The failure: a field the type carries and the cycle never fills, so
+    // every episode the platform ever wrote says the graph knew nothing —
+    // which is indistinguishable from a graph that knew nothing, and is the
+    // reason this test drives a tape the temporal-precedence pass actually
+    // finds a relationship in rather than asserting on an empty graph.
+    let mut platform = fresh()?;
+    platform.observe(bars("AAA", 120));
+    platform.observe(leading_bars("BBB", 120));
+
+    let first = platform.run_cycle(start());
+    let held: Vec<_> = platform
+        .world()
+        .causal()
+        .edges()
+        .iter()
+        .filter(|edge| edge.effect == "obj-AAA")
+        .map(|edge| (edge.cause.clone(), edge.transmission()))
+        .collect();
+    assert_eq!(
+        held.len(),
+        1,
+        "premise: the cycle's temporal-precedence pass claimed exactly one edge into obj-AAA, \
+         so an empty context below is the wiring and not the graph:\n{}",
+        first.summarise()
+    );
+    assert!(
+        !platform.predictions().is_empty(),
+        "premise: the first cycle made a claim to resolve"
+    );
+
+    // Resolve it, so the episode REASON drafted moves into memory where it
+    // can be read.
+    let horizon = platform.predictions()[0].proposition.resolves_at;
+    let t2 = horizon.saturating_add(Duration::from_mins(1));
+    let t3 = t2.saturating_add(Duration::from_secs(1));
+    platform.observe(swings("AAA", horizon));
+    platform.run_cycle(t2);
+
+    let remembered: Vec<_> = platform.remembered_episodes(t3).collect();
+    assert_eq!(remembered.len(), 1, "premise: one episode was remembered");
+    let context = &remembered[0].causal_context;
+    assert_eq!(
+        context.len(),
+        1,
+        "the episode recorded {} edges against a graph holding {} into its instrument",
+        context.len(),
+        held.len()
+    );
+    assert_eq!(
+        context[0].cause, held[0].0,
+        "the episode named a cause the graph does not run from"
+    );
+    assert_eq!(
+        context[0].transmission, held[0].1,
+        "the episode recorded a strength that is not the graph's own transmission"
+    );
+    assert!(
+        !context[0].mechanism.is_empty(),
+        "an edge with no mechanism is a relationship nobody can argue with"
+    );
+
+    // §10.2's fifth trigger, "every veto and near-miss", and the reason this
+    // assertion lives here rather than in a fixture of its own: this tape is
+    // the one that gets a hypothesis *rejected* on review, so the episode
+    // memory holds is a veto. The register said vetoes reached the
+    // counterfactual queue and not memory; they reach both, because
+    // `record_precedent` is called on every arm of the decision and the
+    // prediction a rejected hypothesis still writes is what later resolves
+    // it. What a veto episode must not do is arrive labelled as a decision
+    // the platform took.
+    assert_eq!(
+        remembered[0].decision,
+        qip_ai::memory::DecisionTaken::RejectedOnReview,
+        "the review rejected this hypothesis and the episode records it as {:?}; an episode that \
+         cannot say the platform declined is a memory of successes",
+        remembered[0].decision
     );
     Ok(())
 }
