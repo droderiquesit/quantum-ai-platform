@@ -15182,7 +15182,9 @@ mod decide_tests {
                             Duration::from_days(1),
                             Timestamp::from_secs(1_760_000_000),
                         )
-                        .with_confidence(1.0),
+                        .expect("a strength in [0, 1] is admitted")
+                        .with_confidence(1.0)
+                        .expect("a confidence in [0, 1] is admitted"),
                     )
                 })
                 .expect("an edge naming both ends is admitted");
@@ -17248,6 +17250,7 @@ mod central_sizing_tests {
                 Duration::from_days(1),
                 recorded_at,
             )
+            .expect("a strength in [0, 1] is admitted")
         };
         let unseeded = platform();
         assert!(

@@ -503,7 +503,9 @@ mod tests {
             Duration::from_days(1),
             at(1_000),
         )
+        .expect("a strength in [0, 1] is admitted")
         .with_confidence(0.45)
+        .expect("a confidence in [0, 1] is admitted")
     }
 
     #[test]
@@ -577,14 +579,17 @@ mod tests {
     fn a_mechanism_backed_edge_is_left_alone_by_the_control_audit() {
         let universe = common_driver_universe(&["AAA", "BBB", "CCC", "DDD", "EEE"], 200);
         let mut causal = CausalGraph::new();
-        causal.add(CausalEdge::new(
-            "AAA",
-            "BBB",
-            Mechanism::SupplyChain,
-            0.6,
-            Duration::from_days(1),
-            at(1_000),
-        ));
+        causal.add(
+            CausalEdge::new(
+                "AAA",
+                "BBB",
+                Mechanism::SupplyChain,
+                0.6,
+                Duration::from_days(1),
+                at(1_000),
+            )
+            .expect("a strength in [0, 1] is admitted"),
+        );
         let audit = audit_controls(&causal, &universe, Duration::from_days(1), at(2_000));
         assert_eq!(
             audit.edges_examined, 0,

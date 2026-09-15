@@ -206,6 +206,35 @@ impl EdgeStanding {
 }
 
 impl CausalEdge {
+    /// The confidence an edge carries when its writer states none.
+    ///
+    /// Named rather than written as a literal because
+    /// [`crate::granger::TEMPORAL_PRECEDENCE_CONFIDENCE_CEILING`] is argued
+    /// against it in prose — a temporal-precedence edge may never reach the
+    /// default a mechanism-backed claim starts at — and two numbers compared
+    /// in a doc comment and nowhere in the code drift apart in silence.
+    pub const DEFAULT_CONFIDENCE: f64 = 0.7;
+
+    /// Claim an edge, refusing a strength that is not a real fraction.
+    ///
+    /// Refused rather than clamped, and the distinction is not academic here.
+    /// This read `strength: strength.clamp(0.0, 1.0)` until 2026-09-15, and it
+    /// failed in both directions at once. A caller passing `1.8` — a
+    /// percentage where a fraction was wanted — had its bug silently rewritten
+    /// into a plausible number the platform then sized against, which is
+    /// exactly the caller bug that survives. And `f64::NAN.clamp(0.0, 1.0)` is
+    /// `NAN`, so the one value the clamp most needed to stop was the one value
+    /// it passed through untouched: a NaN strength reached
+    /// [`Self::transmission`], and from there every propagated magnitude and
+    /// every [`CausalGraph::explanations`] ordering — `partial_cmp` answers
+    /// `None` on a NaN and both sorts here fall back to `Equal`, so the
+    /// ranking silently stops ranking.
+    ///
+    /// That path is reachable with no attacker and no hand-written claim:
+    /// [`crate::granger::establish_temporal_precedence_controlling_for`] takes
+    /// its strength from a regression's `partial_r_squared`, and the guard
+    /// above it (`partial_r_squared < MIN_EFFECT`) is `false` for a NaN, so a
+    /// degenerate regression walks straight into this constructor.
     pub fn new(
         cause: impl Into<String>,
         effect: impl Into<String>,
@@ -213,23 +242,70 @@ impl CausalEdge {
         strength: f64,
         lag: Duration,
         recorded_at: Timestamp,
-    ) -> Self {
-        Self {
-            cause: cause.into(),
-            effect: effect.into(),
+    ) -> Result<Self> {
+        let cause = cause.into();
+        let effect = effect.into();
+        Self::check_fraction("strength", strength, &cause, &effect, mechanism)?;
+        Ok(Self {
+            cause,
+            effect,
             mechanism,
-            strength: strength.clamp(0.0, 1.0),
+            strength,
             lag,
-            confidence: 0.7,
+            confidence: Self::DEFAULT_CONFIDENCE,
             evidence: Vec::new(),
             recorded_at,
             decayed_at: None,
             adjusted_for: BTreeSet::new(),
             suspected_confounders: BTreeSet::new(),
-        }
+        })
     }
 
-    /// Refuse an edge that names no cause or no effect.
+    /// Refuse a fraction that is not a real number in `[0, 1]`.
+    ///
+    /// One function for both fields, called from [`Self::new`],
+    /// [`Self::with_confidence`] and [`Self::validate`], because two
+    /// statements of one rule disagree eventually and the one that disagreed
+    /// would be the one guarding the edge nobody built through a constructor.
+    ///
+    /// The `is_finite` test is first and is not redundant with the range test:
+    /// `(0.0..=1.0).contains(&f64::NAN)` is already `false`, so a NaN would be
+    /// refused either way — but it would be refused by a message saying the
+    /// value lies outside `[0, 1]`, which sends the reader hunting for a
+    /// number that is too large. A NaN is not a number that is too large; it
+    /// is an arithmetic result nobody computed, and the message has to say so
+    /// or the operator repairs the wrong end.
+    fn check_fraction(
+        field: &str,
+        value: f64,
+        cause: &str,
+        effect: &str,
+        mechanism: Mechanism,
+    ) -> Result<()> {
+        if !value.is_finite() {
+            return Err(Error::invalid(format!(
+                "the {field} claimed for {cause:?} -> {effect:?} via {} is {value}, which is not a \
+                 real number; it is an arithmetic result nobody computed — a division by a zero \
+                 variance, an overflow — so repair the estimator that produced it rather than \
+                 admitting it, because a non-finite {field} propagates as a magnitude no reader \
+                 can interpret and silently disorders every ranking it reaches",
+                mechanism.as_str()
+            )));
+        }
+        if !(0.0..=1.0).contains(&value) {
+            return Err(Error::invalid(format!(
+                "the {field} claimed for {cause:?} -> {effect:?} via {} is {value}, and a {field} \
+                 is a fraction in [0, 1]; state it as a fraction at the source that produced it — \
+                 a value corrected into range here would be that source's bug surviving into a \
+                 number the platform sizes against",
+                mechanism.as_str()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Refuse an edge that names no cause or no effect, or whose strength or
+    /// confidence is not a real fraction.
     ///
     /// Called by [`crate::WorldModel::claim_causal`], which is the only
     /// production path by which an edge reaches a graph — `CausalGraph::add`
@@ -252,6 +328,31 @@ impl CausalEdge {
     ///
     /// Refused rather than dropped: a claim silently discarded leaves the
     /// caller believing the graph holds a link it does not.
+    ///
+    /// # Why the two fractions are re-checked here and not only in the
+    /// constructors
+    ///
+    /// Because this type's fields are `pub` and it derives `Deserialize`, so
+    /// [`Self::new`] and [`Self::with_confidence`] guard a door with no wall
+    /// beside it: a struct literal, a decoded record, or a later assignment to
+    /// `edge.strength` reaches the graph having faced neither. A refusal only
+    /// a constructor makes is a refusal of that constructor, not of the type.
+    ///
+    /// The sibling remedy — `qip_capital_fabric::tolerance::ToleranceBasis`,
+    /// which shut its decode path with a private `RawBasis` and
+    /// `#[serde(into/try_from)]` — was considered and deliberately not copied.
+    /// It works there because that type's fields are private, so once the
+    /// decode path goes through the constructor there is no other way in at
+    /// all. Here the fields are read in dozens of places and
+    /// [`CausalGraph::reestimate`] writes `edge.strength` in place by design,
+    /// so a serde shim would close one of two doors while making the type look
+    /// as though it had closed both — and it would also duplicate ten field
+    /// declarations, including their `serde` attributes, as a second statement
+    /// of the wire form that can drift from the first. Nothing in the tree
+    /// decodes a `CausalEdge` today; everything that admits one to a graph
+    /// goes through [`crate::WorldModel::claim_causal`], which calls this. So
+    /// the check is put where every path meets rather than on the one path
+    /// that is currently hypothetical.
     pub fn validate(&self) -> Result<()> {
         if self.cause.trim().is_empty() || self.effect.trim().is_empty() {
             return Err(Error::invalid(format!(
@@ -264,12 +365,42 @@ impl CausalEdge {
                 self.mechanism.as_str()
             )));
         }
+        Self::check_fraction(
+            "strength",
+            self.strength,
+            &self.cause,
+            &self.effect,
+            self.mechanism,
+        )?;
+        Self::check_fraction(
+            "confidence",
+            self.confidence,
+            &self.cause,
+            &self.effect,
+            self.mechanism,
+        )?;
         Ok(())
     }
 
-    pub fn with_confidence(mut self, confidence: f64) -> Self {
-        self.confidence = confidence.clamp(0.0, 1.0);
-        self
+    /// State how far the claim itself is believed, refusing anything that is
+    /// not a real fraction.
+    ///
+    /// Fallible for the same reason [`Self::new`] is, and for one more: this
+    /// clamped too, so a confidence of `NAN` — which
+    /// [`crate::granger::establish_temporal_precedence_controlling_for`] can
+    /// compute from a NaN p-value — survived it unchanged and multiplied into
+    /// [`Self::transmission`], where a single NaN edge makes every chain
+    /// through it unorderable rather than merely wrong.
+    pub fn with_confidence(mut self, confidence: f64) -> Result<Self> {
+        Self::check_fraction(
+            "confidence",
+            confidence,
+            &self.cause,
+            &self.effect,
+            self.mechanism,
+        )?;
+        self.confidence = confidence;
+        Ok(self)
     }
 
     /// Record what this edge was and was not adjusted for.
@@ -357,10 +488,13 @@ pub struct SupportingClaim {
     pub mechanism: Mechanism,
     /// The transmission this evidence measured, in `[0, 1]`.
     ///
-    /// Not clamped here, unlike [`CausalEdge::new`]: a reading outside the
-    /// range is a producer's bug, and [`CausalGraph::reestimate`] refuses it
-    /// naming the link. A value silently corrected is a caller bug that
-    /// survives into a strength the platform sizes against.
+    /// Not clamped: a reading outside the range is a producer's bug, and
+    /// [`CausalGraph::reestimate`] refuses it naming the link. A value
+    /// silently corrected is a caller bug that survives into a strength the
+    /// platform sizes against. This sentence read "unlike [`CausalEdge::new`]"
+    /// until 2026-09-15, when the edge constructor stopped clamping and became
+    /// fallible for the same reason — the two now agree, and the asymmetry
+    /// that had one path refuse what its neighbour quietly rewrote is gone.
     pub strength: f64,
     /// When the platform recorded the evidence — the instant it became
     /// knowable here, not the instant the world produced it.

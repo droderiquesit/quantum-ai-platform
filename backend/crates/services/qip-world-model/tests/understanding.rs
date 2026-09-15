@@ -238,7 +238,9 @@ fn causal_chain() -> CausalGraph {
             Duration::from_days(7),
             days_ago(300),
         )
+        .expect("a strength in [0, 1] is admitted")
         .with_confidence(0.8)
+        .expect("a confidence in [0, 1] is admitted")
         .with_evidence(vec!["filing:input-costs".into()]),
     );
     causal.add(
@@ -250,7 +252,9 @@ fn causal_chain() -> CausalGraph {
             Duration::from_days(3),
             days_ago(300),
         )
+        .expect("a strength in [0, 1] is admitted")
         .with_confidence(0.75)
+        .expect("a confidence in [0, 1] is admitted")
         .with_evidence(vec!["filing:supplier-concentration".into()]),
     );
     causal.add(
@@ -262,7 +266,9 @@ fn causal_chain() -> CausalGraph {
             Duration::from_days(5),
             days_ago(300),
         )
+        .expect("a strength in [0, 1] is admitted")
         .with_confidence(0.5)
+        .expect("a confidence in [0, 1] is admitted")
         .with_evidence(vec!["research:substitution".into()]),
     );
     causal
@@ -397,22 +403,28 @@ fn a_negligible_effect_is_dropped_and_counted() {
 #[test]
 fn propagation_terminates_on_a_cycle() {
     let mut causal = CausalGraph::new();
-    causal.add(CausalEdge::new(
-        "a",
-        "b",
-        Mechanism::Sentiment,
-        0.9,
-        Duration::ZERO,
-        days_ago(10),
-    ));
-    causal.add(CausalEdge::new(
-        "b",
-        "a",
-        Mechanism::Sentiment,
-        0.9,
-        Duration::ZERO,
-        days_ago(10),
-    ));
+    causal.add(
+        CausalEdge::new(
+            "a",
+            "b",
+            Mechanism::Sentiment,
+            0.9,
+            Duration::ZERO,
+            days_ago(10),
+        )
+        .expect("a strength in [0, 1] is admitted"),
+    );
+    causal.add(
+        CausalEdge::new(
+            "b",
+            "a",
+            Mechanism::Sentiment,
+            0.9,
+            Duration::ZERO,
+            days_ago(10),
+        )
+        .expect("a strength in [0, 1] is admitted"),
+    );
     let result = causal.propagate("a", 1.0, 10, 1e-6, now(), now());
     assert!(
         result.effects.len() <= 2,
@@ -423,14 +435,10 @@ fn propagation_terminates_on_a_cycle() {
 #[test]
 fn a_causal_claim_recorded_later_is_invisible_earlier() {
     let mut causal = CausalGraph::new();
-    causal.add(CausalEdge::new(
-        "a",
-        "b",
-        Mechanism::SupplyChain,
-        0.5,
-        Duration::ZERO,
-        now(),
-    ));
+    causal.add(
+        CausalEdge::new("a", "b", Mechanism::SupplyChain, 0.5, Duration::ZERO, now())
+            .expect("a strength in [0, 1] is admitted"),
+    );
     assert!(
         causal
             .propagate("a", 1.0, 2, 1e-6, days_ago(10), days_ago(10))
@@ -469,6 +477,7 @@ fn absorbing_a_claim_moves_the_causal_graphs_last_update_and_no_query_does() {
             Duration::ZERO,
             recorded_at,
         )
+        .expect("a strength in [0, 1] is admitted")
     };
     causal.add(edge("a", "b", days_ago(10)));
     assert_eq!(
@@ -529,6 +538,7 @@ fn a_re_estimation_from_claims_inside_the_horizon_moves_the_last_update_and_the_
             Duration::from_days(7),
             days_ago(200),
         )
+        .expect("a strength in [0, 1] is admitted")
         .with_evidence(vec!["filing:northwind-10k".into()]),
     );
     // Premise: the graph is exactly as old as its only claim, and that claim
@@ -616,14 +626,17 @@ fn a_re_estimation_with_only_claims_outside_the_horizon_leaves_the_fact_and_mark
     // question, and the centre would size at full budget against relationships
     // no evidence inside the quarter supports.
     let mut causal = CausalGraph::new();
-    causal.add(CausalEdge::new(
-        "kestrel",
-        "northwind",
-        Mechanism::InputCost,
-        0.30,
-        Duration::from_days(7),
-        days_ago(200),
-    ));
+    causal.add(
+        CausalEdge::new(
+            "kestrel",
+            "northwind",
+            Mechanism::InputCost,
+            0.30,
+            Duration::from_days(7),
+            days_ago(200),
+        )
+        .expect("a strength in [0, 1] is admitted"),
+    );
     // Premise: there *is* a claim, and it names the link the graph holds — it
     // is simply older than the horizon. A test offering no claim at all would
     // pass against an implementation that refreshed on any claim it was given.
@@ -680,14 +693,17 @@ fn a_claim_naming_a_link_the_graph_does_not_hold_is_reported_and_invents_no_edge
     // evidence behind it, asserted deliberately through `add`. Manufacturing
     // one from a strength reading is how a correlation becomes a thesis.
     let mut causal = CausalGraph::new();
-    causal.add(CausalEdge::new(
-        "kestrel",
-        "northwind",
-        Mechanism::InputCost,
-        0.30,
-        Duration::from_days(7),
-        days_ago(10),
-    ));
+    causal.add(
+        CausalEdge::new(
+            "kestrel",
+            "northwind",
+            Mechanism::InputCost,
+            0.30,
+            Duration::from_days(7),
+            days_ago(10),
+        )
+        .expect("a strength in [0, 1] is admitted"),
+    );
     // Premise: the graph holds exactly one link, and the claim below is
     // in-horizon — so nothing but the missing edge stops it being used.
     assert_eq!(causal.len(), 1);
@@ -729,14 +745,17 @@ fn a_claim_from_the_future_or_outside_zero_to_one_is_refused_and_changes_nothing
     // edge is touched, so a rejected batch leaves the graph exactly as it was.
     let build = || {
         let mut causal = CausalGraph::new();
-        causal.add(CausalEdge::new(
-            "kestrel",
-            "northwind",
-            Mechanism::InputCost,
-            0.30,
-            Duration::from_days(7),
-            days_ago(200),
-        ));
+        causal.add(
+            CausalEdge::new(
+                "kestrel",
+                "northwind",
+                Mechanism::InputCost,
+                0.30,
+                Duration::from_days(7),
+                days_ago(200),
+            )
+            .expect("a strength in [0, 1] is admitted"),
+        );
         causal
     };
     let good = || {
@@ -829,14 +848,17 @@ fn two_re_estimations_over_the_same_claims_produce_the_same_report() {
                 0.15,
             ),
         ] {
-            causal.add(CausalEdge::new(
-                cause,
-                effect,
-                mechanism,
-                strength,
-                Duration::from_days(3),
-                days_ago(150),
-            ));
+            causal.add(
+                CausalEdge::new(
+                    cause,
+                    effect,
+                    mechanism,
+                    strength,
+                    Duration::from_days(3),
+                    days_ago(150),
+                )
+                .expect("a strength in [0, 1] is admitted"),
+            );
         }
         causal
     };
@@ -920,14 +942,17 @@ fn explanations_rank_the_most_likely_cause_first() {
 #[test]
 fn unevidenced_claims_are_surfaced() {
     let mut causal = causal_chain();
-    causal.add(CausalEdge::new(
-        "x",
-        "y",
-        Mechanism::Sentiment,
-        0.9,
-        Duration::ZERO,
-        days_ago(1),
-    ));
+    causal.add(
+        CausalEdge::new(
+            "x",
+            "y",
+            Mechanism::Sentiment,
+            0.9,
+            Duration::ZERO,
+            days_ago(1),
+        )
+        .expect("a strength in [0, 1] is admitted"),
+    );
     let unevidenced = causal.unevidenced();
     assert_eq!(unevidenced.len(), 1);
     assert_eq!(unevidenced[0].cause, "x");
@@ -2026,7 +2051,8 @@ fn an_edge_naming_no_cause_is_refused_where_it_is_claimed_and_a_well_formed_one_
         0.45,
         Duration::from_days(3),
         days_ago(1),
-    );
+    )
+    .expect("a strength in [0, 1] is admitted");
     model
         .claim_causal(good)
         .expect("an edge naming both of its ends is a claim the graph may hold");
@@ -2041,14 +2067,17 @@ fn an_edge_naming_no_cause_is_refused_where_it_is_claimed_and_a_well_formed_one_
     // space is a key nobody can look up and a bucket nobody can read.
     for (cause, effect) in [("", "ent-vantage"), ("ent-northwind", ""), ("   ", "  ")] {
         let refusal = model
-            .claim_causal(CausalEdge::new(
-                cause,
-                effect,
-                Mechanism::SupplyChain,
-                0.45,
-                Duration::from_days(3),
-                days_ago(1),
-            ))
+            .claim_causal(
+                CausalEdge::new(
+                    cause,
+                    effect,
+                    Mechanism::SupplyChain,
+                    0.45,
+                    Duration::from_days(3),
+                    days_ago(1),
+                )
+                .expect("a strength in [0, 1] is admitted"),
+            )
             .expect_err("an edge naming no cause or no effect was admitted to the graph");
         assert!(
             refusal.message().contains("must name both"),
@@ -2061,6 +2090,247 @@ fn an_edge_naming_no_cause_is_refused_where_it_is_claimed_and_a_well_formed_one_
     // supporting claim, not the journal entry. A refusal that had already
     // journalled the claim would leave a reader believing the graph holds a
     // link it does not.
+    assert_eq!(
+        model.causal().len(),
+        1,
+        "a refused causal claim still reached the graph"
+    );
+    assert_eq!(
+        model
+            .changes()
+            .iter()
+            .filter(|change| change.kind == ChangeKind::CausalClaimAdded)
+            .count(),
+        1,
+        "a refused causal claim was journalled as added"
+    );
+}
+#[test]
+fn a_strength_that_is_not_a_real_fraction_is_refused_at_construction_and_a_real_one_is_admitted() {
+    // `CausalEdge::new` read `strength.clamp(0.0, 1.0)` until 2026-09-15, and
+    // that clamp failed in both directions at once. A caller passing 45 where
+    // 0.45 was wanted had its bug rewritten into 1.0 — a full-transmission
+    // edge nobody claimed — and `f64::NAN.clamp(0.0, 1.0)` is `NAN`, so the
+    // value the clamp most needed to stop was the one value it did not touch.
+    // This is not hypothetical: `granger::establish_temporal_precedence_*`
+    // feeds this constructor a regression's `partial_r_squared`, and the guard
+    // above it (`partial_r_squared < MIN_EFFECT`) is false for a NaN, because
+    // every comparison against a NaN is.
+
+    // The premise: a well-formed strength really is admitted and is kept
+    // exactly as stated. A gate that refuses every value is not a gate, and a
+    // constructor that quietly adjusted an admitted value would be the same
+    // defect wearing a smaller number.
+    let admitted = CausalEdge::new(
+        "ent-northwind",
+        "ent-vantage",
+        Mechanism::SupplyChain,
+        0.45,
+        Duration::from_days(3),
+        days_ago(1),
+    )
+    .expect("a strength of 0.45 is a fraction in [0, 1] and must be admitted");
+    assert!(
+        approx_eq(admitted.strength, 0.45, 1e-12),
+        "an admitted strength was altered on the way in: {}",
+        admitted.strength
+    );
+    // Both bounds are inclusive: an edge that transmits nothing and an edge
+    // that transmits the whole move are both claims somebody may make.
+    for bound in [0.0, 1.0] {
+        let edge = CausalEdge::new(
+            "ent-northwind",
+            "ent-vantage",
+            Mechanism::SupplyChain,
+            bound,
+            Duration::from_days(3),
+            days_ago(1),
+        )
+        .expect("the bounds of [0, 1] are admitted, or the range is not [0, 1]");
+        assert!(
+            approx_eq(edge.strength, bound, 1e-12),
+            "a strength on the bound was altered: {} from {bound}",
+            edge.strength
+        );
+    }
+
+    // A value that is not a number at all, refused with a message that says so
+    // rather than one about a range — an operator told "outside [0, 1]" goes
+    // looking for a number that is too large, and there is no such number.
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let refusal = CausalEdge::new(
+            "ent-northwind",
+            "ent-vantage",
+            Mechanism::SupplyChain,
+            value,
+            Duration::from_days(3),
+            days_ago(1),
+        )
+        .expect_err("a non-finite strength was admitted");
+        assert!(
+            refusal.message().contains("is not a real number"),
+            "the refusal of {value} does not say the value is not a real number: {}",
+            refusal.message()
+        );
+        assert!(
+            refusal.message().contains("strength"),
+            "the refusal of {value} does not name the field at fault: {}",
+            refusal.message()
+        );
+    }
+
+    // And a finite value outside the range, refused rather than corrected.
+    for value in [1.8, 45.0, -0.2] {
+        let refusal = CausalEdge::new(
+            "ent-northwind",
+            "ent-vantage",
+            Mechanism::SupplyChain,
+            value,
+            Duration::from_days(3),
+            days_ago(1),
+        )
+        .expect_err("a strength outside [0, 1] was admitted");
+        assert!(
+            refusal.message().contains("fraction in [0, 1]"),
+            "the refusal of {value} does not say what a strength is: {}",
+            refusal.message()
+        );
+        assert!(
+            refusal.message().contains("strength"),
+            "the refusal of {value} does not name the field at fault: {}",
+            refusal.message()
+        );
+    }
+}
+
+#[test]
+fn a_confidence_that_is_not_a_real_fraction_is_refused_and_a_stated_one_is_kept_exactly() {
+    // `with_confidence` clamped for the same reason `new` did and failed the
+    // same way. A NaN confidence is reachable from the same Granger path: the
+    // confidence there is `(1 - p_value) * ceiling`, and a p-value out of a
+    // degenerate F tail is a NaN. Multiplied into `transmission()` it makes
+    // every chain through the edge unorderable rather than merely wrong —
+    // `partial_cmp` answers `None` on a NaN and both sorts in `causal.rs` fall
+    // back to `Equal`, so the ranking silently stops ranking.
+    let edge = || {
+        CausalEdge::new(
+            "ent-kestrel",
+            "ent-northwind",
+            Mechanism::InputCost,
+            0.3,
+            Duration::from_days(7),
+            days_ago(1),
+        )
+        .expect("a strength of 0.3 is admitted")
+    };
+
+    // The premise: an edge nobody states a confidence for carries the default,
+    // and a stated confidence is admitted and kept exactly.
+    assert!(
+        approx_eq(edge().confidence, CausalEdge::DEFAULT_CONFIDENCE, 1e-12),
+        "an edge with no stated confidence does not carry the default: {}",
+        edge().confidence
+    );
+    let stated = edge()
+        .with_confidence(0.65)
+        .expect("a confidence of 0.65 is a fraction in [0, 1] and must be admitted");
+    assert!(
+        approx_eq(stated.confidence, 0.65, 1e-12),
+        "an admitted confidence was altered on the way in: {}",
+        stated.confidence
+    );
+
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let refusal = edge()
+            .with_confidence(value)
+            .expect_err("a non-finite confidence was admitted");
+        assert!(
+            refusal.message().contains("is not a real number")
+                && refusal.message().contains("confidence"),
+            "the refusal of {value} does not name the field or the fault: {}",
+            refusal.message()
+        );
+    }
+    for value in [1.5, -0.1] {
+        let refusal = edge()
+            .with_confidence(value)
+            .expect_err("a confidence outside [0, 1] was admitted");
+        assert!(
+            refusal.message().contains("fraction in [0, 1]")
+                && refusal.message().contains("confidence"),
+            "the refusal of {value} does not name the field or the fault: {}",
+            refusal.message()
+        );
+    }
+}
+
+#[test]
+fn an_edge_that_went_round_the_constructors_is_still_refused_where_it_is_claimed() {
+    // `CausalEdge`'s fields are `pub` and it derives `Deserialize`, so a
+    // refusal that lives only in `new` and `with_confidence` guards a door
+    // with no wall beside it: a struct literal, a decoded record, or an
+    // assignment to `edge.strength` reaches the graph having faced neither.
+    // This is the defect class a sibling lane found in `ToleranceBasis`, where
+    // serde derived straight onto private fields and skipped every refusal the
+    // constructor made. The remedy here is `validate`, which
+    // `WorldModel::claim_causal` calls and every path into a graph goes
+    // through, rather than a serde shim that would close one of the two doors
+    // while looking as though it had closed both.
+    let mut model = WorldModel::new();
+
+    // The premise: an edge built the same way, with both fractions in range,
+    // is admitted. Without this the assertions below pass against a claim path
+    // that refuses everything.
+    let mut sound = CausalEdge::new(
+        "ent-northwind",
+        "ent-vantage",
+        Mechanism::SupplyChain,
+        0.45,
+        Duration::from_days(3),
+        days_ago(1),
+    )
+    .expect("a strength of 0.45 is admitted");
+    sound.confidence = 0.9;
+    model
+        .claim_causal(sound)
+        .expect("an edge whose fields are all in range is a claim the graph may hold");
+    assert_eq!(
+        model.causal().len(),
+        1,
+        "a well-formed causal claim did not reach the graph, so nothing below distinguishes a \
+         refusal from a claim path that stores nothing"
+    );
+
+    for (field, strength, confidence) in [
+        ("strength", f64::NAN, 0.7),
+        ("strength", 1.8, 0.7),
+        ("confidence", 0.45, f64::NAN),
+        ("confidence", 0.45, 4.0),
+    ] {
+        let mut smuggled = CausalEdge::new(
+            "ent-northwind",
+            "ent-vantage",
+            Mechanism::SupplyChain,
+            0.45,
+            Duration::from_days(3),
+            days_ago(1),
+        )
+        .expect("the fixture's own strength is in range");
+        smuggled.strength = strength;
+        smuggled.confidence = confidence;
+        let refusal = model
+            .claim_causal(smuggled)
+            .expect_err("an edge that went round the constructors was admitted to the graph");
+        assert!(
+            refusal.message().contains(field),
+            "the refusal does not name the field at fault ({field}): {}",
+            refusal.message()
+        );
+    }
+
+    // Nothing was written by any of the four: not the edge, not the supporting
+    // claim, not the journal entry. A refusal that had already journalled the
+    // claim would leave a reader believing the graph holds a link it does not.
     assert_eq!(
         model.causal().len(),
         1,

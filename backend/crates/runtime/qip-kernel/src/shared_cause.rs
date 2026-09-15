@@ -279,7 +279,9 @@ mod tests {
             Duration::from_days(1),
             at(),
         )
+        .expect("a strength in [0, 1] is admitted")
         .with_confidence(1.0)
+        .expect("a confidence in [0, 1] is admitted")
     }
 
     /// A tape whose returns are not numbers, so the single-factor regression

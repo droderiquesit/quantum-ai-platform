@@ -429,6 +429,7 @@ mod tests {
             Duration::from_days(1),
             at(recorded),
         )
+        .expect("a strength in [0, 1] is admitted")
     }
 
     #[test]
