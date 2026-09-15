@@ -344,6 +344,10 @@ pub struct Platform {
     bridges: BridgeLedger,
     /// Falsifiable claims the REASON stage has made, and their verdicts.
     predictions: Vec<RecordedPrediction>,
+    /// Blueprint §14.3's `Testing` gate: cumulative trials per hypothesis
+    /// family and the refutations they produced. Held across cycles because a
+    /// budget that reset every cycle would be a budget of one.
+    falsification: crate::falsification::Book,
     /// Resolved episodes, for precedent (blueprint §10): what this platform
     /// reasoned in situations like the one in front of it, and what
     /// followed. Bounded by the memory's own capacity, and readable only
@@ -870,7 +874,7 @@ const PREDICTION_HISTORY: usize = 1024;
 /// anything about. `DetectorRegistry::standard` constructs the detector with
 /// its default, and the registry test that pins this pairing is the one that
 /// would fail if either side moved.
-const VOLATILITY_CLAIM_WINDOW: usize = 20;
+pub(crate) const VOLATILITY_CLAIM_WINDOW: usize = 20;
 
 /// How many declined paths the LEARN stage prices per cycle.
 ///
@@ -3312,6 +3316,7 @@ impl Platform {
             confirmations: Confirmations::exactly(config.chain_confirmations),
             bridges: BridgeLedger::new(),
             predictions: Vec::new(),
+            falsification: crate::falsification::Book::new(),
             evaluations: Vec::new(),
             last_calibration: None,
             self_model: SelfModel::new(),
@@ -10330,6 +10335,13 @@ impl Platform {
                 ));
             }
         }
+        // Blueprint §14.3's `Testing` row, and §14.2's source register with
+        // it. Until this call a falsifier was written down at formation and
+        // evaluated by nothing, which reads downstream exactly like a
+        // falsifier that passed. See `crate::falsification`.
+        outcome = self
+            .falsification
+            .review(&self.world.read(), &self.predictions, now, outcome);
         // Price what the gates declined, now that the world has said what
         // would have happened. Blueprint §12: a platform that learns only
         // from the trades it took is learning from a heavily selected
@@ -10813,6 +10825,18 @@ impl Platform {
     /// grading every thesis and never asking which kinds of thesis work when.
     pub fn claim_scores(&self) -> &qip_evolution::scoring::Scoreboard {
         &self.claim_scores
+    }
+
+    /// Blueprint §14.3's trial book: cumulative trials per hypothesis family,
+    /// the refutations they produced, and what the last pass found.
+    ///
+    /// Read by an operator and by a test, and by nothing that decides. The
+    /// §14.3 rows after `Testing` — a supported hypothesis becoming a
+    /// candidate causal edge, a strategy expressing it, a canary — are not
+    /// built, and a seam that quietly did half of one would be worse than the
+    /// gap it filled.
+    pub const fn falsification(&self) -> &crate::falsification::Book {
+        &self.falsification
     }
 
     /// What the platform's own series say, for the metrics named.

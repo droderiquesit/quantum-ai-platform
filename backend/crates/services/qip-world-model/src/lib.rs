@@ -17,6 +17,7 @@
 //! evidence behind it. Conflating the two is how a correlation becomes a thesis.
 
 pub mod causal;
+pub mod falsification;
 pub mod features;
 pub mod granger;
 pub mod graph;
@@ -27,6 +28,10 @@ pub mod vocabulary;
 pub mod world;
 
 pub use causal::{CausalEdge, CausalGraph, Effect, Mechanism, PropagationResult};
+pub use falsification::{
+    Breach, FalsificationPass, Falsifier, HeldOut, HypothesisSource, Inadmissible, LeakageTally,
+    SourceCensus, SourceStanding, TrialLedger, Verdict, rolling_statistic,
+};
 pub use features::{FEATURE_HISTORY, Feature, FeatureLookup, FeatureStore, FeatureValue};
 pub use graph::{Fact, KnowledgeGraph, Node, NodeKind};
 pub use liquidity::{

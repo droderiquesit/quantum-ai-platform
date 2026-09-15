@@ -35,6 +35,7 @@ pub mod central;
 pub mod config;
 pub mod cycle;
 pub mod fabric_declaration;
+pub mod falsification;
 pub mod family_review;
 pub mod platform;
 pub mod references;
