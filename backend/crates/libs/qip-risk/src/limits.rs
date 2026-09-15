@@ -1614,6 +1614,34 @@ impl LimitSet {
                 .with_rationale("bounds single-jurisdiction political and currency risk"),
             )
             .with(
+                Limit::new(
+                    "causal-driver-concentration",
+                    LimitKind::MaxAxisWeight {
+                        axis: crate::shared_cause::CAUSAL_DRIVER_AXIS.into(),
+                        limit: 0.50,
+                    },
+                )
+                .with_rationale(
+                    "no single mechanism may drive more than half the book: positions \
+                     diversified by instrument and by factor can still share one cause, and \
+                     that is the concentration nothing else here can see",
+                ),
+            )
+            .with(
+                Limit::new(
+                    "factor-concentration",
+                    LimitKind::MaxAxisWeight {
+                        axis: crate::shared_cause::FACTOR_AXIS.into(),
+                        limit: 1.20,
+                    },
+                )
+                .with_rationale(
+                    "bounds beta-weighted systematic exposure, which the leverage cap cannot \
+                     see: a book at 1.4 gross in names that move 1.5 times the market is not \
+                     the same risk as one at 1.4 gross in names that move half of it",
+                ),
+            )
+            .with(
                 Limit::new("volatility", LimitKind::MaxVolatility { limit: 0.25 })
                     .with_rationale("keeps the book inside its stated risk profile"),
             )

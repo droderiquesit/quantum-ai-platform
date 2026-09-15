@@ -11100,6 +11100,11 @@ impl Platform {
             daily_loss: self.capital.daily_loss(),
             ..RiskState::from_figures(figures).with_tail_risk(self.monitor.limits(), &returns)
         };
+        // Blueprint §25.3's per-factor and per-causal-driver levels, charged
+        // here rather than at a stage because this is the one state both the
+        // pre-trade veto and the monitor read. See `crate::shared_cause` for
+        // why the per-family level has no producer and no shipped cap.
+        let state = crate::shared_cause::observe(&self.world, &self.price_history, state);
         // Both maps or neither. The fractions are a sum over the same ladder
         // the day counts come from, so filling one from a ladder whose totals
         // could not be computed would leave the two halves of one liquidity
@@ -14407,6 +14412,323 @@ mod decide_tests {
             breached,
             "expected shortfall is {shortfall} against a limit of 0.08 and the \
              limit did not breach; it is still incapable of firing"
+        );
+    }
+
+    /// The name the shipped set gives the per-causal-driver cap.
+    ///
+    /// A constant rather than a literal repeated in three assertions, because
+    /// the assertions below compare it for **equality** with a breach's
+    /// `limit_name` and never with `contains`. `"causal-driver-concentration"`,
+    /// `"country-concentration"` and `"factor-concentration"` all end in the
+    /// same word, and a substring match against `"concentration"` would pass
+    /// on whichever of the three happened to fire.
+    const CAUSAL_DRIVER_LIMIT: &str = "causal-driver-concentration";
+
+    /// The name the shipped set gives the per-factor cap. See
+    /// [`CAUSAL_DRIVER_LIMIT`] for why this is a constant.
+    const FACTOR_LIMIT: &str = "factor-concentration";
+
+    /// A ten-million book, stated here rather than taken from the default, so
+    /// that the notionals the two shared-cause tests charge are arithmetic a
+    /// reader can check against the bounds without opening `PlatformConfig`.
+    fn shared_cause_platform() -> Platform {
+        let config = PlatformConfig::default().with_initial_equity(Decimal::from_int(10_000_000));
+        let (context, _clock) =
+            qip_core::Context::deterministic(Timestamp::from_secs(1_760_000_000), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    /// Charge `count` equal positions to the book and answer their names.
+    ///
+    /// The instruments reach no bucket the reference data vouches for —
+    /// `Platform::exposure_axes_for` answers an empty map for an instrument
+    /// the universe holds no record for — so the sector, country, asset-class
+    /// and venue caps have nothing to read and the only axes present in the
+    /// state are the ones this producer writes. That is what makes the
+    /// assertions below able to name which control fired.
+    fn hold_equal_positions(platform: &mut Platform, count: usize, each: Decimal) -> Vec<String> {
+        (0..count)
+            .map(|index| {
+                let instrument = format!("SHARED-{index:02}");
+                platform
+                    .aggregates
+                    .apply_fill(DESK_STRATEGY, &instrument, &BTreeMap::new(), each)
+                    .expect("a fill of positive notional in a named instrument is aggregated");
+                instrument
+            })
+            .collect()
+    }
+
+    /// Whether the shipped set records a breach of any severity under exactly
+    /// this limit name.
+    ///
+    /// Used for the premises — "nothing else is even warning" and "the quiet
+    /// book is clean" — because both are stronger claims when a warning
+    /// counts.
+    fn breaches(state: &RiskState, limit_name: &str) -> bool {
+        LimitSet::conservative_default()
+            .check(state)
+            .breaches
+            .into_iter()
+            .any(|breach| breach.limit_name == limit_name)
+    }
+
+    /// Whether the shipped set records a **blocking** breach under exactly this
+    /// limit name.
+    ///
+    /// Used for the conclusions, and the distinction is not pedantry: a
+    /// `Severity::Warning` is reported and does not stop an order, so a test
+    /// that accepts one proves the figure is being read and not that the veto
+    /// fires. A mutation moving the per-factor bound from 1.20 to 1.40 — past
+    /// a book measuring 1.30 — survived against the any-severity form, because
+    /// the warning threshold of 0.85 still put 1.30 above 1.19.
+    fn blocks(state: &RiskState, limit_name: &str) -> bool {
+        LimitSet::conservative_default()
+            .check(state)
+            .blocking()
+            .iter()
+            .any(|breach| breach.limit_name == limit_name)
+    }
+
+    #[test]
+    fn the_per_causal_driver_limit_can_actually_fire() {
+        // Blueprint §25.3's per-causal-driver row is the level the section
+        // calls new and calls the concentration that ends firms, and it was
+        // the `MaxExpectedShortfall` defect in a harsher form: not a limit
+        // that shipped and could not fire, but a level with no limit and no
+        // figure at all. `grep -rn 'causal_driver' backend/crates
+        // --include=*.rs` returned nothing, so a book whose every position
+        // sat downstream of one mechanism read as diversified to every
+        // control the platform had — diversified by instrument, by sector, by
+        // country, by venue and by counterparty, and one shock away from
+        // losing all of it at once.
+        //
+        // The state driven here is `Platform::risk_state`, which is the one
+        // state the pre-trade veto and the monitor both read.
+        let mut platform = shared_cause_platform();
+
+        // The premise, before the conclusion, and in three parts.
+        //
+        // First: an empty book against an empty graph must not breach. A cap
+        // that refuses everything is an outage wearing a control's clothes,
+        // and a test that only ever asserts a breach cannot tell the two
+        // apart.
+        let quiet = platform.risk_state();
+        let idle = quiet
+            .axis_exposures
+            .get(qip_risk::shared_cause::CAUSAL_DRIVER_AXIS)
+            .expect(
+                "the level is absent, which means no producer ran; a level that ran and found \
+                 nothing is present and empty, and the difference between those two is the whole \
+                 reason `SharedCauseExposure::declare` exists",
+            );
+        assert!(
+            idle.is_empty(),
+            "a book holding nothing was charged to {} driver(s)",
+            idle.len()
+        );
+        assert!(
+            !breaches(&quiet, CAUSAL_DRIVER_LIMIT),
+            "a book with no positions and a graph with no claims breached the \
+             per-causal-driver cap, so the cap refuses everything rather than \
+             refusing a concentration"
+        );
+
+        // Eight positions at 700,000 against ten million of equity: 5,600,000
+        // gross, which is 0.56 of equity against a leverage cap of 1.5 and
+        // 0.07 each against a position-weight cap of 0.10. Every other
+        // control in the shipped set is comfortably satisfied, so a breach
+        // below can only be the one this test is about.
+        let held = hold_equal_positions(&mut platform, 8, Decimal::from_int(700_000));
+        let driver = "policy-rate-shock";
+        for instrument in &held {
+            platform.world.update(|world| {
+                world.claim_causal(
+                    qip_world_model::causal::CausalEdge::new(
+                        driver,
+                        instrument,
+                        qip_world_model::causal::Mechanism::DiscountRate,
+                        1.0,
+                        Duration::from_days(1),
+                        Timestamp::from_secs(1_760_000_000),
+                    )
+                    .with_confidence(1.0),
+                )
+            });
+        }
+
+        let state = platform.risk_state();
+
+        // Second: the bucket exists and holds what the graph and the book
+        // together imply. Exactly, not approximately — eight positions of
+        // 700,000 at a transmission of one is 5,600,000, and a tolerance here
+        // would also accept a bucket built from some of the edges.
+        let charged = state
+            .axis_exposures
+            .get(qip_risk::shared_cause::CAUSAL_DRIVER_AXIS)
+            .and_then(|buckets| buckets.get(driver))
+            .copied()
+            .unwrap_or_else(|| {
+                panic!(
+                    "no bucket was charged to the driver every held position sits downstream \
+                     of; the axis holds {:?}",
+                    state
+                        .axis_exposures
+                        .get(qip_risk::shared_cause::CAUSAL_DRIVER_AXIS)
+                )
+            });
+        assert_eq!(
+            charged,
+            Decimal::from_int(5_600_000),
+            "the driver's bucket is not the gross notional of the positions it drives"
+        );
+
+        // Third: the controls that would otherwise explain a refusal are
+        // satisfied. Without this the test would pass on a book that was
+        // simply over-levered, and the per-causal-driver cap could still be
+        // incapable of firing.
+        assert!(
+            !breaches(&state, "leverage"),
+            "0.56 of equity gross breached a leverage cap of 1.5"
+        );
+        assert!(
+            !breaches(&state, "position-weight"),
+            "0.07 of equity in one name breached a position-weight cap of 0.10"
+        );
+
+        // And the cap reads the bucket and breaches: 0.56 of equity in one
+        // mechanism against a bound of 0.50.
+        assert!(
+            blocks(&state, CAUSAL_DRIVER_LIMIT),
+            "eight positions that all move on one claimed cause are 0.56 of equity \
+             against a bound of 0.50 and the cap did not block; the level is still \
+             incapable of firing"
+        );
+
+        // And the veto reaches an order. `PreTradeChecker` is the production
+        // type on the order path, and this is the decision it hands back —
+        // not a breach in a report somebody might read.
+        let checker = PreTradeChecker::new(LimitSet::conservative_default());
+        let order = qip_risk_engine::pretrade::ProposedOrder {
+            object_id: qip_core::ids::ObjectId::from_string(held[0].clone()),
+            quantity: Decimal::from_int(1),
+            reference_price: Decimal::from_int(100),
+            axes: BTreeMap::new(),
+            scope: DESK_STRATEGY.to_string(),
+        };
+        let result = checker
+            .check(&order, &state, Timestamp::from_secs(1_760_000_000))
+            .expect("a well-formed order is checked rather than refused as malformed");
+        let qip_risk_engine::pretrade::PreTradeDecision::Rejected { reasons } = &result.decision
+        else {
+            panic!(
+                "an order against a book 0.56 concentrated in one causal driver was not \
+                 rejected: {}",
+                result.decision.describe()
+            );
+        };
+        assert!(
+            reasons
+                .iter()
+                .any(|reason| reason.starts_with(&format!("{CAUSAL_DRIVER_LIMIT}: "))),
+            "the order was rejected but not for the driver concentration; the reasons were \
+             {reasons:?}"
+        );
+    }
+
+    #[test]
+    fn the_per_factor_limit_can_actually_fire() {
+        // §25.3's per-factor row — "systematic exposure, decomposed at fill
+        // time" — was the same gap beside it. `qip-risk` has estimated a
+        // market factor since ADR 0058 and the stress tester reads it, but
+        // nothing charged it to the risk state, so a book of thirteen names
+        // that all move one-for-one with the tape read as thirteen
+        // independent bets to every limit the platform had.
+        let mut platform = shared_cause_platform();
+
+        // The premise first: an empty book, with a tape long enough to
+        // estimate a factor from, must not breach. The level must be present
+        // and empty — ran, found nothing — rather than absent.
+        // Twenty-six series of twenty-four closes — `MarketFactor` refuses a
+        // beta from fewer than twenty overlapping returns. Thirteen move and
+        // thirteen do not, and the factor is the equal-weighted mean of all
+        // of them, so the moving half carries a beta of exactly two against
+        // it. That is deliberate rather than convenient: a beta of one would
+        // make the factor bucket equal the book's gross, and a cap on it
+        // would be indistinguishable from a second leverage limit. This book
+        // is 0.65 of equity gross and 1.30 of equity of systematic exposure,
+        // so only one of the two caps can explain a refusal.
+        for index in 0..13 {
+            let moving: Vec<f64> = (0..24).map(|step| 100.0 + f64::from(step % 7)).collect();
+            platform
+                .price_history
+                .insert(format!("SHARED-{index:02}"), moving);
+            platform
+                .price_history
+                .insert(format!("STILL-{index:02}"), vec![50.0; 24]);
+        }
+        let quiet = platform.risk_state();
+        let idle = quiet
+            .axis_exposures
+            .get(qip_risk::shared_cause::FACTOR_AXIS)
+            .expect("the factor level is absent, which means no producer ran");
+        assert!(
+            idle.is_empty(),
+            "a book holding nothing carries factor exposure of {idle:?}"
+        );
+        assert!(
+            !breaches(&quiet, FACTOR_LIMIT),
+            "an empty book breached the per-factor cap, so the cap refuses everything"
+        );
+
+        // Thirteen positions at 500,000 against ten million: 6,500,000 gross,
+        // which is 0.65 of equity against a leverage cap of 1.5 and 0.05 each
+        // against a position-weight cap of 0.10. At a beta of two the factor
+        // bucket is 13,000,000, which is 1.30 of equity.
+        let held = hold_equal_positions(&mut platform, 13, Decimal::from_int(500_000));
+        assert_eq!(held.len(), 13, "the book did not take every position");
+        let state = platform.risk_state();
+
+        let loading = state
+            .axis_exposures
+            .get(qip_risk::shared_cause::FACTOR_AXIS)
+            .and_then(|buckets| buckets.get(qip_risk::market_factor::MARKET_FACTOR))
+            .copied()
+            .unwrap_or_else(|| {
+                panic!(
+                    "no bucket was charged to the one factor the platform estimates; the axis \
+                     holds {:?}",
+                    state
+                        .axis_exposures
+                        .get(qip_risk::shared_cause::FACTOR_AXIS)
+                )
+            });
+        assert_eq!(
+            loading,
+            Decimal::from_int(13_000_000),
+            "the factor's bucket is not the beta-weighted gross of the positions loading on it"
+        );
+        // The control that would otherwise explain a refusal is satisfied:
+        // without this the test would pass on a book that was simply
+        // over-levered, and the per-factor cap could still be incapable of
+        // firing.
+        assert!(
+            !breaches(&state, "leverage"),
+            "0.65 of equity gross breached a leverage cap of 1.5"
+        );
+        assert!(
+            blocks(&state, FACTOR_LIMIT),
+            "thirteen names that each move twice the tape are 1.30 of equity of \
+             systematic exposure against a bound of 1.20 and the cap did not block; \
+             the level is still incapable of firing"
         );
     }
 

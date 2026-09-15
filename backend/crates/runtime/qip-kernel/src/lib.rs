@@ -39,6 +39,7 @@ pub mod family_review;
 pub mod platform;
 pub mod references;
 pub mod rule_review;
+pub mod shared_cause;
 pub mod sizing_review;
 pub mod valuation;
 pub mod venue_review;
