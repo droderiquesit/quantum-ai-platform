@@ -513,13 +513,22 @@ fn two_cells_under_one_region_table_cannot_each_spend_the_whole_grant() -> Resul
 }
 
 #[test]
-fn a_committed_reservation_survives_the_cells_halt_and_a_halted_pass_neither_sweeps_nor_returns_it()
--> Result<()> {
-    // A cell that halts with an order resting must go on counting that
-    // order's capital as spent: the order is still at the venue and may
-    // still fill. The pass-start sweep runs before the halt check, which is
-    // right for abandoned holds and would be wrong for commits — so the test
-    // pins that a halted pass returns nothing that is committed.
+fn a_halted_cell_withdraws_what_it_had_resting_and_that_capital_returns_exactly_once() -> Result<()>
+{
+    // Two properties, and the first of them changed on purpose. A halted cell
+    // used to leave every order it had already sent resting at the venue
+    // until that order's own time to live ran out — so the kill switch
+    // stopped the cell adding exposure and left the exposure it already had
+    // to a market it had stopped watching. §29.2's mass cancel is wired to
+    // the halt, so the withdrawal now happens on the first halted pass. This
+    // test asserted the old behaviour ("the halt withdrew an order before its
+    // time to live") and now asserts the new one.
+    //
+    // The second property is unchanged and is what the pass-start sweep must
+    // never do: a commit is not an abandoned hold. The sweep runs before the
+    // halt check, which is right for holds and would be wrong for commits,
+    // and the capital must return once — because the order was withdrawn
+    // unfilled — rather than once per halted pass.
     let opening = dec!("100000000");
     let table = RegionTable::new(opening)?;
     let mut cell = cell_under(
@@ -557,37 +566,42 @@ fn a_committed_reservation_survives_the_cells_halt_and_a_halted_pass_neither_swe
         halted.refusals
     );
     assert_eq!(
+        gateway.cancelled.len(),
+        1,
+        "the halt left an order resting at a venue the cell had stopped watching; the mass \
+         cancel did not run"
+    );
+    assert_eq!(
         table.free(),
-        after_send,
-        "a halted pass returned capital an order still resting at the venue had committed"
+        opening,
+        "the withdrawn order filled nothing and its capital stayed spent"
+    );
+    assert!(
+        after_send < opening,
+        "the premise failed: the order committed nothing to return"
     );
     assert_eq!(
         abandoned_entries(&cell),
         0,
         "the halted pass's sweep treated a committed order's capital as an abandoned hold"
     );
-    assert!(
-        gateway.cancelled.is_empty(),
-        "the halt withdrew an order before its time to live"
-    );
 
-    // Still halted at the time to live: withdrawing is not sending, so the
-    // venue withdraws it whole and — nothing having filled — the capital
-    // returns while the cell stays halted. The cell then holds all of it
-    // again and still sends nothing.
-    let expiry = cell.work(t(60), &mut gateway)?;
-    assert!(expiry.halted);
+    // A second halted pass has nothing left to withdraw and must not return
+    // the same capital again: the ledger's bound would admit the repeat, and
+    // the region would then read as untouched.
+    let again = cell.work(t(60), &mut gateway)?;
+    assert!(again.halted);
     assert_eq!(
         gateway.cancelled.len(),
         1,
-        "the premise failed: the resting order was not withdrawn at its time to live"
+        "the order was withdrawn a second time"
     );
     assert_eq!(
         table.free(),
         opening,
-        "an order withdrawn unfilled while halted kept its capital spent"
+        "a second halted pass returned the same capital again"
     );
-    assert!(expiry.orders.is_empty(), "a halted cell sent");
+    assert!(again.orders.is_empty(), "a halted cell sent");
     Ok(())
 }
 

@@ -80,6 +80,19 @@ pub enum Decision {
         venue: String,
         withdrawn: String,
     },
+    /// A resting order was withdrawn because the cell is halted, rather
+    /// than because its own time to live ran out (§29.2).
+    ///
+    /// Distinct from [`Self::OrderExpired`] on purpose, and the distinction is
+    /// the record: the two are the same action for entirely different reasons,
+    /// and an incident review reading a chain full of expiries cannot see the
+    /// moment a kill switch emptied the book. `withdrawn` is the venue's own
+    /// answer to the cancel, as it is there.
+    MassCancelled {
+        order_id: String,
+        venue: String,
+        withdrawn: String,
+    },
     /// Something was refused, with the gate that refused it.
     Refused { gate: String, reason: String },
     /// The venue and the cell's book disagree about a fill.
@@ -189,6 +202,7 @@ impl Decision {
             Self::OrderSent { .. } => "order_sent",
             Self::Filled { .. } => "filled",
             Self::OrderExpired { .. } => "order_expired",
+            Self::MassCancelled { .. } => "mass_cancelled",
             Self::Refused { .. } => "refused",
             Self::ReconciliationBreak { .. } => "reconciliation_break",
             Self::HaltChanged { .. } => "halt_changed",

@@ -38,10 +38,12 @@
 //! order id is a memory leak wearing a dashboard. Each `with(...)` call below
 //! says what bounds its own label.
 
+use crate::quoting::{MessageKind, VenueBudgetState};
 use qip_contracts::degradation::{Capability, DegradationState, Freshness};
 use qip_contracts::signal::SignalKind;
 use qip_contracts::venue::VenueId;
 use qip_core::Decimal;
+use qip_core::time::Duration;
 use qip_observability::metrics::{Histogram, Labels, Metrics, names};
 use std::sync::Arc;
 
@@ -135,6 +137,49 @@ impl RegionShareOutcome {
         }
     }
 }
+
+/// Messages the cell's per-venue budget has left (§29.2), by venue.
+///
+/// Named here rather than in `qip_observability::metrics::names` for the same
+/// reason as [`EDGE_FILLS_CONFIRMED`]. Written on every pass for every
+/// configured venue, including the passes where the cell sent nothing and the
+/// ones where it is halted: a quiet cell with a full bucket and a quiet cell
+/// that has spent its rate limit are the two readings an operator must be
+/// able to tell apart, and only one of them is a problem.
+pub const EDGE_QUOTE_BUDGET_TOKENS: &str = "qip_edge_quote_budget_tokens";
+
+/// Whether the message-to-trade monitor has narrowed quoting at a venue:
+/// `1` or `0`, by venue (§29.2). Written on every pass, so a recovery is a
+/// series falling to zero rather than one that stops being updated.
+pub const EDGE_QUOTE_NARROWED: &str = "qip_edge_quote_narrowed";
+
+/// Messages the cell sent to a venue, by venue and by what the message does
+/// to the cell's exposure (§29.2). Read beside [`EDGE_QUOTE_BUDGET_TOKENS`]:
+/// the rate the cell is actually producing against the budget it has left.
+pub const EDGE_MESSAGES_SENT: &str = "qip_edge_messages_sent_total";
+
+/// Resting orders withdrawn by a mass cancel because the cell is halted, by
+/// venue (§29.2). Distinct from [`EDGE_ORDERS_EXPIRED`] on purpose: an order
+/// that reached its time to live and an order pulled because the kill switch
+/// tripped are the same action for two entirely different reasons, and a
+/// single series would hide a halt inside ordinary housekeeping.
+pub const EDGE_ORDERS_MASS_CANCELLED: &str = "qip_edge_orders_mass_cancelled_total";
+
+/// How long each venue took from the cell's send to the venue's own confirmed
+/// fill, in milliseconds, by venue (§32.1). The measurement the dispersion
+/// gate is built on, published so that a refusal can be checked against the
+/// history that produced it.
+pub const EDGE_FILL_TIME_MILLIS: &str = "qip_edge_fill_time_millis";
+
+/// Configured venues that have produced too few fills for their fill time to
+/// be judged (§32.1).
+///
+/// The idle reading, and the reason this series exists at all: with every
+/// venue unmeasured the dispersion gate admits every cycle on no evidence,
+/// which looks exactly like a gate that is passing. One number, not per
+/// venue, because the question is whether the control has anything to work
+/// with.
+pub const EDGE_FILL_TIME_UNMEASURED: &str = "qip_edge_fill_time_unmeasured_venues";
 
 /// Buckets for the netting ratio.
 ///
@@ -260,6 +305,30 @@ impl CellMetrics {
         m.describe(
             names::EDGE_INTERNAL_CROSSES,
             "portions crossed between the platform's own strategies, by venue",
+        );
+        m.describe(
+            EDGE_QUOTE_BUDGET_TOKENS,
+            "messages the per-venue quote budget has left, by venue",
+        );
+        m.describe(
+            EDGE_QUOTE_NARROWED,
+            "whether the message-to-trade monitor has narrowed quoting at a venue",
+        );
+        m.describe(
+            EDGE_MESSAGES_SENT,
+            "messages sent to a venue, by venue and kind: placement, withdrawal",
+        );
+        m.describe(
+            EDGE_ORDERS_MASS_CANCELLED,
+            "resting orders withdrawn by a mass cancel because the cell is halted, by venue",
+        );
+        m.describe(
+            EDGE_FILL_TIME_MILLIS,
+            "milliseconds from the cell's send to the venue's confirmed fill, by venue",
+        );
+        m.describe(
+            EDGE_FILL_TIME_UNMEASURED,
+            "configured venues with too few fills for their fill time to be judged",
         );
         m.describe(
             names::EDGE_RECONCILIATION_BREAKS,
@@ -543,6 +612,83 @@ impl CellMetrics {
             names::EDGE_INTERNAL_CROSSES,
             self.with("venue", venue.as_str()),
         );
+    }
+
+    /// Every venue's quote budget, as the pass found it (§29.2).
+    ///
+    /// Both series are written for every configured venue on every pass,
+    /// including the halted ones, so the idle state says so rather than being
+    /// a gap. `venue` is bounded by `CellConfig::venues` — the budget has one
+    /// bucket per configured venue and an admission cannot mint another — and
+    /// nothing here is labelled by instrument or order.
+    pub fn quote_budget(&self, states: &[VenueBudgetState]) {
+        for state in states {
+            self.metrics.gauge(
+                EDGE_QUOTE_BUDGET_TOKENS,
+                self.with("venue", &state.venue),
+                f64::from(state.tokens),
+            );
+            self.metrics.gauge(
+                EDGE_QUOTE_NARROWED,
+                self.with("venue", &state.venue),
+                f64::from(u8::from(state.narrowed)),
+            );
+        }
+    }
+
+    /// One message the budget admitted and the cell sent (§29.2).
+    ///
+    /// `kind` is [`MessageKind`], a two-variant enum, so this is two series
+    /// per venue. Counted where the budget was spent rather than inferred
+    /// from orders placed: a cancel is a message the venue's rate limit
+    /// counts and no order series records.
+    pub fn message_sent(&self, venue: &VenueId, kind: MessageKind) {
+        let mut labels = self.with("venue", venue.as_str());
+        labels.insert("kind".to_string(), kind.as_str().to_string());
+        self.metrics.count(EDGE_MESSAGES_SENT, labels);
+    }
+
+    /// A resting order withdrawn because the cell is halted (§29.2).
+    ///
+    /// Bounded on `venue` exactly as [`Self::order_placed`] is. Read beside
+    /// `qip_edge_halted`: the halt says the cell stopped, this says what it
+    /// pulled back on the way.
+    pub fn order_mass_cancelled(&self, venue: &VenueId) {
+        self.metrics.count(
+            EDGE_ORDERS_MASS_CANCELLED,
+            self.with("venue", venue.as_str()),
+        );
+    }
+
+    /// How long one order took from send to confirmed fill (§32.1).
+    ///
+    /// The crossing point from the platform's `Duration` to the `f64` a
+    /// histogram holds, and a reporting one: the dispersion gate compares
+    /// `Duration`s throughout and never reads this number back.
+    pub fn fill_time(&self, venue: &VenueId, taken: Duration) {
+        // `as_nanos` is an `i64` of nanoseconds; the histogram is in
+        // milliseconds, and the division is done here rather than at the call
+        // site so every observation of this series is in the same unit.
+        #[allow(clippy::cast_precision_loss)]
+        let millis = taken.as_nanos() as f64 / 1_000_000.0;
+        self.metrics.observe_latency_ms(
+            EDGE_FILL_TIME_MILLIS,
+            self.with("venue", venue.as_str()),
+            millis,
+        );
+    }
+
+    /// How many configured venues the dispersion gate cannot judge (§32.1).
+    ///
+    /// Written every pass, including the idle ones, because the whole point
+    /// of the number is the state in which the gate admits everything.
+    pub fn fill_time_unmeasured(&self, venues: usize) {
+        // A count of the configured venue list, which is fixed at deployment
+        // and small; the cast cannot lose a venue anybody has.
+        #[allow(clippy::cast_precision_loss)]
+        let venues = venues as f64;
+        self.metrics
+            .gauge(EDGE_FILL_TIME_UNMEASURED, self.base.clone(), venues);
     }
 
     pub fn reconciliation_break(&self) {

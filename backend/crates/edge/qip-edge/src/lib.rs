@@ -35,21 +35,25 @@
 
 pub mod arbitrage;
 pub mod cell;
+pub mod dispersion;
 pub mod dropcopy;
 pub mod envelope;
 pub mod feasibility;
 pub mod journal;
 pub mod mesh;
 pub mod policy;
+pub mod quoting;
 pub mod reservation;
 pub mod seam;
 pub mod telemetry;
 
 pub use arbitrage::ArbitrageDesk;
 pub use cell::{
-    Cell, CellConfig, ConfirmedFill, CrossingInterval, ExecutionReport, MAX_OPEN_ORDERS, OpenOrder,
-    PlacedOrder, Placer, PolledHalt, PricingPolicy, WorkReport,
+    Cell, CellConfig, ConfirmedFill, CrossingInterval, ExecutionReport, GATE_FILL_DISPERSION,
+    GATE_LIVE_VENUE, GATE_MASS_CANCEL, GATE_QUOTE_BUDGET, MAX_OPEN_ORDERS, OpenOrder, PlacedOrder,
+    Placer, PolledHalt, PricingPolicy, WorkReport,
 };
+pub use dispersion::{DispersionPolicy, DispersionVerdict, FillTimes, VenueFillTimeState};
 pub use dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 pub use envelope::{VerifiedEnvelope, sign_payload};
 pub use feasibility::{Granularity, Infeasible, VenueModel};
@@ -61,6 +65,7 @@ pub use mesh::{
     UplinkConfig, UplinkStats,
 };
 pub use policy::{VerifiedHalt, VerifiedPolicy};
+pub use quoting::{Admission, MessageKind, QuoteBudget, RateLimits, VenueBudgetState};
 pub use reservation::{Rebase, RegionAllocation, RegionTable};
 pub use seam::{CellLiquidity, value_kind, value_type};
 pub use telemetry::CellMetrics;
