@@ -61,23 +61,29 @@
 //! **Do not quote a count from this file; run the command.** The slots that
 //! reach a shipped payload are the ones assigned at the shipping seam, and
 //! the only way to enumerate them is to look:
-//! `grep -n 'Slot::produced\|= episodic' backend/crates/apps/qip-api/src/mesh.rs`,
-//! whose assignments name `capital_grants`, `risk_envelope`,
-//! `cycle_whitelist` and `episodic_digest` — four of twelve on 2026-09-07.
-//! Three plan documents said three of twelve on that date; all were written
-//! before `ece7602` added the episodic producer and none re-counted
-//! afterwards, which is exactly the failure a command avoids and a figure
-//! does not.
+//! `grep -n 'Slot::produced\|= episodic\|= belief' backend/crates/apps/qip-api/src/mesh.rs`
+//! — and note that the pattern has had to grow twice, because a slot
+//! assigned from a pre-built value rather than at a `Slot::produced` call is
+//! invisible to the narrower form. It named `capital_grants`,
+//! `risk_envelope`, `cycle_whitelist` and `episodic_digest` — four of twelve
+//! on 2026-09-07. Three plan documents said three of twelve on that date; all
+//! were written before `ece7602` added the episodic producer and none
+//! re-counted afterwards, which is exactly the failure a command avoids and a
+//! figure does not. Run it; no count is written here.
 //!
 //! The produced slots are also asserted rather than only counted:
-//! `a_shipped_payload_produces_exactly_the_five_slots_the_register_names` in
+//! `a_shipped_payload_produces_exactly_the_six_slots_the_register_names` in
 //! `qip-api/tests/mesh.rs` reads a payload `pending_policy` really built and
-//! refuses one more. It is meant to be edited by whoever produces the next
+//! refuses one more. **Do not cite that test by name without running it** —
+//! the name carries a count and so rots exactly as a figure in prose does;
+//! `grep -n 'fn a_shipped_payload_produces' backend/crates/apps/qip-api/tests/mesh.rs`
+//! is the current name. It is meant to be edited by whoever produces the next
 //! one, in the same change that amends that slot's paragraph below — the
 //! failure it exists to catch is a slot quietly filled from a default while
-//! this register still explains why it cannot be. It has done its job once
+//! this register still explains why it cannot be. It has done its job twice
 //! already: it named four and failed the moment slot 11 gained a producer,
-//! which is how the amendment below came to be written rather than skipped.
+//! and named five and failed the moment slot 3 did, which is how both
+//! amendments below came to be written rather than skipped.
 //!
 //! # The audit, re-run rather than inherited
 //!
@@ -99,7 +105,12 @@
 //! One structural check reinforces every refusal below and is cheaper than
 //! reading the producers: six of the eight — every one but the compiled plan
 //! and the feasibility constraints — have no non-test reader anywhere under
-//! `backend/crates/edge` or `backend/crates/apps/qip-edge-node`. The
+//! `backend/crates/edge` or `backend/crates/apps/qip-edge-node`. Belief
+//! priors are in that six and are now produced anyway, which is the one
+//! exception this check predicted would not happen and the reason it is a
+//! heuristic rather than a rule: what a cell reads of slot 3 is its
+//! *freshness*, through `PolicyItem::capability`, and a slot can be read that
+//! way by a cell that never touches its value. The
 //! feasibility constraints were one of the two exceptions when this was
 //! written and are now produced (see the amendment below), which is the
 //! order this check predicts: a slot earns a producer after something at the
@@ -114,9 +125,11 @@
 //! capability, which means producing one *relaxes* the cell rather than
 //! informing it: `DegradationState::sizing_multiplier` stops narrowing when
 //! the belief and causal slots read fresh, and `pauses` stops pausing
-//! situational-recognition strategies when the episodic slot does. Two of
-//! those three are still unproducible, and for the reason this paragraph
-//! originally gave for all three:
+//! situational-recognition strategies when the episodic slot does. This
+//! paragraph said "two of those three are still unproducible"; since
+//! 2026-09-15 it is **one**, the causal digest, and the belief bullet below
+//! is kept with its refutation appended rather than struck, because the way
+//! it was wrong is the useful part:
 //!
 //! * **Belief priors.** `BeliefState` holds when a belief was last formed
 //!   and how many have been — deliberately not the hypotheses themselves,
@@ -129,6 +142,27 @@
 //!   exactly `last_updated` and `hypotheses_formed`, and the investment
 //!   records under `kernel/investment` are subscription and redemption
 //!   requests against the fund, not convictions about a subject.
+//!
+//!   **Amended 2026-09-15: every clause above is still true and the
+//!   conclusion is not.** The thing this bullet said would have to exist was
+//!   already in `platform.rs` and neither the bullet nor its two re-checks
+//!   looked for it under any name but `BeliefState`. `Platform::pending_episodes`
+//!   holds one `Episode` per hypothesis REASON has formed and LEARN has not
+//!   yet resolved, keyed by `instrument` — the subject, not the hypothesis id
+//!   — carrying `claim.confidence`, the effective confidence after review,
+//!   and retained across cycles until the claim resolves. That is a belief
+//!   the centre holds per subject, retained past the cycle that formed it,
+//!   word for word. The lesson worth keeping is that this bullet stated its
+//!   own refutation as a requirement and then re-verified only the clause it
+//!   had already written down; a re-check that searches for the sentence it
+//!   expects to confirm is not a re-check. [`super::belief`] is the producer,
+//!   and the doubling this bullet warns of is real and is what that module's
+//!   four refusals exist to bound — chiefly that it ships nothing unless
+//!   `BeliefState::last_updated` says a belief was formed in this process,
+//!   and that it stamps the slot with the *oldest* belief inside slot 3's own
+//!   five-minute window rather than with the issue instant, so a centre that
+//!   stops reasoning returns every cell to the halved multiplier inside five
+//!   minutes.
 //! * **The causal digest.** `WorldModel::claim_causal` is called only from
 //!   `qip_world_model::world::seed_demo_world` and from this crate's own
 //!   tests, so the graph a deployment holds is empty and its

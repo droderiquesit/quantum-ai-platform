@@ -6,7 +6,10 @@
 //! [`crate::central::whitelist`]'s audit of the nine unproduced slots grouped
 //! belief priors, the episodic digest and the causal digest together as "the
 //! kernel holds no belief engine, no episodic store, and no causal edge".
-//! Belief priors still hold. The causal-edge third held until ADR 0054 gave
+//! This module said "belief priors still hold"; they stopped holding on
+//! 2026-09-15, when [`super::belief`] became slot 3's producer over the open
+//! drafts `Platform::pending_episodes` retains — see that module and the
+//! amended bullet in `whitelist.rs`. The causal-edge third held until ADR 0054 gave
 //! `WorldModel::claim_causal` a second, real caller
 //! (`Platform::discover_temporal_precedence`) — the kernel can now hold a
 //! causal edge, narrowly and rarely, which `whitelist.rs`'s own bullet

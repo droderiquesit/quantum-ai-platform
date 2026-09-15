@@ -35,8 +35,9 @@
 //!   for and nothing was filling.
 
 use crate::central::{
-    AbsorbedFill, CellIngestion, CellOutcome, CellReport, CentralPlane, DispositionOutcome,
-    EpisodicIssue, FamilyStructureJournal, HorizonArming, LearningReport, WhitelistIssue,
+    AbsorbedFill, BeliefIssue, CellIngestion, CellOutcome, CellReport, CentralPlane,
+    DispositionOutcome, EpisodicIssue, FamilyStructureJournal, HorizonArming, LearningReport,
+    WhitelistIssue,
 };
 use crate::config::PlatformConfig;
 use crate::cycle::{CycleReport, Stage, StageOutcome};
@@ -4176,6 +4177,64 @@ impl Platform {
         let envelope = StreamEnvelope::seal(
             self.context.ids().generate::<EventKind>(now),
             Lineage::root(correlation_id, "kernel/episodic"),
+            issue.clone(),
+            now,
+            now,
+            facts,
+        )?;
+        self.event_log.append(&envelope.to_frame()?)?;
+        self.journal.publish(envelope, now)?;
+        Ok(issue)
+    }
+
+    /// Produce the cycle's belief priors — payload slot 3 — and journal it.
+    ///
+    /// One issue per cycle rather than one per cell: the beliefs this states
+    /// are the platform's, so every cell receives the same map, and a record
+    /// per cell would be seven claims about one fact.
+    ///
+    /// The priors are the open drafts REASON has formed and LEARN has not yet
+    /// resolved — `pending_episodes`, keyed by the instrument each claim is
+    /// about — gated on the reasoning engine's own
+    /// `BeliefState::last_updated`, which is the same fact
+    /// [`Self::central_degradation`] reads for the centre's §6.2 row 4. The
+    /// two must agree: a centre reading row 4 unavailable while shipping a
+    /// cell a row 4 that is fresh would be two claims about one capability,
+    /// and the louder one would be the one that sizes an order.
+    ///
+    /// [`crate::central::BeliefIssue::slot`] stamps the slot with the *oldest*
+    /// belief inside slot 3's own five-minute window, never with `now` and
+    /// never with the newest. See [`crate::central::belief`] for why that is
+    /// the whole safety argument: a produced slot stops a cell halving its
+    /// size, and a platform that stopped reasoning must stop excusing full
+    /// size five minutes later.
+    ///
+    /// Journaled produced or not, like the whitelist and the digest beside it,
+    /// because a platform whose beliefs never reach a cell is exactly the fact
+    /// an operator asking why every region sizes at half has to be able to
+    /// find.
+    pub fn issue_belief_priors(&mut self, now: Timestamp) -> Result<BeliefIssue> {
+        let issue = BeliefIssue::derive(
+            self.pending_episodes.iter(),
+            self.reasoning.beliefs().last_updated(),
+            now,
+        )?;
+        let correlation_id = self
+            .context
+            .ids()
+            .generate::<qip_core::lineage::CorrelationKind>(now);
+        let facts = EventFacts::derived(
+            SourceIdentity::new(
+                SourceId::new("qip-kernel"),
+                SourceType::Internal,
+                StreamRegion::new(HOME_REGION),
+            ),
+            Subject::unattributed(),
+            BeliefIssue::TOPIC,
+        );
+        let envelope = StreamEnvelope::seal(
+            self.context.ids().generate::<EventKind>(now),
+            Lineage::root(correlation_id, "kernel/belief"),
             issue.clone(),
             now,
             now,

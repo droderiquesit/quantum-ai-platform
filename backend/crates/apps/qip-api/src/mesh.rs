@@ -654,20 +654,32 @@ pub struct PendingPolicy {
     /// asking why every cell still pauses situational recognition reads the
     /// answer here.
     pub episodic: Vec<String>,
+    /// One line per **cycle**, not per cell: what slot 3 carries and from how
+    /// many open beliefs, or why nothing was produced.
+    ///
+    /// Beside the episodic line and for the same reason: the beliefs are the
+    /// platform's, so seven copies would be seven claims about one thing. An
+    /// operator asking why every region is sizing at half reads the answer
+    /// here, and the two answers an operator needs to tell apart — "this
+    /// process has formed no belief" and "every belief it holds is older than
+    /// five minutes" — are different sentences rather than the same silence.
+    pub beliefs: Vec<String>,
 }
 
 /// The policy payloads one cycle should ship, one per configured cell.
 ///
 /// Built from what the platform actually has. Do not quote a count from this
 /// comment; the assignments are the enumeration and
-/// `grep -n 'Slot::produced\|= episodic' backend/crates/apps/qip-api/src/mesh.rs`
+/// `grep -n 'Slot::produced\|= episodic\|= belief' backend/crates/apps/qip-api/src/mesh.rs`
 /// is how to read it. What each produced slot carries: the grant manifest —
 /// the signatures of every live envelope for the cell, so a dropped grant
 /// becomes visible — the risk envelope, as the limit set the monitor really
 /// enforces, the cycle whitelist, as [`Platform::issue_cycle_whitelist`]
 /// produces and journals it, the episodic digest, as
 /// [`Platform::issue_episodic_digest`] takes it over the LEARN stage's own
-/// memory, and the feasibility constraints, as
+/// memory, the belief priors, as [`Platform::issue_belief_priors`] states the
+/// beliefs REASON has formed and LEARN has not yet resolved, and the
+/// feasibility constraints, as
 /// [`Platform::feasibility_constraints`] reports the venues the platform has
 /// withdrawn. Every other slot ships unproduced and reads as unavailable at
 /// the cell, which narrows it; that is the fail-closed design, not an
@@ -698,6 +710,24 @@ pub struct PendingPolicy {
 /// cell reads stale. What this is not is a state a quiet centre can leave a
 /// cell in: silence ages the digest out and the pause returns without anyone
 /// republishing anything.
+///
+/// **Slot 3 widens what a cell may do, and the widening is bounded the same
+/// way.** `DegradationState::sizing_multiplier` stops halving the moment
+/// `belief_priors` reads fresh, so a produced slot 3 doubles every receiving
+/// cell's size. Three things bound that, and all three live in
+/// [`qip_kernel::central::belief`] rather than here, because a bound the
+/// shipper enforces is a bound the next shipper can forget. The producer
+/// ships nothing at all unless the reasoning engine's own
+/// `BeliefState::last_updated` says a belief was formed in this process — the
+/// same fact `Platform::central_degradation` reads for the centre's §6.2 row
+/// 4, so the two halves of the platform cannot disagree about whether a
+/// belief exists. It carries only beliefs inside slot 3's own five-minute
+/// window. And it stamps the slot with the **oldest** of those, never `now`
+/// and never the newest, so one belief formed this second cannot vouch for a
+/// map of beliefs from last week. A centre that stops reasoning therefore
+/// returns every cell to the halved multiplier inside five minutes without
+/// anyone republishing anything — and the payload's own `valid_for` is three
+/// hundred seconds too, so a centre that stops *speaking* does the same.
 ///
 /// `&mut` because the whitelist and the digest are journaled as they are
 /// issued: a whitelist that reached a cell with no record at the centre would
@@ -770,6 +800,24 @@ pub fn pending_policy(
             Slot::unproduced()
         }
     };
+    // Slot 3, once per cycle for the same reason slot 4 is: the open beliefs
+    // are the platform's, not any one cell's. A refusal ships the slot
+    // unproduced — the state every payload has carried since payloads
+    // existed — and says why, because "the centre formed no belief" and "the
+    // centre could not state the belief it formed" are different faults with
+    // different owners and they narrow a cell identically.
+    let belief = match platform.issue_belief_priors(now) {
+        Ok(issue) => {
+            pending.beliefs.push(issue.describe());
+            issue.slot()
+        }
+        Err(error) => {
+            pending
+                .beliefs
+                .push(format!("belief priors: not shipped, {}", error.message()));
+            Slot::unproduced()
+        }
+    };
     for cell in cells {
         let sequence = now.as_nanos().max(0) as u64;
         let mut payload = PolicyPayload::unproduced(sequence, &cell, now);
@@ -826,6 +874,13 @@ pub fn pending_policy(
         // unproduced slot left alone and the reader should not have to work
         // out which path left it.
         payload.episodic_digest = episodic.clone();
+        // The same priors for every cell, stamped with the oldest belief
+        // inside slot 3's own window rather than this instant. Assigned
+        // unconditionally for the same reason slot 4 is: an unproduced slot
+        // assigned and an unproduced slot left alone are the same fail-closed
+        // value, and the reader should not have to work out which path left
+        // it.
+        payload.belief_priors = belief.clone();
         // Slot 11, assigned unconditionally and to every cell, including
         // when nothing is withdrawn. An empty set is a statement — "the
         // centre is applying no withdrawal" — and a cell that could not tell
