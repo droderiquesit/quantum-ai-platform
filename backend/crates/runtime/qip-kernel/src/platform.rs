@@ -195,6 +195,7 @@ use qip_world_model::features::{Feature, FeatureValue};
 use qip_world_model::granger;
 use qip_world_model::graph::{Node, NodeKind};
 use qip_world_model::liquidity::{DepthObservation, LiquidityTopology};
+use qip_world_model::resolution_source::ResolutionSourceClaim;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -11157,6 +11158,7 @@ impl Platform {
 
         let mut claims = Vec::with_capacity(scored.len());
         let mut outcomes = Vec::with_capacity(scored.len());
+        let mut authorities: Vec<ResolutionSourceClaim> = Vec::with_capacity(scored.len());
         let mut ungradeable = 0usize;
         for (hypothesis, _) in &scored {
             let Some(prediction) = self
@@ -11200,7 +11202,41 @@ impl Platform {
                 mechanism_confirmed: None,
             });
             claims.push(claim);
+            // The authority this thesis is about to be graded against, for
+            // the world model to hold as a node. Both instants are the
+            // proposition's own `recorded_at` and neither is `now`: the
+            // source became this claim's authority when the claim was
+            // written, and the platform knew it at the same instant. Stamping
+            // the graph with the settlement's clock would report every
+            // authority as first known at the cycle that happened to grade
+            // it, and a point-in-time query would then return an edge the
+            // platform did not hold when it decided.
+            //
+            // A source the world model refuses stops the calibration rather
+            // than being recorded under a placeholder: a thesis graded
+            // against an authority nobody can name is a grade with no
+            // provenance, and nothing has been mutated at this point.
+            authorities.push(ResolutionSourceClaim::new(
+                prediction.proposition.source.name.as_str(),
+                prediction.proposition.source.kind.as_str(),
+                prediction.proposition.source.publishes.iter().cloned(),
+                hypothesis.clone(),
+                prediction.recorded_at,
+                prediction.recorded_at,
+            )?);
         }
+
+        // §8.1: the resolving authority is a node something can traverse to,
+        // written from the one production seam that holds it. The count is
+        // distinct node ids, so a cycle grading three theses settled by one
+        // authority reports one source rather than three.
+        let authorities_recorded = self.world.update(|world| {
+            authorities
+                .iter()
+                .map(|authority| world.record_resolution_source(authority))
+                .collect::<BTreeSet<String>>()
+                .len()
+        });
 
         // Meta-learning, at the one instant the platform knows whether a claim
         // held: which *class* of claim was right, in which regime. Until this
@@ -11225,6 +11261,11 @@ impl Platform {
         }
         if !learned.skipped.is_empty() {
             summary.push_str(&format!(", {} skipped", learned.skipped.len()));
+        }
+        if authorities_recorded > 0 {
+            summary.push_str(&format!(
+                ", settled against {authorities_recorded} resolution source(s) in the graph"
+            ));
         }
         match &learned.report {
             Some(report) => {
