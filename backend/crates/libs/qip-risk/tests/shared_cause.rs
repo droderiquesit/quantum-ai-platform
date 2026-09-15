@@ -11,7 +11,7 @@ use qip_core::Decimal;
 use qip_risk::limits::{Limit, LimitKind, LimitSet, RiskState};
 use qip_risk::shared_cause::{
     CAUSAL_DRIVER_AXIS, FACTOR_AXIS, FAMILY_AXIS, SHARED_CAUSE_AXES, SharedCauseExposure,
-    divides_an_overlapping_axis, measures_an_overlapping_axis,
+    divides_an_overlapping_axis, measures_an_overlapping_axis, overlapping_axis_measured,
 };
 use std::collections::BTreeMap;
 
@@ -291,21 +291,53 @@ fn the_shipped_set_caps_the_two_levels_that_have_a_producer_and_not_the_third() 
     // exactly the levels `qip_kernel::shared_cause` feeds. Per family is not
     // one of them: the desk charges every fill it books to one budget holder,
     // so a family bucket would hold the whole book or none of it.
+    //
+    // Collected through `overlapping_axis_measured` rather than by matching
+    // `LimitKind::MaxAxisWeight` here, and the difference is a security review
+    // finding rather than tidiness. **Two** kinds read these axes against
+    // equity, and this test once saw only one of them. The other —
+    // `MaxBucketExposure` — has no early return on an absent axis: it takes
+    // its `unwrap_or(zero)` arm, compares a zero nobody computed against its
+    // bound, and never fires for as long as it ships. A family cap of that
+    // kind added to the shipped set would have passed this test while being
+    // precisely the `MaxExpectedShortfall` defect the test exists to refuse.
     let shipped = LimitSet::conservative_default();
+
+    // The premise that matters, and the one whose absence was the defect: the
+    // collector can see the shape this test was blind to. Without it the
+    // absence assertion below passes against a collector that reads no kind at
+    // all, which is what it effectively was for `MaxBucketExposure`.
+    let family_bucket = Limit::new(
+        "family-concentration",
+        LimitKind::MaxBucketExposure {
+            axis: FAMILY_AXIS.into(),
+            bucket: "momentum-reversal".into(),
+            limit: 0.4,
+        },
+    );
+    assert_eq!(
+        overlapping_axis_measured(&family_bucket.kind),
+        Some(FAMILY_AXIS),
+        "the collector does not see a bucket cap over a shared-cause level, so the absence \
+         assertion below would pass against a shipped set that carried one"
+    );
+    assert!(
+        measures_an_overlapping_axis(&family_bucket.kind),
+        "the predicate and the collector disagree about one kind, so a configuration test \
+         asserting on either says nothing about the other"
+    );
+
     let axes: Vec<&str> = shipped
         .limits
         .iter()
-        .filter_map(|limit| match &limit.kind {
-            LimitKind::MaxAxisWeight { axis, .. } => Some(axis.as_str()),
-            _ => None,
-        })
+        .filter_map(|limit| overlapping_axis_measured(&limit.kind))
         .collect();
 
-    // The premise: the set really does carry axis-weight limits, so the
-    // filter below is not answering over an empty list.
+    // The premise: the set really does cap shared-cause levels, so the filter
+    // below is not answering over an empty list.
     assert!(
         axes.len() >= 2,
-        "the shipped set carries no axis-weight limits at all, so this test measures nothing"
+        "the shipped set caps no shared-cause level at all, so this test measures nothing"
     );
     for level in [CAUSAL_DRIVER_AXIS, FACTOR_AXIS] {
         assert!(
@@ -378,5 +410,64 @@ fn every_shared_cause_level_is_named_once_and_spelled_one_way() {
         before, 3,
         "§25.3 names three levels the instrument record cannot carry, and the array holds \
          {before}"
+    );
+}
+
+#[test]
+fn a_bucket_whose_arithmetic_leaves_the_decimal_range_refuses_the_level_rather_than_the_process() {
+    // Security review LOW-3. `Decimal`'s `*` and `+` come from a macro that
+    // panics on overflow, and `apply` returns a `RiskState` rather than a
+    // `Result`, so the one unchecked arithmetic site in this module was a
+    // panic on a path reached once per order — a notional the book reports
+    // times a weight a producer chose, neither bounded above. A panic is not a
+    // refusal: it takes the process down rather than the order, and every
+    // other arithmetic site in this lane and its neighbour already takes the
+    // checked form for that reason.
+    let mut extreme = SharedCauseExposure::new();
+    extreme
+        .attribute(CAUSAL_DRIVER_AXIS, "rates", "AAA", 1e18)
+        .expect("a finite positive weight is attributed however large it is");
+
+    // The premise: the product really is outside the range, so the refusal
+    // below is the arithmetic refusing and not the axis merely being absent.
+    let weight = Decimal::from_f64(1e18).expect("the weight is carried as a notional");
+    assert!(
+        Decimal::from_int(i64::MAX).checked_mul(weight).is_none(),
+        "this book and this weight multiply inside the range, so nothing overflows and the \
+         assertions below prove nothing"
+    );
+
+    let state = extreme.apply(book(1_000_000, &[("AAA", i64::MAX)]));
+
+    assert!(
+        !state.axis_exposures.contains_key(CAUSAL_DRIVER_AXIS),
+        "a level whose arithmetic failed left a bucket behind, and a partial bucket reads \
+         downstream as a measurement of the book"
+    );
+    let refusal = state
+        .unevaluated
+        .get(CAUSAL_DRIVER_AXIS)
+        .expect("a level whose arithmetic failed is filed unevaluated, which blocks every order");
+    assert!(
+        refusal.contains("left the range"),
+        "the refusal does not name what stopped it: {refusal}"
+    );
+
+    // The admitting half. A guard that refused every book would be no guard at
+    // all, and the ordinary case has to keep charging the same level.
+    let mut ordinary = SharedCauseExposure::new();
+    ordinary
+        .attribute(CAUSAL_DRIVER_AXIS, "rates", "AAA", 1.0)
+        .expect("a weight of one is attributed");
+    let clean = ordinary.apply(book(1_000_000, &[("AAA", 400_000)]));
+    assert!(
+        clean.unevaluated.is_empty(),
+        "an ordinary book was refused by the overflow guard: {:?}",
+        clean.unevaluated
+    );
+    assert_eq!(
+        clean.axis_exposures[CAUSAL_DRIVER_AXIS]["rates"],
+        Decimal::from_int(400_000),
+        "the checked arithmetic does not compute the bucket the unchecked form did"
     );
 }

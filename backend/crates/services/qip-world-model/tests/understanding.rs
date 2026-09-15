@@ -2000,3 +2000,79 @@ fn a_macro_release_whose_series_id_cannot_be_a_key_is_never_journalled() {
         "a hostile key reached the world state snapshot"
     );
 }
+
+#[test]
+fn an_edge_naming_no_cause_is_refused_where_it_is_claimed_and_a_well_formed_one_is_admitted() {
+    // A security review found this as a whole-platform stop reachable from
+    // ingested data, so it is not hypothetical. `CausalEdge::new` validated
+    // nothing about its ends and `claim_causal` stored whatever it was handed,
+    // so one empty symbol in `Platform::price_history` produced one edge with
+    // a blank cause; three stages later
+    // `qip_risk::SharedCauseExposure::attribute` refused the blank driver,
+    // `qip_kernel::shared_cause` answered that by refusing every shared-cause
+    // level, and `PreTradeChecker::check` turned it into a rejection of every
+    // order — with no rate limit, no way to clear it but repairing the world
+    // model, and nothing near the symptom naming the cause. The refusal
+    // belongs where the caller still knows what it was reading.
+    let mut model = WorldModel::new();
+
+    // The premise: a well-formed edge really is admitted, so the refusals
+    // below are about the blank end and not about a claim path that refuses
+    // everything. A gate that refuses every value is not a gate.
+    let good = CausalEdge::new(
+        "ent-northwind",
+        "ent-vantage",
+        Mechanism::SupplyChain,
+        0.45,
+        Duration::from_days(3),
+        days_ago(1),
+    );
+    model
+        .claim_causal(good)
+        .expect("an edge naming both of its ends is a claim the graph may hold");
+    assert_eq!(
+        model.causal().len(),
+        1,
+        "a well-formed causal claim did not reach the graph, so nothing below distinguishes a \
+         refusal from a claim path that stores nothing"
+    );
+
+    // Blank on either end, and whitespace counts as blank: a subject of one
+    // space is a key nobody can look up and a bucket nobody can read.
+    for (cause, effect) in [("", "ent-vantage"), ("ent-northwind", ""), ("   ", "  ")] {
+        let refusal = model
+            .claim_causal(CausalEdge::new(
+                cause,
+                effect,
+                Mechanism::SupplyChain,
+                0.45,
+                Duration::from_days(3),
+                days_ago(1),
+            ))
+            .expect_err("an edge naming no cause or no effect was admitted to the graph");
+        assert!(
+            refusal.message().contains("must name both"),
+            "the refusal does not say what is missing: {}",
+            refusal.message()
+        );
+    }
+
+    // Nothing was written by any of the three: not the edge, not the
+    // supporting claim, not the journal entry. A refusal that had already
+    // journalled the claim would leave a reader believing the graph holds a
+    // link it does not.
+    assert_eq!(
+        model.causal().len(),
+        1,
+        "a refused causal claim still reached the graph"
+    );
+    assert_eq!(
+        model
+            .changes()
+            .iter()
+            .filter(|change| change.kind == ChangeKind::CausalClaimAdded)
+            .count(),
+        1,
+        "a refused causal claim was journalled as added"
+    );
+}
