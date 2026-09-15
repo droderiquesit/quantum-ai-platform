@@ -493,12 +493,17 @@ fn a_cancel_is_funded_from_the_reserve_after_placements_have_spent_the_rest() ->
         "the premise failed: the bucket does not hold exactly the reserve"
     );
 
+    // Still the same instant. A halt a second later would have refilled the
+    // bucket by a whole message at this rate, and the cancel would then be
+    // funded by the refill rather than by the reserve — which is how a
+    // mutation making cancels respect the placement floor survived this test
+    // once. The reserve is what is under test, so nothing may accrue.
     cell.autonomy_mut().kill_switch_mut().trip_global(
-        t(11),
+        t(10),
         "drill",
         "a halt after the budget is spent",
     );
-    let withdrawn = cell.withdraw_expired(&mut gateway, t(11));
+    let withdrawn = cell.withdraw_expired(&mut gateway, t(10));
     assert_eq!(
         withdrawn.len(),
         1,
