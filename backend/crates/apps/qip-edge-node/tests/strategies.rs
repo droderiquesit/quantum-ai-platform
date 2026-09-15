@@ -160,7 +160,7 @@ fn node_with_feed() -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
     // Far above any grant this suite signs, so the plan's deployment decides.
     let allocation = RegionCapital::read(Some("1000000000"))?;
-    let mut node = assemble(config, features, Arc::new(SystemClock), allocation)?;
+    let mut node = assemble(config, features, Arc::new(SystemClock), allocation, None)?;
     let gateway = SimulatedGateway::new(venue(), 7, t(0))?;
     let feed = SimulatedFeed::new(venue());
     feed.attach(&mut node.cell)?;

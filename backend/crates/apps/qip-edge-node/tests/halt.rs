@@ -34,7 +34,7 @@ fn assembled() -> NodeAssembly {
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
     // Far above anything this suite sends, so the halt wire is what decides.
     let allocation = RegionCapital::read(Some("1000000000")).expect("a positive amount");
-    assemble(config, features, Arc::new(SystemClock), allocation)
+    assemble(config, features, Arc::new(SystemClock), allocation, None)
         .expect("a well-formed cell assembles")
 }
 

@@ -201,6 +201,13 @@ QIP_REGION_ALLOCATION=${region_allocation}
 # the tfvars where a reviewer sees it.
 QIP_DEFAULT_PRICING=${default_pricing}
 QIP_STRATEGY_PLAN_PATH=${strategy_plan_path}
+# §31.1, and empty for the same reason as the two above. Empty is every venue
+# in this node's own region — what every node has run as — so every hop
+# composes a transport edge. Set, the binary refuses to start on a declaration
+# placing a venue this node may not trade, placing one at home, or naming a
+# region it measured no round trip to, so a mirror nobody could satisfy stops
+# the node rather than leaving it composing transport edges across an ocean.
+QIP_CROSS_REGION_MIRROR_PATH=${cross_region_mirror_path}
 EOF
 chmod 0444 "$CONF_DIR/node.env"
 

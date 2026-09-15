@@ -22,6 +22,8 @@
 pub mod allocation;
 /// The arbitrage desk, built from the payload's whitelist once capital arrives.
 pub mod arbitrage;
+/// The §31.1 mirror: which venues are abroad, and this region's discipline.
+pub mod cross_region;
 /// The simulated venue's quote feed, and the one value it may be configured as.
 pub mod feed;
 pub mod gateway;
@@ -43,6 +45,7 @@ pub mod telemetry;
 pub mod venue;
 
 use allocation::RegionCapital;
+use cross_region::CrossRegionMirror;
 use qip_core::Clock;
 use qip_core::error::Result;
 use qip_edge::cell::{Cell, CellConfig};
@@ -97,6 +100,17 @@ impl NodeAssembly {
 /// a type only [`RegionCapital::read`] can produce — means a node cannot be
 /// assembled without an amount the deployment stated and this crate checked.
 ///
+/// The mirror is here for the third instance of the same failure. §31.1's
+/// `MirrorArrangement`, `Cell::install_mirror` and `CellConfig::venue_regions`
+/// were built and proven, and every caller of all three was a test — so no
+/// deployed cell ever held a venue in another region, and §30.2's mirrored
+/// rows could not be reached by a running process. `None` is the state every
+/// node has run in and stays legitimate: a cell all of whose venues are at
+/// home. `Some` can only come from `CrossRegionMirror::read`, which has
+/// already refused a venue this cell may not trade and a region with no
+/// measured round trip, so the two halves are applied here rather than
+/// re-argued.
+///
 /// The table opens **unfunded** under that amount (ADR 0039, option (a)):
 /// the cell places nothing until a verified policy payload's grant manifest
 /// names grants it holds, and the operator's amount is the most any share
@@ -109,18 +123,34 @@ impl NodeAssembly {
 /// body says so, and the cost — a fresh node sends nothing until the centre
 /// ships it a share — is the ADR's stated price.
 pub fn assemble(
-    config: CellConfig,
+    mut config: CellConfig,
     features: FeatureEngine,
     clock: Arc<dyn Clock>,
     allocation: RegionCapital,
+    mirror: Option<CrossRegionMirror>,
 ) -> Result<NodeAssembly> {
     let cell_id = config.cell_id.clone();
     let region = config.region.clone();
+    // Both halves of §31.1 go in here, for the third time the same reason
+    // applies: `Cell::install_mirror` and `CellConfig::venue_regions` existed,
+    // were tested, and no composition root wrote either, so every node this
+    // binary built placed all of its venues at home and could compose no
+    // mirror edge at all. Applied together and in this function, because a
+    // node holding one half is worse than a node holding neither — venues
+    // abroad with no arrangement refuses every cross-region cycle, and an
+    // arrangement with no venue abroad is a band nothing looks up. A test can
+    // call this; `main.rs` is a binary no test can call.
+    if let Some(mirror) = &mirror {
+        config.venue_regions = mirror.venue_regions().clone();
+    }
     let telemetry = Telemetry::new("qip-edge-node", clock);
     let metrics: Arc<Metrics> = Arc::clone(&telemetry.metrics);
-    let cell = Cell::new(config, features)?
+    let mut cell = Cell::new(config, features)?
         .with_metrics(Arc::clone(&metrics))
         .with_unfunded_region(allocation.amount())?;
+    if let Some(mirror) = mirror {
+        cell.install_mirror(mirror.into_arrangement())?;
+    }
     let mesh_series = MeshSeries::new(metrics, &cell_id, &region);
     Ok(NodeAssembly {
         telemetry,

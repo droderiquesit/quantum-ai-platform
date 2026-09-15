@@ -38,7 +38,7 @@ fn assembled() -> NodeAssembly {
     let config = CellConfig::new(CELL, REGION).with_venue(VenueId::new("XLON"));
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
     let allocation = RegionCapital::read(Some("1000000000")).expect("a positive amount");
-    assemble(config, features, Arc::new(SystemClock), allocation)
+    assemble(config, features, Arc::new(SystemClock), allocation, None)
         .expect("a well-formed cell assembles")
 }
 
