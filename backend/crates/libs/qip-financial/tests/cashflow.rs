@@ -486,3 +486,111 @@ fn a_fully_drawn_private_asset_records_no_commitment_at_all() -> Result<()> {
     );
     Ok(())
 }
+#[test]
+fn a_scheduled_capital_call_is_never_reported_as_the_instant_capital_returns() -> Result<()> {
+    // The J-curve read upside down. A capital call is the position *taking*
+    // cash, and a liquidity read that accepted one as an answer to "when does
+    // this become cash" would report a fund at its deepest draw as its most
+    // liquid — the holding would then count toward the fraction the
+    // `MinLiquidity` floor vetoes trading on.
+    //
+    // Premise: a distribution on the very same date *is* reported, so what the
+    // call below fails to satisfy is its direction and not its date.
+    let returning = CashflowForecast::new("fund-1", origin(), origin())?.with_flow(
+        ForecastCashflow::new(CashflowKind::Distribution, day(400), dec!("500"), 1.0)?,
+    )?;
+    assert_eq!(
+        returning.first_return_at(origin())?,
+        Some(day(400)),
+        "a distribution dated ahead is the instant capital returns"
+    );
+
+    let drawing = CashflowForecast::new("fund-1", origin(), origin())?
+        .with_flow(ForecastCashflow::new(
+            CashflowKind::CapitalCall,
+            day(400),
+            dec!("500"),
+            1.0,
+        )?)?
+        .with_flow(ForecastCashflow::new(
+            CashflowKind::Fee,
+            day(500),
+            dec!("10"),
+            1.0,
+        )?)?;
+    assert_eq!(
+        drawing.len(),
+        2,
+        "the premise is a schedule that holds flows, so the None below is about their direction"
+    );
+    assert_eq!(
+        drawing.first_return_at(origin())?,
+        None,
+        "a schedule of calls and fees returns no capital at all"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_instant_capital_returns_is_the_earliest_distribution_still_ahead() -> Result<()> {
+    // Two failures in one. Taking the earliest flow of any kind would answer
+    // with the call on day 100; taking the earliest flow in the schedule
+    // regardless of the read instant would answer with the distribution on day
+    // 200, which had already settled — and a liquidity read that counts money
+    // already received as money still to come reports the same cash twice.
+    let forecast = CashflowForecast::new("fund-1", origin(), origin())?
+        .with_flow(ForecastCashflow::new(
+            CashflowKind::CapitalCall,
+            day(100),
+            dec!("300"),
+            1.0,
+        )?)?
+        .with_flow(ForecastCashflow::new(
+            CashflowKind::Distribution,
+            day(200),
+            dec!("50"),
+            1.0,
+        )?)?
+        .with_flow(ForecastCashflow::new(
+            CashflowKind::Distribution,
+            day(900),
+            dec!("400"),
+            1.0,
+        )?)?;
+    // Premise: read from the origin the schedule does answer with the early
+    // distribution, so the later answer below is the read instant moving and
+    // not an empty schedule.
+    assert_eq!(forecast.first_return_at(origin())?, Some(day(200)));
+
+    assert_eq!(
+        forecast.first_return_at(day(300))?,
+        Some(day(900)),
+        "a distribution already settled is behind the reader, not ahead of it"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_instant_capital_returns_cannot_be_read_before_the_schedule_was_knowable() -> Result<()> {
+    // Point-in-time leakage in the liquidity read rather than in the mark. A
+    // lockup restated in March, applied to a January book, makes the platform
+    // look as though it had known how illiquid a position was before it was
+    // told — and every liquidity figure downstream is then better or worse
+    // than reality by exactly the information it should not have had.
+    let forecast = CashflowForecast::new("fund-1", origin(), day(60))?.with_flow(
+        ForecastCashflow::new(CashflowKind::Distribution, day(900), dec!("400"), 1.0)?,
+    )?;
+    // Premise: read at the instant it became knowable, the same schedule
+    // answers, so the refusal below is the instant and not the schedule.
+    assert_eq!(forecast.first_return_at(day(60))?, Some(day(900)));
+
+    let refusal = forecast
+        .first_return_at(day(59))
+        .expect_err("a schedule cannot be read before it was knowable");
+    let message = refusal.message();
+    assert!(
+        message.contains("cannot be read as of"),
+        "the refusal must name the read instant, said: {message}"
+    );
+    Ok(())
+}

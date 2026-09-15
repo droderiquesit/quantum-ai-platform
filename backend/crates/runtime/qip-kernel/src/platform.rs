@@ -1439,9 +1439,18 @@ fn private_asset_origin(
 ///   may be sized into, and it joins `not_decision_grade` for the same reason
 ///   a research-only instrument does — the platform can say what it is and
 ///   cannot say what it is worth.
+/// * The instant each private holding's own cash-flow forecast returns
+///   capital, where its record dates one. This is the third fact and the
+///   newest, and it is here rather than beside the mark because it is the
+///   same schedule: `IlliquidValuator::forecast_private_asset` derives it
+///   once, the mark discounts it, and the liquidity ladder reads the date off
+///   it. Until this was carried out of the sweep the date existed for the
+///   length of one discounting and was then dropped, so the only thing the
+///   risk read knew about how fast a private fund becomes cash was the
+///   catalogue's estimate — and a catalogue cannot know a lockup.
 ///
-/// A universe of listed equities produces an empty book and no marks, so
-/// nothing about an ordinary assembly changes.
+/// A universe of listed equities produces an empty book, no marks and no
+/// dated returns, so nothing about an ordinary assembly changes.
 #[allow(clippy::type_complexity)]
 fn private_holdings_of(
     universe: &Universe,
@@ -1450,10 +1459,12 @@ fn private_holdings_of(
     qip_financial::cashflow::CommitmentBook,
     BTreeMap<String, qip_financial::valuation::AssetValuation>,
     Vec<(String, String)>,
+    BTreeMap<String, Timestamp>,
 )> {
     let mut book = qip_financial::cashflow::CommitmentBook::new();
     let mut marks = BTreeMap::new();
     let mut unmarkable = Vec::new();
+    let mut capital_returns = BTreeMap::new();
     for object in universe.iter() {
         let qip_financial::extensions::Extension::PrivateAsset(details) = &object.extension else {
             continue;
@@ -1477,6 +1488,28 @@ fn private_holdings_of(
         )? {
             book.record(commitment)?;
         }
+        // The schedule, before the mark, and refused rather than skipped on
+        // the way out. A record whose lockup cannot be read is one the mark
+        // below would refuse too; taking it as "no dated return" would let a
+        // corrupt term reach the liquidity read as silence, and silence there
+        // means the catalogue's estimate stands unchallenged.
+        //
+        // `provenance.event_time` is the instant the schedule became true —
+        // the administrator's reporting date — and is the one
+        // `mark_private_asset` discounts from, so the two readers of this
+        // forecast read the same one. `first_return_at` then refuses to be
+        // read as of an instant before that, which is the point-in-time guard
+        // and not a formality: a lockup restated in March must not date a
+        // January liquidity read.
+        if let Some(forecast) = qip_financial::valuation::IlliquidValuator::forecast_private_asset(
+            id.clone(),
+            details,
+            origin,
+            object.provenance.event_time,
+        )? && let Some(returns_at) = forecast.first_return_at(now)?
+        {
+            capital_returns.insert(id.clone(), returns_at);
+        }
         match qip_financial::valuation::IlliquidValuator::mark_object(object, origin, now) {
             Ok(Some(mark)) => {
                 marks.insert(id, mark);
@@ -1489,7 +1522,43 @@ fn private_holdings_of(
             Err(refusal) => unmarkable.push((id, refusal.message().to_string())),
         }
     }
-    Ok((book, marks, unmarkable))
+    Ok((book, marks, unmarkable, capital_returns))
+}
+
+/// Raise a holding's stated exit time to the lockup its own cash-flow forecast
+/// is dated from, and never lower it.
+///
+/// The third lower bound on `LadderEntry::days_to_exit`, beside the rung's
+/// bucket floor and the catalogue's stated figure, and the only one of the
+/// three derived from a contract rather than from somebody's estimate of a
+/// market. `max` rather than a replacement, for the reason the other two are
+/// already combined that way: a catalogue stating a *longer* exit than the
+/// lockup knows something the lockup does not — a secondary market that has
+/// stopped bidding, a gate the manager has imposed — and taking the forecast
+/// there would shorten a holding's stated exit time. Shortening it is the
+/// exact failure `LiquidationHorizon::least_days` records: a holding stated at
+/// forty-five days read as two, `MaxDaysToLiquidate { limit: 10.0 }` compared
+/// 2.0 against 10 and recorded nothing, and the same holding counted toward
+/// the fraction exitable within a week.
+///
+/// So this can only make the liquidity read worse, which is the direction a
+/// control is allowed to move on its own: raising a day count can only breach
+/// `MaxDaysToLiquidate` where it did not, and can only shrink the numerator of
+/// `MinLiquidity`'s fraction. A private fund with seven years of lockup left
+/// no longer counts toward "most of the book is exitable within a week"
+/// because a vendor file guessed thirty days.
+///
+/// Not a clamp. `stated_days` is returned unchanged whenever the forecast has
+/// nothing longer to say, and the forecast's own figure is refused — left out
+/// — rather than corrected if it is not a number of days, because
+/// `LiquidityLadder::new` refuses an entry carrying one and the refusal would
+/// name the wrong record.
+fn exit_days_with_forecast(stated_days: f64, returns_at: Timestamp, now: Timestamp) -> f64 {
+    let forecast_days = returns_at.since(now).as_days_f64();
+    if !forecast_days.is_finite() || forecast_days <= stated_days {
+        return stated_days;
+    }
+    forecast_days
 }
 
 /// The feasibility grid one instrument record vouches for, in the shape the
@@ -3135,7 +3204,7 @@ impl Platform {
         // was a rationale attached to a control that never evaluated. Fallible
         // because a record stating an impossible spread should stop assembly
         // rather than silently take the book's liquidity read with it later.
-        let liquidity_reference: BTreeMap<String, LadderReference> = universe
+        let mut liquidity_reference: BTreeMap<String, LadderReference> = universe
             .iter()
             .map(ladder_reference_of)
             .collect::<Result<_>>()?;
@@ -3182,7 +3251,24 @@ impl Platform {
         // catches an instrument with no positive price, but a private asset
         // can carry a stale price and still be unmarkable, and an unmarkable
         // instrument is exactly one no capital may be sized into.
-        let (commitments, illiquid_marks, unmarkable) = private_holdings_of(&universe, now)?;
+        let (commitments, illiquid_marks, unmarkable, capital_returns) =
+            private_holdings_of(&universe, now)?;
+        // The forecasting half of blueprint §16.4 reaching the decision it
+        // belongs to. Every private holding whose own cash-flow forecast dates
+        // a return of capital raises its stated exit time to that date, and
+        // never lowers it — see `exit_days_with_forecast`. Done here, at
+        // assembly, because this is where both figures are first in hand: the
+        // catalogue's estimate on the reference record and the contract's
+        // lockup on the private-asset record. A holding absent from the
+        // reference map is impossible — both maps are built from the same
+        // universe — and is left alone rather than inserted, because an entry
+        // with no rung and no spread is not a ladder placement.
+        for (id, returns_at) in &capital_returns {
+            if let Some(reference) = liquidity_reference.get_mut(id) {
+                reference.days_to_liquidate =
+                    exit_days_with_forecast(reference.days_to_liquidate, *returns_at, now);
+            }
+        }
         let illiquid_unmarkable: BTreeMap<String, String> = unmarkable.into_iter().collect();
         for (id, refusal) in &illiquid_unmarkable {
             not_decision_grade.push((id.clone(), format!("no defensible mark: {refusal}")));
