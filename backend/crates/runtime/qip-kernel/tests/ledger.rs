@@ -37,7 +37,7 @@ use qip_capital_fabric::journal::{
     CorridorAction, CorridorStep, DestinationAction, FabricCommand, FabricOutcome, GateCommand,
     GateVerdict, Outcome,
 };
-use qip_capital_fabric::tolerance::ToleranceClass;
+use qip_capital_fabric::tolerance::{RateLookup, ToleranceClass};
 use qip_capital_fabric::wallet::{Divergence, ReconciliationOutcome};
 use qip_capital_fabric::{CapitalLocation, Region};
 use qip_contracts::intent::Contributor;
@@ -2045,6 +2045,170 @@ fn desk_cash() -> Result<qip_capital_fabric::wallet::VenueAsset> {
         venue: VenueId::new("simulated-venue"),
         asset: qip_capital_fabric::wallet::Asset::new(Currency::USD.to_string())?,
     })
+}
+
+/// The three levels the shipped ECB fixture carries, decoded by the real
+/// connector through the real runtime and released only once they were
+/// knowable — the same records a deployment's SENSE stage hands to
+/// `Platform::observe`.
+fn ecb_key_rate_records() -> Result<(Vec<qip_market_ingestion::adapter::SensedRecord>, Timestamp)> {
+    use qip_market_ingestion::connector::emulator::SourceEmulator;
+    use qip_market_ingestion::connector::transport::SourceTransport;
+    use qip_market_ingestion::connector::{ConnectorRuntime, RuntimeConfig, SourceConnector};
+    use qip_market_ingestion::connectors::{EcbKeyRatesConnector, ecb_key_rates};
+
+    // The observation date the recording carries, plus the manifest's
+    // sixteen-hour dissemination delay and a margin.
+    let horizon = Timestamp::parse_rfc3339("2026-09-16T09:00:00Z")
+        .expect("a fixture timestamp is valid RFC 3339");
+    let mut connector = EcbKeyRatesConnector::new(EcbKeyRatesConnector::shipped_manifest()?)?;
+    let mut emulator = SourceEmulator::from_json(ecb_key_rates::FIXTURE)?;
+    let mut runtime =
+        ConnectorRuntime::new(connector.manifest().clone(), RuntimeConfig::seeded(11))?;
+    let transport: &mut dyn SourceTransport = &mut emulator;
+    let outcome = runtime.poll(&mut connector, transport, horizon)?;
+    Ok((
+        outcome
+            .admitted
+            .into_iter()
+            .map(|envelope| envelope.into_record())
+            .collect(),
+        horizon,
+    ))
+}
+
+#[test]
+fn the_ecb_deposit_facility_rate_absorbed_at_sense_becomes_a_38_3_interval_rate() -> Result<()> {
+    // The production wire, end to end and with no network: the real connector
+    // decodes the body the ECB's own portal served, the runtime withholds each
+    // level until it was knowable, `Platform::observe` absorbs them, and the
+    // deposit facility rate lands in the table §38.3's tolerance formula
+    // consults. Before this lane the register said no deposit rate existed
+    // anywhere in the platform, so every basis was declared at rate zero and a
+    // halt record could not distinguish "no accrual applies" from "nobody
+    // supplies one".
+    let mut platform = platform(PlatformConfig::default())?;
+    let (records, horizon) = ecb_key_rate_records()?;
+    // Premise: the platform holds no interval rate before the records arrive,
+    // so what is asserted below came through `observe` and not from a default.
+    assert!(platform.interval_rates().is_empty());
+    assert_eq!(records.len(), 3, "{records:?}");
+
+    assert_eq!(platform.observe(records), 3);
+
+    let euro = qip_capital_fabric::wallet::Asset::new("EUR")?;
+    let lookup =
+        platform
+            .interval_rates()
+            .governing(&euro, ToleranceClass::FiatAtBrokerOrBank, horizon);
+    let rate = lookup
+        .rate()
+        .expect("the deposit facility rate governs a euro fiat book at the instant it was read");
+    // 2.25 per cent per annum, the level the ECB published on 2026-09-15, on
+    // the actual/360 day count euro money-market interest accrues at.
+    assert_eq!(rate.published_percent_per_annum(), dec!("2.25"));
+    assert_eq!(rate.rate(), dec!("0.0000625"));
+    // The provenance is the source the licensing catalogue admitted, not a
+    // number somebody typed — which is the whole difference between this and
+    // the constant this lane refused to write.
+    assert_eq!(rate.source_id(), "ecb-key-interest-rates");
+    assert_eq!(
+        rate.true_at(),
+        Timestamp::parse_rfc3339("2026-09-15T00:00:00Z").expect("a valid instant")
+    );
+    assert!(
+        rate.knowable_at() >= rate.true_at(),
+        "a rate was stamped knowable before it was true"
+    );
+
+    // And the other two key rates the same message carries reach no tolerance.
+    // The marginal lending rate is what borrowing costs and the main
+    // refinancing rate is the price of an operation; §38.3's fiat row is the
+    // accrual on a balance *held*, and pressing either onto it would be a real
+    // number applied to something it does not govern.
+    assert_eq!(platform.interval_rates().len(), 1);
+    assert_eq!(
+        platform
+            .interval_rates()
+            .assets()
+            .map(qip_capital_fabric::wallet::Asset::as_str)
+            .collect::<Vec<_>>(),
+        vec!["EUR"]
+    );
+    Ok(())
+}
+
+#[test]
+fn the_desks_dollar_cash_keeps_a_rate_of_zero_and_the_record_names_the_currency_nobody_publishes()
+-> Result<()> {
+    // The honest half of this lane. The one §38.3 class the kernel can attest
+    // without being told is the desk's own cash at its broker, and that book is
+    // in dollars; the ECB sets the euro area's rates and no other issuer's. So
+    // the sourced rate must *not* reach this basis — a euro deposit rate behind
+    // a halt on a dollar book is a fabrication with a citation attached, which
+    // is worse than the missing number it would replace.
+    //
+    // What does change is the record. `rate: 0` used to be all a reader got;
+    // now the reason beside it names the currency no admitted source publishes
+    // a rate for, so "no accrual applies here" and "nobody supplies one" are
+    // two findings rather than one.
+    let mut platform = platform(PlatformConfig::default())?;
+    let (records, horizon) = ecb_key_rate_records()?;
+    assert_eq!(platform.observe(records), 3);
+    // Premise: a euro rate is held, so a zero rate below is about the currency
+    // and not about an empty table.
+    assert_eq!(platform.interval_rates().len(), 1);
+
+    let key = desk_cash()?;
+    let initial_equity = platform.config().initial_equity;
+    platform.observe_statement(
+        key.venue.clone(),
+        "USD",
+        initial_equity + dec!("0.25"),
+        dec!("1"),
+        start(),
+    )?;
+    let report = platform.run_cycle(start().saturating_add(Duration::from_secs(60)));
+    assert!(
+        report.stage(Stage::Learn).is_some(),
+        "the premise is a cycle whose LEARN ran: {report:?}"
+    );
+    let outcome = platform
+        .fabric_state()
+        .reconciliations()
+        .get(&key)
+        .expect("the desk's cash was reconciled");
+    let basis = outcome
+        .basis()
+        .expect("a reconciliation carries the formula it was judged by");
+    assert_eq!(basis.class, ToleranceClass::FiatAtBrokerOrBank);
+    assert_eq!(
+        basis.rate,
+        Decimal::ZERO,
+        "a euro deposit rate reached a dollar book"
+    );
+    assert!(!basis.accrual_applied());
+
+    let reason = platform
+        .tolerance_reasons()
+        .get(&key)
+        .expect("the basis records why it carries the rate it does");
+    assert!(
+        reason.contains("no source in this build publishes an interval rate for USD"),
+        "the record does not name the currency nobody publishes a rate for: {reason}"
+    );
+    // And the lookup itself says so, as one of four findings rather than an
+    // absent `Option`. Asked at the instant the euro rate *was* current, so
+    // the answer can only be about the currency: a table that answered for
+    // dollars because the class matched would return `Governed` here.
+    let dollars = qip_capital_fabric::wallet::Asset::new("USD")?;
+    assert_eq!(
+        platform
+            .interval_rates()
+            .governing(&dollars, ToleranceClass::FiatAtBrokerOrBank, horizon),
+        RateLookup::NoneHeld
+    );
+    Ok(())
 }
 
 #[test]

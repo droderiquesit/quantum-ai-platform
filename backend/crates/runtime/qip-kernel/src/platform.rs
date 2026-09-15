@@ -82,7 +82,10 @@ use qip_capital_fabric::journal::{
     FabricCommand, FabricJournal, FabricRecord, FabricState, PRODUCER as FABRIC_PRODUCER,
     WalletCommand,
 };
-use qip_capital_fabric::tolerance::{ToleranceBasis, ToleranceSchedule, class_for_desk_cash};
+use qip_capital_fabric::tolerance::{
+    PolicyRateTable, SourcedIntervalRate, ToleranceBasis, ToleranceClass, ToleranceSchedule,
+    class_for_desk_cash,
+};
 use qip_capital_fabric::wallet::{
     Asset, HoldingObservation, LedgerView, Provenance as HoldingProvenance, VenueAsset,
 };
@@ -128,6 +131,7 @@ use qip_execution_engine::oms::{OrderManager, RefusalReason, SubmissionResult};
 use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_financial::asset_class::AssetClass;
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
+use qip_financial::intelligence::MacroObservation;
 use qip_financial::ladder::{LadderEntry, LiquidityLadder, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
 use qip_investment_agents::Organisation;
@@ -291,6 +295,26 @@ pub struct Platform {
     /// venue's control with its own — a tolerance nobody at that venue chose,
     /// applied to that venue's book.
     wallet_tolerances: ToleranceSchedule,
+    /// §38.3's interval rates as published institutions set them, keyed by the
+    /// asset each is set for, filled from the SENSE stage by
+    /// [`Platform::absorb_interval_rate`].
+    ///
+    /// Empty until a connector this build carries publishes one. That is not
+    /// the same fact as an empty tolerance schedule and must not be read as
+    /// one: a schedule is what the operator declared, and this is what the
+    /// world published.
+    policy_rates: PolicyRateTable,
+    /// Why each observed venue-asset's basis carries the rate it does, as the
+    /// lookup in `policy_rates` answered at the instant the statement was
+    /// handed in.
+    ///
+    /// Keyed and bounded exactly like `holdings_observed`, whose key set it
+    /// mirrors. It exists because `rate: 0` is the same four characters
+    /// whether no issuer publishes a rate for the currency, the rate held is
+    /// for another §38.3 row, the publisher has gone quiet, or the class
+    /// accrues nothing at all — and an operator reading a halt has to be able
+    /// to tell those apart.
+    wallet_tolerance_reasons: BTreeMap<VenueAsset, String>,
     attributor: Attributor,
     evaluator: ThesisEvaluator,
     feedback: FeedbackEngine,
@@ -3656,6 +3680,8 @@ impl Platform {
             fabric,
             holdings_observed: BTreeMap::new(),
             wallet_tolerances: ToleranceSchedule::new(),
+            policy_rates: PolicyRateTable::new(),
+            wallet_tolerance_reasons: BTreeMap::new(),
             attributor: Attributor::new(),
             evaluator: ThesisEvaluator::default(),
             feedback: FeedbackEngine::default(),
@@ -5629,6 +5655,103 @@ impl Platform {
         Ok(record)
     }
 
+    /// Take §38.3's interval rate from a published macro observation, where
+    /// the observation is one of the series this process will take a rate
+    /// from, and record nothing otherwise.
+    ///
+    /// # Why the series is named here rather than read out of the record
+    ///
+    /// A macro observation carries a series id, a region, a value and a unit
+    /// string. Deciding from those that a figure is one interval of §38.3's
+    /// fiat row would be reading a class out of a string — the mistake
+    /// `class_for_desk_cash` exists to refuse one layer down, arriving by a
+    /// different door. So the mapping is a `match` on the exact series id,
+    /// with one arm, reviewed like the licensing evaluation that admitted the
+    /// source it comes from.
+    ///
+    /// # Why only the deposit facility rate, of the three the ECB publishes
+    ///
+    /// §38.3's fiat row is "one day's interest accrual" on a balance *held*.
+    /// The deposit facility rate is what a balance held overnight earns. The
+    /// marginal lending facility rate is what borrowing costs and the main
+    /// refinancing rate is the price of an operation; neither is the accrual
+    /// on a balance, and pressing either onto this row would be a rate applied
+    /// to something it does not govern. Both are still absorbed as
+    /// observations — the world model holds them — and neither reaches a
+    /// tolerance.
+    ///
+    /// A refusal is pushed onto the capture problems rather than swallowed: a
+    /// rate quietly dropped looks exactly like a publisher that never
+    /// published, and the whole reason this feed exists is that the two were
+    /// indistinguishable before.
+    fn absorb_interval_rate(&mut self, observation: &MacroObservation) {
+        let Some((asset, class)) = Self::interval_rate_series(&observation.series_id) else {
+            return;
+        };
+        let derived = Asset::new(asset).and_then(|asset| {
+            // The one crossing from statistics to money in this path. A macro
+            // observation's `value` is `f64` because that is what the
+            // platform's statistics are; from here it multiplies a balance, so
+            // it is a `Decimal`, and a figure that will not cross is refused
+            // rather than approximated.
+            let published = Decimal::from_f64(observation.value).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the level published for {} is {}, which is not a figure this platform can \
+                     hold as a decimal and multiply a balance by",
+                    observation.series_id, observation.value
+                ))
+            })?;
+            SourcedIntervalRate::from_percent_per_annum(
+                class,
+                asset,
+                observation.provenance.source.clone(),
+                published,
+                observation.reference_date,
+                // The instant this process could read it. The connector
+                // runtime withholds a record until its knowable instant, so
+                // this is at or after the publisher's own; a stamp that is
+                // later can delay a rate's use and can never leak one.
+                observation.provenance.ingestion_time,
+            )
+        });
+        match derived.and_then(|rate| self.policy_rates.record(rate)) {
+            Ok(()) => {}
+            Err(error) => self.capture_problems.push(format!(
+                "a published interval rate for §38.3 was refused: {}",
+                error.message()
+            )),
+        }
+    }
+
+    /// The published series this process will take a §38.3 interval rate from,
+    /// and the asset and class each governs.
+    ///
+    /// One arm. A second is a source whose terms have been read and a class
+    /// the section actually gives an interval to — both decisions, neither a
+    /// string.
+    fn interval_rate_series(series_id: &str) -> Option<(&'static str, ToleranceClass)> {
+        match series_id {
+            // The euro area's deposit facility rate, from
+            // `ecb-key-interest-rates`. It governs euro balances and nothing
+            // else: the ECB sets the euro area's rates and no other issuer's,
+            // and a euro rate judging a dollar book would be a fabrication
+            // with a citation attached.
+            "POLICY_RATE.EA.DFR" => Some(("EUR", ToleranceClass::FiatAtBrokerOrBank)),
+            _ => None,
+        }
+    }
+
+    /// Every published interval rate this process holds, for a record or a
+    /// banner.
+    pub const fn interval_rates(&self) -> &PolicyRateTable {
+        &self.policy_rates
+    }
+
+    /// Why each observed venue-asset's §38.3 basis carries the rate it does.
+    pub const fn tolerance_reasons(&self) -> &BTreeMap<VenueAsset, String> {
+        &self.wallet_tolerance_reasons
+    }
+
     /// Hand in a statement of one balance at one venue, with the tolerance
     /// its reconciliation is judged against.
     ///
@@ -5646,13 +5769,20 @@ impl Platform {
     ///
     /// It is the **dust floor** of §38.3's formula for this venue-asset — the
     /// smallest delta that is a difference at this venue — and it is refused
-    /// unless strictly positive, by [`ToleranceBasis::dust_only`]. The floor
-    /// is the whole tolerance today, because this process holds no funding
-    /// rate, no deposit rate and no mark interval, and a rate it invented
-    /// would widen a halt by a number with no owner. That is the fail-closed
-    /// direction: the tolerance is the tightest the formula goes, and the
-    /// class and the zero rate travel in every outcome so a reader sees that
-    /// no accrual was applied rather than assuming one was.
+    /// unless strictly positive. The accrual term beside it is no longer
+    /// always nil: `policy_rates` is consulted for the asset *and* the class,
+    /// and a published rate that governs both supplies it through
+    /// [`ToleranceBasis::from_sourced`].
+    ///
+    /// In a default deployment it still resolves to zero, and the reason is
+    /// worth stating exactly because it is not the reason it used to be. The
+    /// one class this process can attest is the desk's own cash at its broker,
+    /// that book is in dollars, and the only published rate this build carries
+    /// is the euro area's deposit facility rate. So the lookup answers that
+    /// nothing is held for dollars — and `wallet_tolerance_reasons` records
+    /// that sentence, rather than leaving a reader of a halt to infer a cause
+    /// from a zero. A euro rate pressed onto a dollar book to fill the gap
+    /// would be a halt computed from a number that governs nothing there.
     ///
     /// The class is the one this process can attest and no other: the desk's
     /// own cash at its broker is fiat at a broker, and everything else a
@@ -5687,10 +5817,29 @@ impl Platform {
             &VenueId::new(self.broker.name()),
             &Asset::new(Currency::USD.to_string())?,
         );
+        // §38.3's accrual term, from a published rate or from nothing. The
+        // lookup is by the *asset* as well as the class, because an issuer
+        // sets a rate for a currency: the euro area's deposit facility rate
+        // answers for a euro book and answers `NoneHeld` for every other,
+        // which is the honest answer and the tightest the formula goes.
+        let lookup = self.policy_rates.governing(&asset, class, observed_at);
+        let basis = match lookup.rate() {
+            Some(sourced) => ToleranceBasis::from_sourced(tolerance, sourced)?,
+            None => ToleranceBasis::dust_only(class, tolerance)?,
+        };
+        // The finding, whichever of the four it was, kept beside the basis so
+        // a reader of a halt can tell "nobody publishes a rate for this
+        // currency" from "the feed stopped" — two states that both render as
+        // `rate: 0` and are not the same fact about a control. Not a capture
+        // problem: three of the four are the ordinary state of a book whose
+        // currency no admitted source publishes a rate for, and a problem list
+        // that fills on the ordinary state stops being read.
+        self.wallet_tolerance_reasons
+            .insert(key.clone(), lookup.describe(&asset, observed_at));
         self.wallet_tolerances = self
             .wallet_tolerances
             .clone()
-            .with_basis(key.clone(), ToleranceBasis::dust_only(class, tolerance)?);
+            .with_basis(key.clone(), basis);
         self.holdings_observed.insert(
             key,
             HoldingObservation::new(
@@ -6560,6 +6709,12 @@ impl Platform {
                     absorbed += 1;
                 }
                 SensedRecord::Macro(observation) => {
+                    // §38.3's interval rate, where the observation is one of
+                    // the published series this process takes a rate from.
+                    // Recorded at the seam the fact becomes known rather than
+                    // re-derived at reconciliation time, so the rate a halt
+                    // used is the rate the log shows arriving.
+                    self.absorb_interval_rate(&observation);
                     self.world.update(|world| world.absorb_macro(&observation));
                     self.push_market_event(MarketEvent::from_macro(&observation));
                     absorbed += 1;

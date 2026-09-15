@@ -175,6 +175,41 @@ impl LicensingDecision {
 /// no contract to read — so a change in either party's terms is a change to
 /// this entry, reviewed like code.
 ///
+/// # ecb-key-interest-rates
+///
+/// The three key interest rates the Governing Council sets — the deposit
+/// facility, the marginal lending facility and the main refinancing
+/// operations fixed rate — served unauthenticated by the ECB's own data
+/// portal. The terms read for this evaluation, from the ECB's copyright
+/// statement at `https://www.ecb.europa.eu/services/disclaimer/html/index.en.html`
+/// as it stood on 2026-09-15: "users of this website may make free use of the
+/// information obtained directly from it", subject to three conditions — the
+/// information must appear accurately and the ECB must be cited as the source;
+/// a publisher who sells a document containing it must tell buyers it is
+/// available free from the ECB; and "if the information is modified by the user
+/// (e.g. by seasonal adjustment of statistical data or calculation of growth
+/// rates) this must be stated explicitly". The one exception the statement
+/// carries is for authored documents such as Working Papers, which this source
+/// does not serve. That is `Public`, on the same reading as the reference rates
+/// above, and for the same reason its grant includes `Redistribute`.
+///
+/// **The third condition is the one this platform actually triggers**, and it
+/// is the reason to notice that a class is a label and the evaluation is the
+/// reading. `qip-capital-fabric` does not use the published level: it divides
+/// an annual percentage by the days in a year to obtain one day's accrual for
+/// §38.3's fiat row. That is a calculation on the vendor's figure of exactly
+/// the kind the condition names, so
+/// `qip_capital_fabric::tolerance::SourcedIntervalRate::derivation` states it
+/// in words and that sentence travels in every record the rate reaches — which
+/// is what satisfies the condition, not this comment. The first condition,
+/// acknowledgement, this entry cannot enforce any more than the Frankfurter
+/// one can; nothing displays these rates today and whoever first does owns it.
+///
+/// No expiry is stated, so the entry carries none. This posture was written
+/// from the published terms and not from a negotiated agreement — there is no
+/// contract to read — so a change in the ECB's terms is a change to this entry,
+/// reviewed like code.
+///
 /// # kalshi-markets and alpaca-daily-bars — refused until their terms are read
 ///
 /// The two remaining ADR 0034 candidates. Both connectors exist and both are
@@ -222,6 +257,19 @@ pub fn catalogue() -> Result<Vec<CatalogueEntry>> {
             posture: LicensingPosture::declared(SourceLicense::new(
                 "coinbase-exchange-market-data-terms",
                 [Usage::Research, Usage::Derive, Usage::Trade],
+            )?),
+        },
+        CatalogueEntry {
+            source_id: "ecb-key-interest-rates",
+            expected_class: LicensingClass::Public,
+            posture: LicensingPosture::declared(SourceLicense::new(
+                "ecb-website-copyright-free-use",
+                [
+                    Usage::Research,
+                    Usage::Derive,
+                    Usage::Trade,
+                    Usage::Redistribute,
+                ],
             )?),
         },
         CatalogueEntry {
@@ -800,6 +848,34 @@ mod tests {
             refused.is_err(),
             "a source with no licensing evaluation was admitted, so terms \
              nobody read were treated as read"
+        );
+        Ok(())
+    }
+
+    /// The source §38.3's tolerance formula needed and did not have. It goes
+    /// through the *same* gate as every other entry — the shipped manifest's
+    /// class, both usage questions, the registration question — and no arm of
+    /// that gate was relaxed to admit it. A number that judges whether the
+    /// books balance is the last place a source nobody evaluated belongs.
+    #[test]
+    fn the_ecb_key_interest_rates_are_admitted_for_trade_under_the_ecb_s_own_terms() -> Result<()> {
+        // Premise: the class the gate is handed is the shipped manifest's, so
+        // this is the call the composition root makes and not a class chosen
+        // to make the entry agree.
+        let class = qip_market_ingestion::connector_feed::shipped_class("ecb-key-interest-rates")?;
+        assert_eq!(class, LicensingClass::Public);
+        let decision = admit("ecb-key-interest-rates", class, now())?;
+        assert_eq!(decision.licence, "ecb-website-copyright-free-use");
+        assert_eq!(decision.usages, vec![Usage::Derive, Usage::Trade]);
+        assert_eq!(decision.registration, RegistrationStanding::Keyless);
+        // The banner line, which is the only way an operator can tell this
+        // gate ran from a gate that never did.
+        let line = decision.describe();
+        assert!(
+            line.contains("ecb-website-copyright-free-use")
+                && line.contains("derive and trade")
+                && line.contains("keyless; no registration needed"),
+            "the decision does not say what admitted the source: {line}"
         );
         Ok(())
     }

@@ -76,27 +76,47 @@
 //! caller's mistake that survives into the record as though it were a
 //! decision.
 //!
-//! # The rate has no feed yet, and the record says so
+//! # One rate now has a feed, and the record says which books it reaches
 //!
-//! Nothing in this platform holds a funding rate, a deposit rate or a mark
-//! interval: there is no rate field in the kernel's configuration, none on
-//! the statement an operator hands in, and no venue this process may ask. So
-//! the kernel declares every basis with a rate of zero and, for every
-//! venue-asset except the desk's own cash, the class
-//! [`ToleranceClass::Undeclared`].
+//! This section used to read "the rate has no feed yet", and that is no longer
+//! true of every class. The platform now holds one published rate: the euro
+//! area's **deposit facility rate**, fetched from the ECB's own data portal by
+//! the `ecb-key-interest-rates` connector, admitted by `qip-data-finder`'s
+//! licensing catalogue before the socket, and stamped with the date it applied
+//! to and the instant it became readable. [`SourcedIntervalRate`] is how it
+//! reaches this module, [`PolicyRateTable`] is where the kernel holds it, and
+//! [`ToleranceBasis::from_sourced`] is the only door a non-zero rate enters by
+//! from data rather than from a caller's literal.
 //!
-//! That is deliberate and it is the fail-closed direction — the accrual term
-//! is nil, so the tolerance is the dust floor and nothing wider. What matters
-//! is that it is **visible**: every outcome carries its
+//! What has **not** changed, and must not be read as having changed:
+//!
+//! * **A funding rate and a mark interval still have no feed.** §38.3's
+//!   perpetual, dated-future and private-position rows have a rule and no
+//!   data, and [`SourcedIntervalRate::from_percent_per_annum`] refuses to be
+//!   the one that supplies it: an annual percentage becomes a day without a
+//!   second assumption and becomes a funding interval only with one.
+//! * **The deposit facility rate governs euro balances and nothing else.** An
+//!   issuer sets a rate for a currency, so [`PolicyRateTable::governing`] is
+//!   keyed by asset as well as class. The one class this platform's kernel can
+//!   attest without being told is the desk's own cash at its broker, and that
+//!   book is in dollars — so no basis in a default deployment carries a
+//!   non-zero rate today, and the reason is the currency rather than the
+//!   absence of any feed at all. That distinction is the point: `rate: 0`
+//!   reads identically whether no issuer publishes for the currency, the rate
+//!   held is for another row, the publisher has gone quiet, or the class
+//!   accrues nothing, and [`RateLookup`] makes those four separate findings.
+//!
+//! Everything a class has no rate for stays at zero, which is the fail-closed
+//! direction — the accrual term is nil, so the tolerance is the dust floor and
+//! nothing wider — and it stays **visible**: every outcome carries its
 //! [`EvaluatedTolerance`], so a reader sees `class: undeclared, rate: 0` and
-//! knows no row of §38.3's table was applied, rather than reading a number
-//! and assuming one was. A module that says nothing when it has no subject
-//! reaches no surface in the only state a deployment is ever in.
+//! knows no row of §38.3's table was applied, rather than reading a number and
+//! assuming one was.
 
 use crate::wallet::{Asset, VenueAsset};
 use qip_contracts::venue::VenueId;
-use qip_core::Decimal;
 use qip_core::error::{Error, Result};
+use qip_core::{Decimal, Duration, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -344,6 +364,24 @@ impl ToleranceBasis {
     /// missing rate feed cannot widen a tolerance by accident.
     pub fn dust_only(class: ToleranceClass, dust: Decimal) -> Result<Self> {
         Self::new(class, dust, Decimal::ZERO)
+    }
+
+    /// Declare a basis whose accrual term came from a figure a named
+    /// institution published.
+    ///
+    /// The only way a non-zero rate enters this type from data rather than
+    /// from a caller's literal. It goes through [`Self::new`] unchanged, so a
+    /// sourced rate faces every refusal a declared one does — including
+    /// [`Self::MAX_INTERVAL_RATE`], which a vendor serving a mis-scaled figure
+    /// would meet. A gate a sourced number skipped would be a gate that guards
+    /// only the numbers nobody worried about.
+    ///
+    /// The class comes from the rate rather than from the caller. Two claims
+    /// about which row of §38.3 a figure is one interval of would disagree
+    /// eventually, and the one that disagreed would be the one behind the
+    /// halt.
+    pub fn from_sourced(dust: Decimal, sourced: &SourcedIntervalRate) -> Result<Self> {
+        Self::new(sourced.class(), dust, sourced.rate())
     }
 
     /// Which row of §38.3's table this is.
@@ -670,5 +708,387 @@ pub fn class_for_desk_cash(
         ToleranceClass::FiatAtBrokerOrBank
     } else {
         ToleranceClass::Undeclared
+    }
+}
+
+/// One interval's accrual for a §38.3 class, derived from a figure a named
+/// institution published, with both instants it carries.
+///
+/// # Why a type rather than a `Decimal`
+///
+/// The module documentation above says the rate arm has no feed and that the
+/// kernel declares every basis at zero, "because a rate it invented would
+/// widen a halt by a number with no owner". The owner is the whole point: a
+/// bare `Decimal` reaching [`ToleranceBasis::new`] is indistinguishable from
+/// one somebody typed, and the record a halt leaves would read the same
+/// either way. This type is the difference between the two — it cannot be
+/// built without naming the source, the instant the published figure was true
+/// of, and the instant it became knowable.
+///
+/// # The two instants, and the one that is not optional
+///
+/// A reconciliation tolerance is evaluated against a book at a moment. A rate
+/// that was *true* on a date but not *knowable* until sixteen hours later
+/// cannot be used to judge a book in between, and a rate whose knowable
+/// instant precedes its true instant is a stamp nobody should believe. Both
+/// are refused rather than reordered; see [`Self::from_percent_per_annum`].
+///
+/// # The derivation is stated, because the licence says it must be
+///
+/// The ECB's copyright statement — read for `qip-data-finder`'s catalogue
+/// entry — permits free use of its published figures on three conditions, one
+/// of which is that a *modification* of the figure be stated explicitly, and
+/// it names "calculation of growth rates" as the example. Dividing an annual
+/// percentage by a day-count basis is exactly such a calculation. So
+/// [`Self::derivation`] spells out the arithmetic in words, and it is the
+/// sentence that travels beside the number rather than a comment in this file.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourcedIntervalRate {
+    class: ToleranceClass,
+    asset: Asset,
+    source_id: String,
+    /// The figure as the institution published it, in percent per annum.
+    published_percent_per_annum: Decimal,
+    /// One interval's fractional accrual, derived from the figure above.
+    rate: Decimal,
+    /// The instant the published figure was true of.
+    true_at: Timestamp,
+    /// The instant it became knowable — never earlier than `true_at`.
+    knowable_at: Timestamp,
+}
+
+impl SourcedIntervalRate {
+    /// The day-count basis one day's interest is taken on.
+    ///
+    /// 360, not 365, and the difference is the issuer's rather than this
+    /// platform's preference: euro money-market interest, including the
+    /// remuneration of the ECB's own deposit facility, accrues actual/360. A
+    /// figure divided by the convention its publisher uses is the publisher's
+    /// arithmetic; a figure divided by a rounder number would be this
+    /// platform's, and §38.3's tolerance is the last place to prefer a rounder
+    /// number.
+    pub const DAY_COUNT_BASIS: Decimal = Decimal::from_raw(360_000_000_000);
+
+    /// A published percentage is a percentage: one hundred of them is one.
+    const PERCENT: Decimal = Decimal::from_raw(100_000_000_000);
+
+    /// How stale a published figure may be before it stops being evidence
+    /// about today's book.
+    ///
+    /// Seven days. A central bank's key rates change only at a scheduled
+    /// meeting, and the daily series carries a level for every calendar day,
+    /// so a level more than a week old does not mean the rate has not moved —
+    /// it means the feed stopped, and a tolerance computed from a figure
+    /// nobody is still publishing is a control whose input has gone dark while
+    /// the control kept reporting. Refused rather than extrapolated:
+    /// [`PolicyRateTable::governing`] answers [`RateLookup::NotCurrent`] and
+    /// the caller falls back to the dust floor, which is the tightest the
+    /// formula goes.
+    pub const MAX_AGE: Duration = Duration::from_days(7);
+
+    /// Derive one day's accrual from an annual percentage an institution
+    /// published.
+    ///
+    /// # What is refused, and never corrected
+    ///
+    /// * A class §38.3 does not measure in days. The section gives the fiat
+    ///   row "one day's interest accrual" and gives the other accruing rows a
+    ///   funding interval, a mark-to-market interval and a statement cadence;
+    ///   an annual percentage becomes a day without a second assumption and
+    ///   becomes any of the others only with one. A per-annum figure pressed
+    ///   onto a funding interval would be a number nobody computed wearing a
+    ///   citation.
+    /// * A knowable instant earlier than the instant the figure was true of.
+    ///   That is point-in-time leakage in its purest form: a rate readable
+    ///   before it was knowable makes every backtest that touched it
+    ///   worthless, however good it looked.
+    /// * A figure whose derived rate is not one [`ToleranceBasis`] will
+    ///   accept. That bound is not restated here — the derived rate meets
+    ///   [`ToleranceBasis::MAX_INTERVAL_RATE`] in
+    ///   [`ToleranceBasis::from_sourced`], and two statements of one rule
+    ///   disagree eventually.
+    ///
+    /// # Why the magnitude
+    ///
+    /// A published policy rate can be negative, and the ECB's deposit facility
+    /// sat at -0.50 from 2019 to 2022. One day's accrual on a negative rate is
+    /// a balance that *shrinks*, and a tolerance allows for a movement of that
+    /// size whichever way it points — so the accrual is taken on the
+    /// magnitude. Signing it would produce a negative interval rate, which
+    /// [`ToleranceBasis::new`] refuses by name because it would pull the
+    /// tolerance below the dust floor an operator set. Three real years of
+    /// published policy would then have no usable rate at all, which is a
+    /// worse answer than the correct one.
+    pub fn from_percent_per_annum(
+        class: ToleranceClass,
+        asset: Asset,
+        source_id: impl Into<String>,
+        published_percent_per_annum: Decimal,
+        true_at: Timestamp,
+        knowable_at: Timestamp,
+    ) -> Result<Self> {
+        let source_id = source_id.into();
+        if class != ToleranceClass::FiatAtBrokerOrBank {
+            return Err(Error::invalid(format!(
+                "a figure in percent per annum was offered as one interval of a {class} \
+                 tolerance, and §38.3 gives that class {}. Only the fiat row's interval is a \
+                 day, which is the one an annual figure converts to without a second assumption \
+                 nobody made",
+                class.interval()
+            )));
+        }
+        if knowable_at < true_at {
+            return Err(Error::invalid(format!(
+                "a rate published by `{source_id}` is stamped true at {} and knowable at {}, \
+                 which is earlier. A figure readable before it was knowable is point-in-time \
+                 leakage, and a tolerance built on one judges a book against something nobody \
+                 could have read",
+                true_at.to_rfc3339(),
+                knowable_at.to_rfc3339()
+            )));
+        }
+        let rate = published_percent_per_annum
+            .abs()
+            .checked_div(Self::PERCENT)
+            .and_then(|fraction| fraction.checked_div(Self::DAY_COUNT_BASIS))
+            .ok_or_else(|| {
+                Error::numeric(format!(
+                    "one day's accrual could not be derived from {published_percent_per_annum} \
+                     percent per annum published by `{source_id}`"
+                ))
+            })?;
+        Ok(Self {
+            class,
+            asset,
+            source_id,
+            published_percent_per_annum,
+            rate,
+            true_at,
+            knowable_at,
+        })
+    }
+
+    pub const fn class(&self) -> ToleranceClass {
+        self.class
+    }
+
+    /// The asset the publishing institution sets this rate for.
+    ///
+    /// The field that stops a euro rate judging a dollar book. The ECB sets
+    /// the euro area's rates and nobody else's, so a lookup for any other
+    /// asset must answer that nothing is held rather than reach for the
+    /// nearest number.
+    pub const fn asset(&self) -> &Asset {
+        &self.asset
+    }
+
+    pub fn source_id(&self) -> &str {
+        &self.source_id
+    }
+
+    /// One interval's fractional accrual.
+    pub const fn rate(&self) -> Decimal {
+        self.rate
+    }
+
+    /// The figure as published, before this platform divided it.
+    pub const fn published_percent_per_annum(&self) -> Decimal {
+        self.published_percent_per_annum
+    }
+
+    pub const fn true_at(&self) -> Timestamp {
+        self.true_at
+    }
+
+    pub const fn knowable_at(&self) -> Timestamp {
+        self.knowable_at
+    }
+
+    /// Whether this figure was knowable by `now` and has not gone stale.
+    fn usable_at(&self, now: Timestamp) -> bool {
+        now >= self.knowable_at && now.since(self.knowable_at) <= Self::MAX_AGE
+    }
+
+    /// The arithmetic in words: the published figure, the division, and the
+    /// two instants.
+    ///
+    /// This sentence is the platform's statement that it modified the
+    /// publisher's figure, which the ECB's terms require explicitly and which
+    /// no class label can make. It is also the only way a reader of a halt can
+    /// re-derive the number rather than trust it.
+    pub fn derivation(&self) -> String {
+        format!(
+            "{} per annum for {} published by `{}`, true at {} and knowable at {}, divided by \
+             100 and by an actual/{} day count to one day's accrual of {}",
+            self.published_percent_per_annum,
+            self.asset,
+            self.source_id,
+            self.true_at.to_rfc3339(),
+            self.knowable_at.to_rfc3339(),
+            Self::DAY_COUNT_BASIS,
+            self.rate
+        )
+    }
+}
+
+/// What a lookup in a [`PolicyRateTable`] found, as four findings rather than
+/// one `Option`.
+///
+/// An `Option` would collapse the four into "no rate", and they are different
+/// facts about a control. "Nothing is published for dollars" is a gap in the
+/// sources this build carries; "the rate held is for a class this venue-asset
+/// is not" is a §38.3 question; "the feed stopped a fortnight ago" is an
+/// outage. A caller that could not tell them apart would report a book judged
+/// at its dust floor without being able to say why — which is the state the
+/// tolerance module was in before this type, and the reason its records say
+/// `rate: 0` and nothing else.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RateLookup {
+    /// A published rate governs this asset and this class, and is current.
+    Governed(Box<SourcedIntervalRate>),
+    /// No source in this build publishes a rate for this asset.
+    NoneHeld,
+    /// A rate is held for this asset and governs a different §38.3 class.
+    ClassNotGoverned {
+        held: ToleranceClass,
+        asked: ToleranceClass,
+    },
+    /// A rate is held and is not evidence about this instant: either it was
+    /// not yet knowable, or its publisher has gone quiet.
+    NotCurrent {
+        source_id: String,
+        knowable_at: Timestamp,
+    },
+}
+
+impl RateLookup {
+    /// The sentence a record carries beside the basis, saying which of the
+    /// four happened.
+    pub fn describe(&self, asset: &Asset, now: Timestamp) -> String {
+        match self {
+            Self::Governed(rate) => rate.derivation(),
+            Self::NoneHeld => format!(
+                "no source in this build publishes an interval rate for {asset}, so the dust \
+                 floor is the whole tolerance"
+            ),
+            Self::ClassNotGoverned { held, asked } => format!(
+                "the rate held for {asset} is one interval of a {held} tolerance and this \
+                 venue-asset is {asked}, so the dust floor is the whole tolerance"
+            ),
+            Self::NotCurrent {
+                source_id,
+                knowable_at,
+            } => format!(
+                "the rate held for {asset} from `{source_id}` became knowable at {} and is not \
+                 evidence about {}, so the dust floor is the whole tolerance",
+                knowable_at.to_rfc3339(),
+                now.to_rfc3339()
+            ),
+        }
+    }
+
+    /// The rate, when one governs.
+    pub fn rate(&self) -> Option<&SourcedIntervalRate> {
+        match self {
+            Self::Governed(rate) => Some(rate),
+            Self::NoneHeld | Self::ClassNotGoverned { .. } | Self::NotCurrent { .. } => None,
+        }
+    }
+}
+
+/// Every published interval rate this process holds, keyed by the asset its
+/// publisher sets it for.
+///
+/// Bounded, like every working set here: a table fed from a feed is a table
+/// that grows, and [`Self::MAX_ASSETS`] is the ceiling. Keyed by asset and not
+/// by class, because an institution sets a rate for a currency and §38.3
+/// decides which row of its table that rate can be one interval of — two
+/// different questions, and folding them into one key would let a rate
+/// published for euros answer for a dollar book whose class happened to match.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyRateTable {
+    per_asset: BTreeMap<Asset, SourcedIntervalRate>,
+}
+
+impl PolicyRateTable {
+    /// How many assets' rates may be held at once.
+    ///
+    /// Sixteen. There are not sixteen institutions publishing a policy rate
+    /// whose terms this platform has evaluated; the bound is here so that a
+    /// feed which started minting assets could not grow the table without
+    /// limit, and it refuses the seventeenth by name rather than evicting one
+    /// nobody chose.
+    pub const MAX_ASSETS: usize = 16;
+
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a published rate, or refuse.
+    ///
+    /// Refuses a figure older than the one already held for that asset. A
+    /// re-poll serving the same date is idempotent and lands on the same
+    /// value; a figure stamped *earlier* than the one held is either a replay
+    /// or a vendor serving history, and taking it would move the tolerance
+    /// backwards onto a rate that has since been superseded — the same
+    /// backwards-instant defect `StandingAdmission::check` refuses in the
+    /// licensing gate, in a place where the consequence is a halt rather than
+    /// a licence.
+    pub fn record(&mut self, rate: SourcedIntervalRate) -> Result<()> {
+        if let Some(held) = self.per_asset.get(rate.asset()) {
+            if rate.true_at() < held.true_at() {
+                return Err(Error::invalid(format!(
+                    "a rate for {} stamped true at {} was offered against one already held for \
+                     {}, which is later. A tolerance moved backwards onto a superseded rate is a \
+                     control judging today's book by a figure that has been replaced",
+                    rate.asset(),
+                    rate.true_at().to_rfc3339(),
+                    held.true_at().to_rfc3339()
+                )));
+            }
+        } else if self.per_asset.len() >= Self::MAX_ASSETS {
+            return Err(Error::denied(format!(
+                "a rate for {} would be the {}th asset held against a bound of {}; retire one \
+                 before adding another",
+                rate.asset(),
+                self.per_asset.len() + 1,
+                Self::MAX_ASSETS
+            )));
+        }
+        self.per_asset.insert(rate.asset().clone(), rate);
+        Ok(())
+    }
+
+    /// What this table has to say about one venue-asset's class at one instant.
+    pub fn governing(&self, asset: &Asset, class: ToleranceClass, now: Timestamp) -> RateLookup {
+        let Some(held) = self.per_asset.get(asset) else {
+            return RateLookup::NoneHeld;
+        };
+        if held.class() != class {
+            return RateLookup::ClassNotGoverned {
+                held: held.class(),
+                asked: class,
+            };
+        }
+        if !held.usable_at(now) {
+            return RateLookup::NotCurrent {
+                source_id: held.source_id().to_string(),
+                knowable_at: held.knowable_at(),
+            };
+        }
+        RateLookup::Governed(Box::new(held.clone()))
+    }
+
+    /// Every asset a rate is held for, in stable order.
+    pub fn assets(&self) -> impl Iterator<Item = &Asset> {
+        self.per_asset.keys()
+    }
+
+    pub fn len(&self) -> usize {
+        self.per_asset.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.per_asset.is_empty()
     }
 }
