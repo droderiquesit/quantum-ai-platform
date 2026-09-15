@@ -7,6 +7,7 @@ import Process from "@/components/sections/home1/Process"
 import Apps from "@/components/sections/home1/Apps"
 import Subscribe from "@/components/sections/home1/Subscribe"
 import { BoundaryDiagram } from "@/components/art/Diagrams"
+import { Claim } from "@/components/elements/Claim"
 import { Figure, SectionTitle } from "@/components/sections/Blocks"
 
 export default function Home() {
@@ -25,7 +26,7 @@ export default function Home() {
                         <SectionTitle
                             eyebrow="The boundary"
                             title="Paper-trading discipline"
-                            lede="Algorik never submits a live order. Three independent layers hold that line, and each one catches a different way the mistake could arrive."
+                            lede={<>Algorik never submits a live order. <Claim status="architecture">Three independent layers</Claim> hold that line, and each one catches a different way the mistake could arrive.</>}
                         />
                         <Figure caption="Terraform catches the reviewed, committed mistake. The composition roots catch the unreviewed edit. Neither is redundant.">
                             <BoundaryDiagram />

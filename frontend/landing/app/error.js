@@ -1,6 +1,7 @@
 'use client'
 
 import Link from "next/link"
+import { Numeral } from "@/components/elements/Claim"
 
 /**
  * The client error boundary.
@@ -20,7 +21,10 @@ export default function GlobalError({ error, reset }) {
                     <p>
                         This page failed to render. Nothing on Algorik trades in response to a
                         browser error — the platform is paper trading and the console only reads.
-                        {error?.digest ? <><br />Reference: {error.digest}</> : null}
+                        {/* The digest is an opaque reference and usually carries digits.
+                            It is annotated so the claims sweep cannot mistake a support
+                            reference for a figure the platform is asserting. */}
+                        {error?.digest ? <><br />Reference: <Numeral kind="code">{error.digest}</Numeral></> : null}
                     </p>
                     <div className="algorik-cta-actions" style={{ justifyContent: "center", marginTop: 24 }}>
                         <button type="button" className="theme-btn btn-one" onClick={() => reset()}>Try again</button>

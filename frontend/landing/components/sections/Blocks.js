@@ -1,4 +1,5 @@
 import Link from "next/link"
+import { Numeral } from "@/components/elements/Claim"
 import { POSTURE, SIGN_UP } from "@/lib/site"
 
 /**
@@ -53,7 +54,8 @@ export function NumberedList({ items }) {
                 <div key={title} className="col-lg-6 col-md-6 col-sm-12 content-column">
                     <div className="process-block-one">
                         <div className="inner-box">
-                            <span className="count-text">{index + 1}</span>
+                            {/* The step's position, not a count of anything. */}
+                            <Numeral kind="ordinal" className="count-text">{index + 1}</Numeral>
                             <h3>{title}</h3>
                             <p>{body}</p>
                         </div>
@@ -141,10 +143,20 @@ export function LegalShell({ title, children }) {
     )
 }
 
-export function LegalSection({ heading, children }) {
+/**
+ * A numbered section of a legal document.
+ *
+ * The number is a prop rather than part of the heading string so it can be
+ * marked as what it is: a position in a document, counting nothing. It used to
+ * be written into the heading text — `heading="4. Accounts"` — which put a
+ * bare numeral in front of a reader with nothing saying whether the platform
+ * was asserting a quantity, and there is no way to tell those apart by
+ * looking.
+ */
+export function LegalSection({ index, heading, children }) {
     return (
         <section className="algorik-legal-section">
-            <h3>{heading}</h3>
+            <h3><Numeral kind="ordinal">{index}.</Numeral> {heading}</h3>
             {children}
         </section>
     )

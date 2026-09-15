@@ -1,6 +1,7 @@
 import Layout from "@/components/layout/Layout"
 import { Card, CardGrid, CtaBand, PostureNote, SectionTitle } from "@/components/sections/Blocks"
 import Funfact from "@/components/sections/home1/Funfact"
+import { Claim } from "@/components/elements/Claim"
 
 export const metadata = {
     title: "Company",
@@ -17,9 +18,9 @@ const PRINCIPLES = [
     ["Say why", "Code, commits and decisions name the failure they prevent. A record that restates what happened without why is worse than none, because it reads as an answer."],
     ["Refuse rather than guess", "Invalid input is refused, never silently corrected. A value quietly clamped is a caller's bug that survives to matter later."],
     ["Fail closed", "Every safety default is the restrictive one, and configuration that would relax a guarantee stops the process instead of lowering it."],
-    ["Make it structural", "A guarantee the type system holds beats one a runtime check holds, which beats one a comment asserts. Paper trading is held at the strongest of the three."],
+    ["Make it structural", <>A guarantee the type system holds beats one a runtime check holds, which beats one a comment asserts. Paper trading is held at <Claim status="architecture">the strongest of the three</Claim>.</>],
     ["Evidence, not assertion", "A claim about the system requires the output that proves it. A summary that omits a failure is a false statement, not an optimistic one."],
-    ["Bill what ran", "Costs and outcomes attribute to what actually executed, never to what was planned. Two claims about the same fact will disagree, and the louder one will be wrong."],
+    ["Bill what ran", <>Costs and outcomes attribute to what actually executed, never to what was planned. <Claim status="architecture">Two claims about the same fact</Claim> will disagree, and the louder one will be wrong.</>],
 ]
 
 export default function CompanyPage() {

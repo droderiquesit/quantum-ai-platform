@@ -1,6 +1,7 @@
 import Layout from "@/components/layout/Layout"
 import { Card, CardGrid, CtaBand, Figure, PostureNote, SectionTitle } from "@/components/sections/Blocks"
 import { BoundaryDiagram, ChainDiagram } from "@/components/art/Diagrams"
+import { Claim, Numeral } from "@/components/elements/Claim"
 
 export const metadata = {
     title: "Security",
@@ -19,25 +20,25 @@ export default function SecurityPage() {
                     <div className="auto-container">
                         <SectionTitle
                             eyebrow="The boundary"
-                            title="Paper trading, enforced three times"
-                            lede="Algorik never submits a live order. Three independent layers hold that line, and each one catches a different way the mistake could arrive."
+                            title={<>Paper trading, <Claim status="architecture">enforced three times</Claim></>}
+                            lede={<>Algorik never submits a live order. <Claim status="architecture">Three independent layers</Claim> hold that line, and each one catches a different way the mistake could arrive.</>}
                         />
                         <Figure caption="Infrastructure catches the reviewed, committed mistake. The composition roots catch the unreviewed configuration edit. The type system catches what neither saw.">
                             <BoundaryDiagram />
                         </Figure>
                         <div className="pt_50">
                             <CardGrid columns={3}>
-                                <Card title="1 — Infrastructure as code">
+                                <Card title={<><Numeral kind="ordinal">1</Numeral> — Infrastructure as code</>}>
                                     <p>The deployment configuration refuses any live autonomy ceiling at plan time,
                                         so a live value cannot reach a running cluster through a reviewed, committed
                                         change.</p>
                                 </Card>
-                                <Card title="2 — The composition roots">
+                                <Card title={<><Numeral kind="ordinal">2</Numeral> — The composition roots</>}>
                                     <p>Every service binary re-checks its ceiling at start-up. A live value stops the
                                         process — it is never silently lowered to paper. This catches the unreviewed,
                                         hand-edited configuration the first layer never saw.</p>
                                 </Card>
-                                <Card title="3 — The type system">
+                                <Card title={<><Numeral kind="ordinal">3</Numeral> — The type system</>}>
                                     <p>The regional execution cell has no constructor that accepts anything but a
                                         paper-trading ceiling, and deterministic risk checks return a type that cannot
                                         name a model. Some mistakes are made unrepresentable rather than merely

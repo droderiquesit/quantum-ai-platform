@@ -1,5 +1,6 @@
 import Layout from "@/components/layout/Layout"
 import { Bullets, Card, CardGrid, CtaBand, SectionTitle } from "@/components/sections/Blocks"
+import { Claim, Numeral } from "@/components/elements/Claim"
 
 export const metadata = {
     title: "Developers",
@@ -29,13 +30,15 @@ export default function DevelopersPage() {
                                     requires, and a refusal names what to do instead.</p>
                             </Card>
                             <Card title="Server-sent events" meta="served today">
-                                <p>Five stream channels — market, signals, orders, positions and health — push
-                                    updates over SSE. Plain HTTP, inspectable with nothing more exotic than curl.</p>
+                                <p><Claim status="architecture">Five stream channels</Claim> — market, signals,
+                                    orders, positions and health — push updates over SSE. Plain HTTP, inspectable
+                                    with nothing more exotic than curl.</p>
                             </Card>
                             <Card title="OpenAPI, self-served" meta="served today">
-                                <p>The platform serves an OpenAPI 3.1 document generated from its own route table, so
-                                    the description cannot drift from the router: a route the document declares is a
-                                    route the platform answers, and tests hold the two together.</p>
+                                <p>The platform serves an <Numeral kind="version">OpenAPI 3.1</Numeral> document
+                                    generated from its own route table, so the description cannot drift from the
+                                    router: a route the document declares is a route the platform answers, and
+                                    <Claim status="architecture">tests hold the two together</Claim>.</p>
                             </Card>
                             <Card title="No write path for live orders" meta="structural">
                                 <p>The API serves no route that could submit a live order, and answers an order

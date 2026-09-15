@@ -78,6 +78,40 @@ site has already shipped:
 - **Only `NEXT_PUBLIC_ALGORIK_PORTAL_URL` may be read from the environment.**
   The browser receives nothing the public may not see.
 - **The `PAPER TRADING` label must exist**, in those words.
+- **A claim's status must come from the component that validates it.** A
+  hand-written `data-claim-status` would put a status in the markup that
+  nothing checked, and the DOM sweep reads the attribute without caring who
+  wrote it.
+- **A quantity in an attribute must be declared, and every declaration must
+  still be in the source.** Both directions, because one alone rots.
+- **Nothing may be declared `measured`** while nothing is deployed.
+
+## How a number on this site is labelled
+
+§40.6 requires every quantitative statement on the public site to say whether
+it is architecture, a target, a demo figure or a measurement. Until this
+mechanism existed the rule was upheld by whoever last edited the copy
+remembering it.
+
+- `lib/claims.mjs` — the four statuses, the numeral kinds that count nothing,
+  and the single definition of what reads as a quantity. It catches spelled-out
+  numbers as well as digits: most of this site's numbers spell out, and a
+  `\d`-only rule would have reported it clean.
+- `components/elements/Claim.js` — `<Claim status>` and `<Numeral kind>`, both
+  of which **throw** on a value outside their vocabulary, so an unchecked
+  status cannot render. Anything weaker than `architecture` renders a visible
+  marker beside the figure rather than hiding the distinction behind a hover.
+- `tests/claims.spec.mjs` — the enforcement. It walks the rendered DOM of every
+  page, fails on a numeral with no annotated ancestor, refuses an annotation
+  that covers no quantity or that blankets a section, and refuses `measured`
+  outright: nothing on this platform is deployed, so no figure here can be an
+  observation of one. Publishing a measured figure means editing that test in
+  front of a reviewer, which is the point.
+- The scheme is explained to the public in `/legal/risk-disclosures`, because a
+  label a reader cannot decode is decoration.
+
+If you cannot tell what a claim is, annotate it the weaker way. Over-claiming
+is the failure this exists to prevent; under-claiming is not.
 
 ESLint proper is a separate, reviewable decision. `eslint` and
 `eslint-config-next` are devDependencies of the portal and could be adopted

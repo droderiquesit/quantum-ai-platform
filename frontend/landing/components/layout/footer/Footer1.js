@@ -1,5 +1,6 @@
 import Link from "next/link"
 import Brand from "../Brand"
+import { Claim, Numeral } from "@/components/elements/Claim"
 import { CONTACT_EMAIL, FOOTER_COLUMNS, POSTURE, SIGN_IN, SIGN_UP } from "@/lib/site"
 
 /**
@@ -31,8 +32,17 @@ export default function Footer1() {
                                             </div>
                                             <div className="widget-content">
                                                 <ul className="links-list clearfix">
+                                                    {/* A navigation label is copy like any other: "The eight-stage
+                                                        loop" states a quantity on all twelve pages. Where the IA
+                                                        declares a status for a label, it is rendered as one. */}
                                                     {column.links.map((link) => (
-                                                        <li key={link.href}><Link href={link.href}>{link.label}</Link></li>
+                                                        <li key={link.href}>
+                                                            <Link href={link.href}>
+                                                                {link.claim
+                                                                    ? <Claim status={link.claim}>{link.label}</Claim>
+                                                                    : link.label}
+                                                            </Link>
+                                                        </li>
                                                     ))}
                                                 </ul>
                                             </div>
@@ -68,7 +78,7 @@ export default function Footer1() {
             <div className="footer-bottom">
                 <div className="auto-container">
                     <div className="bottom-inner">
-                        <p>Copyright {new Date().getFullYear()} Algorik. All rights reserved.</p>
+                        <p>Copyright <Numeral kind="date">{new Date().getFullYear()}</Numeral> Algorik. All rights reserved.</p>
                         <p className="footer-posture">
                             <Link href="/legal/risk-disclosures">Risk disclosures</Link>
                             <span aria-hidden="true"> · </span>

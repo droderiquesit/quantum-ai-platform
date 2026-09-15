@@ -5,7 +5,12 @@
  * `banner-img-*.png` — grey placeholder rectangles. On a 1440px screen the
  * slide read as a headline floating in an empty box. These are drawn for a
  * dark background and say the same thing the slide's headline says.
+ *
+ * The only numerals drawn here are the stage positions on the loop, which
+ * count nothing and say so through `Numeral`. The quantities in the slides'
+ * alternative text are declared in `DECLARED_ATTRIBUTE_CLAIMS`.
  */
+import { Numeral } from "@/components/elements/Claim"
 
 const GREEN = "#10b981"
 const FAINT = "rgba(255,255,255,0.20)"
@@ -72,8 +77,10 @@ export function HeroLoop() {
                 return (
                     <g key={name}>
                         <circle cx={x} cy={y} r="13" fill={i === 6 ? GREEN : "#0a1512"} stroke={i === 6 ? GREEN : DIM} strokeWidth="2" />
-                        <text x={x} y={y + 4} textAnchor="middle" fontSize="11" fontWeight="700"
-                            fill={i === 6 ? "#04120c" : "#ffffff"}>{i + 1}</text>
+                        <Numeral kind="ordinal" svg>
+                            <text x={x} y={y + 4} textAnchor="middle" fontSize="11" fontWeight="700"
+                                fill={i === 6 ? "#04120c" : "#ffffff"}>{i + 1}</text>
+                        </Numeral>
                         <text x={lx} y={ly + 4} textAnchor={anchor} fontSize="12" fill={DIM}>{name}</text>
                     </g>
                 )

@@ -1,6 +1,7 @@
 import Layout from "@/components/layout/Layout"
 import { Bullets, Card, CardGrid, CtaBand, Figure, SectionTitle } from "@/components/sections/Blocks"
 import { BaselineDiagram, PanelDiagram } from "@/components/art/Diagrams"
+import { Claim } from "@/components/elements/Claim"
 
 export const metadata = {
     title: "Technology",
@@ -28,8 +29,8 @@ export default function TechnologyPage() {
                     <div className="auto-container">
                         <SectionTitle
                             eyebrow="AI intelligence"
-                            title="A seventeen-agent reasoning panel"
-                            lede="The deep brain hosts seventeen specialist agents and refuses to host the one agent that touches a venue — reasoning and execution are separated by construction, not by convention."
+                            title={<Claim status="architecture">A seventeen-agent reasoning panel</Claim>}
+                            lede={<>The deep brain hosts <Claim status="architecture">seventeen specialist agents</Claim> and refuses to host the one agent that touches a venue — reasoning and execution are separated by construction, not by convention.</>}
                         />
                         <div className="algorik-split">
                             <div>
@@ -38,11 +39,12 @@ export default function TechnologyPage() {
                                     isolated per agent, because an organisation where one analyst&rsquo;s bug mutes
                                     the others is worse than one where a finding is missing.</p>
                                 <p>The adversarial reviewer exists to disagree. A panel that always concurs is not a
-                                    panel; it is one opinion with sixteen echoes.</p>
+                                    panel; it is <Claim status="architecture">one opinion with sixteen
+                                    echoes</Claim>.</p>
                                 <p><strong>Confidence is arithmetic.</strong> A confidence figure is derived from the
-                                    evidence by stated combination rules, so two screens can never disagree about how
-                                    sure the platform is, and &ldquo;high conviction&rdquo; is never an adjective
-                                    someone typed.</p>
+                                    evidence by stated combination rules, so <Claim status="architecture">two
+                                    screens</Claim> can never disagree about how sure the platform is, and
+                                    &ldquo;high conviction&rdquo; is never an adjective someone typed.</p>
                                 <p>Deterministic pre-trade risk checks never route to a model. The cost router makes
                                     that structural: where determinism is required, the routing type cannot even name
                                     a model rung.</p>
@@ -99,9 +101,10 @@ export default function TechnologyPage() {
                                     one deliberate exception.</p>
                             </Card>
                             <Card title="A tiny supply chain">
-                                <p>The core platform admits two third-party libraries, total. Every additional
-                                    dependency is an architecture decision with a written record, because a
-                                    dependency is an audit surface, not a download.</p>
+                                <p>The core platform admits <Claim status="architecture">two third-party
+                                    libraries</Claim>, total. Every additional dependency is an architecture decision
+                                    with a written record, because a dependency is an audit surface, not a
+                                    download.</p>
                             </Card>
                             <Card title="Determinism where money moves">
                                 <p>Money is decimal arithmetic, iteration orders are stable, and a replay of the log

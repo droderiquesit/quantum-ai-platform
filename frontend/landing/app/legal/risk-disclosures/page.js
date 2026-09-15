@@ -1,5 +1,6 @@
 import Link from "next/link"
 import Layout from "@/components/layout/Layout"
+import { ClaimLegend } from "@/components/elements/Claim"
 import { Bullets, LegalSection, LegalShell } from "@/components/sections/Blocks"
 
 export const metadata = {
@@ -19,7 +20,7 @@ export default function RiskDisclosuresPage() {
         <div className="boxed_wrapper">
             <Layout breadcrumbTitle="Risk disclosures">
                 <LegalShell title="Risk Disclosures">
-                    <LegalSection heading="1. The three statements that matter most">
+                    <LegalSection index={1} heading="The statements that matter most">
                         <Bullets items={[
                             <span key="simulated">
                                 <strong>Simulated results do not predict real trading.</strong>{" "}
@@ -38,7 +39,7 @@ export default function RiskDisclosuresPage() {
                         ]} />
                     </LegalSection>
 
-                    <LegalSection heading="2. Limitations of simulated performance">
+                    <LegalSection index={2} heading="Limitations of simulated performance">
                         <p>Simulated and hypothetical results are produced with the benefit of a controlled
                             environment. Among other differences from live markets, a simulation:</p>
                         <Bullets items={[
@@ -52,14 +53,14 @@ export default function RiskDisclosuresPage() {
                             does not invite one.</p>
                     </LegalSection>
 
-                    <LegalSection heading="3. General investment risk">
+                    <LegalSection index={3} heading="General investment risk">
                         <p>Trading and investing in financial instruments involves substantial risk, including the
                             possible loss of the entire amount invested. Markets are volatile; past performance —
                             real or simulated — is not indicative of future results. No trading is without risk,
                             and nothing on this platform changes that.</p>
                     </LegalSection>
 
-                    <LegalSection heading="4. Not advice, not a solicitation">
+                    <LegalSection index={4} heading="Not advice, not a solicitation">
                         <p>Outputs of the platform — opportunities, findings, confidence figures, simulated fills
                             and attribution — are research artefacts of a software system, not recommendations to
                             you. Algorik does not provide investment, legal, accounting or tax advice, and nothing
@@ -67,7 +68,7 @@ export default function RiskDisclosuresPage() {
                             instrument.</p>
                     </LegalSection>
 
-                    <LegalSection heading="5. Model and quantum research risk">
+                    <LegalSection index={5} heading="Model and quantum research risk">
                         <p>The platform&rsquo;s reasoning uses machine-learned and language models whose outputs
                             can be wrong, and quantum optimisation methods that are experimental. Both are bounded
                             by design — deterministic risk checks never route to a model, and every quantum
@@ -75,7 +76,25 @@ export default function RiskDisclosuresPage() {
                             error, and research outputs should be treated accordingly.</p>
                     </LegalSection>
 
-                    <LegalSection heading="6. If anything here changes">
+                    {/* The legend belongs in this document and not in a footnote, because
+                        this is the document that governs how everything else on the site
+                        should be read. A status attached to a figure that a reader cannot
+                        decode is decoration; saying what the four words mean is what turns
+                        the annotation into a disclosure. */}
+                    <LegalSection index={6} heading="How a number on this site is labelled">
+                        <p>Every quantitative statement on this site carries a status, readable in the
+                            page&rsquo;s own markup and shown when you hover the figure. The distinction they
+                            draw is the one that matters here: <strong>Algorik is not deployed</strong>, so
+                            almost nothing on this site can be an observation of a running system, and a figure
+                            that read like one would be misleading however accurate it was.</p>
+                        <ClaimLegend />
+                        <p>A statement labelled anything other than <em>architecture</em> is marked visibly
+                            beside the figure. If you find a figure here with no status at all, it is a defect —
+                            the site&rsquo;s own test suite fails on one — and the{" "}
+                            <Link href="/contact">contact page</Link> is where to say so.</p>
+                    </LegalSection>
+
+                    <LegalSection index={7} heading="If anything here changes">
                         <p>Should the platform&rsquo;s execution posture ever change, this document would change
                             first, with a new effective date and prominent notice — not as a quiet edit. Questions
                             can be raised via the <Link href="/contact">contact page</Link>.</p>

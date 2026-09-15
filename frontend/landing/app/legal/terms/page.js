@@ -13,14 +13,14 @@ export default function TermsPage() {
         <div className="boxed_wrapper">
             <Layout breadcrumbTitle="Terms of service">
                 <LegalShell title="Terms of Service">
-                    <LegalSection heading="1. What these terms cover">
+                    <LegalSection index={1} heading="What these terms cover">
                         <p>These terms will govern access to and use of Algorik (the &ldquo;Service&rdquo;), a
                             software platform for investment research operated in paper-trading mode. By creating
                             an account or using the Service, you agree to be bound by the version of these terms
                             in effect at the time of use.</p>
                     </LegalSection>
 
-                    <LegalSection heading="2. The Service is simulated">
+                    <LegalSection index={2} heading="The Service is simulated">
                         <p>Algorik executes exclusively against simulators and sandboxes. The Service does not
                             submit orders to any live trading venue, does not hold client funds or securities, and
                             provides no facility for doing either. Figures shown as fills, positions or
@@ -28,7 +28,7 @@ export default function TermsPage() {
                             such.</p>
                     </LegalSection>
 
-                    <LegalSection heading="3. No investment advice; no brokerage">
+                    <LegalSection index={3} heading="No investment advice; no brokerage">
                         <p>Nothing in the Service constitutes investment advice, a recommendation, an offer, or a
                             solicitation to buy or sell any financial instrument. Algorik is not acting as your
                             broker, dealer, adviser or fiduciary. You are solely responsible for any investment
@@ -36,7 +36,7 @@ export default function TermsPage() {
                             advice before making one.</p>
                     </LegalSection>
 
-                    <LegalSection heading="4. Accounts">
+                    <LegalSection index={4} heading="Accounts">
                         <Bullets items={[
                             "You must provide accurate registration information and keep your credentials confidential.",
                             "You are responsible for activity under your account until you notify us of unauthorised use.",
@@ -44,7 +44,7 @@ export default function TermsPage() {
                         ]} />
                     </LegalSection>
 
-                    <LegalSection heading="5. Acceptable use">
+                    <LegalSection index={5} heading="Acceptable use">
                         <p>You agree not to:</p>
                         <Bullets items={[
                             "attempt to access another user's data or any system component not intentionally exposed to you;",
@@ -54,13 +54,13 @@ export default function TermsPage() {
                         ]} />
                     </LegalSection>
 
-                    <LegalSection heading="6. Intellectual property">
+                    <LegalSection index={6} heading="Intellectual property">
                         <p>The Service, including its software, design system, marks and documentation, remains
                             the property of Algorik and its licensors. You retain rights in content you submit;
                             you grant us the licence needed to operate the Service on it, and no more.</p>
                     </LegalSection>
 
-                    <LegalSection heading="7. Disclaimers">
+                    <LegalSection index={7} heading="Disclaimers">
                         <p>The Service is provided &ldquo;as is&rdquo; and &ldquo;as available&rdquo;, without
                             warranties of any kind, express or implied, including fitness for a particular purpose
                             and non-infringement. Simulated results do not predict real trading outcomes, and no
@@ -68,20 +68,20 @@ export default function TermsPage() {
                             <Link href="/legal/risk-disclosures">risk disclosures</Link>.</p>
                     </LegalSection>
 
-                    <LegalSection heading="8. Limitation of liability">
+                    <LegalSection index={8} heading="Limitation of liability">
                         <p>To the maximum extent permitted by law, Algorik will not be liable for indirect,
                             incidental, special, consequential or punitive damages, or for loss of profits, data
                             or goodwill, arising from use of the Service. Nothing in these terms excludes
                             liability that cannot be excluded by law.</p>
                     </LegalSection>
 
-                    <LegalSection heading="9. Changes and termination">
+                    <LegalSection index={9} heading="Changes and termination">
                         <p>We may change the Service or these terms. Material changes will be published with a new
                             effective date before they apply. You may stop using the Service at any time; sections
                             which by their nature survive termination will survive it.</p>
                     </LegalSection>
 
-                    <LegalSection heading="10. Governing law and contact">
+                    <LegalSection index={10} heading="Governing law and contact">
                         <p>Governing law and venue are to be determined before these terms take effect. Questions
                             about this draft can be sent via the <Link href="/contact">contact page</Link>.</p>
                     </LegalSection>

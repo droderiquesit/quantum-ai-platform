@@ -489,3 +489,94 @@
 .algorik-card-body p:last-child .theme-btn {
   margin-top: 4px;
 }
+
+/* ---------------------------------------------------------------------------
+   Quantitative claims (§40.6).
+
+   Every number a reader sees is wrapped by `components/elements/Claim.js`,
+   which puts the status in the markup. These rules make the wrapper
+   typographically invisible where it has to be — it sits inside headings,
+   animated counters and SVG, none of which can absorb a new inline box — and
+   visible where the status is the point.
+
+   `display: contents` on the counter wrapper is deliberate: the funfact strip
+   is laid out by the licensed template's CSS, and an extra inline box between
+   `.count-outer` and `.count-text` puts the figure off its baseline.
+   --------------------------------------------------------------------------- */
+
+.algorik-claim,
+.algorik-numeral {
+  display: inline;
+}
+
+.count-outer > .algorik-claim {
+  display: contents;
+}
+
+/* The status of anything weaker than "architecture" is shown, not hidden
+   behind a hover: a target a reader mistakes for a measurement is the whole
+   failure this mechanism exists to prevent, and most readers never hover. */
+.algorik-claim-flag {
+  font-size: 9px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-left: 4px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(234, 179, 8, 0.18);
+  color: #8a6500;
+  vertical-align: super;
+  white-space: nowrap;
+}
+
+.algorik-claim[data-claim-status="measured"] > .algorik-claim-flag {
+  background: rgba(99, 102, 241, 0.16);
+  color: #3f3fa0;
+}
+
+.algorik-claim-legend {
+  margin: 18px 0 24px;
+}
+
+.algorik-claim-legend > div {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+
+.algorik-claim-legend dt {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.algorik-claim-legend dd {
+  margin: 0;
+}
+
+.algorik-claim-legend-chip {
+  display: inline-block;
+  min-width: 108px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(16, 185, 129, 0.14);
+  color: #0a7a5b;
+}
+
+.algorik-claim-legend-chip[data-claim-legend="target"],
+.algorik-claim-legend-chip[data-claim-legend="demo"] {
+  background: rgba(234, 179, 8, 0.18);
+  color: #8a6500;
+}
+
+.algorik-claim-legend-chip[data-claim-legend="measured"] {
+  background: rgba(99, 102, 241, 0.16);
+  color: #3f3fa0;
+}

@@ -13,13 +13,13 @@ export default function PrivacyPage() {
         <div className="boxed_wrapper">
             <Layout breadcrumbTitle="Privacy policy">
                 <LegalShell title="Privacy Policy">
-                    <LegalSection heading="1. Scope">
+                    <LegalSection index={1} heading="Scope">
                         <p>This policy will describe how Algorik handles personal data across the public site and
                             the signed-in platform. It is written to say what actually happens, in the order a
                             reader would ask: what is collected, why, where it goes, and how long it is kept.</p>
                     </LegalSection>
 
-                    <LegalSection heading="2. What we collect">
+                    <LegalSection index={2} heading="What we collect">
                         <Bullets items={[
                             "Account data: email address, optional display name, account type, and the agreements you have accepted.",
                             "Session data: a signed session identifier in a cookie, sign-in method, and authentication timestamps.",
@@ -30,7 +30,7 @@ export default function PrivacyPage() {
                             credentials — the Service is paper trading and has no use for them.</p>
                     </LegalSection>
 
-                    <LegalSection heading="3. What we use it for">
+                    <LegalSection index={3} heading="What we use it for">
                         <Bullets items={[
                             "Operating the Service: authentication, authorisation and support.",
                             "Security: detecting abuse and investigating incidents.",
@@ -40,7 +40,7 @@ export default function PrivacyPage() {
                             tracking cookies.</p>
                     </LegalSection>
 
-                    <LegalSection heading="4. Cookies and local storage">
+                    <LegalSection index={4} heading="Cookies and local storage">
                         <Bullets items={[
                             "This public site sets no cookies of its own. It embeds no analytics and no third-party scripts.",
                             "A session cookie and a request-forgery-protection cookie, both scoped to the portal's origin, are used for signed-in access there.",
@@ -48,7 +48,7 @@ export default function PrivacyPage() {
                         ]} />
                     </LegalSection>
 
-                    <LegalSection heading="5. Retention">
+                    <LegalSection index={5} heading="Retention">
                         <p>Working data is kept under explicit bounds, and audit records are retained for as long
                             as the record they attest to is retained — a tamper-evident log that could be
                             selectively shortened would not be one. Account data is deleted or anonymised on
@@ -56,20 +56,20 @@ export default function PrivacyPage() {
                             reasons; where that applies, we will say so in the response.</p>
                     </LegalSection>
 
-                    <LegalSection heading="6. Sharing">
+                    <LegalSection index={6} heading="Sharing">
                         <p>Personal data is shared only with infrastructure providers processing it on our behalf
                             under contract, and where the law requires disclosure. A future change to this list
                             takes effect only through a published revision of this policy.</p>
                     </LegalSection>
 
-                    <LegalSection heading="7. Your rights">
+                    <LegalSection index={7} heading="Your rights">
                         <p>Depending on your jurisdiction, you may have rights to access, correct, export,
                             restrict or delete personal data. Requests can be made via the{" "}
                             <Link href="/contact">contact page</Link> and will be answered within the period your
                             jurisdiction requires.</p>
                     </LegalSection>
 
-                    <LegalSection heading="8. Changes">
+                    <LegalSection index={8} heading="Changes">
                         <p>Material changes will be published with a new effective date before they apply. This
                             draft has no effective date and is not yet in force.</p>
                     </LegalSection>
