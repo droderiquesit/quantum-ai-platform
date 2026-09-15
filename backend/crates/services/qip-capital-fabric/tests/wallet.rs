@@ -17,9 +17,12 @@ use qip_capital_fabric::custody::{
     Agreement, Attestation, ClassConstraints, CorridorKind, Custodian, CustodyClass, CustodyPolicy,
     EnforcementPoint, EnforcementPoints, Identity, RefusalReason,
 };
+use qip_capital_fabric::tolerance::{
+    ScheduleState, ToleranceBasis, ToleranceClass, ToleranceSchedule, class_for_desk_cash,
+};
 use qip_capital_fabric::wallet::{
-    Asset, BreakCause, HoldingObservation, LedgerView, Provenance, ReconciliationOutcome,
-    TolerancePolicy, VenueAsset, Wallet,
+    Asset, BreakCause, Divergence, HoldingObservation, LedgerView, Provenance,
+    ReconciliationOutcome, VenueAsset, Wallet,
 };
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
@@ -76,6 +79,19 @@ fn key(venue_name: &str, asset_name: &str) -> Result<VenueAsset> {
         venue: venue(venue_name),
         asset: asset(asset_name)?,
     })
+}
+
+/// A schedule whose every venue-asset carries a dust floor and no accrual —
+/// the shape the kernel builds today, and the tightest §38.3's formula goes.
+fn floors(entries: &[(&str, &str, Decimal)]) -> Result<ToleranceSchedule> {
+    let mut schedule = ToleranceSchedule::new();
+    for (venue_name, asset_name, floor) in entries {
+        schedule = schedule.with_basis(
+            key(venue_name, asset_name)?,
+            ToleranceBasis::dust_only(ToleranceClass::Undeclared, *floor)?,
+        );
+    }
+    Ok(schedule)
 }
 
 fn attestation(point: EnforcementPoint, identity: &str) -> Result<Attestation> {
@@ -140,9 +156,11 @@ fn a_delta_at_tolerance_halts_exactly_that_venue_asset_and_no_other() -> Result<
     // is a halt that stops the venue, or the wallet, rather than the one
     // balance that broke — or a `>` that lets a delta exactly at tolerance
     // through.
-    let tolerances = TolerancePolicy::new()
-        .with_tolerance(asset("USD")?, dec!("10"))?
-        .with_tolerance(asset("BTC")?, dec!("0.0001"))?;
+    let tolerances = floors(&[
+        ("XCBT", "USD", dec!("10")),
+        ("XNAS", "USD", dec!("10")),
+        ("COIN", "BTC", dec!("0.0001")),
+    ])?;
     let wallet = Wallet::assemble(
         vec![
             observed("XCBT", "USD", dec!("930"))?, // expected 925, delta +5: clean
@@ -181,23 +199,43 @@ fn a_delta_at_tolerance_halts_exactly_that_venue_asset_and_no_other() -> Result<
             assert_eq!(alert.cause, BreakCause::DeltaBeyondTolerance);
             assert_eq!(alert.expected, dec!("500"));
             assert_eq!(alert.observed, dec!("490"));
-            assert_eq!(alert.tolerance, dec!("10"));
+            assert_eq!(alert.basis.tolerance, dec!("10"));
+            assert_eq!(alert.direction, Some(Divergence::Shortfall));
             assert!(alert.message.contains("writes no correction"));
         }
         other => panic!("expected a halt, got {other:?}"),
     }
 
-    // The other two reconciled, and kept their deltas for the persistent-delta
-    // ticket §38.3 asks for.
-    let clean: BTreeMap<VenueAsset, Decimal> = outcomes
+    // The other two did not halt, and they are two different findings. XCBT
+    // disagrees by 5 inside a tolerance of 10 — a break of a known direction
+    // that was not worth halting on, which §38.3 opens a ticket for — and
+    // COIN agrees exactly.
+    let not_halted: BTreeMap<VenueAsset, Decimal> = outcomes
         .iter()
-        .filter_map(|o| match o {
-            ReconciliationOutcome::Reconciled { delta, .. } => Some((o.venue_asset(), *delta)),
-            ReconciliationOutcome::Halt { .. } => None,
-        })
+        .filter(|o| !o.is_halt())
+        .map(|o| (o.venue_asset(), o.delta()))
         .collect();
-    assert_eq!(clean.get(&key("XCBT", "USD")?), Some(&dec!("5")));
-    assert_eq!(clean.get(&key("COIN", "BTC")?), Some(&Decimal::ZERO));
+    assert_eq!(not_halted.get(&key("XCBT", "USD")?), Some(&dec!("5")));
+    assert_eq!(not_halted.get(&key("COIN", "BTC")?), Some(&Decimal::ZERO));
+    let xcbt = outcomes
+        .iter()
+        .find(|o| o.venue_asset() == key("XCBT", "USD").unwrap_or_else(|_| unreachable!()))
+        .ok_or_else(|| Error::schema("XCBT/USD produced no outcome"))?;
+    assert!(
+        matches!(xcbt, ReconciliationOutcome::WithinTolerance { .. }),
+        "a delta of 5 inside a tolerance of 10 is a divergence, not a clean balance: {xcbt:?}"
+    );
+    assert!(xcbt.is_break(), "it is still a break: {xcbt:?}");
+    assert_eq!(xcbt.direction(), Some(Divergence::Surplus));
+    let coin = outcomes
+        .iter()
+        .find(|o| o.venue_asset() == key("COIN", "BTC").unwrap_or_else(|_| unreachable!()))
+        .ok_or_else(|| Error::schema("COIN/BTC produced no outcome"))?;
+    assert!(
+        matches!(coin, ReconciliationOutcome::Reconciled { .. }),
+        "an exact agreement is reconciled: {coin:?}"
+    );
+    assert!(!coin.is_break());
     Ok(())
 }
 
@@ -207,7 +245,7 @@ fn a_surplus_beyond_tolerance_halts_as_a_shortfall_does() -> Result<()> {
     // same severity. The failure this prevents is a `delta >= tolerance`
     // written without the absolute value, which halts on missing money and
     // waves through money the ledger cannot explain.
-    let tolerances = TolerancePolicy::new().with_tolerance(asset("USD")?, dec!("10"))?;
+    let tolerances = floors(&[("XCBT", "USD", dec!("10"))])?;
     let wallet = Wallet::assemble(
         vec![observed("XCBT", "USD", dec!("1025"))?],
         vec![booked("XCBT", "USD", dec!("1000"), dec!("0"), dec!("0"))?],
@@ -228,7 +266,7 @@ fn a_holding_the_ledger_never_booked_halts_as_unrecorded() -> Result<()> {
     // A venue reporting a balance the ledger has no row for is a break, not a
     // discovery. The failure this prevents is the wallet silently adopting the
     // venue's figure as the ledger's — which is a correction by another name.
-    let tolerances = TolerancePolicy::new().with_tolerance(asset("ETH")?, dec!("0.01"))?;
+    let tolerances = floors(&[("COIN", "ETH", dec!("0.01"))])?;
     let wallet = Wallet::assemble(
         vec![observed("COIN", "ETH", dec!("4"))?],
         vec![],
@@ -346,18 +384,339 @@ fn a_tolerance_that_is_not_strictly_positive_is_refused() -> Result<()> {
     // Zero halts on every reconciled balance; negative halts on none. Both
     // read as a configured control and are neither.
     assert!(matches!(
-        TolerancePolicy::new().with_tolerance(asset("USD")?, Decimal::ZERO),
+        ToleranceBasis::dust_only(ToleranceClass::CryptoSpot, Decimal::ZERO),
         Err(Error::Invalid(_))
     ));
     assert!(matches!(
-        TolerancePolicy::new().with_tolerance(asset("USD")?, dec!("-1")),
+        ToleranceBasis::dust_only(ToleranceClass::CryptoSpot, dec!("-1")),
         Err(Error::Invalid(_))
     ));
+    // And the gate admits a good one, which is what distinguishes a working
+    // gate from one that refuses everything.
+    assert!(ToleranceBasis::dust_only(ToleranceClass::CryptoSpot, dec!("0.01")).is_ok());
+    Ok(())
+}
+#[test]
+fn an_interval_rate_that_could_never_halt_is_refused_and_a_usable_one_is_admitted() -> Result<()> {
+    // §38.3's formula widens a tolerance by one interval's accrual. A rate of
+    // one or more makes the tolerance the whole book, so `|delta| >=
+    // tolerance` is false for every delta a balance of that size can produce
+    // — the `MaxExpectedShortfall` defect with the sign reversed: a control
+    // that reads as protection and cannot fire. A negative rate is the mirror
+    // image, pulling the tolerance below the floor somebody set.
+    assert!(matches!(
+        ToleranceBasis::new(ToleranceClass::PerpetualFuture, dec!("1"), Decimal::ONE),
+        Err(Error::Invalid(_))
+    ));
+    assert!(matches!(
+        ToleranceBasis::new(ToleranceClass::PerpetualFuture, dec!("1"), dec!("2.5")),
+        Err(Error::Invalid(_))
+    ));
+    assert!(matches!(
+        ToleranceBasis::new(ToleranceClass::PerpetualFuture, dec!("1"), dec!("-0.0001")),
+        Err(Error::Invalid(_))
+    ));
+    // Admitted: a funding interval that moves a tenth of a percent, and a
+    // rate of exactly zero for an interval that accrued nothing.
+    assert!(ToleranceBasis::new(ToleranceClass::PerpetualFuture, dec!("1"), dec!("0.001")).is_ok());
+    assert!(ToleranceBasis::new(ToleranceClass::PerpetualFuture, dec!("1"), Decimal::ZERO).is_ok());
+    Ok(())
+}
+
+#[test]
+fn a_class_that_38_3_gives_no_accrual_to_cannot_be_given_an_interval_rate() -> Result<()> {
+    // §38.3 writes crypto spot as "dust floor only" and equity as "zero
+    // beyond dust". The failure this prevents is a fraction of the book
+    // entered against either row and then *ignored* by the formula — a number
+    // an operator set, believing it governed, that governed nothing. It is
+    // refused rather than dropped.
+    for class in [ToleranceClass::CryptoSpot, ToleranceClass::Equity] {
+        assert!(!class.accrues(), "premise: {class} has no accrual term");
+        assert!(
+            matches!(
+                ToleranceBasis::new(class, dec!("0.0001"), dec!("0.01")),
+                Err(Error::Invalid(_))
+            ),
+            "{class} admitted an interval rate"
+        );
+        assert!(ToleranceBasis::dust_only(class, dec!("0.0001")).is_ok());
+    }
+    // And the four rows that do accrue take one.
+    for class in [
+        ToleranceClass::PerpetualFuture,
+        ToleranceClass::DatedFutureOrMargin,
+        ToleranceClass::FiatAtBrokerOrBank,
+        ToleranceClass::PrivatePosition,
+    ] {
+        assert!(class.accrues(), "premise: {class} has an accrual term");
+        assert!(
+            ToleranceBasis::new(class, dec!("0.0001"), dec!("0.01")).is_ok(),
+            "{class} refused an interval rate it should take"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn the_same_basis_allows_more_on_a_larger_book_and_less_on_a_smaller_one() -> Result<()> {
+    // This is the whole of "tolerance is a formula, not a constant". One
+    // declared basis — a perpetual whose funding interval accrues ten basis
+    // points — judged against two books three orders of magnitude apart. The
+    // failure this prevents is the constant the platform shipped: a single
+    // number that is too tight for the large book and too loose for the
+    // small, mis-judging whichever one it was not chosen for, silently.
+    let basis = ToleranceBasis::new(ToleranceClass::PerpetualFuture, dec!("0.5"), dec!("0.001"))?;
+    let small = basis.evaluate(dec!("1000"))?;
+    let large = basis.evaluate(dec!("1000000"))?;
+    // Premise: the two books really are different sizes and the dust floor is
+    // the same under both, so the difference below is the accrual and nothing
+    // else.
+    assert_ne!(small.basis_quantity, large.basis_quantity);
+    assert_eq!(small.dust, large.dust);
+
+    assert_eq!(small.accrual, dec!("1"));
+    assert_eq!(small.tolerance, dec!("1.5"));
+    assert_eq!(large.accrual, dec!("1000"));
+    assert_eq!(large.tolerance, dec!("1000.5"));
+    assert!(small.accrual_applied() && large.accrual_applied());
+    // A debit balance accrues on its magnitude: a margin account in the red
+    // is a real balance and its tolerance is not negative.
+    let debit = basis.evaluate(dec!("-1000000"))?;
+    assert_eq!(debit.tolerance, large.tolerance);
+
+    // And the derivation travels with it, so the figure can be re-derived
+    // from the record rather than trusted.
+    let derivation = large.derivation();
     assert!(
-        TolerancePolicy::new()
-            .with_tolerance(asset("USD")?, dec!("0.01"))
-            .is_ok()
+        derivation.contains("perpetual_future ("),
+        "the derivation names no class: {derivation}"
     );
+    assert!(
+        derivation.contains("dust 0.5 + rate 0.001 x expected magnitude 1000000 = 1000.5"),
+        "the derivation does not show the working: {derivation}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_tolerance_that_the_formula_widened_still_halts_beyond_it_and_not_inside() -> Result<()> {
+    // Both halves, because each without the other is a different defect: a
+    // tolerance so wide the halt can never fire, and one so tight it halts on
+    // everything. The accrual here is 1000 on a book of 1,000,000, so 999 is
+    // inside and 1001 is out — and neither would be, on the dust floor of 0.5
+    // alone, which is what makes this a test of the formula rather than of
+    // the floor.
+    let schedule = ToleranceSchedule::new().with_basis(
+        key("XCME", "USD")?,
+        ToleranceBasis::new(
+            ToleranceClass::DatedFutureOrMargin,
+            dec!("0.5"),
+            dec!("0.001"),
+        )?,
+    );
+    let inside = Wallet::assemble(
+        vec![observed("XCME", "USD", dec!("1000999"))?],
+        vec![booked(
+            "XCME",
+            "USD",
+            dec!("1000000"),
+            dec!("0"),
+            dec!("0"),
+        )?],
+        freshness(),
+        now(),
+    )?
+    .reconcile(&schedule)?;
+    assert_eq!(inside.len(), 1);
+    assert!(
+        !inside[0].is_halt(),
+        "a delta of 999 inside a derived tolerance of 1000.5 must not halt: {inside:?}"
+    );
+    assert!(
+        inside[0].is_break(),
+        "and it is still a break, of a known direction: {inside:?}"
+    );
+    assert_eq!(inside[0].direction(), Some(Divergence::Surplus));
+
+    let outside = Wallet::assemble(
+        vec![observed("XCME", "USD", dec!("1001001"))?],
+        vec![booked(
+            "XCME",
+            "USD",
+            dec!("1000000"),
+            dec!("0"),
+            dec!("0"),
+        )?],
+        freshness(),
+        now(),
+    )?
+    .reconcile(&schedule)?;
+    assert_eq!(outside.len(), 1);
+    assert!(
+        outside[0].is_halt(),
+        "a delta of 1001 beyond a derived tolerance of 1000.5 must halt: {outside:?}"
+    );
+    match &outside[0] {
+        ReconciliationOutcome::Halt { alert, .. } => {
+            assert_eq!(alert.basis.class, ToleranceClass::DatedFutureOrMargin);
+            assert_eq!(alert.basis.accrual, dec!("1000"));
+            assert_eq!(alert.basis.tolerance, dec!("1000.5"));
+        }
+        other => panic!("expected a halt, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn an_empty_wallet_refuses_to_reconcile_rather_than_reporting_a_clean_book() -> Result<()> {
+    // The silent-when-idle failure, in the one state every deployment starts
+    // in. `reconcile` used to answer `Ok(vec![])` for a wallet nobody had
+    // observed anything into, which is byte-identical to the answer for a
+    // book that reconciled perfectly — and it is the answer a process gives
+    // for as long as no statement arrives. The emptiness has to say so.
+    let empty = Wallet::assemble(vec![], vec![], freshness(), now())?;
+    // Premise: the wallet really is empty and the schedule really is not the
+    // thing being refused.
+    assert_eq!(empty.venue_assets().count(), 0);
+    let schedule = floors(&[("XCBT", "USD", dec!("10"))])?;
+    assert!(!schedule.is_empty());
+    assert!(matches!(
+        empty.reconcile(&schedule),
+        Err(Error::Invalid(ref m)) if m.contains("nothing to reconcile")
+    ));
+    Ok(())
+}
+
+#[test]
+fn an_empty_schedule_says_it_is_idle_rather_than_reading_as_permissive() -> Result<()> {
+    // A schedule with nothing in it is not a schedule that permits
+    // everything, and `is_empty()` returning `true` is a fact a caller has to
+    // know to ask for. `state()` makes the emptiness a value carrying the
+    // reason.
+    let idle = ToleranceSchedule::new();
+    match idle.state() {
+        ScheduleState::Idle { reason } => {
+            assert_eq!(reason, ToleranceSchedule::IDLE_REASON);
+            assert!(reason.contains("reconciles nothing rather than reconciling everything"));
+        }
+        other => panic!("an empty schedule reported {other:?}"),
+    }
+    // Declared, and counted by what it can and cannot do: two venue-assets,
+    // one classified, and none accruing — which is the kernel's state today
+    // and is the thing a reader must be able to see rather than assume.
+    let declared = ToleranceSchedule::new()
+        .with_basis(
+            key("XCBT", "USD")?,
+            ToleranceBasis::dust_only(ToleranceClass::FiatAtBrokerOrBank, dec!("1"))?,
+        )
+        .with_basis(
+            key("COIN", "BTC")?,
+            ToleranceBasis::dust_only(ToleranceClass::Undeclared, dec!("0.0001"))?,
+        );
+    assert_eq!(
+        declared.state(),
+        ScheduleState::Declared {
+            venue_assets: 2,
+            classified: 1,
+            accruing: 0,
+        }
+    );
+    // And one that does accrue is counted as accruing, so the two states are
+    // distinguishable.
+    let accruing = declared.clone().with_basis(
+        key("XCME", "PERP")?,
+        ToleranceBasis::new(ToleranceClass::PerpetualFuture, dec!("1"), dec!("0.0005"))?,
+    );
+    assert_eq!(
+        accruing.state(),
+        ScheduleState::Declared {
+            venue_assets: 3,
+            classified: 2,
+            accruing: 1,
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn two_venues_holding_one_asset_are_judged_by_their_own_floors() -> Result<()> {
+    // The failure this prevents has a name in the code it replaced: the
+    // schedule was keyed by *asset*, so the second statement handed in
+    // overwrote the first venue's tolerance with its own. Here the bank's
+    // floor is a dollar and the exchange's is a thousand, and the same
+    // five-hundred-dollar delta must halt one and not the other. Under a
+    // per-asset key one of the two is judged by a control nobody at that
+    // venue set, and which one depends on insertion order.
+    let schedule = ToleranceSchedule::new()
+        .with_basis(
+            key("BANK", "USD")?,
+            ToleranceBasis::dust_only(ToleranceClass::FiatAtBrokerOrBank, dec!("1"))?,
+        )
+        .with_basis(
+            key("XCBT", "USD")?,
+            ToleranceBasis::dust_only(ToleranceClass::FiatAtBrokerOrBank, dec!("1000"))?,
+        );
+    let wallet = Wallet::assemble(
+        vec![
+            observed("BANK", "USD", dec!("10500"))?,
+            observed("XCBT", "USD", dec!("10500"))?,
+        ],
+        vec![
+            booked("BANK", "USD", dec!("10000"), dec!("0"), dec!("0"))?,
+            booked("XCBT", "USD", dec!("10000"), dec!("0"), dec!("0"))?,
+        ],
+        freshness(),
+        now(),
+    )?;
+    let outcomes = wallet.reconcile(&schedule)?;
+    // Premise: two outcomes, over the same asset, the same delta, and two
+    // different floors.
+    assert_eq!(outcomes.len(), 2);
+    let by_key: BTreeMap<VenueAsset, &ReconciliationOutcome> =
+        outcomes.iter().map(|o| (o.venue_asset(), o)).collect();
+    let bank = by_key
+        .get(&key("BANK", "USD")?)
+        .ok_or_else(|| Error::schema("BANK/USD produced no outcome"))?;
+    let exchange = by_key
+        .get(&key("XCBT", "USD")?)
+        .ok_or_else(|| Error::schema("XCBT/USD produced no outcome"))?;
+    assert_eq!(bank.delta(), dec!("500"));
+    assert_eq!(exchange.delta(), dec!("500"));
+    assert!(bank.is_halt(), "a 500 delta against a floor of 1 halts");
+    assert!(
+        !exchange.is_halt(),
+        "a 500 delta against a floor of 1000 does not halt"
+    );
+    assert!(exchange.is_break(), "and is still recorded as a divergence");
+    Ok(())
+}
+
+#[test]
+fn only_the_desks_own_cash_is_classified_without_being_told() -> Result<()> {
+    // The failure this prevents: a class read out of an asset string. "BTC
+    // looks like crypto spot" would put a §38.3 row nobody chose behind a
+    // halt, and the row decides how wide the tolerance is. One venue-asset is
+    // attestable from what the process knows — the cash row the ledger books
+    // at the desk's own broker — and everything else is `undeclared`, which
+    // carries no accrual and so is the tightest the formula goes.
+    let desk_venue = venue("simulated-venue");
+    let desk_asset = asset("USD")?;
+    assert_eq!(
+        class_for_desk_cash(&desk_venue, &desk_asset, &desk_venue, &desk_asset),
+        ToleranceClass::FiatAtBrokerOrBank
+    );
+    // Same asset, another venue: not the desk's cash row.
+    assert_eq!(
+        class_for_desk_cash(&venue("custodian-x"), &desk_asset, &desk_venue, &desk_asset),
+        ToleranceClass::Undeclared
+    );
+    // Same venue, another asset.
+    assert_eq!(
+        class_for_desk_cash(&desk_venue, &asset("BTC")?, &desk_venue, &desk_asset),
+        ToleranceClass::Undeclared
+    );
+    // And `undeclared` is not a permissive default: it accrues nothing.
+    assert!(!ToleranceClass::Undeclared.accrues());
     Ok(())
 }
 
@@ -371,11 +730,18 @@ fn an_asset_without_a_tolerance_is_refused_rather_than_guessed() -> Result<()> {
         freshness(),
         now(),
     )?;
-    let only_usd = TolerancePolicy::new().with_tolerance(asset("USD")?, dec!("10"))?;
+    let elsewhere = floors(&[("XCBT", "USD", dec!("10"))])?;
     assert!(matches!(
-        wallet.reconcile(&only_usd),
-        Err(Error::Invalid(ref m)) if m.contains("BTC")
+        wallet.reconcile(&elsewhere),
+        Err(Error::Invalid(ref m)) if m.contains("COIN/BTC")
     ));
+    // And a schedule that does name it admits it, which is what distinguishes
+    // a working refusal from one that refuses everything.
+    assert!(
+        wallet
+            .reconcile(&floors(&[("COIN", "BTC", dec!("10"))])?)
+            .is_ok()
+    );
     Ok(())
 }
 
@@ -424,7 +790,7 @@ fn the_wallet_exposes_no_mutation_of_ledger_state() -> Result<()> {
         now(),
     )?;
     let before = wallet.ledger_view(&key("XCBT", "USD")?).cloned();
-    let tolerances = TolerancePolicy::new().with_tolerance(asset("USD")?, dec!("10"))?;
+    let tolerances = floors(&[("XCBT", "USD", dec!("10"))])?;
     let outcomes = wallet.reconcile(&tolerances)?;
     assert!(outcomes[0].is_halt(), "premise: this reconciliation breaks");
     let after = wallet.ledger_view(&key("XCBT", "USD")?).cloned();
@@ -450,7 +816,11 @@ fn no_wallet_field_has_a_type_that_could_carry_a_credential() {
         "Provenance",
         "VenueAsset",
         "BreakCause",
-        "BTreeMap<Asset, Decimal>",
+        "Divergence",
+        "Option<Divergence>",
+        // §38.3's formula as it was evaluated: six decimals and a class, and
+        // nothing that could name a channel.
+        "EvaluatedTolerance",
         "BTreeMap<VenueAsset, HoldingObservation>",
         "BTreeMap<VenueAsset, LedgerView>",
         "ReconciliationAlert",

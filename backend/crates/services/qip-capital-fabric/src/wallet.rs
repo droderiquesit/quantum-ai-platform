@@ -49,12 +49,33 @@
 //! # Tolerance
 //!
 //! §38.3 makes tolerance a formula per asset class — a funding interval's
-//! accrual for perpetuals, a day's interest for fiat, dust for spot — and the
-//! evaluation of that formula belongs to whoever holds the rates. The wallet
-//! takes the evaluated figures as a [`TolerancePolicy`] keyed by asset, refuses
-//! one that is not strictly positive, and refuses to reconcile an asset it has
-//! no tolerance for rather than guessing a generous one.
+//! accrual for perpetuals, a day's interest for fiat, dust for spot. That
+//! formula is [`crate::tolerance`], and the wallet takes a
+//! [`ToleranceSchedule`] keyed by **venue-asset**, evaluates each basis
+//! against that venue-asset's own expectation, and refuses to reconcile a
+//! venue-asset it has no basis for rather than guessing a generous one.
+//!
+//! It used to take one constant per *asset*, which was wrong three ways: a
+//! single number is too tight for a small book and too loose for a large one,
+//! two venues holding USD shared a control neither chose, and no §38.3 class
+//! was recorded at all. The evaluated formula travels in every outcome as an
+//! [`EvaluatedTolerance`], so the figure behind a halt — or behind a
+//! divergence that was *not* a halt — can be re-derived from the record.
+//!
+//! # A break inside tolerance is still a break
+//!
+//! §38.3: "A persistent non-zero delta inside tolerance is a modelling defect
+//! and opens a ticket." So a delta that is non-zero and smaller than the
+//! tolerance is [`ReconciliationOutcome::WithinTolerance`] — its own arm,
+//! carrying its [`Divergence`] direction and the tolerance that spared it —
+//! and not [`ReconciliationOutcome::Reconciled`], which now means the delta
+//! was exactly nothing. Two independent claims about one balance disagreed;
+//! a tolerance decides whether to halt on the disagreement, and it must not
+//! decide whether the disagreement happened. A wider tolerance that folded
+//! these into "reconciled" would remove the evidence rather than resolve it,
+//! and the wider it got the cleaner the book would look.
 
+use crate::tolerance::{EvaluatedTolerance, ToleranceSchedule};
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
@@ -274,38 +295,40 @@ impl LedgerView {
     }
 }
 
-/// The evaluated tolerance per asset for one reconciliation pass.
+/// Which way a non-zero delta ran.
 ///
-/// Strictly positive per asset. A zero tolerance halts on a delta of zero,
-/// which is every reconciled balance; a negative one halts on nothing at all.
-/// Both are refused at construction rather than clamped to something that
-/// reads like a control.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TolerancePolicy {
-    per_asset: BTreeMap<Asset, Decimal>,
+/// §38.3: "An external balance exceeding expectation is treated with the same
+/// severity as a shortfall." Same severity, and not the same finding — money
+/// the ledger cannot find and money it cannot explain are investigated in
+/// opposite directions, and an outcome that recorded only a magnitude would
+/// send an operator looking the wrong way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Divergence {
+    /// The venue reports more than the ledger expected.
+    Surplus,
+    /// The venue reports less than the ledger expected.
+    Shortfall,
 }
 
-impl TolerancePolicy {
-    /// An empty policy — reconciling anything against it is refused.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set an asset's tolerance, refusing anything that is not strictly positive.
-    pub fn with_tolerance(mut self, asset: Asset, tolerance: Decimal) -> Result<Self> {
-        if !tolerance.is_positive() {
-            return Err(Error::invalid(format!(
-                "tolerance for {asset} is {tolerance}; it must be strictly positive — zero \
-                 halts every reconciled balance and a negative figure halts none"
-            )));
+impl Divergence {
+    /// The direction of a delta, or `None` when the delta is exactly nothing.
+    pub fn of(delta: Decimal) -> Option<Self> {
+        if delta.is_positive() {
+            Some(Self::Surplus)
+        } else if delta.is_negative() {
+            Some(Self::Shortfall)
+        } else {
+            None
         }
-        self.per_asset.insert(asset, tolerance);
-        Ok(self)
     }
 
-    /// The tolerance for an asset, or `None` when the caller never supplied one.
-    pub fn for_asset(&self, asset: &Asset) -> Option<Decimal> {
-        self.per_asset.get(asset).copied()
+    /// A stable label for records and alerts.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Surplus => "surplus",
+            Self::Shortfall => "shortfall",
+        }
     }
 }
 
@@ -348,8 +371,14 @@ pub struct ReconciliationAlert {
     pub observed: Decimal,
     /// `observed - expected`, signed: a surplus is as much a break as a shortfall.
     pub delta: Decimal,
-    /// The tolerance the delta was judged against.
-    pub tolerance: Decimal,
+    /// Which way it ran, or `None` on an unrecorded holding whose observed
+    /// balance was itself zero.
+    pub direction: Option<Divergence>,
+    /// §38.3's formula as it was evaluated here, every term kept, so the
+    /// figure the delta was judged against can be re-derived rather than
+    /// trusted. One statement of the tolerance and not two: the final number
+    /// is `basis.tolerance`.
+    pub basis: EvaluatedTolerance,
     /// When the observation was true.
     pub observed_at: Timestamp,
     /// Which class of read-only channel reported it.
@@ -367,15 +396,36 @@ pub struct ReconciliationAlert {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum ReconciliationOutcome {
-    /// The delta is inside tolerance.
+    /// Observed and expected agree exactly. There is nothing to explain.
     Reconciled {
         /// The venue-asset.
         venue: VenueId,
         /// The asset.
         asset: Asset,
-        /// `observed - expected`, kept so a persistent non-zero delta inside
-        /// tolerance — §38.3's modelling defect — can be seen rather than lost.
+        /// `observed - expected`, which on this arm is exactly zero. Kept as a
+        /// field because "measured and found to be nil" is a statement and an
+        /// absent field is not.
         delta: Decimal,
+    },
+    /// The two claims disagree, and by less than the tolerance. Not a halt,
+    /// and **not** a clean book: §38.3 calls a persistent non-zero delta
+    /// inside tolerance a modelling defect that opens a ticket, so it is its
+    /// own outcome with its own direction. A tolerance decides whether to
+    /// stop trading a venue-asset; it does not decide whether the
+    /// disagreement happened.
+    WithinTolerance {
+        /// The venue-asset.
+        venue: VenueId,
+        /// The asset.
+        asset: Asset,
+        /// `observed - expected`, non-zero on this arm by construction.
+        delta: Decimal,
+        /// Which way it ran.
+        direction: Divergence,
+        /// §38.3's formula as evaluated here — the reason this was not a halt,
+        /// with the working, so a tolerance that is quietly absorbing a real
+        /// divergence can be argued with.
+        basis: EvaluatedTolerance,
     },
     /// Halt this venue-asset and alert. Nothing else is touched.
     Halt {
@@ -394,16 +444,56 @@ impl ReconciliationOutcome {
     /// The venue-asset the outcome is about.
     pub fn venue_asset(&self) -> VenueAsset {
         match self {
-            Self::Reconciled { venue, asset, .. } | Self::Halt { venue, asset, .. } => VenueAsset {
+            Self::Reconciled { venue, asset, .. }
+            | Self::WithinTolerance { venue, asset, .. }
+            | Self::Halt { venue, asset, .. } => VenueAsset {
                 venue: venue.clone(),
                 asset: asset.clone(),
             },
         }
     }
 
+    /// `observed - expected`, whichever arm this is.
+    pub fn delta(&self) -> Decimal {
+        match self {
+            Self::Reconciled { delta, .. }
+            | Self::WithinTolerance { delta, .. }
+            | Self::Halt { delta, .. } => *delta,
+        }
+    }
+
     /// Whether this outcome halts its venue-asset.
     pub fn is_halt(&self) -> bool {
         matches!(self, Self::Halt { .. })
+    }
+
+    /// Whether the two claims disagreed at all, halt or not.
+    ///
+    /// The distinction [`Self::is_halt`] cannot make and §38.3 needs: a
+    /// divergence inside tolerance is a break of a known direction that was
+    /// not worth halting on, and a caller that counted only halts would read
+    /// a drifting book as a clean one.
+    pub fn is_break(&self) -> bool {
+        matches!(self, Self::WithinTolerance { .. } | Self::Halt { .. })
+    }
+
+    /// Which way the delta ran, or `None` when it was exactly nothing.
+    pub fn direction(&self) -> Option<Divergence> {
+        match self {
+            Self::Reconciled { .. } => None,
+            Self::WithinTolerance { direction, .. } => Some(*direction),
+            Self::Halt { alert, .. } => alert.direction,
+        }
+    }
+
+    /// The §38.3 formula this outcome was judged by, or `None` on an exact
+    /// agreement, where no tolerance was needed to reach the verdict.
+    pub fn basis(&self) -> Option<&EvaluatedTolerance> {
+        match self {
+            Self::Reconciled { .. } => None,
+            Self::WithinTolerance { basis, .. } => Some(basis),
+            Self::Halt { alert, .. } => Some(&alert.basis),
+        }
     }
 }
 
@@ -519,43 +609,69 @@ impl Wallet {
         self.ledger.get(key)
     }
 
-    /// Reconcile every venue-asset against its tolerance (§38.3).
+    /// Reconcile every venue-asset against §38.3's tolerance formula.
     ///
     /// Returns one outcome per venue-asset in stable order. Refuses — for the
-    /// whole pass — when an observed asset has no tolerance, because a
-    /// reconciliation that guessed a tolerance for one asset would report
-    /// "reconciled" on a figure nobody chose. A halt on one venue-asset does
-    /// not affect any other's outcome, and nothing in this method or reachable
-    /// from it writes to the ledger.
-    pub fn reconcile(&self, tolerances: &TolerancePolicy) -> Result<Vec<ReconciliationOutcome>> {
+    /// whole pass — when:
+    ///
+    /// * the wallet holds no venue-asset at all. An empty `Ok(vec![])` is
+    ///   indistinguishable from a book that reconciled cleanly, and that is
+    ///   the state a deployment sits in before anybody hands in a statement,
+    ///   so it is exactly the case in which silence would be read as health;
+    /// * an observed venue-asset has no basis in the schedule, because a
+    ///   reconciliation that guessed a tolerance would report "reconciled"
+    ///   against a figure nobody chose.
+    ///
+    /// The basis is evaluated against *this* venue-asset's own expectation,
+    /// which is what makes the tolerance a formula rather than a constant: the
+    /// same declared basis yields a wider allowance on a larger book and a
+    /// tighter one on a smaller, and two venues holding one asset are judged
+    /// separately.
+    ///
+    /// A halt on one venue-asset does not affect any other's outcome, and
+    /// nothing in this method or reachable from it writes to the ledger.
+    pub fn reconcile(&self, schedule: &ToleranceSchedule) -> Result<Vec<ReconciliationOutcome>> {
+        if self.observed.is_empty() {
+            return Err(Error::invalid(format!(
+                "the wallet holds no venue-asset as of {}, so there is nothing to reconcile; \
+                 an empty reconciliation reads as a clean book and is not one — assemble from \
+                 at least one observation first",
+                self.as_of
+            )));
+        }
         let mut outcomes = Vec::with_capacity(self.observed.len());
         for (key, observation) in &self.observed {
-            let tolerance = tolerances.for_asset(&key.asset).ok_or_else(|| {
+            let basis = schedule.basis_for(key).ok_or_else(|| {
                 Error::invalid(format!(
-                    "no tolerance was supplied for {}; reconciliation will not guess one",
-                    key.asset
+                    "no tolerance basis was supplied for {key}; reconciliation will not guess \
+                     one — declare the §38.3 class and its dust floor for this venue-asset"
                 ))
             })?;
             let (expected, cause) = match self.ledger.get(key) {
                 Some(view) => (view.expected()?, BreakCause::DeltaBeyondTolerance),
                 None => (Decimal::ZERO, BreakCause::UnrecordedByLedger),
             };
+            let evaluated = basis.evaluate(expected)?;
             let delta = observation.observed.checked_sub(expected).ok_or_else(|| {
                 Error::numeric(format!(
                     "delta for {key} overflowed from observed {} - expected {expected}",
                     observation.observed
                 ))
             })?;
-            let breaks = cause == BreakCause::UnrecordedByLedger || delta.abs() >= tolerance;
-            if breaks {
+            let direction = Divergence::of(delta);
+            let halts =
+                cause == BreakCause::UnrecordedByLedger || delta.abs() >= evaluated.tolerance;
+            if halts {
                 let message = format!(
-                    "halt {key}: {} — observed {} against expected {expected} (delta {delta}, \
-                     tolerance {tolerance}) as of {} via {}; investigate at the venue and the \
+                    "halt {key}: {} — observed {} against expected {expected} (delta {delta}{}) \
+                     as of {} via {}; tolerance was {} ; investigate at the venue and the \
                      ledger, the wallet writes no correction",
                     cause.as_str(),
                     observation.observed,
+                    direction.map_or(String::new(), |d| format!(", a {}", d.as_str())),
                     observation.observed_at,
                     observation.provenance.as_str(),
+                    evaluated.derivation(),
                 );
                 outcomes.push(ReconciliationOutcome::Halt {
                     venue: key.venue.clone(),
@@ -567,11 +683,20 @@ impl Wallet {
                         expected,
                         observed: observation.observed,
                         delta,
-                        tolerance,
+                        direction,
+                        basis: evaluated,
                         observed_at: observation.observed_at,
                         provenance: observation.provenance,
                         message,
                     },
+                });
+            } else if let Some(direction) = direction {
+                outcomes.push(ReconciliationOutcome::WithinTolerance {
+                    venue: key.venue.clone(),
+                    asset: key.asset.clone(),
+                    delta,
+                    direction,
+                    basis: evaluated,
                 });
             } else {
                 outcomes.push(ReconciliationOutcome::Reconciled {
