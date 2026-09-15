@@ -351,6 +351,37 @@ impl WorldModel {
         Ok(())
     }
 
+    /// Record that the temporal-precedence test behind a link was re-run
+    /// under `regime` and did not clear its bar — blueprint §9.1's
+    /// conditions layer, written from the same pass that writes the edges.
+    ///
+    /// Returns how many edges the link had to mark; zero where the link was
+    /// never claimed.
+    ///
+    /// # Why this is not a second writer in the sense the graph warns about
+    ///
+    /// `CausalGraph`'s note on writers is about a *read* path that also
+    /// writes. This is the negative arm of the same pass that writes the
+    /// positive one: `Platform::discover_temporal_precedence` runs one test
+    /// per pair and, until now, threw away every result that did not clear
+    /// the bar. Discarding it is what left §9.1's conditions layer with
+    /// nothing to fill it — the platform was already computing the evidence
+    /// and dropping it on the floor.
+    ///
+    /// It deliberately journals nothing and moves no freshness: see
+    /// [`CausalGraph::record_condition_failure`] for why a graph whose edges
+    /// are failing must not read as a graph that was just refreshed.
+    pub fn record_causal_condition_failure(
+        &mut self,
+        cause: &str,
+        effect: &str,
+        regime: &str,
+        known_at: Timestamp,
+    ) -> Result<usize> {
+        self.causal
+            .record_condition_failure(cause, effect, regime, known_at)
+    }
+
     /// Absorb evidence about a causal link, and re-estimate the causal graph
     /// from every claim still inside the freshness horizon.
     ///

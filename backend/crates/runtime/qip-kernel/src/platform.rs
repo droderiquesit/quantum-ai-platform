@@ -7601,19 +7601,36 @@ impl Platform {
                     precedence.refused
                 )
             };
+            let conditions = if precedence.conditions_tested == 0 {
+                String::new()
+            } else {
+                format!(
+                    ", {} pair(s) tested on enough history and did not clear it, marking {} \
+                     existing edge(s) as failing under the regime in force",
+                    precedence.conditions_tested, precedence.conditions_marked
+                )
+            };
             format!(
                 "; temporal-precedence pass tested {} instrument pair(s), wrote {} causal \
-                 edge(s){refused}",
+                 edge(s){refused}{conditions}",
                 precedence.tested, precedence.written
             )
         };
+        // §9.2's control audit, §9.3's hidden concentration and §9.1's
+        // conditions layer, read back over the graph the pass above has just
+        // written. All three are reads: nothing here retracts an edge or
+        // moves a size, for the reason `causal_review::ControlAudit` states
+        // at length — a control that finds a problem and silently fixes it
+        // leaves nothing in the record naming what changed.
+        let review = self.causal_review(now);
+        let review_detail = review.detail();
         let mut outcome = StageOutcome::ran(
             Stage::Understand,
             state.object_count + state.entity_count,
             format!(
                 "world model holds {} instrument(s), {} entity(ies), {} relationship(s), \
                  {} causal claim(s), {} readable feature value(s), {} document(s)\
-                 {liquidity}{events}{chain}{credit}{precedence_detail}",
+                 {liquidity}{events}{chain}{credit}{precedence_detail}{review_detail}",
                 state.object_count,
                 state.entity_count,
                 state.relationship_count,
@@ -7626,6 +7643,43 @@ impl Platform {
             outcome = outcome.with_problem(problem);
         }
         outcome
+    }
+
+    /// Read the causal graph back the three ways blueprint §9 asks for, at
+    /// `now`.
+    ///
+    /// A thin assembly over `crate::causal_review::review`: the kernel module
+    /// holds the statistics and the traversal, and this supplies the three
+    /// facts only a `Platform` has — the return histories the edges were
+    /// built from, the book actually held, and the regime label in force for
+    /// an instrument.
+    ///
+    /// `Duration::from_days(1)` is the bar interval handed to the audit, and
+    /// it is the same fallback the writer above uses. It labels the `lag` of
+    /// an edge the audit re-estimates and immediately discards — the audit
+    /// keeps the verdict, never the edge — so it reaches no stored claim. It
+    /// is named here rather than left implicit because
+    /// `qip_world_model::granger` is explicit that inventing a bar interval
+    /// for an edge that is *kept* would mislabel it.
+    fn causal_review(&self, now: Timestamp) -> crate::causal_review::CausalReview {
+        // Log returns for every instrument with history, built once: the
+        // audit needs the whole universe to form a cross-sectional control,
+        // not one pair at a time.
+        let returns: BTreeMap<String, Vec<f64>> = self
+            .price_history
+            .iter()
+            .map(|(subject, prices)| (subject.clone(), qip_numerics::stats::log_returns(prices)))
+            .collect();
+        let held: BTreeSet<String> = self.capital.positions.keys().cloned().collect();
+        let world = self.world.read();
+        crate::causal_review::review(
+            world.causal(),
+            &returns,
+            &held,
+            Duration::from_days(1),
+            now,
+            |subject| self.regime_context(subject),
+        )
     }
 
     /// Bound on instrument pairs tested per cycle.
@@ -7686,14 +7740,46 @@ impl Platform {
                 // allowed to stop the rest of the pairs, the way
                 // `capacity_probe`'s `None` already treats a refusal along
                 // its own path.
-                if let Ok(Some(edge)) = granger::establish_temporal_precedence(
+                // The regime in force for the series whose future is being
+                // predicted — §9.1's conditions layer needs a label, and the
+                // effect's is the right one: the test asks what the cause's
+                // past says about *this* series' next bar, so it is this
+                // tape's regime the answer was obtained under.
+                let regime = self.regime_context(effect_id);
+                // Whether a test could run at all, asked before the result is
+                // read rather than inferred from it. `Ok(None)` covers both
+                // "too little history" and "ran and did not clear the bar",
+                // and filing the first as a condition failure would write a
+                // refutation nobody obtained — the exact shape of a control
+                // that reads as evidence and is not.
+                let testable = cause_returns.len() >= granger::TEMPORAL_PRECEDENCE_MIN_OBSERVATIONS
+                    && effect_returns.len() >= granger::TEMPORAL_PRECEDENCE_MIN_OBSERVATIONS;
+                let established = granger::establish_temporal_precedence(
                     cause_id,
                     &cause_returns,
                     effect_id,
                     &effect_returns,
                     bar_interval,
                     now,
-                ) {
+                );
+                // A test that ran and refused is §9.1's "the conditions under
+                // which it is known to fail", and until this it was computed
+                // every cycle and dropped on the floor — which is why that
+                // layer had nothing in it. It is recorded against whatever
+                // edges the link already holds; a link never claimed marks
+                // nothing and says so by returning zero.
+                if testable && matches!(established, Ok(None)) {
+                    report.conditions_tested += 1;
+                    let cause = cause_id.clone();
+                    let effect = effect_id.clone();
+                    let regime_key = regime.clone();
+                    if let Ok(marked) = self.world.update(|world| {
+                        world.record_causal_condition_failure(&cause, &effect, &regime_key, now)
+                    }) {
+                        report.conditions_marked += marked;
+                    }
+                }
+                if let Ok(Some(edge)) = established {
                     // `claim_causal` refuses an edge naming no cause or no
                     // effect, and the refusal is counted rather than
                     // discarded. One such edge used to be admitted here and
@@ -7704,7 +7790,17 @@ impl Platform {
                     // sends, from one malformed symbol in the price history,
                     // with no rate limit and nothing near the symptom naming
                     // the cause.
-                    match self.world.update(|world| world.claim_causal(edge)) {
+                    // §9.1's conditions layer on the positive arm: the
+                    // regime this test cleared its bar under, recorded on the
+                    // edge rather than left to be inferred from its
+                    // `recorded_at` against a regime history nobody keeps.
+                    // `with_conditions` refuses a blank label, and a refusal
+                    // is counted beside the world model's own rather than
+                    // silently skipping the edge.
+                    match edge
+                        .with_conditions(BTreeSet::from([regime]), BTreeSet::new())
+                        .and_then(|edge| self.world.update(|world| world.claim_causal(edge)))
+                    {
                         Ok(()) => report.written += 1,
                         Err(_) => report.refused += 1,
                     }
@@ -9737,6 +9833,18 @@ struct TemporalPrecedenceReport {
     /// finding: a pass that wrote nothing and a pass whose every write was
     /// refused read as the same silence.
     refused: usize,
+    /// Pairs whose test genuinely **ran** on enough history and did not clear
+    /// its bar — blueprint §9.1's conditions layer, the evidence this pass
+    /// used to throw away.
+    ///
+    /// Counted separately from `tested`, which includes every pair skipped
+    /// for want of history. A pair nobody could test has not failed under a
+    /// regime; it has not been asked about one.
+    conditions_tested: usize,
+    /// Of those, the edges an existing link had marked as failing under the
+    /// regime in force. Zero where the failing pair was never claimed as an
+    /// edge, which is the ordinary case and not a fault.
+    conditions_marked: usize,
 }
 
 /// What one capacity probe against the book's most-observed instrument found,
