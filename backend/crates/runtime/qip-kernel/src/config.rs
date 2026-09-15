@@ -378,6 +378,29 @@ pub struct PlatformConfig {
     /// deserialising, to the behaviour the platform had when it was written.
     #[serde(default = "default_reasoning_confidence_bar")]
     pub reasoning_confidence_bar: f64,
+
+    /// The share of the book this deployment will spend on information gain
+    /// rather than expected return (blueprint §13.2), as a fraction in
+    /// `[0, 1]`.
+    ///
+    /// This is the **desk's** share, and therefore the ceiling every user
+    /// mandate is admitted under — `MandateRegistry::register` refuses a user
+    /// share above the desk's. It has to be configurable for the budget to
+    /// exist at all: `Mandate::desk` pins the desk at zero, so with no field
+    /// here no mandate anywhere could ever carry a nonzero exploration share,
+    /// and `exploration_share` was a term validated at construction, refused
+    /// on the way back in, rendered in the console and impossible to set. A
+    /// limit that cannot fire and a budget that cannot be spent are the same
+    /// defect.
+    ///
+    /// Zero by default, and zero means what it says: the platform explores
+    /// with nothing until a deployment states otherwise in a diff somebody
+    /// reviews. Exploration capital is capital withheld from return-seeking
+    /// sizing — the DECIDE stage holds it out of the reservation ledger — so
+    /// a default above zero would quietly shrink every book that never
+    /// mentioned it.
+    #[serde(default = "default_exploration_share")]
+    pub exploration_share: Decimal,
 }
 
 /// The owner recorded against anything this deployment registers.
@@ -403,6 +426,13 @@ fn default_chain_confirmations() -> u32 {
 /// book size keeps the behaviour it had.
 fn default_initial_equity() -> Decimal {
     Decimal::from_int(10_000_000)
+}
+
+/// Nothing set aside for exploration. The fail-closed default: a budget that
+/// appeared without anyone asking for it would take capital out of sizing on
+/// every deployment that had never heard of it.
+fn default_exploration_share() -> Decimal {
+    Decimal::ZERO
 }
 
 /// The resolving power `qip_cost_router::IntelligenceTier::MultiAgentReasoning`
@@ -463,6 +493,7 @@ impl Default for PlatformConfig {
             venue_registrations: Vec::new(),
             chain_confirmations: default_chain_confirmations(),
             reasoning_confidence_bar: default_reasoning_confidence_bar(),
+            exploration_share: default_exploration_share(),
         }
     }
 }
@@ -511,6 +542,15 @@ impl PlatformConfig {
     /// one line is one a reviewer can see.
     pub fn with_event_log_file(self, path: impl Into<PathBuf>) -> Self {
         self.with_event_log(EventLogDestination::file(path))
+    }
+
+    /// State the share of the book that may be spent on information gain
+    /// (blueprint §13.2). Refused rather than corrected outside `[0, 1]`:
+    /// `Mandate::new` is where that refusal lives, and a builder that clamped
+    /// here would hide it until assembly.
+    pub fn with_exploration_share(mut self, share: Decimal) -> Self {
+        self.exploration_share = share;
+        self
     }
 
     /// Name who is accountable for what this deployment registers.

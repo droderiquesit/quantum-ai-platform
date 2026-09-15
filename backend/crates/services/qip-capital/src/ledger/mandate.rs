@@ -135,13 +135,35 @@ impl Mandate {
     /// did. Capital is the book's opening equity; a negative one is refused
     /// like any other.
     pub fn desk(capital: Decimal, currency: Currency) -> Result<Self> {
+        Self::desk_exploring(capital, currency, Decimal::ZERO)
+    }
+
+    /// The desk's mandate with a stated exploration ceiling (blueprint §13.2).
+    ///
+    /// The share is the desk's own and therefore the ceiling every user
+    /// mandate is admitted under, since
+    /// [`MandateRegistry::register`](super::registry::MandateRegistry::register)
+    /// refuses a user share above the desk's. That is why this constructor
+    /// has to exist: with the desk pinned at zero, *no* mandate anywhere
+    /// could carry a nonzero exploration share, so the share was a validated,
+    /// stored, rendered field that no deployment could ever set above zero —
+    /// a budget that could not be spent reading as one that simply was not.
+    ///
+    /// Zero remains the default ([`Self::desk`]) because exploration capital
+    /// is capital withheld from return-seeking use: a deployment that wants
+    /// it says so, and one that says nothing explores with nothing.
+    pub fn desk_exploring(
+        capital: Decimal,
+        currency: Currency,
+        exploration_share: Decimal,
+    ) -> Result<Self> {
         Self::new(MandateTerms {
             capital,
             currency,
             risk_tolerance: Decimal::ONE,
             permitted_families: PermittedFamilies::Any,
             liquidity_floor: Decimal::ZERO,
-            exploration_share: Decimal::ZERO,
+            exploration_share,
             jurisdiction: Jurisdiction::new("ZZ")?,
         })
     }

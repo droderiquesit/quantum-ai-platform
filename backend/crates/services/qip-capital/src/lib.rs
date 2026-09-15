@@ -5,7 +5,7 @@
 //! this crate decides what envelopes to issue, watches what the cells have
 //! collectively done with them, and takes capital back.
 //!
-//! Seven things live here.
+//! Eight things live here.
 //!
 //! * [`allocation`] splits a risk budget across strategies and cells, subject
 //!   to per-strategy, per-cell, per-venue and total limits at once. Strategies
@@ -36,6 +36,13 @@
 //!   half of a double-spend — the second proposal against the same free
 //!   balance also passes — so [`reservation::ReservationLedger`] makes
 //!   passing and holding the same operation, and the second is refused.
+//! * [`exploration`] is the budget spent on information rather than return
+//!   (blueprint §13.2): the share a mandate sets aside, the five probe types,
+//!   an upper-confidence-bound rule for choosing between them, a maximum loss
+//!   on every probe, and an account in which the cost of learning is visible
+//!   apart from the cost of trading. Until it existed
+//!   [`ledger::Mandate::exploration_share`] was validated, stored, rendered
+//!   in the console and drawn on by nothing.
 //! * [`recall`] withdraws capital mid-flight, and is explicit that a recall is
 //!   a request. The reliable bound on a cell nobody can reach is the envelope
 //!   expiry, which the cell enforces locally against its own clock.
@@ -104,6 +111,7 @@
 pub mod allocation;
 pub mod capacity;
 pub mod envelope;
+pub mod exploration;
 pub mod exposure;
 pub mod ledger;
 pub mod margin;
@@ -116,6 +124,10 @@ pub use allocation::{
 };
 pub use capacity::{Capacity, CapacityBound, CapacityModel};
 pub use envelope::{EnvelopeIssuer, EnvelopeTerms, MAXIMUM_ENVELOPE_VALIDITY};
+pub use exploration::{
+    DeclinedProbe, ExplorationBook, ExplorationPlan, KindRecord, Probe, ProbeCandidate,
+    ProbeEvidence, ProbeKind, ProbeOutcome, ProbeSettlement, budget_for,
+};
 pub use exposure::{
     AggregateExposure, CellPosition, ConcentrationFinding, ConcentrationLimits, CrowdedPosition,
 };

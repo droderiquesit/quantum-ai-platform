@@ -168,9 +168,25 @@ impl UserLedger {
     /// registered at the epoch: the desk is the holder that exists before
     /// any registration has a time.
     pub fn with_desk(user: UserId, capital: Decimal, currency: Currency) -> Result<Self> {
+        Self::with_desk_exploring(user, capital, currency, Decimal::ZERO)
+    }
+
+    /// The same ledger with the desk's exploration ceiling stated
+    /// (blueprint §13.2, [`Mandate::desk_exploring`]).
+    ///
+    /// A separate constructor rather than a fourth argument on
+    /// [`Self::with_desk`], so that every caller who has not thought about
+    /// exploration keeps the behaviour it had — no capital set aside — and
+    /// the one that has says so in a diff.
+    pub fn with_desk_exploring(
+        user: UserId,
+        capital: Decimal,
+        currency: Currency,
+        exploration_share: Decimal,
+    ) -> Result<Self> {
         Self::opened_by(
             user,
-            Mandate::desk(capital, currency)?,
+            Mandate::desk_exploring(capital, currency, exploration_share)?,
             Timestamp::from_secs(0),
         )
     }

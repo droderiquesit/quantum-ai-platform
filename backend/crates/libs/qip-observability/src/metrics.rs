@@ -1142,6 +1142,35 @@ pub mod names {
     /// before it produces a bad trade rather than after.
     pub const UNIVERSE_NOT_DECISION_GRADE: &str = "qip_universe_not_decision_grade";
 
+    /// The exploration budget (blueprint §13.2): capital set aside for
+    /// information gain rather than expected return, and therefore withheld
+    /// from return-seeking sizing. A gauge written on **every** DECIDE pass,
+    /// including the pass that sets nothing aside, because zero is the state
+    /// a deployment is normally in and a series that appeared only when the
+    /// budget was positive would leave an operator unable to tell "no share
+    /// is configured" from "nothing is recording".
+    pub const EXPLORATION_BUDGET: &str = "qip_exploration_budget";
+
+    /// Of that budget, what the live probes have between them put at risk.
+    pub const EXPLORATION_COMMITTED: &str = "qip_exploration_committed";
+
+    /// What exploration has actually *spent*, cumulatively — §13.2's
+    /// "reported separately from return-seeking capital", as a series rather
+    /// than as a line buried in performance. The cost of learning read as
+    /// drag is the cost of learning about to be cut.
+    pub const EXPLORATION_SPEND: &str = "qip_exploration_spend";
+
+    /// Probes selected, by `kind` — one of the five
+    /// `qip_capital::ProbeKind` values, so the label set is fixed in source.
+    pub const EXPLORATION_PROBES_SELECTED: &str = "qip_exploration_probes_selected_total";
+
+    /// Probes closed, by `evidence` — `probed` where the probe was taken up
+    /// and the answer is the probe's, `observed` where it expired unexercised
+    /// and the subject was re-measured anyway. Two labels rather than one
+    /// because only the first is evidence about probing, and a platform with
+    /// no exploration execution path records exclusively the second.
+    pub const EXPLORATION_PROBES_SETTLED: &str = "qip_exploration_probes_settled_total";
+
     /// The OpenObserve drain thread's own account of itself (ADR 0028), by
     /// `signal` (`metrics` or `traces`). Principle 10, "degrade, do not
     /// fail": a collector that is unreachable must not crash the process that
