@@ -299,3 +299,45 @@ when it lands.
   Helm provider, no Pod running a `qip-*` image.** Each is refused by a
   named test in `infrastructure.rs`, and each has a history in this
   repository of why.
+
+## What a plan says today, 2026-09-15
+
+Run 44 of `infra.yml` (`action=plan`, `environment=dev`, ref `main` at
+`5ec76f7`) finished green. Recorded here because the previous entry in this
+register is the teardown, and a reader arriving after it should not have to
+guess what state the environment was left in.
+
+```
+Plan: 184 to add, 0 to change, 0 to destroy.
+55 resources in dev state
+```
+
+**The plan does not refuse, and that is not the same as an apply succeeding.**
+An earlier assessment in this session predicted the first `up` after the
+teardown would fail at plan time on the resources the teardown left in the
+project but took out of state. It does not: Terraform plans to *create* them,
+because a resource absent from state is a resource it believes does not exist.
+The collision is real and it lands at apply time. The plan names where:
+`binary_authorization_key_version` and the GitOps `etcd_key` both move from a
+concrete `//cloudkms.googleapis.com/...` path to `(known after apply)`, so the
+apply intends to create a key ring and keys that are still in the project. A
+KMS key cannot be deleted, only scheduled, so those creates will fail on
+"already exists" until somebody imports them.
+
+What survived the teardown, from the run's own state list: the `cicd` module
+whole (the workload identity pool and provider, both service accounts, the two
+custom roles and every `infra_roles` binding), every `services` API
+enablement, `module.network`'s VPC, and two of the four trust-zone subnets —
+`cognition` and `intelligence`. The other two, `application-identity` and
+`management`, are in the plan's create list, which matches run 43's note that
+Cloud Run's `serverless-ipv4-*` addresses were still holding two subnets on
+Google's own release schedule. They have since been released.
+
+So the order for a future `up` is: import the surviving KMS key ring and keys
+first, then apply. Nothing else in the 184 looks like it has a twin in the
+project, but the 55 addresses above are the list to check against rather than
+a claim that it does not.
+
+One diff worth naming because it is not infrastructure at all:
+`universe_catalogue_sha256` moves, which is the committed catalogue changing
+under the plan rather than anything about the environment.
