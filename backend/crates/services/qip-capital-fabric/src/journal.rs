@@ -60,8 +60,9 @@ use crate::gate::{
     TransferIntent, VelocityState, Vetoed,
 };
 use crate::location::CapitalLocation;
+use crate::tolerance::ToleranceSchedule;
 use crate::wallet::{
-    HoldingObservation, LedgerView, ReconciliationOutcome, TolerancePolicy, VenueAsset, Wallet,
+    Divergence, HoldingObservation, LedgerView, ReconciliationOutcome, VenueAsset, Wallet,
 };
 use qip_core::error::Result;
 use qip_core::ids::IdGenerator;
@@ -301,9 +302,15 @@ pub enum WalletCommand {
         freshness: Duration,
         now: Timestamp,
     },
-    /// [`Wallet::reconcile`] against these tolerances, at this instant.
+    /// [`Wallet::reconcile`] against this tolerance schedule, at this instant.
+    ///
+    /// The schedule rather than the evaluated numbers, because the numbers
+    /// depend on the balances in the wallet the previous record assembled. A
+    /// record carrying the evaluated tolerances would be a second claim about
+    /// a figure the replay recomputes, and the two would disagree the first
+    /// time the formula changed.
     Reconcile {
-        tolerances: TolerancePolicy,
+        tolerances: ToleranceSchedule,
         at: Timestamp,
     },
 }
@@ -499,7 +506,19 @@ impl EventBody for FabricRecord {
     /// the explicit check refuses it. Do not remove it, and do not add either
     /// of those two lines, without reading
     /// `a_fabric_record_written_under_the_old_schema_is_refused_by_name`.
-    const SCHEMA_VERSION: u32 = 3;
+    ///
+    /// **Version 4** is §38.3's tolerance formula. A version 3
+    /// [`WalletCommand::Reconcile`] carries one constant per *asset*; this
+    /// build's [`crate::tolerance::ToleranceSchedule`] carries a class, a dust
+    /// floor and an interval rate per *venue-asset*. Both halves matter. A
+    /// version 3 record cannot be decoded into the new shape at all, so serde
+    /// would refuse it — but for the reason that a map key changed, not for
+    /// the reason that matters, which is that the recorded outcome was reached
+    /// under a rule this build no longer applies. Re-running a version 3
+    /// reconciliation under version 4 would judge a delta against a different
+    /// number and could turn a recorded halt into a clean book, or the
+    /// reverse. Refusing by version says the true thing.
+    const SCHEMA_VERSION: u32 = 4;
 }
 
 /// Everything the fabric's controls have decided, rebuilt from records.
@@ -512,7 +531,54 @@ pub struct FabricState {
     corridors: BTreeMap<CorridorId, Corridor>,
     wallet: Option<Wallet>,
     reconciliations: BTreeMap<VenueAsset, ReconciliationOutcome>,
+    drift: BTreeMap<VenueAsset, DriftStreak>,
     assessments: Vec<GateAssessment>,
+}
+
+/// How long a venue-asset has been diverging inside its tolerance, and which
+/// way.
+///
+/// §38.3: "A persistent non-zero delta inside tolerance is a modelling defect
+/// and opens a ticket." A single pass cannot tell a rounding artefact from a
+/// model that is quietly wrong; a run of passes leaning the same way can.
+/// Without this, a tolerance wide enough to absorb a real divergence produces
+/// an outcome per pass that each look benign in isolation and are a standing
+/// disagreement in aggregate — which is the exact failure a tolerance
+/// introduces, and the reason it must be recorded and not just applied.
+///
+/// Rebuilt from the records like everything else in [`FabricState`], so the
+/// streak a replay reports is the streak the log holds rather than a counter
+/// some process kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DriftStreak {
+    /// Which way every pass in the streak ran.
+    pub direction: Divergence,
+    /// How many consecutive reconciliations diverged this way inside
+    /// tolerance. Reset to one by a divergence the other way, and cleared
+    /// entirely by an exact agreement or a halt — a halt is already the
+    /// loudest finding this venue-asset can produce and does not also need a
+    /// drift ticket.
+    pub passes: u32,
+    /// When the streak started.
+    pub since: Timestamp,
+    /// The most recent delta in it.
+    pub latest_delta: qip_core::Decimal,
+}
+
+impl DriftStreak {
+    /// How many same-direction passes make a streak worth a ticket.
+    ///
+    /// Three rather than two: two consecutive passes is the shortest run that
+    /// can happen by chance on a book that settles between cycles, and a
+    /// threshold that fires on chance is a ticket nobody reads. Three is a
+    /// judgement, and it is stated here as one so that changing it is a change
+    /// to a named rule rather than to a literal in a condition.
+    pub const TICKET_AFTER_PASSES: u32 = 3;
+
+    /// Whether this streak has reached the length §38.3 opens a ticket on.
+    pub fn opens_a_ticket(&self) -> bool {
+        self.passes >= Self::TICKET_AFTER_PASSES
+    }
 }
 
 impl FabricState {
@@ -544,6 +610,26 @@ impl FabricState {
     /// The latest reconciliation outcome per venue-asset.
     pub fn reconciliations(&self) -> &BTreeMap<VenueAsset, ReconciliationOutcome> {
         &self.reconciliations
+    }
+
+    /// Every venue-asset currently diverging inside its tolerance, with how
+    /// long it has been doing so.
+    ///
+    /// A venue-asset is absent once it agrees exactly or halts.
+    pub fn drift(&self) -> &BTreeMap<VenueAsset, DriftStreak> {
+        &self.drift
+    }
+
+    /// The venue-assets whose drift has run long enough to be §38.3's
+    /// modelling defect, in stable order.
+    ///
+    /// The ticket the section asks for, as a query over the log's own state
+    /// rather than a side effect somebody has to remember to wire.
+    pub fn drift_tickets(&self) -> BTreeMap<&VenueAsset, &DriftStreak> {
+        self.drift
+            .iter()
+            .filter(|(_, streak)| streak.opens_a_ticket())
+            .collect()
     }
 
     /// Every gate assessment, in record order.
@@ -694,8 +780,9 @@ impl FabricState {
                 match wallet.reconcile(tolerances) {
                     Ok(outcomes) => {
                         for outcome in &outcomes {
-                            self.reconciliations
-                                .insert(outcome.venue_asset(), outcome.clone());
+                            let key = outcome.venue_asset();
+                            self.record_drift(&key, outcome, *at);
+                            self.reconciliations.insert(key, outcome.clone());
                         }
                         Outcome::Applied(WalletOutcome::Reconciled { outcomes })
                     }
@@ -703,6 +790,42 @@ impl FabricState {
                 }
             }
         }
+    }
+
+    /// Advance, restart or clear a venue-asset's drift streak from one pass's
+    /// outcome.
+    ///
+    /// Only [`ReconciliationOutcome::WithinTolerance`] extends a streak. An
+    /// exact agreement clears it, because the disagreement has gone; a halt
+    /// clears it too, because the venue-asset is already stopped and a drift
+    /// ticket beside a halt is a second, quieter claim about a fact the halt
+    /// states loudly. A divergence that changes direction restarts at one —
+    /// a book that alternates surplus and shortfall is noise, and counting it
+    /// as persistence would make the ticket fire on exactly the case §38.3
+    /// does not mean.
+    fn record_drift(&mut self, key: &VenueAsset, outcome: &ReconciliationOutcome, at: Timestamp) {
+        let ReconciliationOutcome::WithinTolerance {
+            delta, direction, ..
+        } = outcome
+        else {
+            self.drift.remove(key);
+            return;
+        };
+        let streak = match self.drift.get(key) {
+            Some(previous) if previous.direction == *direction => DriftStreak {
+                direction: *direction,
+                passes: previous.passes.saturating_add(1),
+                since: previous.since,
+                latest_delta: *delta,
+            },
+            _ => DriftStreak {
+                direction: *direction,
+                passes: 1,
+                since: at,
+                latest_delta: *delta,
+            },
+        };
+        self.drift.insert(key.clone(), streak);
     }
 
     fn execute_gate(&mut self, command: &GateCommand) -> Outcome<GateVerdict> {

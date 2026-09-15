@@ -148,10 +148,13 @@ pub fn replay(records: &[LogRecord]) -> Result<Replayed> {
                  version is refused by name rather than re-interpreted, because what it lacks is \
                  what a control ruled on — a version 1 gate record carries no funding ruling, and \
                  a version 2 gate record's transfer-gate and custody-policy attestations name \
-                 nothing checkable, because nothing checked them when it was written. Re-running \
-                 the control over either would produce a verdict about a question the record was \
-                 never made to answer, and a veto is not the same finding as a record this build \
-                 cannot judge",
+                 nothing checkable, because nothing checked them when it was written, and a \
+                 version 3 wallet reconciliation was judged against one tolerance constant per \
+                 asset rather than against §38.3's formula per venue-asset. Re-running the \
+                 control over any of them would produce a verdict about a question the record \
+                 was never made to answer — or, for version 3, the same question answered by a \
+                 different rule, which can turn a recorded halt into a clean book and back \
+                 again — and neither is the same finding as a record this build cannot judge",
                 record.sequence,
                 record.event.schema_version,
                 FabricRecord::SCHEMA_VERSION,

@@ -37,6 +37,8 @@ use qip_capital_fabric::journal::{
     CorridorAction, CorridorStep, DestinationAction, FabricCommand, FabricOutcome, GateCommand,
     GateVerdict, Outcome,
 };
+use qip_capital_fabric::tolerance::ToleranceClass;
+use qip_capital_fabric::wallet::{Divergence, ReconciliationOutcome};
 use qip_capital_fabric::{CapitalLocation, Region};
 use qip_contracts::intent::Contributor;
 use qip_contracts::message::BookSide;
@@ -2032,5 +2034,256 @@ fn an_operator_credential_older_than_the_kernel_accepts_raises_no_investment_req
         1,
         "only the premise's request reached the log"
     );
+    Ok(())
+}
+
+// --- §38.3 the tolerance formula, as the LEARN stage applies it -------------
+
+/// The venue-asset the desk's own cash is booked at.
+fn desk_cash() -> Result<qip_capital_fabric::wallet::VenueAsset> {
+    Ok(qip_capital_fabric::wallet::VenueAsset {
+        venue: VenueId::new("simulated-venue"),
+        asset: qip_capital_fabric::wallet::Asset::new(Currency::USD.to_string())?,
+    })
+}
+
+#[test]
+fn the_learn_stage_judges_the_desks_cash_by_the_38_3_row_it_can_attest() -> Result<()> {
+    // The production path, end to end: a statement handed to
+    // `Platform::observe_statement` becomes a §38.3 tolerance basis, the LEARN
+    // stage's `reconcile_wallet` puts that basis in the `Reconcile` command,
+    // and `Wallet::reconcile` evaluates it against the expectation the ledger
+    // held. The failure this prevents is the one the delivery register
+    // recorded: a tolerance that was a bare constant with no class behind it,
+    // so a halt could not say which of §38.3's six rules it had applied — and
+    // nobody could tell whether the number was the right one for that book.
+    let mut platform = platform(PlatformConfig::default())?;
+    let initial_equity = platform.config().initial_equity;
+    let key = desk_cash()?;
+    // Premise: nothing observed and nothing reconciled before the statement.
+    assert!(platform.holdings_observed().is_empty());
+    assert!(platform.fabric_state().reconciliations().is_empty());
+
+    // A quarter above the book against a floor of one. Not an exact match,
+    // because an exact match is `Reconciled`, which carries no basis: with a
+    // delta of zero every positive tolerance reaches the same verdict, so
+    // there is no figure the outcome was judged by to record.
+    platform.observe_statement(
+        key.venue.clone(),
+        "USD",
+        initial_equity + dec!("0.25"),
+        dec!("1"),
+        start(),
+    )?;
+    let report = platform.run_cycle(start().saturating_add(Duration::from_secs(60)));
+    assert!(
+        report.stage(Stage::Learn).is_some(),
+        "the premise is a cycle whose LEARN ran, since that is where the wallet is \
+         reconciled: {report:?}"
+    );
+
+    let outcome = platform
+        .fabric_state()
+        .reconciliations()
+        .get(&key)
+        .expect("the desk's cash was reconciled");
+    let basis = outcome
+        .basis()
+        .expect("a reconciliation carries the formula it was judged by");
+    // The row the kernel can attest, and only that row.
+    assert_eq!(basis.class, ToleranceClass::FiatAtBrokerOrBank);
+    assert_eq!(basis.dust, dec!("1"), "the statement's figure is the floor");
+    // And the record says plainly that no accrual was applied, rather than
+    // leaving a reader to assume one was: this process holds no deposit rate
+    // and does not invent one.
+    assert_eq!(basis.rate, Decimal::ZERO);
+    assert!(!basis.accrual_applied());
+    assert_eq!(basis.tolerance, dec!("1"));
+    Ok(())
+}
+
+#[test]
+fn a_statement_drifting_inside_its_floor_is_recorded_as_a_divergence_and_not_as_a_clean_balance()
+-> Result<()> {
+    // Principle 6, at the seam where a tolerance is applied: two independent
+    // claims about the desk's cash disagreed by less than the floor. The
+    // tolerance decides not to halt; it must not decide that the
+    // disagreement did not happen. Before this, a delta inside tolerance was
+    // `Reconciled` and read — in `/wallet`, in the log, to anyone — exactly
+    // like a balance that agreed to the unit, and the wider the floor the
+    // cleaner a drifting book looked.
+    let mut platform = platform(PlatformConfig::default())?;
+    let initial_equity = platform.config().initial_equity;
+    let key = desk_cash()?;
+    // A statement fifty cents above the book, against a floor of ten dollars.
+    platform.observe_statement(
+        key.venue.clone(),
+        "USD",
+        initial_equity + dec!("0.5"),
+        dec!("10"),
+        start(),
+    )?;
+    let report = platform.run_cycle(start().saturating_add(Duration::from_secs(60)));
+    assert!(report.stage(Stage::Learn).is_some(), "premise: LEARN ran");
+
+    let outcome = platform
+        .fabric_state()
+        .reconciliations()
+        .get(&key)
+        .expect("the desk's cash was reconciled");
+    assert!(
+        !outcome.is_halt(),
+        "half a dollar inside a floor of ten must not halt: {outcome:?}"
+    );
+    assert!(
+        matches!(outcome, ReconciliationOutcome::WithinTolerance { .. }),
+        "a non-zero delta inside tolerance is a divergence, not a clean balance: {outcome:?}"
+    );
+    assert!(outcome.is_break());
+    assert_eq!(outcome.direction(), Some(Divergence::Surplus));
+    assert_eq!(outcome.delta(), dec!("0.5"));
+    Ok(())
+}
+
+#[test]
+fn the_learn_stage_halts_a_statement_beyond_its_floor_and_not_one_inside_it() -> Result<()> {
+    // Both halves, on the production path. A control that never fires and one
+    // that always fires are the same defect with opposite signs, and either
+    // is invisible if only one half is tested: the floor is ten dollars, so
+    // nine must pass and eleven must halt, and neither would distinguish a
+    // gate that refuses everything from one that refuses nothing on its own.
+    for (statement_delta, should_halt) in [(dec!("9"), false), (dec!("11"), true)] {
+        let mut platform = platform(PlatformConfig::default())?;
+        let initial_equity = platform.config().initial_equity;
+        let key = desk_cash()?;
+        platform.observe_statement(
+            key.venue.clone(),
+            "USD",
+            initial_equity + statement_delta,
+            dec!("10"),
+            start(),
+        )?;
+        platform.run_cycle(start().saturating_add(Duration::from_secs(60)));
+        let outcome = platform
+            .fabric_state()
+            .reconciliations()
+            .get(&key)
+            .expect("the desk's cash was reconciled");
+        // Premise: the delta reaching the control is the one the statement
+        // stated, so the verdict below is about the tolerance and not about
+        // some other number.
+        assert_eq!(outcome.delta(), statement_delta);
+        assert_eq!(
+            outcome.is_halt(),
+            should_halt,
+            "a delta of {statement_delta} against a floor of 10 was judged wrongly: {outcome:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn two_venues_holding_dollars_keep_their_own_floors_through_the_learn_stage() -> Result<()> {
+    // The failure this prevents has already happened here: the kernel held
+    // its tolerances keyed by *asset*, so the second statement naming USD
+    // replaced the first venue's floor with its own, and which venue ended up
+    // judged by a control nobody there set depended on the order the
+    // statements arrived. Both venues below report a ten-dollar surplus
+    // against floors of one and a hundred, so under a per-asset key exactly
+    // one of the two verdicts is wrong whichever floor survived.
+    let mut platform = platform(PlatformConfig::default())?;
+    let initial_equity = platform.config().initial_equity;
+    let desk = desk_cash()?;
+    let custodian = qip_capital_fabric::wallet::VenueAsset {
+        venue: VenueId::new("custodian-x"),
+        asset: qip_capital_fabric::wallet::Asset::new("USD")?,
+    };
+    // The desk's own cash, ten dollars above the book, floor of one hundred:
+    // inside.
+    platform.observe_statement(
+        desk.venue.clone(),
+        "USD",
+        initial_equity + dec!("10"),
+        dec!("100"),
+        start(),
+    )?;
+    // A custodian the ledger books nothing at, floor of one. It halts as
+    // `unrecorded_by_ledger` whatever its floor, which is the point: the
+    // floor it carries must still be its own.
+    platform.observe_statement(
+        custodian.venue.clone(),
+        "USD",
+        dec!("250"),
+        dec!("1"),
+        start(),
+    )?;
+    // Premise: two venue-assets, one asset, two different floors.
+    assert_eq!(platform.holdings_observed().len(), 2);
+
+    platform.run_cycle(start().saturating_add(Duration::from_secs(60)));
+    let state = platform.fabric_state();
+    let desk_outcome = state
+        .reconciliations()
+        .get(&desk)
+        .expect("the desk's cash was reconciled");
+    let custodian_outcome = state
+        .reconciliations()
+        .get(&custodian)
+        .expect("the custodian's balance was reconciled");
+    assert_eq!(
+        desk_outcome
+            .basis()
+            .expect("a judged outcome carries its basis")
+            .dust,
+        dec!("100"),
+        "the desk's floor was replaced by the custodian's"
+    );
+    assert_eq!(
+        custodian_outcome
+            .basis()
+            .expect("a judged outcome carries its basis")
+            .dust,
+        dec!("1"),
+        "the custodian's floor was replaced by the desk's"
+    );
+    assert!(
+        !desk_outcome.is_halt(),
+        "ten dollars inside a floor of a hundred halted: {desk_outcome:?}"
+    );
+    assert!(custodian_outcome.is_halt());
+    Ok(())
+}
+
+#[test]
+fn a_statement_whose_floor_is_not_strictly_positive_stops_at_the_kernel() -> Result<()> {
+    // Refused, not clamped. A zero floor halts every reconciled balance and a
+    // negative one halts none; a kernel that quietly corrected either into
+    // range would put a control nobody chose behind every halt on that
+    // venue-asset, and the operator's own figure would be nowhere in the
+    // record.
+    let mut platform = platform(PlatformConfig::default())?;
+    let venue = VenueId::new("custodian-x");
+    assert!(
+        platform
+            .observe_statement(venue.clone(), "USD", dec!("1"), Decimal::ZERO, start())
+            .is_err()
+    );
+    assert!(
+        platform
+            .observe_statement(venue.clone(), "USD", dec!("1"), dec!("-1"), start())
+            .is_err()
+    );
+    // Refused all the way: nothing was observed either, so a rejected floor
+    // cannot leave a holding behind that the next pass reconciles against a
+    // basis that was never accepted.
+    assert!(platform.holdings_observed().is_empty());
+    // And a good one is admitted, which is what distinguishes a working gate
+    // from one that refuses everything.
+    assert!(
+        platform
+            .observe_statement(venue, "USD", dec!("1"), dec!("0.01"), start())
+            .is_ok()
+    );
+    assert_eq!(platform.holdings_observed().len(), 1);
     Ok(())
 }

@@ -28,13 +28,15 @@ use qip_capital_fabric::gate::{
     TransferHistory, TransferIntent, VelocityState,
 };
 use qip_capital_fabric::journal::{
-    CorridorAction, CorridorStep, DestinationAction, FabricCommand, FabricJournal, FabricOutcome,
-    FabricRecord, GateCommand, GateVerdict, Outcome, PRODUCER, WalletCommand, WalletOutcome,
+    CorridorAction, CorridorStep, DestinationAction, DriftStreak, FabricCommand, FabricJournal,
+    FabricOutcome, FabricRecord, FabricState, GateCommand, GateVerdict, Outcome, PRODUCER,
+    WalletCommand, WalletOutcome,
 };
 use qip_capital_fabric::location::{CapitalLocation, Region};
 use qip_capital_fabric::replay::{Replayed, chain_hash, replay};
+use qip_capital_fabric::tolerance::{ToleranceBasis, ToleranceClass, ToleranceSchedule};
 use qip_capital_fabric::wallet::{
-    self, HoldingObservation, LedgerView, Provenance, ReconciliationOutcome, TolerancePolicy,
+    self, Divergence, HoldingObservation, LedgerView, Provenance, ReconciliationOutcome, VenueAsset,
 };
 use qip_contracts::venue::VenueId;
 use qip_core::error::Result;
@@ -318,9 +320,21 @@ fn mixed_sequence() -> Result<Vec<FabricCommand>> {
             now: now(),
         }),
         FabricCommand::Wallet(WalletCommand::Reconcile {
-            tolerances: TolerancePolicy::new()
-                .with_tolerance(usd, dec!("1"))?
-                .with_tolerance(jpy, dec!("0.5"))?,
+            tolerances: ToleranceSchedule::new()
+                .with_basis(
+                    VenueAsset {
+                        venue: VenueId::new("XNYS"),
+                        asset: usd,
+                    },
+                    ToleranceBasis::dust_only(ToleranceClass::FiatAtBrokerOrBank, dec!("1"))?,
+                )
+                .with_basis(
+                    VenueAsset {
+                        venue: VenueId::new("XTKS"),
+                        asset: jpy,
+                    },
+                    ToleranceBasis::dust_only(ToleranceClass::FiatAtBrokerOrBank, dec!("0.5"))?,
+                ),
             at: now(),
         }),
         gate(KillSwitchState::Armed, id.clone(), now())?,
@@ -905,8 +919,9 @@ fn a_fabric_record_written_under_the_old_schema_is_refused_by_name() -> Result<(
     // The failure this prevents: a version 1 fabric record — written before a
     // `GateCommand` carried the Intelligence layer's funding ruling — read as
     // though the corridor had been ruled on. `FabricRecord::SCHEMA_VERSION`
-    // went 1 → 2 for exactly that reason, and 2 → 3 when ADR 0051 bound the
-    // transfer-gate and custody-policy attestations to what they agreed to.
+    // went 1 → 2 for exactly that reason, 2 → 3 when ADR 0051 bound the
+    // transfer-gate and custody-policy attestations to what they agreed to,
+    // and 3 → 4 when §38.3's tolerance stopped being a constant per asset.
     // `AnyEvent::decode` guards only against a version *newer* than the
     // build's, so nothing in the version machinery refused an older record.
     // What refused a version 1 record was serde: the two assertions below hold
@@ -926,9 +941,9 @@ fn a_fabric_record_written_under_the_old_schema_is_refused_by_name() -> Result<(
         .position(|record| record.event.payload["command"]["subject"] == "gate")
         .expect("the mixed sequence journals gate assessments");
     let record = &mut records[index];
-    // Premise: as written this is a version 3 record and it carries the field
-    // version 1 did not have.
-    assert_eq!(record.event.schema_version, 3);
+    // Premise: as written this is a record of this build's version and it
+    // carries the field version 1 did not have.
+    assert_eq!(record.event.schema_version, FabricRecord::SCHEMA_VERSION);
     assert!(
         record.event.payload["command"]["funding"].is_object(),
         "premise: a gate record of this build's version carries the funding ruling"
@@ -967,7 +982,8 @@ fn a_fabric_record_written_under_the_old_schema_is_refused_by_name() -> Result<(
         "the refusal must name the record's position: {message}"
     );
     assert!(
-        message.contains("schema version 1") && message.contains("reads version 3"),
+        message.contains("schema version 1")
+            && message.contains(&format!("reads version {}", FabricRecord::SCHEMA_VERSION)),
         "the refusal must name the version written and the version read, so the reason is in \
          the error rather than in a serde message about a missing field: {message}"
     );
@@ -997,6 +1013,82 @@ fn a_fabric_record_written_under_the_old_schema_is_refused_by_name() -> Result<(
 /// those two readings, and the first assertion below is what proves it is
 /// carrying the weight alone.
 #[test]
+fn a_reconciliation_recorded_under_the_old_tolerance_rule_is_refused_by_version_rather_than_re_judged()
+-> Result<()> {
+    // The failure this prevents: a wallet reconciliation written when the
+    // tolerance was one constant per asset, replayed under §38.3's formula and
+    // re-judged against a different number. The two rules can disagree about
+    // the same delta in both directions — a formula's accrual can spare a
+    // delta the constant halted, and a per-venue-asset floor can halt one the
+    // per-asset constant spared — so a replay that recomputed the outcome
+    // would either erase a recorded halt or manufacture one, and the hash
+    // chain would verify either way, because the chain proves the record has
+    // not changed and not that the rule that produced it still holds.
+    //
+    // Version 4 is the same shape of case as version 2, and not the same as
+    // version 1: the record below decodes perfectly under this build. Nothing
+    // but the explicit version check stands between it and being re-judged,
+    // and the first assertion is what proves the check is carrying the weight
+    // alone.
+    let journal = journal_of(11, mixed_sequence()?)?;
+    let mut records = journal.records().to_vec();
+    // Premise: the log replays clean before this test alters one record.
+    assert_eq!(replay(&records)?.applied, 18);
+
+    let index = records
+        .iter()
+        .position(|record| {
+            record.event.payload["command"]["subject"] == "wallet"
+                && record.event.payload["command"]["command"] == "reconcile"
+        })
+        .expect("the mixed sequence journals a wallet reconciliation");
+    // Premise: as written this is a record of this build's version, and it
+    // carries the schedule rather than a bare per-asset constant.
+    assert_eq!(
+        records[index].event.schema_version,
+        FabricRecord::SCHEMA_VERSION
+    );
+    assert!(
+        records[index].event.payload["command"]["tolerances"].is_array(),
+        "premise: this build records a tolerance schedule as a sequence of venue-asset entries"
+    );
+
+    records[index].event.schema_version = 3;
+    rechain(&mut records, index)?;
+
+    // Half one: the record still decodes, so the version check is the only
+    // refusal between it and being re-judged.
+    assert!(
+        records[index].event.decode::<FabricRecord>().is_ok(),
+        "premise: the payload is untouched and still decodes"
+    );
+
+    // Half two: the replay refuses it, naming the position and both versions
+    // as delimited tokens rather than as a substring of a longer number.
+    let err = replay(&records).expect_err("a record from another schema version was applied");
+    let message = err.message();
+    assert!(
+        message.contains(&format!("position {} ", index + 1)),
+        "the refusal must name the position: {message}"
+    );
+    // Delimited tokens on both halves. `contains("version 3")` would be true
+    // of "version 34" and of a message that named only the build's version if
+    // that ever became 3 again; the phrases either side of the numbers are
+    // what make each one unambiguous.
+    assert!(
+        message.contains("schema version 3")
+            && message.contains(&format!("reads version {}", FabricRecord::SCHEMA_VERSION)),
+        "the refusal must name the version written and the version read: {message}"
+    );
+    assert!(
+        !message.contains("cannot be decoded"),
+        "the version must be refused before the payload is decoded, or the reason an operator \
+         sees describes a corruption that is not there: {message}"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_version_two_record_is_refused_by_version_rather_than_re_judged() -> Result<()> {
     let journal = journal_of(11, mixed_sequence()?)?;
     let mut records = journal.records().to_vec();
@@ -1007,12 +1099,15 @@ fn a_version_two_record_is_refused_by_version_rather_than_re_judged() -> Result<
         .iter()
         .position(|record| record.event.payload["command"]["subject"] == "gate")
         .expect("the mixed sequence journals gate assessments");
-    // Premise: as written this is a version 3 record.
-    assert_eq!(records[index].event.schema_version, 3);
+    // Premise: as written this is a record of this build's version.
+    assert_eq!(
+        records[index].event.schema_version,
+        FabricRecord::SCHEMA_VERSION
+    );
 
     // A record as a version 2 writer left it. Only the version is restated;
-    // the payload is untouched, because a version 2 gate command and a version
-    // 3 one have the same fields and that is exactly why serde cannot tell
+    // the payload is untouched, because a version 2 gate command and this
+    // build's have the same fields and that is exactly why serde cannot tell
     // them apart.
     records[index].event.schema_version = 2;
     rechain(&mut records, index)?;
@@ -1033,7 +1128,8 @@ fn a_version_two_record_is_refused_by_version_rather_than_re_judged() -> Result<
         "the refusal must name the record's position: {message}"
     );
     assert!(
-        message.contains("schema version 2") && message.contains("reads version 3"),
+        message.contains("schema version 2")
+            && message.contains(&format!("reads version {}", FabricRecord::SCHEMA_VERSION)),
         "the refusal must name the version written and the version read: {message}"
     );
     assert!(
@@ -1192,5 +1288,243 @@ fn a_gate_command_whose_custody_table_contradicts_the_blueprint_is_journalled_as
     );
     let replayed = replay(journal.records())?;
     assert_eq!(replayed.state, *journal.state());
+    Ok(())
+}
+
+// --- §38.3 persistent drift --------------------------------------------------
+
+/// The venue-asset every drift test below reconciles.
+fn drifting_key() -> Result<VenueAsset> {
+    Ok(VenueAsset {
+        venue: VenueId::new("XNYS"),
+        asset: wallet::Asset::new("USD")?,
+    })
+}
+
+/// A state holding a wallet in which XNYS/USD is observed at `observed`
+/// against a ledger balance of 10,000, with a dust floor of 100 and no
+/// accrual, assembled at [`now`].
+fn observe_into(state: &mut FabricState, observed: qip_core::Decimal) -> Result<()> {
+    let usd = wallet::Asset::new("USD")?;
+    let assembled = state.execute(FabricCommand::Wallet(WalletCommand::Assemble {
+        observations: vec![HoldingObservation::new(
+            VenueId::new("XNYS"),
+            usd.clone(),
+            observed,
+            now(),
+            Provenance::Statement,
+        )],
+        ledger_views: vec![LedgerView::new(
+            VenueId::new("XNYS"),
+            usd,
+            dec!("10000"),
+            dec!("0"),
+            dec!("0"),
+        )?],
+        freshness: Duration::from_mins(5),
+        now: now(),
+    }));
+    assert!(
+        !assembled.outcome.is_refused(),
+        "premise: the wallet assembles: {assembled:?}"
+    );
+    Ok(())
+}
+
+fn state_observing(observed: qip_core::Decimal) -> Result<(FabricState, ToleranceSchedule)> {
+    let mut state = FabricState::new();
+    observe_into(&mut state, observed)?;
+    let schedule = ToleranceSchedule::new().with_basis(
+        drifting_key()?,
+        ToleranceBasis::dust_only(ToleranceClass::FiatAtBrokerOrBank, dec!("100"))?,
+    );
+    Ok((state, schedule))
+}
+
+fn reconcile_at(state: &mut FabricState, schedule: &ToleranceSchedule, at: Timestamp) {
+    let record = state.execute(FabricCommand::Wallet(WalletCommand::Reconcile {
+        tolerances: schedule.clone(),
+        at,
+    }));
+    assert!(
+        !record.outcome.is_refused(),
+        "premise: the reconciliation applies: {record:?}"
+    );
+}
+
+#[test]
+fn a_delta_that_keeps_leaning_the_same_way_inside_tolerance_opens_a_ticket() -> Result<()> {
+    // §38.3: "A persistent non-zero delta inside tolerance is a modelling
+    // defect and opens a ticket." The failure this prevents is the one a
+    // tolerance introduces: a real divergence absorbed pass after pass, each
+    // outcome benign on its own, with nothing in the record that grows. A
+    // wider tolerance would then make the book look cleaner, which is exactly
+    // backwards — it removes the disagreement rather than resolving it.
+    let (mut state, schedule) = state_observing(dec!("10050"))?;
+    // Premise: 50 on a floor of 100 is inside tolerance, so no pass here halts
+    // and the streak is the only thing that can register the divergence.
+    for pass in 1..=DriftStreak::TICKET_AFTER_PASSES {
+        reconcile_at(
+            &mut state,
+            &schedule,
+            now().saturating_add(Duration::from_secs(i64::from(pass))),
+        );
+        let outcome = state
+            .reconciliations()
+            .get(&drifting_key()?)
+            .ok_or_else(|| qip_core::error::Error::schema("no outcome for XNYS/USD"))?;
+        assert!(!outcome.is_halt(), "pass {pass} halted: {outcome:?}");
+        assert!(
+            outcome.is_break(),
+            "pass {pass} recorded no break: {outcome:?}"
+        );
+
+        let streak = state
+            .drift()
+            .get(&drifting_key()?)
+            .ok_or_else(|| qip_core::error::Error::schema("no drift streak for XNYS/USD"))?;
+        assert_eq!(streak.direction, Divergence::Surplus);
+        assert_eq!(streak.passes, pass);
+        assert_eq!(streak.latest_delta, dec!("50"));
+        assert_eq!(streak.since, now().saturating_add(Duration::from_secs(1)));
+        // The ticket opens on the last pass of the loop and not before: a
+        // threshold that fired on the first pass would fire on a book that
+        // settles between cycles, and one that never fired would be the
+        // control that cannot fire.
+        assert_eq!(
+            streak.opens_a_ticket(),
+            pass == DriftStreak::TICKET_AFTER_PASSES,
+            "pass {pass} of {}: ticket state is wrong",
+            DriftStreak::TICKET_AFTER_PASSES
+        );
+    }
+    let tickets = state.drift_tickets();
+    assert_eq!(tickets.len(), 1);
+    assert!(tickets.contains_key(&drifting_key()?));
+    Ok(())
+}
+
+#[test]
+fn a_divergence_that_changes_direction_restarts_the_streak_rather_than_extending_it() -> Result<()>
+{
+    // A book that alternates surplus and shortfall is noise, not a model that
+    // is wrong in one direction. Counting it as persistence would open a
+    // ticket on exactly the case §38.3 does not mean, and an operator who
+    // learned that the ticket fires on noise stops reading it.
+    let (mut state, schedule) = state_observing(dec!("10050"))?;
+    reconcile_at(&mut state, &schedule, now());
+    reconcile_at(&mut state, &schedule, now());
+    let before = *state
+        .drift()
+        .get(&drifting_key()?)
+        .ok_or_else(|| qip_core::error::Error::schema("no drift streak after two passes"))?;
+    // Premise: two same-direction passes really did accumulate.
+    assert_eq!(before.passes, 2);
+    assert_eq!(before.direction, Divergence::Surplus);
+
+    // The *same* state re-assembled from an observation the other way, so the
+    // streak the third pass meets is the two-pass surplus streak above. A
+    // fresh state here would have asserted nothing: it would pass whether the
+    // direction reset or the counter simply started at one, which is the
+    // reading this test exists to rule out.
+    observe_into(&mut state, dec!("9950"))?;
+    reconcile_at(&mut state, &schedule, now());
+    let after = *state
+        .drift()
+        .get(&drifting_key()?)
+        .ok_or_else(|| qip_core::error::Error::schema("no drift streak after the flip"))?;
+    assert_eq!(after.direction, Divergence::Shortfall);
+    assert_eq!(after.latest_delta, dec!("-50"));
+    assert_eq!(
+        after.passes, 1,
+        "a divergence the other way extended the streak instead of restarting it"
+    );
+    assert!(!after.opens_a_ticket());
+    Ok(())
+}
+
+#[test]
+fn an_exact_agreement_or_a_halt_clears_the_drift_a_venue_asset_had_accumulated() -> Result<()> {
+    // Two clearings, for two different reasons. An exact agreement clears
+    // because the disagreement has gone. A halt clears because the
+    // venue-asset is already stopped, and a drift ticket beside a halt is a
+    // second, quieter claim about a fact the halt states loudly — and the
+    // quieter claim is the one that would still be open after the halt was
+    // cleared.
+    // Both halves drive the *same* state from a standing streak into the
+    // clearing event. A fresh state for the clearing half would assert
+    // nothing: it would pass whether the streak was cleared or was never
+    // there, and that is precisely the mutation this test has to catch.
+    for (clearing_observation, expected_halt) in [(dec!("10000"), false), (dec!("10500"), true)] {
+        let (mut state, schedule) = state_observing(dec!("10050"))?;
+        reconcile_at(&mut state, &schedule, now());
+        reconcile_at(&mut state, &schedule, now());
+        // Premise: there is a streak to clear, and it has run long enough to
+        // be worth clearing.
+        let standing = state
+            .drift()
+            .get(&drifting_key()?)
+            .ok_or_else(|| qip_core::error::Error::schema("no drift streak to clear"))?;
+        assert_eq!(standing.passes, 2);
+
+        observe_into(&mut state, clearing_observation)?;
+        reconcile_at(&mut state, &schedule, now());
+        let outcome = state
+            .reconciliations()
+            .get(&drifting_key()?)
+            .ok_or_else(|| qip_core::error::Error::schema("no outcome after the clearing pass"))?;
+        assert_eq!(
+            outcome.is_halt(),
+            expected_halt,
+            "premise: the clearing pass is the one this arm meant: {outcome:?}"
+        );
+        assert!(
+            !outcome.is_break() || expected_halt,
+            "premise: the non-halting arm is an exact agreement: {outcome:?}"
+        );
+        assert!(
+            state.drift().is_empty(),
+            "the streak survived a clearing pass: {:?}",
+            state.drift()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_recorded_schedule_naming_one_venue_asset_twice_is_refused_on_the_way_back_in() -> Result<()> {
+    // A schedule is a control, and a record that states one venue-asset's
+    // control twice states it in two ways that can disagree. Taking either
+    // would make the tolerance depend on the order the record happened to
+    // list its entries, and the rebuilt schedule would look exactly like a
+    // well-formed one — a replay that silently judged a book by the wrong
+    // floor, with nothing in the log to show it.
+    let one = serde_json::json!([
+        {
+            "venue_asset": { "venue": "XNYS", "asset": "USD" },
+            "basis": { "class": "fiat_at_broker_or_bank", "dust": "1", "rate": "0" }
+        }
+    ]);
+    // Premise: a well-formed record of the same shape decodes, so the refusal
+    // below is about the duplicate and not about the shape.
+    let admitted: ToleranceSchedule = serde_json::from_value(one)?;
+    assert_eq!(admitted.len(), 1);
+
+    let twice = serde_json::json!([
+        {
+            "venue_asset": { "venue": "XNYS", "asset": "USD" },
+            "basis": { "class": "fiat_at_broker_or_bank", "dust": "1", "rate": "0" }
+        },
+        {
+            "venue_asset": { "venue": "XNYS", "asset": "USD" },
+            "basis": { "class": "fiat_at_broker_or_bank", "dust": "1000", "rate": "0" }
+        }
+    ]);
+    let refused = serde_json::from_value::<ToleranceSchedule>(twice);
+    assert!(
+        refused.is_err(),
+        "two bases for one venue-asset were admitted: {:?}",
+        refused.map(|schedule| schedule.len())
+    );
     Ok(())
 }

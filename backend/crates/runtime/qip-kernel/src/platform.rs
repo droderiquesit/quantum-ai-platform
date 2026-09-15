@@ -79,9 +79,9 @@ use qip_capital_fabric::journal::{
     FabricCommand, FabricJournal, FabricRecord, FabricState, PRODUCER as FABRIC_PRODUCER,
     WalletCommand,
 };
+use qip_capital_fabric::tolerance::{ToleranceBasis, ToleranceSchedule, class_for_desk_cash};
 use qip_capital_fabric::wallet::{
-    Asset, HoldingObservation, LedgerView, Provenance as HoldingProvenance, TolerancePolicy,
-    VenueAsset,
+    Asset, HoldingObservation, LedgerView, Provenance as HoldingProvenance, VenueAsset,
 };
 use qip_capital_fabric::{
     CapitalLocation, DemandForecast, DemandForecaster, DemandKind, DemandObservation, FundingCurve,
@@ -271,10 +271,16 @@ pub struct Platform {
     /// empty no wallet is assembled — a wallet showing zero holdings would
     /// read as an empty account rather than an unobserved one.
     holdings_observed: BTreeMap<VenueAsset, HoldingObservation>,
-    /// The reconciliation tolerance per observed asset, supplied with the
-    /// statement by whoever holds the rates; the wallet refuses to reconcile
-    /// an asset it has no tolerance for rather than guessing one.
-    wallet_tolerances: TolerancePolicy,
+    /// §38.3's tolerance formula per observed **venue-asset**: the class, the
+    /// dust floor the statement stated, and one interval's rate. The wallet
+    /// refuses to reconcile a venue-asset it has no basis for rather than
+    /// guessing one.
+    ///
+    /// Keyed by venue-asset, not by asset. It was keyed by asset, so a
+    /// statement for a second venue holding USD silently replaced the first
+    /// venue's control with its own — a tolerance nobody at that venue chose,
+    /// applied to that venue's book.
+    wallet_tolerances: ToleranceSchedule,
     attributor: Attributor,
     evaluator: ThesisEvaluator,
     feedback: FeedbackEngine,
@@ -3395,7 +3401,7 @@ impl Platform {
             pending_promotions: BTreeMap::new(),
             fabric,
             holdings_observed: BTreeMap::new(),
-            wallet_tolerances: TolerancePolicy::new(),
+            wallet_tolerances: ToleranceSchedule::new(),
             attributor: Attributor::new(),
             evaluator: ThesisEvaluator::default(),
             feedback: FeedbackEngine::default(),
@@ -5271,10 +5277,27 @@ impl Platform {
     /// it can record is a statement a person handed it, and the provenance
     /// is fixed here rather than taken from the caller. A statement for a
     /// venue-asset already held replaces it; one for a new venue-asset past
-    /// [`MAX_OBSERVED_VENUE_ASSETS`] is refused. The tolerance is refused
-    /// unless strictly positive, by [`TolerancePolicy::with_tolerance`].
+    /// [`MAX_OBSERVED_VENUE_ASSETS`] is refused.
     /// Nothing is assembled here: the wallet is assembled in the LEARN
     /// stage, against the ledger as the cycle left it.
+    ///
+    /// # What `tolerance` now means
+    ///
+    /// It is the **dust floor** of §38.3's formula for this venue-asset — the
+    /// smallest delta that is a difference at this venue — and it is refused
+    /// unless strictly positive, by [`ToleranceBasis::dust_only`]. The floor
+    /// is the whole tolerance today, because this process holds no funding
+    /// rate, no deposit rate and no mark interval, and a rate it invented
+    /// would widen a halt by a number with no owner. That is the fail-closed
+    /// direction: the tolerance is the tightest the formula goes, and the
+    /// class and the zero rate travel in every outcome so a reader sees that
+    /// no accrual was applied rather than assuming one was.
+    ///
+    /// The class is the one this process can attest and no other: the desk's
+    /// own cash at its broker is fiat at a broker, and everything else a
+    /// statement names is [`qip_capital_fabric::tolerance::ToleranceClass::Undeclared`].
+    /// Reading a class out of an asset string — "BTC looks like crypto spot" —
+    /// would put a §38.3 row nobody chose behind a halt.
     pub fn observe_statement(
         &mut self,
         venue: VenueId,
@@ -5297,10 +5320,16 @@ impl Platform {
                 self.holdings_observed.len() + 1
             )));
         }
+        let class = class_for_desk_cash(
+            &venue,
+            &asset,
+            &VenueId::new(self.broker.name()),
+            &Asset::new(Currency::USD.to_string())?,
+        );
         self.wallet_tolerances = self
             .wallet_tolerances
             .clone()
-            .with_tolerance(asset.clone(), tolerance)?;
+            .with_basis(key.clone(), ToleranceBasis::dust_only(class, tolerance)?);
         self.holdings_observed.insert(
             key,
             HoldingObservation::new(

@@ -165,6 +165,7 @@ pub mod location;
 pub mod plan;
 pub mod replay;
 pub mod settlement;
+pub mod tolerance;
 pub mod transfer;
 pub mod wallet;
 
