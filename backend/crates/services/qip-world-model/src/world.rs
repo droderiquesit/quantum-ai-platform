@@ -21,6 +21,7 @@ use crate::causal::{
 use crate::features::{Feature, FeatureStore, FeatureValue};
 use crate::graph::{Fact, KnowledgeGraph, Node, NodeKind};
 use crate::relationship::{Relationship, RelationshipKind};
+use crate::resolution_source::ResolutionSourceClaim;
 use crate::state::{Change, ChangeKind, WorldDiff, WorldState};
 use crate::vocabulary::{AltMetric, MacroSeries, SubjectKind, names};
 
@@ -235,6 +236,66 @@ impl WorldModel {
             0.4,
             recorded_at,
         ));
+    }
+
+    /// Record the authority a thesis is settled against, and the edge from
+    /// the thesis to it. Returns the authority's node id.
+    ///
+    /// # Why there is no write instant in this signature
+    ///
+    /// Both instants come from the claim, which took them from the
+    /// proposition's own provenance, and this function has no clock to reach
+    /// for instead. That is deliberate and structural: a node stamped at write
+    /// time reports every authority as first known at the instant the replay
+    /// ran, [`Fact::holds`] then admits an edge the platform did not hold, and
+    /// the backtest that results is better than the platform was. A rule a
+    /// signature enforces beats one a comment asks for.
+    ///
+    /// # Ensure-only, for the reason `recorded_at` exists
+    ///
+    /// The node is written once. [`Node::recorded_at`] answers "when did the
+    /// platform first learn this authority settles anything", and a second
+    /// sighting must not rewrite it — the same discipline the runtime applies
+    /// to an instrument node. A source that later publishes more than it did
+    /// at first sighting is a changed fact with no recorded instant of change,
+    /// so the attribute keeps what was known then and the *edge* carries what
+    /// this settlement used. The thesis end is ensured too, so the edge runs
+    /// between two nodes rather than out of nothing.
+    pub fn record_resolution_source(&mut self, claim: &ResolutionSourceClaim) -> String {
+        let id = claim.node_id();
+        if self.graph.node(&id).is_none() {
+            self.graph.add_node(
+                Node::new(
+                    &id,
+                    NodeKind::ResolutionSource,
+                    claim.name(),
+                    claim.knowable_at(),
+                )
+                .with_attribute("authority", claim.authority())
+                .with_attribute("publishes", claim.published_list()),
+            );
+        }
+        if self.graph.node(claim.settles()).is_none() {
+            self.graph.add_node(Node::new(
+                claim.settles(),
+                NodeKind::Thesis,
+                claim.settles(),
+                claim.knowable_at(),
+            ));
+        }
+        self.relate(
+            Relationship::new(
+                claim.settles(),
+                &id,
+                RelationshipKind::ResolvedBy,
+                1.0,
+                claim.published_list(),
+            ),
+            claim.authoritative_from(),
+            claim.knowable_at(),
+            1.0,
+        );
+        id
     }
 
     /// Record a causal claim.

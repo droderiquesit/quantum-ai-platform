@@ -62,6 +62,12 @@ pub enum RelationshipKind {
     ContradictsThesis,
     /// A counterparty relationship, for exposure aggregation.
     CounterpartyOf,
+    /// A thesis is settled by a resolving authority.
+    ///
+    /// Directed thesis to authority, so the question an audit actually asks —
+    /// "who settles this claim" — is one hop forward rather than a scan of
+    /// every edge pointing at it.
+    ResolvedBy,
 }
 
 impl RelationshipKind {
@@ -89,6 +95,7 @@ impl RelationshipKind {
             Self::SupportsThesis => "supports_thesis",
             Self::ContradictsThesis => "contradicts_thesis",
             Self::CounterpartyOf => "counterparty_of",
+            Self::ResolvedBy => "resolved_by",
         }
     }
 

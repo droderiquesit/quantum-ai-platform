@@ -25,6 +25,7 @@ pub mod granger;
 pub mod graph;
 pub mod liquidity;
 pub mod relationship;
+pub mod resolution_source;
 pub mod state;
 pub mod vocabulary;
 pub mod world;
@@ -46,6 +47,7 @@ pub use liquidity::{
     VenueShift,
 };
 pub use relationship::{Relationship, RelationshipKind};
+pub use resolution_source::{RESOLUTION_SOURCE_PREFIX, ResolutionSourceClaim};
 pub use state::{Change, ChangeKind, WorldDiff, WorldState};
 pub use vocabulary::{AltMetric, FeatureRead, MacroSeries, SubjectKind, UNWRITTEN, Unwritten};
 pub use world::WorldModel;

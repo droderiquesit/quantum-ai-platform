@@ -21,6 +21,10 @@ pub enum NodeKind {
     Portfolio,
     Thesis,
     Evidence,
+    /// The authority a thesis is settled against. Held here rather than only
+    /// on the proposition that names it, so "who said so" is an edge to
+    /// follow rather than a struct to know about.
+    ResolutionSource,
 }
 
 /// A vertex.
