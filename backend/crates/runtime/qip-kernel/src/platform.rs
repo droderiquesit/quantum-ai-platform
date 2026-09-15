@@ -231,6 +231,12 @@ pub struct Platform {
     /// user mandate is registered — so the §43.4 chain terminates in a
     /// mandate rather than in a strategy lot.
     user_ledger: UserLedger,
+    /// The exploration budget (blueprint §13.2): the share of the book spent
+    /// on information gain rather than expected return, the probes it funds
+    /// and the account of what learning cost. Held out of `reservations`
+    /// under one id on every DECIDE pass, so what is explored with is not
+    /// also sized against.
+    exploration: crate::exploration::ExplorationDesk,
     /// Which strategy family may be sold in which jurisdiction — the product
     /// half of the gate [`Platform::fund_user`] runs, beside the eligibility
     /// registry's statement about the user. Empty at assembly, because that
@@ -3361,8 +3367,12 @@ impl Platform {
         // stops assembly with the term named: a platform that opened a book
         // under a mandate the registry refused would be promising capital
         // the desk does not have.
-        let mut user_ledger =
-            UserLedger::with_desk(UserId::new(DESK_USER)?, initial_equity, Currency::USD)?;
+        let mut user_ledger = UserLedger::with_desk_exploring(
+            UserId::new(DESK_USER)?,
+            initial_equity,
+            Currency::USD,
+            config.exploration_share,
+        )?;
         for enrolment in &config.user_mandates {
             user_ledger.enrol(
                 enrolment.user.clone(),
@@ -3478,6 +3488,7 @@ impl Platform {
             reservations: ReservationLedger::new(Decimal::ZERO)
                 .unwrap_or_else(|_| unreachable!("zero is not negative")),
             user_ledger,
+            exploration: crate::exploration::ExplorationDesk::new(),
             products: ProductCatalogue::new(),
             registrations: RegistrationRegistry::shipped(),
             pending_promotions: BTreeMap::new(),
@@ -5781,6 +5792,12 @@ impl Platform {
     /// tracked equity it was last anchored to.
     pub fn reservations(&self) -> &ReservationLedger {
         &self.reservations
+    }
+
+    /// The exploration budget's account — read-only; it moves only in the
+    /// DECIDE stage, through [`crate::exploration::review`].
+    pub fn exploration(&self) -> &crate::exploration::ExplorationDesk {
+        &self.exploration
     }
 
     /// The per-user, per-strategy books — read-only; fills reach them
@@ -9790,6 +9807,21 @@ impl Platform {
                 labels([("reason", "holds_exceed_equity")]),
             );
         }
+        // The exploration budget, before anything is sized: §13.2's share is
+        // held out of the same free balance the construction sizes against,
+        // so capital spent on learning is not also spent on returning. The
+        // line it returns is never empty — a platform exploring with nothing
+        // says so rather than falling silent in the state it is usually in.
+        let exploration = crate::exploration::review(
+            &mut self.exploration,
+            &mut self.reservations,
+            &self.telemetry.metrics,
+            &self.user_ledger,
+            &self.self_model,
+            &self.fill_scores,
+            self.capital.equity(),
+            now,
+        );
         // Construction expresses approved theses. With none pending there is
         // nothing to size, and that is a normal state. The equity is the
         // tracked number — the same one the risk monitor watches — so a
@@ -9901,6 +9933,7 @@ impl Platform {
         if !capped.is_empty() {
             detail.push_str(&format!("; {}", capped.join(", ")));
         }
+        detail.push_str(&format!("; {exploration}"));
         let mut outcome = StageOutcome::ran(Stage::Decide, legs, detail);
         // Named, one problem per thesis. A removal folded into a count would
         // tell an operator that something was dropped without saying what, and

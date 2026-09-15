@@ -39,6 +39,7 @@ pub mod central;
 pub mod config;
 pub mod cross_margin;
 pub mod cycle;
+pub mod exploration;
 pub mod fabric_declaration;
 pub mod family_review;
 pub mod feature_statistics;
