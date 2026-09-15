@@ -692,9 +692,26 @@ fn a_cycle_ships_a_signed_payload_the_cell_verifies_and_a_trip_reaches_it() -> R
         payload.payload().risk_envelope.value().is_some(),
         "the risk envelope slot shipped unproduced"
     );
+    // Slot 3 has a producer since §11.3's lane, and it is unproduced *here*
+    // because this rig reasons about nothing: `rig_full` builds on
+    // `Universe::new()` and observes no bars, so no cycle forms a hypothesis,
+    // so there is neither a belief instant nor an open draft to ship.
+    //
+    // **Say what this assertion does not prove, because mutation testing
+    // caught it over-claiming.** The comment here first said the slot was
+    // unproduced because `BeliefState::last_updated` is `None`, which is true
+    // and is not what this line tests: deleting that gate from
+    // `BeliefIssue::derive` entirely leaves this test green, because a rig
+    // with no drafts produces nothing by the *other* refusal too. What this
+    // line holds is narrower and still worth holding — that a payload a real
+    // cell verified carries an unproduced slot 3, so the fail-closed shape
+    // survives signing and the wire. Which refusal produced it is held by
+    // `qip_kernel::central::belief`'s unit tests, one per refusal, and the
+    // produced arm by
+    // `a_cycle_ships_slot_three_stamped_with_the_oldest_open_belief_and_the_halving_returns_when_it_ages`.
     assert!(
         payload.payload().belief_priors.value().is_none(),
-        "a belief slot shipped produced, and nothing here produces beliefs"
+        "a belief slot shipped produced from a platform that has reasoned about nothing"
     );
 
     // The operator trips the switch; the same action must reach the region.
@@ -1723,6 +1740,139 @@ fn remembering_platform() -> Result<(Platform, Timestamp, Timestamp)> {
 }
 
 #[test]
+fn a_cycle_ships_slot_three_stamped_with_the_oldest_open_belief_and_the_halving_returns_when_it_ages()
+-> Result<()> {
+    // Slot 3 had no producer at all until this change: `pending_policy`
+    // assigned nothing to `belief_priors`, so every deployed cell would have
+    // read it `unproduced` for ever and halved its size for ever, however
+    // hard the centre was reasoning. This test is the production seam — a
+    // payload `pending_policy` really built, from a platform that really ran
+    // cycles — and it asserts the two things a producer of a §6.2-mapped slot
+    // has to get right: that the slot is stamped with the *belief's* instant
+    // rather than the shipper's, and that the widening it grants expires on
+    // the platform's silence without anyone republishing anything.
+    let (mut platform, resolved_at, asked_at) = remembering_platform()?;
+
+    // Premise, and the state every deployed centre shipped: a payload whose
+    // slot 3 is unproduced halves the cell. Without this the assertions below
+    // would pass on a payload that narrows nothing.
+    let unwired = PolicyPayload::unproduced(1, CELL, asked_at);
+    assert_eq!(unwired.belief_priors, Slot::unproduced());
+    let halved = unwired.narrowing(asked_at).sizing_multiplier();
+    assert_eq!(
+        unwired
+            .narrowing(asked_at)
+            .freshness(Capability::BeliefState),
+        Freshness::Unavailable,
+        "an unproduced slot 3 must read unavailable, or this test proves nothing"
+    );
+
+    let pending = qip_api::mesh::pending_policy(
+        &mut platform,
+        [CELL.to_string()].into_iter(),
+        None,
+        asked_at,
+    );
+    assert_eq!(pending.payloads.len(), 1, "one cell, one payload");
+    let (cell, payload) = &pending.payloads[0];
+    assert_eq!(cell, CELL);
+
+    let priors = payload.belief_priors.value().ok_or_else(|| {
+        Error::invalid("slot 3 shipped unproduced from a platform that has formed a belief")
+    })?;
+    assert!(
+        !priors.priors.is_empty(),
+        "slot 3 shipped an empty map, which is a freshness claim with nothing behind it"
+    );
+    for (subject, confidence) in &priors.priors {
+        assert!(
+            !subject.is_empty(),
+            "a prior keyed by nothing names no subject"
+        );
+        assert!(
+            (0.0..=1.0).contains(confidence),
+            "{subject} carries {confidence}, which is not a probability"
+        );
+    }
+
+    // The instant is the belief's and not the shipper's. This is the whole
+    // safety argument: stamped `now`, a platform that stopped reasoning last
+    // week would keep every cell at full size for as long as payloads kept
+    // being issued.
+    assert_eq!(
+        payload.belief_priors.produced_at(),
+        Some(resolved_at),
+        "slot 3 is not stamped with the instant the oldest open belief was formed"
+    );
+    assert_ne!(
+        payload.belief_priors.produced_at(),
+        Some(asked_at),
+        "slot 3 was stamped with the issue instant"
+    );
+
+    // One line per cycle, not one per cell: the beliefs are the platform's.
+    assert_eq!(
+        pending.beliefs.len(),
+        1,
+        "one belief state, one line: {:?}",
+        pending.beliefs
+    );
+    assert!(
+        pending.beliefs[0].contains("subject(s)")
+            && pending.beliefs[0].contains("oldest current belief"),
+        "the operator line does not say what shipped: {}",
+        pending.beliefs[0]
+    );
+
+    // The widening, exactly: a second after the belief was formed the cell no
+    // longer halves.
+    let narrowing = payload.narrowing(asked_at);
+    assert_eq!(
+        narrowing.freshness(Capability::BeliefState),
+        Freshness::Fresh
+    );
+    assert_eq!(
+        narrowing.sizing_multiplier(),
+        halved
+            .checked_mul(Decimal::from_int(2))
+            .ok_or_else(|| Error::numeric("doubling a multiplier no larger than one"))?,
+        "a fresh slot 3 did not lift the halving, so wiring the producer changed nothing"
+    );
+
+    // And its bound, measured on the slot alone so the payload's own 300
+    // second validity is not what is being read: fresh at 299 seconds past
+    // the belief's instant, stale at 301.
+    assert_eq!(
+        payload.belief_priors.freshness(
+            PolicyItem::BeliefPriors,
+            resolved_at.saturating_add(Duration::from_secs(299))
+        ),
+        Freshness::Fresh
+    );
+    assert_eq!(
+        payload.belief_priors.freshness(
+            PolicyItem::BeliefPriors,
+            resolved_at.saturating_add(Duration::from_secs(301))
+        ),
+        Freshness::Stale,
+        "slot 3 outlived its five-minute time to live, so a platform that stopped reasoning \
+         would keep excusing full size"
+    );
+    assert_eq!(
+        payload
+            .narrowing(resolved_at.saturating_add(Duration::from_secs(301)))
+            .sizing_multiplier(),
+        halved,
+        "the halving did not return once the priors aged out"
+    );
+
+    // The boundary: issuing policy reached no venue and this platform could
+    // never reach one.
+    assert!(!platform.is_live_capable());
+    Ok(())
+}
+
+#[test]
 fn a_cycle_ships_slot_four_stamped_with_the_memorys_instant_and_the_pause_returns_when_it_ages()
 -> Result<()> {
     let (mut platform, resolved_at, asked_at) = remembering_platform()?;
@@ -1832,8 +1982,9 @@ fn a_cycle_ships_slot_four_stamped_with_the_memorys_instant_and_the_pause_return
 // --- the register of unproduced slots, held to what the centre can source ---
 //
 // `qip-kernel/src/central/whitelist.rs` carries an audit of all twelve §41.5
-// items and a stated reason each of the eight unproduced ones cannot be
-// filled. The audit is prose, and prose does not fail. This does.
+// items and a stated reason each unproduced one cannot be filled — eight when
+// the audit was written, six now. The audit is prose, and prose does not
+// fail. This does.
 //
 // The failure it prevents is specific and has a shape: a slot filled from a
 // default, a zero, a constant, or from the centre's own state re-keyed to
@@ -1845,12 +1996,14 @@ fn a_cycle_ships_slot_four_stamped_with_the_memorys_instant_and_the_pause_return
 // cell may do. The payload is signed and cells size against it, so a
 // fabricated slot is a wrong position rather than a wrong log line.
 //
-// This test is meant to be edited — by whoever produces the fifth slot, in
-// the same change that strikes that slot's paragraph from the register. What
-// it refuses is a fifth slot appearing while the register still explains why
-// it cannot exist.
+// This test is meant to be edited — by whoever produces the next slot, in
+// the same change that amends that slot's paragraph in the register. What it
+// refuses is a slot appearing while the register still explains why it cannot
+// exist. It has done that job twice: it named four and failed when slot 11
+// gained a producer, and named five and failed when slot 3 did, which is how
+// both amendments came to be written rather than skipped.
 #[test]
-fn a_shipped_payload_produces_exactly_the_five_slots_the_register_names() -> Result<()> {
+fn a_shipped_payload_produces_exactly_the_six_slots_the_register_names() -> Result<()> {
     let (mut platform, _resolved_at, asked_at) = remembering_platform()?;
     let pending = qip_api::mesh::pending_policy(
         &mut platform,
@@ -1870,12 +2023,13 @@ fn a_shipped_payload_produces_exactly_the_five_slots_the_register_names() -> Res
         PolicyItem::RiskEnvelope,
         PolicyItem::CycleWhitelist,
         PolicyItem::EpisodicDigest,
+        PolicyItem::BeliefPriors,
     ] {
         assert_eq!(
             payload.freshness(item, asked_at),
             Freshness::Fresh,
-            "premise: {} is one of the four the centre really produces, and this payload does \
-             not carry it — so the refusals below would hold on a payload carrying nothing",
+            "premise: {} is one of the five the centre really produces fresh, and this payload \
+             does not carry it — so the refusals below would hold on a payload carrying nothing",
             item.as_str()
         );
     }
@@ -1893,10 +2047,28 @@ fn a_shipped_payload_produces_exactly_the_five_slots_the_register_names() -> Res
         "slot 2 shipped a plan digest; it must equal a sha256 of bytes in a file on the node's \
          disk, and any other digest makes every node refuse every plan as tampering"
     );
+    // Slot 3 is produced since this lane, and the paragraph it used to
+    // refuse under is amended in `qip-kernel/src/central/whitelist.rs` in the
+    // same change. The refusal that stood here was right about the danger — a
+    // produced slot 3 doubles every receiving cell's sizing multiplier — and
+    // wrong only about there being nothing to key a prior by: `BeliefState`
+    // still holds no per-subject prior, and `Platform::pending_episodes`
+    // does, keyed by instrument and retained past the cycle that formed it,
+    // which is exactly what that paragraph said would have to exist. What
+    // replaces the refusal is the narrower assertion: whatever ships is a
+    // probability about a named subject, because a slot 3 carrying anything
+    // else would still be a number nobody computed.
+    let priors = payload
+        .belief_priors
+        .value()
+        .expect("slot 3 shipped unproduced from a platform that has formed a belief");
     assert!(
-        payload.belief_priors.value().is_none(),
-        "slot 3 shipped belief priors; `BeliefState` holds no per-subject prior, and a produced \
-         slot 3 widens every receiving cell's sizing multiplier"
+        !priors.priors.is_empty()
+            && priors.priors.iter().all(
+                |(subject, confidence)| !subject.is_empty() && (0.0..=1.0).contains(confidence)
+            ),
+        "slot 3 shipped something that is not a probability about a named subject: {:?}",
+        priors.priors
     );
     assert!(
         payload.causal_digest.value().is_none(),
@@ -1946,11 +2118,12 @@ fn a_shipped_payload_produces_exactly_the_five_slots_the_register_names() -> Res
 
     // And the catch-all, read through the accessor a *cell* uses rather than
     // through the values above: whatever the twelve become, the set a payload
-    // carries is the five the register names and no other. This is the line
+    // carries is the six the register names and no other. This is the line
     // that fails if a thirteenth item is added and produced, or if a slot is
     // filled by some route the assertions above do not name. It was four
-    // until ADR 0062's follow-on lane produced slot 11, and the edit landed
-    // in that same change, which is what this line exists to force.
+    // until ADR 0062's follow-on lane produced slot 11 and five until §11.3's
+    // lane produced slot 3, and both edits landed in those same changes,
+    // which is what this line exists to force.
     let produced: Vec<&'static str> = PolicyItem::all()
         .into_iter()
         .filter(|item| payload.freshness(*item, asked_at) != Freshness::Unavailable)
@@ -1959,13 +2132,14 @@ fn a_shipped_payload_produces_exactly_the_five_slots_the_register_names() -> Res
     assert_eq!(
         produced,
         vec![
+            "belief_priors",
             "episodic_digest",
             "capital_grants",
             "cycle_whitelist",
             "risk_envelope",
             "feasibility_constraints",
         ],
-        "the produced set is not the five the register names; if a producer was added, say so \
+        "the produced set is not the six the register names; if a producer was added, say so \
          in `qip-kernel/src/central/whitelist.rs` and edit this test in the same change"
     );
 

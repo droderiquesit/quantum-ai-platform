@@ -9,14 +9,22 @@
 //! # A slot with no producer is stale from birth
 //!
 //! Most of the twelve have no producer in this platform yet — there is no
-//! belief engine, no episodic digest, no compiled plan. The slots exist
-//! anyway, and an unproduced slot reports [`Freshness::Unavailable`] from the
-//! moment the payload is built. That is not scaffolding; it is the fail-closed
-//! behaviour §6.2 requires. A cell that has never received belief priors
-//! behaves exactly as one whose priors went stale: confidence-weighted sizing
-//! falls back to the fixed conservative multiplier. The platform's sizing was
-//! never belief-weighted; this makes that fact load-bearing instead of
-//! implicit.
+//! compiled plan, no causal digest, no regime estimate. **Do not read that
+//! list as fixed, and do not quote a count from here**: the sentence named
+//! belief priors and the episodic digest too until each gained one, and a
+//! reader who trusted it after that was told a closed gap was still open.
+//! `grep -n 'Slot::produced\|= episodic\|= belief' backend/crates/apps/qip-api/src/mesh.rs`
+//! is the enumeration.
+//!
+//! The slots exist anyway, and an unproduced slot reports
+//! [`Freshness::Unavailable`] from the moment the payload is built. That is
+//! not scaffolding; it is the fail-closed behaviour §6.2 requires. A cell that
+//! has never received belief priors behaves exactly as one whose priors went
+//! stale: confidence-weighted sizing falls back to the fixed conservative
+//! multiplier. That remains the behaviour on every cycle in which the centre
+//! has formed no belief, or none inside this item's five-minute window —
+//! `qip_kernel::central::belief` ships nothing at all in either case rather
+//! than a default that would read like a real prior.
 //!
 //! # What this deliberately reuses
 //!
