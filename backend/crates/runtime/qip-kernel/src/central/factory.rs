@@ -32,7 +32,7 @@ use qip_lifecycle::demotion::{
 use qip_lifecycle::evidence::{KillCondition, StrategyEvidence};
 use qip_lifecycle::horizon::HorizonAssurance;
 use qip_lifecycle::ledger::{LifecycleLedger, attempt_promotion};
-use qip_lifecycle::trials::{StrategyFamily, TrialBook};
+use qip_lifecycle::trials::{StrategyFamily, TrialAccount, TrialBook};
 use qip_observability::metrics::Metrics;
 use qip_strategy::compile::CompiledStrategy;
 use qip_strategy::program::Program;
@@ -361,6 +361,39 @@ impl StrategyFactory {
 
     pub fn ledger(&self) -> &LifecycleLedger {
         &self.ledger
+    }
+
+    /// Charge one look at one counterfactual finding to the trial book's
+    /// reserved counterfactual family, and hand back the account it must be
+    /// judged against.
+    ///
+    /// Narrow for the same reason [`Self::ledger`] has no mutable twin: this
+    /// is the only way a counterfactual finding may spend a trial, and it
+    /// cannot reach anything else on the ledger. It shares the *book* with
+    /// the promotion path — one store, one hash chain, one replay — and not
+    /// the *budget*: `TrialBook` budgets per family per quarter, and
+    /// `qip_lifecycle::trials::COUNTERFACTUAL_FAMILY` is a reserved name no
+    /// strategy can be enrolled in, so a quarter of rule reviews cannot leave
+    /// a sweep with no budget to promote on, nor a sweep leave a finding
+    /// untestable.
+    ///
+    /// Refuses when no book is attached at all, rather than treating an
+    /// absent count as zero: an uncounted look is the laundering the whole
+    /// module exists to refuse, and a finding admitted on one would be
+    /// admitted against the uncorrected bar.
+    pub fn charge_counterfactual_trial(
+        &mut self,
+        subject: &str,
+        at: Timestamp,
+    ) -> Result<TrialAccount> {
+        let book = self.ledger.trial_book_mut().ok_or_else(|| {
+            Error::denied(format!(
+                "no trial book is attached, so the look at {subject} cannot be counted and the \
+                 finding cannot be corrected for how often the platform has looked; attach one \
+                 with `StrategyFactory::with_trial_book`"
+            ))
+        })?;
+        book.charge_counterfactual(subject, at)
     }
 
     /// Declare the corridors whose policy this factory's ledger sets, and
