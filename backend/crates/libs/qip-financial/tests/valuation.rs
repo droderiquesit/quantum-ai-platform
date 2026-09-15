@@ -1030,3 +1030,45 @@ fn an_input_read_back_from_a_document_meets_the_same_check_that_minted_it() -> R
     );
     Ok(())
 }
+#[test]
+fn a_private_record_whose_lockup_has_run_out_dates_no_return_of_capital() -> Result<()> {
+    // The schedule two readers share, and the arm that must say nothing rather
+    // than say something stale. A lockup that expired is not a date at which
+    // capital comes back — the fund is simply out of it — and answering with a
+    // past instant would assert a distribution the record does not state. The
+    // kernel's liquidity ladder reads this: a `None` leaves the catalogue's
+    // own exit time standing, which is the right answer for a position nothing
+    // contractual is holding, whereas a past instant would be read as a
+    // negative number of days and shorten the holding's stated exit.
+    //
+    // Premise: read one day *before* the lockup ends the same record does date
+    // a return, so the `None` below is the expiry and not a record that never
+    // schedules anything.
+    let locked = details(dec!("800"), dec!("1000"), Decimal::ZERO);
+    let lockup_end = locked.vintage_origin()?.saturating_add(locked.lockup()?);
+    let day_before = lockup_end.saturating_add(Duration::from_days(-1));
+    let inside = IlliquidValuator::forecast_private_asset("fund-1", &locked, origin(), day_before)?
+        .expect("a record inside its lockup dates the distribution its mark is discounted from");
+    assert_eq!(
+        inside.first_return_at(day_before)?,
+        Some(lockup_end),
+        "the dated return is the end of the record's own lockup"
+    );
+
+    assert!(
+        IlliquidValuator::forecast_private_asset("fund-1", &locked, origin(), lockup_end)?
+            .is_none(),
+        "a lockup that has run out dates nothing, and a past instant is not an answer"
+    );
+    assert!(
+        IlliquidValuator::forecast_private_asset(
+            "fund-1",
+            &details(Decimal::ZERO, dec!("1000"), Decimal::ZERO),
+            origin(),
+            origin(),
+        )?
+        .is_none(),
+        "a record reporting no residual value schedules no distribution to date"
+    );
+    Ok(())
+}

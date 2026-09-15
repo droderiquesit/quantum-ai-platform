@@ -26,6 +26,7 @@ use qip_core::time::Timestamp;
 use qip_core::{Context, Decimal, Duration, ObjectId, dec};
 use qip_financial::asset_class::InstrumentType;
 use qip_financial::extensions::{Extension, PrivateAssetDetails};
+use qip_financial::ladder::LiquidityLadder;
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
 use qip_financial::universe::Universe;
@@ -33,7 +34,9 @@ use qip_financial::valuation::ValuationMethod;
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::platform::Platform;
 use qip_observability::Telemetry;
+use qip_risk::aggregate::RiskAggregates;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
+use std::collections::BTreeMap;
 
 /// The liquidity every fixture in this file states, because nothing states it
 /// for them any more.
@@ -104,6 +107,32 @@ fn equity(symbol: &str) -> Result<FinancialObject> {
     .price(dec!("100"))
     .provenance(Provenance::new("vendor", start(), start()))
     .build(start())
+}
+
+/// A book holding one position, so a liquidity read has something to measure.
+///
+/// The equity and cash are the fixture's own and reach nothing these tests
+/// assert: `Platform::liquidity_ladder` places position notionals and
+/// deliberately leaves cash off the ladder, because `MinLiquidity` is a
+/// fraction of the portfolio and adding the cash balance would quietly
+/// redefine the shipped limit.
+fn book_holding(instrument: &str, notional: Decimal) -> Result<RiskAggregates> {
+    let mut aggregates = RiskAggregates::new(dec!("1000000"), dec!("500000"))?;
+    aggregates.apply_fill("test", instrument, &BTreeMap::new(), notional)?;
+    Ok(aggregates)
+}
+
+/// The days the ladder says one holding takes to leave.
+///
+/// Panics where the holding is absent rather than answering zero: a read that
+/// silently reported nothing would make every assertion about it pass over a
+/// ladder that never carried it.
+fn exit_days_of(ladder: &LiquidityLadder, instrument: &str) -> f64 {
+    ladder
+        .entries()
+        .find(|entry| entry.object_id == instrument)
+        .map(|entry| entry.days_to_exit())
+        .expect("the ladder must carry the holding under test")
 }
 
 fn platform_over(universe: Universe, equity_capital: Decimal) -> Result<Platform> {
@@ -451,6 +480,88 @@ fn a_record_updated_before_its_own_vintage_is_refused_rather_than_quietly_repair
             .contains("a commitment cannot be known before it was made"),
         "the engine's own refusal must reach the operator, said: {}",
         refusal.message()
+    );
+    Ok(())
+}
+#[test]
+fn a_private_fund_inside_its_lockup_is_not_counted_as_exitable_on_the_catalogue_s_word()
+-> Result<()> {
+    // The forecasting half of §16.4 reaching a decision. The commitment book
+    // says *how much* a private position obliges the book to; nothing said
+    // *when* it turns into cash, so the liquidity read took the catalogue's
+    // figure — `LiquidityProfile::listed` states one day — and a fund with
+    // years of lockup left counted toward the fraction `MinLiquidity` vetoes
+    // trading on. The platform held the answer the whole time: the same
+    // schedule the mark is discounted from dates the distribution.
+    //
+    // This is the `MaxDaysToLiquidate { limit: 10.0 }` failure in a new place.
+    // There, a holding stated at forty-five days was read as two and the
+    // ceiling compared 2.0 against 10. Here a fund locked up until 2030 was
+    // read as exitable inside the `Years` bucket's own floor.
+    let inside_lockup = details(
+        dec!("1000000"),
+        dec!("1000000"),
+        Decimal::ZERO,
+        dec!("800000"),
+    );
+    let lockup_end = inside_lockup
+        .vintage_origin()?
+        .saturating_add(inside_lockup.lockup()?);
+    let locked_days = lockup_end.since(start()).as_days_f64();
+    // Premise on the fixture itself: the lockup really does run years past the
+    // instant these platforms are assembled at, and past the 400-day horizon
+    // asserted below. A record whose lockup had already expired would make
+    // every assertion here pass for the wrong reason.
+    assert!(
+        locked_days > 1_500.0 && locked_days < 1_900.0,
+        "the fixture must be assembled well inside its own lockup, and it is {locked_days} days \
+         from it"
+    );
+
+    // Premise: the same fund, whose record reports no residual and therefore
+    // dates no distribution, is carried at the exit time the reference record
+    // and the rung agree on — and is reachable inside 400 days. So the change
+    // below is the forecast and not the rung, the spread or the fixture's
+    // liquidity profile, all three of which are identical across the two
+    // universes.
+    let mut undated = Universe::new();
+    undated.insert(private_object(
+        "PEF",
+        details(
+            dec!("1000000"),
+            dec!("1000000"),
+            Decimal::ZERO,
+            Decimal::ZERO,
+        ),
+    )?)?;
+    let bare = platform_over(undated, dec!("1000000"))?;
+    let bare_ladder = bare.liquidity_ladder(&book_holding("obj-PEF", dec!("500000"))?)?;
+    let bare_days = exit_days_of(&bare_ladder, "obj-PEF");
+    assert!(
+        bare_days < locked_days,
+        "the premise is a liquidity read that under-states the lockup: it reported {bare_days} \
+         days against a lockup of {locked_days}"
+    );
+    assert_eq!(
+        bare_ladder.reachable_within(400.0)?,
+        dec!("500000"),
+        "the premise is a book the ladder calls reachable inside 400 days"
+    );
+
+    let mut dated = Universe::new();
+    dated.insert(private_object("PEF", inside_lockup)?)?;
+    let platform = platform_over(dated, dec!("1000000"))?;
+    let ladder = platform.liquidity_ladder(&book_holding("obj-PEF", dec!("500000"))?)?;
+    let days = exit_days_of(&ladder, "obj-PEF");
+    assert!(
+        (days - locked_days).abs() < 1.0,
+        "the holding must carry the lockup its own forecast is dated from ({locked_days} days), \
+         and it carries {days}"
+    );
+    assert_eq!(
+        ladder.reachable_within(400.0)?,
+        Decimal::ZERO,
+        "a fund locked up for {locked_days} days raises no cash inside 400 of them"
     );
     Ok(())
 }

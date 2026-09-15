@@ -658,6 +658,58 @@ impl IlliquidValuator {
         )
     }
 
+    /// The distribution schedule a private-asset record states, or `None`
+    /// where it states none.
+    ///
+    /// **One derivation, two readers.** [`Self::mark_private_asset`] discounts
+    /// it where the record also carries a required yield; the kernel's
+    /// liquidity ladder reads the date the capital comes back. It was built
+    /// inline inside the mark, so the only dated fact this platform held about
+    /// when a private position becomes cash was discarded the instant it had
+    /// been discounted — and the liquidity read fell back to the catalogue's
+    /// stated exit time, which has no way of knowing a lockup runs another
+    /// seven years. A second derivation beside the mark would have been worse
+    /// than the gap: two schedules for one fund disagree eventually, and the
+    /// one the risk read used would be the one nobody reviewed.
+    ///
+    /// Nothing is invented. The amount is the manager's own reported residual
+    /// and the date is the record's own vintage origin plus its own lockup
+    /// term — the same two fields the mark has always discounted. There is no
+    /// capital call in here and there must not be: the unfunded balance is
+    /// already charged against free capital by the commitment book, and
+    /// charging it a second time inside a valuation would be two claims on one
+    /// obligation, the louder of which would be wrong.
+    ///
+    /// `None` in two cases, both of them the record saying nothing rather than
+    /// the record being broken: no residual value reported, and a lockup that
+    /// has already run out at `observed_at`. Answering the second with a past
+    /// instant would assert a distribution the record does not state, and
+    /// [`CashflowForecast::present_value`] refuses a settled flow anyway.
+    pub fn forecast_private_asset(
+        asset: impl Into<String>,
+        details: &PrivateAssetDetails,
+        origin: Timestamp,
+        observed_at: Timestamp,
+    ) -> Result<Option<CashflowForecast>> {
+        if !details.residual_value.is_positive() {
+            return Ok(None);
+        }
+        let lockup_end = origin.saturating_add(details.lockup()?);
+        if lockup_end <= observed_at {
+            return Ok(None);
+        }
+        Ok(Some(
+            CashflowForecast::new(asset, origin, observed_at)?.with_flow(
+                crate::cashflow::ForecastCashflow::new(
+                    crate::cashflow::CashflowKind::Distribution,
+                    lockup_end,
+                    details.residual_value,
+                    1.0,
+                )?,
+            )?,
+        ))
+    }
+
     /// Mark a private-asset record from what the object model already carries,
     /// in descending order of evidence, and refuse when it carries none.
     ///
@@ -729,18 +781,17 @@ impl IlliquidValuator {
             )));
         }
         if details.residual_value.is_positive() {
-            let lockup_end = origin.saturating_add(details.lockup()?);
+            // Built before the rate is looked at, which keeps this identical
+            // to the inline construction it replaced: `details.lockup()?` ran
+            // unconditionally there too, so a record stating a lockup nobody
+            // could have written is still refused rather than dropping
+            // through to a last-round mark that never reads the term.
+            let forecast =
+                Self::forecast_private_asset(asset.clone(), details, origin, observed_at)?;
             if let Some(rate) = required_yield.filter(|r| r.is_finite() && *r > -1.0)
-                && lockup_end > observed_at
+                && let Some(forecast) = &forecast
             {
-                let forecast = CashflowForecast::new(asset.clone(), origin, observed_at)?
-                    .with_flow(crate::cashflow::ForecastCashflow::new(
-                        crate::cashflow::CashflowKind::Distribution,
-                        lockup_end,
-                        details.residual_value,
-                        1.0,
-                    )?)?;
-                return Self::from_discounted_cashflow(asset, &forecast, rate, observed_at);
+                return Self::from_discounted_cashflow(asset, forecast, rate, observed_at);
             }
             return Self::from_last_round(asset, details.residual_value, observed_at, observed_at);
         }

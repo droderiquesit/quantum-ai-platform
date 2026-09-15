@@ -341,6 +341,38 @@ impl CashflowForecast {
         Ok(total)
     }
 
+    /// The first instant at or after `as_of` at which this forecast returns
+    /// capital, or `None` where it schedules none.
+    ///
+    /// The question a liquidity read has to ask of a private holding, and the
+    /// one an unfunded balance cannot answer. A commitment is an amount; it
+    /// says nothing about *when* the position turns into cash. The only other
+    /// figure anything here holds for that is the catalogue's stated days to
+    /// liquidate, which is a vendor's estimate of a market, whereas the
+    /// lockup this schedule is dated from is the contract that binds. Where
+    /// the two disagree the contract is the one a book has to live with.
+    ///
+    /// **An outflow is never an answer.** A capital call is the position
+    /// taking cash, and a read that let one satisfy "when does this become
+    /// cash" would report a fund at its deepest draw as its most liquid — the
+    /// J-curve read upside down.
+    ///
+    /// `None` rather than a refusal where nothing is scheduled ahead: a
+    /// schedule that returns nothing inside its own horizon is a fact about
+    /// the schedule, and a caller holding another bound should keep using it
+    /// rather than be told the read failed. Refusing here would make the
+    /// commoner case — a holding out of its lockup — indistinguishable from a
+    /// broken record.
+    pub fn first_return_at(&self, as_of: Timestamp) -> Result<Option<Timestamp>> {
+        self.guard_knowable(as_of)?;
+        Ok(self
+            .flows
+            .values()
+            .filter(|flow| !flow.kind().is_outflow() && flow.due_at() >= as_of)
+            .map(ForecastCashflow::due_at)
+            .min())
+    }
+
     /// A forecast holding only the flows still ahead at `as_of`.
     ///
     /// The companion to [`Self::present_value`], which refuses a settled flow
