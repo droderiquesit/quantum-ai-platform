@@ -84,6 +84,20 @@ fn keyed_statement(key: &str, quantity: Decimal) -> String {
     )
 }
 
+/// A statement whose one holding states both its own quantity and its own
+/// tolerance, and nothing at the statement level.
+///
+/// No top-level `tolerance`, so the only tolerance in the document is the one
+/// beside the quantity — which is the pair the parser judges and the pair the
+/// transposition swapped.
+fn own_tolerance_statement(quantity: &str, tolerance: &str) -> String {
+    format!(
+        r#"{{"as_of": "{}", "venue": "v",
+            "holdings": [{{"asset": "USD", "quantity": "{quantity}", "tolerance": "{tolerance}"}}]}}"#,
+        dated().to_rfc3339()
+    )
+}
+
 /// Move the file's modification time to `when`, so a change is visible
 /// however coarse the filesystem's timestamps are.
 fn touch(path: &str, when: std::time::SystemTime) {
@@ -537,6 +551,146 @@ fn a_malformed_or_future_dated_statement_is_refused_naming_the_field() {
     let _ = std::fs::remove_dir_all(&directory);
 }
 
+// --- a transposed quantity and tolerance --------------------------------------
+
+#[test]
+fn a_holding_whose_own_tolerance_is_not_smaller_than_its_quantity_is_refused_naming_both_fields() {
+    // The failure this prevents has already happened, and a security review
+    // found it: a mounted statement with `quantity` and `tolerance`
+    // transposed — ten million of each. Both figures are strictly positive,
+    // so every check this parser had admitted the file, and from that cycle
+    // on any divergence up to the whole balance at that venue-asset recorded
+    // as within tolerance. `ToleranceBasis::evaluate` refuses it one layer
+    // down against what the ledger expects, which is the complete check; this
+    // is the earlier and narrower one, and the point of it is that it needs
+    // no ledger, no cycle and no venue-asset the ledger books.
+    let now = start();
+    // Premise: the same document with a tolerance under the balance is
+    // accepted, so each refusal below is of the pair and not of the shape.
+    let sane = own_tolerance_statement("10000000", "1");
+    let parsed = Statement::parse(&sane, now).expect("a tolerance under the balance is accepted");
+    assert_eq!(parsed.holdings.len(), 1);
+    assert_eq!(parsed.holdings[0].tolerance, "1");
+
+    let cases = [
+        (
+            "the transposed pair the review reported",
+            own_tolerance_statement("10000000", "10000000"),
+        ),
+        (
+            "a tolerance one unit wider than the balance",
+            own_tolerance_statement("100", "100.000000001"),
+        ),
+        (
+            // A margin account in debit is a real balance, and the fabric
+            // takes its basis on the magnitude; a parser comparing the signed
+            // figure would admit every tolerance against every debit.
+            "a debit balance no larger than the tolerance judging it",
+            own_tolerance_statement("-100", "100"),
+        ),
+    ];
+    for (label, text) in cases {
+        let error = match Statement::parse(&text, now) {
+            Ok(_) => panic!("{label} was accepted"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, Error::Invalid(_)),
+            "{label}: the refusal is not an invalid-class refusal: {error:?}"
+        );
+        let message = error.message().to_string();
+        assert!(
+            names(&message, "holdings[0].tolerance") && names(&message, "holdings[0].quantity"),
+            "{label}: the refusal does not name both fields: {message}"
+        );
+        // The operator has to find a swapped pair in a file rather than
+        // re-derive §38.3, so the refusal has to say so — the same sentence
+        // the evaluate-time bound ends on.
+        assert!(
+            message.contains("transposed"),
+            "{label}: the refusal does not suggest a transposed pair: {message}"
+        );
+    }
+}
+
+#[test]
+fn a_statement_whose_tolerances_are_under_the_balances_they_judge_is_still_admitted() {
+    // The half that distinguishes a working gate from one that refuses
+    // everything. Each document below is one an operator could plausibly
+    // mount, and each has to survive: a gate that also stops the statements
+    // it was not written about stops the feed, and a stopped feed is a wallet
+    // that stays unassembled while the banner says a feed is on.
+    let now = start();
+    let cases = [
+        (
+            "a tolerance well under the balance",
+            own_tolerance_statement("1000", "0.5"),
+            "0.5",
+        ),
+        (
+            // One unit in the last place under the balance, so the bound is
+            // strictly where it says it is and not a unit either side.
+            "a tolerance one unit under the balance",
+            own_tolerance_statement("10000000", "9999999.999999999"),
+            "9999999.999999999",
+        ),
+        (
+            "a debit balance whose magnitude is over its tolerance",
+            own_tolerance_statement("-100", "99.9"),
+            "99.9",
+        ),
+    ];
+    for (label, text, tolerance) in cases {
+        let parsed = match Statement::parse(&text, now) {
+            Ok(parsed) => parsed,
+            Err(error) => panic!("{label} was refused: {}", error.message()),
+        };
+        assert_eq!(parsed.holdings.len(), 1, "{label}");
+        assert_eq!(parsed.holdings[0].tolerance, tolerance, "{label}");
+    }
+
+    // And the case the parser deliberately does not judge: a holding taking
+    // the statement's default tolerance, where the two figures were never
+    // written beside each other by anybody. Judging a statement-wide default
+    // per holding would refuse a whole file over a pairing no operator wrote;
+    // `ToleranceBasis::evaluate` still holds that holding against the
+    // ledger's own expectation, which is the stricter figure.
+    let defaulted = format!(
+        r#"{{"as_of": "{}", "venue": "v", "tolerance": "1",
+            "holdings": [{{"asset": "USD", "quantity": "1"}}]}}"#,
+        dated().to_rfc3339()
+    );
+    let parsed = Statement::parse(&defaulted, now)
+        .expect("a holding on the statement's default tolerance is admitted");
+    assert_eq!(parsed.holdings[0].tolerance, "1");
+}
+
+#[test]
+fn a_holding_stating_a_zero_balance_is_admitted_so_its_own_halt_can_still_fire() {
+    // The exemption the check needs, and the reason it is written as
+    // "non-zero magnitude" rather than as a flat comparison. A venue
+    // reporting a flat balance states zero, every strictly positive tolerance
+    // exceeds zero, and a flat comparison would refuse the whole file — no
+    // statement observed, no wallet assembled, and no `unrecorded_by_ledger`
+    // halt on the venue-asset that zero is evidence about. A refusal standing
+    // in front of the halt it was written to protect is the same defect one
+    // layer up, and the first draft of the evaluate-time bound had it.
+    let now = start();
+    // Premise: the same tolerance against a non-zero balance of that size is
+    // refused, so what follows is the exemption working rather than the check
+    // being absent.
+    let refused = Statement::parse(&own_tolerance_statement("5", "5"), now);
+    assert!(
+        refused.is_err(),
+        "the premise fails: a tolerance equal to the balance was admitted"
+    );
+
+    let parsed = Statement::parse(&own_tolerance_statement("0", "5"), now)
+        .expect("a stated balance of zero is admitted");
+    assert_eq!(parsed.holdings[0].quantity, "0");
+    assert_eq!(parsed.holdings[0].tolerance, "5");
+}
+
 // --- a refusal never publishes the document ---------------------------------
 
 /// A value no custodian would state, put in a fixture so its appearance in a
@@ -619,6 +773,17 @@ fn no_refusal_of_a_statement_quotes_a_value_the_file_carried() {
             "a holding tolerance that is not positive",
             format!(
                 r#"{{"as_of": "{past}", "venue": "v", "holdings": [{{"asset": "USD", "quantity": "1", "tolerance": "-{SENTINEL_QUANTITY}"}}]}}"#
+            ),
+            "holdings[0].tolerance",
+            vec![SENTINEL_QUANTITY.to_string()],
+        ),
+        (
+            // The transposed pair, which the parser refuses by comparing the
+            // two figures — so it is the refusal most tempted to quote them,
+            // and the one an operator is most likely to paste into a ticket.
+            "a tolerance transposed with the quantity beside it",
+            format!(
+                r#"{{"as_of": "{past}", "venue": "v", "holdings": [{{"asset": "USD", "quantity": "{SENTINEL_QUANTITY}", "tolerance": "{SENTINEL_QUANTITY}"}}]}}"#
             ),
             "holdings[0].tolerance",
             vec![SENTINEL_QUANTITY.to_string()],
