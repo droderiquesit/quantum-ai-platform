@@ -3863,6 +3863,15 @@ impl Platform {
             names::RISK_EVALUATIONS,
             "passes of the risk monitor over the book",
         );
+        metrics.describe(
+            names::HEDGE_PROPOSALS,
+            "hedge proposals the DECIDE survey produced; a proposal, never a position",
+        );
+        metrics.describe(
+            names::HEDGE_REFUSALS,
+            "hedge outcomes the survey refused, by reason; exposures_unreadable means no \
+             policy was surveyed at all",
+        );
         // The DISCOVER-to-REASON funnel. Recorded because a platform that has
         // stopped finding anything and a platform whose review rejects
         // everything both submit no orders, and until these five existed the
@@ -11603,6 +11612,35 @@ impl Platform {
                 "the hedge survey was reported to the desk and not journalled: {}",
                 error.message()
             ));
+        }
+        // The survey's own record on the metrics plane, written where the
+        // outcome becomes known rather than where a hedge is acted on —
+        // nothing acts on one. Until this existed the DECIDE line and the
+        // journal were the whole trace, and both answer for a single cycle:
+        // a desk reading charts could not see that every declared exposure
+        // had gone unhedged for a week, which is precisely the state §31.4
+        // exists to make visible. Neither the policy's name nor its hedge
+        // instrument is a label; both are configuration this source does not
+        // bound, and the `HedgeSurveyed` record already carries them.
+        let metrics = &self.telemetry.metrics;
+        let proposed = review.proposals().len();
+        if proposed > 0 {
+            metrics.increment(names::HEDGE_PROPOSALS, labels([]), proposed as u64);
+        }
+        for refusal in review.refusals() {
+            metrics.count(
+                names::HEDGE_REFUSALS,
+                labels([("reason", crate::hedge_review::refusal_reason(refusal))]),
+            );
+        }
+        // Once per cycle rather than once per declared policy: the fact is
+        // that one book could not be described, and a count multiplied by the
+        // policy list would move when somebody edited configuration.
+        if review.exposures_refused.is_some() {
+            metrics.count(
+                names::HEDGE_REFUSALS,
+                labels([("reason", crate::hedge_review::REASON_EXPOSURES_UNREADABLE)]),
+            );
         }
         review
     }
