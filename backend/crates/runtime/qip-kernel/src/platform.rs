@@ -10674,6 +10674,28 @@ impl Platform {
         // could narrow sits behind a writer with no production caller, so a
         // cap built on it would be a control that cannot fire. The two
         // families are different objects and neither moves capital.
+        //
+        // **And the correlation family is not merely unconsumed: in a
+        // deployed process this call measures nothing at all.** That is the
+        // fact a LEVEL 2 lane needs first and neither sentence above carries.
+        // The only input is the realised calendar; the calendar's granted
+        // days are stamped from `self.envelopes`; and that map's one writer
+        // is `CentralPlane::issue`, which no binary's `src/` reaches. Its own
+        // doc enumerates what stays dead until the operator-authenticated
+        // capital route exists, and this measurement is named on that list.
+        // `the_learn_stage_measures_no_family_structure_on_a_corpus_the_centre_never_granted`
+        // in `tests/central.rs` settles a full clustering window of real
+        // fills for three strategies and pins the calendar empty anyway.
+        //
+        // So LEVEL 2 is not a wiring job waiting for somebody with an
+        // afternoon. Allocating across families needs a family and a weight,
+        // and the weight is empty for the same shape of reason: the only
+        // `src/` caller of `set_proposal` is `central::learning`'s `resize`,
+        // which returns early unless a proposal already exists and can
+        // originate none. A consumer added on top of either would be a gate
+        // with no subject in the strong sense — not one that nothing reads,
+        // one that nothing feeds — and ADR 0064 requires its own record
+        // before either family notion is wired to a weight in any case.
         match self.central.family_structure(now) {
             Ok(Some(journal)) => {
                 let detail = format!("{}; {}", outcome.detail, journal.describe());
