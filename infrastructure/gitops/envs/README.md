@@ -99,19 +99,21 @@ Authorization refuses at admission, which reads as a broken deploy rather
 than as a missing collector. The digest is refused upstream today —
 `modules/observability/NOT-SCRAPED.md` has the finding and the commands.
 
-What is already correct, so that the day it is pinned this is a mechanical
-edit rather than a design: `modules/cloudrun` publishes the `RunMonitoring`
+What is already correct, so that the day it is pinned this is a short edit
+rather than a design: `modules/cloudrun` publishes the `RunMonitoring`
 document as `config.yaml` at the **root** of `qip-metrics-<env>-<name>-<project>`,
 and exports `collector_mount_path` (`/etc/rungmp`) and
 `collector_config_path` (`/etc/rungmp/config.yaml`). The second is not a
-setting: it is the only path the sidecar's entrypoint opens. The two
-fragments the manifest for `fastbrain` and `deepbrain` then needs, and
-nothing else — the sidecar carries no environment, no secret and no
-identity of its own:
+setting: it is the only path the sidecar's entrypoint opens. The sidecar
+carries no environment, no secret and no identity of its own. The fragments
+the manifests for `fastbrain` and `deepbrain` then need:
 
 ```yaml
     - name: qip-metrics-collector
       image: cloud-run-gmp-sidecar        # a logical name; kustomization.yaml pins the digest
+      dependsOn:
+      - fastbrain                         # `deepbrain` in deepbrain.yaml. The collector starts
+                                          # after the workload and is stopped before it
       volumeMounts:
       - name: metrics-collector-config
         mountPath: /etc/rungmp            # modules/cloudrun's collector_mount_path
@@ -126,11 +128,68 @@ identity of its own:
         readOnly: true
 ```
 
+Three things this section had wrong or left unsaid until 2026-09-15, found by
+reading Google's own instructions for the sidecar and the tests that would
+check the paste. None of them is a reason to write the fragment early — the
+parity test refuses a collector container while the environment names no
+digest, and it is right to: a container pulling an image nothing has mirrored
+is a revision Binary Authorization refuses, which reads as a broken deploy
+rather than as a missing collector. They are the reasons the day it is pinned
+is not only a paste.
+
+- **`dependsOn` was missing from the fragment, and it is the half that is
+  not decoration.** Google's instructions for adding the sidecar say to add
+  a container-dependency annotation —
+  `run.googleapis.com/container-dependencies: '{"collector":["app"]}'` — so
+  that the collector "starts after and shuts down before the application
+  container", and the same page says the collector "performs a start-up
+  scrape after 10 seconds and performs a shut-down scrape, no matter how
+  short-lived the instance is"
+  (<https://cloud.google.com/stackdriver/docs/managed-prometheus/cloudrun-sidecar>,
+  read 2026-09-15; it redirects to `docs.cloud.google.com` and answers 200).
+  A shut-down scrape taken after the workload has already gone is the last
+  scrape before a revision disappears, which is the one an operator most
+  wants and the one nothing else will ever produce again. In this CRD shape
+  that annotation is the container's `dependsOn`, exactly as the egress
+  sidecar is already ordered — with the direction reversed, because the
+  workload waits for the proxy and the collector waits for the workload.
+- **The only thing checked about any of this is the container count.**
+  `gitops.rs`'s parity test counts containers named `qip-metrics-collector`
+  and asserts the count equals "the catalogue entry asks **and** the
+  environment names a digest". Nothing reads the mount: on 2026-09-15
+  `grep -rn rungmp backend/crates/tests/qip-acceptance/tests/` returned four
+  lines, all in `infrastructure.rs` and all about `modules/cloudrun`'s own
+  locals. So a fragment pasted with the mount one directory out, or with
+  another workload's bucket, passes every gate in this repository. And it
+  fails **invisibly**, in a way worse than the object-path bug it would
+  reproduce: the sidecar's built-in default scrapes port 8080 at `/metrics`
+  every 30 seconds, which for these two workloads is the same target the
+  published document names, so a document that never arrived produces
+  metrics that look right and a `RunMonitoring` nobody is reading. The
+  assertion that would close this belongs beside the count — the mount equals
+  the module's `collector_mount_path`, the volume names that workload's own
+  `qip-metrics-<env>-<name>-<project>` — and it does not exist yet. Write it
+  in the same commit as the fragment, not after.
+- **Whether the document should arrive from a bucket at all is an open
+  question, and it is the one decision the day cannot paste its way past.**
+  Google documents the custom configuration arriving as a Secret Manager
+  volume mounted at `/etc/rungmp`, with the secret version projected as
+  `config.yaml`. This repository publishes it to a bucket and would mount a
+  `gcs` volume — and the vendored CRD's volume schema, enumerated in the
+  section above, lists `cloudSqlInstance`, `emptyDir`, `name` and `secret`
+  and no `gcs`. Of the three `gcs` volumes these manifests carry, the
+  collector's is therefore the only one with a documented alternative that
+  the schema is known to admit. Moving it is not a manifest edit: the
+  bucket, the `objectViewer` grant and the two outputs in `modules/cloudrun`
+  would become a secret, a version and a `secretAccessor` grant, and that is
+  an ADR, taken by a person, on the day. Recorded here so the next reader
+  meets it before writing the mount rather than after a sync prunes it.
+
 That volume is a `gcs` volume, so it is subject in full to the section
 above: if the schema prunes `gcs`, the collector mounts nothing, reads its
-built-in default and scrapes a target nobody chose. Prove the mount before
-believing a scrape, and do not flip `workload_metrics_exist` on a manifest
-that merely applied.
+built-in default and — per the paragraph above — charts something that looks
+like a scrape. Prove the mount before believing a scrape, and do not flip
+`workload_metrics_exist` on a manifest that merely applied.
 
 ## Other fields whose accepted form was not confirmable offline
 
