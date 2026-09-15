@@ -324,6 +324,8 @@ mod tests {
                 market: "calm".to_string(),
                 volatility: "low".to_string(),
             },
+            state: None,
+            causal_context: Vec::new(),
             findings: FindingsSummary {
                 runs: 1,
                 findings: 1,

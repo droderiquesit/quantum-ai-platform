@@ -11,9 +11,9 @@
 #![allow(clippy::float_cmp)]
 
 use qip_ai::memory::{
-    AnalystStance, ClaimRecord, DecisionTaken, EPISODE_DIMENSIONS, EPISODE_ENCODING, Episode,
-    EpisodeOutcome, EpisodeQuery, EpisodicMemory, FindingsSummary, PrecedentDigest, RegimeLabel,
-    StanceDirection,
+    AnalystStance, CausalContextEdge, ClaimRecord, DecisionTaken, EPISODE_DIMENSIONS,
+    EPISODE_ENCODING, Episode, EpisodeOutcome, EpisodeQuery, EpisodicMemory, FindingsSummary,
+    MarketState, PrecedentDigest, RegimeLabel, StanceDirection,
 };
 use qip_core::time::{Duration, Timestamp};
 
@@ -51,6 +51,8 @@ fn episode(id: &str, instrument: &str, market: &str, at: Timestamp, move_bps: f6
         episode_id: id.to_string(),
         instrument: instrument.to_string(),
         regime: regime(market, "normal"),
+        state: None,
+        causal_context: Vec::new(),
         findings: FindingsSummary {
             runs: 4,
             findings: 3,
@@ -68,6 +70,7 @@ fn episode(id: &str, instrument: &str, market: &str, at: Timestamp, move_bps: f6
             resolved_at: at.saturating_add(Duration::from_days(1)),
             realised_move_bps: move_bps,
             realised_pnl: 0.0,
+            expected_move_bps: None,
         }),
         at,
         known_at: at.saturating_add(Duration::from_days(1)),
@@ -399,6 +402,8 @@ fn two_constructions_from_the_same_episodes_recall_identically() {
     let query = EpisodeQuery {
         instrument: "obj-AAA".to_string(),
         regime: regime("trending", "high"),
+        state: None,
+        causal_context: Vec::new(),
         claim: Some(claim("undervalued", 1.0, 0.5)),
         findings: None,
         stances: Vec::new(),
@@ -476,5 +481,298 @@ fn the_precedent_digest_counts_agreement_only_over_resolved_signed_outcomes() {
     assert_eq!(
         directionless.agreement, None,
         "a directionless claim cannot be agreed with"
+    );
+}
+
+// --- §10.1: the state, the causal context and the surprise -------------------
+
+/// A measured state: ratios that were formed, a book a tenth down, and a
+/// window that ran up two hundred basis points.
+fn measured_state() -> MarketState {
+    MarketState {
+        drawdown: 0.10,
+        volatility_ratio: Some(1.8),
+        spread_ratio: Some(1.2),
+        recent_return_bps: Some(200.0),
+        observations: 120,
+    }
+}
+
+fn edge(cause: &str, transmission: f64, established: bool) -> CausalContextEdge {
+    CausalContextEdge {
+        cause: cause.to_string(),
+        mechanism: "supply_chain".to_string(),
+        transmission,
+        established,
+    }
+}
+
+#[test]
+fn a_state_whose_ratio_is_not_a_real_number_is_refused_and_a_measured_one_is_admitted() {
+    // The failure: a degenerate series divides by zero, the quotient is NaN,
+    // and the encoder's bounded map sends NaN to 0.0 — which is exactly the
+    // value an *unmeasured* state encodes as. A broken measurement would
+    // reach the index labelled "nothing was measured", and no reader of the
+    // record or of the vector could tell the two apart.
+    let mut admitted = episode("ok", "obj-AAA", "quiet", start(), 10.0);
+    admitted.state = Some(measured_state());
+    assert!(
+        admitted.validate().is_ok(),
+        "premise: a state whose every figure was measured is admitted, so the refusals below \
+         are about the value and not about the field existing"
+    );
+
+    for (label, bad) in [
+        (
+            "volatility_ratio",
+            MarketState {
+                volatility_ratio: Some(f64::NAN),
+                ..measured_state()
+            },
+        ),
+        (
+            "spread_ratio",
+            MarketState {
+                spread_ratio: Some(-0.5),
+                ..measured_state()
+            },
+        ),
+    ] {
+        let mut refused = episode("bad", "obj-AAA", "quiet", start(), 10.0);
+        refused.state = Some(bad);
+        let error = refused
+            .validate()
+            .expect_err("a ratio that is not a real number was admitted");
+        assert!(
+            error.message().contains(label),
+            "the refusal must name the field that was wrong; got: {}",
+            error.message()
+        );
+    }
+
+    // A drawdown is a fraction of the high-water mark. One above 1 is a
+    // reading from a broken capital state, not a very bad day.
+    let mut deep = episode("deep", "obj-AAA", "quiet", start(), 10.0);
+    deep.state = Some(MarketState {
+        drawdown: 1.4,
+        ..measured_state()
+    });
+    let error = deep
+        .validate()
+        .expect_err("a drawdown above one was admitted");
+    assert!(
+        error.message().contains("drawdown"),
+        "got: {}",
+        error.message()
+    );
+
+    // A ratio nobody could form is absent, and absent is admitted: the
+    // platform is allowed to say it did not measure.
+    let mut cold = episode("cold", "obj-AAA", "quiet", start(), 10.0);
+    cold.state = Some(MarketState {
+        volatility_ratio: None,
+        spread_ratio: None,
+        recent_return_bps: None,
+        observations: 0,
+        drawdown: 0.0,
+    });
+    assert!(
+        cold.validate().is_ok(),
+        "a cold start must be recordable; refusing it would force a caller to invent a ratio"
+    );
+}
+
+#[test]
+fn a_causal_edge_whose_transmission_is_outside_the_unit_interval_is_refused_and_one_inside_it_is_admitted()
+ {
+    // The failure, and it has already happened once in the world model: a
+    // NaN strength reached `transmission`, `partial_cmp` answered `None`, and
+    // every ordering that touched it silently stopped ordering. Here the same
+    // number reaches the mean the encoder takes over these edges and makes
+    // every episode in the store unorderable against every other.
+    let mut admitted = episode("ok", "obj-AAA", "quiet", start(), 10.0);
+    admitted.causal_context = vec![edge("obj-BBB", 0.42, true)];
+    assert!(
+        admitted.validate().is_ok(),
+        "premise: an edge with a real transmission is admitted"
+    );
+
+    for bad in [f64::NAN, 1.5, -0.1] {
+        let mut refused = episode("bad", "obj-AAA", "quiet", start(), 10.0);
+        refused.causal_context = vec![edge("obj-BBB", bad, true)];
+        let error = refused
+            .validate()
+            .expect_err("a transmission outside the unit interval was admitted");
+        assert!(
+            error.message().contains("transmission"),
+            "got: {}",
+            error.message()
+        );
+    }
+
+    let mut unnamed = episode("unnamed", "obj-AAA", "quiet", start(), 10.0);
+    unnamed.causal_context = vec![edge("  ", 0.5, true)];
+    assert!(
+        unnamed.validate().is_err(),
+        "an edge from an unnamed cause is a bucket nobody can read"
+    );
+}
+
+#[test]
+fn the_surprise_is_the_gap_from_what_was_claimed_to_what_happened_and_is_absent_where_nothing_was_claimed()
+ {
+    // The failure: reporting a surprise of zero for a claim that never
+    // stated a magnitude. Zero surprise reads as "we called it exactly",
+    // which is the strongest possible statement about the platform's
+    // judgement, and it would be made on the strength of no claim at all.
+    let mut resolved = episode("ep", "obj-AAA", "quiet", start(), 120.0);
+    assert_eq!(
+        resolved.surprise_bps(),
+        None,
+        "premise: an outcome with no expectation states no surprise"
+    );
+
+    if let Some(outcome) = resolved.outcome.as_mut() {
+        outcome.expected_move_bps = Some(50.0);
+    }
+    assert_eq!(
+        resolved.surprise_bps(),
+        Some(70.0),
+        "the move overshot a 50bp claim by 70bp"
+    );
+
+    // Signed, because the sign is a different lesson: falling short of a
+    // claim and blowing through it are not the same mistake.
+    if let Some(outcome) = resolved.outcome.as_mut() {
+        outcome.expected_move_bps = Some(300.0);
+    }
+    assert_eq!(
+        resolved.surprise_bps(),
+        Some(-180.0),
+        "a move that fell short must report a negative surprise, not its magnitude"
+    );
+
+    let mut open = episode("open", "obj-AAA", "quiet", start(), 0.0);
+    open.outcome = None;
+    assert_eq!(
+        open.surprise_bps(),
+        None,
+        "an unresolved episode cannot be surprising yet"
+    );
+}
+
+#[test]
+fn the_state_a_market_was_in_ranks_the_neighbours_and_never_moves_the_bucket_they_are_found_in() {
+    // The failure this guards is not hypothetical and was found by the
+    // kernel's own suite rather than reasoned out: bucketing on the state put
+    // the same claim about the same name in a different bucket once the tape
+    // had swung, the one-bit probe missed it, and memory answered "no
+    // precedent" in exactly the situation precedent is asked for. The index
+    // gathers on the question; the cosine ranks on the state.
+    let quiet_state = MarketState {
+        volatility_ratio: Some(0.9),
+        recent_return_bps: Some(10.0),
+        ..measured_state()
+    };
+    let violent_state = MarketState {
+        volatility_ratio: Some(4.0),
+        recent_return_bps: Some(1_500.0),
+        ..measured_state()
+    };
+
+    let mut quiet = episode("quiet", "obj-AAA", "quiet", start(), 30.0);
+    quiet.state = Some(quiet_state);
+    let mut violent = episode(
+        "violent",
+        "obj-AAA",
+        "quiet",
+        start().saturating_add(Duration::from_days(1)),
+        30.0,
+    );
+    violent.state = Some(violent_state);
+
+    let mut memory = EpisodicMemory::new(16, 16).expect("non-zero bounds");
+    let mut bare = episode("bare", "obj-AAA", "quiet", start(), 30.0);
+    bare.state = None;
+    bare.causal_context = Vec::new();
+    let stateless = memory.buckets_of(&bare.embedding());
+    assert_eq!(
+        memory.buckets_of(&quiet.embedding()),
+        stateless,
+        "a state block moved the bucket; the index must gather on the question alone"
+    );
+    assert_eq!(
+        memory.buckets_of(&violent.embedding()),
+        stateless,
+        "a violent state moved the bucket away from a quiet one's"
+    );
+
+    memory.remember(quiet).expect("valid");
+    memory.remember(violent).expect("valid");
+
+    // Ranking, though, is the state's business. A question asked on a
+    // violent tape must bring the violent episode back first.
+    let mut query = episode("q", "obj-AAA", "quiet", start(), 0.0).as_query();
+    query.state = Some(violent_state);
+    let recall = memory.recall(&query, Timestamp::MAX, 2);
+    assert_eq!(recall.nearest.len(), 2, "premise: both were recalled");
+    assert_eq!(
+        recall.nearest[0].episode.episode_id, "violent",
+        "the episode formed in the state being asked about did not rank first"
+    );
+
+    let mut calm_query = episode("q", "obj-AAA", "quiet", start(), 0.0).as_query();
+    calm_query.state = Some(quiet_state);
+    let calm = memory.recall(&calm_query, Timestamp::MAX, 2);
+    assert_eq!(calm.nearest.len(), 2, "premise: both were recalled");
+    assert_eq!(
+        calm.nearest[0].episode.episode_id, "quiet",
+        "the ranking did not follow the state at all, so it is not ranking on it"
+    );
+}
+
+#[test]
+fn the_precedent_digest_reports_the_worst_surprise_among_the_neighbours_and_none_where_none_is_gradeable()
+ {
+    // The failure: a mean over the neighbours. §10.2 calls high-surprise
+    // moments the most informative and the rarest, and a mean over five
+    // buries the one that was rare — the exact reading the statistic exists
+    // to surface.
+    let mut memory = EpisodicMemory::new(16, 16).expect("non-zero bounds");
+    let day = Duration::from_days(1);
+    for (id, at, realised, expected) in [
+        ("small", start(), 60.0, Some(50.0)),
+        ("large", start().saturating_add(day), 40.0, Some(900.0)),
+        ("ungraded", start().saturating_add(day * 2), 30.0, None),
+    ] {
+        let mut entry = episode(id, "obj-AAA", "quiet", at, realised);
+        if let Some(outcome) = entry.outcome.as_mut() {
+            outcome.expected_move_bps = expected;
+        }
+        memory.remember(entry).expect("valid");
+    }
+
+    let recall = memory.recall(
+        &episode("q", "obj-AAA", "quiet", start(), 0.0).as_query(),
+        Timestamp::MAX,
+        10,
+    );
+    assert_eq!(recall.nearest.len(), 3, "premise: all three recalled");
+    let digest = PrecedentDigest::of(&recall.nearest, 1.0);
+    assert_eq!(
+        digest.surprising, 2,
+        "the episode with no expectation must not be in the denominator"
+    );
+    assert_eq!(
+        digest.worst_surprise_bps,
+        Some(-860.0),
+        "the worst surprise is the largest by magnitude, reported with its sign"
+    );
+
+    let nothing = PrecedentDigest::of(&[], 1.0);
+    assert_eq!(nothing.surprising, 0);
+    assert_eq!(
+        nothing.worst_surprise_bps, None,
+        "no precedent is not a surprise of zero"
     );
 }

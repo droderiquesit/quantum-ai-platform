@@ -3,11 +3,23 @@
 //! Streaming estimators forget by construction (blueprint §10). This module
 //! is the platform's answer to the question a desk trader answers from
 //! experience: an [`Episode`] is the blueprint's compressed episode vector —
-//! the instrument, the regime in force, what the detectors found, where each
-//! analyst stood, what the hypothesis claimed and at what confidence, what
-//! was decided, and what followed once the claim resolved — and
+//! the instrument, the regime in force, the market and world state the
+//! platform measured ([`MarketState`]), the causal edges the graph held into
+//! that instrument ([`CausalContextEdge`]), what the detectors found, where
+//! each analyst stood, what the hypothesis claimed and at what confidence,
+//! what was decided, what followed once the claim resolved, and how far that
+//! was from what had been expected ([`Episode::surprise_bps`]) — and
 //! [`EpisodicMemory`] retrieves the episodes nearest to a situation by
 //! approximate nearest neighbour.
+//!
+//! That list is §10.1's seven fields, and two of them are deliberately not
+//! stored as the blueprint draws them. `state_vector` is kept as the named
+//! quantities it is computed from rather than as an opaque array, and
+//! `surprise` is computed from the outcome rather than written beside it.
+//! Both for the same reason: a record that holds a fact twice holds two
+//! facts, and the copy that goes stale is indistinguishable from the one that
+//! did not. See [`episode::EPISODE_DIMENSIONS`] and
+//! [`EpisodeOutcome::surprise_bps`] for the arguments in full.
 //!
 //! Two properties are load-bearing and both are structural rather than
 //! conventions:
@@ -49,7 +61,8 @@ pub mod episode;
 pub mod store;
 
 pub use episode::{
-    AnalystStance, ClaimRecord, DecisionTaken, EPISODE_DIMENSIONS, EPISODE_ENCODING, Episode,
-    EpisodeOutcome, EpisodeQuery, FindingsSummary, RegimeLabel, StanceDirection,
+    AnalystStance, CausalContextEdge, ClaimRecord, DecisionTaken, EPISODE_DIMENSIONS,
+    EPISODE_ENCODING, Episode, EpisodeOutcome, EpisodeQuery, FindingsSummary, MarketState,
+    RegimeLabel, StanceDirection,
 };
 pub use store::{EpisodicMemory, PrecedentDigest, Recall, Recalled};

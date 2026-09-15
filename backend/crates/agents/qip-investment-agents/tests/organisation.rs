@@ -1663,6 +1663,8 @@ fn precedent() -> BriefPrecedent {
             resolved: 3,
             agreeing: 1,
             agreement: Some(1.0 / 3.0),
+            surprising: 0,
+            worst_surprise_bps: None,
         },
         0.91,
         Some(false),
