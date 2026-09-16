@@ -833,6 +833,83 @@ variable "enable_vertex_ai" {
   default     = false
 }
 
+# --- Key protection level ---------------------------------------------------
+#
+# Blueprint §45.1 lists Cloud HSM beside Secret Manager and KMS. Google Cloud
+# has no separate HSM resource: Cloud HSM *is* a KMS key whose version
+# template declares `protection_level = "HSM"`. Declaring that row therefore
+# means giving this configuration's keys a protection level somebody may
+# choose, not adding a resource. A search for `google_cloud_hsm` will never
+# match anything, in this tree or any other, because the provider has no such
+# resource type — it is a question that cannot return yes, and §45.1's own
+# evidence command asked it for a while.
+#
+# ADR 0069 declined to declare Cloud HSM on the grounds that "no custody key
+# material, no signing key and no asymmetric key of any kind exists anywhere".
+# That premise is not true, and was not true on the day it was written:
+# `modules/binaryauthorization` has held an `ASYMMETRIC_SIGN` key since
+# 2026-09-02, twelve days earlier, and ADR 0043 names it in terms — "the
+# platform already meets an asymmetric-signature obligation, today". ADR 0069
+# set its own reversal condition as "any asymmetric key material", to be
+# checked by a grep for a caller rather than by a judgement about phase:
+# `grep -rn 'purpose *= *"ASYMMETRIC_SIGN"' infrastructure/terraform
+# --include=*.tf` prints that key. This is that condition firing, not the
+# decision being reopened.
+#
+# Note the shape of that command, because the obvious version of it is broken
+# in a way this repository has been bitten by before. A bare
+# `grep -rln ASYMMETRIC_SIGN` over the same tree prints *two* files: the module
+# and this one, because this paragraph names the string. A recount command
+# that matches its own citation is a measurement instrument that reads itself,
+# and it inflates by one the moment somebody quotes it. Matching the `purpose`
+# assignment rather than the bare token keeps prose out of the count.
+#
+# `SOFTWARE` by default, and that default is the conservative one in the sense
+# that matters here: it is the level all four keys already declared as
+# literals, so a plan taken after this variable existed is identical to one
+# taken before it. Nothing changes shape or cost until somebody sets it. An
+# HSM key version bills at roughly ten times a software one, and three of the
+# four keys rotate every ninety days, so each new version is a standing charge
+# rather than a one-off.
+#
+# One value for the whole configuration, threaded to every key, because a
+# posture that is HSM for the attestor and software for the evidence key reads
+# to anybody asking as "the platform uses Cloud HSM" while being false of the
+# key they meant. Making the mixed posture unrepresentable is worth more than
+# a rule in a document saying not to build one.
+#
+# What this variable does not do, and it is the sharp edge: raising it on an
+# environment that has already been applied does not upgrade a key.
+# `version_template` is immutable on a crypto key, so Terraform plans to
+# *replace* it, and all four carry `prevent_destroy = true` — the apply stops
+# rather than proceeding. That is the safe failure and it is still a wedged
+# apply, and the unsafe version of it would make every object under the
+# evidence key unreadable while leaving the objects in place. Choose the level
+# before an environment's first apply. **Terraform cannot gate this**: a
+# variable validation is handed the value and never the prior state, so this
+# paragraph is documentation, and the harness at
+# `terraform/tests/kms-protection.tftest.hcl` does not claim to prove it.
+# Saying so here is the alternative to a check that would read as protection
+# and could never fire.
+
+variable "kms_protection_level" {
+  description = "Protection level for every KMS key in this configuration: SOFTWARE or HSM. One value for all four keys, so a mixed posture cannot be expressed."
+  type        = string
+  default     = "SOFTWARE"
+
+  validation {
+    # Cloud KMS also accepts EXTERNAL and EXTERNAL_VPC, and both are refused
+    # here rather than passed through. Each needs a `google_kms_ekm_connection`
+    # and a key management partner outside Google, and this configuration
+    # declares neither. An environment setting one would fail deep inside the
+    # provider, naming a key URI nobody configured rather than the connection
+    # nobody made. A value this configuration cannot honour is refused at the
+    # point where the reason is still legible.
+    condition     = contains(["SOFTWARE", "HSM"], var.kms_protection_level)
+    error_message = "kms_protection_level must be exactly \"SOFTWARE\" or \"HSM\". Cloud KMS is case-sensitive, so \"hsm\" is not \"HSM\". EXTERNAL and EXTERNAL_VPC are refused deliberately: each needs a google_kms_ekm_connection this configuration does not declare."
+  }
+}
+
 # --- Private connectivity ---------------------------------------------------
 #
 # Both default false, for a reason one step beyond the managed data services

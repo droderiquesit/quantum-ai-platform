@@ -24,3 +24,19 @@ output "console_service_account_email" {
   description = "The identity the portal runs as, or null where the console has no platform to read."
   value       = one(google_service_account.console[*].email)
 }
+
+output "key_protection_level" {
+  description = <<-EOT
+    The protection level the secrets key is actually planned with.
+
+    Read off the resource rather than echoed from the variable, and that is the
+    whole point of it: an output returning `var.kms_protection_level` would
+    agree with itself no matter what the key was built with, and the thing
+    worth proving is that the value reached the key. This is what the root
+    surfaces and what `terraform/tests/kms-protection.tftest.hcl` asserts on,
+    so severing the variable from the resource fails a plan rather than passing
+    one quietly.
+  EOT
+
+  value = google_kms_crypto_key.secrets.version_template[0].protection_level
+}
