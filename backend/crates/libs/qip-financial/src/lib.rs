@@ -37,7 +37,10 @@ pub mod valuation;
 
 pub use asset_class::{AssetClass, InstrumentType, Sector};
 pub use calendar::{MarketHours, Session, TradingCalendar};
-pub use cashflow::{CashflowForecast, CashflowKind, Commitment, CommitmentBook, ForecastCashflow};
+pub use cashflow::{
+    CallConsequence, CapitalCall, CashflowForecast, CashflowKind, Commitment, CommitmentBook,
+    ForecastCashflow,
+};
 pub use catalogue::{CatalogueManifest, LoadedCatalogue};
 pub use category::SourceCategory;
 pub use constraints::{Jurisdiction, RegulatoryConstraints, TradingRestriction};
