@@ -11970,7 +11970,22 @@ impl Platform {
                 realised_pnl: by_hypothesis
                     .get(hypothesis)
                     .map_or(0.0, |pnl| pnl.to_f64()),
-                falsifiers_triggered: Vec::new(),
+                // The falsifier this thesis named in advance, where the
+                // §14.3 `Testing` gate has already seen held-out data
+                // contradict it. Empty until this call existed, at every
+                // production site, so `Verdict::Falsified` was a grade the
+                // platform could never award: a thesis contradicted
+                // mid-horizon and recovered by settlement graded
+                // `Vindicated` and the calibration counted it correct. The
+                // register is the trial ledger's own and the LEARN stage
+                // wrote it on an earlier cycle, while the claim was still
+                // open — this cycle's falsification pass runs after the
+                // settlement and never sees a claim it has just resolved.
+                falsifiers_triggered: self
+                    .falsification
+                    .refutation_of(&claim, &prediction.proposition.criteria)
+                    .into_iter()
+                    .collect(),
                 // The platform holds no observation of a mechanism's own
                 // observables, so it does not claim to have confirmed one.
                 mechanism_confirmed: None,

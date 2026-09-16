@@ -145,11 +145,16 @@ fn learn_outcome(platform: &mut Platform, now: Timestamp) -> (String, Vec<String
 
 /// What the platform's first recorded claim actually claims.
 struct FirstClaim {
+    hypothesis_id: String,
     metric: String,
     comparison: Comparison,
     reference: Decimal,
     expected_move_bps: f64,
     class: String,
+    /// The prose the hypothesis's author stated as what would refute it. The
+    /// mirror falsifier carries it into the refutation register, so it is
+    /// what a settlement's rationale must name.
+    stated_falsifiers: Vec<String>,
     resolves_at: Timestamp,
 }
 
@@ -162,11 +167,13 @@ fn first_claim(platform: &Platform) -> Option<FirstClaim> {
             comparison,
             value,
         } => Some(FirstClaim {
+            hypothesis_id: claim.hypothesis_id.clone(),
             metric: metric.clone(),
             comparison: *comparison,
             reference: *value,
             expected_move_bps: claim.expected_move_bps,
             class: claim.class.clone(),
+            stated_falsifiers: claim.falsifiers.clone(),
             resolves_at: prediction.proposition.resolves_at,
         }),
         _ => None,
@@ -415,6 +422,193 @@ fn a_statistic_derived_only_from_closes_knowable_after_a_claim_was_formed_can_re
     assert!(
         detail.contains("1 refuted"),
         "the LEARN stage did not report the refutation: {detail}"
+    );
+    Ok(())
+}
+
+/// A claim, refuted mid-horizon or not, driven all the way to its settlement.
+///
+/// `spike` decides the only difference between the two tests below: whether
+/// the tape contradicts the falsifier before the horizon closes. Everything
+/// after it is identical — a flat tape to settlement, so realised volatility
+/// falls to zero and the claim's own prediction comes true — which is what
+/// makes the pair a controlled comparison rather than two anecdotes.
+fn settle_a_volatility_claim(spike: bool) -> Result<(FirstClaim, Platform, usize)> {
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    let first = platform.run_cycle(start());
+    assert!(
+        !platform.predictions().is_empty(),
+        "no claim was written, so there is nothing to settle:\n{}",
+        first.summarise()
+    );
+    let claim = first_claim(&platform).expect("the claim was recorded against a threshold");
+    assert!(
+        matches!(claim.comparison, Comparison::LessThan | Comparison::AtMost),
+        "the claim compares {:?}, so a rising tape does not contradict it and neither test \
+         below asserts anything",
+        claim.comparison
+    );
+    assert!(
+        !claim.stated_falsifiers.is_empty(),
+        "the claim states no falsifier in prose, so the refutation register would hold \
+         arithmetic with no sentence and this test could not tell provenance from coincidence"
+    );
+
+    if spike {
+        // Thirty alternating held-out closes: realised volatility of about
+        // 0.095 against a reference under 0.01, which is the claim's own
+        // mirror breached many times over.
+        platform.observe(hourly(
+            "AAA",
+            30,
+            |i| if i % 2 == 0 { 100.0 } else { 110.0 },
+        ));
+    }
+    let mid = start().saturating_add(Duration::from_days(5));
+    assert!(
+        mid < claim.resolves_at,
+        "the claim would already have been settled, so the falsification pass would never \
+         see it open and the spike could not be recorded"
+    );
+    let detail = learn_detail(&mut platform, mid);
+    let refuted = platform
+        .falsification()
+        .last_pass()
+        .expect("the LEARN stage recorded a pass")
+        .refuted;
+
+    // A flat tape from here to the horizon. Realised volatility over the
+    // settlement window is zero, which is below the reference the claim named,
+    // so the claim is about to come true on the arithmetic the grader reads.
+    platform.observe(hourly("AAA", 900, |_| 100.0));
+    let settle = claim.resolves_at.saturating_add(Duration::from_hours(1));
+    let settled = learn_detail(&mut platform, settle);
+    assert!(
+        settled.contains("1 thesis(es) resolved, 1 graded"),
+        "the horizon passed and nothing was graded, so the verdict this test is about was \
+         never reached. mid-horizon: {detail}\nsettlement: {settled}"
+    );
+    Ok((claim, platform, refuted))
+}
+
+#[test]
+fn a_thesis_whose_own_falsifier_fired_is_graded_falsified_rather_than_credited_as_a_correct_call()
+-> Result<()> {
+    // The defect this closes, stated as the failure it caused: every
+    // production construction of `ThesisOutcome::falsifiers_triggered` in the
+    // kernel was `Vec::new()`, so `Verdict::Falsified` — the grader's
+    // strongest refutation — could not be awarded however plainly a thesis
+    // had been contradicted. A thesis refuted mid-horizon whose observable
+    // then did what it predicted was graded as a call that held, and
+    // `counts_as_correct()` fed that into the Brier score. The platform was
+    // learning that its reasoning worked from the one case proving it did not.
+    let (claim, platform, refuted) = settle_a_volatility_claim(true)?;
+
+    // Premise one: the falsifier actually fired while the claim was open.
+    // Without this the verdict below would say nothing about the wiring.
+    assert_eq!(
+        refuted, 1,
+        "the mid-horizon pass refuted nothing, so no refutation was on the register when the \
+         thesis settled and this test would pass on an unwired platform"
+    );
+
+    let evaluation = platform
+        .evaluations()
+        .iter()
+        .find(|evaluation| evaluation.hypothesis_id == claim.hypothesis_id)
+        .expect("the settled thesis was graded");
+
+    // Premise two: the direction held and the move cleared the noise floor.
+    // Those two facts rule out `Wrong` and `Inconclusive`, and the platform
+    // confirms no mechanism, so the only verdicts this path could otherwise
+    // reach are `Vindicated` and `DirectionallyRight` — and
+    // `counts_as_correct()` is true of both. That is what makes the assertion
+    // below a statement about the falsifier rather than about the arithmetic.
+    let policy = qip_learning_engine::evaluation::EvaluationPolicy::default();
+    assert!(
+        evaluation.magnitude_ratio > 0.0,
+        "the realised move went against the claim, so this thesis would have been graded \
+         Wrong anyway and the falsifier is not what decided it (ratio {})",
+        evaluation.magnitude_ratio
+    );
+    assert!(
+        evaluation.realised_move_bps.abs() >= policy.noise_floor_bps,
+        "the realised move of {}bp is inside the {}bp noise floor, so this thesis would have \
+         been graded Inconclusive anyway",
+        evaluation.realised_move_bps,
+        policy.noise_floor_bps
+    );
+
+    assert_eq!(
+        evaluation.verdict,
+        qip_learning_engine::evaluation::Verdict::Falsified,
+        "a thesis its own stated falsifier contradicted was graded {:?}: {}",
+        evaluation.verdict,
+        evaluation.rationale
+    );
+    assert!(
+        !evaluation.verdict.counts_as_correct(),
+        "a refuted thesis still counts as a correct call, so the calibration is being fed the \
+         opposite of what happened"
+    );
+    // Provenance, not merely a non-empty list: the rationale has to name the
+    // sentence the hypothesis's author wrote, followed by the mirror's own
+    // breach word. A `falsifiers_triggered` filled with anything else would
+    // reach `Falsified` and prove nothing about where it came from, and the
+    // prose alone would match a rationale that merely echoed the claim.
+    let stated = &claim.stated_falsifiers[0];
+    assert!(
+        evaluation
+            .rationale
+            .contains(&format!("{stated} (rises_to ")),
+        "the grade names no falsifier the platform actually stated; it should carry {stated:?} \
+         and the level its mirror was breached at: {}",
+        evaluation.rationale
+    );
+    Ok(())
+}
+
+#[test]
+fn a_thesis_no_held_out_observation_ever_contradicted_is_not_graded_falsified() -> Result<()> {
+    // The other half, and the one that stops the wiring above from being a
+    // gate that refuses everything. The tape is identical to the test above
+    // except that the spike never happens, so the falsifier is never
+    // breached — and the settlement arithmetic, which is the same in both,
+    // must then produce a verdict that credits the claim. A `Falsified` here
+    // would mean the register is answering for a refutation that never
+    // occurred, which reads downstream exactly like a thesis that failed.
+    let (claim, platform, refuted) = settle_a_volatility_claim(false)?;
+
+    assert_eq!(
+        refuted, 0,
+        "the tape with no spike refuted the claim anyway, so the two tests are not the \
+         controlled comparison they are written as"
+    );
+    assert_eq!(
+        platform.falsification().ledger().refutations(),
+        0,
+        "the register holds a refutation nothing observed"
+    );
+
+    let evaluation = platform
+        .evaluations()
+        .iter()
+        .find(|evaluation| evaluation.hypothesis_id == claim.hypothesis_id)
+        .expect("the settled thesis was graded");
+    assert_ne!(
+        evaluation.verdict,
+        qip_learning_engine::evaluation::Verdict::Falsified,
+        "an unrefuted thesis was graded as refuted: {}",
+        evaluation.rationale
+    );
+    assert!(
+        evaluation.verdict.counts_as_correct(),
+        "the claim came true on the settlement arithmetic and was still not credited ({:?}), \
+         so the pair of tests is comparing two different settlements rather than one \
+         settlement under two histories: {}",
+        evaluation.verdict,
+        evaluation.rationale
     );
     Ok(())
 }

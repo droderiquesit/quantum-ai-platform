@@ -174,6 +174,44 @@ impl Book {
         self.last.as_ref()
     }
 
+    /// The falsifier a settling claim named in advance, where held-out data
+    /// has already contradicted it.
+    ///
+    /// `Platform::calibrate_resolved` reads this to fill
+    /// `ThesisOutcome::falsifiers_triggered`, which every production site in
+    /// the kernel built as `Vec::new()`. That made
+    /// `qip_learning_engine::evaluation::Verdict::Falsified` — the grader's
+    /// strongest refutation, and the only one that says the platform named in
+    /// advance what would make it wrong — a verdict that could not fire. A
+    /// thesis whose own falsifier fired mid-horizon and whose price then
+    /// recovered by the settlement graded `Vindicated`, and the calibration
+    /// counted it correct, which is worse than not grading it: the platform
+    /// was learning that its reasoning had worked from the one case that
+    /// proves it did not.
+    ///
+    /// This reads [`TrialLedger`]'s own register and holds no copy of it, so
+    /// a refutation still has exactly one record. Keying on the family and
+    /// the statement rather than on a hypothesis id is the register's stated
+    /// purpose rather than an approximation of it: §14.3 keeps a refutation
+    /// so that the *same idea* re-proposed is recognisable, and two claims of
+    /// one family whose subject, stated magnitude and prose falsifier all
+    /// match are that same idea, contradicted by the same observation at the
+    /// same level.
+    ///
+    /// The family is trimmed because [`TrialLedger`] records under the
+    /// trimmed key; asking under the untrimmed one would miss its own
+    /// writer's entry.
+    pub fn refutation_of(
+        &self,
+        claim: &qip_learning_engine::evaluation::ThesisClaim,
+        criteria: &ResolutionCriteria,
+    ) -> Option<String> {
+        let (_, _, falsifier) = evaluable(claim, criteria)?;
+        self.ledger
+            .already_refuted(claim.class.trim(), falsifier.statement())
+            .then(|| falsifier.statement().to_string())
+    }
+
     /// Evaluate every open claim's falsifier against held-out data and say
     /// what happened.
     ///
@@ -218,20 +256,9 @@ impl Book {
                 pass.unevaluable += 1;
                 continue;
             };
-            let ResolutionCriteria::Threshold {
-                metric,
-                comparison,
-                value,
-            } = &prediction.proposition.criteria
+            let Some((observable, subject, falsifier)) =
+                evaluable(claim, &prediction.proposition.criteria)
             else {
-                pass.unevaluable += 1;
-                continue;
-            };
-            let Some((observable, subject)) = metric.split_once(':') else {
-                pass.unevaluable += 1;
-                continue;
-            };
-            let Some(observable) = Observable::parse(observable) else {
                 pass.unevaluable += 1;
                 continue;
             };
@@ -240,12 +267,6 @@ impl Book {
             // first cycle of every claim looks like — and counted so the
             // summary says how many are waiting rather than falling silent.
             let Ok(boundary) = HeldOut::between(claim.formed_at, now) else {
-                pass.unevaluable += 1;
-                continue;
-            };
-
-            let Some(falsifier) = mirror_falsifier(claim, observable.series(), *comparison, value)
-            else {
                 pass.unevaluable += 1;
                 continue;
             };
@@ -316,6 +337,34 @@ impl Book {
         }
         outcome
     }
+}
+
+/// The claim's falsifier, the series it is read from, and the subject — or
+/// nothing, where the claim states no threshold this module can evaluate.
+///
+/// One derivation rather than two, and that is the whole reason it is a
+/// function. [`Book::review`] records a refutation under the statement this
+/// returns and [`Book::refutation_of`] looks one up under the same statement.
+/// Two copies that drifted apart would have the settlement ask the register
+/// for a sentence the review never wrote; the lookup would answer "never
+/// refuted" for ever and nothing would fail, which is the shape of a control
+/// that reads as protection and is not.
+fn evaluable<'a>(
+    claim: &qip_learning_engine::evaluation::ThesisClaim,
+    criteria: &'a ResolutionCriteria,
+) -> Option<(Observable, &'a str, Falsifier)> {
+    let ResolutionCriteria::Threshold {
+        metric,
+        comparison,
+        value,
+    } = criteria
+    else {
+        return None;
+    };
+    let (observable, subject) = metric.split_once(':')?;
+    let observable = Observable::parse(observable)?;
+    let falsifier = mirror_falsifier(claim, observable.series(), *comparison, value)?;
+    Some((observable, subject, falsifier))
 }
 
 /// The claim's own mirror, as something evaluable.
