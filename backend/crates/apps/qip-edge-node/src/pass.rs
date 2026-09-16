@@ -115,6 +115,17 @@ pub fn run_pass(
     now: Timestamp,
 ) -> Result<PassOutcome> {
     let tick = feed.publish(gateway, cell, now)?;
+    // §36.3's node-crash row. While the cell is reconciling before it
+    // resumes, the venue's own account of what it holds open is taken here —
+    // from the gateway itself, before it is wrapped, because the account is
+    // the venue's answer and not the requoter's — and handed to the cell
+    // below, past the halt check. Taken only while the discipline stands:
+    // outside it the cell refuses the account rather than comparing it
+    // against a working set the pass is still changing.
+    let account = match cell.awaiting_reconciliation() {
+        Some(_) => Some(gateway.venue_account(now)?),
+        None => None,
+    };
     // From here every call the cell makes to the venue is mapped, so a
     // replacement's venue id reaches the cell as the id the cell sent.
     let mut gateway = RequotingPlacer::new(gateway, requoter);
@@ -155,6 +166,13 @@ pub fn run_pass(
             feed: tick,
             fills: already_out,
         });
+    }
+
+    // The account, before anything this pass could decide. A disagreement
+    // here is a reconciliation break, which halts the cell — so this runs
+    // before the requoter and before `work`, both of which send.
+    if let Some(account) = account {
+        cell.observe_venue_account(account, now)?;
     }
 
     // Staleness is judged only now: past the halt check, because a requote

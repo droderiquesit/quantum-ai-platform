@@ -44,16 +44,20 @@ pub mod mesh;
 pub mod mirror;
 pub mod policy;
 pub mod quoting;
+/// Which other regions have gone dark, and what a cell does about it (§36.3).
+pub mod region;
 pub mod reservation;
+/// What a cell must be shown before it resumes after a crash (§36.3).
+pub mod resume;
 pub mod seam;
 pub mod telemetry;
 
 pub use arbitrage::ArbitrageDesk;
 pub use cell::{
-    Cell, CellConfig, ConfirmedFill, CrossingInterval, ExecutionReport, GATE_FILL_DISPERSION,
-    GATE_LIVE_VENUE, GATE_MASS_CANCEL, GATE_PATH_EXTENSION, GATE_PATH_ROUTER, GATE_QUOTE_BUDGET,
-    MAX_OPEN_ORDERS, OpenOrder, PlacedOrder, Placer, PolledHalt, PricingPolicy, RoutedCycle,
-    WorkReport,
+    Cell, CellConfig, ConfirmedFill, CrossingInterval, ExecutionReport,
+    GATE_AWAITING_RECONCILIATION, GATE_DARK_REGION, GATE_FILL_DISPERSION, GATE_LIVE_VENUE,
+    GATE_MASS_CANCEL, GATE_PATH_EXTENSION, GATE_PATH_ROUTER, GATE_QUOTE_BUDGET, MAX_OPEN_ORDERS,
+    OpenOrder, PlacedOrder, Placer, PolledHalt, PricingPolicy, RoutedCycle, WorkReport,
 };
 pub use dispersion::{DispersionPolicy, DispersionVerdict, FillTimes, VenueFillTimeState};
 pub use dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
@@ -69,6 +73,8 @@ pub use mesh::{
 pub use mirror::{MirrorArrangement, MirroredInstrument};
 pub use policy::{VerifiedHalt, VerifiedPolicy};
 pub use quoting::{Admission, MessageKind, QuoteBudget, RateLimits, VenueBudgetState};
+pub use region::{DarkSource, RegionOutlook};
 pub use reservation::{Rebase, RegionAllocation, RegionTable};
+pub use resume::{ResumeDiscipline, VenueAccount};
 pub use seam::{CellLiquidity, value_kind, value_type};
 pub use telemetry::CellMetrics;

@@ -20,7 +20,9 @@ use crate::mesh::{CellStateDelta, DeltaOrder, DeltaRefusal, StrategyUtilisation}
 use crate::mirror::MirrorArrangement;
 use crate::policy::{VerifiedHalt, VerifiedPolicy};
 use crate::quoting::{Admission, MessageKind, QuoteBudget, RateLimits};
+use crate::region::RegionOutlook;
 use crate::reservation::RegionTable;
+use crate::resume::{ResumeDiscipline, VenueAccount};
 use crate::seam::CellLiquidity;
 use crate::telemetry::{CellMetrics, RegionShareOutcome};
 use qip_arbitrage::liquidity::LiquiditySource;
@@ -103,6 +105,11 @@ enum RoutedOutcome {
     Assigned(PathAssignment, ExtensionVerdict),
     RouterRefused(Error),
     ExtensionRefused(PathAssignment, Error),
+    /// A mirror edge of this cycle reaches a region that has gone dark, so
+    /// §36.3 suspends the mirror rather than routing it. An arm of its own
+    /// rather than a router refusal: the router would have assigned this
+    /// cycle a path, and the reason it did not is in another region.
+    RegionDark(Error),
 }
 
 /// The chain entry for an assignment, written from the two places that make
@@ -149,6 +156,32 @@ pub const GATE_FILL_DISPERSION: &str = "fill_dispersion";
 /// the record; the chain says it once per halted pass with the order count
 /// in it.
 pub const GATE_MASS_CANCEL: &str = "mass_cancel";
+
+/// The gate a cell refuses a cross-region cycle under when the region on the
+/// other side of one of its mirror edges has gone dark (§36.3).
+///
+/// A constant rather than a literal because the refusal is raised at the
+/// routing seam and asserted by name in two suites, and a gate an operator
+/// pages on must not be renameable by an edit that a test would still pass.
+/// Refused through [`Cell::refuse`] like every other pass gate, so the label
+/// needs no second enumeration.
+///
+/// Distinct from [`GATE_PATH_ROUTER`] on purpose. "The router had no row for
+/// this cycle" and "the cell on the other end of this mirror is not
+/// answering" are different findings with different remedies — the first is
+/// a whitelist the desk wrote, the second is somebody else's node — and a
+/// cycle refused for the second reason under the first gate would send an
+/// operator to read a routing table about an outage in another region.
+pub const GATE_DARK_REGION: &str = "dark_region";
+
+/// The gate a restarted cell refuses every pass under until each of its
+/// venues has been reconciled against (§36.3, §48's degradation matrix).
+///
+/// A constant for the same reason as [`GATE_DARK_REGION`]. The cell forms no
+/// order at all while this gate is in force; see
+/// [`Cell::require_reconciliation_before_resuming`] for what arms it and
+/// [`Cell::observe_venue_account`] for the only thing that clears it.
+pub const GATE_AWAITING_RECONCILIATION: &str = "awaiting_reconciliation";
 
 /// How a cell is identified and what it is allowed to reach.
 #[derive(Clone, Debug)]
@@ -876,6 +909,22 @@ pub struct Cell {
     /// [`Cell::admit_cycle`], which refuses a cycle whose legs would arrive
     /// too far apart to be one position.
     fill_times: FillTimes,
+    /// What this cell has been told about the other regions (§36.3).
+    ///
+    /// [`RegionOutlook::AllLit`] is the state every cell has run in and is
+    /// not a permissive default in the dangerous sense: it is what a cell
+    /// whose operator has declared nothing believes, and
+    /// [`CellMetrics::regions_dark`] writes it on every pass, so a cell
+    /// running with no region wire at all says so on a chart rather than
+    /// looking like one whose peers are all answering.
+    outlook: RegionOutlook,
+    /// The venues this cell must be shown an account of before it forms
+    /// another order (§36.3), if a composition root armed the discipline.
+    ///
+    /// `None` is a cell that is not resuming from anything. Only a
+    /// composition root can arm it, because only the composition root knows
+    /// whether this process is a restart — see [`crate::resume`].
+    resume: Option<ResumeDiscipline>,
 }
 
 /// How many reconciliation breaks a cell keeps for reporting.
@@ -933,6 +982,8 @@ impl Cell {
             region_allocation: None,
             budget,
             fill_times,
+            outlook: RegionOutlook::AllLit,
+            resume: None,
             config,
         })
     }
@@ -957,6 +1008,12 @@ impl Cell {
     pub fn with_metrics(mut self, metrics: std::sync::Arc<qip_observability::Metrics>) -> Self {
         self.metrics = CellMetrics::new(metrics, &self.config.cell_id, &self.config.region);
         self.record_halt();
+        // Both §36.3 gauges, for the reason the halt gauge is written here: a
+        // cell assembled against a dark region, or armed to reconcile before
+        // it resumes, and scraped before its first pass must not read as a
+        // cell with neither.
+        self.record_dark_regions();
+        self.record_awaiting_reconciliation();
         self
     }
 
@@ -1162,6 +1219,255 @@ impl Cell {
     /// The mirror arrangement, if one is installed.
     pub const fn mirror(&self) -> Option<&MirrorArrangement> {
         self.mirror.as_ref()
+    }
+
+    // --- §36.3: a region that has gone dark ---------------------------------
+
+    /// Apply what the cell has been told about the other regions.
+    ///
+    /// Handed a reading, exactly as [`Self::apply_polled_halt`] is: the cell
+    /// reads no file and opens no socket, so the same seam is driven by a
+    /// test with nothing mounted anywhere. A cell cannot work this out for
+    /// itself — the venues in another region answer whether or not the cell
+    /// that trades them is alive — and a cell that inferred a peer's death
+    /// from its own sessions would be publishing a claim about a process it
+    /// has never spoken to.
+    ///
+    /// Idempotent: a reading identical to the one in force is no event, so
+    /// polling this every pass writes one chain entry per change rather than
+    /// one per pass.
+    pub fn apply_region_outlook(&mut self, outlook: RegionOutlook, now: Timestamp) {
+        if outlook != self.outlook {
+            self.journal.record(
+                Decision::RegionOutlookChanged {
+                    source: outlook.source().map_or_else(
+                        || "all_lit".to_string(),
+                        |source| source.as_str().to_string(),
+                    ),
+                    regions: outlook.named(),
+                    detail: outlook.describe(),
+                },
+                now,
+            );
+            self.outlook = outlook;
+        }
+        self.record_dark_regions();
+    }
+
+    /// What the cell has been told about the other regions.
+    pub const fn region_outlook(&self) -> &RegionOutlook {
+        &self.outlook
+    }
+
+    /// Whether `region` is dark to this cell.
+    ///
+    /// A cell is never dark to itself, whatever the reading says: it is the
+    /// process asking, and a cell that read itself as dark would suspend the
+    /// local half of §36.3's "everything else" column too.
+    pub fn is_region_dark(&self, region: &str) -> bool {
+        self.outlook.is_dark(region, &self.config.region)
+    }
+
+    /// How many of the regions this cell's own venue map places abroad are
+    /// dark, which is how many regions its mirrors are suspended into.
+    ///
+    /// Counted over the venue map rather than over the reading, so the
+    /// number says what it costs this cell. A reading naming six regions
+    /// this cell has no venue in suspends nothing here, and a gauge carrying
+    /// the six would have an operator hunting for mirrors that never
+    /// existed.
+    fn dark_foreign_regions(&self) -> usize {
+        let home = self.config.region.as_str();
+        self.config
+            .venue_regions
+            .values()
+            .filter(|region| region.as_str() != home)
+            .collect::<std::collections::BTreeSet<&String>>()
+            .into_iter()
+            .filter(|region| self.is_region_dark(region))
+            .count()
+    }
+
+    fn record_dark_regions(&self) {
+        self.metrics
+            .regions_dark(self.outlook.source(), self.dark_foreign_regions());
+    }
+
+    // --- §36.3: reconciling against every venue before resuming --------------
+
+    /// Refuse to form an order until every venue has been reconciled against.
+    ///
+    /// Armed by the composition root when it finds evidence that this
+    /// process is a restart of a cell that ran before — the node reads that
+    /// from its own journal store. It is not armed by the cell, and
+    /// [`crate::resume`] says why: a cell that armed itself on every start
+    /// would wait for ever on the first start of a node that has never sent
+    /// anything, which is a gate that cannot open rather than a control that
+    /// fires.
+    ///
+    /// Refuses a second arming rather than resetting the first. A cell that
+    /// silently re-armed would throw away the venues that had already
+    /// answered, and an operator watching the pending list would see it grow
+    /// back for no reason they could name.
+    pub fn require_reconciliation_before_resuming(
+        &mut self,
+        reason: impl Into<String>,
+        now: Timestamp,
+    ) -> Result<()> {
+        if let Some(existing) = &self.resume {
+            return Err(Error::denied(format!(
+                "this cell is already reconciling before it resumes ({}), with {} venue(s) still \
+                 to answer; a second arming would discard the accounts already agreed",
+                existing.reason(),
+                existing.pending().len()
+            )));
+        }
+        let discipline = ResumeDiscipline::new(reason, self.config.venues.iter().cloned())?;
+        self.journal.record(
+            Decision::ReconciliationRequired {
+                reason: discipline.reason().to_string(),
+                venues: discipline.pending(),
+            },
+            now,
+        );
+        self.resume = Some(discipline);
+        self.record_awaiting_reconciliation();
+        Ok(())
+    }
+
+    /// The discipline in force, if the cell is still reconciling.
+    pub const fn awaiting_reconciliation(&self) -> Option<&ResumeDiscipline> {
+        self.resume.as_ref()
+    }
+
+    /// Compare one venue's own account of what it holds open for this cell
+    /// against the cell's record, and clear that venue if the two agree.
+    ///
+    /// The only thing that clears a venue. Nothing the cell computes about
+    /// itself can: a cell that cleared its own gate would be asserting the
+    /// very fact it was asked to prove.
+    ///
+    /// A disagreement is a reconciliation break, which halts the cell and is
+    /// never auto-corrected — §36.3's own row for a break, and §48's "human
+    /// investigation". That is the failure this whole discipline exists to
+    /// find: a restarted process rebuilds its books from the feed and its
+    /// journal from genesis, so an order the dead process left resting is
+    /// one nothing in this platform can see, withdraw or attribute a fill
+    /// on, and the ordinary reconciler cannot find it because the cell's
+    /// side of that comparison is empty and agreeing with nothing reads as
+    /// agreement.
+    ///
+    /// Refused outside the resume window rather than compared anyway: the
+    /// working set moves within a pass — an order sent, a fill booked — and
+    /// a comparison against a venue's account taken at some other instant
+    /// would halt a healthy cell on a difference that is just the clock.
+    pub fn observe_venue_account(&mut self, account: VenueAccount, now: Timestamp) -> Result<()> {
+        let Some(discipline) = self.resume.as_ref() else {
+            return Err(Error::denied(format!(
+                "this cell is not reconciling before it resumes, so an account from {} would be \
+                 compared against a working set this pass is still changing; arm the discipline \
+                 first, or reconcile through the drop-copy channel",
+                account.venue().as_str()
+            )));
+        };
+        if !self.config.venues.contains(account.venue()) {
+            return Err(Error::invalid(format!(
+                "{} is not a venue this cell was configured for, so an account from it says \
+                 nothing about what this cell left open; supply an account for one of the {} \
+                 venues in the cell's own list",
+                account.venue().as_str(),
+                self.config.venues.len()
+            )));
+        }
+        let awaited = discipline.awaits(account.venue());
+        let mine: BTreeMap<String, Decimal> = self
+            .working
+            .iter()
+            .filter(|(_, working)| {
+                working.order.closed.is_none() && &working.order.venue == account.venue()
+            })
+            .map(|(order_id, working)| (order_id.clone(), working.order.remaining()))
+            .collect();
+        let venue = account.venue().as_str().to_string();
+        let mut findings: Vec<String> = Vec::new();
+        for (order_id, remaining) in account.open() {
+            match mine.get(order_id) {
+                None => findings.push(format!(
+                    "{venue} is holding order {order_id} open for {remaining} and this cell has \
+                     no record of sending it; a restarted cell can neither withdraw it nor \
+                     attribute a fill on it"
+                )),
+                Some(ours) if ours != remaining => findings.push(format!(
+                    "{venue} says order {order_id} has {remaining} open and this cell says {ours}"
+                )),
+                Some(_) => {}
+            }
+        }
+        for (order_id, ours) in &mine {
+            if !account.open().contains_key(order_id) {
+                findings.push(format!(
+                    "this cell holds order {order_id} open for {ours} at {venue} and the venue's \
+                     account does not name it"
+                ));
+            }
+        }
+        if account.quotes() > 0 {
+            // §48 asks for "resting orders and quotes". The cell keeps no
+            // quote inventory of its own, so any quote the venue holds live
+            // for it is exposure with no owner in this process — the same
+            // finding as an unknown resting order, and reported as one
+            // rather than left out because there is no field to compare it
+            // against.
+            findings.push(format!(
+                "{venue} is holding {} quote(s) live for this cell and the cell keeps no quote of \
+                 its own; something is quoting in this cell's name",
+                account.quotes()
+            ));
+        }
+        if !findings.is_empty() {
+            for finding in findings {
+                self.break_on(finding, now);
+            }
+            return Ok(());
+        }
+        if !awaited {
+            // A venue that has already answered, answering again. Clean, and
+            // deliberately not journaled: the node offers this every pass
+            // while the discipline stands, and one chain entry per pass for
+            // a venue that cleared three passes ago is noise in the record
+            // an incident review reads.
+            return Ok(());
+        }
+        let (pending, resumed) = match self.resume.as_mut() {
+            Some(discipline) => {
+                discipline.answered(account.venue());
+                (discipline.pending(), discipline.is_satisfied())
+            }
+            None => (Vec::new(), true),
+        };
+        self.journal.record(
+            Decision::VenueReconciled {
+                venue,
+                open: account.open().len(),
+                quotes: account.quotes(),
+                pending,
+                resumed,
+            },
+            now,
+        );
+        if resumed {
+            self.resume = None;
+        }
+        self.record_awaiting_reconciliation();
+        Ok(())
+    }
+
+    fn record_awaiting_reconciliation(&self) {
+        self.metrics.awaiting_reconciliation(
+            self.resume
+                .as_ref()
+                .map_or(0, |discipline| discipline.pending().len()),
+        );
     }
 
     /// The tenth policy slot's inventory targets and the instant they were
@@ -2180,6 +2486,14 @@ impl Cell {
         // passing unless this is on a chart.
         self.metrics
             .fill_time_unmeasured(self.fill_times.unmeasured());
+        // §36.3's two, published before the halt check for the reason every
+        // gauge above is: a halted cell that goes dark on how many of its
+        // peers have gone dark, or on how many venues it has yet to
+        // reconcile against, reads exactly like a cell with neither problem.
+        // "Nothing is dark and nothing is outstanding" is the finding an
+        // operator is looking for during somebody else's incident.
+        self.record_dark_regions();
+        self.record_awaiting_reconciliation();
 
         self.record_halt();
 
@@ -2232,6 +2546,31 @@ impl Cell {
                 self.autonomy.ceiling().as_str()
             );
             self.refuse(&mut report, GATE_LIVE_VENUE, &reason, now);
+            return Ok(report);
+        }
+
+        // §36.3's node-crash row: a cell that restarted forms no order until
+        // every venue's own account has agreed with its record. Placed after
+        // the halt and gateway gates, which are the two an operator must act
+        // on first, and before anything that could raise a signal — a
+        // strategy that ran here would price against a book whose venue may
+        // still be holding size this process cannot see.
+        //
+        // The borrow ends before the refusal, because `refuse` takes the cell
+        // mutably to journal and count what it refused.
+        let awaiting = self
+            .resume
+            .as_ref()
+            .map(|discipline| (discipline.reason().to_string(), discipline.pending()));
+        if let Some((reason, pending)) = awaiting {
+            let detail = format!(
+                "this cell is reconciling before it resumes ({reason}) and {} venue(s) have not \
+                 answered — {}; §36.3 reconciles against every venue, including resting orders \
+                 and quotes, before resuming, so no order is formed this pass",
+                pending.len(),
+                pending.join(", ")
+            );
+            self.refuse(&mut report, GATE_AWAITING_RECONCILIATION, &detail, now);
             return Ok(report);
         }
 
@@ -3596,6 +3935,15 @@ impl Cell {
             Ok(composition) => composition,
             Err(refusal) => return RoutedOutcome::RouterRefused(refusal),
         };
+        // §36.3, before the facts are assembled and before the router runs: a
+        // mirror whose other side is in a region that has gone dark is
+        // suspended rather than routed. Checked here rather than inside
+        // `mirror_facts_for` so the refusal is charted under its own gate —
+        // "the router had no row for this" and "the cell on the other end is
+        // not answering" send an operator to two different places.
+        if let Some(refusal) = self.dark_mirror(&composition) {
+            return RoutedOutcome::RegionDark(refusal);
+        }
         let facts = match self.mirror_facts_for(&composition) {
             Ok(facts) => facts,
             Err(refusal) => return RoutedOutcome::RouterRefused(refusal),
@@ -3611,6 +3959,40 @@ impl Cell {
             Ok(verdict) => RoutedOutcome::Assigned(assignment, verdict),
             Err(refusal) => RoutedOutcome::ExtensionRefused(assignment, refusal),
         }
+    }
+
+    /// The refusal for the first mirror edge of this composition that reaches
+    /// a dark region, if any does (§36.3).
+    ///
+    /// Both ends are examined rather than only the far one. A composition
+    /// whose mirror edge has neither end at home is already refused by
+    /// [`Self::mirror_ends`], and reaching for "the remote end" before that
+    /// check would be this file deciding which end is remote twice, in two
+    /// places, with one of them wrong the day a whitelist names two foreign
+    /// venues.
+    fn dark_mirror(&self, composition: &Composition) -> Option<Error> {
+        let home = self.config.region.as_str();
+        for index in composition.mirror_edges() {
+            let Some(edge) = composition.edges().get(index) else {
+                continue;
+            };
+            for end in [edge.from(), edge.to()] {
+                let region = end.region.as_str();
+                if region != home && self.is_region_dark(region) {
+                    return Some(Error::denied(format!(
+                        "the mirrored leg {} -> {} reaches region {region}, and {}; §36.3 \
+                         suspends every mirror involving a dark region rather than taking one \
+                         side of a trade whose other side is nobody. This cell's local \
+                         strategies and its intra-venue cycles are unaffected, and the mirror \
+                         resumes when that region does",
+                        edge.from().label(),
+                        edge.to().label(),
+                        self.outlook.describe()
+                    )));
+                }
+            }
+        }
+        None
     }
 
     /// Which end of a mirror edge this cell is standing on, and which way it
@@ -4032,6 +4414,22 @@ impl Cell {
             // control.
             let (assignment, extension) = match routing {
                 RoutedOutcome::Assigned(assignment, extension) => (assignment, extension),
+                // §36.3. Refused whole and charted under its own gate: the
+                // cycle was routable, and the reason it is not being taken is
+                // an outage in another region.
+                RoutedOutcome::RegionDark(refusal) => {
+                    self.refuse(
+                        report,
+                        GATE_DARK_REGION,
+                        &format!(
+                            "cycle {cycle_id} has a mirrored leg into a region that has gone \
+                             dark and is suspended whole: {}",
+                            refusal.message()
+                        ),
+                        now,
+                    );
+                    continue;
+                }
                 RoutedOutcome::RouterRefused(refusal) => {
                     self.refuse(
                         report,

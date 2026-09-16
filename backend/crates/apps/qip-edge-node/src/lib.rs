@@ -24,6 +24,8 @@ pub mod allocation;
 pub mod arbitrage;
 /// The §31.1 mirror: which venues are abroad, and this region's discipline.
 pub mod cross_region;
+/// The polled region-availability wire: which peers have gone dark (§36.3).
+pub mod dark;
 /// The simulated venue's quote feed, and the one value it may be configured as.
 pub mod feed;
 pub mod gateway;

@@ -49,10 +49,12 @@ use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, SystemClock};
 use qip_edge::cell::PolledHalt;
 use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy, WorkReport};
+use qip_edge::region::RegionOutlook;
 use qip_edge::telemetry::CellMetrics;
 use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::arbitrage::{ArbitrageInstaller, STRATEGY_VARIABLE};
 use qip_edge_node::cross_region::{CrossRegionMirror, MIRROR_VARIABLE, no_declaration_line};
+use qip_edge_node::dark::DarkRegionWire;
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SIMULATED_FEED, SimulatedFeed};
 use qip_edge_node::gateway::NodeGateway;
 use qip_edge_node::halt::{FLAG_VARIABLE, HaltFlag};
@@ -136,6 +138,11 @@ struct NodeConfig {
     /// production requirements rather than silently accepted — see
     /// `qip_edge_node::halt`.
     halt_flag: Option<HaltFlag>,
+    /// §36.3's region wire, beside the halt flag and under no variable of its
+    /// own — see `qip_edge_node::dark` for why the same mount carries both.
+    /// `None` is a node with no halt flag either, which can never be told
+    /// that a peer region has gone dark.
+    region_wire: Option<DarkRegionWire>,
     /// The strategy whose grant funds the arbitrage desk, when this node
     /// runs one. `None` installs no desk and is named in the production
     /// requirements — see `qip_edge_node::arbitrage`.
@@ -244,6 +251,12 @@ impl NodeConfig {
             Ok(value) if !value.trim().is_empty() => Some(HaltFlag::at(value.trim())?),
             _ => None,
         };
+        // Derived from the flag rather than read on its own: one mount, one
+        // operator's hand, and therefore no second variable a deployment can
+        // set inconsistently with the first.
+        let region_wire = halt_flag
+            .as_ref()
+            .and_then(|flag| DarkRegionWire::beside(flag.path()));
 
         let arbitrage_strategy = match std::env::var(STRATEGY_VARIABLE) {
             Ok(value) if !value.trim().is_empty() => Some(StrategyId::new(value.trim())),
@@ -285,6 +298,7 @@ impl NodeConfig {
             storage,
             mesh,
             halt_flag,
+            region_wire,
             arbitrage_strategy,
             feed,
             pricing,
@@ -455,6 +469,32 @@ fn run() -> Result<()> {
         started,
     )?;
     let retained_sessions = mirror.retained_sessions()?;
+    // §36.3's node-crash row: "that region dark; reconciles against every
+    // venue before resuming". A store that already holds a session is a
+    // previous run of this cell, and this process knows nothing about the
+    // orders that run left resting — it rebuilds its books from the feed and
+    // chains its journal onto genesis. So the cell forms no order until every
+    // venue's own account has agreed with its record.
+    //
+    // Armed here rather than inside the cell, and only on the evidence of a
+    // prior session: a cell that armed itself on every start would stop the
+    // genuinely first start of every node for ever, waiting for an account of
+    // a venue it has never sent anything to, which is a gate that cannot open
+    // rather than a control that fires.
+    if retained_sessions > 0 {
+        cell.require_reconciliation_before_resuming(
+            format!(
+                "this journal store already holds {retained_sessions} session(s), so this \
+                 process is a restart of a cell that has run before"
+            ),
+            started,
+        )?;
+        println!(
+            "qip-edge-node: reconciling before resuming: {} venue(s) must answer with what they \
+             hold open for this cell before it forms an order (§36.3)",
+            config.venues.len()
+        );
+    }
 
     // The table is printed as the cell holds it, not as configuration read
     // it, so the banner is a claim about the cell and not about a variable —
@@ -550,6 +590,23 @@ fn run() -> Result<()> {
             "qip-edge-node: polled halt flag at {}",
             flag.path().display()
         );
+    }
+    // §36.3's region wire, beside the halt flag and under no variable of its
+    // own — see `qip_edge_node::dark` for why the same mount carries both.
+    // Announced in both directions: a node with no wire can never be told
+    // that a peer has gone dark, and an operator reading a cell that kept
+    // mirroring through another region's outage needs to know that is the
+    // reason rather than a gate that failed.
+    match &config.region_wire {
+        Some(wire) => println!(
+            "qip-edge-node: region availability wire at {} (absent file: no region dark)",
+            wire.path().display()
+        ),
+        None => println!(
+            "qip-edge-node: no region availability wire ({FLAG_VARIABLE} unset): no peer region \
+             can be declared dark on this node, so a cross-region mirror is gated only by \
+             §31.1's reference window"
+        ),
     }
 
     // The requoter rides with the feed and nowhere else: `from_env` refused
@@ -731,6 +788,9 @@ fn serve(
     // rather than on every probe; an unreadable flag is printed every time,
     // because it is an incident for as long as it lasts.
     let mut last_polled: Option<PolledHalt> = None;
+    // The last reading of the region wire, on the same discipline as the
+    // halt flag's above.
+    let mut last_outlook: Option<RegionOutlook> = None;
     // The last pass's report, carried into the next probe's mesh exchange so
     // the delta the centre receives describes trading that happened rather
     // than an empty report. One probe behind, and said so: the pass runs
@@ -761,6 +821,21 @@ fn serve(
                         );
                     }
                     last_polled = Some(reading);
+                }
+                // §36.3's region wire, polled beside the halt flag and for
+                // the same reason it is polled first: the suspension it
+                // applies belongs in the journal this probe's flush ships
+                // and in the delta its exchange publishes. A reading equal
+                // to the one in force is no event in the cell and no line
+                // here; an unreadable one is printed every time, because it
+                // suspends every mirror for as long as it lasts.
+                if let Some(wire) = &config.region_wire {
+                    let reading = wire.poll(cell, now);
+                    let unreadable = matches!(reading, RegionOutlook::Unreadable(_));
+                    if unreadable || last_outlook.as_ref() != Some(&reading) {
+                        eprintln!("qip-edge-node: region availability: {}", reading.describe());
+                    }
+                    last_outlook = Some(reading);
                 }
                 // A journal that cannot be shipped is reported and the node
                 // keeps serving: the entries are still held locally and still

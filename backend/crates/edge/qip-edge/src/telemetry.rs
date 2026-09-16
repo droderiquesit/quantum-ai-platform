@@ -39,6 +39,7 @@
 //! says what bounds its own label.
 
 use crate::quoting::{MessageKind, VenueBudgetState};
+use crate::region::DarkSource;
 use qip_contracts::degradation::{Capability, DegradationState, Freshness};
 use qip_contracts::signal::SignalKind;
 use qip_contracts::venue::VenueId;
@@ -164,6 +165,29 @@ pub const EDGE_MESSAGES_SENT: &str = "qip_edge_messages_sent_total";
 /// tripped are the same action for two entirely different reasons, and a
 /// single series would hide a halt inside ordinary housekeeping.
 pub const EDGE_ORDERS_MASS_CANCELLED: &str = "qip_edge_orders_mass_cancelled_total";
+
+/// Regions this cell mirrors into that it is treating as dark, by why
+/// (§36.3). Named here for the same reason as [`EDGE_FILLS_CONFIRMED`].
+///
+/// Counted over the regions the cell's own venue map places abroad, so the
+/// number is "mirrors into this many regions are suspended" rather than "a
+/// file somewhere lists this many names". Both `source` arms are written on
+/// every pass, including a halted one and including the pass where nothing
+/// is dark, because a cell that stops publishing this reads exactly like a
+/// cell with every peer answering — and "no peer has gone dark" is the
+/// finding an operator is looking for during an incident in another region.
+pub const EDGE_REGIONS_DARK: &str = "qip_edge_regions_dark";
+
+/// Venues a restarted cell must still be shown an account of before it forms
+/// an order (§36.3). Named here for the same reason as
+/// [`EDGE_FILLS_CONFIRMED`].
+///
+/// Zero for a cell that is not awaiting reconciliation, which is every cell
+/// that did not restart, and written on every pass for the reason
+/// [`EDGE_REGIONS_DARK`] is: a node paused pending reconciliation sends
+/// nothing, and a node that is merely quiet sends nothing, and those are the
+/// two states this series exists to tell apart.
+pub const EDGE_VENUES_AWAITING_RECONCILIATION: &str = "qip_edge_venues_awaiting_reconciliation";
 
 /// How long each venue took from the cell's send to the venue's own confirmed
 /// fill, in milliseconds, by venue (§32.1). The measurement the dispersion
@@ -331,6 +355,15 @@ impl CellMetrics {
             "configured venues with too few fills for their fill time to be judged",
         );
         m.describe(
+            EDGE_REGIONS_DARK,
+            "regions this cell mirrors into that it is treating as dark, by source: declared, \
+             unreadable",
+        );
+        m.describe(
+            EDGE_VENUES_AWAITING_RECONCILIATION,
+            "venues a restarted cell must still be shown an account of before it forms an order",
+        );
+        m.describe(
             names::EDGE_RECONCILIATION_BREAKS,
             "disagreements between the cell's fills and the venue's own account",
         );
@@ -386,6 +419,39 @@ impl CellMetrics {
             names::EDGE_HALTED,
             self.with("source", "polled"),
             f64::from(u8::from(polled)),
+        );
+    }
+
+    /// How many of the regions this cell mirrors into are dark, by source.
+    ///
+    /// Both arms are written on every call for the reason [`Self::halt`]
+    /// writes all three of its own: a gauge that stops being updated and a
+    /// region that came back read identically on a chart. `source` takes the
+    /// two values of [`DarkSource`] and nothing else — never a region name,
+    /// which arrives from outside the process and is exactly the unbounded
+    /// label this module's header refuses.
+    pub fn regions_dark(&self, source: Option<DarkSource>, count: usize) {
+        for arm in [DarkSource::Declared, DarkSource::Unreadable] {
+            let dark = if source == Some(arm) { count } else { 0 };
+            self.metrics.gauge(
+                EDGE_REGIONS_DARK,
+                self.with("source", arm.as_str()),
+                dark as f64,
+            );
+        }
+    }
+
+    /// How many venues a restarted cell is still waiting on.
+    ///
+    /// No label beyond the cell's own: the venues are named in the journal
+    /// and in the refusal, and a series per venue would put the same fact on
+    /// the chart twice — once as a count that can reach zero and once as a
+    /// set of gauges that never can.
+    pub fn awaiting_reconciliation(&self, venues: usize) {
+        self.metrics.gauge(
+            EDGE_VENUES_AWAITING_RECONCILIATION,
+            self.base.clone(),
+            venues as f64,
         );
     }
 
