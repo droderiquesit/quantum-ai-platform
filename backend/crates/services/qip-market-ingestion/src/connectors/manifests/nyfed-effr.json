@@ -1,0 +1,31 @@
+{
+  "source_id": "nyfed-effr",
+  "provider": "The Federal Reserve Bank of New York's markets data API (markets.newyorkfed.org), serving the Effective Federal Funds Rate — the volume-weighted median of overnight federal funds transactions, published each business day for the prior business day. Free, unauthenticated, no signup.",
+  "asset_class": "rates",
+  "region": "north_america",
+  "protocol": "poll",
+  "schema": {
+    "version": "1.0",
+    "required_fields": [{ "path": "refRates", "kind": "array" }],
+    "unknown_fields": "ignore"
+  },
+  "auth": { "scheme": "none" },
+  "endpoint": {
+    "path": "/api/rates/unsecured/effr/last/10.json",
+    "health_path": "/api/rates/unsecured/effr/last/10.json"
+  },
+  "rate_limit": { "requests": 1, "per_ms": 60000, "burst": 2 },
+  "retry": {
+    "max_attempts": 3,
+    "initial_backoff_ms": 500,
+    "max_backoff_ms": 30000,
+    "multiplier": 4,
+    "jitter_basis_points": 2000
+  },
+  "poll_interval_ms": 3600000,
+  "freshness_sla_ms": 691200000,
+  "publication_delay_ms": 432000000,
+  "licensing": "public",
+  "max_events_per_batch": 16,
+  "category": "government_and_trade"
+}

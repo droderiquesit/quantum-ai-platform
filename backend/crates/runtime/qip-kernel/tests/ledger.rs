@@ -2139,19 +2139,24 @@ fn the_ecb_deposit_facility_rate_absorbed_at_sense_becomes_a_38_3_interval_rate(
 }
 
 #[test]
-fn the_desks_dollar_cash_keeps_a_rate_of_zero_and_the_record_names_the_currency_nobody_publishes()
+fn a_euro_rate_on_its_own_leaves_the_desks_dollar_cash_at_its_dust_floor_and_the_record_says_why()
 -> Result<()> {
-    // The honest half of this lane. The one §38.3 class the kernel can attest
-    // without being told is the desk's own cash at its broker, and that book is
-    // in dollars; the ECB sets the euro area's rates and no other issuer's. So
-    // the sourced rate must *not* reach this basis — a euro deposit rate behind
-    // a halt on a dollar book is a fabrication with a citation attached, which
-    // is worse than the missing number it would replace.
+    // The one §38.3 class the kernel can attest without being told is the
+    // desk's own cash at its broker, and that book is in dollars; the ECB sets
+    // the euro area's rates and no other issuer's. So a euro rate must *not*
+    // reach this basis — a euro deposit rate behind a halt on a dollar book is
+    // a fabrication with a citation attached, which is worse than the missing
+    // number it would replace. This process observes the euro rate and nothing
+    // else, which is the case that has to keep holding now that a dollar rate
+    // exists: the separation is by currency, not by which feed happens to be
+    // shipped.
     //
-    // What does change is the record. `rate: 0` used to be all a reader got;
-    // now the reason beside it names the currency no admitted source publishes
-    // a rate for, so "no accrual applies here" and "nobody supplies one" are
-    // two findings rather than one.
+    // This test was named `..._names_the_currency_nobody_publishes` until the
+    // `nyfed-effr` lane, and the name had become a false claim about the
+    // build — a dollar rate is published now. The property it actually holds
+    // is the one above, and the record's own wording was corrected with it:
+    // `RateLookup::NoneHeld` says what it can see (this process holds none)
+    // rather than what it cannot (what the build ships).
     let mut platform = platform(PlatformConfig::default())?;
     let (records, horizon) = ecb_key_rate_records()?;
     assert_eq!(platform.observe(records), 3);
@@ -2194,7 +2199,7 @@ fn the_desks_dollar_cash_keeps_a_rate_of_zero_and_the_record_names_the_currency_
         .get(&key)
         .expect("the basis records why it carries the rate it does");
     assert!(
-        reason.contains("no source in this build publishes an interval rate for USD"),
+        reason.contains("this process holds no published interval rate for USD"),
         "the record does not name the currency nobody publishes a rate for: {reason}"
     );
     // And the lookup itself says so, as one of four findings rather than an
@@ -2211,6 +2216,281 @@ fn the_desks_dollar_cash_keeps_a_rate_of_zero_and_the_record_names_the_currency_
     Ok(())
 }
 
+/// The nine effective federal funds rates the shipped `nyfed-effr` fixture
+/// carries that were knowable by the horizon, decoded by the real connector
+/// through the real runtime — the same records a deployment's SENSE stage
+/// hands to `Platform::observe`.
+///
+/// Nine of ten, not ten: the newest effective date has not cleared the
+/// manifest's five-day dissemination delay at this horizon, and a helper that
+/// quietly returned all ten would be a helper that had disabled the
+/// point-in-time gate for every test built on it.
+fn nyfed_effr_records() -> Result<(Vec<qip_market_ingestion::adapter::SensedRecord>, Timestamp)> {
+    use qip_market_ingestion::connector::emulator::SourceEmulator;
+    use qip_market_ingestion::connector::transport::SourceTransport;
+    use qip_market_ingestion::connector::{ConnectorRuntime, RuntimeConfig, SourceConnector};
+    use qip_market_ingestion::connectors::{NyFedEffrConnector, nyfed_effr};
+
+    let horizon = Timestamp::parse_rfc3339("2026-09-16T09:00:00Z")
+        .expect("a fixture timestamp is valid RFC 3339");
+    let mut connector = NyFedEffrConnector::new(NyFedEffrConnector::shipped_manifest()?)?;
+    let mut emulator = SourceEmulator::from_json(nyfed_effr::FIXTURE)?;
+    let mut runtime =
+        ConnectorRuntime::new(connector.manifest().clone(), RuntimeConfig::seeded(11))?;
+    let transport: &mut dyn SourceTransport = &mut emulator;
+    let outcome = runtime.poll(&mut connector, transport, horizon)?;
+    Ok((
+        outcome
+            .admitted
+            .into_iter()
+            .map(|envelope| envelope.into_record())
+            .collect(),
+        horizon,
+    ))
+}
+
+#[test]
+fn the_effective_federal_funds_rate_absorbed_at_sense_becomes_a_38_3_interval_rate_for_dollars()
+-> Result<()> {
+    // The production wire, end to end and with no network: the real connector
+    // decodes the body the New York Fed's own markets API served, the runtime
+    // withholds each rate until it was knowable, `Platform::observe` absorbs
+    // them, and the effective rate lands in the table §38.3's tolerance
+    // formula consults — **keyed to the dollar**. Before this lane the euro
+    // deposit rate proved the machinery and could answer for no book this
+    // process can attest, so every production basis was still its dust floor.
+    let mut platform = platform(PlatformConfig::default())?;
+    let (records, horizon) = nyfed_effr_records()?;
+    // Premise: the platform holds no interval rate before the records arrive,
+    // so what is asserted below came through `observe` and not from a default.
+    assert!(platform.interval_rates().is_empty());
+    assert_eq!(records.len(), 9, "{records:?}");
+
+    assert_eq!(platform.observe(records), 9);
+
+    let dollars = qip_capital_fabric::wallet::Asset::new("USD")?;
+    let lookup =
+        platform
+            .interval_rates()
+            .governing(&dollars, ToleranceClass::FiatAtBrokerOrBank, horizon);
+    let rate = lookup
+        .rate()
+        .expect("the effective federal funds rate governs a dollar fiat book at the instant read");
+    // 3.63 per cent per annum, the level the New York Fed published for every
+    // date in the recording, on the actual/360 day count US money-market
+    // interest accrues at: 3.63 / 100 / 360.
+    assert_eq!(rate.published_percent_per_annum(), dec!("3.63"));
+    assert_eq!(rate.rate(), dec!("0.000100833"));
+    // The provenance is the source the licensing catalogue admitted, not a
+    // number somebody typed.
+    assert_eq!(rate.source_id(), "nyfed-effr");
+    // The newest rate that had become *knowable*, not the newest the vendor
+    // served. 2026-09-14 is in the recording and is still withheld here; a
+    // table that held it would be a table built from a row this process could
+    // not have read.
+    assert_eq!(
+        rate.true_at(),
+        Timestamp::parse_rfc3339("2026-09-11T00:00:00Z").expect("a valid instant")
+    );
+    assert!(
+        rate.knowable_at() >= rate.true_at(),
+        "a rate was stamped knowable before it was true"
+    );
+    // One asset, because a series that governs dollars governs nothing else.
+    assert_eq!(platform.interval_rates().len(), 1);
+    assert_eq!(
+        platform
+            .interval_rates()
+            .assets()
+            .map(qip_capital_fabric::wallet::Asset::as_str)
+            .collect::<Vec<_>>(),
+        vec!["USD"]
+    );
+    Ok(())
+}
+
+#[test]
+fn the_learn_stage_judges_the_desks_dollar_cash_by_a_published_rate_rather_than_its_dust_floor()
+-> Result<()> {
+    // The point of the lane, at the seam that matters. §38.3's tolerance is
+    // `dust + rate x |expected|`, and until now the second term was nil on
+    // every production book: the machinery was proven and the only class the
+    // kernel can attest without being told is dollar cash, for which no
+    // admitted source published anything. It does now, so the LEARN stage's
+    // reconciliation of the desk's own cash is judged by a figure the Federal
+    // Reserve Bank of New York published rather than by the floor alone.
+    let mut platform = platform(PlatformConfig::default())?;
+    let (records, knowable) = nyfed_effr_records()?;
+    assert_eq!(platform.observe(records), 9);
+    // Premise: exactly one rate is held, and it is for dollars, so a non-zero
+    // rate below is this rate and not an artefact of a table with several.
+    assert_eq!(platform.interval_rates().len(), 1);
+
+    let key = desk_cash()?;
+    let initial_equity = platform.config().initial_equity;
+    // Observed *after* the rate became knowable. A statement judged at an
+    // instant before the publisher had published is judged at the dust floor
+    // by design — `RateLookup::NotCurrent` — and a test that took the rate's
+    // own horizon for granted would be asserting the arithmetic while
+    // silently proving nothing about the bitemporal gate.
+    platform.observe_statement(
+        key.venue.clone(),
+        "USD",
+        initial_equity + dec!("0.25"),
+        dec!("1"),
+        knowable,
+    )?;
+    let report = platform.run_cycle(knowable.saturating_add(Duration::from_secs(60)));
+    assert!(
+        report.stage(Stage::Learn).is_some(),
+        "the premise is a cycle whose LEARN ran: {report:?}"
+    );
+    let outcome = platform
+        .fabric_state()
+        .reconciliations()
+        .get(&key)
+        .expect("the desk's cash was reconciled");
+    let basis = outcome
+        .basis()
+        .expect("a reconciliation carries the formula it was judged by");
+    assert_eq!(basis.class, ToleranceClass::FiatAtBrokerOrBank);
+    assert_eq!(basis.dust, dec!("1"), "the statement's figure is the floor");
+    assert_eq!(
+        basis.rate,
+        dec!("0.000100833"),
+        "the desk's dollar cash is still judged at a rate of zero"
+    );
+    assert!(
+        basis.accrual_applied(),
+        "the record says no accrual was applied to a basis carrying a published rate"
+    );
+
+    // And the reason beside it is the derivation, not a label: the published
+    // figure, the arithmetic and both instants, so a reader of a halt can
+    // re-derive the number rather than trust it.
+    let reason = platform
+        .tolerance_reasons()
+        .get(&key)
+        .expect("the basis records why it carries the rate it does");
+    assert!(
+        reason.contains("3.63 per annum for USD published by `nyfed-effr`")
+            && reason.contains("an actual/360 day count to one day's accrual of 0.000100833"),
+        "the record does not show how the rate was derived: {reason}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_tolerance_derived_from_the_effective_rate_carries_the_notice_the_new_york_fed_demands()
+-> Result<()> {
+    // The licence obligation, discharged as far as this platform structurally
+    // can. The New York Fed's Terms of Use place a use restriction on
+    // reference rate data: a named notice and disclaimer must accompany any
+    // *presentation* of it. So the text travels in the record the derived
+    // figure is written into, rather than sitting in a doc comment beside the
+    // code that read the socket — a licence term nothing carries is a licence
+    // term nobody discharges.
+    //
+    // What this cannot prove, and what the catalogue entry says plainly: no
+    // check here compels a console that does not exist yet to render the
+    // sentence. Carrying it is the mechanism; rendering it is the obligation,
+    // and whoever first displays this rate owns it.
+    let mut platform = platform(PlatformConfig::default())?;
+    let (records, knowable) = nyfed_effr_records()?;
+    assert_eq!(platform.observe(records), 9);
+
+    let key = desk_cash()?;
+    let initial_equity = platform.config().initial_equity;
+    platform.observe_statement(
+        key.venue.clone(),
+        "USD",
+        initial_equity + dec!("0.25"),
+        dec!("1"),
+        knowable,
+    )?;
+    let reason = platform
+        .tolerance_reasons()
+        .get(&key)
+        .expect("the basis records why it carries the rate it does")
+        .clone();
+    // Premise: this is the sourced arm and not one of the three findings that
+    // report a dust floor, so the notice below is attached to a real rate.
+    assert!(
+        reason.contains("published by `nyfed-effr`"),
+        "the basis is not the sourced one: {reason}"
+    );
+    let notice = qip_market_ingestion::connectors::NyFedEffrConnector::REFERENCE_RATE_NOTICE;
+    assert!(
+        reason.contains(notice),
+        "the record carries the rate without the notice its publisher's terms require: {reason}"
+    );
+    // And the notice is reachable on its own, for a surface that renders the
+    // number and the sentence separately rather than parsing prose.
+    let dollars = qip_capital_fabric::wallet::Asset::new("USD")?;
+    let held = platform
+        .interval_rates()
+        .governing(&dollars, ToleranceClass::FiatAtBrokerOrBank, knowable)
+        .rate()
+        .cloned()
+        .expect("the dollar rate governs at the statement's instant");
+    assert_eq!(held.presentation_notice(), Some(notice));
+    Ok(())
+}
+
+#[test]
+fn a_dollar_rate_and_a_euro_rate_are_held_apart_and_neither_answers_for_the_other_s_book()
+-> Result<()> {
+    // Two issuers now publish into the same table, and the table is keyed by
+    // asset for exactly this reason: an issuer sets a rate for a currency, and
+    // a table keyed by class alone would let whichever rate arrived last
+    // answer for both books. The failure that would cause is not abstract —
+    // the euro rate is 2.25 and the dollar rate is 3.63, so a dollar book
+    // judged by the euro rate would carry a tolerance a third too narrow and
+    // halt on drift that was inside its own limit.
+    let mut platform = platform(PlatformConfig::default())?;
+    let (ecb, horizon) = ecb_key_rate_records()?;
+    let (effr, _) = nyfed_effr_records()?;
+    // Premise: both feeds released records, so an assertion about two rates is
+    // not an assertion about one and a gap.
+    assert_eq!(ecb.len(), 3);
+    assert_eq!(effr.len(), 9);
+    assert_eq!(platform.observe(ecb), 3);
+    assert_eq!(platform.observe(effr), 9);
+    assert_eq!(platform.interval_rates().len(), 2);
+
+    let euro = qip_capital_fabric::wallet::Asset::new("EUR")?;
+    let dollars = qip_capital_fabric::wallet::Asset::new("USD")?;
+    let euro_rate = platform
+        .interval_rates()
+        .governing(&euro, ToleranceClass::FiatAtBrokerOrBank, horizon)
+        .rate()
+        .cloned()
+        .expect("the deposit facility rate governs the euro book");
+    let dollar_rate = platform
+        .interval_rates()
+        .governing(&dollars, ToleranceClass::FiatAtBrokerOrBank, horizon)
+        .rate()
+        .cloned()
+        .expect("the effective federal funds rate governs the dollar book");
+    assert_eq!(euro_rate.source_id(), "ecb-key-interest-rates");
+    assert_eq!(dollar_rate.source_id(), "nyfed-effr");
+    assert_eq!(euro_rate.published_percent_per_annum(), dec!("2.25"));
+    assert_eq!(dollar_rate.published_percent_per_annum(), dec!("3.63"));
+    // The obligation follows the publisher, not the table: the euro entry's
+    // terms ask for no form of words, the dollar entry's do.
+    assert_eq!(euro_rate.presentation_notice(), None);
+    assert!(dollar_rate.presentation_notice().is_some());
+    // And a third currency is still `NoneHeld`, which is the honest answer and
+    // the tightest the formula goes.
+    let sterling = qip_capital_fabric::wallet::Asset::new("GBP")?;
+    assert_eq!(
+        platform
+            .interval_rates()
+            .governing(&sterling, ToleranceClass::FiatAtBrokerOrBank, horizon),
+        RateLookup::NoneHeld
+    );
+    Ok(())
+}
 #[test]
 fn the_learn_stage_judges_the_desks_cash_by_the_38_3_row_it_can_attest() -> Result<()> {
     // The production path, end to end: a statement handed to

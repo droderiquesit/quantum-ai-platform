@@ -5692,7 +5692,8 @@ impl Platform {
     /// published, and the whole reason this feed exists is that the two were
     /// indistinguishable before.
     fn absorb_interval_rate(&mut self, observation: &MacroObservation) {
-        let Some((asset, class)) = Self::interval_rate_series(&observation.series_id) else {
+        let Some((asset, class, notice)) = Self::interval_rate_series(&observation.series_id)
+        else {
             return;
         };
         let derived = Asset::new(asset).and_then(|asset| {
@@ -5708,7 +5709,7 @@ impl Platform {
                     observation.series_id, observation.value
                 ))
             })?;
-            SourcedIntervalRate::from_percent_per_annum(
+            let rate = SourcedIntervalRate::from_percent_per_annum(
                 class,
                 asset,
                 observation.provenance.source.clone(),
@@ -5719,7 +5720,14 @@ impl Platform {
                 // this is at or after the publisher's own; a stamp that is
                 // later can delay a rate's use and can never leak one.
                 observation.provenance.ingestion_time,
-            )
+            )?;
+            // The publisher's own condition on presenting the figure, where it
+            // has one, attached at the seam where the figure becomes this
+            // platform's rather than left to whatever reads it later.
+            match notice {
+                None => Ok(rate),
+                Some(notice) => rate.with_presentation_notice(notice),
+            }
         });
         match derived.and_then(|rate| self.policy_rates.record(rate)) {
             Ok(()) => {}
@@ -5730,20 +5738,56 @@ impl Platform {
         }
     }
 
-    /// The published series this process will take a §38.3 interval rate from,
-    /// and the asset and class each governs.
+    /// The published series this process will take a §38.3 interval rate from:
+    /// the asset each governs, the class it is one interval of, and the notice
+    /// its publisher's terms require beside any presentation of it.
     ///
-    /// One arm. A second is a source whose terms have been read and a class
-    /// the section actually gives an interval to — both decisions, neither a
+    /// Two arms. A third is a source whose terms have been read and a class the
+    /// section actually gives an interval to — both decisions, neither a
     /// string.
-    fn interval_rate_series(series_id: &str) -> Option<(&'static str, ToleranceClass)> {
+    ///
+    /// # Why the notice is in the tuple
+    ///
+    /// Because a licence obligation nobody is forced to answer is a licence
+    /// obligation somebody will forget. The New York Fed's Terms of Use demand
+    /// a named notice with any *presentation* of reference rate data and the
+    /// ECB's copyright statement demands no such thing, so the honest answer
+    /// differs per source and the only way to make that a decision rather than
+    /// an oversight is to make the table refuse to compile without one.
+    /// `None` here is a claim — "this publisher asks for no notice" — and it
+    /// is as reviewable as the text beside it.
+    fn interval_rate_series(
+        series_id: &str,
+    ) -> Option<(&'static str, ToleranceClass, Option<&'static str>)> {
         match series_id {
             // The euro area's deposit facility rate, from
             // `ecb-key-interest-rates`. It governs euro balances and nothing
             // else: the ECB sets the euro area's rates and no other issuer's,
             // and a euro rate judging a dollar book would be a fabrication
-            // with a citation attached.
-            "POLICY_RATE.EA.DFR" => Some(("EUR", ToleranceClass::FiatAtBrokerOrBank)),
+            // with a citation attached. The ECB's statement asks for
+            // acknowledgement and for a modification to be stated; the second
+            // is what `SourcedIntervalRate::derivation` already is, and the
+            // first is not a form of words the statement specifies, so there
+            // is no notice to carry.
+            "POLICY_RATE.EA.DFR" => Some(("EUR", ToleranceClass::FiatAtBrokerOrBank, None)),
+            // The effective federal funds rate, from `nyfed-effr`. It governs
+            // dollar balances and nothing else, on the same reasoning, and it
+            // is the arm that gives the desk's own cash book — the one class
+            // this process can attest without being told — a rate rather than
+            // a dust floor.
+            //
+            // The notice is not decoration and not this platform's wording:
+            // the New York Fed's Terms of Use place a use restriction on
+            // reference rate data requiring a named notice and disclaimer with
+            // any presentation of it, and the connector holds the completed
+            // text. `qip_data_finder::admission`'s catalogue entry is the
+            // reading that established it, and says plainly what this platform
+            // cannot enforce.
+            "POLICY_RATE.US.EFFR" => Some((
+                "USD",
+                ToleranceClass::FiatAtBrokerOrBank,
+                Some(qip_market_ingestion::connectors::NyFedEffrConnector::REFERENCE_RATE_NOTICE),
+            )),
             _ => None,
         }
     }

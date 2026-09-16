@@ -210,6 +210,86 @@ impl LicensingDecision {
 /// contract to read — so a change in the ECB's terms is a change to this entry,
 /// reviewed like code.
 ///
+/// # nyfed-effr
+///
+/// The Effective Federal Funds Rate — the volume-weighted median of overnight
+/// federal funds transactions, published each business day for the prior
+/// business day — served unauthenticated by the Federal Reserve Bank of New
+/// York's own markets API. The terms read for this evaluation are the New York
+/// Fed's Terms of Use at `https://www.newyorkfed.org/privacy/termsofuse`,
+/// "Last Updated: 6/9/2023", fetched and read on 2026-09-16.
+///
+/// **The grant.** "The New York Fed grants you a non-exclusive license,
+/// subject to the Terms, to use, copy, and distribute Content for your
+/// personal or business purposes", and the enumerated permissions include
+/// access "manually or through an automated process or device, provided your
+/// access does not have the effect of disabling, damaging, or interfering with
+/// the function of the Website"; "Download, store, and use Content in any
+/// format or media"; "Copy and distribute the Content in any format or media";
+/// and "Modify and create derivative works from the Content". That is
+/// `Public`, on the same reading as the two ECB entries above, and for the
+/// same reason its grant includes `Redistribute`. The Prohibited Uses section
+/// names illegal or fraudulent use, impersonation, interference with the site,
+/// and unauthorised access; none describes this platform, and the manifest's
+/// one-request-per-minute rate limit against an hourly poll is what keeps the
+/// "does not interfere" proviso a fact rather than an intention.
+///
+/// **The conditions, all of which attach.** Copyright notices and source
+/// identifiers travel with any copy; where no specific form is given the
+/// attribution is "© [year] Federal Reserve Bank of New York. Content from the
+/// New York Fed subject to the Terms of Use at newyorkfed.org."; a
+/// modification "must clearly label the modified Content" and "You may not
+/// attribute any modifications or derivative works to the New York Fed"; a
+/// distributor "must make the Content available with the same permissions,
+/// conditions, and restrictions set forth in these Terms" and "may not impose
+/// more restrictive terms"; and nothing may "state or imply that the New York
+/// Fed endorses your use".
+///
+/// **The use restriction, which is why this entry is longer than the ECB's.**
+/// Reference rates are one of the categories the Terms single out, and EFFR is
+/// one of the rates named. The restriction is verbatim: "If you use or
+/// distribute reference rate data or related information posted to the
+/// website, you must include the following notice and disclaimer with your
+/// presentation of that data or information: 'The [NAME OF DATA or CONTENT] is
+/// subject to the Terms of Use posted at newyorkfed.org. The New York Fed is
+/// not responsible for publication of the [DATA NAME] by [NAME OF PUBLISHER],
+/// does not [sanction] or [endorse] any particular republication, and has no
+/// liability for your use.'" The brackets, the Terms say, "indicate detail to
+/// be completed by the person using or distributing the reference rate data".
+///
+/// **Where that notice lives, and what it cannot do.** The completed text is
+/// `qip_market_ingestion::connectors::NyFedEffrConnector::REFERENCE_RATE_NOTICE`,
+/// written once, and it is carried by
+/// `qip_capital_fabric::tolerance::SourcedIntervalRate::presentation_notice`
+/// into the derivation sentence every §38.3 tolerance record derived from this
+/// rate keeps — which is the only place the derived figure is written down
+/// today. That is a mechanism, not a comment, and it is still **not
+/// compliance**: the obligation attaches to *presentation*, and this platform
+/// cannot compel a console that does not exist yet to render the sentence it
+/// carries. Nothing displays this rate today; whoever first does owns it,
+/// exactly as the two ECB entries above say about acknowledgement. Three other
+/// obligations are likewise recorded and unenforceable by any check in this
+/// file: the attribution format, the same-permissions condition on
+/// redistribution (this platform redistributes nothing today), and the Terms'
+/// own statement that "Users are responsible for monitoring the Website for
+/// any changes" — a change in the New York Fed's terms is a change to this
+/// entry, reviewed like code, and no code here will notice it.
+///
+/// **Two things the evaluation deliberately does not claim.** The trademark
+/// carve-out permitting a reference rate's name in a product or service name
+/// is not relied on — this platform names no product after EFFR, so the
+/// further "[User] is not affiliated with the New York Fed" disclaimer the
+/// Terms attach to that use is not triggered. And the SOFR and BGCR series on
+/// the same host are **not** covered: the Terms record that they "are
+/// calculated using data provided under a license granted to the New York Fed
+/// by DTCC Solutions LLC", which is a third party's licence this evaluation
+/// has not read. `NyFedEffrConnector` refuses a manifest pointed at either,
+/// so that limit is a refusal rather than a sentence.
+///
+/// No expiry is stated, so the entry carries none. This posture was written
+/// from the published terms and not from a negotiated agreement — there is no
+/// contract to read.
+///
 /// # kalshi-markets and alpaca-daily-bars — refused until their terms are read
 ///
 /// The two remaining ADR 0034 candidates. Both connectors exist and both are
@@ -264,6 +344,19 @@ pub fn catalogue() -> Result<Vec<CatalogueEntry>> {
             expected_class: LicensingClass::Public,
             posture: LicensingPosture::declared(SourceLicense::new(
                 "ecb-website-copyright-free-use",
+                [
+                    Usage::Research,
+                    Usage::Derive,
+                    Usage::Trade,
+                    Usage::Redistribute,
+                ],
+            )?),
+        },
+        CatalogueEntry {
+            source_id: "nyfed-effr",
+            expected_class: LicensingClass::Public,
+            posture: LicensingPosture::declared(SourceLicense::new(
+                "nyfed-terms-of-use-reference-rates",
                 [
                     Usage::Research,
                     Usage::Derive,
@@ -878,6 +971,74 @@ mod tests {
             "the decision does not say what admitted the source: {line}"
         );
         Ok(())
+    }
+
+    /// The source that gives §38.3's fiat row a rate in the currency the
+    /// desk's own cash book is actually denominated in. It goes through the
+    /// *same* gate as every other entry — the shipped manifest's class, both
+    /// usage questions, the registration question — and no arm of that gate
+    /// was relaxed to admit it. The euro entry above proved the machinery and
+    /// could not answer for a dollar book; this one answers, and it does so
+    /// because the New York Fed's own Terms of Use were read, not because a
+    /// dollar number was wanted.
+    #[test]
+    fn the_new_york_feds_effective_federal_funds_rate_is_admitted_for_trade_under_its_terms_of_use()
+    -> Result<()> {
+        // Premise: the class the gate is handed is the shipped manifest's, so
+        // this is the call the composition root makes and not a class chosen
+        // to make the entry agree.
+        let class = qip_market_ingestion::connector_feed::shipped_class("nyfed-effr")?;
+        assert_eq!(class, LicensingClass::Public);
+        let decision = admit("nyfed-effr", class, now())?;
+        assert_eq!(decision.licence, "nyfed-terms-of-use-reference-rates");
+        assert_eq!(decision.usages, vec![Usage::Derive, Usage::Trade]);
+        assert_eq!(decision.registration, RegistrationStanding::Keyless);
+        // The banner line, which is the only way an operator can tell this
+        // gate ran from a gate that never did.
+        let line = decision.describe();
+        assert!(
+            line.contains("nyfed-terms-of-use-reference-rates")
+                && line.contains("derive and trade")
+                && line.contains("keyless; no registration needed"),
+            "the decision does not say what admitted the source: {line}"
+        );
+        Ok(())
+    }
+
+    /// The obligation the Terms attach to *presentation* has to be a thing the
+    /// platform holds, not a sentence in this module. The connector owns the
+    /// completed notice, and the catalogue entry is the reading that says it is
+    /// required; a text that drifted from the Terms' own wording would satisfy
+    /// nobody, so the load-bearing clauses are matched here rather than a
+    /// length or a substring of one word.
+    #[test]
+    fn the_reference_rate_notice_the_terms_require_is_carried_verbatim_by_the_connector() {
+        let notice = qip_market_ingestion::connectors::NyFedEffrConnector::REFERENCE_RATE_NOTICE;
+        // Premise: the notice is a sentence and not an empty constant.
+        assert!(notice.len() > 100, "the notice is {notice:?}");
+        for clause in [
+            "is subject to the Terms of Use posted at newyorkfed.org",
+            "is not responsible for publication of the",
+            "does not sanction or endorse any particular republication",
+            "has no liability for your use",
+        ] {
+            assert!(
+                notice.contains(clause),
+                "the notice drops the clause {clause:?}: {notice}"
+            );
+        }
+        // And the brackets the Terms say the publisher must complete are
+        // completed. A notice shipped with `[NAME OF PUBLISHER]` still in it
+        // would read as compliance and name nobody.
+        assert!(
+            !notice.contains('[') && !notice.contains(']'),
+            "the notice still carries an uncompleted bracket: {notice}"
+        );
+        assert!(
+            notice.contains("Effective Federal Funds Rate (EFFR)")
+                && notice.contains("EFFR by the"),
+            "the notice does not name the data and the publisher: {notice}"
+        );
     }
 
     #[test]

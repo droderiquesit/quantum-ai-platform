@@ -1,11 +1,11 @@
-//! Five worked connectors: three against endpoints that need no key and no
+//! Six worked connectors: four against endpoints that need no key and no
 //! signup, and the two candidates ADR 0034 names for equities and
 //! prediction markets.
 //!
 //! They are here rather than in a test file because an example nobody compiles
-//! is an example that stops being true. All five are ordinary
-//! [`crate::connector::SourceConnector`] implementations, all five ship their
-//! manifest and a fixture, and all five are run through
+//! is an example that stops being true. All six are ordinary
+//! [`crate::connector::SourceConnector`] implementations, all six ship their
+//! manifest and a fixture, and all six are run through
 //! [`crate::connector::ContractHarness`] in `tests/connector_contract.rs` with
 //! no network.
 //!
@@ -14,10 +14,11 @@
 //! | [`coinbase_ticker`] | `api.exchange.coinbase.com/products/BTC-USD/ticker` | a [`qip_market::quote::Tick`] per last trade |
 //! | [`frankfurter_rates`] | `api.frankfurter.dev/v1/latest?base=EUR` | a [`qip_financial::intelligence::MacroObservation`] per currency pair |
 //! | [`ecb_key_rates`] | `data-api.ecb.europa.eu/service/data/FM/...` | a [`qip_financial::intelligence::MacroObservation`] per key interest rate per date |
+//! | [`nyfed_effr`] | `markets.newyorkfed.org/api/rates/unsecured/effr/last/10.json` | a [`qip_financial::intelligence::MacroObservation`] per business day |
 //! | [`kalshi_markets`] | `api.elections.kalshi.com/trade-api/v2/markets` | a [`qip_market::quote::Quote`] per open binary market |
 //! | [`alpaca_bars`] | `data.alpaca.markets/v2/stocks/bars` | a [`qip_market::bar::Bar`] per symbol per session |
 //!
-//! # All five are unreachable in this build, and say so
+//! # All six are unreachable in this build, and say so
 //!
 //! `qip_transport::http` has no TLS stack and refuses `https` by name rather
 //! than downgrading it. Every one of these endpoints is HTTPS only. So every
@@ -33,7 +34,7 @@
 //! send requests — and, for a source that needed one, a credential — across
 //! the internet in clear text.
 //!
-//! # Two of the five are refused by the licensing gate today
+//! # Two of the six are refused by the licensing gate today
 //!
 //! Kalshi and Alpaca are candidates whose terms have not been read against a
 //! contract (ADR 0034). Their manifests declare the fail-closed licensing
@@ -63,16 +64,24 @@
 //! series across several dates, indexed by position into dimension tables
 //! rather than by name — so it is the connector that has to bound its own
 //! decode before allocating, and the one whose response is held to a
-//! **currency** because something downstream refuses on it.
+//! **currency** because something downstream refuses on it. The New York
+//! Fed's effective federal funds rate is the one whose payload carries **no**
+//! currency at all, so the dollar is asserted from the identity of the rate
+//! the path named rather than verified against the body; it is also the one
+//! whose licence attaches an obligation to *presentation* rather than to
+//! access, and the only one that reads a vendor's own revision flag instead of
+//! declaring every row final.
 
 pub mod alpaca_bars;
 pub mod coinbase_ticker;
 pub mod ecb_key_rates;
 pub mod frankfurter_rates;
 pub mod kalshi_markets;
+pub mod nyfed_effr;
 
 pub use alpaca_bars::AlpacaBarsConnector;
 pub use coinbase_ticker::CoinbaseTickerConnector;
 pub use ecb_key_rates::EcbKeyRatesConnector;
 pub use frankfurter_rates::FrankfurterRatesConnector;
 pub use kalshi_markets::KalshiMarketsConnector;
+pub use nyfed_effr::NyFedEffrConnector;
