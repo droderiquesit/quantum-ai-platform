@@ -133,7 +133,7 @@ would be capability with no consumer and no refusal:
 | Row | Consumer | What declaring it would produce |
 |---|---|---|
 | Cloud Workflows | No lifecycle or ingestion orchestration exists; Pub/Sub carries what there is | A workflow definition nothing triggers, whose steps nobody can review because there is no sequence to review |
-| Cloud HSM | No custody key material, no signing key and no asymmetric key of any kind exists. ADR 0043 records asymmetric signing as a gap no in-tree code may close | An HSM-backed key encrypting nothing, at roughly ten times the cost of a software key, rotating forever |
+| Cloud HSM | ~~No custody key material, no signing key and no asymmetric key of any kind exists. ADR 0043 records asymmetric signing as a gap no in-tree code may close~~ — **this premise was false when written; see the amendment below** | An HSM-backed key encrypting nothing, at roughly ten times the cost of a software key, rotating forever |
 | Spot GPU | No training job, no causal estimation run and no simulation job exists. `enable_vertex_ai = false` everywhere | An instance template for a machine that boots and idles — and a GPU is the most expensive thing on this platform to leave running by accident |
 
 None of the three has a gate to prove. A plan against any of them would show
@@ -286,3 +286,69 @@ verb is being run, however simulated the apply.
 **Declare Cloud Workflows, Cloud HSM and spot GPU switched off, for
 completeness.** Rejected for the reason in decision 2. The public edge earns
 its place by the refusals it carries; those three would carry none.
+
+---
+
+## Amendment, 2026-09-16 — decision 2's Cloud HSM row rested on a false premise
+
+The row above said Cloud HSM had no consumer because "no custody key
+material, no signing key and no asymmetric key of any kind exists", and cited
+ADR 0043 as recording that gap. Both halves were wrong on the day this ADR
+was written, and the citation was wrong in the direction that made the
+decision look safer than it was.
+
+An asymmetric signing key already existed:
+
+```
+$ grep -rn 'purpose *= *"ASYMMETRIC_SIGN"' infrastructure/terraform --include=*.tf
+infrastructure/terraform/modules/binaryauthorization/main.tf:57:  purpose  = "ASYMMETRIC_SIGN"
+```
+
+It landed in `6e3aad0` on 2026-09-02; this ADR is `4b07f44`, 2026-09-14.
+`git merge-base --is-ancestor 6e3aad0 4b07f44` exits 0, so the key predates
+the decision that said it did not exist. And ADR 0043, cited here as
+recording the gap, says the opposite in terms: the platform "already meets an
+asymmetric-signature obligation, today, in production". This is the second
+time in this repository that a rule file has asserted a prohibition by citing
+an ADR that authorises the thing — `.claude/rules/architecture/00-boundaries.md`
+records the first, where "No in-tree cryptography" mis-cited ADR 0009 against
+ADR 0002's Decision section. The shape is worth naming because it is not
+carelessness about facts: it is a citation quoted forward because it was
+quoted forward, which is exactly the failure mode the rest of this repository
+attacks by citing commands instead of numbers. **A citation deserves the same
+treatment as a line number: run it, do not inherit it.**
+
+A second, smaller error made the gap unfalsifiable. `§45.1`'s evidence
+command grepped for `google_cloud_hsm`, which is not a resource type in any
+provider. The question could not return yes however the tree was written, so
+the row would have read the same forever.
+
+**What changes, and what does not.** The reversal condition this ADR set —
+"declare it when the thing that consumes it exists" — is met for HSM and is
+still unmet for Cloud Workflows and the spot GPU pool, both re-checked on
+2026-09-16 and both still without a consumer. So decision 2 stands for those
+two and is superseded only for HSM.
+
+HSM is therefore expressed as `var.kms_protection_level`, defaulting to
+`SOFTWARE` — the level all four keys already carried — and threaded to each
+of them. This declares **no new resource** and changes **no plan** until
+somebody sets it, so the cost objection in the table above is answered rather
+than overruled: nothing bills differently at the default. One value governs
+the whole configuration, because a mixed posture is a claim about protection
+that the weakest key falsifies.
+
+Proven both ways, as decision 1 of this ADR requires, in
+`infrastructure/terraform/tests/kms-protection.tftest.hcl`: `SOFTWARE` and
+`HSM` plan to the end **and are asserted to reach the key**; `hsm`,
+`EXTERNAL`, `EXTERNAL_VPC` and the empty string stop the plan. Six runs,
+`6 passed, 0 failed`. The admitting half is the half that matters — a gate
+that refuses everything is indistinguishable from a working one when only its
+refusals are tested.
+
+One limit, stated rather than gated: raising the level on an environment that
+has already been applied does not upgrade a key. `version_template` is
+immutable, so Terraform plans a replacement and `prevent_destroy` stops the
+apply. No validation can catch this, because a variable validation sees the
+value and never the prior state — a check for it could never fire, and this
+repository's standing rule is that a control which cannot fire reads as
+protection and is not one.
