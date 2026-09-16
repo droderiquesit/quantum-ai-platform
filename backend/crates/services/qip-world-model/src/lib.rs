@@ -35,8 +35,8 @@ pub use causal::{
 };
 pub use confounder::{Confounder, ConfounderSet, ConfounderStanding};
 pub use exposure::{
-    ConcentrationReport, Exposure, ExposureSet, SharedDriver, hidden_concentration,
-    instruments_exposed_to, unheld_dependencies,
+    ConcentrationReport, Exposure, ExposureSet, SecondOrderReview, SharedDriver, UnheldDependency,
+    hidden_concentration, instruments_exposed_to, second_order_exposure, unheld_dependencies,
 };
 pub use falsification::{
     Breach, FalsificationPass, Falsifier, HeldOut, HypothesisSource, Inadmissible, LeakageTally,
