@@ -649,7 +649,12 @@ finding above. So:
 
 A withdrawn venue is never a *candidate* under any of this — the filter is
 the withdrawn set — so nothing an echo does can withdraw a venue twice or feed
-a decision back into its own evidence.
+a decision back into its own evidence. **That last clause was false when it
+was written; see Amendment D.** The filter holds only while the venue is
+withdrawn, and the classification it depends on was re-derived at read time,
+so a reinstatement turned every echo into evidence against the venue in the
+same step that made it a candidate again. The guarantee is real now and is
+held by where the classification is written, not by this paragraph.
 
 **Whose decision an echo is, is the centre's.** The classification took the
 gate string off the report, and the cell→centre wire authenticates nobody. No
@@ -715,3 +720,194 @@ Evidence: `slot_elevens_withdrawn_set_is_additive_on_the_wire_in_both_directions
 `a_repeated_echo_of_one_withdrawal_is_counted_in_full_and_seated_once` and
 `a_cell_citing_a_withdrawal_the_centre_does_not_hold_is_evidence_and_not_an_echo`
 (`qip-kernel/tests/central.rs`), and three unit tests beside `assess`.
+
+## Amendment D — a reinstatement now survives the cycle after it (2026-09-14)
+
+**Two operators sign a venue back into use and the next LEARN pass withdraws
+it again.** That was true of every build this record has ever described, and
+Amendment C made it worse rather than causing it. A control two people
+exercise and the machine reverts by itself is protection in the reading and
+nothing in the fact — the `MaxExpectedShortfall` shape this repository keeps
+as its standing example of what not to ship — and this record shipped one.
+
+It was reproduced before anything was changed, on a platform with twenty-four
+corroborated lot refusals at one venue and eight at another:
+
+```
+PROBE while withdrawn:     None
+PROBE after reinstatement: Some(VenueCluster { venue: "XNYS",
+    constraint: "feasibility_lot", sample: 38, count: 30, share: 0.789 })
+PROBE withdrawn after next cycle: {"XNYS"}
+```
+
+and, with thirty seated echoes rather than six, the record that second
+withdrawal wrote:
+
+```
+PROBE withdrawal record: venue=XNYS constraint=feasibility_withdrawn_venue
+    count=54 sample=62
+```
+
+An audit line saying the venue was withdrawn because it had been withdrawn.
+Amendment C asserts that "nothing an echo does can withdraw a venue twice or
+feed a decision back into its own evidence". **That sentence was false when it
+was written**, and it is corrected below rather than deleted, because the
+reasoning around it is right and only the place the guarantee was held was
+wrong: it was held by prose about `assess`, and `assess` re-derived the
+classification every time it ran.
+
+### Two defects, and either alone leaves the control unable to do what it says
+
+**Non-stationarity.** Whether a stored window entry was an echo was decided at
+*read* time, by `is_withdrawal_echo(gate, venue, withdrawn)` against the
+withdrawn set as it stood at that call. Amendment C introduced that function
+for a good reason and put it in the wrong place. The moment a reinstatement
+removed the venue from the set, every seat it had taken as an echo while
+withdrawn was promoted — in one step, with no record changing — from a
+weight-capped denominator entry into a full numerator refusal *against* it,
+at the same instant the venue became a candidate again. The case against a
+reinstated venue therefore grew with how long it had stayed out.
+
+The classification is now taken once, where it is known, and stored:
+`venue_review::RefusalStanding` is `Evidence`, `Echo` or `Pardoned`, written
+by `CentralPlane::attribute_refusals` and by the desk's recording site, and
+read by `assess` without re-derivation. One enum rather than a pair of flags,
+because "an echo that is also pardoned" is not a thing this platform can mean.
+
+**Reinstatement never reached the evidence.** `reinstate_venue_at_seams`
+removed the venue from the withdrawn set and from the two seams and left the
+feasibility window exactly as it found it, so the cluster that withdrew the
+venue was still standing and re-fired immediately. This half is older than
+Amendment C and independent of echoes: with no seated echoes at all the
+baseline probe read `count=24 sample=32 share=0.75`, which clears
+`VENUE_WITHDRAWAL_SHARE` on its own.
+
+Two people deciding a venue should come back is precisely a decision about the
+evidence that removed it, so the signatures now reach the window through
+`venue_review::pardon`. **They mark, and do not delete, and the three
+candidate designs are worth recording because each of the other two is wrong
+in a way that reads as right.**
+
+* *Delete this venue's entries.* Shrinks the denominator every **other**
+  venue's share is measured against while leaving their numerators alone — the
+  runner-up becomes a cluster of what remains. That is the cascade "The
+  no-cascade denominator" exists to refuse, arriving by a new door.
+* *Delete the whole window.* Unbiased, but over-reaching: two people signed
+  for *this* venue, and evidence about venues they did not name is not theirs
+  to clear. A reinstatement would become a way to delay another venue's
+  withdrawal, which nobody signed for.
+* *Mark, and keep weighing the marked entries on the venue's own share.* Turns
+  a pardon into a shield: the ten refusals that withdrew a venue would sit in
+  its own denominator, so thirty fresh ones would be needed before it could go
+  again. The signatures would have raised the bar on a control rather than
+  reset it.
+
+So a pardoned refusal holds the denominator at full rate for every other
+venue, and is excluded from the numerator, the corroboration and the modal
+constraint of the venue it names — and from that venue's own denominator.
+`assess` judges a candidate on every other venue's weight in full plus its own
+binding refusals. A reinstated venue starts from the same bar any venue starts
+from, and a venue nobody signed for sees no change at all.
+
+### Two further holes, found while proving the fix
+
+**One report could be the whole window.** `VENUE_WITHDRAWAL_MIN_CELLS`
+requires two distinct cells before edge-only evidence withdraws anything, and
+it counts distinct cell *names* rather than evidence per cell. Thirty refusals
+in a single report plus one token refusal from a second name cleared it — a
+probe withdrew a venue for the entire platform in two messages, on a wire
+`qip-edge/src/mesh.rs` says authenticates nobody. Amendment C's one-seat-per-
+report rule already existed and was applied to `GATE_WITHDRAWN_VENUE` alone;
+its argument — "a report asserts one fact, and repeating it once per intent
+measures how many cycles a stale desk enumerated" — was never particular to
+that gate, and the eight gates it did not cover are the ones an attacker would
+use. It is now one seat per venue **per gate** per report, so a report's seats
+are bounded by the gate vocabulary times the configured venue list and by
+nothing a sender chooses. Every repeat is still counted on
+`qip_feasibility_refusals_total`.
+
+**A reinstatement makes every cell stale about that venue by construction.** A
+cell learns on its next policy frame, not on the signature, so until the frame
+arrives every intent there comes back under `feasibility_withdrawn_venue`.
+Those are not echoes — the centre no longer holds the withdrawal — and under
+Amendment C's rule they are ordinary evidence, which withdrew the venue again
+at once. A probe re-withdrew a just-reinstated venue on 256 window entries of
+which not one was a genuine refusal. Left there, **no reinstatement could ever
+have stuck while any two cells were behind**, and the withdrawal that followed
+made the cells' stale belief true.
+
+The centre now remembers what it reinstated (`CentralPlane::reinstated_venues`,
+cleared when the venue is withdrawn again) and seats such a refusal as
+`Pardoned`. This does not touch Amendment C's security finding, which stands:
+a cell asserting a withdrawal the centre has **never** made is still making an
+ordinary refusal at a venue in use, and is still evidence. The distinction the
+centre can draw, and the cell cannot, is between a cell that is behind on a
+decision the centre made and a cell inventing one.
+
+**And nothing that cannot withdraw a venue may displace something that can.**
+An echo or a pardoned refusal arriving at a full window is counted on the
+series and seated nowhere. Otherwise a cell reporting at a venue nobody is
+judging pushes out the evidence every other venue's withdrawal rests on, until
+fewer than `VENUE_WITHDRAWAL_MIN_SAMPLE` genuine entries survive and no venue
+can be withdrawn at all — the same dead control reached by arithmetic instead
+of by anybody's decision.
+
+### What this does not change
+
+The paper-trading boundary is untouched at all three layers. A reinstatement
+still only removes a name from a subtractive set; `FeasibilityConstraints`
+gains no permitted-venues field and no field by which a payload could make a
+venue reachable; `pardon` writes to an in-process evidence window and to
+nothing else. "Why evidence can never add a venue" stands unchanged, and so
+does the cardinality bound on `qip_feasibility_refusals_total`: `venue` by the
+desk broker's name, the configured and granted venue list and `unknown`, and
+`constraint` by the nine gate literals and `other`.
+
+The window remains per-process and is not resumed from the log, so the pardon
+at assembly is a no-op — a restarted process has no window to pardon, which is
+why the two callers of `reinstate_venue_at_seams` are kept on one path.
+
+### What would make this wrong
+
+If a venue's grid is genuinely broken and two operators reinstate it without
+fixing it, the venue now needs a fresh cluster — ten refusals at three in four
+— before it is withdrawn again, where before it was withdrawn on the next
+pass. That is the intended cost and it is the runbook's existing advice made
+true: "reinstating without changing either buys ten more refusals and the same
+withdrawal on the next review" was a description of behaviour the platform did
+not have until this amendment.
+
+If a fleet is large enough that one cell's pass carries many venues, the
+per-gate seat cap makes a genuine multi-venue problem slower to establish. The
+bound is the vocabulary and not the sender, so it is slower and never blind.
+
+### Evidence
+
+`qip-kernel/tests/learning.rs::reinstatement_needs_two_different_fresh_operators_and_is_journaled_at_each_signature`
+(its final assertion reversed, and the old one named as wrong in the commit
+that reversed it), `qip-kernel/tests/central.rs::one_report_cannot_be_the_whole_window_however_many_refusals_it_carries`,
+`::a_cell_that_has_not_heard_a_reinstatement_cannot_undo_it`,
+`::a_refusal_that_cannot_withdraw_a_venue_never_evicts_one_that_can`, and four
+unit tests beside `assess`:
+`a_pardoned_refusal_holds_the_denominator_for_every_venue_but_the_one_it_names`,
+`a_pardoned_refusal_never_names_the_constraint_a_withdrawal_record_cites`,
+`a_pardoned_venues_cluster_still_needs_two_cells_to_corroborate_it` and
+`an_echo_stays_an_echo_after_the_venue_leaves_the_withdrawn_set`. Every one was
+mutation-verified and each mutation fired for its own reason.
+
+### Three documents this amendment falsifies
+
+Not edited here, because they are outside this lane's territory, and named so
+that the next reader does not take them for current:
+
+* `venue_review::assess`'s doc comment — corrected in this change.
+* `.claude/rules/domains/observability.md`, whose third bullet on the ninth
+  gate literal says a seated echo "can never withdraw anything". True for an
+  entry stored as an echo, and it was the re-derivation that made it false;
+  the bullet should name where the classification is taken.
+* `docs/operations/reinstating-a-venue.md`, which tells an operator "an echo
+  cannot cause a withdrawal and cannot hide one" — in the document they are
+  reading *while performing the reinstatement that triggered it*. It should
+  also gain the fact that a reinstatement now sets the venue's accumulated
+  refusals aside, and that a cell which has not yet heard the reinstatement
+  refuses at the venue without that counting against it.

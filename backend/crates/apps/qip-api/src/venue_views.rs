@@ -50,6 +50,25 @@ pub struct WithdrawnVenuesView {
     /// per call of a route an operator reads; the cost of the third hand-typed
     /// copy it replaces was a 404 in the middle of a recovery.
     pub reinstatement_path: String,
+    /// Why a signature posted to [`Self::reinstatement_path`] will be
+    /// refused by *this* deployment, or `None` if it would be taken.
+    ///
+    /// **Served because the path above is served.** Since ADR 0065 every
+    /// credential this API accepts is a standing bearer token, which attests
+    /// nobody's presence, so the reinstatement route refuses before the
+    /// kernel is asked — and this list handed an operator the path to it and
+    /// said nothing. The operator reading this list is the one about to call
+    /// it, which is the reason the path is here at all; learning that the
+    /// call cannot succeed belongs at the same moment, not in a runbook they
+    /// may not have open.
+    ///
+    /// Taken from `Principal::authentication_instant` — the same call the
+    /// signature route makes, on the same principal — rather than from a
+    /// second statement about it. Two independent claims about one fact
+    /// disagree eventually and the louder one is wrong; this one cannot,
+    /// because if that accessor ever returns an instant the field goes
+    /// `None` in the same release, with nothing here to update.
+    pub reinstatement_refusal: Option<String>,
 }
 
 /// One withdrawn venue and where its reinstatement stands.
@@ -74,7 +93,14 @@ pub struct WithdrawnVenueRow {
 }
 
 /// The view, or the reason the log could not be read.
-pub fn withdrawals(platform: &Platform) -> Result<WithdrawnVenuesView, String> {
+///
+/// `reinstatement_refusal` is the caller's own — the refusal their principal
+/// would receive at the signature route, passed in by the handler that holds
+/// it, because this module has no principal and must not invent one.
+pub fn withdrawals(
+    platform: &Platform,
+    reinstatement_refusal: Option<String>,
+) -> Result<WithdrawnVenuesView, String> {
     let records = platform
         .venue_withdrawals()
         .map_err(|error| error.message().to_string())?;
@@ -99,6 +125,7 @@ pub fn withdrawals(platform: &Platform) -> Result<WithdrawnVenuesView, String> {
         withdrawn,
         withdrawals_recorded: records.len(),
         reinstatement_path: reinstatement_path(),
+        reinstatement_refusal,
     })
 }
 
