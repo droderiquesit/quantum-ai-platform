@@ -375,3 +375,24 @@ output "public_edge" {
     shell_bucket    = module.public_edge.static_shell_bucket
   }
 }
+
+output "kms_protection_level" {
+  description = <<-EOT
+    The protection level this environment's KMS keys are planned with —
+    `SOFTWARE`, or `HSM` where Cloud HSM has been chosen.
+
+    Taken from the key the secrets module plans rather than from the variable,
+    so an operator reading it is reading what the configuration would build and
+    not what it was asked for. One value covers all four keys by construction:
+    the root passes `var.kms_protection_level` to every module that owns one,
+    and a mixed posture has no way to be expressed.
+
+    This does not say what an applied environment holds. `version_template` is
+    immutable on a crypto key, so an environment applied at `SOFTWARE` stays
+    `SOFTWARE` until its keys are replaced, and `prevent_destroy` stops that
+    replacement rather than performing it. Compare this against the project
+    before believing either.
+  EOT
+
+  value = module.secrets.key_protection_level
+}

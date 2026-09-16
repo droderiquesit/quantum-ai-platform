@@ -66,3 +66,18 @@ variable "console_enabled" {
   default     = false
   description = "Create the console's service account and let it read the viewer token."
 }
+
+variable "kms_protection_level" {
+  description = "Protection level for the key ring's secrets key. Set from the root's single value so the platform cannot be HSM for one key and software for another."
+  type        = string
+  default     = "SOFTWARE"
+
+  validation {
+    # Defended here as well as at the root, because this module is callable on
+    # its own and an input nobody checks is a gap wherever it is reached from.
+    # EXTERNAL and EXTERNAL_VPC need an EKM connection this configuration does
+    # not declare; the root variable of the same name carries the argument.
+    condition     = contains(["SOFTWARE", "HSM"], var.kms_protection_level)
+    error_message = "kms_protection_level must be exactly \"SOFTWARE\" or \"HSM\"."
+  }
+}

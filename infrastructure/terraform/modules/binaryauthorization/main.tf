@@ -58,7 +58,7 @@ resource "google_kms_crypto_key" "attestor" {
 
   version_template {
     algorithm        = var.signing_algorithm
-    protection_level = "SOFTWARE"
+    protection_level = var.kms_protection_level
   }
 
   # No `rotation_period`, and its absence is a fact about Cloud KMS rather than

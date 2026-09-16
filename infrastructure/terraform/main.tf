@@ -235,6 +235,10 @@ module "secrets" {
   environment    = var.environment
   labels         = local.labels
 
+  # One protection level for every key in the configuration; this module owns
+  # the ring the other three keys hang off.
+  kms_protection_level = var.kms_protection_level
+
   # Which secrets exist. Their values are never in Terraform: the resource is
   # created empty and the value is written out of band, so a state file that
   # leaks does not leak credentials.
@@ -536,6 +540,9 @@ module "evidence" {
   # second one nobody rotates.
   key_ring_id = module.secrets.key_ring_id
 
+  # One protection level for every key in the configuration.
+  kms_protection_level = var.kms_protection_level
+
   # The deep brain produces the evidence for a decision; the API serves it to
   # whoever is asking. Deliberately two identities: the component that writes
   # the record and the component that shows it should not be the same one.
@@ -745,6 +752,10 @@ module "binary_authorization" {
   # evidence and data keys, rather than in a second ring nobody rotates.
   key_ring_id = module.secrets.key_ring_id
 
+  # One protection level for every key in the configuration. This is the
+  # asymmetric key ADR 0069's reversal condition for Cloud HSM names.
+  kms_protection_level = var.kms_protection_level
+
   # The pipeline signs. That is the honest shape of this control and its main
   # limitation: whoever can run a step in that pipeline can sign an image.
   # modules/binaryauthorization/OUT-OF-BAND.md says what a stronger
@@ -800,6 +811,9 @@ module "backup" {
 
   # In the platform's existing key ring, like the evidence and model keys.
   key_ring_id = module.secrets.key_ring_id
+
+  # One protection level for every key in the configuration.
+  kms_protection_level = var.kms_protection_level
 
   snapshot_start_time  = var.snapshot_start_time
   snapshot_retain_days = var.snapshot_retain_days
