@@ -45,6 +45,15 @@
 //!   ignores a refusal from either has skipped a check rather than gained a
 //!   permission.
 //!
+//! * **Whether two strategies that named no venue become one order.**
+//!   [`consolidate::Consolidator`] is blueprint §27.2's third row: intents
+//!   carrying [`consolidate::UNSPECIFIED_VENUE`] are put onto the venue the
+//!   router prices best, *before* netting, so they collapse into one order
+//!   instead of crossing each other at two placeholders. It never moves an
+//!   intent that named a venue, never changes a size or a side, and an intent
+//!   it cannot place is removed and reported rather than sent to a venue that
+//!   does not exist.
+//!
 //! [`gateway::Gateway`] is the venue-facing surface.
 //! [`gateway::SimulatedGateway`] implements it against a book;
 //! [`gateway::NativeGateway`] is the shape of the real adapter and reports
@@ -57,6 +66,7 @@
 //! the same history route the same way on a replay.
 
 pub mod children;
+pub mod consolidate;
 pub mod extension;
 pub mod gateway;
 pub mod health;
@@ -70,6 +80,10 @@ pub mod router;
 pub mod venue;
 
 pub use children::{ChildOrder, ChildState, ParentOrder};
+pub use consolidate::{
+    Consolidation, ConsolidationDecision, ConsolidationRefusal, Consolidator, UNSPECIFIED_VENUE,
+    is_unspecified,
+};
 pub use extension::{
     AnchorExtension, BasisExtension, ExtensionVerdict, FirmQuoteExtension, HedgeExtension,
     MirrorExtension, PathExtensions, PayoffExtension, check,
