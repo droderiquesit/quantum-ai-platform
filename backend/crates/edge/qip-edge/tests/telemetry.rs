@@ -1056,7 +1056,7 @@ fn a_payload_that_says_nothing_about_capital_is_counted_as_withheld_and_moves_no
 // --- §36.3: dark regions, and reconciling before resuming --------------------
 
 #[test]
-fn a_cell_told_a_region_it_mirrors_into_is_dark_publishes_it_on_every_pass_including_a_halted_one()
+fn a_cell_told_a_region_it_mirrors_into_is_dark_publishes_it_before_its_first_pass_and_until_it_returns()
 -> Result<()> {
     // The failure this prevents: a gauge written only where the reading
     // changes. A cell told a peer is dark and then halted for its own
@@ -1098,7 +1098,11 @@ fn a_cell_told_a_region_it_mirrors_into_is_dark_publishes_it_on_every_pass_inclu
         "a declared region was attributed to an unreadable wire"
     );
 
-    // A halted pass still publishes it.
+    // A halted pass leaves it standing. Stated as what it is rather than as
+    // proof of the write inside `Cell::work`: the registry's gauge holds its
+    // last value and every path that can change this reading records at its
+    // own seam, so no mutation of the pass-time write could be seen here.
+    // What this does falsify is a halt path that reset the reading.
     cell.apply_halt(halt(t(10))?, t(10));
     assert!(
         cell.is_halted(),
@@ -1111,7 +1115,7 @@ fn a_cell_told_a_region_it_mirrors_into_is_dark_publishes_it_on_every_pass_inclu
             .snapshot()
             .gauge(EDGE_REGIONS_DARK, &by("source", "declared")),
         Some(1.0),
-        "a halted pass stopped publishing which peers are dark"
+        "a halted pass left the cell reading as though its peers were answering"
     );
 
     // And a region that comes back is the series falling, not stopping.
@@ -1180,8 +1184,11 @@ fn a_restarted_cell_publishes_how_many_venues_have_yet_to_answer_and_the_gauge_f
         Some(1.0),
         "an armed discipline left the gauge at zero"
     );
-    // Published on the refused pass too, which is the pass an operator is
-    // looking at when they ask why the node is quiet.
+    // Still standing on the refused pass — the pass an operator is looking at
+    // when they ask why the node is quiet. Asserted with the same honest
+    // limit as the halted pass in the test above: the gauge holds its last
+    // value, so this falsifies a pass that cleared it rather than the
+    // pass-time write itself.
     let report = work(&mut cell, t(10))?;
     assert!(
         report
