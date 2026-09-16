@@ -76,17 +76,32 @@
 //! caller's mistake that survives into the record as though it were a
 //! decision.
 //!
-//! # One rate now has a feed, and the record says which books it reaches
+//! # Two rates now have a feed, and one of them is the desk's own currency
 //!
-//! This section used to read "the rate has no feed yet", and that is no longer
-//! true of every class. The platform now holds one published rate: the euro
-//! area's **deposit facility rate**, fetched from the ECB's own data portal by
-//! the `ecb-key-interest-rates` connector, admitted by `qip-data-finder`'s
-//! licensing catalogue before the socket, and stamped with the date it applied
-//! to and the instant it became readable. [`SourcedIntervalRate`] is how it
-//! reaches this module, [`PolicyRateTable`] is where the kernel holds it, and
-//! [`ToleranceBasis::from_sourced`] is the only door a non-zero rate enters by
-//! from data rather than from a caller's literal.
+//! This section read "the rate has no feed yet" until the ECB lane, and then
+//! "one rate now has a feed" until this one. The platform holds **two**
+//! published rates today, each admitted by `qip-data-finder`'s licensing
+//! catalogue before any socket, each stamped with the date it applied to and
+//! the instant it became readable:
+//!
+//! * the euro area's **deposit facility rate**, from the ECB's own data portal
+//!   by the `ecb-key-interest-rates` connector;
+//! * the United States' **effective federal funds rate**, from the Federal
+//!   Reserve Bank of New York's markets API by the `nyfed-effr` connector.
+//!
+//! [`SourcedIntervalRate`] is how each reaches this module, [`PolicyRateTable`]
+//! is where the kernel holds them, and [`ToleranceBasis::from_sourced`] is the
+//! only door a non-zero rate enters by from data rather than from a caller's
+//! literal.
+//!
+//! **The second one is what makes the machinery reach a production book.** The
+//! one §38.3 class this platform's kernel can attest without being told is the
+//! desk's own cash at its broker, and that book is in dollars; the euro rate
+//! answered `NoneHeld` for it, correctly, and the whole apparatus therefore
+//! judged every real book at its dust floor. It no longer does. A dollar book
+//! at the desk's broker is now judged by `dust + one day's EFFR accrual on the
+//! expected balance`, and the record says which figure, from which publisher,
+//! true when and knowable when.
 //!
 //! What has **not** changed, and must not be read as having changed:
 //!
@@ -95,16 +110,22 @@
 //!   data, and [`SourcedIntervalRate::from_percent_per_annum`] refuses to be
 //!   the one that supplies it: an annual percentage becomes a day without a
 //!   second assumption and becomes a funding interval only with one.
-//! * **The deposit facility rate governs euro balances and nothing else.** An
-//!   issuer sets a rate for a currency, so [`PolicyRateTable::governing`] is
-//!   keyed by asset as well as class. The one class this platform's kernel can
-//!   attest without being told is the desk's own cash at its broker, and that
-//!   book is in dollars — so no basis in a default deployment carries a
-//!   non-zero rate today, and the reason is the currency rather than the
-//!   absence of any feed at all. That distinction is the point: `rate: 0`
-//!   reads identically whether no issuer publishes for the currency, the rate
-//!   held is for another row, the publisher has gone quiet, or the class
-//!   accrues nothing, and [`RateLookup`] makes those four separate findings.
+//! * **Each rate governs its own currency and nothing else.** An issuer sets a
+//!   rate for a currency, so [`PolicyRateTable::governing`] is keyed by asset
+//!   as well as class. The deposit facility rate answers for a euro book and
+//!   `NoneHeld` for every other; EFFR answers for a dollar book and `NoneHeld`
+//!   for every other. A book in a third currency still carries rate zero, and
+//!   the reason is the currency rather than the absence of any feed at all.
+//!   That distinction is the point: `rate: 0` reads identically whether no
+//!   issuer publishes for the currency, the rate held is for another row, the
+//!   publisher has gone quiet, or the class accrues nothing, and
+//!   [`RateLookup`] makes those four separate findings.
+//! * **Neither rate is reachable by a deployment.** Neither
+//!   `data-api.ecb.europa.eu` nor `markets.newyorkfed.org` is in the Envoy
+//!   bootstrap or in `egress_allowed_upstreams`, so both connectors are proven
+//!   against recorded bodies and against nothing a deployed process has
+//!   fetched. A connector is not a feed until that separate step under
+//!   ADR 0034 is taken.
 //!
 //! Everything a class has no rate for stays at zero, which is the fail-closed
 //! direction — the accrual term is nil, so the tolerance is the dust floor and
@@ -755,6 +776,20 @@ pub struct SourcedIntervalRate {
     true_at: Timestamp,
     /// The instant it became knowable — never earlier than `true_at`.
     knowable_at: Timestamp,
+    /// A notice the publisher's own terms require to accompany a presentation
+    /// of this figure, when the publisher requires one.
+    ///
+    /// `Option` because most publishers do not. The ECB's copyright statement
+    /// asks for acknowledgement and for a modification to be stated, and the
+    /// second of those is what [`Self::derivation`] already is. The New York
+    /// Fed's Terms of Use go further for reference rate data specifically and
+    /// demand a named notice and disclaimer *with the presentation of that
+    /// data*, so for that source the text has to travel in the record rather
+    /// than sit in a doc comment. `skip_serializing_if` so a rate from a
+    /// publisher who asks for nothing serialises exactly as it did before this
+    /// field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    presentation_notice: Option<String>,
 }
 
 impl SourcedIntervalRate {
@@ -767,6 +802,19 @@ impl SourcedIntervalRate {
     /// arithmetic; a figure divided by a rounder number would be this
     /// platform's, and §38.3's tolerance is the last place to prefer a rounder
     /// number.
+    ///
+    /// **The dollar rate that arrived second happens to share it, and that was
+    /// checked rather than assumed.** The New York Fed's effective federal
+    /// funds rate is a US money-market rate, and US money-market interest —
+    /// federal funds, SOFR, commercial paper, the bill discount — accrues
+    /// actual/360 too. So one constant still serves both, and it serves them
+    /// because two money markets independently settled on the same convention,
+    /// not because the second rate was divided by whatever the first one had
+    /// already been divided by. A third currency whose money market is
+    /// actual/365 — sterling is the obvious one — cannot reuse this constant,
+    /// and the conversion would have to become the issuer's rather than a
+    /// shared literal. That is a change to this type, not a new arm in the
+    /// kernel's series table.
     pub const DAY_COUNT_BASIS: Decimal = Decimal::from_raw(360_000_000_000);
 
     /// A published percentage is a percentage: one hundred of them is one.
@@ -865,7 +913,40 @@ impl SourcedIntervalRate {
             rate,
             true_at,
             knowable_at,
+            presentation_notice: None,
         })
+    }
+
+    /// Attach the notice the publisher's terms require beside any presentation
+    /// of this figure.
+    ///
+    /// # Why this is a builder and not a parameter
+    ///
+    /// Every publisher asks for something different and most ask for nothing,
+    /// so a required parameter would be `None` at most call sites and would
+    /// read as a field nobody had thought about. What makes the decision
+    /// unavoidable is one layer up: the kernel's `interval_rate_series` maps a
+    /// published series to the asset, the §38.3 class **and** the notice, so a
+    /// second source cannot be added there without naming one — or naming that
+    /// there is none. Read that table, not this method, to see whether the
+    /// decision was made.
+    ///
+    /// Refuses a blank notice for the reason [`ToleranceBasis::new`] refuses a
+    /// dust floor of zero: an empty string satisfies `is_some` and discharges
+    /// nothing, and a licence obligation that reads as met and is not is worse
+    /// than one visibly absent.
+    pub fn with_presentation_notice(mut self, notice: impl Into<String>) -> Result<Self> {
+        let notice = notice.into();
+        if notice.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "a blank presentation notice was attached to the rate `{}` publishes for {}. A \
+                 notice a publisher's terms require is discharged by its words or not at all; \
+                 pass the text, or attach none and record that the publisher asks for none",
+                self.source_id, self.asset
+            )));
+        }
+        self.presentation_notice = Some(notice);
+        Ok(self)
     }
 
     pub const fn class(&self) -> ToleranceClass {
@@ -904,6 +985,16 @@ impl SourcedIntervalRate {
         self.knowable_at
     }
 
+    /// The notice the publisher's terms require beside a presentation of this
+    /// figure, when the publisher requires one.
+    ///
+    /// Exposed as well as folded into [`Self::derivation`] so a surface that
+    /// renders the number and the sentence separately can find the sentence
+    /// without parsing prose.
+    pub fn presentation_notice(&self) -> Option<&str> {
+        self.presentation_notice.as_deref()
+    }
+
     /// Whether this figure was knowable by `now` and has not gone stale.
     fn usable_at(&self, now: Timestamp) -> bool {
         now >= self.knowable_at && now.since(self.knowable_at) <= Self::MAX_AGE
@@ -916,8 +1007,18 @@ impl SourcedIntervalRate {
     /// publisher's figure, which the ECB's terms require explicitly and which
     /// no class label can make. It is also the only way a reader of a halt can
     /// re-derive the number rather than trust it.
+    ///
+    /// Where the publisher demands a notice beside any presentation of the
+    /// figure — the New York Fed does, for reference rate data — that notice
+    /// is appended here rather than left for a caller to remember. This string
+    /// is what `Platform::tolerance_reasons` keeps beside every §38.3 basis,
+    /// so appending it is how the obligation travels with the number. It is
+    /// not how the obligation is *discharged*: nothing in this crate renders
+    /// anything, and a screen that shows the rate without this sentence would
+    /// breach the terms while every check here passed. See the catalogue entry
+    /// in `qip_data_finder::admission`, which says so in the same words.
     pub fn derivation(&self) -> String {
-        format!(
+        let derived = format!(
             "{} per annum for {} published by `{}`, true at {} and knowable at {}, divided by \
              100 and by an actual/{} day count to one day's accrual of {}",
             self.published_percent_per_annum,
@@ -927,7 +1028,11 @@ impl SourcedIntervalRate {
             self.knowable_at.to_rfc3339(),
             Self::DAY_COUNT_BASIS,
             self.rate
-        )
+        );
+        match &self.presentation_notice {
+            None => derived,
+            Some(notice) => format!("{derived}. {notice}"),
+        }
     }
 }
 
@@ -946,7 +1051,16 @@ impl SourcedIntervalRate {
 pub enum RateLookup {
     /// A published rate governs this asset and this class, and is current.
     Governed(Box<SourcedIntervalRate>),
-    /// No source in this build publishes a rate for this asset.
+    /// This process holds no rate for this asset at all.
+    ///
+    /// The wording matters and was wrong until the `nyfed-effr` lane. It read
+    /// "no source in this build publishes a rate for this asset", which was
+    /// true while the only admitted rate was the euro's and became false the
+    /// day a dollar rate shipped: a build can carry a source for an asset and
+    /// still hold nothing, because the connector was never opened, or was
+    /// opened and has not yet released a knowable row. This arm says what it
+    /// can actually see — the table is empty for this asset — and does not
+    /// claim to know what the build ships.
     NoneHeld,
     /// A rate is held for this asset and governs a different §38.3 class.
     ClassNotGoverned {
@@ -968,8 +1082,8 @@ impl RateLookup {
         match self {
             Self::Governed(rate) => rate.derivation(),
             Self::NoneHeld => format!(
-                "no source in this build publishes an interval rate for {asset}, so the dust \
-                 floor is the whole tolerance"
+                "this process holds no published interval rate for {asset}, so the dust floor is \
+                 the whole tolerance"
             ),
             Self::ClassNotGoverned { held, asked } => format!(
                 "the rate held for {asset} is one interval of a {held} tolerance and this \

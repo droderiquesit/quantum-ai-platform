@@ -25,8 +25,8 @@ use qip_market_ingestion::connector::{
 };
 use qip_market_ingestion::connectors::{
     AlpacaBarsConnector, CoinbaseTickerConnector, EcbKeyRatesConnector, FrankfurterRatesConnector,
-    KalshiMarketsConnector, alpaca_bars, coinbase_ticker, ecb_key_rates, frankfurter_rates,
-    kalshi_markets,
+    KalshiMarketsConnector, NyFedEffrConnector, alpaca_bars, coinbase_ticker, ecb_key_rates,
+    frankfurter_rates, kalshi_markets,
 };
 use qip_transport::RecordingSleeper;
 use std::collections::BTreeMap;
@@ -81,6 +81,22 @@ fn ecb_key_rates() -> Result<(EcbKeyRatesConnector, SourceEmulator)> {
     Ok((
         connector,
         SourceEmulator::from_json(ecb_key_rates::FIXTURE)?,
+    ))
+}
+
+/// After nine of the recorded EFFR rows have cleared the manifest's five-day
+/// dissemination delay, and before the tenth has. The newest row in the
+/// recording is 2026-09-14 and is still correctly withheld here, which is why
+/// the expected count below is nine rather than ten.
+fn nyfed_effr_horizon() -> Timestamp {
+    at("2026-09-16T09:00:00Z")
+}
+
+fn nyfed_effr() -> Result<(NyFedEffrConnector, SourceEmulator)> {
+    let connector = NyFedEffrConnector::new(NyFedEffrConnector::shipped_manifest()?)?;
+    Ok((
+        connector,
+        SourceEmulator::from_json(qip_market_ingestion::connectors::nyfed_effr::FIXTURE)?,
     ))
 }
 
@@ -615,10 +631,11 @@ fn every_known_source_opens_by_name_through_the_bridge_over_its_own_fixture() ->
     // fails at start-up with a message about a missing arm. Each is opened
     // over its recorded (or placeholder) fixture through the same
     // `over_transport` path `open` takes after it builds the transport.
-    assert_eq!(KNOWN_SOURCES.len(), 5, "{KNOWN_SOURCES:?}");
+    assert_eq!(KNOWN_SOURCES.len(), 6, "{KNOWN_SOURCES:?}");
     let (kalshi, kalshi_emulator) = kalshi()?;
     let (alpaca, alpaca_emulator) = alpaca()?;
     let (ecb, ecb_emulator) = ecb_key_rates()?;
+    let (effr, effr_emulator) = nyfed_effr()?;
     let cases: Vec<(
         Box<dyn SourceConnector + Send>,
         SourceEmulator,
@@ -630,6 +647,10 @@ fn every_known_source_opens_by_name_through_the_bridge_over_its_own_fixture() ->
         // Three key rates on one observation date: the deposit facility, the
         // marginal lending facility and the main refinancing fixed rate.
         (Box::new(ecb), ecb_emulator, ecb_key_rates_horizon(), 3),
+        // Nine of the recording's ten business days: the newest has not
+        // cleared its dissemination delay at this horizon, and a case
+        // expecting ten would be a case that had turned the gate off.
+        (Box::new(effr), effr_emulator, nyfed_effr_horizon(), 9),
     ];
     for (connector, emulator, horizon, expected) in cases {
         let manifest = connector.manifest().clone();

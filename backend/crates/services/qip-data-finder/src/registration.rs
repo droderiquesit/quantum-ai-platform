@@ -311,6 +311,7 @@ impl RegistrationRegistry {
                 RegistrationRequirement::Keyless,
             )
             .with_requirement("ecb-key-interest-rates", RegistrationRequirement::Keyless)
+            .with_requirement("nyfed-effr", RegistrationRequirement::Keyless)
             .with_requirement("alpaca-daily-bars", RegistrationRequirement::Account)
             .with_requirement("kalshi-markets", RegistrationRequirement::Account)
     }
@@ -678,6 +679,15 @@ mod tests {
         // satisfied by a record somebody added.
         assert_eq!(
             shipped.requirement("ecb-key-interest-rates"),
+            Some(RegistrationRequirement::Keyless)
+        );
+        // The New York Fed's markets API serves its reference rates with no
+        // account and no key. The Terms of Use have a Registration section,
+        // and it governs "Permissioned Access Websites" reached with a
+        // username and password — which this endpoint is not, as the 200 it
+        // answers an anonymous request with shows.
+        assert_eq!(
+            shipped.requirement("nyfed-effr"),
             Some(RegistrationRequirement::Keyless)
         );
         // The two ADR 0034 candidates need a person's account, and the table

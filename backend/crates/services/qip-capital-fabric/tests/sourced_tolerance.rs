@@ -207,7 +207,7 @@ fn a_euro_rate_never_answers_for_a_book_in_another_currency() -> Result<()> {
     // not left to infer it from a zero.
     let said = dollar_lookup.describe(&dollars, knowable());
     assert!(
-        said.contains("no source in this build publishes an interval rate for USD"),
+        said.contains("this process holds no published interval rate for USD"),
         "the record does not name the missing currency: {said}"
     );
     Ok(())

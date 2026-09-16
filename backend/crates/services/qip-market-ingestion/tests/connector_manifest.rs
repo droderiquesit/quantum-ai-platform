@@ -14,7 +14,7 @@ use qip_market_ingestion::connector::manifest::{AuthScheme, AuthSpec, SchemaVers
 use qip_market_ingestion::connector::transport::HttpSourceTransport;
 use qip_market_ingestion::connector::{Protocol, SourceManifest};
 use qip_market_ingestion::connectors::{
-    alpaca_bars, coinbase_ticker, ecb_key_rates, frankfurter_rates, kalshi_markets,
+    alpaca_bars, coinbase_ticker, ecb_key_rates, frankfurter_rates, kalshi_markets, nyfed_effr,
 };
 
 #[test]
@@ -786,12 +786,16 @@ fn every_shipped_manifest_declares_the_category_its_authors_place_it_in() -> Res
             SourceCategory::GovernmentAndTrade,
         ),
         (
+            nyfed_effr::NyFedEffrConnector::shipped_manifest()?,
+            SourceCategory::GovernmentAndTrade,
+        ),
+        (
             kalshi_markets::KalshiMarketsConnector::shipped_manifest()?,
             SourceCategory::Marketplace,
         ),
     ];
     // Premise: the table above covers every source the build can open, so a
-    // sixth connector added without a declaration is caught here rather than
+    // seventh connector added without a declaration is caught here rather than
     // at the door.
     assert_eq!(
         expected.len(),
