@@ -64,6 +64,7 @@ pub mod mirror;
 pub mod ordertype;
 pub mod path;
 pub mod pathcycle;
+pub mod ratelimit;
 pub mod reprice;
 pub mod router;
 pub mod venue;
@@ -92,6 +93,7 @@ pub use path::{
     eligible_paths,
 };
 pub use pathcycle::{CycleRouter, RepresentationClasses, VenueRegions};
+pub use ratelimit::{MAX_TRACKED_PER_WINDOW, RateLedger, RateLimits};
 pub use reprice::{
     Drift, HoldReason, PendingReplace, RepriceDecision, RepricePolicy, Repricer, ThrottleScope,
 };

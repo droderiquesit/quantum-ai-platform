@@ -50,6 +50,7 @@ use qip_financial::quality::Provenance;
 pub use qip_market::book::BookLevel;
 use qip_market::book::OrderBook;
 use qip_market::quote::Quote;
+use qip_routing::ratelimit::{RateLedger, RateLimits};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -98,6 +99,14 @@ pub struct ExchangeSettings {
     pub opening_cash: Decimal,
     pub currency: Currency,
     pub margin: MarginPolicy,
+    /// What the venue will accept per window — blueprint §34.1's rate limits.
+    ///
+    /// The venue's own count of what *arrived*, deliberately separate from the
+    /// router's count of what it decided to send. Two independent claims about
+    /// one fact, which is the only arrangement in which the two can be seen to
+    /// disagree; a venue that derived its count from the sender's would agree
+    /// with it by construction and prove nothing.
+    pub rate_limits: RateLimits,
 }
 
 impl Default for ExchangeSettings {
@@ -112,6 +121,7 @@ impl Default for ExchangeSettings {
             opening_cash: Decimal::from_int(10_000_000),
             currency: Currency::USD,
             margin: MarginPolicy::default(),
+            rate_limits: RateLimits::ASSUMED,
         }
     }
 }
@@ -190,6 +200,10 @@ pub struct SimulatedExchange {
     heartbeats: u64,
     submitted: u64,
     rejected: u64,
+    /// What this venue has been sent inside its window. The venue's own books,
+    /// not the sender's: a message the sender believes it sent and this ledger
+    /// never saw is exactly the gap worth being able to see.
+    rates: RateLedger,
 }
 
 impl SimulatedExchange {
@@ -222,11 +236,23 @@ impl SimulatedExchange {
             heartbeats: 0,
             submitted: 0,
             rejected: 0,
+            rates: RateLedger::new(),
         }
     }
 
     pub fn settings(&self) -> ExchangeSettings {
         self.settings
+    }
+
+    /// What is left of this venue's allowance at `at` — orders, then messages.
+    ///
+    /// The venue's own count, readable so that an operator can see the gap
+    /// between what a sender believes it sent and what arrived here. Without
+    /// it the allowance would only ever be visible as a refusal, which is the
+    /// one moment it is too late to act on.
+    pub fn rate_budget(&self, at: Timestamp) -> (u32, u32) {
+        self.rates
+            .remaining(self.venue.as_str(), &self.settings.rate_limits, at)
     }
 
     /// List an instrument. The venue will not trade anything else.
@@ -731,6 +757,18 @@ impl VenueAdapter for SimulatedExchange {
         order.validate()?;
         self.submitted = self.submitted.saturating_add(1);
 
+        // §34.1's rate limit, enforced by the venue rather than trusted to the
+        // sender. A real venue answers "too many" by dropping the session, and
+        // a simulator that accepted an unlimited burst would be a rehearsal for
+        // a venue that does not exist — the order path would meet its first
+        // rate refusal in a deployment.
+        let venue = self.venue.as_str().to_string();
+        let limits = self.settings.rate_limits;
+        if let Err(error) = self.rates.spend_order(&venue, &limits, at) {
+            self.rejected = self.rejected.saturating_add(1);
+            return Err(error);
+        }
+
         let limit = self.limit_of(order).inspect_err(|_| {
             self.rejected = self.rejected.saturating_add(1);
         })?;
@@ -846,6 +884,12 @@ impl VenueAdapter for SimulatedExchange {
         // No readiness ticket. Cancelling reduces risk, and a degraded session
         // is exactly when it is most needed.
         self.connection.require_session(at)?;
+        // Counted against the message allowance and never refused by it, for
+        // the same reason there is no ticket: a rate limit that blocked a
+        // withdrawal would leave a position resting that nobody can pull.
+        let venue = self.venue.as_str().to_string();
+        let limits = self.settings.rate_limits;
+        self.rates.record_message(&venue, &limits, at);
         let Some(record) = self.orders.get(order_id.as_str()) else {
             return Err(Error::not_found(format!(
                 "{} has no order {}",
@@ -902,6 +946,10 @@ impl VenueAdapter for SimulatedExchange {
         // An amendment can add quantity, which is new risk, so it needs the
         // same proof of readiness a fresh order does.
         self.connection.authorise(ticket, at)?;
+        let replace_venue = self.venue.as_str().to_string();
+        let replace_limits = self.settings.rate_limits;
+        self.rates
+            .record_message(&replace_venue, &replace_limits, at);
         let Some(record) = self.orders.get(order_id.as_str()) else {
             return Err(Error::not_found(format!(
                 "{} has no order {}",

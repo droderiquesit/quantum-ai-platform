@@ -25,6 +25,7 @@ use qip_routing::gateway::{
 };
 use qip_routing::health::{HealthPolicy, HealthTracker, HealthVerdict};
 use qip_routing::ordertype::{OrderTypeKind, RoutedOrderType, Touch, Urgency, select_order_type};
+use qip_routing::ratelimit::{RateLedger, RateLimits};
 use qip_routing::router::{
     ExclusionReason, Router, RouterSettings, RoutingRequest, VenueCandidate,
 };
@@ -115,6 +116,7 @@ fn routing_picks_the_best_net_cost_and_not_the_best_quote() -> Result<()> {
         &buy("100", Urgency::Normal),
         &candidates,
         &HealthTracker::default(),
+        &RateLedger::new(),
         at(),
     )?;
 
@@ -160,6 +162,7 @@ fn a_maker_rebate_can_beat_a_better_quote() -> Result<()> {
         &buy("100", Urgency::Patient),
         &candidates,
         &HealthTracker::default(),
+        &RateLedger::new(),
         at(),
     )?;
 
@@ -194,6 +197,7 @@ fn a_sale_is_routed_to_the_venue_that_pays_most_after_fees() -> Result<()> {
         &sell("100", Urgency::Normal),
         &candidates,
         &HealthTracker::default(),
+        &RateLedger::new(),
         at(),
     )?;
 
@@ -230,6 +234,7 @@ fn a_split_adds_back_up_to_the_parent_exactly() -> Result<()> {
         &buy("100", Urgency::Immediate),
         &candidates,
         &HealthTracker::default(),
+        &RateLedger::new(),
         at(),
     )?;
 
@@ -263,6 +268,7 @@ fn lot_rounding_reports_the_remainder_rather_than_losing_it() -> Result<()> {
         &buy("25", Urgency::Immediate),
         &[lumpy],
         &HealthTracker::default(),
+        &RateLedger::new(),
         at(),
     )?;
 
@@ -307,6 +313,7 @@ fn a_halted_or_unreachable_venue_never_receives_an_order() -> Result<()> {
         &buy("100", Urgency::Normal),
         &[halted, unreachable, open],
         &HealthTracker::default(),
+        &RateLedger::new(),
         at(),
     )?;
 
@@ -348,6 +355,7 @@ fn a_venue_with_a_high_reject_rate_is_deprioritised() -> Result<()> {
         &buy("100", Urgency::Normal),
         &candidates,
         &HealthTracker::default(),
+        &RateLedger::new(),
         at(),
     )?;
     assert_eq!(
@@ -361,8 +369,13 @@ fn a_venue_with_a_high_reject_rate_is_deprioritised() -> Result<()> {
         health.record_sent(&venue("AAA"));
     }
     health.record_reject(&venue("AAA"), at());
-    let decision =
-        Router::default().route(&buy("100", Urgency::Normal), &candidates, &health, at())?;
+    let decision = Router::default().route(
+        &buy("100", Urgency::Normal),
+        &candidates,
+        &health,
+        &RateLedger::new(),
+        at(),
+    )?;
 
     assert_eq!(
         decision.slices[0].venue,
@@ -407,8 +420,13 @@ fn a_venue_rejecting_most_of_its_orders_is_taken_out_of_rotation() -> Result<()>
     assert!(!assessment.verdict.is_usable());
     assert!(assessment.verdict.reason().contains("stop sending"));
 
-    let decision =
-        Router::default().route(&buy("100", Urgency::Normal), &candidates, &health, at())?;
+    let decision = Router::default().route(
+        &buy("100", Urgency::Normal),
+        &candidates,
+        &health,
+        &RateLedger::new(),
+        at(),
+    )?;
     assert_eq!(decision.venues(), vec![&venue("BBB")]);
     assert!(
         decision
@@ -583,8 +601,13 @@ fn a_price_limit_keeps_the_order_off_a_venue_that_is_too_expensive() -> Result<(
         &[("100.00", "100000")],
     )];
     let request = buy("100", Urgency::Normal).with_price_limit(d("100.01"));
-    let decision =
-        Router::default().route(&request, &candidates, &HealthTracker::default(), at())?;
+    let decision = Router::default().route(
+        &request,
+        &candidates,
+        &HealthTracker::default(),
+        &RateLedger::new(),
+        at(),
+    )?;
 
     assert!(decision.slices.is_empty());
     assert_eq!(decision.unrouted, d("100"));
@@ -620,6 +643,7 @@ fn a_fully_filled_parent_accounts_for_every_share() -> Result<()> {
         &buy("100", Urgency::Immediate),
         &candidates,
         &HealthTracker::default(),
+        &RateLedger::new(),
         at(),
     )?;
 
@@ -960,12 +984,14 @@ fn routing_the_same_market_twice_produces_the_same_decision() -> Result<()> {
         &buy("100", Urgency::Immediate),
         &candidates,
         &HealthTracker::default(),
+        &RateLedger::new(),
         at(),
     )?;
     let second = router.route(
         &buy("100", Urgency::Immediate),
         &candidates,
         &HealthTracker::default(),
+        &RateLedger::new(),
         at(),
     )?;
     assert_eq!(first, second, "a replay must reproduce the run exactly");
@@ -1085,6 +1111,7 @@ fn a_venue_whose_fee_rate_cannot_be_applied_is_refused_by_name_while_a_sound_one
         &buy("100", Urgency::Normal),
         std::slice::from_ref(&sound),
         &HealthTracker::default(),
+        &RateLedger::new(),
         at(),
     )?;
     assert_eq!(priced.slices.len(), 1, "a stated rate still routes");
@@ -1098,6 +1125,7 @@ fn a_venue_whose_fee_rate_cannot_be_applied_is_refused_by_name_while_a_sound_one
             &buy("100", Urgency::Normal),
             &[sound, poisoned],
             &HealthTracker::default(),
+            &RateLedger::new(),
             at(),
         )
         .expect_err("a fee rate that is not a number cannot price a venue");
@@ -1163,7 +1191,13 @@ fn a_health_surcharge_that_cannot_be_applied_is_refused_while_a_stated_one_still
     );
 
     let refusal = Router::default()
-        .route(&buy("100", Urgency::Normal), &candidates, &health, at())
+        .route(
+            &buy("100", Urgency::Normal),
+            &candidates,
+            &health,
+            &RateLedger::new(),
+            at(),
+        )
         .expect_err("a surcharge that cannot be applied cannot price the venue");
     let message = refusal.message();
     assert!(
@@ -1179,12 +1213,129 @@ fn a_health_surcharge_that_cannot_be_applied_is_refused_while_a_stated_one_still
         sane.record_sent(&venue("AAA"));
     }
     sane.record_reject(&venue("AAA"), at());
-    let decision =
-        Router::default().route(&buy("100", Urgency::Normal), &candidates, &sane, at())?;
+    let decision = Router::default().route(
+        &buy("100", Urgency::Normal),
+        &candidates,
+        &sane,
+        &RateLedger::new(),
+        at(),
+    )?;
     assert_eq!(
         decision.slices[0].venue,
         venue("BBB"),
         "a chargeable surcharge still moves the order off the rejecting venue"
     );
+    Ok(())
+}
+
+// Blueprint §34.1's rate limits, at the seam where they change a decision.
+//
+// The failure these guard is not an order that bounces. It is the order after
+// the one that bounced: a venue answers "too many" by dropping the session or
+// banning the account, and the cancel that would have withdrawn the resting
+// order goes with it. So the allowance is read here, before an order object
+// exists, and a venue whose window is spent is dropped from the comparison
+// with a reason — not sent to and rejected.
+
+#[test]
+fn a_venue_whose_order_allowance_is_spent_is_dropped_from_the_comparison_with_a_reason()
+-> Result<()> {
+    let limits = RateLimits::per_second(2, 10)?;
+    let cheap = VenueCandidate::new(
+        profile("BUSY", 0.0, 1.0).with_rate_limits(limits),
+        VenueStatus::Open,
+        book("BUSY", &[("99.90", "100000")], &[("100.00", "100000")]),
+    );
+    let dear = candidate(
+        "IDLE",
+        0.0,
+        40.0,
+        &[("99.90", "100000")],
+        &[("100.00", "100000")],
+    );
+    let candidates = [cheap, dear];
+
+    // The premise, asserted first: with the window untouched the cheap venue
+    // wins on cost, so the change below is the allowance and not the fixture.
+    let unspent = Router::default().route(
+        &buy("100", Urgency::Normal),
+        &candidates,
+        &HealthTracker::default(),
+        &RateLedger::new(),
+        at(),
+    )?;
+    assert_eq!(unspent.slices.len(), 1);
+    assert_eq!(unspent.slices[0].venue, venue("BUSY"));
+
+    let mut ledger = RateLedger::new();
+    ledger.spend_order("BUSY", &limits, at())?;
+    ledger.spend_order("BUSY", &limits, at())?;
+
+    let spent = Router::default().route(
+        &buy("100", Urgency::Normal),
+        &candidates,
+        &HealthTracker::default(),
+        &ledger,
+        at(),
+    )?;
+    assert_eq!(
+        spent.slices.len(),
+        1,
+        "the order still goes somewhere; the cheap venue is merely unusable"
+    );
+    assert_eq!(
+        spent.slices[0].venue,
+        venue("IDLE"),
+        "and it goes to the venue with budget left, even though it costs more"
+    );
+    let excluded = spent
+        .exclusions
+        .iter()
+        .find(|exclusion| exclusion.venue == venue("BUSY"))
+        .expect("the venue that was not used says why");
+    assert_eq!(excluded.reason, ExclusionReason::RateLimited);
+    assert!(
+        excluded.detail.contains("2 orders"),
+        "the reason names the allowance that was spent: {}",
+        excluded.detail
+    );
+    Ok(())
+}
+
+#[test]
+fn the_allowance_is_read_from_the_profile_so_two_venues_do_not_share_one_budget() -> Result<()> {
+    let limits = RateLimits::per_second(1, 10)?;
+    let candidates = [
+        VenueCandidate::new(
+            profile("AAA", 0.0, 1.0).with_rate_limits(limits),
+            VenueStatus::Open,
+            book("AAA", &[("99.90", "100000")], &[("100.00", "100000")]),
+        ),
+        VenueCandidate::new(
+            profile("BBB", 0.0, 1.0).with_rate_limits(limits),
+            VenueStatus::Open,
+            book("BBB", &[("99.90", "100000")], &[("100.00", "100000")]),
+        ),
+    ];
+
+    let mut ledger = RateLedger::new();
+    ledger.spend_order("AAA", &limits, at())?;
+
+    let decision = Router::default().route(
+        &buy("100", Urgency::Normal),
+        &candidates,
+        &HealthTracker::default(),
+        &ledger,
+        at(),
+    )?;
+    // The premise: the ledger really did spend something.
+    assert_eq!(ledger.remaining("AAA", &limits, at()).0, 0);
+    assert_eq!(ledger.remaining("BBB", &limits, at()).0, 1);
+    assert_eq!(
+        decision.slices.len(),
+        1,
+        "one venue is spent, the other is not"
+    );
+    assert_eq!(decision.slices[0].venue, venue("BBB"));
     Ok(())
 }

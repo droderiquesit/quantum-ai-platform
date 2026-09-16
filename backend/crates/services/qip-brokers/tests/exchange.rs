@@ -37,6 +37,7 @@ use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_financial::asset_class::InstrumentType;
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
+use qip_routing::ratelimit::RateLimits;
 
 /// The liquidity every fixture in this file states, because nothing states it
 /// for them any more.
@@ -961,5 +962,125 @@ fn capabilities_and_requirements_describe_a_venue_nobody_could_mistake_for_real(
     assert!(summary.contains("QIP_XSIM_ENABLED"), "{summary}");
     assert!(summary.contains("Nothing is defaulted"), "{summary}");
     assert_eq!(exchange.requirement(), summary);
+    Ok(())
+}
+// --- §34.1: the venue's own rate limit --------------------------------------
+
+#[test]
+fn the_venue_refuses_the_order_that_exceeds_its_published_allowance_and_admits_it_a_window_later()
+-> Result<()> {
+    // Two orders a second is not a real schedule; it is the smallest one that
+    // makes the boundary visible. The failure being defended is not the order
+    // that bounces — it is the session a real venue drops when the burst
+    // arrives, which takes every resting order's cancel with it.
+    let settings = ExchangeSettings {
+        rate_limits: RateLimits::per_second(2, 10)?,
+        ..ExchangeSettings::orderly()
+    };
+    let mut exchange = live_venue(settings, 21)?;
+    let ticket = exchange.ready(start())?;
+
+    // The premise: the allowance is whole before anything is sent.
+    assert_eq!(
+        exchange.rate_budget(start()),
+        (2, 10),
+        "the venue starts the window with its full allowance"
+    );
+
+    for label in ["rate-one", "rate-two"] {
+        exchange.submit_order(
+            &ticket,
+            &order_at(
+                label,
+                Side::Buy,
+                1,
+                OrderType::Limit {
+                    price: dec!("99.00"),
+                },
+            ),
+            start(),
+        )?;
+    }
+    assert_eq!(
+        exchange.rate_budget(start()).0,
+        0,
+        "and the two that were sent really spent it"
+    );
+
+    let refusal = exchange
+        .submit_order(
+            &ticket,
+            &order_at(
+                "rate-three",
+                Side::Buy,
+                1,
+                OrderType::Limit {
+                    price: dec!("99.00"),
+                },
+            ),
+            start(),
+        )
+        .expect_err("the third order inside the window is beyond the allowance");
+    assert!(
+        refusal.message().contains("2 orders per second"),
+        "the refusal names the allowance rather than being a bare denial: {}",
+        refusal.message()
+    );
+
+    // And the window really rolls, so the control throttles rather than latches
+    // the venue shut — a limit that never reopens is an outage, not a limit.
+    let later = start().saturating_add(Duration::from_secs(2));
+    let ticket = exchange.ready(later)?;
+    exchange.submit_order(
+        &ticket,
+        &order_at(
+            "rate-four",
+            Side::Buy,
+            1,
+            OrderType::Limit {
+                price: dec!("99.00"),
+            },
+        ),
+        later,
+    )?;
+    Ok(())
+}
+
+#[test]
+fn a_cancel_is_never_refused_by_the_rate_limit_and_is_still_counted_against_it() -> Result<()> {
+    // The asymmetry is the whole point. A rate limit that could block a cancel
+    // would leave a position resting that nobody can withdraw — which is the
+    // failure an exhausted allowance causes at the venue, reproduced by the
+    // control meant to avoid it.
+    let settings = ExchangeSettings {
+        rate_limits: RateLimits::per_second(1, 2)?,
+        ..ExchangeSettings::orderly()
+    };
+    let mut exchange = live_venue(settings, 22)?;
+    let ticket = exchange.ready(start())?;
+
+    let resting = order_at(
+        "cancellable",
+        Side::Buy,
+        1,
+        OrderType::Limit {
+            price: dec!("99.00"),
+        },
+    );
+    exchange.submit_order(&ticket, &resting, start())?;
+    // The premise: order entry is now shut for this window.
+    assert_eq!(exchange.rate_budget(start()).0, 0);
+
+    let ack = exchange.cancel_order(&resting.order_id, start())?;
+    assert_eq!(
+        ack.state.as_str(),
+        "cancelled",
+        "the withdrawal goes through with the order allowance already spent"
+    );
+    assert_eq!(
+        exchange.rate_budget(start()).1,
+        0,
+        "and it is counted against the message allowance, which the venue does count"
+    );
     Ok(())
 }

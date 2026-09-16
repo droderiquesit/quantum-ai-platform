@@ -161,6 +161,14 @@ pub struct VenueProfile {
     pub reliability_f64: f64,
     /// Trailing volume already traded here, which fixes the fee tier.
     pub trailing_volume: Decimal,
+    /// What the venue will accept per window — blueprint §34.1's rate limits.
+    ///
+    /// Part of the profile rather than of the adapter that talks to the venue,
+    /// because the decision it changes is made before an order object exists:
+    /// [`crate::router::Router`] drops a venue with no order budget left out of
+    /// the comparison entirely. A limit discovered at submit time is a limit
+    /// discovered by being banned.
+    pub rate_limits: crate::ratelimit::RateLimits,
 }
 
 impl VenueProfile {
@@ -182,7 +190,14 @@ impl VenueProfile {
             typical_latency: Duration::from_millis(5),
             reliability_f64: 0.999,
             trailing_volume: Decimal::ZERO,
+            rate_limits: crate::ratelimit::RateLimits::ASSUMED,
         }
+    }
+
+    /// State the allowance this venue actually publishes.
+    pub fn with_rate_limits(mut self, rate_limits: crate::ratelimit::RateLimits) -> Self {
+        self.rate_limits = rate_limits;
+        self
     }
 
     pub fn with_sizes(mut self, min_size: Decimal, lot_size: Decimal) -> Self {

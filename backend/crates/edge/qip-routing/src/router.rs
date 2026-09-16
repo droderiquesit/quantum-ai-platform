@@ -26,6 +26,7 @@
 
 use crate::health::{HealthTracker, HealthVerdict};
 use crate::ordertype::{OrderTypeSelection, RoutedOrderType, Touch, Urgency, select_order_type};
+use crate::ratelimit::RateLedger;
 use crate::venue::VenueProfile;
 use qip_contracts::message::BookSide;
 use qip_contracts::venue::{VenueId, VenueStatus};
@@ -140,6 +141,9 @@ pub enum ExclusionReason {
     NoUsableOrderType,
     /// Its all-in price is worse than the caller's limit.
     PriceLimit,
+    /// Its published order or message allowance is already spent for this
+    /// window — blueprint §34.1's rate limits, read before an order exists.
+    RateLimited,
 }
 
 impl ExclusionReason {
@@ -151,6 +155,7 @@ impl ExclusionReason {
             Self::BelowMinimumSize => "below_minimum_size",
             Self::NoUsableOrderType => "no_usable_order_type",
             Self::PriceLimit => "price_limit",
+            Self::RateLimited => "rate_limited",
         }
     }
 }
@@ -263,6 +268,7 @@ impl Router {
         request: &RoutingRequest,
         candidates: &[VenueCandidate],
         health: &HealthTracker,
+        rates: &RateLedger,
         at: Timestamp,
     ) -> Result<RoutingDecision> {
         if request.quantity <= Decimal::ZERO {
@@ -273,7 +279,7 @@ impl Router {
 
         let mut exclusions: Vec<VenueExclusion> = Vec::new();
         let mut notes: Vec<String> = Vec::new();
-        let eligible = self.eligible(request, candidates, health, at, &mut exclusions)?;
+        let eligible = self.eligible(request, candidates, health, rates, at, &mut exclusions)?;
 
         let mut allocation = vec![Decimal::ZERO; eligible.len()];
         let mut price_limited: Vec<usize> = Vec::new();
@@ -421,6 +427,7 @@ impl Router {
         request: &RoutingRequest,
         candidates: &'a [VenueCandidate],
         health: &HealthTracker,
+        rates: &RateLedger,
         at: Timestamp,
         exclusions: &mut Vec<VenueExclusion>,
     ) -> Result<Vec<Eligible<'a>>> {
@@ -436,6 +443,26 @@ impl Router {
                     detail: format!(
                         "the venue is {} and an order sent there does not bounce, it disappears",
                         candidate.status.as_str()
+                    ),
+                });
+                continue;
+            }
+
+            // Before the book is even looked at, because a venue that cannot be
+            // sent to is not a venue whose price is worth comparing — and
+            // because §34.1's allowance is a limit checked before an order
+            // object exists, like every other limit in this platform.
+            let limits = &candidate.profile.rate_limits;
+            if !rates.admits_order(venue.as_str(), limits, at) {
+                let (orders, messages) = rates.remaining(venue.as_str(), limits, at);
+                exclusions.push(VenueExclusion {
+                    venue,
+                    reason: ExclusionReason::RateLimited,
+                    detail: format!(
+                        "its published allowance of {} orders and {} messages per window is spent: \
+                         {orders} orders and {messages} messages remain at {at}",
+                        limits.orders_per_window(),
+                        limits.messages_per_window()
                     ),
                 });
                 continue;
