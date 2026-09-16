@@ -409,6 +409,258 @@ pub fn unheld_dependencies(
     }
     dependencies
 }
+/// The most unheld dependencies one [`second_order_exposure`] pass follows
+/// into the relationship graph.
+///
+/// A bound on the work and a bound on the answer. Every dependency followed
+/// costs a breadth-first walk of [`instruments_exposed_to`], so an unbounded
+/// follow would make one pass's cost a function of however dense the causal
+/// graph happened to become — the unbounded pass in a platform that took
+/// care not to have one anywhere else. The drivers are ranked by how much of
+/// the book they reach *before* the cut is taken, so what falls off the end
+/// is what reaches fewest positions, and how many fell off is reported
+/// rather than dropped.
+pub const MAX_SECOND_ORDER_DEPENDENCIES: usize = 16;
+
+/// One entity the book depends on and does not hold, with the instruments
+/// the relationship graph says are exposed to it.
+///
+/// §8.2's fifth query answered, and then its first query asked of the
+/// answer. The pair is the chain the blueprint argues the graph earns its
+/// place by walking: a driver nobody holds is a name, and the instruments
+/// within two hops of it are the positions that name could be taken or
+/// hedged through.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UnheldDependency {
+    /// The unheld cause, exactly as [`unheld_dependencies`] named it.
+    pub entity: String,
+    /// The held positions this driver reaches, in id order.
+    ///
+    /// The evidence for the dependency, carried rather than counted: a
+    /// driver of the whole book and a driver of one position read
+    /// identically as a name, and the desk acts differently on each.
+    pub drives: BTreeSet<String>,
+    /// [`instruments_exposed_to`] asked of this entity — the full answer,
+    /// including its own truncation flag, so a reader can tell a complete
+    /// exposure from a cut one.
+    pub exposure: ExposureSet,
+    /// Of those instruments, the ones the book does not hold.
+    ///
+    /// The operative half. An exposed instrument already held is a
+    /// dependency the desk took on purpose and can see; one not held is the
+    /// route the dependency could be hedged through, or the position the
+    /// desk did not know it was two hops away from.
+    pub unheld_instruments: BTreeSet<String>,
+}
+
+/// What [`second_order_exposure`] found.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SecondOrderReview {
+    /// How many held positions were examined. The premise of everything
+    /// below, for [`ConcentrationReport::positions_examined`]'s reason.
+    pub positions_examined: usize,
+    /// Causal edges arriving at a held position and knowable at the instant
+    /// asked about. Zero means the causal graph had nothing to say, which is
+    /// a different fact from a book with no unheld dependency and must never
+    /// read as one.
+    pub edges_considered: usize,
+    /// How many unheld dependencies the query named, before the follow
+    /// bound. The denominator of `dependencies` below.
+    pub dependencies_found: usize,
+    /// The dependencies followed into the relationship graph, the ones
+    /// reaching most of the book first.
+    pub dependencies: Vec<UnheldDependency>,
+    /// Named and not followed, because of [`MAX_SECOND_ORDER_DEPENDENCIES`].
+    /// Non-zero means `dependencies` is a prefix.
+    pub dependencies_truncated: usize,
+}
+
+impl SecondOrderReview {
+    /// Whether this review is evidence of anything at all.
+    ///
+    /// [`ConcentrationReport::was_answerable`]'s argument applies unchanged:
+    /// an empty `dependencies` list means "the book depends on nothing it
+    /// does not hold" only when there were positions to examine *and* edges
+    /// to examine them against. With either at zero the same empty list
+    /// means "nothing was asked", and a caller reporting the first while
+    /// holding the second has built a control that cannot fire.
+    pub fn was_answerable(&self) -> bool {
+        self.positions_examined > 0 && self.edges_considered > 0
+    }
+
+    /// No unheld dependency was found. Only meaningful alongside
+    /// [`Self::was_answerable`].
+    pub fn is_clean(&self) -> bool {
+        self.dependencies.is_empty()
+    }
+
+    /// The review as a clause for a stage's detail, or an empty string when
+    /// the pass had nothing it could honestly say.
+    ///
+    /// Silence rather than a cheerful line, for the reason every other
+    /// summary in this platform keeps quiet: a pass that could not run reads
+    /// identically to a clean one unless it says nothing, and the stage
+    /// detail is the one place an operator finds out which happened.
+    ///
+    /// Each dependency is named with the positions it drives and a *count*
+    /// of the unheld instruments rather than their names. The names are on
+    /// the struct and reach the journal; a line naming up to
+    /// [`MAX_SECOND_ORDER_DEPENDENCIES`] drivers times
+    /// [`MAX_EXPOSURE_RESULTS`] instruments is a line nobody reads at three
+    /// in the morning, and an unread line is not observability.
+    pub fn detail(&self) -> String {
+        if !self.was_answerable() {
+            return String::new();
+        }
+        if self.is_clean() {
+            return format!(
+                "; no unheld causal driver reaches any of {} held position(s) across {} causal \
+                 edge(s)",
+                self.positions_examined, self.edges_considered
+            );
+        }
+        let named = self
+            .dependencies
+            .iter()
+            .map(|dependency| {
+                format!(
+                    "{} drives {} and {} unheld instrument(s) sit within {} hop(s) of it",
+                    dependency.entity,
+                    dependency
+                        .drives
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("+"),
+                    dependency.unheld_instruments.len(),
+                    dependency.exposure.hops_searched,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let left = if self.dependencies_truncated == 0 {
+            String::new()
+        } else {
+            format!(
+                ", {} further dependency(ies) named and not followed this pass",
+                self.dependencies_truncated
+            )
+        };
+        format!(
+            "; {} unheld dependency(ies) of {} held position(s): {named}{left}",
+            self.dependencies_found, self.positions_examined
+        )
+    }
+}
+
+/// §8.2's fifth query — "which entities does my portfolio depend on that I
+/// do not hold?" — and its first query asked of every answer: "which
+/// instruments are exposed to this entity, directly or through two hops?"
+///
+/// # Why the two are composed rather than offered separately
+///
+/// Either alone is a list nobody can act on. A driver the book does not hold
+/// is a name in a causal graph; the desk cannot buy it, sell it, or hedge
+/// it, and an operator handed the name asks "through what?" immediately.
+/// The instruments within two hops of that driver are the answer to that
+/// question, and the ones the book does not already hold are the subset that
+/// is news. Composing them is what turns §8.2's "one observation into
+/// several positions" into something with a shape a reader can use.
+///
+/// # Two graphs, and they are not interchangeable
+///
+/// The dependency comes from the **causal** graph — a claim that a shock
+/// travels — and the exposure from the **relationship** graph, which holds
+/// facts about corporate structure. [`instruments_exposed_to`] already
+/// refuses to conflate them and this function keeps that separation: the
+/// finding says "this claimed driver reaches these held positions, and the
+/// corporate structure puts these instruments within reach of it", never
+/// that the structure transmits anything.
+///
+/// # Point in time
+///
+/// `valid_at` and `known_at` are passed down unchanged, and `known_at` also
+/// filters the causal edges. A dependency established by an edge recorded
+/// after `known_at` is invisible, which is what stops a review run over
+/// history from being better informed than the platform was.
+///
+/// # What makes this return something
+///
+/// One held position, one causal edge arriving at it from an unheld cause
+/// and recorded at or before `known_at`, and — for the exposure half to be
+/// non-empty as well — a [`NodeKind::FinancialObject`] within
+/// [`MAX_EXPOSURE_HOPS`] of that cause in the relationship graph.
+///
+/// Returns `Result` because the query it composes is fallible. Absorbing
+/// that refusal here and reporting a review with one leg missing would be
+/// the caller bug surviving into the record, which is the failure this
+/// platform refuses rather than clamps.
+pub fn second_order_exposure(
+    graph: &KnowledgeGraph,
+    causal: &CausalGraph,
+    held: &BTreeSet<String>,
+    valid_at: Timestamp,
+    known_at: Timestamp,
+) -> Result<SecondOrderReview> {
+    let mut review = SecondOrderReview {
+        positions_examined: held.len(),
+        ..SecondOrderReview::default()
+    };
+    for position in held {
+        review.edges_considered += causal.incoming(position, known_at).len();
+    }
+
+    // §8.2's fifth query, asked exactly as it stands rather than
+    // reimplemented here. One definition of "a dependency the book does not
+    // hold", so this review and anything else reading that query cannot
+    // disagree about what one is.
+    let dependencies = unheld_dependencies(causal, held, known_at);
+    review.dependencies_found = dependencies.len();
+
+    // Rank before cutting. Taking the first sixteen in id order would drop
+    // the driver of half the book because its name sorts late, which is a
+    // bound that discards the finding rather than the noise.
+    let mut ranked: Vec<(String, BTreeSet<String>)> = dependencies
+        .into_iter()
+        .map(|entity| {
+            let drives: BTreeSet<String> = causal
+                .outgoing(&entity, known_at)
+                .into_iter()
+                .map(|edge| edge.effect.clone())
+                .filter(|effect| held.contains(effect))
+                .collect();
+            (entity, drives)
+        })
+        .collect();
+    // Widest reach first, then by entity id so the order is total and a
+    // replay reproduces the same prefix rather than a different one.
+    ranked.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+    review.dependencies_truncated = ranked.len().saturating_sub(MAX_SECOND_ORDER_DEPENDENCIES);
+    ranked.truncate(MAX_SECOND_ORDER_DEPENDENCIES);
+
+    for (entity, drives) in ranked {
+        // `MAX_EXPOSURE_HOPS` rather than a parameter, deliberately: the hop
+        // count is §8.2's own, and a review taking one would let a caller
+        // ask this question at a depth the blueprint does not name — the
+        // mistake `unheld_dependencies` is kept separate from
+        // `hidden_concentration` to avoid.
+        let exposure =
+            instruments_exposed_to(graph, &entity, MAX_EXPOSURE_HOPS, valid_at, known_at)?;
+        let unheld_instruments: BTreeSet<String> = exposure
+            .instruments()
+            .into_iter()
+            .filter(|instrument| !held.contains(instrument))
+            .collect();
+        review.dependencies.push(UnheldDependency {
+            entity,
+            drives,
+            exposure,
+            unheld_instruments,
+        });
+    }
+
+    Ok(review)
+}
 
 #[cfg(test)]
 mod tests {
