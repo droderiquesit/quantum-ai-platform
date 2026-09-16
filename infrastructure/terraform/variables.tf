@@ -852,8 +852,17 @@ variable "enable_vertex_ai" {
 # platform already meets an asymmetric-signature obligation, today". ADR 0069
 # set its own reversal condition as "any asymmetric key material", to be
 # checked by a grep for a caller rather than by a judgement about phase:
-# `grep -rln ASYMMETRIC_SIGN infrastructure/terraform --include=*.tf` prints
-# that module. This is that condition firing, not the decision being reopened.
+# `grep -rn 'purpose *= *"ASYMMETRIC_SIGN"' infrastructure/terraform
+# --include=*.tf` prints that key. This is that condition firing, not the
+# decision being reopened.
+#
+# Note the shape of that command, because the obvious version of it is broken
+# in a way this repository has been bitten by before. A bare
+# `grep -rln ASYMMETRIC_SIGN` over the same tree prints *two* files: the module
+# and this one, because this paragraph names the string. A recount command
+# that matches its own citation is a measurement instrument that reads itself,
+# and it inflates by one the moment somebody quotes it. Matching the `purpose`
+# assignment rather than the bare token keeps prose out of the count.
 #
 # `SOFTWARE` by default, and that default is the conservative one in the sense
 # that matters here: it is the level all four keys already declared as
