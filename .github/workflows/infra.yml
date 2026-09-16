@@ -64,6 +64,27 @@
 # `what exists now` step prints what remains; that list, not this comment,
 # is the record. Nothing here is recoverable once run: unlike a project
 # deletion, there is no thirty-day window.
+#
+# ## `up` after a `teardown` — putting the remains back into state
+#
+# The bullet at the top of this header says a full destroy/apply cycle
+# collides with its own remains, and then `teardown` performed one. What it
+# leaves is worse than the header describes, because the resources it keeps it
+# also *removes from state*: Terraform afterwards believes nine crypto keys, a
+# key ring and five buckets do not exist and plans to create them. Run 44
+# (`plan`, `dev`, 2026-09-15) returned `Plan: 184 to add, 0 to change, 0 to
+# destroy` over 55 surviving entries, with the attestor's key version and the
+# GitOps `etcd_key` both moving to `(known after apply)`.
+#
+# So `up` reclaims before it applies. The `reclaim what the teardown left
+# standing` step plans, asks which of those creates would collide with
+# something still in the project, asks Google whether each one is actually
+# there, and imports only the ones that are. It creates nothing: an object the
+# probe does not find is skipped, so a first-ever apply into a clean project
+# proceeds exactly as before. Its list comes from
+# `scripts/terraform-undeletable.py`, the same parse `teardown` removes by,
+# because the step that decides what to leave behind and the step that decides
+# what to put back cannot be allowed to hold two different lists.
 name: infra
 
 on:
@@ -501,6 +522,127 @@ jobs:
             echo "  gcloud secrets versions access latest --secret qip-openobserve-root-password-$suffix --project $project"
           fi
 
+      # Put back into state what the teardown deliberately left in the
+      # project, before the apply below plans to create it a second time.
+      #
+      # The teardown takes every `prevent_destroy = true` resource and every
+      # `force_destroy = false` bucket *out of state* and leaves them standing
+      # — the header says why, and the reason is sound. What nothing did was
+      # the other half. Terraform then believes those objects do not exist:
+      # run 44 (`plan`, `dev`, 2026-09-15) returned `Plan: 184 to add, 0 to
+      # change, 0 to destroy` against 55 surviving entries, with
+      # `binary_authorization_key_version` and the GitOps `etcd_key` moving
+      # from a concrete `//cloudkms.googleapis.com/...` path to `(known after
+      # apply)`. A crypto key cannot be deleted, only scheduled for
+      # destruction, and a key ring has no delete method at all, so those
+      # creates answer "already exists" — partway through 184 resources, with
+      # the rest created and billing and no clean way back. The header
+      # predicted exactly this collision and then only defended against it by
+      # never doing a full destroy; the teardown did one.
+      #
+      # So: plan, ask which creates would collide, ask Google whether each of
+      # those objects is actually there, and import the ones that are.
+      #
+      # **This step creates nothing, and each part of that is deliberate.**
+      # `terraform plan` creates nothing. `gcloud ... describe` creates
+      # nothing. `terraform import` creates nothing — it writes state and
+      # fails if the object is absent. And an object the probe does not find
+      # is skipped rather than imported, so a first-ever apply into a clean
+      # project finds nothing, imports nothing and proceeds; that is the case
+      # a step written as "import and ignore the error" would quietly break,
+      # because it cannot tell an absent object from a denied one.
+      #
+      # A probe that fails for any reason other than "not found" stops the
+      # job. The message gcloud prints names the permission, and the answer is
+      # to grant that one permission — never to widen a role until the error
+      # goes away. Nothing here needs a grant today: `roles/cloudkms.admin`
+      # carries `cloudkms.keyRings.get` and `cloudkms.cryptoKeys.get`, and
+      # `modules/cicd`'s custom `infra_storage` role carries
+      # `storage.buckets.get`, all three already held by this account.
+      #
+      # The identifier handed to `import` is built from the plan's own
+      # intended attributes, never from a name written down in a workflow, so
+      # what is reclaimed is by construction the object this apply was about
+      # to create. The addresses come from the same parse the teardown removes
+      # by. Neither is typed; a typed list is what missed the evidence bucket
+      # in run 41.
+      #
+      # Why a loop rather than one pass: a crypto key's import identifier
+      # contains its key ring's resource path, and while the ring is itself
+      # only planned that path is `(known after apply)`. Importing the ring
+      # makes the next plan know it. Each round imports what it can resolve
+      # and stops when a round resolves nothing new; a key still unresolved
+      # when the loop settles is a key whose ring genuinely does not exist,
+      # and a key cannot exist under a ring that does not.
+      #
+      # Addresses are printed, never values — the same reason the teardown's
+      # remainder step prints addresses rather than a count.
+      - name: reclaim what the teardown left standing
+        if: inputs.action == 'up'
+        env:
+          VAR_FILES: ${{ steps.vars.outputs.files }}
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+        run: |
+          set -euo pipefail
+          tf() { terraform -chdir=infrastructure/terraform "$@"; }
+          plan="${RUNNER_TEMP}/reclaim.tfplan"
+          rendered="${RUNNER_TEMP}/reclaim.json"
+          lines="${RUNNER_TEMP}/reclaim.txt"
+          denial="${RUNNER_TEMP}/reclaim.err"
+          settled=0
+          for round in 1 2 3 4; do
+            echo "── reclaim round ${round}: planning ──"
+            tf plan -input=false -out="$plan" ${VAR_FILES}
+            tf show -json "$plan" > "$rendered"
+            rm -f "$plan"
+            python3 scripts/terraform-undeletable.py imports \
+              --plan "$rendered" --project "$GCP_PROJECT" > "$lines"
+            imported=0
+            while IFS="$(printf '\t')" read -r verb address probe identifier; do
+              [ -n "${verb:-}" ] || continue
+              if [ "$verb" != import ]; then
+                echo "${verb}: ${address} — ${probe}"
+                continue
+              fi
+              IFS='|' read -r kind one two three four <<< "$probe"
+              case "$kind" in
+                keyring) ask=(gcloud kms keyrings describe "$three"
+                              --project "$one" --location "$two") ;;
+                key)     ask=(gcloud kms keys describe "$four"
+                              --project "$one" --location "$two" --keyring "$three") ;;
+                bucket)  ask=(gcloud storage buckets describe "gs://${two}"
+                              --project "$one") ;;
+                *) echo "no probe for ${kind} at ${address}" >&2; exit 1 ;;
+              esac
+              if "${ask[@]}" --format='value(name)' >/dev/null 2>"$denial" </dev/null; then
+                tf import -input=false ${VAR_FILES} "$address" "$identifier" </dev/null
+                echo "reclaimed: ${address}"
+                imported=$((imported + 1))
+              elif grep -qiE 'NOT_FOUND|not found|404|does not exist' "$denial"; then
+                echo "absent: ${address} — nothing to reclaim"
+              else
+                echo "could not tell whether ${address} exists. gcloud said:" >&2
+                cat "$denial" >&2
+                echo "This step will not apply on a question it could not ask: an" >&2
+                echo "object that is there and unseen is the collision this step" >&2
+                echo "exists to prevent. If the message names a missing" >&2
+                echo "permission, grant that one permission — not a wider role." >&2
+                exit 1
+              fi
+            done < "$lines"
+            if [ "$imported" = 0 ]; then
+              settled=1
+              echo "round ${round} reclaimed nothing further; state and project agree"
+              break
+            fi
+          done
+          if [ "$settled" != 1 ]; then
+            echo "four plans in and this step was still importing. That is not a" >&2
+            echo "teardown's remains, which are a fixed set; something is being" >&2
+            echo "imported and lost again. Refusing to apply into that." >&2
+            exit 1
+          fi
+
       # -auto-approve because there is nobody at a prompt: the review is the
       # dispatch itself, recorded in the Actions log with who pressed it. The
       # prod refusal above is what keeps that acceptable.
@@ -745,22 +887,17 @@ jobs:
           #    this identity does not hold and this action does not grant —
           #    an object in a bucket that stays is a few kilobytes in a
           #    bucket that stays.
-          python3 - > "${RUNNER_TEMP}/kept.txt" <<'PY'
-          import glob, re
-          kept = set()
-          for path in glob.glob("infrastructure/terraform/modules/*/main.tf"):
-              last = None
-              for line in open(path, encoding="utf-8"):
-                  header = re.match(r'\s*resource\s+"([^"]+)"\s+"([^"]+)"', line)
-                  if header:
-                      last = f"{header.group(1)}.{header.group(2)}"
-                      if header.group(1) == "google_storage_bucket_object":
-                          kept.add(last)
-                  if last and (re.match(r'\s*prevent_destroy\s*=\s*true', line)
-                               or re.match(r'\s*force_destroy\s*=\s*false', line)):
-                      kept.add(last)
-          print("\n".join(sorted(kept)))
-          PY
+          #
+          #    The parse used to be a heredoc here. It is
+          #    `scripts/terraform-undeletable.py` now, unchanged, because the
+          #    `reclaim what the teardown left standing` step above needs the
+          #    same list read the same way: this step decides what to leave in
+          #    the project and that one decides what to put back into state,
+          #    and two copies of one parse drift into two different lists.
+          #    They drifted already — the copy that existed was only this one,
+          #    so `up` had no list at all and run 44 planned 184 creates over
+          #    the remains.
+          python3 scripts/terraform-undeletable.py addresses > "${RUNNER_TEMP}/kept.txt"
           echo "declared undeletable or refusing, taken out of state:"; cat "${RUNNER_TEMP}/kept.txt"
           for address in $(tf state list | grep -E 'google_container_cluster\.' || true); do
             tf state rm "$address"

@@ -103,6 +103,29 @@ refusing a `qip-*` image in any Pod spec. Terraform's provider set is still
   `docs/DELIVERY-STATUS.md` records what each plan and each observation
   found. It absorbed the missing-infrastructure register on 2026-09-07,
   and this line pointed at the deleted path until 2026-09-08.
+- **Standing it back up is not a plain apply, and `infra.yml` now knows
+  that.** Everything the teardown left in the project it also took out of
+  state, so run 44 (`plan`, `dev`, 2026-09-15) returned `Plan: 184 to add, 0
+  to change, 0 to destroy` — planning to *create* nine crypto keys, the key
+  ring under them and five buckets that are all still there. A crypto key
+  cannot be deleted and a key ring has no delete method at all, so those
+  creates answer "already exists" partway through an apply and leave a
+  half-built environment billing. `up` therefore runs a `reclaim what the
+  teardown left standing` step first: it plans, asks which creates would
+  collide, asks Google whether each object is actually there, and imports
+  only the ones that are. An object that is absent is skipped, so a
+  first-ever apply into a clean project is unaffected.
+  `scripts/terraform-undeletable.py` is the one parse both halves read — the
+  teardown's list of what to leave behind and the reclaim step's list of what
+  to put back have to be the same list, and a second copy of a parse is how
+  they stop being.
+- **What `up` will still not give you today.** The teardown destroyed
+  `module.registry`, so the six digests in `gitops/envs/dev/kustomization.yaml`
+  and the eight controller digests in `gitops/bootstrap/*/overlays/dev/`
+  name a repository that no longer holds them. The Terraform apply does not
+  read a digest and is unaffected; the bootstrap step in the same job is not.
+  Re-mirror with `vendor.yml` and rebuild with `deploy.yml` after the apply
+  has recreated the registry and the attestor, then dispatch `up` again.
 - `autonomy_ceiling` may not name a live level. `variables.tf` refuses all
   three at plan time; that validation is load-bearing and mutation-tested, and
   since 2026-09-14 it is also *planned*: `terraform/tests/paper-boundary.tftest.hcl`
