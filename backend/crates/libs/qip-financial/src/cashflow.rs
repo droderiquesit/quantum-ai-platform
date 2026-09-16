@@ -485,6 +485,309 @@ impl CashflowForecast {
     }
 }
 
+/// What the book suffers if a call is not met by the date it fell due.
+///
+/// Blueprint §43.2 names the consequence of failure as part of the object, not
+/// as commentary on it, and the reason is that a book short of cash has to
+/// rank a capital call against everything else it owes. A demand with no
+/// priced consequence ranks last by default, which is the wrong answer: a
+/// missed drawdown on a private commitment is the one payment failure that
+/// can cost more than the payment.
+///
+/// The arms are three rather than one because they behave differently in
+/// time. Interest grows with lateness; forfeiture is taken once and does not;
+/// acceleration costs no extra principal at all and instead moves every
+/// remaining call to today. A single "penalty" number could not express the
+/// third, and the third is the one that breaks a liquidity plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallConsequence {
+    /// Default interest accrues on the unmet amount at an annual rate, in
+    /// basis points, for every day past the due date.
+    Interest {
+        /// Annual rate in basis points. An integer, so the whole penalty
+        /// computation stays in [`Decimal`].
+        annual_rate_bps: u32,
+    },
+    /// A fraction of the unmet amount, in basis points, is forfeited the
+    /// moment the call is missed. Taken once; it does not grow with lateness.
+    Forfeiture {
+        /// Fraction forfeited, in basis points of the unmet amount.
+        fraction_bps: u32,
+    },
+    /// The whole unfunded balance falls due at once.
+    ///
+    /// Costs no additional principal — the balance was already owed — so its
+    /// penalty is zero and its effect is entirely on *when* the capital is
+    /// demanded. [`Commitment::demand_within`] is where that is read.
+    Acceleration,
+}
+
+/// One basis point is a ten-thousandth.
+const BPS: i64 = 10_000;
+
+/// Basis points times the day count of a year, so an annual rate quoted in
+/// basis points becomes a daily one in a single division.
+const BPS_YEAR: i64 = BPS * 365;
+
+/// Nanoseconds in a day, for turning a [`Duration`] of lateness into whole
+/// days in integer arithmetic.
+///
+/// [`Duration::as_days_f64`] exists and is not used: it would put a day count
+/// feeding a money computation through `f64`, and a penalty that disagrees
+/// with the fund's own notice in the last cent is a reconciliation nobody can
+/// close.
+const NANOS_PER_DAY: i64 = 86_400 * 1_000_000_000;
+
+impl CallConsequence {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Interest { .. } => "interest",
+            Self::Forfeiture { .. } => "forfeiture",
+            Self::Acceleration => "acceleration",
+        }
+    }
+
+    /// The capital this consequence costs on top of the amount already owed.
+    ///
+    /// **Money never leaves [`Decimal`] here, and that is deliberate.** The
+    /// module's rule is that probabilities and discount rates are `f64` and
+    /// the crossing point is marked where it happens; this computation has no
+    /// crossing point, because a rate in basis points and a count of days are
+    /// both integers. [`Decimal::apply_bps`] would have been the obvious call
+    /// and it takes an `f64` rate — using it would have put a binary rounding
+    /// error into a default-interest figure somebody has to reconcile against
+    /// a fund's own notice, which is exactly the class of disagreement this
+    /// platform refuses to create.
+    ///
+    /// A 365-day year is asserted rather than derived. Partnership agreements
+    /// differ and some count 360; this returns what the platform believes it
+    /// owes, and the fund's notice remains the record.
+    pub fn penalty_on(self, unmet: Decimal, days_late: i64) -> Result<Decimal> {
+        if unmet.is_negative() {
+            return Err(Error::invalid(format!(
+                "a default penalty was asked for on an unmet amount of {unmet}; pass the \
+                 outstanding amount as a non-negative figure, because a negative unmet balance is \
+                 a call that was overpaid and has no penalty to compute"
+            )));
+        }
+        if days_late < 0 {
+            return Err(Error::invalid(format!(
+                "a default penalty was asked for {days_late} days late; a call that has not yet \
+                 fallen due carries no penalty, so ask at or after its due date"
+            )));
+        }
+        match self {
+            Self::Interest { annual_rate_bps } => unmet
+                .checked_mul(Decimal::from_int(i64::from(annual_rate_bps)))
+                .and_then(|accrued| accrued.checked_mul(Decimal::from_int(days_late)))
+                .and_then(|accrued| accrued.checked_div(Decimal::from_int(BPS_YEAR)))
+                .ok_or_else(|| {
+                    Error::numeric(format!(
+                        "default interest on {unmet} at {annual_rate_bps}bp over {days_late} \
+                         day(s) overflows; nothing is reserved against a penalty that cannot be \
+                         represented"
+                    ))
+                }),
+            Self::Forfeiture { fraction_bps } => unmet
+                .checked_mul(Decimal::from_int(i64::from(fraction_bps)))
+                .and_then(|taken| taken.checked_div(Decimal::from_int(BPS)))
+                .ok_or_else(|| {
+                    Error::numeric(format!(
+                        "a forfeiture of {fraction_bps}bp on {unmet} overflows; nothing is \
+                         reserved against a penalty that cannot be represented"
+                    ))
+                }),
+            Self::Acceleration => Ok(Decimal::ZERO),
+        }
+    }
+}
+
+/// A drawdown demand: a date, an amount, and what failing it costs.
+///
+/// Blueprint §43.2's tenth object, and the one the platform was missing. A
+/// [`CashflowKind::CapitalCall`] variant already existed and is not this: that
+/// is a *probability-weighted projection* of a call somebody might make, which
+/// is the right shape for pacing and the wrong shape for a notice that has
+/// actually arrived. A forecast flow can be discounted. An issued notice
+/// cannot — the money is due on the stated date or the consequence follows.
+///
+/// Both instants are kept because they are different facts. `issued` is when
+/// the notice became knowable to this platform, and reading a call before it
+/// is point-in-time leakage of the kind this module's header names second;
+/// `due` is when the capital has to be there. A backtest that saw the notice
+/// on the due date rather than the day it arrived would report a liquidity
+/// squeeze the desk would in fact have had two weeks to prepare for, and a
+/// backtest that saw it early would report one it never had.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CapitalCall {
+    subject: String,
+    reference: String,
+    amount: Decimal,
+    issued: Timestamp,
+    due: Timestamp,
+    consequence: CallConsequence,
+}
+
+impl CapitalCall {
+    /// Record a notice, refusing one that cannot be true.
+    ///
+    /// Refuses an empty subject or reference, a non-positive amount, and a
+    /// call falling due before the notice that demanded it was knowable. The
+    /// last is the one worth stating: a call due before it was issued is not
+    /// a tight deadline, it is a record whose two dates came from different
+    /// places, and treating it as merely overdue would accrue default
+    /// interest from an instant nobody was told about.
+    ///
+    /// The reference is the fund's own notice identifier. It is required
+    /// rather than generated because two calls for the same amount on the
+    /// same date are ordinary, and a book that cannot tell them apart will
+    /// silently hold only one.
+    pub fn notice(
+        subject: impl Into<String>,
+        reference: impl Into<String>,
+        amount: Decimal,
+        issued: Timestamp,
+        due: Timestamp,
+        consequence: CallConsequence,
+    ) -> Result<Self> {
+        let subject = subject.into();
+        let reference = reference.into();
+        if subject.trim().is_empty() {
+            return Err(Error::invalid(
+                "a capital call needs the object id it draws against; supply one rather than an \
+                 empty subject",
+            ));
+        }
+        if reference.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "the call against {subject} carries no notice reference; supply the fund's own \
+                 identifier, because two calls for the same amount on the same date are ordinary \
+                 and a book that cannot tell them apart will hold only one"
+            )));
+        }
+        if !amount.is_positive() {
+            return Err(Error::invalid(format!(
+                "notice {reference} against {subject} demands {amount}, which is not a drawdown; \
+                 record a strictly positive amount, or record a distribution in the forecast if \
+                 capital is being returned"
+            )));
+        }
+        if due < issued {
+            return Err(Error::invalid(format!(
+                "notice {reference} against {subject} falls due at {} but became knowable at {}; \
+                 correct the dates rather than recording a call that was already late when it \
+                 arrived, because default interest would accrue from an instant nobody was told \
+                 about",
+                due.to_rfc3339(),
+                issued.to_rfc3339()
+            )));
+        }
+        Ok(Self {
+            subject,
+            reference,
+            amount,
+            issued,
+            due,
+            consequence,
+        })
+    }
+
+    pub fn subject(&self) -> &str {
+        &self.subject
+    }
+
+    pub fn reference(&self) -> &str {
+        &self.reference
+    }
+
+    pub const fn amount(&self) -> Decimal {
+        self.amount
+    }
+
+    /// The instant the notice became knowable to this platform.
+    pub const fn issued_at(&self) -> Timestamp {
+        self.issued
+    }
+
+    /// The instant the capital has to be there.
+    pub const fn due_at(&self) -> Timestamp {
+        self.due
+    }
+
+    pub const fn consequence(&self) -> CallConsequence {
+        self.consequence
+    }
+
+    /// Whether this notice had reached the platform by `as_of`.
+    pub fn is_knowable_at(&self, as_of: Timestamp) -> bool {
+        self.issued <= as_of
+    }
+
+    /// Refuse to be read at an instant before the notice arrived.
+    pub fn guard_knowable(&self, as_of: Timestamp) -> Result<()> {
+        if self.is_knowable_at(as_of) {
+            return Ok(());
+        }
+        Err(Error::invalid(format!(
+            "notice {} against {} became knowable at {} and cannot be read as of {}; a book \
+             cannot reserve against a demand it had not yet been told about",
+            self.reference,
+            self.subject,
+            self.issued.to_rfc3339(),
+            as_of.to_rfc3339()
+        )))
+    }
+
+    /// Whether the money was due and this notice was knowable, both by
+    /// `as_of`.
+    ///
+    /// Both halves are load-bearing. A call issued tomorrow and due tomorrow
+    /// is not overdue today however the dates sort, and asking only whether
+    /// the due date has passed would make a notice recorded today with a past
+    /// due date accrue interest for a period the platform was never told
+    /// about.
+    pub fn is_overdue_at(&self, as_of: Timestamp) -> bool {
+        self.is_knowable_at(as_of) && self.due < as_of
+    }
+
+    /// Whole days between the due date and `as_of`, or zero where the call is
+    /// not overdue.
+    ///
+    /// Whole days, floored, because default interest is quoted per day and a
+    /// part-day is not a day. Rounding up would bill the book for lateness it
+    /// does not have.
+    pub fn days_late_at(&self, as_of: Timestamp) -> i64 {
+        if !self.is_overdue_at(as_of) {
+            return 0;
+        }
+        as_of.since(self.due).as_nanos() / NANOS_PER_DAY
+    }
+
+    /// What failing this call has cost by `as_of`, on top of the amount owed.
+    ///
+    /// Zero until the call is both knowable and past due, so a notice sitting
+    /// in the book ahead of its date costs nothing and a notice nobody has
+    /// sent yet costs nothing.
+    pub fn penalty_at(&self, as_of: Timestamp) -> Result<Decimal> {
+        if !self.is_overdue_at(as_of) {
+            return Ok(Decimal::ZERO);
+        }
+        self.consequence
+            .penalty_on(self.amount, self.days_late_at(as_of))
+    }
+
+    pub fn describe(&self) -> String {
+        format!(
+            "{} calls {} on {} under notice {} ({} on default)",
+            self.subject,
+            self.amount,
+            self.due.to_date_string(),
+            self.reference,
+            self.consequence.label()
+        )
+    }
+}
 /// A promise of capital, mostly unfunded, that somebody else may call.
 ///
 /// The unfunded balance is a hard obligation whether or not a schedule for it
@@ -501,6 +804,22 @@ pub struct Commitment {
     known_at: Timestamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     forecast: Option<CashflowForecast>,
+    /// Issued notices, keyed by the fund's own reference.
+    ///
+    /// A `BTreeMap` rather than a `HashMap` because these reach output — a
+    /// describe, a penalty total, a demand figure summed in iteration order —
+    /// and a replay that reorders is not a replay.
+    ///
+    /// `serde(default)` so a commitment written before notices existed still
+    /// reads back, and the field is skipped when empty so those payloads do
+    /// not change shape. Deserialisation does not route through
+    /// [`Commitment::record_call`], so a payload could carry notices whose
+    /// sum exceeds the unfunded balance. That direction is the safe one and
+    /// is the reason it is tolerated rather than an oversight: notices only
+    /// ever *raise* [`Commitment::obligation`], and a raised obligation makes
+    /// the platform hold more capital back, never less.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    calls: BTreeMap<String, CapitalCall>,
 }
 
 impl Commitment {
@@ -558,6 +877,7 @@ impl Commitment {
             origin,
             known_at,
             forecast: None,
+            calls: BTreeMap::new(),
         })
     }
 
@@ -637,6 +957,195 @@ impl Commitment {
         (self.committed - self.called).max(Decimal::ZERO)
     }
 
+    /// Record an issued drawdown notice against this commitment.
+    ///
+    /// Refuses a notice naming a different subject, a duplicate reference, a
+    /// notice knowable before the commitment itself was, and — the one that
+    /// matters — a notice which, with those already outstanding, would demand
+    /// more than remains unfunded. That last refusal is the same argument
+    /// [`Self::unscheduled`] makes about the called balance: a fund cannot
+    /// call more than was promised, and capping the excess would turn a
+    /// corrupt record into a plausible one.
+    ///
+    /// A duplicate reference is refused rather than overwritten because a
+    /// second notice under one reference is either a restatement or a second
+    /// draw, and the two demand different capital. Guessing which would move
+    /// the reserve with no record of which claim won.
+    pub fn record_call(&mut self, call: CapitalCall) -> Result<()> {
+        if call.subject() != self.subject {
+            return Err(Error::invalid(format!(
+                "notice {} draws against {} and cannot be recorded on the commitment for {}; file it against its own subject",
+                call.reference(),
+                call.subject(),
+                self.subject
+            )));
+        }
+        if self.calls.contains_key(call.reference()) {
+            return Err(Error::invalid(format!(
+                "{} already holds notice {}; amend the existing one rather than recording a second under the same reference, because the reserve would move with no record of which claim won",
+                self.subject,
+                call.reference()
+            )));
+        }
+        if call.issued_at() < self.known_at {
+            return Err(Error::invalid(format!(
+                "notice {} against {} became knowable at {}, before the commitment it draws on did at {}; correct the dates — a fund cannot call capital before the platform knew it had promised any",
+                call.reference(),
+                self.subject,
+                call.issued_at().to_rfc3339(),
+                self.known_at.to_rfc3339()
+            )));
+        }
+        let unfunded = self.unfunded();
+        let outstanding = self.outstanding_total()?;
+        let demanded = outstanding.checked_add(call.amount()).ok_or_else(|| {
+            Error::numeric(format!(
+                "the outstanding notices against {} overflow when {} is added; nothing is reserved against a demand that cannot be represented",
+                self.subject,
+                call.reference()
+            ))
+        })?;
+        if demanded > unfunded {
+            return Err(Error::invalid(format!(
+                "notice {} would take the notices outstanding against {} to {demanded} against an unfunded balance of {unfunded}; correct the notice or the called balance — a fund cannot call more than remains promised, and the excess will not be capped here",
+                call.reference(),
+                self.subject
+            )));
+        }
+        self.calls.insert(call.reference().to_string(), call);
+        Ok(())
+    }
+
+    /// Every notice outstanding against this commitment, in reference order.
+    pub fn calls(&self) -> impl Iterator<Item = &CapitalCall> {
+        self.calls.values()
+    }
+
+    /// One outstanding notice by its reference.
+    pub fn call(&self, reference: &str) -> Option<&CapitalCall> {
+        self.calls.get(reference)
+    }
+
+    /// Principal demanded by the notices outstanding, whether or not due.
+    fn outstanding_total(&self) -> Result<Decimal> {
+        let mut total = Decimal::ZERO;
+        for call in self.calls.values() {
+            total = total.checked_add(call.amount()).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the notices outstanding against {} overflow; nothing is reserved against a demand that cannot be represented",
+                    self.subject
+                ))
+            })?;
+        }
+        Ok(total)
+    }
+
+    /// Meet a notice: move its amount into the called balance and retire it.
+    ///
+    /// This is the one operation that reduces [`Self::unfunded`] with a
+    /// record of *why*. Before notices existed the called balance was a bare
+    /// figure that arrived from a vendor record with no provenance, and
+    /// nothing could say which draws made it up.
+    ///
+    /// Refuses an unknown reference, and payment at an instant before the
+    /// notice was knowable — money cannot have been sent against a demand
+    /// nobody had received.
+    pub fn settle_call(&mut self, reference: &str, paid_at: Timestamp) -> Result<Decimal> {
+        let call = self.calls.get(reference).ok_or_else(|| {
+            Error::invalid(format!(
+                "{} holds no notice {reference}; record the notice before settling it, because a payment with no demand behind it would move the called balance with nothing to reconcile it against",
+                self.subject
+            ))
+        })?;
+        call.guard_knowable(paid_at)?;
+        let amount = call.amount();
+        let called = self.called.checked_add(amount).ok_or_else(|| {
+            Error::numeric(format!(
+                "settling {reference} overflows the called balance of {}; the record cannot be represented and is not written",
+                self.subject
+            ))
+        })?;
+        if called > self.committed {
+            return Err(Error::invalid(format!(
+                "settling {reference} would take {}'s called capital to {called} against a commitment of {}; correct the record rather than paying more than was promised",
+                self.subject, self.committed
+            )));
+        }
+        self.called = called;
+        self.calls.remove(reference);
+        Ok(self.unfunded())
+    }
+
+    /// What failing the overdue notices has cost by `as_of`.
+    ///
+    /// Zero where nothing is overdue, which is the ordinary case — so this
+    /// adds nothing to a book that is paying its calls, and is not a figure
+    /// that quietly inflates every reserve.
+    pub fn accrued_default_penalty(&self, as_of: Timestamp) -> Result<Decimal> {
+        let mut total = Decimal::ZERO;
+        for call in self.calls.values() {
+            total = total.checked_add(call.penalty_at(as_of)?).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the default penalties accrued against {} overflow; nothing is reserved against a penalty that cannot be represented",
+                    self.subject
+                ))
+            })?;
+        }
+        Ok(total)
+    }
+
+    /// Everything this commitment obliges the book to as of `as_of`: the
+    /// unfunded balance plus whatever failing an overdue notice has cost.
+    ///
+    /// The two coincide exactly while no notice is overdue, which is why
+    /// [`CommitmentBook::unfunded_total`] can read this without changing any
+    /// figure the platform reports today. They diverge the moment a call is
+    /// missed, and the divergence is the point: default interest is capital
+    /// owed to the same counterparty on the same paper, and a book that
+    /// deployed against an unfunded balance alone would be deploying money it
+    /// had already lost.
+    pub fn obligation(&self, as_of: Timestamp) -> Result<Decimal> {
+        self.guard_knowable(as_of)?;
+        self.unfunded()
+            .checked_add(self.accrued_default_penalty(as_of)?)
+            .ok_or_else(|| {
+                Error::numeric(format!(
+                    "the obligation for {} overflows; nothing is reserved against a liability that cannot be represented",
+                    self.subject
+                ))
+            })
+    }
+
+    /// Principal the outstanding notices demand at or before `until`,
+    /// counting anything already overdue as demanded now.
+    ///
+    /// Only notices the platform had received by `as_of` are counted; one
+    /// issued later is a demand the desk had not been told about, and letting
+    /// it into a backtest is the point-in-time leakage this module's header
+    /// names second.
+    fn noticed_demand_by(&self, as_of: Timestamp, until: Timestamp) -> Result<Decimal> {
+        let mut total = Decimal::ZERO;
+        for call in self.calls.values() {
+            if !call.is_knowable_at(as_of) || call.due_at() > until {
+                continue;
+            }
+            total = total.checked_add(call.amount()).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the notices falling due against {} overflow; nothing is reserved against a demand that cannot be represented",
+                    self.subject
+                ))
+            })?;
+        }
+        Ok(total)
+    }
+
+    /// Whether an overdue notice has accelerated the whole unfunded balance.
+    fn is_accelerated_at(&self, as_of: Timestamp) -> bool {
+        self.calls.values().any(|call| {
+            call.is_overdue_at(as_of) && matches!(call.consequence(), CallConsequence::Acceleration)
+        })
+    }
+
     /// Whether this commitment was knowable at `as_of`.
     pub fn is_knowable_at(&self, as_of: Timestamp) -> bool {
         self.known_at <= as_of
@@ -656,18 +1165,54 @@ impl Commitment {
         )))
     }
 
-    /// Probability-weighted capital demanded within `horizon`, or the whole
-    /// unfunded balance where no schedule exists.
+    /// Capital demanded within `horizon`, from the notices actually issued
+    /// and from the pacing model, plus anything an overdue notice has cost.
     ///
-    /// The fallback is deliberately the conservative one. A commitment with no
-    /// pacing model could be called in full tomorrow, and the honest reserve
-    /// against a timing nobody has modelled is the whole obligation.
+    /// The fallback where no schedule exists is deliberately the conservative
+    /// one. A commitment with no pacing model could be called in full
+    /// tomorrow, and the honest reserve against a timing nobody has modelled
+    /// is the whole obligation.
+    ///
+    /// **An issued notice is taken as the greater of the two, never as a sum
+    /// of them.** The forecast is a projection of calls somebody might make,
+    /// and a notice that has arrived is very often one of the calls it
+    /// projected; adding them would reserve for the same draw twice and
+    /// report a squeeze the desk does not have. Taking the maximum cannot
+    /// under-reserve against a demand already in writing, which is the
+    /// failure that matters — before notices existed, a commitment carrying a
+    /// pacing model returned the model's probability-weighted figure even
+    /// where a fund had sent a notice for the full balance, and the reserve
+    /// was short by the difference between a guess and a fact.
+    ///
+    /// An overdue [`CallConsequence::Acceleration`] demands the whole
+    /// unfunded balance now, which is what that arm means and the only place
+    /// it is read.
     pub fn demand_within(&self, as_of: Timestamp, horizon: Duration) -> Result<Decimal> {
         self.guard_knowable(as_of)?;
-        match &self.forecast {
-            Some(forecast) => forecast.expected_demand_within(as_of, horizon),
-            None => Ok(self.unfunded()),
+        if horizon.as_nanos() < 0 {
+            return Err(Error::invalid(format!(
+                "a demand horizon of {} nanoseconds runs backwards; supply a non-negative horizon",
+                horizon.as_nanos()
+            )));
         }
+        let projected = match &self.forecast {
+            Some(forecast) => forecast.expected_demand_within(as_of, horizon)?,
+            None => self.unfunded(),
+        };
+        let noticed = if self.is_accelerated_at(as_of) {
+            self.unfunded()
+        } else {
+            self.noticed_demand_by(as_of, as_of.saturating_add(horizon))?
+        };
+        projected
+            .max(noticed)
+            .checked_add(self.accrued_default_penalty(as_of)?)
+            .ok_or_else(|| {
+                Error::numeric(format!(
+                    "the capital demanded of {} within the horizon overflows; nothing is reserved against a demand that cannot be represented",
+                    self.subject
+                ))
+            })
     }
 
     /// Derive a commitment from the private-asset record the object model
@@ -746,23 +1291,81 @@ impl CommitmentBook {
         self.commitments.values()
     }
 
-    /// The whole unfunded balance across every commitment knowable at `as_of`.
+    /// Everything the private book obliges the desk to at `as_of`: the whole
+    /// unfunded balance, plus what failing any overdue notice has already
+    /// cost.
     ///
     /// This is what the capital engine must treat as reserved. A commitment
     /// not yet knowable is refused rather than skipped, because a reserve that
     /// silently omits an obligation is the failure this book exists to
     /// prevent.
+    ///
+    /// **The penalty half is new and the name is unchanged, so read
+    /// [`Commitment::obligation`] rather than the name.** The two figures are
+    /// equal for every commitment with no overdue [`CapitalCall`], which is
+    /// every commitment the platform holds today, so this returns exactly
+    /// what it always did until a notice is missed. Once one is, default
+    /// interest is capital owed to the same counterparty on the same paper,
+    /// and a desk deploying against the unfunded balance alone would be
+    /// deploying money it had already lost.
     pub fn unfunded_total(&self, as_of: Timestamp) -> Result<Decimal> {
         let mut total = Decimal::ZERO;
         for commitment in self.commitments.values() {
             commitment.guard_knowable(as_of)?;
-            total = total.checked_add(commitment.unfunded()).ok_or_else(|| {
-                Error::numeric(
-                    "the unfunded commitment total overflows; nothing is reserved against a number \
-                     that cannot be represented"
-                        .to_string(),
-                )
-            })?;
+            total = total
+                .checked_add(commitment.obligation(as_of)?)
+                .ok_or_else(|| {
+                    Error::numeric(
+                        "the unfunded commitment total overflows; nothing is reserved against a \
+                         number that cannot be represented"
+                            .to_string(),
+                    )
+                })?;
+        }
+        Ok(total)
+    }
+
+    /// File an issued drawdown notice against the commitment it draws on.
+    ///
+    /// Refuses a notice for a subject the book does not hold, rather than
+    /// opening a commitment to receive it: a call against a commitment nobody
+    /// recorded is either a notice for somebody else's book or a commitment
+    /// this platform was never told about, and inventing the second to
+    /// accommodate the first would put an obligation in the book with no
+    /// promise behind it.
+    pub fn record_call(&mut self, call: CapitalCall) -> Result<()> {
+        let subject = call.subject().to_string();
+        let commitment = self.commitments.get_mut(&subject).ok_or_else(|| {
+            Error::invalid(format!(
+                "no commitment is recorded for {subject}, so notice {} has nothing to draw \
+                 against; record the commitment first rather than letting a call open one, \
+                 because an obligation with no promise behind it cannot be reconciled",
+                call.reference()
+            ))
+        })?;
+        commitment.record_call(call)
+    }
+
+    /// What failing the book's overdue notices has cost by `as_of`.
+    ///
+    /// Reported separately as well as inside [`Self::unfunded_total`] so an
+    /// operator can see the penalty on its own. A reserve that grew and a
+    /// penalty that accrued look identical in a single total, and they call
+    /// for different action: one is capital doing its job, the other is a
+    /// payment the desk missed.
+    pub fn accrued_default_penalty(&self, as_of: Timestamp) -> Result<Decimal> {
+        let mut total = Decimal::ZERO;
+        for commitment in self.commitments.values() {
+            commitment.guard_knowable(as_of)?;
+            total = total
+                .checked_add(commitment.accrued_default_penalty(as_of)?)
+                .ok_or_else(|| {
+                    Error::numeric(
+                        "the default penalties across the commitment book overflow; nothing is \
+                         reserved against a penalty that cannot be represented"
+                            .to_string(),
+                    )
+                })?;
         }
         Ok(total)
     }
