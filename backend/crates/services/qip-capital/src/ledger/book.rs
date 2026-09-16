@@ -27,11 +27,12 @@
 use super::cash::CashBalance;
 use super::eligibility::{Eligibility, EligibilityRecord, EligibilityRegistry, Ineligible};
 use super::identity::{MandateId, UserId};
+use super::lot::{HoldingPeriodDistribution, HoldingPeriodRules, TaxLot};
 use super::mandate::Mandate;
 use super::registry::MandateRegistry;
 use qip_contracts::signal::StrategyId;
 use qip_core::error::{Error, Result};
-use qip_core::{Currency, Decimal, Timestamp};
+use qip_core::{Currency, Decimal, Duration, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -161,6 +162,15 @@ pub struct UserLedger {
     /// Fills journalled across every book, for the same reason each book
     /// counts its own.
     fills_journalled: u64,
+    /// Every contribution, in the same [`LedgerKey`] order as the books and
+    /// in acquisition order within a key, so a report of them replays
+    /// identically. Written only by [`Self::fund`]; see `ledger/lot.rs` for
+    /// why a balance cannot answer what these answer.
+    lots: BTreeMap<LedgerKey, Vec<TaxLot>>,
+    /// The operator's per-jurisdiction long-term thresholds. Empty until
+    /// somebody declares one, so an undeclared jurisdiction reports
+    /// `Undetermined` rather than a guess.
+    holding_period_rules: HoldingPeriodRules,
 }
 
 impl UserLedger {
@@ -198,6 +208,8 @@ impl UserLedger {
             eligibility: EligibilityRegistry::new(),
             books: BTreeMap::new(),
             fills_journalled: 0,
+            lots: BTreeMap::new(),
+            holding_period_rules: HoldingPeriodRules::new(),
         })
     }
 
@@ -323,6 +335,26 @@ impl UserLedger {
     /// here, at the one place capital enters a book, rather than checked by
     /// every caller. A caller that consulted the registry first gets the
     /// same answer twice; one that did not is refused all the same.
+    ///
+    /// # The contribution ceiling, and why the settled check is not it
+    ///
+    /// There is a second ceiling after that one, on the user's *cumulative
+    /// contributions* rather than on what they have at work, and it is
+    /// checked against the mandate's whole capital. The settled check cannot
+    /// do this job: a user who funds their investable capital, loses half of
+    /// it and funds again has a settled total the loss has made room in, so
+    /// the settled check admits the second funding, and the user has now
+    /// placed more of their own money under management than the mandate they
+    /// signed says the desk may manage. The evidence the loss destroyed —
+    /// how much went in — is exactly what the [`TaxLot`]s keep, which is why
+    /// this ceiling could not exist before them.
+    ///
+    /// It is checked **after** the settled ceiling, and that order is
+    /// deliberate rather than incidental: the new ceiling is strictly
+    /// tighter and is only ever reached where the old one already admitted
+    /// the funding, so no refusal that existed before this check changes its
+    /// message. Nothing is relaxed by it; a funding refused before is
+    /// refused now for the same stated reason.
     pub fn fund(
         &mut self,
         user: &UserId,
@@ -355,13 +387,135 @@ impl UserLedger {
                 mandate.liquidity_floor()
             )));
         }
+        let contributed = self.contributed_total(user, currency)?;
+        let Some(would_contribute) = contributed.checked_add(amount) else {
+            return Err(Error::numeric(format!(
+                "funding {strategy} with {amount} {currency} overflows {user}'s contributed \
+                 total of {contributed}; fund a smaller amount"
+            )));
+        };
+        let capital = mandate.capital();
+        if would_contribute > capital {
+            return Err(Error::denied(format!(
+                "funding {strategy} with {amount} {currency} would take {user}'s contributed \
+                 total from {contributed} to {would_contribute}, past the {capital} the \
+                 mandate places under management; the desk manages what the mandate says it \
+                 manages, and a realised loss does not create room for a further \
+                 contribution — record a new mandate under the change that supersedes this \
+                 one"
+            )));
+        }
+        let jurisdiction = mandate.jurisdiction();
+        let key = (user.clone(), strategy.clone());
         let book = self
             .books
-            .entry((user.clone(), strategy.clone()))
+            .entry(key.clone())
             .or_insert_with(StrategyBook::new);
         book.cash_mut(currency).credit(amount)?;
         book.last_entry_at = Some(at);
+        self.lots.entry(key).or_default().push(TaxLot {
+            strategy: strategy.clone(),
+            currency,
+            basis: amount,
+            acquired_at: at,
+            jurisdiction,
+        });
         Ok(())
+    }
+
+    /// Everything a user has ever contributed in one currency, across every
+    /// strategy.
+    ///
+    /// Distinct from [`Self::funded_total`], which sums settled cash and so
+    /// includes realised profit and loss. The difference between the two is
+    /// what the books earned, which is the third fact neither could state
+    /// alone. Refuses an overflow rather than panicking inside `+`.
+    pub fn contributed_total(&self, user: &UserId, currency: Currency) -> Result<Decimal> {
+        let mut total = Decimal::ZERO;
+        for lot in self
+            .lots
+            .iter()
+            .filter(|((owner, _), _)| owner == user)
+            .flat_map(|(_, lots)| lots.iter())
+            .filter(|lot| lot.currency == currency)
+        {
+            let Some(next) = total.checked_add(lot.basis) else {
+                return Err(Error::numeric(format!(
+                    "{user}'s contributed total in {currency} overflows past {total}; the \
+                     lots cannot be summed and no further funding can be admitted"
+                )));
+            };
+            total = next;
+        }
+        Ok(total)
+    }
+
+    /// Every contribution into one user's strategy book, in acquisition
+    /// order; empty for a book nobody has funded.
+    pub fn tax_lots(&self, user: &UserId, strategy: &StrategyId) -> &[TaxLot] {
+        self.lots
+            .get(&(user.clone(), strategy.clone()))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Every contribution, in [`LedgerKey`] order and in acquisition order
+    /// within a key.
+    ///
+    /// The ordered surface a report of contributions is built from, for the
+    /// reason [`Self::books`] exists beside it: the ordering is the
+    /// deliverable, because a replay that reorders is not a replay. An
+    /// aggregate such as [`Self::holding_period_distribution`] cannot prove
+    /// this — it sums, and addition is commutative, so it reads identically
+    /// however the lots were walked.
+    pub fn lots(&self) -> &BTreeMap<LedgerKey, Vec<TaxLot>> {
+        &self.lots
+    }
+
+    /// The operator's declared long-term thresholds.
+    pub fn holding_period_rules(&self) -> &HoldingPeriodRules {
+        &self.holding_period_rules
+    }
+
+    /// Declare when a holding becomes long-term in one jurisdiction.
+    ///
+    /// Every refusal is [`HoldingPeriodRules::declare`]'s. Until a
+    /// jurisdiction is declared, its lots report
+    /// [`super::HoldingPeriod::Undetermined`] — this platform does not guess
+    /// a jurisdiction's tax law, and an undeclared table is the honest
+    /// record of nobody having taken the determination.
+    pub fn declare_holding_period(
+        &mut self,
+        jurisdiction: super::Jurisdiction,
+        threshold: Duration,
+    ) -> Result<()> {
+        self.holding_period_rules.declare(jurisdiction, threshold)
+    }
+
+    /// Withdraw a jurisdiction's declared threshold. Refuses one nobody
+    /// declared.
+    pub fn withdraw_holding_period(&mut self, jurisdiction: &super::Jurisdiction) -> Result<()> {
+        self.holding_period_rules.withdraw(jurisdiction)
+    }
+
+    /// Contributed basis across every book, split by holding-period state at
+    /// `at`.
+    ///
+    /// The producer of the first half of ADR 0008's reversal condition —
+    /// "holding-period distribution" — which had none before the lots
+    /// existed, because a balance carries only the instant it last moved and
+    /// not the instant any tranche of capital arrived.
+    ///
+    /// Walks the lots in [`LedgerKey`] order and acquisition order within a
+    /// key, so the same ledger yields the same distribution on every machine.
+    pub fn holding_period_distribution(&self, at: Timestamp) -> Result<HoldingPeriodDistribution> {
+        let mut distribution = HoldingPeriodDistribution::empty(at);
+        for lot in self.lots.values().flat_map(|lots| lots.iter()) {
+            distribution.add(
+                lot.holding_period(at, &self.holding_period_rules),
+                lot.basis,
+            )?;
+        }
+        Ok(distribution)
     }
 
     /// Book an attributed fill to the users whose capital it was, exactly.

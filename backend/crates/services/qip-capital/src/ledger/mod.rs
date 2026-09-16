@@ -169,6 +169,7 @@ mod cash;
 mod eligibility;
 mod entitlement;
 mod identity;
+mod lot;
 mod mandate;
 mod product;
 mod registry;
@@ -182,6 +183,7 @@ pub use eligibility::{
 };
 pub use entitlement::{Capability, Entitlement, ProductEligibility, Role, WithdrawalEntitlement};
 pub use identity::{Jurisdiction, MAX_MANDATE_ID_LENGTH, MAX_USER_ID_LENGTH, MandateId, UserId};
+pub use lot::{HoldingPeriod, HoldingPeriodDistribution, HoldingPeriodRules, TaxLot};
 pub use mandate::{Mandate, MandateTerms, PermittedFamilies};
 pub use product::ProductCatalogue;
 pub use registry::{DESK_MANDATE_ID, MandateRegistry, RegisteredMandate, RegistryRecord};
