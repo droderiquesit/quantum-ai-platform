@@ -240,6 +240,42 @@ pub enum Decision {
         free: String,
         deficit: String,
     },
+    /// What the cell has been told about the other regions changed (§36.3).
+    ///
+    /// Recorded because it is the moment the cell stopped — or started —
+    /// taking one side of a cross-region mirror, and "why did this cell stop
+    /// mirroring" has the same standing as "why did it trade". `source` is
+    /// the reading's own kind and `regions` the names it carried, which is
+    /// empty for the unreadable reading: that one darkens every region other
+    /// than this cell's own and names none, so a reader who saw only a list
+    /// would think nothing had changed.
+    RegionOutlookChanged {
+        source: String,
+        regions: Vec<String>,
+        detail: String,
+    },
+    /// The cell was told to reconcile against every venue before resuming
+    /// (§36.3's node-crash row).
+    ///
+    /// The venues are named, because the discipline clears venue by venue
+    /// and a chain that recorded only "reconciliation required" could not
+    /// say which venue was still outstanding when the cell was quiet.
+    ReconciliationRequired { reason: String, venues: Vec<String> },
+    /// One venue's own account agreed with the cell's record, after a
+    /// restart (§36.3).
+    ///
+    /// `open` and `quotes` are what the venue said it was holding — both
+    /// zero for the ordinary clean answer — and `pending` names the venues
+    /// still to answer. `resumed` is the fact the pending list implies and
+    /// this states, so a replay does not have to infer the moment the cell
+    /// was allowed to form an order again from an empty vector.
+    VenueReconciled {
+        venue: String,
+        open: usize,
+        quotes: usize,
+        pending: Vec<String>,
+        resumed: bool,
+    },
 }
 
 impl Decision {
@@ -265,6 +301,9 @@ impl Decision {
             Self::CycleCommitted { .. } => "cycle_committed",
             Self::StrategyWithdrawn { .. } => "strategy_withdrawn",
             Self::RegionShareApplied { .. } => "region_share_applied",
+            Self::RegionOutlookChanged { .. } => "region_outlook_changed",
+            Self::ReconciliationRequired { .. } => "reconciliation_required",
+            Self::VenueReconciled { .. } => "venue_reconciled",
         }
     }
 }

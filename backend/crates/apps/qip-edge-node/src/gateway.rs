@@ -60,6 +60,7 @@ use qip_core::ids::{ObjectId, OrderId};
 use qip_core::time::Timestamp;
 use qip_edge::cell::{ExecutionReport, Placer};
 use qip_edge::dropcopy::DropCopyFill;
+use qip_edge::resume::VenueAccount;
 use qip_execution_engine::broker::Broker;
 use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_financial::costs::LiquidityProfile;
@@ -315,6 +316,47 @@ impl SimulatedGateway {
     /// defaulted one, which is how the defaulted one survived.
     pub fn listing(&self, object_id: &ObjectId) -> Option<&FinancialObject> {
         self.exchange.listing(object_id)
+    }
+
+    /// The venue's own account of what it is holding open for the cell
+    /// (§36.3, §48's "resting orders and quotes").
+    ///
+    /// Read back from the matching engine one order at a time rather than
+    /// from this gateway's own follow set: the follow set is what this
+    /// process believes it sent, and a cell reconciling after a restart is
+    /// asking the venue, not itself. The follow set only decides which ids
+    /// to *ask* about.
+    ///
+    /// **Two honest limits, because this account is only as good as the
+    /// venue behind it.** The simulated venue lives in this process, so it
+    /// dies with the process a restart is recovering from: after a genuine
+    /// restart this gateway has no ids to ask about and the venue has no
+    /// orders, and the account is empty because both sides are empty rather
+    /// than because they were compared. It is a real comparison against a
+    /// venue that outlives the cell, which this one does not; a node pointed
+    /// at a venue that does outlive it — `RestGateway` — has no account
+    /// channel at all and so never satisfies the discipline, which is the
+    /// fail-closed direction and is stated in `qip_edge::resume`. And
+    /// `quotes` is zero because this venue holds no quote for the cell that
+    /// is not a resting order already counted above; reporting the resting
+    /// orders twice would be a reconciliation break on one fact.
+    pub fn venue_account(&self, at: Timestamp) -> Result<VenueAccount> {
+        let mut account = VenueAccount::empty(self.venue.clone(), at);
+        for order_id in self.working.keys() {
+            let Ok(order) = self.exchange.query_order(&OrderId::from_string(order_id)) else {
+                // The venue has no record of an order this gateway followed.
+                // Not reported as an open order — it is the absence of one —
+                // and not swallowed either: the cell's own side of the
+                // comparison names it, because the account it is compared
+                // against does not.
+                continue;
+            };
+            if order.state.is_terminal() || !order.remaining().is_positive() {
+                continue;
+            }
+            account = account.with_open(order_id.clone(), order.remaining())?;
+        }
+        Ok(account)
     }
 
     /// Whether the venue's own order record still holds `order_id` open.

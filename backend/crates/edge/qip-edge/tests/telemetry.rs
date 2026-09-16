@@ -30,8 +30,13 @@ use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy, WorkReport};
 use qip_edge::dropcopy::DropCopyFill;
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::policy::{VerifiedHalt, VerifiedPolicy};
+use qip_edge::region::RegionOutlook;
 use qip_edge::reservation::RegionTable;
-use qip_edge::telemetry::{EDGE_REGION_SHARE_APPLIED, EDGE_REGION_SHARE_BOUND};
+use qip_edge::resume::VenueAccount;
+use qip_edge::telemetry::{
+    EDGE_REGION_SHARE_APPLIED, EDGE_REGION_SHARE_BOUND, EDGE_REGIONS_DARK,
+    EDGE_VENUES_AWAITING_RECONCILIATION,
+};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_observability::metrics::{Labels, Metrics, labels, names};
@@ -1044,6 +1049,169 @@ fn a_payload_that_says_nothing_about_capital_is_counted_as_withheld_and_moves_no
         shares(&tableless_metrics, "withheld"),
         0,
         "a cell with no region table counted a share the centre withheld from nobody"
+    );
+    Ok(())
+}
+
+// --- §36.3: dark regions, and reconciling before resuming --------------------
+
+#[test]
+fn a_cell_told_a_region_it_mirrors_into_is_dark_publishes_it_before_its_first_pass_and_until_it_returns()
+-> Result<()> {
+    // The failure this prevents: a gauge written only where the reading
+    // changes. A cell told a peer is dark and then halted for its own
+    // reasons would stop publishing, and a series that stops being updated
+    // reads exactly like a cell whose peers are all answering — which is the
+    // reading an operator takes during somebody else's incident.
+    let metrics = Arc::new(Metrics::new("qip-edge-node"));
+    let config = CellConfig::new(CELL, REGION)
+        .with_venue(venue())
+        .with_venue_in_region(VenueId::new("XPAR"), "europe-west9")?;
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?.with_metrics(Arc::clone(&metrics));
+
+    // Premise: both arms are published before anything is dark, so the
+    // assertions below are about a number that moved rather than about a
+    // series that appeared.
+    let before = metrics.snapshot();
+    assert_eq!(
+        before.gauge(EDGE_REGIONS_DARK, &by("source", "declared")),
+        Some(0.0),
+        "a freshly wired cell published no declared-dark gauge"
+    );
+    assert_eq!(
+        before.gauge(EDGE_REGIONS_DARK, &by("source", "unreadable")),
+        Some(0.0),
+        "a freshly wired cell published no unreadable-wire gauge"
+    );
+
+    cell.apply_region_outlook(RegionOutlook::declared(["europe-west9".to_string()])?, t(9));
+    let dark = metrics.snapshot();
+    assert_eq!(
+        dark.gauge(EDGE_REGIONS_DARK, &by("source", "declared")),
+        Some(1.0),
+        "a declared dark region left the gauge at zero"
+    );
+    assert_eq!(
+        dark.gauge(EDGE_REGIONS_DARK, &by("source", "unreadable")),
+        Some(0.0),
+        "a declared region was attributed to an unreadable wire"
+    );
+
+    // A halted pass leaves it standing. Stated as what it is rather than as
+    // proof of the write inside `Cell::work`: the registry's gauge holds its
+    // last value and every path that can change this reading records at its
+    // own seam, so no mutation of the pass-time write could be seen here.
+    // What this does falsify is a halt path that reset the reading.
+    cell.apply_halt(halt(t(10))?, t(10));
+    assert!(
+        cell.is_halted(),
+        "the premise failed: the halt did not take"
+    );
+    let report = work(&mut cell, t(11))?;
+    assert!(report.halted, "the premise failed: the pass was not halted");
+    assert_eq!(
+        metrics
+            .snapshot()
+            .gauge(EDGE_REGIONS_DARK, &by("source", "declared")),
+        Some(1.0),
+        "a halted pass left the cell reading as though its peers were answering"
+    );
+
+    // And a region that comes back is the series falling, not stopping.
+    cell.apply_region_outlook(RegionOutlook::AllLit, t(12));
+    assert_eq!(
+        metrics
+            .snapshot()
+            .gauge(EDGE_REGIONS_DARK, &by("source", "declared")),
+        Some(0.0),
+        "a region that came back still reads as dark"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cell_whose_region_wire_cannot_be_read_publishes_every_foreign_region_it_holds_as_dark()
+-> Result<()> {
+    // The count is over the regions this cell's own venue map places abroad,
+    // because that is what the suspension costs *here*. A gauge counting the
+    // names in a declaration would have an operator hunting for mirrors that
+    // never existed.
+    let metrics = Arc::new(Metrics::new("qip-edge-node"));
+    let config = CellConfig::new(CELL, REGION)
+        .with_venue(venue())
+        .with_venue_in_region(VenueId::new("XPAR"), "europe-west9")?
+        .with_venue_in_region(VenueId::new("XTSE"), "northamerica-northeast1")?;
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?.with_metrics(Arc::clone(&metrics));
+    cell.apply_region_outlook(RegionOutlook::unreadable("the mount is gone")?, t(9));
+
+    let snapshot = metrics.snapshot();
+    assert_eq!(
+        snapshot.gauge(EDGE_REGIONS_DARK, &by("source", "unreadable")),
+        Some(2.0),
+        "an unreadable wire should darken both foreign regions and not the cell's own"
+    );
+    assert_eq!(
+        snapshot.gauge(EDGE_REGIONS_DARK, &by("source", "declared")),
+        Some(0.0),
+        "an unreadable wire was charted as a declaration"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_restarted_cell_publishes_how_many_venues_have_yet_to_answer_and_the_gauge_falls_to_zero()
+-> Result<()> {
+    // "Nothing is outstanding" and "this node is paused pending
+    // reconciliation" are the two states this series exists to tell apart,
+    // and both of them look like a quiet node on every other series the cell
+    // publishes.
+    let (mut cell, metrics) = wired_cell()?;
+    assert_eq!(
+        metrics
+            .snapshot()
+            .gauge(EDGE_VENUES_AWAITING_RECONCILIATION, &base()),
+        Some(0.0),
+        "a freshly wired cell published no reconciliation gauge"
+    );
+
+    cell.require_reconciliation_before_resuming("a prior session was found in the store", t(5))?;
+    assert_eq!(
+        metrics
+            .snapshot()
+            .gauge(EDGE_VENUES_AWAITING_RECONCILIATION, &base()),
+        Some(1.0),
+        "an armed discipline left the gauge at zero"
+    );
+    // Still standing on the refused pass — the pass an operator is looking at
+    // when they ask why the node is quiet. Asserted with the same honest
+    // limit as the halted pass in the test above: the gauge holds its last
+    // value, so this falsifies a pass that cleared it rather than the
+    // pass-time write itself.
+    let report = work(&mut cell, t(10))?;
+    assert!(
+        report
+            .refusals
+            .iter()
+            .any(|(gate, _)| gate == "awaiting_reconciliation"),
+        "the premise failed: the pass was not refused under the reconciliation gate: {:?}",
+        report.refusals
+    );
+    assert_eq!(
+        metrics
+            .snapshot()
+            .gauge(EDGE_VENUES_AWAITING_RECONCILIATION, &base()),
+        Some(1.0)
+    );
+
+    cell.observe_venue_account(VenueAccount::empty(venue(), t(11)), t(11))?;
+    assert_eq!(
+        metrics
+            .snapshot()
+            .gauge(EDGE_VENUES_AWAITING_RECONCILIATION, &base()),
+        Some(0.0),
+        "the venue answered and the gauge still reads as waiting"
     );
     Ok(())
 }

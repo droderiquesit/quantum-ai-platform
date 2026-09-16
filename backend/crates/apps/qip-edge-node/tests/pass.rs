@@ -1582,3 +1582,214 @@ fn a_replayed_lower_sequence_payload_leaves_the_nodes_table_unchanged() -> Resul
     );
     Ok(())
 }
+
+// --- §36.3: reconciling against every venue before resuming ------------------
+
+#[test]
+fn a_node_that_restarted_reconciles_with_its_venue_before_it_forms_an_order() -> Result<()> {
+    // §36.3's node-crash row, on the node's own loop. `qip-edge`'s suite
+    // proves the cell refuses while the discipline stands; what it cannot
+    // see is whether the node ever *obtains* the venue's account — and a
+    // discipline nothing answers is a node that never resumes, which is the
+    // failure on the other side of this control.
+    //
+    // The order within the pass is the property: the venue answers, and only
+    // then does the cell form anything. Asserted on the chain rather than on
+    // the report, because the chain is what an incident review reads.
+    let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+    node.cell.require_reconciliation_before_resuming(
+        "this journal store already holds 1 session(s)",
+        t(9),
+    )?;
+    // Premise: the discipline really is standing when the pass begins.
+    assert!(node.cell.awaiting_reconciliation().is_some());
+
+    let mut stats = PassStats::default();
+    let outcome = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(10),
+    )?;
+    let PassOutcome::Ran { report, .. } = outcome else {
+        panic!("a running node reported its pass as halted: {outcome:?}");
+    };
+    assert_eq!(
+        report.orders.len(),
+        1,
+        "the node did not resume after its venue answered: {:?}",
+        report.refusals
+    );
+    assert!(node.cell.awaiting_reconciliation().is_none());
+
+    let chain: Vec<&str> = node
+        .cell
+        .journal()
+        .entries()
+        .iter()
+        .map(|entry| entry.decision.kind())
+        .collect();
+    let reconciled = chain
+        .iter()
+        .position(|kind| *kind == "venue_reconciled")
+        .expect("the chain records the venue that answered");
+    let sent = chain
+        .iter()
+        .position(|kind| *kind == "order_sent")
+        .expect("the chain records the order");
+    assert!(
+        reconciled < sent,
+        "the node formed an order before the venue answered: {chain:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_restarted_node_whose_second_venue_cannot_answer_keeps_refusing_rather_than_resuming()
+-> Result<()> {
+    // Fail closed, and the honest cost of it. The node's order entry reaches
+    // one venue, so a cell configured for two can never be shown the
+    // second's account — and §36.3 says every venue. It stays paused and
+    // says so on every pass, rather than resuming against a venue nothing
+    // has reconciled with.
+    let config = CellConfig::new(CELL, REGION)
+        .with_venue(venue())
+        .with_venue(VenueId::new("XNYS"));
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let allocation = RegionCapital::read(Some("1000000000"))?;
+    let mut node = assemble(config, features, Arc::new(SystemClock), allocation, None)?;
+    let mut gateway = SimulatedGateway::new(venue(), 7, t(0))?;
+    let feed = SimulatedFeed::new(venue());
+    feed.attach(&mut node.cell)?;
+    let mut feed = feed;
+    let (compiled, program) = firing_strategy()?;
+    node.cell
+        .deploy_with_pricing(compiled, program, grant()?, PricingPolicy::Marketable)?;
+    let named = grant()?.signature().to_string();
+    node.cell
+        .apply_policy(share_policy(CELL, 1, t(5), vec![named])?, t(5))?;
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+
+    // Premise: this node trades when nothing is holding it back, so an empty
+    // order list below is the discipline and not the fixture.
+    let mut stats = PassStats::default();
+    let outcome = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(10),
+    )?;
+    let PassOutcome::Ran { report, .. } = outcome else {
+        panic!("a running node reported its pass as halted: {outcome:?}");
+    };
+    assert_eq!(
+        report.orders.len(),
+        1,
+        "the premise failed: an unarmed two-venue node placed no order: {:?}",
+        report.refusals
+    );
+
+    node.cell.require_reconciliation_before_resuming(
+        "this journal store already holds 1 session(s)",
+        t(11),
+    )?;
+    let submitted = gateway.submitted_count();
+    for (turn, at) in [t(12), t(13)].into_iter().enumerate() {
+        let outcome = run_pass(
+            &mut node.cell,
+            &mut gateway,
+            &mut feed,
+            None,
+            &mut stats,
+            at,
+        )?;
+        let PassOutcome::Ran { report, .. } = outcome else {
+            panic!("a running node reported its pass as halted: {outcome:?}");
+        };
+        assert!(
+            report.orders.is_empty(),
+            "turn {turn}: a node that cannot reconcile with every venue sent an order"
+        );
+        assert!(
+            report
+                .refusals
+                .iter()
+                .any(|(gate, _)| gate == "awaiting_reconciliation"),
+            "turn {turn}: the pass was refused under {:?}",
+            report.refusals
+        );
+    }
+    assert_eq!(
+        gateway.submitted_count(),
+        submitted,
+        "the venue saw an order from a node that had not reconciled"
+    );
+    let pending = node
+        .cell
+        .awaiting_reconciliation()
+        .expect("the discipline still stands")
+        .pending();
+    assert_eq!(
+        pending,
+        vec!["XNYS".to_string()],
+        "the venue that answered is still pending, or the one that cannot has cleared"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_account_the_node_hands_the_cell_is_the_venues_own_record_of_what_rests() -> Result<()> {
+    // The account has to be the venue's answer rather than the gateway's
+    // memory, or the comparison is the process checking itself. Proven by
+    // resting an order, reading the account back, and finding the venue's
+    // own remaining quantity in it.
+    let (mut node, mut gateway, mut feed) =
+        node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(60))?)?;
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+    let mut stats = PassStats::default();
+    run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(10),
+    )?;
+    // Premise: an order really is resting at the venue, or the account below
+    // would be empty for the uninteresting reason.
+    let open = node.cell.open_orders();
+    assert_eq!(open.len(), 1, "the pass rested no order of its own");
+
+    let account = gateway.venue_account(t(11))?;
+    assert_eq!(account.venue(), &venue());
+    assert_eq!(
+        account.open().len(),
+        1,
+        "the venue's account does not name the resting order: {:?}",
+        account.open()
+    );
+    assert_eq!(
+        account.open().get(&open[0].order_id),
+        Some(&open[0].remaining()),
+        "the venue's account disagrees with the cell about an order neither has touched"
+    );
+    // And a cell shown its own venue's account agrees with it, rather than
+    // halting on a record it does stand behind.
+    node.cell
+        .require_reconciliation_before_resuming("a prior session was found", t(11))?;
+    node.cell.observe_venue_account(account, t(11))?;
+    assert!(
+        !node.cell.is_halted(),
+        "the venue's own account of the cell's own order read as a break"
+    );
+    assert!(node.cell.awaiting_reconciliation().is_none());
+    Ok(())
+}

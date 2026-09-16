@@ -54,11 +54,14 @@ use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
 use qip_core::error::Result;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::arbitrage::ArbitrageDesk;
-use qip_edge::cell::{Cell, CellConfig, GATE_PATH_EXTENSION, GATE_PATH_ROUTER, Placer, WorkReport};
+use qip_edge::cell::{
+    Cell, CellConfig, GATE_DARK_REGION, GATE_PATH_EXTENSION, GATE_PATH_ROUTER, Placer, WorkReport,
+};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::Decision;
 use qip_edge::mirror::{MirrorArrangement, MirroredInstrument};
 use qip_edge::policy::VerifiedPolicy;
+use qip_edge::region::RegionOutlook;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_observability::metrics::{Metrics, labels, names};
@@ -1007,5 +1010,212 @@ fn a_mirrored_instrument_with_no_local_book_is_refused_rather_than_priced_on_one
         refused[0]
     );
     assert!(gateway.placed.is_empty());
+    Ok(())
+}
+
+// --- §36.3: a region that has gone dark --------------------------------------
+
+#[test]
+fn a_cycle_whose_mirrored_leg_reaches_a_dark_region_is_suspended_under_its_own_gate() -> Result<()>
+{
+    // §36.3's node-crash and region-failure rows, in the column that applies
+    // to every *other* region: "mirrors involving it suspend". The cell on
+    // the other end of this mirror is not there to take its side, and a
+    // region that keeps trading one side of a mirror whose other side is
+    // nobody is left long in one region and hedged in neither.
+    //
+    // The premise is the test above it: this exact fixture is assigned path
+    // 3 and reaches §33.1's extension. Asserted here rather than assumed,
+    // because "no path was assigned" is also what a broken fixture looks
+    // like.
+    let (mut lit, _) = cell_with(
+        true,
+        Some(arrangement()?),
+        policy(t(5), Some((&Distributed::workable(), t(5))))?,
+    )?;
+    let mut unused = RecordingGateway::default();
+    let routed = lit.work(t(10), &mut unused)?;
+    assert_eq!(
+        routed.paths.len(),
+        1,
+        "the premise failed: this fixture is assigned no path at all: {:?}",
+        routed.refusals
+    );
+    assert!(unused.placed.is_empty());
+
+    let (mut cell, metrics) = cell_with(
+        true,
+        Some(arrangement()?),
+        policy(t(5), Some((&Distributed::workable(), t(5))))?,
+    )?;
+    cell.apply_region_outlook(RegionOutlook::declared([REGION_TWO.to_string()])?, t(9));
+    assert!(cell.is_region_dark(REGION_TWO));
+    let mut gateway = RecordingGateway::default();
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_one_opportunity(&cell);
+
+    let suspended = refusals_under(&report, GATE_DARK_REGION);
+    assert_eq!(
+        suspended.len(),
+        1,
+        "a mirror into a dark region was not suspended: {:?}",
+        report.refusals
+    );
+    assert!(
+        suspended[0].contains(REGION_TWO),
+        "the refusal should name the region that went dark: {}",
+        suspended[0]
+    );
+    assert_eq!(
+        refusals_counted(&metrics, GATE_DARK_REGION),
+        1,
+        "the suspension was journaled and not counted"
+    );
+    // Under its own gate, and not under the router's: "the router had no row
+    // for this cycle" and "the cell at the other end is not answering" send
+    // an operator to two different places.
+    assert!(
+        refusals_under(&report, GATE_PATH_ROUTER).is_empty(),
+        "a suspended mirror was charted as a routing failure: {:?}",
+        report.refusals
+    );
+    assert!(
+        report.paths.is_empty(),
+        "a suspended cycle was still assigned a path"
+    );
+    assert!(gateway.placed.is_empty(), "a suspended mirror still sent");
+    Ok(())
+}
+
+#[test]
+fn an_unreadable_region_wire_suspends_the_mirror_and_a_region_this_cell_never_reaches_does_not()
+-> Result<()> {
+    // Two halves of one property, because each fails separately. A wire that
+    // cannot be read says nothing about which peer is alive, so the
+    // fail-closed reading suspends every mirror — a reading that guessed
+    // "nothing is dark" would let this cell take one side of a trade whose
+    // other side may be gone. And a region this cell holds no venue in
+    // suspends nothing here, because none of its mirror edges reach it: a
+    // declaration that stopped an unrelated cell would make a regional
+    // outage a platform outage, which is the opposite of isolation.
+    let (mut blind, _) = cell_with(
+        true,
+        Some(arrangement()?),
+        policy(t(5), Some((&Distributed::workable(), t(5))))?,
+    )?;
+    blind.apply_region_outlook(RegionOutlook::unreadable("the mount is gone")?, t(9));
+    let mut blind_gateway = RecordingGateway::default();
+    let blinded = blind.work(t(10), &mut blind_gateway)?;
+    assert_one_opportunity(&blind);
+    assert_eq!(
+        refusals_under(&blinded, GATE_DARK_REGION).len(),
+        1,
+        "an unreadable wire did not suspend the mirror: {:?}",
+        blinded.refusals
+    );
+    assert!(blind_gateway.placed.is_empty());
+
+    let (mut elsewhere, _) = cell_with(
+        true,
+        Some(arrangement()?),
+        policy(t(5), Some((&Distributed::workable(), t(5))))?,
+    )?;
+    elsewhere.apply_region_outlook(RegionOutlook::declared(["ap-south-1".to_string()])?, t(9));
+    // Premise: the reading really is in force, so the cycle below is
+    // unaffected because the region is unrelated and not because nothing was
+    // applied.
+    assert!(elsewhere.is_region_dark("ap-south-1"));
+    assert!(!elsewhere.is_region_dark(REGION_TWO));
+    let mut untouched = RecordingGateway::default();
+    let report = elsewhere.work(t(10), &mut untouched)?;
+    assert!(
+        refusals_under(&report, GATE_DARK_REGION).is_empty(),
+        "a region this cell has no venue in suspended its mirror: {:?}",
+        report.refusals
+    );
+    assert_eq!(
+        report.paths.len(),
+        1,
+        "the cycle should still be assigned its path: {:?}",
+        report.refusals
+    );
+    Ok(())
+}
+
+#[test]
+fn a_dark_region_leaves_a_cell_whose_venues_are_all_at_home_trading_exactly_as_before() -> Result<()>
+{
+    // §36.3's "everything else" column: others unaffected. The same
+    // declaration that suspends a mirror must not touch a cell whose cycle
+    // never leaves its own region — an isolation control that stops the
+    // regions that were working is an outage it caused itself.
+    let (mut cell, metrics) = cell_with(false, None, policy(t(5), None)?)?;
+    cell.apply_region_outlook(RegionOutlook::declared([REGION_TWO.to_string()])?, t(9));
+    let mut gateway = RecordingGateway::default();
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_one_opportunity(&cell);
+
+    assert_eq!(
+        report.paths.len(),
+        1,
+        "a local cycle was not assigned a path while another region was dark: {:?}",
+        report.refusals
+    );
+    assert_eq!(report.paths[0].assignment.assigned().number(), 2);
+    assert!(
+        refusals_under(&report, GATE_DARK_REGION).is_empty(),
+        "a local cycle was suspended by another region's outage: {:?}",
+        report.refusals
+    );
+    assert_eq!(refusals_counted(&metrics, GATE_DARK_REGION), 0);
+    Ok(())
+}
+
+#[test]
+fn a_change_in_what_the_cell_believes_about_its_peers_reaches_the_chain_once() -> Result<()> {
+    // The suspension has to be replayable from the journal alone: "why did
+    // this cell stop mirroring" has the same standing as "why did it trade".
+    // Once, not once per poll — the node reads the wire every pass, and a
+    // chain entry per pass would bury the moment it changed.
+    let (mut cell, _) = cell_with(
+        true,
+        Some(arrangement()?),
+        policy(t(5), Some((&Distributed::workable(), t(5))))?,
+    )?;
+    let outlook = RegionOutlook::declared([REGION_TWO.to_string()])?;
+    cell.apply_region_outlook(outlook.clone(), t(9));
+    cell.apply_region_outlook(outlook, t(10));
+    let changes: Vec<&Decision> = cell
+        .journal()
+        .entries()
+        .iter()
+        .map(|entry| &entry.decision)
+        .filter(|decision| matches!(decision, Decision::RegionOutlookChanged { .. }))
+        .collect();
+    assert_eq!(
+        changes.len(),
+        1,
+        "a re-read of an unchanged wire wrote a second entry: {changes:?}"
+    );
+    match changes[0] {
+        Decision::RegionOutlookChanged {
+            source, regions, ..
+        } => {
+            assert_eq!(source, "declared");
+            assert_eq!(regions, &vec![REGION_TWO.to_string()]);
+        }
+        other => panic!("the chain holds the wrong entry: {other:?}"),
+    }
+
+    // And a release is an event too, or a reader of the chain could never
+    // tell when the mirror resumed.
+    cell.apply_region_outlook(RegionOutlook::AllLit, t(11));
+    let after: usize = cell
+        .journal()
+        .entries()
+        .iter()
+        .filter(|entry| matches!(entry.decision, Decision::RegionOutlookChanged { .. }))
+        .count();
+    assert_eq!(after, 2, "the release left no entry");
     Ok(())
 }
