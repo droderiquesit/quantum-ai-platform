@@ -547,6 +547,17 @@ pub struct Platform {
     /// read twice: a cycle that reaches no construction journals nothing
     /// rather than the last cycle's comparison.
     cycle_solver_routing: Option<SolverRoutingJournal>,
+    /// Blueprint §8.2's second-order exposure review as the UNDERSTAND stage
+    /// left it, held only until the cycle's journal entry is sealed, which
+    /// takes it.
+    ///
+    /// Written on every UNDERSTAND, so there is no path on which a later
+    /// cycle inherits an earlier one's finding: `stage_understand` assigns
+    /// this unconditionally, including to `None` when the review could not be
+    /// answered or refused. A dependency attributed to a cycle that did not
+    /// find it is an audit trail worse than an empty one, because it looks
+    /// complete.
+    cycle_second_order: Option<SecondOrderJournal>,
     /// The durable, hash-chained mirror of the cycle journal.
     journal: DurableLogTransport,
     /// Everything the platform decided, and what came of it — refusals
@@ -2214,6 +2225,92 @@ pub struct CycleJournalEntry {
     /// before the field existed replays.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub solver_routing: Option<SolverRoutingJournal>,
+    /// Blueprint §8.2's second-order exposure review, as the UNDERSTAND stage
+    /// found it: the entities the book depends on and does not hold, and the
+    /// instruments the relationship graph puts within two hops of each.
+    ///
+    /// Absent exactly when the review was not answerable — an empty book, or
+    /// a causal graph holding no edge into any held position. That is not the
+    /// same fact as "the book depends on nothing it does not hold", and an
+    /// entry that rendered the two alike would be a control that reads as
+    /// protection and cannot fire. Defaulted so a journal written before the
+    /// field existed replays.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub second_order: Option<SecondOrderJournal>,
+}
+
+/// One entity the book depends on and does not hold, as the journal keeps it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SecondOrderDriver {
+    /// The unheld cause.
+    pub entity: String,
+    /// The held positions it drives. Carried rather than counted: a driver of
+    /// the whole book and a driver of one position read identically as a
+    /// name, and a replay has to be able to tell them apart.
+    pub drives: BTreeSet<String>,
+    /// Instruments within [`qip_world_model::exposure::MAX_EXPOSURE_HOPS`] of
+    /// it in the relationship graph, of any holding status.
+    pub instruments_exposed: usize,
+    /// Of those, the ones the book does not hold — the routes through which
+    /// the dependency could be taken deliberately or hedged.
+    pub unheld_instruments: BTreeSet<String>,
+    /// Instruments the exposure walk found beyond its own result cap and
+    /// dropped. Non-zero means `unheld_instruments` is a prefix.
+    pub exposure_truncated: usize,
+}
+
+/// What the UNDERSTAND stage's §8.2 second-order pass left in the journal.
+///
+/// A summary rather than the review itself: the review carries the node path
+/// walked to every instrument, which is what an operator wants on screen and
+/// not what a hash-chained record needs to carry once per cycle per driver.
+/// Every collection here is ordered, because this is replayed and a replay
+/// that reorders is not a replay.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SecondOrderJournal {
+    /// Held positions examined. The premise of every figure below.
+    pub positions_examined: usize,
+    /// Causal edges arriving at a held position and knowable this cycle.
+    pub edges_considered: usize,
+    /// Unheld dependencies the query named, before the follow bound.
+    pub dependencies_found: usize,
+    /// Named and not followed this pass, because of
+    /// [`qip_world_model::exposure::MAX_SECOND_ORDER_DEPENDENCIES`].
+    pub dependencies_truncated: usize,
+    /// The dependencies followed, widest reach first.
+    pub drivers: Vec<SecondOrderDriver>,
+}
+
+impl SecondOrderJournal {
+    /// The review as the journal keeps it, or `None` when there was no
+    /// question to answer.
+    ///
+    /// The `None` is the load-bearing half. A cycle whose book is empty, or
+    /// whose causal graph has no edge into anything held, has established
+    /// nothing about second-order risk, and journalling a zero would put a
+    /// finding in the permanent record that nobody made.
+    fn of(review: &qip_world_model::exposure::SecondOrderReview) -> Option<Self> {
+        if !review.was_answerable() {
+            return None;
+        }
+        Some(Self {
+            positions_examined: review.positions_examined,
+            edges_considered: review.edges_considered,
+            dependencies_found: review.dependencies_found,
+            dependencies_truncated: review.dependencies_truncated,
+            drivers: review
+                .dependencies
+                .iter()
+                .map(|dependency| SecondOrderDriver {
+                    entity: dependency.entity.clone(),
+                    drives: dependency.drives.clone(),
+                    instruments_exposed: dependency.exposure.exposures.len(),
+                    unheld_instruments: dependency.unheld_instruments.clone(),
+                    exposure_truncated: dependency.exposure.truncated,
+                })
+                .collect(),
+        })
+    }
 }
 
 /// What the LEARN stage's counterfactual pass left in the journal.
@@ -3638,6 +3735,7 @@ impl Platform {
             cycle_family_structure: None,
             cycle_horizon_arming: None,
             cycle_solver_routing: None,
+            cycle_second_order: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
             outcomes: OutcomeCapture::new(),
             counterfactuals,
@@ -7422,6 +7520,11 @@ impl Platform {
             // between DECIDE and here would break it silently, and there is no
             // type that would notice.
             solver_routing: self.cycle_solver_routing.take(),
+            // Taken for `solver_routing`'s reason, and safe for a narrower
+            // one: UNDERSTAND assigns this field on every path through the
+            // stage, so a cycle that reaches journalling has already
+            // overwritten whatever the last cycle left.
+            second_order: self.cycle_second_order.take(),
         };
 
         let facts = EventFacts::derived(
@@ -7868,13 +7971,41 @@ impl Platform {
         // leaves nothing in the record naming what changed.
         let review = self.causal_review(now);
         let review_detail = review.detail();
+        // §8.2's fifth query — which entities does the book depend on that it
+        // does not hold — and its first asked of each answer: which
+        // instruments sit within two hops of that entity. A read like the
+        // three above: it names the routes through which a dependency could
+        // be taken or hedged and moves nothing, because a finding that sized
+        // a position would leave no record of the number that changed.
+        //
+        // A refusal becomes a stage problem rather than silence. The review
+        // composes a query that validates its own arguments, and a pass that
+        // could not run must say so — an empty clause and a clean book are
+        // the same characters on the screen otherwise.
+        let (second_order_detail, second_order_problem) = match self.second_order_exposure(now) {
+            Ok(second_order) => {
+                let detail = second_order.detail();
+                self.cycle_second_order = SecondOrderJournal::of(&second_order);
+                (detail, None)
+            }
+            Err(error) => {
+                self.cycle_second_order = None;
+                (
+                    String::new(),
+                    Some(format!(
+                        "second-order exposure review did not run this cycle: {error}"
+                    )),
+                )
+            }
+        };
         let mut outcome = StageOutcome::ran(
             Stage::Understand,
             state.object_count + state.entity_count,
             format!(
                 "world model holds {} instrument(s), {} entity(ies), {} relationship(s), \
                  {} causal claim(s), {} readable feature value(s), {} document(s)\
-                 {liquidity}{events}{chain}{credit}{precedence_detail}{review_detail}",
+                  {liquidity}{events}{chain}{credit}{precedence_detail}{review_detail}\
+                 {second_order_detail}",
                 state.object_count,
                 state.entity_count,
                 state.relationship_count,
@@ -7886,7 +8017,38 @@ impl Platform {
         for problem in credit_problems {
             outcome = outcome.with_problem(problem);
         }
+        if let Some(problem) = second_order_problem {
+            outcome = outcome.with_problem(problem);
+        }
         outcome
+    }
+
+    /// Blueprint §8.2's fifth query and its first, over the two graphs this
+    /// cycle has just written, at `now`.
+    ///
+    /// A thin assembly over `qip_world_model::exposure::second_order_exposure`
+    /// in the same shape as [`Self::causal_review`]: the world model holds the
+    /// traversal and this supplies the one fact only a `Platform` has — the
+    /// book actually held.
+    ///
+    /// Both instants are `now`, and they are passed separately rather than
+    /// through a convenience overload precisely so that this is visible here.
+    /// The cycle is asking what is true now as far as it knows now; a review
+    /// replayed over history passes the pair the replay is entitled to, and
+    /// nothing in the query lets the two be conflated by accident.
+    fn second_order_exposure(
+        &self,
+        now: Timestamp,
+    ) -> Result<qip_world_model::exposure::SecondOrderReview> {
+        let held: BTreeSet<String> = self.capital.positions.keys().cloned().collect();
+        let world = self.world.read();
+        qip_world_model::exposure::second_order_exposure(
+            world.graph(),
+            world.causal(),
+            &held,
+            now,
+            now,
+        )
     }
 
     /// Read the causal graph back the three ways blueprint §9 asks for, at
@@ -22395,6 +22557,314 @@ mod corporate_action_tests {
             "the refused action is not reported against the instrument it corrupts, so the \
              series and the book silently disagree with the tape: {:?}",
             learned.problems
+        );
+    }
+}
+#[cfg(test)]
+mod second_order_exposure_tests {
+    //! Blueprint §8.2's first and fifth queries reaching the cycle.
+    //!
+    //! §8.2 names five queries it argues the graph structure earns its place
+    //! by answering. Two of them — "which instruments are exposed to this
+    //! entity, directly or through two hops" and "which entities does my
+    //! portfolio depend on that I do not hold" — were built, tested, and
+    //! called by nothing outside a test for as long as they had existed. A
+    //! query with no caller is a capability claim no run can contradict, and
+    //! the rest of this platform already holds one worked example of what
+    //! that costs: `MaxExpectedShortfall` shipped in every default limit set
+    //! against a figure that was always empty, so a limit that could never
+    //! fire read as protection for as long as nobody checked.
+    //!
+    //! These tests drive [`Platform::run_cycle`], not the private helper, so
+    //! what they prove is that the UNDERSTAND stage reaches the traversal and
+    //! that what it found is in the hash-chained journal afterwards — not
+    //! merely that a function in `qip_world_model` returns the right answer,
+    //! which `qip-world-model/tests/second_order.rs` proves separately.
+
+    use super::*;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+    use qip_world_model::causal::{CausalEdge, Mechanism};
+    use qip_world_model::graph::Fact;
+    use qip_world_model::relationship::{Relationship, RelationshipKind};
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    /// A day before the cycle runs: every fixture fact is knowable when the
+    /// cycle asks, so a test that found nothing would be finding a real
+    /// absence rather than a point-in-time filter doing its job.
+    fn known_from() -> Timestamp {
+        start().saturating_sub(Duration::from_days(1))
+    }
+
+    fn platform() -> Platform {
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            qip_financial::universe::Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    /// The book: a hundred shares each of NWD and AAA, written straight into
+    /// the lots rather than through a fill, because this is about what the
+    /// UNDERSTAND stage reads and not about what booking a fill costs.
+    fn hold_nwd_and_aaa(platform: &mut Platform) {
+        for object in ["obj-NWD", "obj-AAA"] {
+            platform.capital.positions.insert(
+                object.to_string(),
+                PositionLot {
+                    quantity: Decimal::from_int(100),
+                    average_price: Decimal::from_int(100),
+                },
+            );
+        }
+    }
+
+    /// §8.2's own sentence as data. KESTREL is a private supplier nobody can
+    /// buy; it supplies NORTHWIND, which issues NWD, and HOLLOWAY, which
+    /// issues HWY. So the instrument through which a dependency on KESTREL
+    /// could be taken or hedged — HWY — is two hops away and unheld.
+    fn write_the_supply_chain(platform: &mut Platform) {
+        platform.world.update(|world| {
+            for entity in ["KESTREL", "NORTHWIND", "HOLLOWAY"] {
+                world.graph_mut().add_node(Node::new(
+                    entity,
+                    NodeKind::Entity,
+                    entity,
+                    known_from(),
+                ));
+            }
+            for instrument in ["obj-NWD", "obj-HWY"] {
+                world.graph_mut().add_node(Node::new(
+                    instrument,
+                    NodeKind::FinancialObject,
+                    instrument,
+                    known_from(),
+                ));
+            }
+            for (from, to, kind) in [
+                ("KESTREL", "NORTHWIND", RelationshipKind::Supplies),
+                ("KESTREL", "HOLLOWAY", RelationshipKind::Supplies),
+                ("NORTHWIND", "obj-NWD", RelationshipKind::Issues),
+                ("HOLLOWAY", "obj-HWY", RelationshipKind::Issues),
+            ] {
+                world.graph_mut().assert_fact(
+                    Fact::new(
+                        Relationship::new(from, to, kind, 1.0, "fixture"),
+                        known_from(),
+                        known_from(),
+                    )
+                    .with_confidence(0.9),
+                );
+            }
+        });
+    }
+
+    /// The causal claim: KESTREL drives both held positions. A claim, and
+    /// kept in the causal graph rather than the relationship graph for that
+    /// reason — that a company supplies another is a fact, that a shock
+    /// travels between them is not.
+    fn claim_kestrel_drives_the_book(platform: &mut Platform) {
+        platform.world.update(|world| {
+            for effect in ["obj-NWD", "obj-AAA"] {
+                world
+                    .claim_causal(
+                        CausalEdge::new(
+                            "KESTREL",
+                            effect,
+                            Mechanism::TemporalPrecedence,
+                            0.5,
+                            Duration::from_days(1),
+                            known_from(),
+                        )
+                        .expect("a strength in [0, 1] is admitted"),
+                    )
+                    .expect("the claim is admitted");
+            }
+        });
+    }
+
+    fn understand_detail(report: &CycleReport) -> String {
+        report
+            .stages
+            .iter()
+            .find(|stage| stage.stage == Stage::Understand)
+            .expect("UNDERSTAND always runs")
+            .detail
+            .clone()
+    }
+
+    fn journalled(platform: &Platform) -> Option<SecondOrderJournal> {
+        platform
+            .journal_entries()
+            .expect("the journal decodes")
+            .last()
+            .expect("one cycle was journalled")
+            .second_order
+            .clone()
+    }
+
+    #[test]
+    fn a_cycle_names_the_driver_its_book_depends_on_and_the_unheld_instrument_two_hops_from_it() {
+        let mut platform = platform();
+        hold_nwd_and_aaa(&mut platform);
+        write_the_supply_chain(&mut platform);
+        claim_kestrel_drives_the_book(&mut platform);
+
+        // The premise, asserted rather than assumed. The book holds two
+        // names, neither of them the driver and neither of them the
+        // instrument the finding is supposed to surface — without this, a
+        // finding naming HWY could be a finding about something already held.
+        assert_eq!(
+            platform.capital.positions.len(),
+            2,
+            "the premise: two positions are held"
+        );
+        assert!(
+            !platform.capital.positions.contains_key("obj-HWY"),
+            "the premise: the instrument the review should surface is not already held"
+        );
+        assert!(
+            !platform.capital.positions.contains_key("KESTREL"),
+            "the premise: the driver is not held either"
+        );
+
+        let report = platform.run_cycle(start());
+        let detail = understand_detail(&report);
+
+        // The stage detail is what an operator reads. Matched on the whole
+        // clause rather than on "KESTREL": the driver's name also appears in
+        // the relationship count upstream of this clause on some cycles, and
+        // a substring that the surrounding text already contains guards
+        // nothing.
+        assert!(
+            detail.contains("1 unheld dependency(ies) of 2 held position(s)"),
+            "the UNDERSTAND stage does not report the §8.2 second-order review: {detail}"
+        );
+        assert!(
+            detail.contains("KESTREL drives obj-AAA+obj-NWD"),
+            "the finding does not name the driver and the positions it reaches: {detail}"
+        );
+        assert!(
+            detail.contains("1 unheld instrument(s) sit within 2 hop(s) of it"),
+            "the finding does not report the two-hop exposure leg: {detail}"
+        );
+
+        // And the record. A finding an operator can read once and nothing can
+        // replay is not attribution.
+        let journal = journalled(&platform).expect("an answerable review is journalled");
+        assert_eq!(journal.positions_examined, 2);
+        assert_eq!(journal.dependencies_found, 1);
+        assert_eq!(journal.dependencies_truncated, 0);
+        assert_eq!(journal.drivers.len(), 1);
+        assert_eq!(journal.drivers[0].entity, "KESTREL");
+        assert_eq!(
+            journal.drivers[0].drives,
+            ["obj-AAA".to_string(), "obj-NWD".to_string()]
+                .into_iter()
+                .collect::<BTreeSet<String>>(),
+            "the evidence for the dependency is both held positions"
+        );
+        assert_eq!(
+            journal.drivers[0].unheld_instruments,
+            ["obj-HWY".to_string()]
+                .into_iter()
+                .collect::<BTreeSet<String>>(),
+            "the route to the dependency the desk does not already own is the operative finding"
+        );
+        assert_eq!(
+            journal.drivers[0].instruments_exposed, 2,
+            "both listed securities are within two hops; only one of them is news"
+        );
+    }
+
+    #[test]
+    fn a_cycle_whose_book_is_empty_journals_no_second_order_finding_rather_than_a_clean_one() {
+        let mut platform = platform();
+        write_the_supply_chain(&mut platform);
+        // The graph says everything it said above. Only the book is empty.
+        claim_kestrel_drives_the_book(&mut platform);
+        assert!(
+            platform.capital.positions.is_empty(),
+            "the premise: nothing is held"
+        );
+
+        let report = platform.run_cycle(start());
+        let detail = understand_detail(&report);
+        assert!(
+            !detail.contains("unheld dependency(ies)"),
+            "a platform holding nothing has established nothing about second-order risk: {detail}"
+        );
+        assert!(
+            !detail.contains("no unheld causal driver reaches"),
+            "and it must not report a clean book either — the two read alike and are not: \
+             {detail}"
+        );
+        assert!(
+            journalled(&platform).is_none(),
+            "journalling a zero would put a finding in the permanent record that nobody made"
+        );
+    }
+
+    #[test]
+    fn a_book_with_no_causal_edge_into_it_is_reported_as_clean_only_once_there_are_edges_to_clear_it()
+     {
+        // Positions held, relationship graph written, and no causal claim at
+        // all: nothing was asked, so nothing may be reported.
+        let mut unasked = platform();
+        hold_nwd_and_aaa(&mut unasked);
+        write_the_supply_chain(&mut unasked);
+        let report = unasked.run_cycle(start());
+        let unasked_detail = understand_detail(&report);
+        assert!(
+            !unasked_detail.contains("no unheld causal driver reaches"),
+            "an empty causal graph cannot clear a book: {unasked_detail}"
+        );
+        assert!(
+            journalled(&unasked).is_none(),
+            "and nothing is journalled, because nothing was established"
+        );
+
+        // Now one causal edge, from a driver the book *does* hold. There is
+        // something to examine and nothing unheld to find, which is the one
+        // arrangement in which "clean" is a fact rather than a silence.
+        let mut answered = platform();
+        hold_nwd_and_aaa(&mut answered);
+        write_the_supply_chain(&mut answered);
+        answered.world.update(|world| {
+            world
+                .claim_causal(
+                    CausalEdge::new(
+                        "obj-AAA",
+                        "obj-NWD",
+                        Mechanism::TemporalPrecedence,
+                        0.5,
+                        Duration::from_days(1),
+                        known_from(),
+                    )
+                    .expect("a strength in [0, 1] is admitted"),
+                )
+                .expect("the claim is admitted");
+        });
+        let report = answered.run_cycle(start());
+        let detail = understand_detail(&report);
+        assert!(
+            detail.contains("no unheld causal driver reaches any of 2 held position(s)"),
+            "a book examined against a real edge and found clean must say so: {detail}"
+        );
+        let journal = journalled(&answered).expect("an answerable review is journalled");
+        assert_eq!(journal.dependencies_found, 0);
+        assert!(journal.drivers.is_empty());
+        assert_eq!(
+            journal.edges_considered, 1,
+            "and the record names what the clean verdict rests on"
         );
     }
 }
