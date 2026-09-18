@@ -520,6 +520,32 @@ impl DataFinder {
         );
         let source = source.with_tier(tier);
 
+        // §7.6.6's sixth rule — "personal data on private individuals is not
+        // registered" — screened on the fields the probe actually observed,
+        // and refused before the source is scored. Before, rather than after,
+        // for the same reason the denylist runs before the fetch: a source
+        // this platform will never collect should not also be ranked against
+        // the ones it will, and a score is the artefact somebody later reads
+        // as a recommendation. The screen refuses on `NotScreened` as well as
+        // on a finding, because a payload with no observable fields was not
+        // examined and "nothing found" off zero fields is the vacuous pass a
+        // stated exclusion with no check already was.
+        let personal_data = crate::personal_data::screen(source.evidence().schema());
+        reasoning.record(LifecycleStage::AssessLegality, personal_data.describe());
+        if !personal_data.permits_registration() {
+            let reason = personal_data.describe();
+            reasoning.record(
+                LifecycleStage::Register,
+                format!("rejected on personal data: {reason}"),
+            );
+            return RegistrationDecision::new(
+                id,
+                DecisionOutcome::Rejected { reason },
+                reasoning,
+                now,
+            );
+        }
+
         let robots_verdict = self.robots_legality(&source);
         let licensing_verdict = source
             .licensing()

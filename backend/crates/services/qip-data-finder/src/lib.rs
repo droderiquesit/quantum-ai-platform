@@ -47,6 +47,14 @@
 //!   the refusal says that anonymous or automated registration is not a path
 //!   this platform offers.
 //!
+//! * **A source carrying personal data on natural persons is not
+//!   registered.** [`personal_data::screen`] reads the field names the probe
+//!   observed, never the candidate's own description of itself, and only its
+//!   `Clear` arm permits registration — a payload with no observable fields
+//!   is `NotScreened`, which does not. §7.6.6's sixth rule was a sentence in
+//!   a governance table with nothing in the tree that could refuse anything
+//!   until this existed.
+//!
 //! Everything else — rate limits, denylists, drift severity — is advisory in
 //! the sense that a caller could compute the same numbers differently. The
 //! five above are not.
@@ -72,6 +80,7 @@ pub mod health;
 pub mod ingestion;
 pub mod ledger;
 pub mod legal;
+pub mod personal_data;
 pub mod probe;
 pub mod quality;
 pub mod reference;
@@ -108,6 +117,7 @@ pub use ledger::{LedgerOutcome, ReferenceLedger, RevisionRecord};
 pub use legal::{
     HostRules, LegalAssessment, Legality, LicensingPosture, RateLimit, SourceLicense, SourcePolicy,
 };
+pub use personal_data::{PersonalDataFinding, PersonalDataScreen, PersonalIdentifier};
 pub use probe::{
     HeadResponse, InMemoryProbe, NetworkProbe, PayloadSample, ProbeEvidence, RobotsFetch,
     SourceProbe,
