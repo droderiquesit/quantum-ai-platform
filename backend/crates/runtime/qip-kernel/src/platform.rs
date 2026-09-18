@@ -7998,6 +7998,49 @@ impl Platform {
                 )
             }
         };
+        // Blueprint §21.1's streaming half and §22.2's three estimator rows,
+        // over the return series the SENSE stage has just extended.
+        // `crate::feature_statistics::measure` was built, tested and declared
+        // in `lib.rs`, and called by nothing at all: the t-digest, the
+        // HyperLogLog, the weighted reservoir and Welford's accumulator
+        // summarised no series on any cycle this platform ever ran, and the
+        // two findings they exist to raise — a return distribution that has
+        // moved past what the estimators' own rank error explains, and a feed
+        // reporting too few distinct values to be a distribution at all —
+        // could not be raised. Here rather than in LEARN because both are
+        // statements about what the platform is looking at *now*, and a
+        // quantised feed found at the end of a cycle has already been priced,
+        // reasoned over and sized against.
+        //
+        // The record is written every cycle, findings or none, and the detail
+        // line only when there is something in it: that split is
+        // `feature_statistics`'s own stated contract, and it is what keeps a
+        // cycle that measured everything and found nothing distinguishable
+        // from a cycle where this never ran.
+        //
+        // Nothing here narrows a size or drops a feed. Which of those a
+        // distribution shift should cause is a sizing decision, and taking it
+        // by implication from a statistic is how a control arrives that
+        // nobody chose.
+        let statistics = crate::feature_statistics::measure(&self.price_history, self.cycle, now);
+        let statistics_detail = if statistics.has_findings() {
+            format!("; {}", statistics.describe())
+        } else {
+            String::new()
+        };
+        // A journal that refused the record is a problem on the stage rather
+        // than a lost cycle: the measurement happened, and the reason it did
+        // not reach the log is the fact worth carrying, not a reason to
+        // discard the seven other things this stage found.
+        let statistics_problem = self
+            .journal_record(statistics, "kernel/feature-statistics", now)
+            .err()
+            .map(|error| {
+                format!(
+                    "the streaming feature statistics were measured and not journalled: {}",
+                    error.message()
+                )
+            });
         let mut outcome = StageOutcome::ran(
             Stage::Understand,
             state.object_count + state.entity_count,
@@ -8005,7 +8048,7 @@ impl Platform {
                 "world model holds {} instrument(s), {} entity(ies), {} relationship(s), \
                  {} causal claim(s), {} readable feature value(s), {} document(s)\
                   {liquidity}{events}{chain}{credit}{precedence_detail}{review_detail}\
-                 {second_order_detail}",
+                 {second_order_detail}{statistics_detail}",
                 state.object_count,
                 state.entity_count,
                 state.relationship_count,
@@ -8018,6 +8061,9 @@ impl Platform {
             outcome = outcome.with_problem(problem);
         }
         if let Some(problem) = second_order_problem {
+            outcome = outcome.with_problem(problem);
+        }
+        if let Some(problem) = statistics_problem {
             outcome = outcome.with_problem(problem);
         }
         outcome
