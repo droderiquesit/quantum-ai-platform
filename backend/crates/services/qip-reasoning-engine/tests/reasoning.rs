@@ -22,6 +22,7 @@ use qip_reasoning_engine::evidence::{
 };
 use qip_reasoning_engine::hypothesis::{
     CausalChain, CausalStep, Claim, Hypothesis, HypothesisDraft, HypothesisStatus,
+    SINGLE_ORIGIN_CONFIDENCE_CEILING,
 };
 use qip_reasoning_engine::redteam::{ChallengeKind, RedTeam, ReviewPolicy};
 use qip_world_model::causal::Mechanism;
@@ -1586,6 +1587,93 @@ fn agent_facts_are_preserved_with_their_provenance() -> Result<()> {
             .hypothesis
             .contributors
             .contains(&"run-credit".to_string())
+    );
+    Ok(())
+}
+
+// --- §56.5 rule 56: no belief exceeds a threshold on a single source --------
+
+/// Eight strong supporting items, `origins` distinct origins between them,
+/// round-robin so the weight is spread as evenly as the count allows.
+fn supported_from(origins: usize) -> EvidenceSet {
+    EvidenceSet::from_items(
+        (0..8)
+            .map(|i| {
+                evidence(
+                    &format!("r56-{i}"),
+                    EvidenceKind::Filing,
+                    Stance::Supports,
+                    &format!("registry-{}", i % origins.max(1)),
+                    0.99,
+                    0.95,
+                )
+            })
+            .collect(),
+    )
+}
+
+#[test]
+fn an_all_one_origin_thesis_never_exceeds_the_single_origin_ceiling() -> Result<()> {
+    // §56.5 rule 56: "No belief exceeds a confidence threshold on a single
+    // information source." The threshold is
+    // `SINGLE_ORIGIN_CONFIDENCE_CEILING`, and it is enforced by the shape of
+    // the concentration discount in `effective_confidence` rather than by a
+    // clamp, because a clamp at that value could never fire.
+    //
+    // The failure this prevents is specific and was live when the test was
+    // written: the rule's other candidate home, `Hypothesis::meets_action_bar`,
+    // is reached only through `ReasoningEngine::clears_action_bar`, which has
+    // no production caller — the cycle reads `effective_confidence` and
+    // `confidence_for_sizing` directly. A later edit to the discount's slope
+    // would have moved the threshold with nothing objecting.
+    let hypothesis = Hypothesis::form(draft(supported_from(1), sound_chain()))?;
+
+    // Premise, asserted before the property: this really is one source, and
+    // the raw belief really does sit above the ceiling — otherwise the bound
+    // below would hold for a reason that has nothing to do with the rule.
+    assert!(
+        (hypothesis.evidence.concentration() - 1.0).abs() < 1e-12,
+        "premise: every supporting item must come from one origin, got concentration {}",
+        hypothesis.evidence.concentration()
+    );
+    assert!(
+        hypothesis.confidence > SINGLE_ORIGIN_CONFIDENCE_CEILING,
+        "premise: the raw posterior must exceed the ceiling for the bound to be doing \
+         anything, got {}",
+        hypothesis.confidence
+    );
+
+    assert!(
+        hypothesis.effective_confidence() <= SINGLE_ORIGIN_CONFIDENCE_CEILING,
+        "a belief resting entirely on one origin reached {} against a {} ceiling",
+        hypothesis.effective_confidence(),
+        SINGLE_ORIGIN_CONFIDENCE_CEILING
+    );
+    // The sizing number is the admission number narrowed further, so the
+    // ceiling binds there too. Asserted rather than assumed: the cycle sizes
+    // on this one, not on the one above.
+    assert!(hypothesis.confidence_for_sizing() <= SINGLE_ORIGIN_CONFIDENCE_CEILING);
+    Ok(())
+}
+
+#[test]
+fn the_single_origin_ceiling_admits_the_same_evidence_once_it_is_corroborated() -> Result<()> {
+    // The other half of the gate, and the half that distinguishes a working
+    // control from one that refuses everything: the identical items, split
+    // across four origins instead of one, are allowed past the ceiling. If
+    // this failed, the bound above would be a blanket cap on confidence and
+    // would say nothing about sources.
+    let corroborated = Hypothesis::form(draft(supported_from(4), sound_chain()))?;
+    assert!(
+        corroborated.evidence.concentration() <= 0.5,
+        "premise: four origins must leave no origin holding more than half the \
+         supporting weight, got {}",
+        corroborated.evidence.concentration()
+    );
+    assert!(
+        corroborated.effective_confidence() > SINGLE_ORIGIN_CONFIDENCE_CEILING,
+        "corroborated evidence was held to the single-origin ceiling at {}",
+        corroborated.effective_confidence()
     );
     Ok(())
 }
