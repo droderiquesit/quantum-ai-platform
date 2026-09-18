@@ -1081,3 +1081,138 @@ fn a_default_penalty_is_exact_in_decimal_and_each_consequence_treats_lateness_it
     );
     Ok(())
 }
+#[test]
+fn a_record_calling_more_capital_than_it_committed_is_refused_rather_than_read_as_fully_drawn()
+-> Result<()> {
+    // `Commitment::unscheduled` refuses this record by name and says the
+    // excess "will not be capped here". It could never see one through
+    // `from_private_asset`, because `PrivateAssetDetails::unfunded_commitment`
+    // is `(committed - called).max(0)`: 1100 called against 1000 committed
+    // answered an unfunded balance of zero, the constructor read that as a
+    // fully drawn fund and returned `None`, and the corrupt record left
+    // `qip-kernel`'s `private_holdings_of` sweep with no commitment recorded
+    // and no refusal raised. A clamp in front of a refusal is the shape the
+    // risk rules name by example: a control that reads as protection and
+    // cannot fire. The direction is the dangerous one — a commitment nobody
+    // recorded is capital `Platform::deployable_capital` treats as free.
+    //
+    // Two premises, and the second is the one that makes this test about the
+    // excess rather than about the constructor.
+    let partial = Commitment::from_private_asset(
+        "fund-1",
+        &private_asset(dec!("1000"), dec!("400")),
+        origin(),
+        origin(),
+    )?
+    .expect("a partially drawn record still obliges the book");
+    assert_eq!(partial.unfunded(), dec!("600"));
+
+    // `None` is still reachable for the coherent fully drawn record, so the
+    // repair refuses the incoherent case and not every case.
+    assert!(
+        Commitment::from_private_asset(
+            "fund-2",
+            &private_asset(dec!("1000"), dec!("1000")),
+            origin(),
+            origin(),
+        )?
+        .is_none(),
+        "a coherent fully drawn fund must still record no commitment at all"
+    );
+
+    let refusal = Commitment::from_private_asset(
+        "fund-3",
+        &private_asset(dec!("1000"), dec!("1100")),
+        origin(),
+        origin(),
+    )
+    .expect_err("a record calling more than it committed must be refused, not dropped");
+    assert!(
+        refusal
+            .message()
+            .contains("cannot call more than was promised"),
+        "the refusal must name the contract it breaks, said: {}",
+        refusal.message()
+    );
+    assert!(
+        refusal.message().contains("will not be capped here"),
+        "the refusal must say it is not clamping the excess, said: {}",
+        refusal.message()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_forecast_that_schedules_no_call_cannot_be_attached_to_a_commitment_that_is_still_unfunded()
+-> Result<()> {
+    let commitment =
+        Commitment::unscheduled("fund-1", dec!("1000"), dec!("250"), origin(), origin())?;
+    // Premise: 750 remains unfunded, and a forecast that *does* schedule a
+    // call attaches, so what is refused below is the silence about calls and
+    // not the act of attaching a forecast.
+    assert_eq!(commitment.unfunded(), dec!("750"));
+    let paced = CashflowForecast::new("fund-1", origin(), origin())?.with_flow(
+        ForecastCashflow::new(CashflowKind::CapitalCall, day(400), dec!("750"), 1.0)?,
+    )?;
+    commitment.clone().with_forecast(paced)?;
+
+    // A forecast holding only distributions passes the subject, origin and
+    // over-schedule checks — its scheduled call total is zero, which is never
+    // above the unfunded balance — and `demand_within` would then project
+    // zero capital demanded of a wholly unfunded commitment inside any
+    // horizon, because `expected_demand_within` counts outflows and there are
+    // none. That is the reserve reading as protection while computing nothing.
+    let distributions_only = CashflowForecast::new("fund-1", origin(), origin())?.with_flow(
+        ForecastCashflow::new(CashflowKind::Distribution, day(400), dec!("900"), 1.0)?,
+    )?;
+    assert_eq!(
+        distributions_only.expected_demand_within(origin(), Duration::from_days(3650))?,
+        Decimal::ZERO,
+        "premise: such a schedule really does project no demand at all"
+    );
+    let refusal = commitment
+        .clone()
+        .with_forecast(distributions_only)
+        .expect_err("a forecast silent about calls must not be attached to an unfunded balance");
+    assert!(
+        refusal.message().contains("schedules no capital call"),
+        "the refusal must name what the schedule is missing, said: {}",
+        refusal.message()
+    );
+    assert!(
+        refusal.message().contains("reserves that balance whole"),
+        "the refusal must name the unscheduled alternative, said: {}",
+        refusal.message()
+    );
+
+    // Not hypothetical, and one call site away. The only `CashflowForecast`
+    // this platform builds outside tests is
+    // `IlliquidValuator::forecast_private_asset`, which `private_holdings_of`
+    // derives for every private asset in the universe — and it holds exactly
+    // one flow, a distribution of the residual value at the end of the
+    // lockup. Attached to that same asset's own commitment it would take the
+    // reserve to nothing.
+    let mut record = private_asset(dec!("1000"), dec!("250"));
+    record.residual_value = dec!("900");
+    let shipped = qip_financial::valuation::IlliquidValuator::forecast_private_asset(
+        "fund-1",
+        &record,
+        origin(),
+        origin(),
+    )?
+    .expect("premise: the shipped constructor does build a forecast for this record");
+    assert!(
+        shipped.flows().all(|flow| !flow.kind().is_outflow()),
+        "premise: the shipped forecast schedules no call, which is the whole hazard"
+    );
+    let refusal = Commitment::from_private_asset("fund-1", &record, origin(), origin())?
+        .expect("premise: this record does oblige the book")
+        .with_forecast(shipped)
+        .expect_err("the platform's own forecast must not zero its own commitment's reserve");
+    assert!(
+        refusal.message().contains("schedules no capital call"),
+        "the refusal must name what the schedule is missing, said: {}",
+        refusal.message()
+    );
+    Ok(())
+}
