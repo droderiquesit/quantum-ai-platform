@@ -46,7 +46,12 @@
 //!   proposal that passes a capital check without holding the capital is one
 //!   half of a double-spend — the second proposal against the same free
 //!   balance also passes — so [`reservation::ReservationLedger`] makes
-//!   passing and holding the same operation, and the second is refused.
+//!   passing and holding the same operation, and the second is refused. Every
+//!   hold expires, and [`reservation::MAXIMUM_RESERVATION_VALIDITY`] bounds
+//!   that the way [`envelope::MAXIMUM_ENVELOPE_VALIDITY`] bounds a grant:
+//!   expiry is the only thing that frees a hold nobody commits or releases,
+//!   so a validity with no ceiling was a promise of expiry that a caller
+//!   could void without saying so.
 //! * [`exploration`] is the budget spent on information rather than return
 //!   (blueprint §13.2): the share a mandate sets aside, the five probe types,
 //!   an upper-confidence-bound rule for choosing between them, a maximum loss
@@ -156,4 +161,4 @@ pub use margin::{
     LiquidationHorizon, LiquidityAssessment, MarginModel, MarginRequirement, assess_liquidity,
 };
 pub use recall::{RecallOrder, RecallReason, RecallRegister, RecallState};
-pub use reservation::{Reservation, ReservationLedger};
+pub use reservation::{MAXIMUM_RESERVATION_VALIDITY, Reservation, ReservationLedger};
