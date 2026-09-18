@@ -884,11 +884,44 @@ impl Commitment {
     /// Attach a call and distribution schedule.
     ///
     /// Refuses a forecast about a different subject, a forecast with a
-    /// different origin, and a schedule whose unweighted calls and fees exceed
-    /// the unfunded balance. The last is the consistency check that matters:
-    /// a pacing model that schedules more than was ever promised is wrong, and
-    /// a reserve computed from it would be a number with no counterpart in the
-    /// contract.
+    /// different origin, a schedule whose unweighted calls and fees exceed the
+    /// unfunded balance, and a schedule holding no call at all while capital
+    /// remains unfunded.
+    ///
+    /// The third is the consistency check that matters in the obvious
+    /// direction: a pacing model that schedules more than was ever promised is
+    /// wrong, and a reserve computed from it would be a number with no
+    /// counterpart in the contract.
+    ///
+    /// # The fourth refusal, and the forecast this platform actually builds
+    ///
+    /// Attaching a forecast changes what [`Self::demand_within`] projects from
+    /// the whole unfunded balance to the schedule's own weighted calls. That
+    /// is the point of a pacing model — a fund that calls nothing for two
+    /// years demands nothing inside a month, and saying so is the reason to
+    /// hold a schedule at all. But a forecast holding **no call at all** is
+    /// not a pacing model for calls; it is the absence of one, and reading its
+    /// silence as "no call, ever" collapses the projection to zero for a
+    /// commitment that is still wholly unfunded.
+    ///
+    /// This is not hypothetical, and it is one call site away. The only
+    /// [`CashflowForecast`] this platform constructs outside tests is
+    /// [`crate::valuation::IlliquidValuator::forecast_private_asset`], which
+    /// `qip-kernel`'s `private_holdings_of` builds for every private asset in
+    /// the universe — and it holds exactly one flow, a
+    /// [`CashflowKind::Distribution`] of the residual value at the end of the
+    /// lockup. Attaching that forecast to that asset's own commitment would
+    /// pass the subject, origin and over-schedule checks and take the reserve
+    /// to nothing. The sweep keeps the two apart today; this makes the type,
+    /// rather than that sweep, the thing that keeps them apart.
+    ///
+    /// Refusing rather than repairing, because both repairs are worse: adding
+    /// the unfunded balance as a call the record does not state invents a
+    /// demand, and reading the forecast for distributions while ignoring it
+    /// for calls makes one attached object mean two things. The module's own
+    /// first-class answer is already the right one — leave the commitment
+    /// [`Self::unscheduled`], which reserves the balance whole — so the
+    /// refusal names it.
     pub fn with_forecast(mut self, forecast: CashflowForecast) -> Result<Self> {
         if forecast.subject() != self.subject {
             return Err(Error::invalid(format!(
@@ -908,14 +941,26 @@ impl Commitment {
             )));
         }
         let mut scheduled = Decimal::ZERO;
+        let mut calls = 0usize;
         for flow in forecast.flows() {
             if flow.kind().is_outflow() {
+                calls += 1;
                 scheduled = scheduled.checked_add(flow.amount()).ok_or_else(|| {
                     Error::numeric("the scheduled call total overflows".to_string())
                 })?;
             }
         }
         let unfunded = self.unfunded();
+        if calls == 0 && unfunded.is_positive() {
+            return Err(Error::invalid(format!(
+                "{} still has {unfunded} unfunded and the forecast offered for it schedules no \
+                 capital call; leave the commitment unscheduled, which reserves that balance \
+                 whole, or attach the call schedule alongside the distributions — a forecast \
+                 silent about calls is read as expecting none, and the capital demanded of this \
+                 commitment inside any horizon would be zero",
+                self.subject
+            )));
+        }
         if scheduled > unfunded {
             return Err(Error::invalid(format!(
                 "{} schedules {scheduled} of calls and fees against an unfunded balance of \
@@ -1223,13 +1268,43 @@ impl Commitment {
     /// Returns `None` where the record shows nothing unfunded — a fully drawn
     /// fund obliges the book to no further capital, and recording a zero
     /// commitment would put a row in the book that can never reserve anything.
+    ///
+    /// # A record stating more called than committed is refused, and was not
+    ///
+    /// [`Self::unscheduled`] refuses that record by name and says why the
+    /// excess "will not be capped here". It could never see one from this
+    /// constructor. [`PrivateAssetDetails::unfunded_commitment`] is
+    /// `(committed − called).max(0)`, so a record stating 12 called against 10
+    /// committed answered an unfunded balance of zero, the guard above read
+    /// that as "a fully drawn fund" and returned `None`, and the corrupt
+    /// record left the sweep with no commitment recorded and no refusal
+    /// raised. The clamp sat in front of the refusal and answered first —
+    /// the shape `.claude/rules/domains/risk-and-execution.md` names by
+    /// example, a control that reads as protection and cannot fire.
+    ///
+    /// The direction is the dangerous one. A commitment nobody recorded is
+    /// capital `Platform::deployable_capital` treats as free, and a units
+    /// error or a duplicated drawdown in an administrator's record is exactly
+    /// how 12-against-10 arises. So the coherence of the record is asked
+    /// before the balance derived from it, and an incoherent record falls
+    /// through to [`Self::unscheduled`]'s own refusal rather than to a second
+    /// copy of its sentence written here — one writer of that message, so the
+    /// two cannot drift apart.
+    ///
+    /// This is the constructor `qip-kernel`'s `private_holdings_of` calls for
+    /// every private asset in the universe at assembly, so the refusal stops
+    /// `Platform::new` and names the record, exactly as the neighbouring
+    /// `known_at < origin` refusal already does for a vintage typed a year
+    /// early.
     pub fn from_private_asset(
         subject: impl Into<String>,
         details: &PrivateAssetDetails,
         origin: Timestamp,
         known_at: Timestamp,
     ) -> Result<Option<Self>> {
-        if !details.unfunded_commitment().is_positive() {
+        if details.called_capital <= details.committed_capital
+            && !details.unfunded_commitment().is_positive()
+        {
             return Ok(None);
         }
         Self::unscheduled(
