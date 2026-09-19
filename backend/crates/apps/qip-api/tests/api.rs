@@ -2254,3 +2254,106 @@ fn with_body(method: Method, path: &str, token: Option<&str>, body: &str) -> Req
     request.body = body.as_bytes().to_vec();
     request
 }
+// --- §40.1's exploration surface --------------------------------------------
+
+#[test]
+fn the_exploration_surface_reports_the_ceiling_the_desk_mandate_declares_rather_than_a_default()
+-> Result<()> {
+    // The failure this prevents: a surface that renders a plausible number
+    // nobody declared. The exploration share is a term of the desk's
+    // `Mandate`, and `qip_kernel::exploration`'s budget refuses outright when
+    // the ledger holds none — so a route answering with a default here would
+    // show an operator a ceiling the capital path would not honour.
+    // The shipped default sets nothing aside, so a fixture on it would make
+    // "the surface reports the declared share" and "the surface reports zero"
+    // the same assertion. The configuration states a share, which is exactly
+    // the value the route must be shown to be reading.
+    let assembled = assemble_with(
+        qip_kernel::PlatformConfig::default().with_exploration_share(
+            qip_core::Decimal::parse("0.025").expect("a well-formed share"),
+        ),
+    )?;
+    let declared = {
+        let platform = assembled
+            .platform
+            .lock()
+            .expect("the fixture's platform mutex");
+        let ledger = platform.user_ledger();
+        let mandate = ledger
+            .mandate(ledger.desk())
+            .expect("the platform opens its book under a desk mandate");
+        mandate.exploration_share().to_string()
+    };
+    // Premise, in two parts. The share is really declared, and it is not the
+    // zero that an undeclared term and a declared nothing would both produce
+    // — without this the assertion below could pass against a route that
+    // read no ledger at all.
+    assert_ne!(declared, "0", "the fixture's desk mandate explores nothing");
+
+    let body = body_of(get(
+        &assembled.api,
+        "/api/v1/exploration",
+        Some("viewer-token"),
+    ));
+    assert_eq!(body["share"]["declared"], serde_json::json!(true), "{body}");
+    // Compared as a whole JSON string rather than by substring: "0.02" is a
+    // substring of "0.025", and a share that drifted by a factor of ten would
+    // survive a `contains`.
+    assert_eq!(
+        body["share"]["share"],
+        serde_json::Value::String(declared),
+        "the surface does not report the share the desk mandate declares: {body}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_exploration_surface_keeps_what_is_held_committed_and_spent_as_three_numbers() -> Result<()> {
+    // §40.1 asks what the platform is *spending* to learn. Held capital,
+    // capital an open probe has committed, and capital exploration has
+    // actually cost are three different answers, and a surface that summed
+    // any two of them would double-count every open probe. They are asserted
+    // present rather than by value, because a fresh platform has opened
+    // nothing and every value is legitimately zero — the property under test
+    // is that the reader is never handed one number where the budget has
+    // three.
+    let assembled = assemble()?;
+    let body = body_of(get(
+        &assembled.api,
+        "/api/v1/exploration",
+        Some("viewer-token"),
+    ));
+    for field in ["held", "committed", "spend"] {
+        assert!(
+            body[field].is_string(),
+            "the exploration surface has no `{field}`: {body}"
+        );
+    }
+    // And the account's own counters, so a reader can tell "nothing was ever
+    // bought" from "everything bought has settled".
+    for field in [
+        "open_count",
+        "opened_total",
+        "settled_total",
+        "abandoned_total",
+    ] {
+        assert!(
+            body[field].is_number(),
+            "the exploration surface has no `{field}`: {body}"
+        );
+    }
+    // The half this process cannot serve says so, with a reason, rather than
+    // being absent or reported as a measured zero.
+    assert_eq!(
+        body["learned"]["available"],
+        serde_json::json!(false),
+        "{body}"
+    );
+    assert!(
+        body["learned"]["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty()),
+        "{body}"
+    );
+    Ok(())
+}
