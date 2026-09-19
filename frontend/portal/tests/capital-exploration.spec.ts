@@ -166,7 +166,7 @@ const DECLARED = {
   learned: LEARNED,
 } as const;
 
-test("the declared share, the three figures kept apart, every open probe as its question, and the learning table's absence are all rendered — and nothing acts", async ({
+test("the declared share, the three figures kept apart, every open probe as its question, and the learning table are all rendered — and nothing acts", async ({
   page,
 }) => {
   const writes: string[] = [];

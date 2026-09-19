@@ -37,7 +37,6 @@ import { useResource } from "@/lib/hooks/useResource";
  *   bought" from "everything bought has settled".
  * * **Every open probe as the question it bought**, with the bound it may
  *   cost, the uncertainty it was opened against and when it expires.
- *
  * * **What it learned, per kind, as the route's own table.** One row per
  *   `ProbeKind`, in the order the route sends them, including kinds the
  *   book has never bought — the route walks the enum rather than its
