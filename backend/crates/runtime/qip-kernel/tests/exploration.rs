@@ -42,6 +42,7 @@ use qip_learning_engine::self_model::{ComponentKey, ComponentKind, ScoredOutcome
 use qip_observability::Telemetry;
 use qip_observability::metrics::labels;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
+use std::collections::BTreeMap;
 
 const INSTRUMENT: &str = "EXPLORE-1";
 
@@ -259,6 +260,7 @@ fn a_probe_nobody_takes_up_settles_as_observation_and_never_as_evidence_that_pro
         &ledger,
         &self_model,
         &[],
+        &BTreeMap::new(),
         dec!("1000000"),
         start(),
     );
@@ -278,6 +280,7 @@ fn a_probe_nobody_takes_up_settles_as_observation_and_never_as_evidence_that_pro
         &ledger,
         &self_model,
         &[],
+        &BTreeMap::new(),
         dec!("1000000"),
         later,
     );

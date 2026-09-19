@@ -30,14 +30,22 @@
 //!   fills than the sizing review needs has an unmeasured capacity, which is
 //!   [`ProbeKind::CapacityAtSize`].
 //!
-//! [`ProbeKind::UnfamiliarVenue`] and [`ProbeKind::RegimeBoundary`] are
-//! **deliberately not fed from here**, and that is a statement about the
-//! platform rather than about the budget: nothing counts orders per venue, so
-//! "unfamiliar" would be a number this module invented, and nothing marks a
-//! regime *transition* — `Platform::regime_label` names the regime in force
-//! and not the boundary. A candidate built on either would be a probe sized
-//! against a figure nobody computed, which is the defect this whole lane
-//! exists to avoid.
+//! * since §9.4's marker landed, [`ProbeKind::RegimeBoundary`] — the share
+//!   of a subject's incoming causal edges whose conditions are untested in
+//!   the regime it has just entered, handed in by the caller because only a
+//!   `Platform` holds both the graph and the marker. It is *not*
+//!   `1 - confidence`: a hand-asserted mechanism claim, a precedence edge and
+//!   a confounded edge take their confidence from three different ceilings,
+//!   so ranking probes on it would rank them by how an edge was established
+//!   rather than by how little is known about it.
+//!
+//! [`ProbeKind::UnfamiliarVenue`] is **deliberately not fed from here**, and
+//! that is a statement about the platform rather than about the budget:
+//! nothing counts orders per venue, so "unfamiliar" would be a number this
+//! module invented. A candidate built on it would be a probe sized against a
+//! figure nobody computed, which is the defect this whole lane exists to
+//! avoid. `RegimeBoundary` was in the same sentence until
+//! [`crate::regime_transition`] computed the fact it was missing.
 //!
 //! # Nothing takes a probe up, and the report says so
 //!
@@ -137,6 +145,7 @@ pub fn review(
     ledger: &UserLedger,
     self_model: &SelfModel,
     fill_scores: &[crate::platform::FillScore],
+    regime_boundaries: &BTreeMap<String, f64>,
     equity: Decimal,
     now: Timestamp,
 ) -> String {
@@ -149,7 +158,7 @@ pub fn review(
     // the subjects it is now certain about: the settlement below needs to
     // read a subject that has stopped being a candidate, and a subject
     // missing from this map is one that can no longer be measured at all.
-    let uncertainties = uncertainty_by_subject(self_model, fill_scores);
+    let uncertainties = uncertainty_by_subject(self_model, fill_scores, regime_boundaries);
     let mut notes: Vec<String> = Vec::new();
     settle_due(desk, metrics, &uncertainties, now, &mut notes);
 
@@ -231,6 +240,7 @@ fn describe(metrics: &Metrics) {
 fn uncertainty_by_subject(
     self_model: &SelfModel,
     fill_scores: &[crate::platform::FillScore],
+    regime_boundaries: &BTreeMap<String, f64>,
 ) -> BTreeMap<String, (ProbeKind, f64)> {
     let mut subjects = BTreeMap::new();
     for (key, estimate) in self_model.iter() {
@@ -260,6 +270,16 @@ fn uncertainty_by_subject(
     for (subject, sample) in scored {
         let uncertainty = 1.0 - (sample as f64 / CAPACITY_SAMPLE as f64).min(1.0);
         subjects.insert(subject, (ProbeKind::CapacityAtSize, uncertainty));
+    }
+    // The boundaries arrive already measured and already keyed by
+    // `crate::regime_transition::SUBJECT_PREFIX`, which is what keeps a probe
+    // openable and settleable under one string. They are seated here rather
+    // than beside the candidates so that `settle_due` can read them too: a
+    // subject present at zero is measurable and never selected, which is the
+    // distinction that lets a regime-boundary probe close with an observation
+    // instead of being abandoned as "no longer measured".
+    for (subject, uncertainty) in regime_boundaries {
+        subjects.insert(subject.clone(), (ProbeKind::RegimeBoundary, *uncertainty));
     }
     subjects
 }

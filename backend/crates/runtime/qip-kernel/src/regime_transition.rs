@@ -57,6 +57,15 @@ use std::collections::BTreeMap;
 /// which is the `MaxExpectedShortfall` shape in a new place.
 pub const MARKER_WINDOW: Duration = Duration::from_hours(48);
 
+/// The prefix an exploration subject built from a regime boundary carries.
+///
+/// One constant rather than a literal at each end, because the exploration
+/// desk keys a probe's history on the subject string: if the writer and the
+/// settler spelled it differently the probe would be opened against one key
+/// and looked up under another, and every regime-boundary probe would be
+/// abandoned as "no longer measured" without anything reading as broken.
+pub const SUBJECT_PREFIX: &str = "regime-boundary:";
+
 /// The most subjects whose regime is remembered at once.
 ///
 /// A bounded working set, like every other buffer here. Eviction drops the

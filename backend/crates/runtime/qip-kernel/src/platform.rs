@@ -199,6 +199,7 @@ use qip_twin::counterfactual::{
 };
 use qip_twin::value::Simulated;
 use qip_world_model::WorldModel;
+use qip_world_model::causal::ConditionStanding;
 use qip_world_model::features::{Feature, FeatureValue};
 use qip_world_model::granger;
 use qip_world_model::graph::{Node, NodeKind};
@@ -246,6 +247,13 @@ pub struct Platform {
     /// under one id on every DECIDE pass, so what is explored with is not
     /// also sized against.
     exploration: crate::exploration::ExplorationDesk,
+    /// The regime each subject the causal graph names was last seen in
+    /// (blueprint §9.4). Written in UNDERSTAND, read in DECIDE by
+    /// [`Platform::regime_boundary_uncertainties`]: without it the platform
+    /// knows the regime in force and not the instant it changed, and
+    /// [`qip_capital::exploration::ProbeKind::RegimeBoundary`] would be a
+    /// probe sized against a figure nobody computed.
+    regime_transitions: crate::regime_transition::RegimeTransitions,
     /// Which strategy family may be sold in which jurisdiction — the product
     /// half of the gate [`Platform::fund_user`] runs, beside the eligibility
     /// registry's statement about the user. Empty at assembly, because that
@@ -3814,6 +3822,7 @@ impl Platform {
                 .unwrap_or_else(|_| unreachable!("zero is not negative")),
             user_ledger,
             exploration: crate::exploration::ExplorationDesk::new(),
+            regime_transitions: crate::regime_transition::RegimeTransitions::new(),
             products: ProductCatalogue::new(),
             registrations: RegistrationRegistry::shipped(),
             pending_promotions: BTreeMap::new(),
@@ -8075,6 +8084,19 @@ impl Platform {
         // moves a size, for the reason `causal_review::ControlAudit` states
         // at length — a control that finds a problem and silently fixes it
         // leaves nothing in the record naming what changed.
+        // §9.4's regime boundary, marked before the graph is read back:
+        // `Platform::regime_label` names the regime in force and not the
+        // instant it changed, so until this the DECIDE stage's
+        // `ProbeKind::RegimeBoundary` had no fact to be built on and was
+        // deliberately left unfed. The marker moves nothing here — it is
+        // read in DECIDE — and a first sighting is not a crossing, so a
+        // restarted process does not read as a market-wide regime change.
+        let crossings = self.mark_regime_transitions(now);
+        let crossing_detail = if crossings == 0 {
+            String::new()
+        } else {
+            format!("; {crossings} subject(s) crossed a regime boundary this pass")
+        };
         let review = self.causal_review(now);
         let review_detail = review.detail();
         // §8.2's fifth query — which entities does the book depend on that it
@@ -8153,7 +8175,7 @@ impl Platform {
             format!(
                 "world model holds {} instrument(s), {} entity(ies), {} relationship(s), \
                  {} causal claim(s), {} readable feature value(s), {} document(s)\
-                  {liquidity}{events}{chain}{credit}{precedence_detail}{review_detail}\
+                  {liquidity}{events}{chain}{credit}{precedence_detail}{crossing_detail}{review_detail}\
                  {second_order_detail}{statistics_detail}",
                 state.object_count,
                 state.entity_count,
@@ -8238,6 +8260,100 @@ impl Platform {
             now,
             |subject| self.regime_context(subject),
         )
+    }
+
+    /// Mark which of the subjects the causal graph names have changed regime
+    /// since the last pass, returning how many crossed — blueprint §9.4.
+    ///
+    /// Over the graph's effects rather than over every instrument with a
+    /// price, because the only reader is §9.4's regime-boundary probe and its
+    /// question is how the *edges* behave at the transition. A subject the
+    /// graph makes no claim about has no edges to be uncertain about, and
+    /// marking it would grow a bounded working set with entries nothing can
+    /// ever read.
+    ///
+    /// The pairs are collected before any is recorded because
+    /// [`Self::regime_context`] and the world-model read guard both borrow
+    /// `self`, and the marker needs it mutably. Collecting first also makes
+    /// the pass atomic within a cycle: every subject is labelled against the
+    /// same graph snapshot.
+    fn mark_regime_transitions(&mut self, now: Timestamp) -> usize {
+        let subjects: BTreeSet<String> = {
+            let world = self.world.read();
+            world
+                .causal()
+                .edges()
+                .iter()
+                .filter(|edge| edge.recorded_at <= now)
+                .map(|edge| edge.effect.clone())
+                .collect()
+        };
+        let observed: Vec<(String, String)> = subjects
+            .into_iter()
+            .map(|subject| {
+                let regime = self.regime_context(&subject);
+                (subject, regime)
+            })
+            .collect();
+        observed
+            .into_iter()
+            .filter(|(subject, regime)| {
+                self.regime_transitions
+                    .observe(subject, regime, now)
+                    .is_some()
+            })
+            .count()
+    }
+
+    /// What the platform does not know about how its causal edges behave at
+    /// a boundary one of its subjects has just crossed — blueprint §9.4's
+    /// "low-confidence edges inform exploration", as one measure.
+    ///
+    /// The figure is the share of a subject's incoming edges whose conditions
+    /// are [`ConditionStanding::Untested`] in the regime now in force. It is
+    /// deliberately **not** `1 - confidence`: a hand-asserted mechanism claim
+    /// takes `CausalEdge::DEFAULT_CONFIDENCE`, a precedence edge takes
+    /// `1 - p` under its own ceiling, and a confounded edge half of that, so
+    /// ranking probes on confidence would rank them by how an edge was
+    /// established rather than by how little is known about it here. An
+    /// untested condition is one question asked the same way of every edge.
+    ///
+    /// A subject whose every edge has already been tested in this regime
+    /// scores zero and is therefore measurable but never selected — the
+    /// exploration desk skips a candidate at zero and still settles a probe
+    /// whose subject it can read, which is the distinction that lets a
+    /// regime-boundary probe close with an observation rather than be
+    /// abandoned.
+    ///
+    /// usize → f64 at the quotient: a share of edges is a statistic, and this
+    /// is where the counts stop being counts.
+    fn regime_boundary_uncertainties(&self, now: Timestamp) -> BTreeMap<String, f64> {
+        let world = self.world.read();
+        let mut tally: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        for edge in world.causal().edges() {
+            if edge.recorded_at > now {
+                continue;
+            }
+            if !self.regime_transitions.crossed_recently(&edge.effect, now) {
+                continue;
+            }
+            let regime = self.regime_context(&edge.effect);
+            let entry = tally.entry(edge.effect.clone()).or_insert((0, 0));
+            entry.1 += 1;
+            if edge.in_regime(&regime) == ConditionStanding::Untested {
+                entry.0 += 1;
+            }
+        }
+        tally
+            .into_iter()
+            .filter(|(_, (_, total))| *total > 0)
+            .map(|(subject, (untested, total))| {
+                (
+                    format!("{}{subject}", crate::regime_transition::SUBJECT_PREFIX),
+                    untested as f64 / total as f64,
+                )
+            })
+            .collect()
     }
 
     /// Bound on instrument pairs tested per cycle.
@@ -10938,6 +11054,10 @@ impl Platform {
         // so capital spent on learning is not also spent on returning. The
         // line it returns is never empty — a platform exploring with nothing
         // says so rather than falling silent in the state it is usually in.
+        // §9.4's regime boundaries, measured against the graph as UNDERSTAND
+        // left it this cycle. Taken before the mutable borrows below because
+        // it reads the world model and the marker at once.
+        let regime_boundaries = self.regime_boundary_uncertainties(now);
         let exploration = crate::exploration::review(
             &mut self.exploration,
             &mut self.reservations,
@@ -10945,6 +11065,7 @@ impl Platform {
             &self.user_ledger,
             &self.self_model,
             &self.fill_scores,
+            &regime_boundaries,
             self.capital.equity(),
             now,
         );
