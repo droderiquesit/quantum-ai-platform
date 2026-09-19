@@ -279,6 +279,19 @@ pub const ROUTES: &[Route] = &[
         summary: "exposure, concentration, the kill switch, and what is not measurable here",
         success: 200,
     },
+    // §40.1's eighth surface. Read-only, and the "Acts on" half of the row
+    // — "adjust the exploration share" — is deliberately not here: the
+    // share is a term of a `Mandate`, and a mandate changes through the
+    // capital path with an authenticated operator, never through a viewer's
+    // GET. A route that showed the share beside a control to move it would
+    // be the console implying an authority this process does not grant.
+    Route {
+        method: Method::Get,
+        pattern: "/exploration",
+        required_role: Role::Viewer,
+        summary: "what the platform is spending to learn, and what it has learned per kind",
+        success: 200,
+    },
     Route {
         method: Method::Get,
         pattern: "/fills",
@@ -1123,6 +1136,7 @@ impl Api {
             (Method::Get, "/models") => Response::json(200, models(&platform)),
             (Method::Get, "/capital") => Response::json(200, capital(&platform, now)),
             (Method::Get, "/risk") => Response::json(200, risk(&platform, self.cells.as_ref())),
+            (Method::Get, "/exploration") => Response::json(200, exploration(&platform)),
             (Method::Get, "/fills") => Response::json(200, fills(&platform)),
             (Method::Get, "/pnl") => Response::json(
                 200,
@@ -2670,6 +2684,99 @@ fn capital(platform: &Platform, now: Timestamp) -> String {
         json::string(&config.per_venue.to_string()),
         envelopes.join(","),
         recalls.join(",")
+    )
+}
+
+/// §40.1's exploration surface: what the platform is spending to learn.
+///
+/// The blueprint names eight surfaces a user controls and this is the one
+/// that had no route at all, so the console could not have rendered it had
+/// anybody written the page: the exploration budget moves in every DECIDE
+/// stage, through `qip_kernel::exploration::review`, and reached no reader
+/// outside the cycle line.
+///
+/// Three things are deliberately not flattened.
+///
+/// * **Held, committed and spent are three numbers.** `held` is what the
+///   reservation ledger is withholding from return-seeking capital;
+///   `committed` is capital a probe still has open against it; `spend` is
+///   what exploration has actually cost. Summing any two double-counts an
+///   open probe, and reporting one alone answers a different question from
+///   the one §40.1 asks.
+/// * **The share is the desk mandate's, or it is absent.** A ledger with no
+///   desk mandate has no exploration ceiling at all — `mandate_budget`
+///   refuses on exactly that — so reporting a default here would be this
+///   route inventing a term the capital path would refuse.
+/// * **What each open probe is buying travels with it.** `learns` is
+///   `ProbeKind::learns`, so a reader sees the question rather than an
+///   enum token they would have to look up.
+///
+/// # What this cannot yet show, and why
+///
+/// §40.1's surface says "and what it learned". That is the per-kind mean
+/// information gain the book keeps in `KindRecord`, and reaching it needs
+/// `ProbeKind`, because `ExplorationBook::record` is keyed by it and there is
+/// no iterator over the kinds. `ProbeKind` is `qip_capital`'s, `qip-capital`
+/// is a **dev**-dependency of this crate, and `api_boundary.rs` refuses a
+/// shipped edge from the application layer to any capital crate. That refusal
+/// is not worked around here. Closing the half needs one line —
+/// `pub use` on the `qip_capital::exploration` import in
+/// `qip-kernel/src/exploration.rs`, so the kernel's own surface names the
+/// enum the way it already names `ExplorationDesk`. A partial table built
+/// from the kinds that happen to have an open probe was the alternative and
+/// is worse than the absence: a kind that has settled everything would
+/// silently not appear, and a row missing from a table reads as a kind with
+/// nothing to report.
+fn exploration(platform: &Platform) -> String {
+    let desk = platform.exploration();
+    let book = desk.book();
+    let ledger = platform.user_ledger();
+    let share = match ledger.mandate(ledger.desk()) {
+        Some(mandate) => format!(
+            r#"{{"declared":true,"share":{}}}"#,
+            json::string(&mandate.exploration_share().to_string())
+        ),
+        None => unavailable(
+            "exploration_share",
+            "the ledger holds no desk mandate, so no exploration ceiling has been declared",
+        ),
+    };
+    let open: Vec<String> = book
+        .open()
+        .map(|probe| {
+            format!(
+                r#"{{"id":{},"kind":{},"learns":{},"subject":{},"maximum_loss":{},"uncertainty_at_open":{},"opened_at":{},"expires_at":{}}}"#,
+                json::string(&probe.id),
+                json::string(probe.kind.as_str()),
+                json::string(probe.kind.learns()),
+                json::string(&probe.subject),
+                json::string(&probe.maximum_loss.to_string()),
+                // f64 → JSON number, and the only field here that is not a
+                // `Decimal` rendered as a string: an uncertainty is a
+                // statistic, not money.
+                probe.uncertainty_at_open,
+                json::string(&probe.opened_at.to_rfc3339()),
+                json::string(&probe.expires_at.to_rfc3339())
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"share":{},"held":{},"committed":{},"spend":{},"open_count":{},"opened_total":{},"settled_total":{},"abandoned_total":{},"subjects_forgotten":{},"open":[{}],"learned":{}}}"#,
+        share,
+        json::string(&desk.held().to_string()),
+        json::string(&book.committed().to_string()),
+        json::string(&book.spend().to_string()),
+        book.open_count(),
+        book.opened_total(),
+        book.settled_total(),
+        book.abandoned_total(),
+        book.subjects_forgotten(),
+        open.join(","),
+        unavailable(
+            "learned",
+            "the per-kind information gain is keyed by a capital-crate enum this process may \
+             not name; see the handler's documentation",
+        )
     )
 }
 
