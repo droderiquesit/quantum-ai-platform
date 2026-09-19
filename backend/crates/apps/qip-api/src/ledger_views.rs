@@ -182,8 +182,14 @@ pub struct BalanceView {
     pub currency: String,
     pub settled: String,
     pub reserved: String,
-    /// `settled - reserved`. Expected inflows are not in it.
+    /// `settled - reserved`. Expected inflows are not in it, and nor is
+    /// `uninvestable`.
     pub available: String,
+    /// Cash that arrived past the mandate's ceilings when it was posted and
+    /// is held: received, never in `available`, never sized against (ADR
+    /// 0085). Zero on every deployed platform today, because nothing in this
+    /// build posts an arrival — see `inflow_posting` on the body.
+    pub uninvestable: String,
     /// Visible and never added to anything.
     pub expected_inflows_total: String,
     pub expected_inflows: Vec<ExpectedInflowView>,
@@ -222,6 +228,23 @@ pub struct UserView {
     pub entitlements_note: Option<String>,
 }
 
+/// What a page must say beside every expected inflow it renders: that this
+/// build never posts one.
+///
+/// A declared inflow reads as "arriving" to anyone who sees it, and blueprint
+/// §40.12's flow continues `detected → settled → available`. It does not
+/// continue here. The ledger's `post_inflow` is reachable from nothing a
+/// deployed process runs, because nothing in this tree can honestly say a
+/// user's wire landed — the only custodian statement the platform observes
+/// is the desk's own wallet — and ADR 0085 refuses to invent a statement.
+/// Rendered as a constant so the sentence and the code cannot drift apart:
+/// the day a reconciled statement posts an inflow, this constant is the
+/// thing to delete, and the test that pins it fires.
+pub const INFLOW_POSTING: &str = "no declared inflow is ever posted by this build: nothing here \
+    can say a user's wire landed, so an expected inflow stays expected until an operator \
+    cancels it, and `uninvestable` is zero on every balance until a reconciled statement \
+    exists (ADR 0085)";
+
 /// The body of `GET /ledger/users`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct LedgerUsersView {
@@ -230,6 +253,9 @@ pub struct LedgerUsersView {
     pub evaluated_as_role: &'static str,
     pub products: Vec<String>,
     pub fills_journalled: u64,
+    /// [`INFLOW_POSTING`]: why every `expected_inflows` entry below is a
+    /// claim and never becomes a balance in this build.
+    pub inflow_posting: &'static str,
     pub users: Vec<UserView>,
 }
 
@@ -257,6 +283,7 @@ pub fn ledger_users(platform: &Platform, now: Timestamp) -> Result<LedgerUsersVi
         evaluated_as_role: EVALUATED_AS_ROLE,
         products,
         fills_journalled: ledger.fills_journalled(),
+        inflow_posting: INFLOW_POSTING,
         users: user_rows(platform, now, None)?,
     })
 }
@@ -309,6 +336,7 @@ fn user_rows(
                     settled: cash.settled().to_string(),
                     reserved: cash.reserved().to_string(),
                     available: cash.available().to_string(),
+                    uninvestable: cash.uninvestable().to_string(),
                     expected_inflows_total: cash.expected_total().to_string(),
                     expected_inflows: cash
                         .expected_inflows()
@@ -592,6 +620,159 @@ pub fn decided_eligibility(
     Ok(EligibilityDecisionView {
         posture: POSTURE,
         served_at: now.to_rfc3339(),
+        user: rows.remove(0),
+    })
+}
+
+// --- POST and DELETE /ledger/users/{user}/expected-inflows -------------------
+
+/// The sentence every unknown key on an inflow declaration is refused with.
+///
+/// It answers the mistake §40.12's flow invites: the blueprint's "Add
+/// capital" runs `funding source → destination → amount → … → settled →
+/// available`, so a caller writing against it will send a `source`, a
+/// `destination` or a `settled`. None of those is read. This route records
+/// that a deposit is *expected*; it does not receive one, post one or make
+/// one available, and a key silently ignored would let a caller believe it
+/// had.
+pub const NO_ARRIVAL_FIELD: &str = "an inflow declaration reads `strategy`, `reference` and \
+    `amount`, and nothing else. It records that the user says a deposit is on its way: the \
+    amount is held beside the balance and outside `available` until the ledger posts it, \
+    which this build never does, and there is no field on this route that could receive, \
+    post or invest anything";
+
+/// What `POST /ledger/users/{user}/expected-inflows` accepts.
+///
+/// Parsed by hand for the reason the other two operator bodies are: a
+/// refusal names the *field* a person must fix. The user is not in the body
+/// — it is the path's, resolved against the mandate registry — and the
+/// instant is the server's, because a declaration dated by its caller is a
+/// caller-chosen position in the eligibility's history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InflowDeclarationBody {
+    declaration: serde_json::Value,
+}
+
+impl InflowDeclarationBody {
+    /// The keys this route reads, and the only ones.
+    const FIELDS: [&'static str; 3] = ["strategy", "reference", "amount"];
+
+    pub fn parse(body: &str) -> Result<Self, String> {
+        let value: serde_json::Value = serde_json::from_str(body).map_err(|_| {
+            "the body is not JSON; send {\"strategy\": \"<id>\", \"reference\": \"<the wire's \
+             reference>\", \"amount\": \"1000.00\"}"
+                .to_string()
+        })?;
+        let Some(object) = value.as_object() else {
+            return Err(
+                "the body must be a JSON object carrying an inflow declaration".to_string(),
+            );
+        };
+        if let Some(position) = object
+            .keys()
+            .position(|key| !Self::FIELDS.contains(&key.as_str()))
+        {
+            // Named by position and never quoted, for the reason every
+            // other operator body's refusal is: echoing what a caller sent
+            // publishes it to the response and to every log that copies it.
+            return Err(format!(
+                "the body's key at position {} is not one this route reads; {NO_ARRIVAL_FIELD}",
+                position + 1
+            ));
+        }
+        // Built from pieces this function validated, never from `object`.
+        let declaration = serde_json::json!({
+            "strategy": Self::text(object, "strategy")?,
+            "reference": Self::text(object, "reference")?,
+            "amount": Self::amount(object)?,
+        });
+        Ok(Self { declaration })
+    }
+
+    /// The declaration as the kernel's own type.
+    ///
+    /// Generic so the type is inferred from `Platform::expect_inflow`'s
+    /// signature and this crate never names it: the application layer ships
+    /// no edge to `qip-capital` and no field typed as money
+    /// (`api_boundary.rs`), and the exact-decimal rule is the type's own.
+    pub fn declaration<D: serde::de::DeserializeOwned>(&self) -> Result<D, String> {
+        serde_json::from_value(self.declaration.clone())
+            .map_err(|error| format!("the inflow declaration was refused: {error}"))
+    }
+
+    /// The amount, as text and only as text — a JSON number is refused
+    /// rather than converted, for the reason the investment request gives.
+    fn amount(object: &serde_json::Map<String, serde_json::Value>) -> Result<String, String> {
+        match object.get("amount") {
+            None => Err("the body has no `amount`; it is required".to_string()),
+            Some(serde_json::Value::String(amount)) if !amount.trim().is_empty() => {
+                Ok(amount.trim().to_string())
+            }
+            Some(serde_json::Value::String(_)) => Err("`amount` is blank".to_string()),
+            Some(_) => Err(
+                "`amount` must be a JSON string such as \"1000.00\", never a number: a number \
+                 is parsed as a float and a deposit a parser rounded is not the deposit anyone \
+                 declared"
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// A non-blank string field, or a refusal naming the field.
+    fn text(
+        object: &serde_json::Map<String, serde_json::Value>,
+        field: &str,
+    ) -> Result<String, String> {
+        let Some(value) = object.get(field) else {
+            return Err(format!("the body has no `{field}`; it is required"));
+        };
+        let Some(text) = value.as_str() else {
+            return Err(format!("`{field}` must be a JSON string"));
+        };
+        if text.trim().is_empty() {
+            return Err(format!("`{field}` is blank"));
+        }
+        Ok(text.to_string())
+    }
+}
+
+/// The answer to a declaration or a cancellation: the user's `/ledger/users`
+/// row, read back after the ledger adopted the record.
+///
+/// The row rather than an acknowledgement, for the reason the eligibility
+/// answer is the row: the acknowledgement would be the route's claim and the
+/// row is the ledger's, and an operator needs to see the declared amount
+/// beside `available` — which it did not move — and beside `inflow_posting`,
+/// which says it never will in this build.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct InflowRowView {
+    pub posture: &'static str,
+    pub served_at: String,
+    pub inflow_posting: &'static str,
+    pub user: UserView,
+}
+
+/// Build the answer to a declaration or a cancellation for `user`.
+pub fn inflow_row(
+    platform: &Platform,
+    user: &str,
+    now: Timestamp,
+) -> Result<InflowRowView, String> {
+    let mut rows = user_rows(platform, now, Some(user))?;
+    if rows.len() != 1 {
+        // Unreachable through the routes, which resolve the user against the
+        // mandate registry first. Answered rather than indexed, for the
+        // reason `decided_eligibility` gives.
+        return Err(format!(
+            "the ledger holds {} rows for `{user}` after the record was applied; it must hold \
+             exactly one",
+            rows.len()
+        ));
+    }
+    Ok(InflowRowView {
+        posture: POSTURE,
+        served_at: now.to_rfc3339(),
+        inflow_posting: INFLOW_POSTING,
         user: rows.remove(0),
     })
 }

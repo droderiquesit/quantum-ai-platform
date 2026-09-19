@@ -126,6 +126,7 @@ Field by field:
 | `evaluated_as_role` | `"viewer"` | The ledger role every entitlement was evaluated under. This surface is the viewer's; it never evaluates as an investor or the desk. |
 | `products` | `string[]` | The strategy families registered with the central factory, which are the products an entitlement is evaluated against. Empty on a fresh platform. |
 | `fills_journalled` | integer | Attributed fills the ledger has booked since assembly, whichever basis each was booked under. |
+| `inflow_posting` | string | A constant sentence: no declared inflow is ever posted by this build, so every `expected_inflows` entry is a claim and never becomes a balance here (ADR 0085). Render it beside any expected inflow shown. |
 | `users[].user_id` | string | The ledger's user id. `"desk"` is the platform's own book and is always present; the rest are the configuration's enrolments, in id order. |
 | `users[].mandate.capital` | money string | Capital under management. |
 | `users[].mandate.currency` | string | ISO 4217 code. |
@@ -139,7 +140,8 @@ Field by field:
 | `users[].balances[]` | list | One row per `(strategy, currency)` book the user holds. Empty until the user's mandate has funded a strategy or a fill has been attributed to the user. |
 | `balances[].settled` | money string | Cash the ledger has said is here: funded, plus the user's exact share of every fill since. |
 | `balances[].reserved` | money string | Settled cash held against an unresolved proposal. |
-| `balances[].available` | money string | `settled - reserved`. Expected inflows are **not** in this figure. |
+| `balances[].available` | money string | `settled - reserved`. Expected inflows are **not** in this figure, and nor is `uninvestable`. |
+| `balances[].uninvestable` | money string | Cash that arrived past the mandate's investable or contribution ceiling when it was posted, held and never sized against (ADR 0085). `"0"` on every balance in this build, because nothing posts an arrival — see `inflow_posting`. |
 | `balances[].expected_inflows_total` | money string | Sum of declared, unposted inflows. Reported so it is visible; never added to anything. |
 | `balances[].expected_inflows[]` | `{reference, amount, declared_at}` | Each declared inflow by the reference the user supplied. |
 | `balances[].entries` | integer | Attributed fills booked here. Distinguishes "none booked" from "balance happens to be zero". |
@@ -214,6 +216,69 @@ Every outcome — admitted or refused — is journalled to the platform's event
 log under the producer `kernel/investment`, with the operator who raised it and
 the stated reason. A refusal that left no trace would be indistinguishable from
 a request nobody made.
+
+## `POST /api/v1/ledger/users/{user}/expected-inflows`
+
+**Role: `operator`.** Declare, on `{user}`'s behalf, that a deposit is on its
+way: the strategy it is for, the reference the wire will carry, and the
+amount. This is blueprint §40.12's "Add capital" flow as far as ADR 0085
+lets it go — the `expected inflow` step — and no further.
+
+**It receives, posts and invests nothing.** The amount is held beside the
+balance in `expected_inflows` and is not in `available`. It stays there until
+an operator cancels it: **no declared inflow is ever posted by this build**,
+because nothing here can honestly say a user's wire landed (the only
+custodian statement the platform observes is the desk's own wallet), and the
+body's `inflow_posting` says so in as many words. A page must render that
+sentence beside any expected inflow it shows.
+
+Request body — exactly these three keys, all JSON strings. Any other key is
+`400`, named by position and never quoted back; a caller writing against the
+blueprint's flow will send `source`, `destination` or `settled`, and none of
+them is read:
+
+```json
+{
+  "strategy": "momentum-eu",
+  "reference": "SWIFT-2026-09-19-0001",
+  "amount": "25000.00"
+}
+```
+
+- `amount` is a **string**, for the reason every money figure here is.
+- The declaration is refused (`409`, the ledger's own sentence) for a user the
+  eligibility registry does not admit, by the reason named; for a reference
+  already outstanding at any of the user's books, because a wire reference
+  names one wire; and for an amount that, with what the user has contributed
+  and every declaration still outstanding, would pass the capital the mandate
+  places under management. The declaration is the last instant a refusal
+  reaches the person before the wire is sent, which is why the contribution
+  ceiling is asked here.
+- The user is the path's, resolved against the mandate registry; a user with
+  no mandate is `404`. The instant is the server's clock.
+- **Refused in fact today**, `403`, for want of an attested person: every
+  credential this API accepts is a standing bearer token, and the route dates
+  the operator by `Principal::authentication_instant`, which refuses one (ADR
+  0065, ADR 0075). The route is authorised in shape; it acts once a
+  per-person credential exists (ADR 0076).
+
+Answer, `200`: the user's `/ledger/users` row read back from the ledger after
+it adopted the declaration, with `posture`, `served_at` and `inflow_posting`
+beside it. The declaration and the operator's subject are journalled to the
+event log under the producer `kernel/ledger` **before** the ledger adopts it,
+and rebuilt from the log at the next boot, so a declaration lives in the log
+and nowhere else.
+
+## `DELETE /api/v1/ledger/users/{user}/expected-inflows/{reference}`
+
+**Role: `operator`.** Record that the declared deposit under `{reference}` is
+not coming. No body. Refused (`409`) for a reference no book of the user's
+expects, so a cancellation is always of a declaration that stood; `404` for a
+user with no mandate; `403` for want of an attested person, exactly as the
+declaration is. Nothing else on the book moves, and the reference is free to
+be declared again for the wire that does come. Answer, `200`: the same row
+the declaration answers with. Journalled under `kernel/ledger` before the
+ledger drops it, and replayed in log order after the declaration it cancels.
 
 ## `GET /api/v1/wallet`
 

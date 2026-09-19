@@ -2162,6 +2162,16 @@ const OPERATOR_CALLS: &[(Method, &str, &str)] = &[
     ),
     (
         Method::Post,
+        "/ledger/users/user-1/expected-inflows",
+        r#"{"strategy":"strat-1","reference":"wire-0001","amount":"250.00"}"#,
+    ),
+    (
+        Method::Delete,
+        "/ledger/users/user-1/expected-inflows/wire-0001",
+        "",
+    ),
+    (
+        Method::Post,
         "/registrations/a-source/approve",
         r#"{"terms":"https://example.test/terms","secret":"QIP_SOURCE_SECRET"}"#,
     ),

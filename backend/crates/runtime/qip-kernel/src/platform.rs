@@ -2785,7 +2785,54 @@ pub enum LedgerEntry {
         gate: String,
         reason: String,
     },
+    /// [`UserLedger::expect_inflow`]: an operator recorded, on the user's
+    /// behalf, that a deposit is on its way. Moves no money — the ledger
+    /// keeps it beside the balance and outside `available()` — and is the
+    /// record [`Platform::resume_ledger`] rebuilds the declaration from at
+    /// the next boot, so a declaration lives in the log and nowhere else
+    /// (ADR 0085). `declared_by` is the authenticated operator's subject,
+    /// taken from the identity and never from a body.
+    InflowExpected {
+        user: UserId,
+        strategy: StrategyId,
+        currency: Currency,
+        reference: String,
+        amount: Decimal,
+        declared_at: Timestamp,
+        declared_by: String,
+    },
+    /// [`UserLedger::cancel_inflow`]: the deposit is not coming. Replayed
+    /// in log order after the declaration it cancels, so a reference
+    /// declared, cancelled and declared again resumes declared once.
+    InflowCancelled {
+        user: UserId,
+        strategy: StrategyId,
+        reference: String,
+        amount: Decimal,
+        cancelled_at: Timestamp,
+        cancelled_by: String,
+    },
 }
+
+/// What an operator declares on a user's behalf: the strategy the deposit is
+/// for, the reference the wire will carry, and the amount.
+///
+/// Deserialises, so `qip-api` can hand the kernel one built from a body it
+/// screened without naming a money type itself; every rule the pieces keep —
+/// a strategy id, an exact decimal — is the type's own. The user is not in
+/// it: the route resolves the user against the mandate registry and passes
+/// the ledger's own id, so a body cannot declare on behalf of a stranger.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InflowDeclaration {
+    pub strategy: StrategyId,
+    pub reference: String,
+    pub amount: Decimal,
+}
+
+/// The producer every per-user ledger record in the event log carries, and
+/// the discriminator [`Platform::resume_ledger`] selects on beside the
+/// topic: the topic is shared with the attribution's own records.
+const LEDGER_ORIGIN: &str = "kernel/ledger";
 
 impl EventBody for LedgerEntry {
     /// The last link of the attribution chain: what the centre's exact
@@ -3940,6 +3987,16 @@ impl Platform {
                 now,
             )?;
         }
+        // The declared inflows the log holds, replayed into the ledger
+        // through the same gates a live declaration passes — after the
+        // committed eligibilities above, because a declaration asks the
+        // registry and a replay against an empty one would refuse every
+        // record. Before this seam a declaration was erased at the next
+        // process start: `/ledger/users` showed a deposit as expected until
+        // the first restart and never again (ADR 0085). Two fields borrowed
+        // disjointly rather than a method, so the log is read while the
+        // ledger is written.
+        Self::resume_ledger(&platform.event_log, &mut platform.user_ledger)?;
         // The committed venue registrations, through the same journaled path
         // an operator's runtime approval takes. A record the registry refuses
         // — a source with no declared requirement — stops assembly with the
@@ -4922,7 +4979,7 @@ impl Platform {
                 amount: fill.amount,
                 basis,
             };
-            if let Err(error) = self.journal_record(entry, "kernel/ledger", now) {
+            if let Err(error) = self.journal_record(entry, LEDGER_ORIGIN, now) {
                 self.capture_problems.push(format!(
                     "the booking of the attributed position {} was made and not journalled: {}",
                     position.object_id,
@@ -5041,7 +5098,7 @@ impl Platform {
                 currency,
                 amount,
             },
-            "kernel/ledger",
+            LEDGER_ORIGIN,
             now,
         )
     }
@@ -5197,7 +5254,7 @@ impl Platform {
                 gate: gate.to_string(),
                 reason: reason.clone(),
             },
-            "kernel/ledger",
+            LEDGER_ORIGIN,
             now,
         )?;
         // The gate is deliberately not a label. It is journalled, where an
@@ -5413,6 +5470,202 @@ impl Platform {
             records.push(envelope.decode::<EligibilityEntry>()?.body.record);
         }
         EligibilityRegistry::replay(records)
+    }
+
+    // --- declared inflows -------------------------------------------------------
+
+    /// Record, as an authenticated operator, that a user says a deposit is
+    /// on its way — and journal it before the ledger adopts it.
+    ///
+    /// The §40.12 "Add capital" writer, as far as ADR 0085 lets it go: a
+    /// declaration is a claim the desk can see and match, held outside
+    /// `available()` by [`qip_capital::ledger::CashBalance`] itself, so this
+    /// moves no money and can size nothing. The identity is the same type an
+    /// eligibility decision takes, held to the same freshness, because both
+    /// are a person putting a fact about a user's capital on the record.
+    /// The ledger's own refusals stand — no mandate, ineligible by the reason
+    /// named, a reused reference, an amount the mandate could never take in
+    /// — and a refused declaration writes nothing: it is not a decision the
+    /// platform acted on, and the log holds what stood.
+    ///
+    /// Checked on a scratch copy first, then journalled, then applied, in
+    /// the order [`Platform::apply_eligibility`] keeps: the log has the
+    /// record before the state moves, and never a record of a state that
+    /// did not. What is journalled is what [`Platform::resume_ledger`]
+    /// replays, so the declaration survives a restart.
+    pub fn expect_inflow(
+        &mut self,
+        user: &UserId,
+        declaration: InflowDeclaration,
+        operator: &OperatorIdentity,
+        now: Timestamp,
+    ) -> Result<()> {
+        if !operator.is_fresh(now, ELIGIBILITY_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to declare an \
+                 inflow",
+                operator.subject(),
+                ELIGIBILITY_CREDENTIAL_AGE
+            )));
+        }
+        let Some(mandate) = self.user_ledger.mandate(user) else {
+            return Err(Error::denied(format!(
+                "{user} holds no mandate; enrol one in the configuration before declaring an \
+                 inflow"
+            )));
+        };
+        let currency = mandate.currency();
+        let InflowDeclaration {
+            strategy,
+            reference,
+            amount,
+        } = declaration;
+        let mut scratch = self.user_ledger.clone();
+        scratch.expect_inflow(user, &strategy, reference.clone(), amount, now)?;
+        self.journal_record(
+            LedgerEntry::InflowExpected {
+                user: user.clone(),
+                strategy: strategy.clone(),
+                currency,
+                reference: reference.clone(),
+                amount,
+                declared_at: now,
+                declared_by: operator.subject().to_string(),
+            },
+            LEDGER_ORIGIN,
+            now,
+        )?;
+        self.user_ledger
+            .expect_inflow(user, &strategy, reference, amount, now)
+    }
+
+    /// Record, as an authenticated operator, that a declared deposit is not
+    /// coming — and journal it before the ledger drops it.
+    ///
+    /// The other half of the writer, and the one the register found missing
+    /// on 2026-09-19: without it a declaration that never arrived could never
+    /// be cleared and its reference never re-used. Same identity, same
+    /// freshness, same scratch-journal-apply order as
+    /// [`Platform::expect_inflow`]. Refused for a reference no book of the
+    /// user's expects, so a cancellation is always of something that stood.
+    pub fn cancel_inflow(
+        &mut self,
+        user: &UserId,
+        reference: &str,
+        operator: &OperatorIdentity,
+        now: Timestamp,
+    ) -> Result<()> {
+        if !operator.is_fresh(now, ELIGIBILITY_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to cancel an \
+                 expected inflow",
+                operator.subject(),
+                ELIGIBILITY_CREDENTIAL_AGE
+            )));
+        }
+        let mut scratch = self.user_ledger.clone();
+        let cancelled = scratch.cancel_inflow(user, reference, now)?;
+        self.journal_record(
+            LedgerEntry::InflowCancelled {
+                user: user.clone(),
+                strategy: cancelled.strategy,
+                reference: reference.to_string(),
+                amount: cancelled.amount,
+                cancelled_at: now,
+                cancelled_by: operator.subject().to_string(),
+            },
+            LEDGER_ORIGIN,
+            now,
+        )?;
+        self.user_ledger.cancel_inflow(user, reference, now)?;
+        Ok(())
+    }
+
+    /// Replay the log's declared inflows into the ledger, in log order,
+    /// through the same gates a live declaration passes — called after the
+    /// enrolments and the committed eligibilities are in, because the gates
+    /// ask both and a replay against an empty registry would refuse every
+    /// record it was written to keep.
+    ///
+    /// The fourth resume seam beside the fabric journal, the withdrawn venue
+    /// set and the open recalibration proposals, and the one the per-user
+    /// ledger lacked: `UserLedger` is built from the configuration's
+    /// enrolments at every boot, so a declaration journalled by
+    /// [`Platform::expect_inflow`] was on the record and in no book after a
+    /// restart. Selected by the ledger topic *and* producer, because the
+    /// topic is shared with the attribution's records.
+    ///
+    /// **What is deliberately not replayed, and why it is stated here.**
+    /// `Funded`, `Booked` and `FundingRefused` are passed over. A funding
+    /// re-run through `fund` would be re-decided against an eligibility
+    /// registry and a product catalogue that this boot builds from the
+    /// configuration alone — neither is resumed from its own log records —
+    /// so replaying it is not a check of the record but a fresh decision
+    /// under different evidence, and the books it would rebuild are read by
+    /// the attribution's pro-rata split, which is a different lane's
+    /// question (§43.2's lifetime finding). A declaration is safe to resume
+    /// where a funding is not: it is never in `available()`, so a resumed
+    /// declaration can loosen nothing. The cost of that asymmetry is real
+    /// and named in ADR 0085: a book resumes with its declarations and
+    /// without its fundings, which is what it did before, minus the
+    /// declarations.
+    ///
+    /// Refused — assembly stops — when a record the log holds is one the
+    /// ledger this boot built will not take: a user the configuration no
+    /// longer enrols, an eligibility this boot's configuration does not
+    /// grant, a mandate that has shrunk under the declaration. Dropping the
+    /// record silently would be the erasure this seam exists to end, and
+    /// resuming it past the gate would be a document minting ledger state.
+    /// The refusal names the record's sequence and what to do.
+    fn resume_ledger(log: &EventLog, ledger: &mut UserLedger) -> Result<usize> {
+        let mut resumed = 0usize;
+        for record in log.records() {
+            if record.event.topic != LedgerEntry::TOPIC
+                || record.event.lineage.producer != LEDGER_ORIGIN
+            {
+                continue;
+            }
+            let entry = StreamEnvelope::from_frame(&record.event)?
+                .decode::<LedgerEntry>()?
+                .body;
+            let outcome = match entry {
+                LedgerEntry::InflowExpected {
+                    user,
+                    strategy,
+                    reference,
+                    amount,
+                    declared_at,
+                    ..
+                } => ledger
+                    .expect_inflow(&user, &strategy, reference.clone(), amount, declared_at)
+                    .map_err(|why| (user, reference, "declares", why)),
+                LedgerEntry::InflowCancelled {
+                    user,
+                    reference,
+                    cancelled_at,
+                    ..
+                } => ledger
+                    .cancel_inflow(&user, &reference, cancelled_at)
+                    .map(|_| ())
+                    .map_err(|why| (user, reference, "cancels", why)),
+                LedgerEntry::Funded { .. }
+                | LedgerEntry::Booked { .. }
+                | LedgerEntry::FundingRefused { .. } => continue,
+            };
+            if let Err((user, reference, verb, why)) = outcome {
+                return Err(Error::invalid(format!(
+                    "the event log's record {} {verb} an inflow under {reference} for {user} \
+                     and the ledger this boot assembled refuses it ({}); the per-user ledger \
+                     cannot be resumed from this log under this configuration — restore the \
+                     enrolment and eligibility the declaration was admitted under, or archive \
+                     the log and start a new one",
+                    record.sequence,
+                    why.message()
+                )));
+            }
+            resumed += 1;
+        }
+        Ok(resumed)
     }
 
     // --- investment requests ----------------------------------------------------
