@@ -62,6 +62,30 @@
 //! for a model that is extrapolating, and extrapolation is where a fitted
 //! function's error stops being bounded by anything it was measured on.
 //!
+//! # Which model class, in which regime
+//!
+//! Blueprint §5.4's meta-learning domain asks "which model class works in
+//! which regime". Until 2026-09-19 every round fitted one class — ridge
+//! regression — so the question had one possible answer and nothing to
+//! learn. A round now fits **two** teachers on the same dataset and the same
+//! holdout tail: the linear baseline, always (ADR 0006's classical baseline
+//! and ADR 0083's "a learned model against its linear baseline"), and the
+//! boosted-stumps challenger. Each class's out-of-sample verdict is scored
+//! on a [`Scoreboard`] keyed by class and by the regime the platform itself
+//! classified (`Platform::regime_context`) — the same board type §15.1's
+//! claim scoreboard and the succession desk use, so a fourth notion of
+//! "score by regime" is not invented here.
+//!
+//! The board is read *before* this round's outcomes are recorded, and it
+//! decides one thing: which of the two teachers is registered and distilled.
+//! The rule is fail-closed in the direction of the baseline. The challenger
+//! is registered only where its precedent in this regime is *established*
+//! (the board's own evidence band, not a count chosen here) and its shrunk
+//! score is strictly above the baseline's in the same regime. No precedent,
+//! an unproven one, or a tie all register the baseline — the class a person
+//! can read the coefficients of. The board is bounded by construction: two
+//! classes by the product of two regime enums.
+//!
 //! # What it does not do
 //!
 //! It does not promote. A registered card enters at development stage and
@@ -69,11 +93,17 @@
 //! This module only ensures that when that decision is taken, the evidence on
 //! the card is true and its drift score is a measurement rather than a zero
 //! nobody ever wrote.
+//!
+//! It does not transfer across venues or asset classes. The board is keyed by
+//! regime and by nothing else; a precedent earned on one instrument is read
+//! for the next only because the regime key is the platform's, not the
+//! instrument's, and that is the whole of what this module claims.
 
 use qip_ai::evaluation::DriftReport;
 use qip_ai::registry::{ModelCard, ModelRegistry};
 use qip_core::error::{Error, Result};
 use qip_core::{ObjectId, Timestamp};
+use qip_evolution::scoring::{Outcome, Scoreboard};
 use qip_kernel::central::models::{ModelRegistration, register_fit};
 use qip_market::bar::Bar;
 use qip_quant::signal::Horizon;
@@ -115,6 +145,108 @@ const LOOKBACK: usize = 10;
 /// card unattributable, and an unattributable card is one this desk declines to
 /// measure.
 const DATASET_PREFIX: &str = "bars-";
+
+/// The class every round fits and registers unless the board says otherwise.
+///
+/// Ridge regression: the class whose coefficients a person can read, and the
+/// classical baseline ADR 0006 wants computed every time a learned model is.
+const BASELINE_CLASS: ModelFamily = ModelFamily::Linear { ridge: 1e-3 };
+
+/// The class every round fits beside the baseline and registers only on an
+/// established precedent in the current regime.
+const CHALLENGER_CLASS: ModelFamily = ModelFamily::boosted();
+
+/// Why a round registered the class it did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClassReason {
+    /// The board holds no *established* score for the challenger in this
+    /// regime — nothing seen, or too little to act on. The baseline is
+    /// registered, which is where a desk with no evidence should be.
+    NoEstablishedPrecedent,
+    /// The challenger's precedent is established and its score is not above
+    /// the baseline's in the same regime. A tie keeps the baseline: the
+    /// readable class wins unless the other one has actually done better.
+    PrecedentBelowBaseline,
+    /// The challenger's precedent is established and above the baseline's.
+    PrecedentPrefersChallenger,
+}
+
+impl ClassReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NoEstablishedPrecedent => "no established precedent",
+            Self::PrecedentBelowBaseline => "precedent not above the baseline",
+            Self::PrecedentPrefersChallenger => "precedent prefers the challenger",
+        }
+    }
+}
+
+/// Which teacher class a round registered, and what the board was told.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClassChoice {
+    /// The regime key the precedent was read under —
+    /// `Platform::regime_context`'s `market/volatility` pair.
+    pub regime: String,
+    /// The family key of the teacher that was registered and distilled.
+    pub registered: &'static str,
+    pub reason: ClassReason,
+    /// Whether the baseline cleared the skill bar this round: the outcome
+    /// the board was given for it.
+    pub baseline_skilled: bool,
+    /// The same for the challenger. `None` where the challenger could not be
+    /// fitted at all; a fit the trainer refused is not an observation of
+    /// failure and is not scored as one.
+    pub challenger_skilled: Option<bool>,
+}
+
+impl ClassChoice {
+    pub fn describe(&self) -> String {
+        let challenger = match self.challenger_skilled {
+            Some(true) => "cleared".to_string(),
+            Some(false) => "missed".to_string(),
+            None => "was not fitted".to_string(),
+        };
+        format!(
+            "registered {} in {} ({}); baseline {} the bar, challenger {}",
+            self.registered,
+            self.regime,
+            self.reason.as_str(),
+            if self.baseline_skilled {
+                "cleared"
+            } else {
+                "missed"
+            },
+            challenger
+        )
+    }
+}
+
+/// Which class to register in `regime`, read from the board before this
+/// round's own outcomes join it.
+///
+/// Fail-closed toward the baseline three ways: no score for the challenger,
+/// a score below the board's established band, or a score not strictly
+/// above the baseline's all return the baseline. The baseline's own score is
+/// required rather than defaulted to the prior, because a comparison with
+/// only one side is not a comparison — and since both classes are fitted on
+/// every round, a challenger with a score and a baseline without one is a
+/// state production cannot reach.
+fn choose_class(board: &Scoreboard, regime: &str) -> (ModelFamily, ClassReason) {
+    let Some(challenger) = board.score(CHALLENGER_CLASS.as_str(), regime) else {
+        return (BASELINE_CLASS, ClassReason::NoEstablishedPrecedent);
+    };
+    if !challenger.is_confident() {
+        return (BASELINE_CLASS, ClassReason::NoEstablishedPrecedent);
+    }
+    let Some(baseline) = board.score(BASELINE_CLASS.as_str(), regime) else {
+        return (BASELINE_CLASS, ClassReason::NoEstablishedPrecedent);
+    };
+    if challenger.score() > baseline.score() {
+        (CHALLENGER_CLASS, ClassReason::PrecedentPrefersChallenger)
+    } else {
+        (BASELINE_CLASS, ClassReason::PrecedentBelowBaseline)
+    }
+}
 
 /// The dataset name a round on `subject` fits under.
 fn dataset_name(subject: &ObjectId) -> String {
@@ -246,6 +378,10 @@ pub struct LearningRound {
     /// where an operator reads it, rather than the error that stopped the
     /// node loop until 2026-09-12.
     pub refused_by_door: Option<String>,
+    /// Which teacher class this round registered and why — the board's
+    /// answer to "which model class works in this regime". `None` on a round
+    /// that registered nothing.
+    pub class_choice: Option<ClassChoice>,
 }
 
 impl LearningRound {
@@ -262,6 +398,7 @@ impl LearningRound {
             distillation_refusal: None,
             campaign: None,
             refused_by_door: Some(reason.into()),
+            class_choice: None,
         }
     }
 
@@ -288,6 +425,10 @@ impl LearningRound {
         let registered = match &self.registration {
             Some(registration) => registration.summarise(),
             None => "no fit this round".to_string(),
+        };
+        let class = match &self.class_choice {
+            Some(choice) => format!("; {}", choice.describe()),
+            None => String::new(),
         };
         let distilled = match &self.distillation {
             Some(distillation) => {
@@ -325,7 +466,7 @@ impl LearningRound {
             )
         };
         format!(
-            "learning: {registered}; {} model(s) measured for drift, {} \
+            "learning: {registered}{class}; {} model(s) measured for drift, {} \
              ineligible{unattributed}{degraded}{distilled}{campaign}",
             self.drift.len(),
             self.ineligible.len()
@@ -426,6 +567,12 @@ pub struct LearningDesk {
     /// the join unsound in exactly the way the per-model derivation it was
     /// built to avoid would have.
     stream_reference: BTreeMap<String, FeatureEstimators>,
+    /// How often each teacher class cleared the skill bar, by regime — the
+    /// §5.4 meta-learning board for model classes. Subjects are the two
+    /// family keys, contexts are `Platform::regime_context` pairs, so it is
+    /// bounded by construction and does not grow with uptime. Read by
+    /// [`choose_class`] before a round's own fits are scored onto it.
+    classes: Scoreboard,
     /// Fits attempted, which is what a model's version is drawn from.
     fits: u64,
     seed: u64,
@@ -450,10 +597,28 @@ impl LearningDesk {
             registry: ModelRegistry::new(),
             reference: BTreeMap::new(),
             stream_reference: BTreeMap::new(),
+            classes: Scoreboard::models(),
             fits: 0,
             seed,
             stats: LearningStats::default(),
         }
+    }
+
+    /// The model-class board: how often each teacher class cleared the skill
+    /// bar, by regime. For an operator reading why a round registered the
+    /// class it did; nothing outside this desk writes to it.
+    pub const fn class_board(&self) -> &Scoreboard {
+        &self.classes
+    }
+
+    /// Seed the class board with an outcome a real fit would have produced.
+    /// Test-only: the one production writer is a round's own fit, and a
+    /// public writer here would let anything forge the precedent the
+    /// registration decision reads.
+    #[cfg(test)]
+    fn observe_class(&mut self, family: &ModelFamily, regime: &str, skilled: bool) {
+        self.classes
+            .observe(Outcome::binary(family.as_str(), regime, skilled));
     }
 
     pub const fn stats(&self) -> LearningStats {
@@ -485,17 +650,23 @@ impl LearningDesk {
     /// against the window that has arrived since it was fitted.
     ///
     /// `None` means "not this cycle", which is the normal case.
+    ///
+    /// `regime` is the key the platform classified for this subject
+    /// (`Platform::regime_context`), read by the caller and handed in rather
+    /// than recomputed here: a desk that classified its own regime would be
+    /// a second answer to a question the platform has already answered.
     pub fn maybe_learn(
         &mut self,
         subject: &ObjectId,
         bars: &[Bar],
+        regime: &str,
         cycle: u64,
         now: Timestamp,
     ) -> Result<Option<LearningRound>> {
         if !self.due(cycle) || bars.len() < self.config.minimum_bars {
             return Ok(None);
         }
-        Ok(Some(self.learn(subject, bars, now)?))
+        Ok(Some(self.learn(subject, bars, regime, now)?))
     }
 
     /// Whether the cadence says a round runs this cycle. Split from
@@ -522,6 +693,7 @@ impl LearningDesk {
         &mut self,
         subject: &ObjectId,
         bars: &[Bar],
+        regime: &str,
         now: Timestamp,
     ) -> Result<LearningRound> {
         if bars.len() < self.config.minimum_bars {
@@ -532,10 +704,23 @@ impl LearningDesk {
                 self.config.minimum_bars
             )));
         }
-        self.learn(subject, bars, now)
+        self.learn(subject, bars, regime, now)
     }
 
-    fn learn(&mut self, subject: &ObjectId, bars: &[Bar], now: Timestamp) -> Result<LearningRound> {
+    fn learn(
+        &mut self,
+        subject: &ObjectId,
+        bars: &[Bar],
+        regime: &str,
+        now: Timestamp,
+    ) -> Result<LearningRound> {
+        if regime.trim().is_empty() {
+            return Err(Error::invalid(
+                "a learning round needs the regime the platform classified for its subject; \
+                 an empty key would score every class under one context and the board would \
+                 learn which class works in no regime at all — pass `Platform::regime_context`",
+            ));
+        }
         self.stats.rounds += 1;
         let columns = feature_columns(bars);
         // Every comparison below is scoped to this instrument. A model fitted
@@ -628,9 +813,9 @@ impl LearningDesk {
             });
         }
 
-        let (registration, distillation, distillation_refusal) =
-            match self.fit(subject, bars, &columns, now) {
-                Ok((registration, distillation, distillation_refusal)) => {
+        let (registration, distillation, distillation_refusal, class_choice) =
+            match self.fit(subject, bars, &columns, regime, now) {
+                Ok((registration, distillation, distillation_refusal, choice)) => {
                     if registration.passed {
                         self.stats.registered += 1;
                     } else {
@@ -654,7 +839,12 @@ impl LearningDesk {
                     // reference distribution with another's.
                     self.stream_reference
                         .insert(on_subject.to_string(), current);
-                    (Some(registration), distillation, distillation_refusal)
+                    (
+                        Some(registration),
+                        distillation,
+                        distillation_refusal,
+                        Some(choice),
+                    )
                 }
                 // A round that could not fit is not a round that found
                 // nothing: too little history, a degenerate target, a
@@ -673,6 +863,7 @@ impl LearningDesk {
                         distillation_refusal: None,
                         campaign: None,
                         refused_by_door: None,
+                        class_choice: None,
                     });
                 }
             };
@@ -695,6 +886,7 @@ impl LearningDesk {
             distillation_refusal,
             campaign: None,
             refused_by_door: None,
+            class_choice,
         })
     }
 
@@ -749,8 +941,14 @@ impl LearningDesk {
         subject: &ObjectId,
         bars: &[Bar],
         columns: &BTreeMap<String, Vec<f64>>,
+        regime: &str,
         now: Timestamp,
-    ) -> Result<(ModelRegistration, Option<Distillation>, Option<String>)> {
+    ) -> Result<(
+        ModelRegistration,
+        Option<Distillation>,
+        Option<String>,
+        ClassChoice,
+    )> {
         let targets = next_bar_returns(bars);
         let times: Vec<Timestamp> = bars
             .iter()
@@ -791,22 +989,71 @@ impl LearningDesk {
         // measured drift is erased by the arrival of its successor is a control
         // that resets itself exactly when it matters.
         self.fits += 1;
-        let spec = TrainingSpec::new(
-            format!("bar-teacher-{}", subject.as_str()),
-            format!("0.{}.0", self.fits),
-            "central-research",
-            dataset.name(),
-            ModelFamily::Linear { ridge: 1e-3 },
-        )
-        .with_purpose(format!(
-            "predicts the next bar's return on {} from its own observed bars",
-            subject.as_str()
-        ))
-        .with_horizon(Horizon::Intraday)
-        .with_holdout(self.config.holdout_fraction)
-        .with_seed(self.seed);
+        // The precedent is read before this round's fits are scored onto the
+        // board, so a round cannot vote for itself: the class registered now
+        // is decided by what earlier rounds in this regime showed.
+        let (chosen, reason) = choose_class(&self.classes, regime);
+        // The class is in the model's name, so the registry reference a
+        // strategy candidate carries says which function it is. Nothing
+        // else on the card records the class: `register_fit` copies the
+        // features, the dataset and the holdout figures, and a card that
+        // could be a linear fit or a sixty-stump ensemble without saying
+        // which is a card a reviewer cannot read.
+        let spec_for = |family: ModelFamily| {
+            TrainingSpec::new(
+                format!("bar-{}-{}", family.as_str(), subject.as_str()),
+                format!("0.{}.0", self.fits),
+                "central-research",
+                dataset.name(),
+                family,
+            )
+            .with_purpose(format!(
+                "predicts the next bar's return on {} from its own observed bars",
+                subject.as_str()
+            ))
+            .with_horizon(Horizon::Intraday)
+            .with_holdout(self.config.holdout_fraction)
+            .with_seed(self.seed)
+        };
+        let spec = spec_for(chosen);
 
-        let teacher = LocalTrainer::new().fit(&spec, &dataset, now)?;
+        // Both classes are fitted on the same dataset and scored on the same
+        // holdout tail, whichever one is registered. The baseline's fit is
+        // the round's — a baseline the trainer refuses is a round that could
+        // not fit. The challenger's is not: a refused challenger is reported
+        // on the choice and given no outcome on the board, because a fit
+        // that never happened is not evidence that the class fails here.
+        let trainer = LocalTrainer::new();
+        let baseline = trainer.fit(&spec_for(BASELINE_CLASS), &dataset, now)?;
+        let challenger = trainer.fit(&spec_for(CHALLENGER_CLASS), &dataset, now);
+        let baseline_skilled = baseline
+            .fit()
+            .is_some_and(|fit| fit.claims_skill(&self.policy));
+        let challenger_skilled = challenger.as_ref().ok().map(|teacher| {
+            teacher
+                .fit()
+                .is_some_and(|fit| fit.claims_skill(&self.policy))
+        });
+        self.classes.observe(Outcome::binary(
+            BASELINE_CLASS.as_str(),
+            regime,
+            baseline_skilled,
+        ));
+        if let Some(skilled) = challenger_skilled {
+            self.classes
+                .observe(Outcome::binary(CHALLENGER_CLASS.as_str(), regime, skilled));
+        }
+        let teacher = match chosen {
+            ModelFamily::Linear { .. } => baseline,
+            ModelFamily::BoostedStumps { .. } => challenger?,
+        };
+        let choice = ClassChoice {
+            regime: regime.to_string(),
+            registered: chosen.as_str(),
+            reason,
+            baseline_skilled,
+            challenger_skilled,
+        };
         let registration = register_fit(
             &mut self.registry,
             &teacher,
@@ -833,7 +1080,7 @@ impl LearningDesk {
                 Err(error) => (None, Some(error.message().to_string())),
             };
 
-        Ok((registration, distillation, distillation_refusal))
+        Ok((registration, distillation, distillation_refusal, choice))
     }
 }
 
@@ -963,6 +1210,10 @@ mod tests {
         Timestamp::from_secs(1_760_000_000)
     }
 
+    /// The regime key a production round hands in from
+    /// `Platform::regime_context`; the pair shape is the platform's.
+    const REGIME: &str = "trending/calm";
+
     fn learning_desk() -> LearningDesk {
         LearningDesk::new(
             LearningConfig {
@@ -987,7 +1238,7 @@ mod tests {
 
         let bars = super::tests_support::learnable(400);
         let round = desk
-            .maybe_learn(&subject(), &bars, 1, at())?
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
             .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
 
         let registration = round.registration.ok_or_else(|| {
@@ -1044,7 +1295,7 @@ mod tests {
         let mut fresh = learning_desk();
         let noise = super::tests_support::unlearnable(400);
         let refused = fresh
-            .maybe_learn(&subject(), &noise, 1, at())?
+            .maybe_learn(&subject(), &noise, REGIME, 1, at())?
             .and_then(|round| round.registration)
             .ok_or_else(|| Error::not_found("a registration for the noise fit"))?;
         assert!(
@@ -1074,7 +1325,7 @@ mod tests {
         let mut desk = learning_desk();
         let calm = super::tests_support::learnable(400);
         let round = desk
-            .maybe_learn(&subject(), &calm, 1, at())?
+            .maybe_learn(&subject(), &calm, REGIME, 1, at())?
             .ok_or_else(|| Error::not_found("the first round"))?;
         let reference = round
             .registration
@@ -1103,7 +1354,7 @@ mod tests {
         // in violent alternating jumps instead of a steady drift.
         let shocked = super::tests_support::shocked(400);
         let second = desk
-            .maybe_learn(&subject(), &shocked, 2, at())?
+            .maybe_learn(&subject(), &shocked, REGIME, 2, at())?
             .ok_or_else(|| Error::not_found("the second round"))?;
 
         let observation = second
@@ -1210,7 +1461,7 @@ mod tests {
         let calm = super::tests_support::learnable(400);
 
         let first = desk
-            .maybe_learn(&subject(), &calm, 1, at())?
+            .maybe_learn(&subject(), &calm, REGIME, 1, at())?
             .ok_or_else(|| Error::not_found("the first round"))?;
         // Premise: a desk with no stream reference measures nothing, and
         // reports that by an empty map rather than by a zero index. Without
@@ -1225,7 +1476,7 @@ mod tests {
         // A second fit on the same calm series, so the registry holds two
         // cards reading the same five features before anything moves.
         let second = desk
-            .maybe_learn(&subject(), &calm, 2, at())?
+            .maybe_learn(&subject(), &calm, REGIME, 2, at())?
             .ok_or_else(|| Error::not_found("the second round"))?;
         drop(second);
         assert!(
@@ -1238,7 +1489,7 @@ mod tests {
         // Now a regime none of them was fitted on.
         let shocked = super::tests_support::shocked(400);
         let third = desk
-            .maybe_learn(&subject(), &shocked, 3, at())?
+            .maybe_learn(&subject(), &shocked, REGIME, 3, at())?
             .ok_or_else(|| Error::not_found("the third round"))?;
 
         // Premise: something actually drifted past the estimators' own
@@ -1313,7 +1564,7 @@ mod tests {
         // join is the only thing in this desk that can write it.
         let mut desk = learning_desk();
         let calm = super::tests_support::learnable(400);
-        desk.maybe_learn(&subject(), &calm, 1, at())?
+        desk.maybe_learn(&subject(), &calm, REGIME, 1, at())?
             .ok_or_else(|| Error::not_found("the first round"))?;
 
         // A card from somewhere else entirely: same feature vocabulary, same
@@ -1373,7 +1624,7 @@ mod tests {
 
         let shocked = super::tests_support::shocked(400);
         let round = desk
-            .maybe_learn(&subject(), &shocked, 2, at())?
+            .maybe_learn(&subject(), &shocked, REGIME, 2, at())?
             .ok_or_else(|| Error::not_found("the second round"))?;
 
         assert!(
@@ -1402,7 +1653,7 @@ mod tests {
         let mut desk = learning_desk();
         let calm = super::tests_support::learnable(400);
         let reference = desk
-            .maybe_learn(&subject(), &calm, 1, at())?
+            .maybe_learn(&subject(), &calm, REGIME, 1, at())?
             .and_then(|round| round.registration)
             .ok_or_else(|| Error::not_found("a registration"))?
             .reference;
@@ -1427,7 +1678,7 @@ mod tests {
             })?;
 
         let shocked = super::tests_support::shocked(400);
-        desk.maybe_learn(&subject(), &shocked, 2, at())?;
+        desk.maybe_learn(&subject(), &shocked, REGIME, 2, at())?;
 
         let refusal = desk
             .registry()
@@ -1459,6 +1710,186 @@ mod tests {
         assert_eq!(desk.stats().rounds, 0);
     }
 
+    /// A second regime key, for the property that a precedent earned in one
+    /// regime decides nothing in another.
+    const OTHER_REGIME: &str = "quiet/calm";
+
+    #[test]
+    fn a_round_fits_the_baseline_and_the_challenger_and_scores_each_class_in_the_regime()
+    -> Result<()> {
+        // §5.4's meta-learning domain — "which model class works in which
+        // regime" — had one class to choose from, so the board it needed
+        // could never hold a comparison. A round now fits both and tells the
+        // board about both, under the regime the platform classified.
+        let mut desk = learning_desk();
+        // The premise: nothing has been scored before the round.
+        assert!(desk.class_board().is_empty());
+
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
+        let choice = round
+            .class_choice
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a class choice on a round that registered"))?;
+
+        let baseline = desk
+            .class_board()
+            .score(BASELINE_CLASS.as_str(), REGIME)
+            .ok_or_else(|| Error::not_found("the baseline's score in the regime"))?;
+        let challenger = desk
+            .class_board()
+            .score(CHALLENGER_CLASS.as_str(), REGIME)
+            .ok_or_else(|| Error::not_found("the challenger's score in the regime"))?;
+        assert_eq!(baseline.observations(), 1);
+        assert_eq!(challenger.observations(), 1);
+        assert_eq!(
+            desk.class_board()
+                .score(BASELINE_CLASS.as_str(), OTHER_REGIME),
+            None,
+            "a round in one regime scored a class in another"
+        );
+        // What the board was told is what the choice reports, and the
+        // challenger was actually fitted rather than refused.
+        assert!(
+            choice.challenger_skilled.is_some(),
+            "the challenger was not fitted on a learnable series"
+        );
+        let told = if choice.baseline_skilled { 1.0 } else { 0.0 };
+        assert!(
+            (baseline.observed() - told).abs() < 1e-12,
+            "the board was told {} and the choice reports {told}",
+            baseline.observed()
+        );
+        // With no precedent the readable class is registered.
+        assert_eq!(choice.registered, BASELINE_CLASS.as_str());
+        assert_eq!(choice.reason, ClassReason::NoEstablishedPrecedent);
+        assert_eq!(choice.regime, REGIME);
+        assert!(
+            round.describe().contains("no established precedent"),
+            "the round line does not say why the class was chosen: {}",
+            round.describe()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_established_precedent_for_the_challenger_registers_it_in_that_regime_and_nowhere_else()
+    -> Result<()> {
+        // The control this board exists to drive: the class that is
+        // registered and distilled. Without this, the board would be a
+        // record nothing reads — the `MaxExpectedShortfall` shape.
+        let mut desk = learning_desk();
+        for _ in 0..60 {
+            desk.observe_class(&CHALLENGER_CLASS, REGIME, true);
+            desk.observe_class(&BASELINE_CLASS, REGIME, false);
+        }
+        // The premise: the precedent is established by the board's own band
+        // and prefers the challenger, in this regime only.
+        let precedent = desk
+            .class_board()
+            .score(CHALLENGER_CLASS.as_str(), REGIME)
+            .ok_or_else(|| Error::not_found("the seeded precedent"))?;
+        assert!(
+            precedent.is_confident(),
+            "sixty observations are not established"
+        );
+        assert_eq!(
+            desk.class_board()
+                .score(CHALLENGER_CLASS.as_str(), OTHER_REGIME),
+            None
+        );
+
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
+        let choice = round
+            .class_choice
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a class choice on a round that registered"))?;
+        assert_eq!(choice.reason, ClassReason::PrecedentPrefersChallenger);
+        assert_eq!(choice.registered, CHALLENGER_CLASS.as_str());
+        // The card in the registry is the challenger's, not a relabelled
+        // baseline: the class is in the name the card was registered under,
+        // because nothing else on a card records it.
+        let reference = &round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference;
+        let card = desk
+            .registry()
+            .get(reference)
+            .ok_or_else(|| Error::not_found("the registered card"))?;
+        assert_eq!(
+            card.name,
+            format!("bar-{}-{}", CHALLENGER_CLASS.as_str(), subject().as_str())
+        );
+
+        // The same desk, a regime with no precedent: the baseline again.
+        let round = desk
+            .maybe_learn(&subject(), &bars, OTHER_REGIME, 2, at())?
+            .ok_or_else(|| Error::not_found("a second round"))?;
+        let choice = round
+            .class_choice
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a class choice on the second round"))?;
+        assert_eq!(choice.reason, ClassReason::NoEstablishedPrecedent);
+        assert_eq!(choice.registered, BASELINE_CLASS.as_str());
+        Ok(())
+    }
+
+    #[test]
+    fn an_established_precedent_that_does_not_beat_the_baseline_keeps_the_baseline() -> Result<()> {
+        // A tie is not a preference. The readable class is registered unless
+        // the other one has actually done better in this regime; a board
+        // that flipped on equal evidence would be choosing on noise.
+        let mut desk = learning_desk();
+        for _ in 0..60 {
+            desk.observe_class(&CHALLENGER_CLASS, REGIME, true);
+            desk.observe_class(&BASELINE_CLASS, REGIME, true);
+        }
+        let challenger = desk
+            .class_board()
+            .score(CHALLENGER_CLASS.as_str(), REGIME)
+            .ok_or_else(|| Error::not_found("the seeded challenger precedent"))?;
+        let baseline = desk
+            .class_board()
+            .score(BASELINE_CLASS.as_str(), REGIME)
+            .ok_or_else(|| Error::not_found("the seeded baseline precedent"))?;
+        // The premise: established, and equal.
+        assert!(challenger.is_confident());
+        assert!((challenger.score() - baseline.score()).abs() < 1e-12);
+
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
+        let choice = round
+            .class_choice
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a class choice on a round that registered"))?;
+        assert_eq!(choice.reason, ClassReason::PrecedentBelowBaseline);
+        assert_eq!(choice.registered, BASELINE_CLASS.as_str());
+        Ok(())
+    }
+
+    #[test]
+    fn a_round_with_no_regime_key_is_refused_rather_than_scored_under_one_context() {
+        // An empty key would fold every regime into one cell and the board
+        // would learn which class works in no regime at all.
+        let mut desk = learning_desk();
+        let bars = super::tests_support::learnable(400);
+        let refused = desk.learn_window(&subject(), &bars, "  ", at());
+        assert!(refused.is_err(), "an empty regime key was accepted");
+        assert!(
+            desk.class_board().is_empty(),
+            "a refused round still scored"
+        );
+    }
+
     #[test]
     fn a_round_that_registers_a_teacher_also_carries_a_student_distilled_on_its_holdout_tail()
     -> Result<()> {
@@ -1472,7 +1903,7 @@ mod tests {
         let mut desk = learning_desk();
         let bars = super::tests_support::learnable(400);
         let round = desk
-            .maybe_learn(&subject(), &bars, 1, at())?
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
             .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
 
         let registration = round
@@ -1551,7 +1982,7 @@ mod tests {
         );
         let bars = super::tests_support::learnable(64);
         let round = desk
-            .maybe_learn(&subject(), &bars, 1, at())?
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
             .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
 
         // The premise: a teacher was still registered this round, so the
@@ -1593,12 +2024,12 @@ mod tests {
         let mut desk = learning_desk();
         let calm = super::tests_support::learnable(400);
         let first = desk
-            .maybe_learn(&subject(), &calm, 1, at())?
+            .maybe_learn(&subject(), &calm, REGIME, 1, at())?
             .and_then(|round| round.registration)
             .ok_or_else(|| Error::not_found("a registration on the first subject"))?
             .reference;
         let second = desk
-            .maybe_learn(&other_subject(), &calm, 2, at())?
+            .maybe_learn(&other_subject(), &calm, REGIME, 2, at())?
             .and_then(|round| round.registration)
             .ok_or_else(|| Error::not_found("a registration on the second subject"))?
             .reference;
@@ -1633,7 +2064,7 @@ mod tests {
         // The second instrument, and only the second, changes regime.
         let shocked = super::tests_support::shocked(400);
         let round = desk
-            .maybe_learn(&other_subject(), &shocked, 3, at())?
+            .maybe_learn(&other_subject(), &shocked, REGIME, 3, at())?
             .ok_or_else(|| Error::not_found("a round on the second subject"))?;
 
         // The premise for the exclusion: the join did fire, on the card fitted
@@ -1670,7 +2101,7 @@ mod tests {
         // desk names the card on the round rather than letting it disappear.
         let mut desk = learning_desk();
         let calm = super::tests_support::learnable(400);
-        desk.maybe_learn(&subject(), &calm, 1, at())?
+        desk.maybe_learn(&subject(), &calm, REGIME, 1, at())?
             .ok_or_else(|| Error::not_found("the first round"))?;
 
         // Same features, same everything -- except it says nothing about what
@@ -1704,7 +2135,7 @@ mod tests {
 
         let shocked = super::tests_support::shocked(400);
         let round = desk
-            .maybe_learn(&subject(), &shocked, 2, at())?
+            .maybe_learn(&subject(), &shocked, REGIME, 2, at())?
             .ok_or_else(|| Error::not_found("the second round"))?;
 
         // Premise for the absence: the round's drift pass did fire, on the
@@ -1756,7 +2187,7 @@ mod tests {
         let mut desk = learning_desk();
         let calm = super::tests_support::learnable(400);
         let reference = desk
-            .maybe_learn(&subject(), &calm, 1, at())?
+            .maybe_learn(&subject(), &calm, REGIME, 1, at())?
             .and_then(|round| round.registration)
             .ok_or_else(|| Error::not_found("a registration on the first subject"))?
             .reference;
@@ -1777,7 +2208,7 @@ mod tests {
         // A different instrument, in a regime the first one never visited.
         let shocked = super::tests_support::shocked(400);
         let second = desk
-            .maybe_learn(&other_subject(), &shocked, 2, at())?
+            .maybe_learn(&other_subject(), &shocked, REGIME, 2, at())?
             .ok_or_else(|| Error::not_found("a round on the second subject"))?;
 
         // The premise that makes the absence below mean something: the round
@@ -1822,7 +2253,7 @@ mod tests {
         // if drift measurement had simply been switched off: the same shock
         // on the model's *own* subject is measured, and past its threshold.
         let third = desk
-            .maybe_learn(&subject(), &shocked, 3, at())?
+            .maybe_learn(&subject(), &shocked, REGIME, 3, at())?
             .ok_or_else(|| Error::not_found("a round back on the first subject"))?;
         let observation = third
             .drift

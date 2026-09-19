@@ -31,13 +31,23 @@
 //! is withdrawn, on evidence of refusals rather than on an absence of
 //! records.
 //!
-//! # Nothing calls this yet, and that is stated rather than implied
+//! # What calls this, and what still feeds it nothing
 //!
-//! `Platform` holds no [`VenueLadder`]. Wiring it takes one field and one
-//! line in `stage_learn`, both named in this lane's handoff. Until they land,
-//! this module is composition waiting for a caller and the §34.4 row is not
-//! delivered at the kernel — which is said here, in the file, because a
-//! module that reads as wired is worse than one that is plainly not.
+//! `Platform` holds a [`VenueLadder`] (`grep -n 'venue_ladder' backend/crates/runtime/qip-kernel/src/platform.rs`)
+//! and `stage_learn` calls [`review`] on it every cycle beside `review_venues`.
+//! This paragraph said "nothing calls this yet" from the day the module was
+//! written until 2026-09-19, by which time the field and the call had both
+//! landed; a module that reads as unwired while it runs is the mirror image
+//! of the failure the original sentence was written to prevent.
+//!
+//! What is still true is narrower and worth keeping exact: the ladder the
+//! platform holds is constructed empty and has no production writer.
+//! [`qip_lifecycle::venue_ladder::attempt_promotion`] is reached from this
+//! module's tests and from nowhere in a binary — `PlatformConfig` carries no
+//! [`qip_lifecycle::venue_ladder::VenueDeclaration`] and the measurement a
+//! venue would be verified against lives in the adapter layer — so every
+//! reachable venue reports as never registered, and the review says so as a
+//! summary line rather than a problem. The §34.4 row carries the seam.
 
 use qip_lifecycle::venue_ladder::{VenueLadder, rung_name};
 use std::collections::BTreeSet;

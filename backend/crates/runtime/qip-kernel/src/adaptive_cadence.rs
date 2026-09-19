@@ -42,6 +42,7 @@
 //! [`TIERING_CADENCE_CYCLES`] and one in [`REINVESTMENT_CADENCE_CYCLES`]
 //! respectively; the rest are the saving.
 
+use crate::central::factory::StrategyFactory;
 use crate::platform::Platform;
 use qip_capital::compounding::CompoundingPolicy;
 use qip_core::Decimal;
@@ -197,25 +198,52 @@ pub fn signals_of(platform: &Platform) -> CadenceSignals {
     }
 }
 
-/// The registered population, as §19.2 needs it: family name → (the alpha
-/// family that name denotes, members registered under it).
+/// The registered population, as §19.2 needs it, read off the platform.
 ///
-/// The family name is matched **whole** against the ten alpha families, and
-/// anything else is `None`, which tiers to `Batch`. Nothing infers an alpha
-/// source from a name that resembles one: a sweep called `momentum-v3` is
-/// not evidence that its strategies harvest continuation, and a strategy
-/// pulled into the hot tier on that evidence would spend a latency budget on
-/// a guess. A desk that wants the hot tier names the family after the alpha
-/// source, which is a decision a person makes and the log records.
+/// The seam `review` and `signals_of` use and the acceptance suite drives;
+/// the body is [`declared_population`], which takes the factory alone so a
+/// test can prove the census without constructing a platform.
 pub fn population_of(platform: &Platform) -> BTreeMap<String, (Option<AlphaFamily>, usize)> {
-    platform
-        .family_standings()
-        .into_iter()
-        .map(|(name, standing)| {
-            let family = AlphaFamily::parse(&name).ok();
-            (name, (family, standing.members))
-        })
-        .collect()
+    declared_population(platform.central().factory())
+}
+
+/// The registered population, as §19.2 needs it: sweep name → (the alpha
+/// family its candidates declared, members registered under it).
+///
+/// Read from the candidates' own declarations
+/// (`StrategyCandidate::alpha_family`, §26.1's `family` field) and from
+/// nothing else. Until 2026-09-19 this parsed the sweep's *name* whole
+/// against the ten alpha families, which was honest about not guessing —
+/// `momentum-v3` never tiered anything — but left the hot tier reachable
+/// only through a lineage string the deployed deep brain hard-codes as
+/// `evo-{subject}`, so no operator could reach it at all. A declaration on
+/// the record is what a person chose and the register can read back.
+///
+/// A sweep whose candidates disagree about their family is counted under
+/// `None`: the hot tier's cap is a latency budget and a sweep that cannot
+/// say what it harvests may not spend it. The foundry cannot produce such a
+/// sweep — it declares once and copies — so this arm is reachable only
+/// through the factory's own `register`.
+pub fn declared_population(
+    factory: &StrategyFactory,
+) -> BTreeMap<String, (Option<AlphaFamily>, usize)> {
+    let mut population: BTreeMap<String, (Option<AlphaFamily>, usize)> = BTreeMap::new();
+    let mut mixed: BTreeSet<String> = BTreeSet::new();
+    for candidate in factory.candidates() {
+        let sweep = candidate.family().as_str().to_string();
+        let declared = candidate.alpha_family();
+        let entry = population.entry(sweep.clone()).or_insert((declared, 0));
+        if entry.1 > 0 && entry.0 != declared {
+            mixed.insert(sweep);
+        }
+        entry.1 += 1;
+    }
+    for sweep in mixed {
+        if let Some(entry) = population.get_mut(&sweep) {
+            entry.0 = None;
+        }
+    }
+    population
 }
 
 /// The compounding policy this book is under.

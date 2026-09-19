@@ -34,6 +34,7 @@ use qip_lifecycle::horizon::HorizonAssurance;
 use qip_lifecycle::ledger::{LifecycleLedger, attempt_promotion};
 use qip_lifecycle::trials::{StrategyFamily, TrialAccount, TrialBook};
 use qip_observability::metrics::Metrics;
+pub use qip_optimization_engine::universe::AlphaFamily;
 use qip_strategy::compile::CompiledStrategy;
 use qip_strategy::program::Program;
 use std::collections::BTreeMap;
@@ -56,6 +57,14 @@ pub struct StrategyCandidate {
     /// enrolled, and a candidate that could exist without one would be a
     /// candidate that can never be promoted and does not say so until then.
     family: StrategyFamily,
+    /// Blueprint §26.1's `family`: the alpha source this strategy claims to
+    /// harvest, as the sweep that produced it *declared* — never inferred
+    /// from the sweep's name (ADR 0066). The third of the three things this
+    /// workspace calls a family, and the one §19.2's evaluation tier is a
+    /// property of: `adaptive_cadence::population_of` reads it, and a
+    /// candidate that declares none tiers to the coldest tier rather than
+    /// spending the hot tier's latency budget on a guess.
+    alpha_family: Option<AlphaFamily>,
     cell: String,
     venue: VenueId,
     evidence: StrategyEvidence,
@@ -101,6 +110,7 @@ impl StrategyCandidate {
             compiled,
             program,
             family,
+            alpha_family: None,
             cell,
             venue,
             evidence: StrategyEvidence::new(),
@@ -108,6 +118,17 @@ impl StrategyCandidate {
             evidence_artifacts: Vec::new(),
             registered_at,
         })
+    }
+
+    /// Declare the alpha family this candidate harvests.
+    ///
+    /// A declaration, made by whoever configured the sweep, and the only way
+    /// a candidate reaches an evaluation tier warmer than batch. There is no
+    /// setter taking a string: the family is a type, and a caller holding
+    /// only a name goes through [`AlphaFamily::parse`] and its refusal.
+    pub const fn with_alpha_family(mut self, family: AlphaFamily) -> Self {
+        self.alpha_family = Some(family);
+        self
     }
 
     /// Attach the evidence the gates will read.
@@ -139,6 +160,13 @@ impl StrategyCandidate {
     }
 
     /// The sweep whose lifetime trial count this candidate is charged to.
+    /// The alpha family the sweep declared, or `None` where it declared
+    /// nothing — which every consumer reads as the most conservative answer
+    /// it has, never as "unaffected".
+    pub const fn alpha_family(&self) -> Option<AlphaFamily> {
+        self.alpha_family
+    }
+
     pub fn family(&self) -> &StrategyFamily {
         &self.family
     }
