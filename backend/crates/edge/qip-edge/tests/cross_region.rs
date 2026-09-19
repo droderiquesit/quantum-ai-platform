@@ -1187,7 +1187,14 @@ fn a_mirror_into_a_region_the_centre_derived_dark_is_refused_at_the_extension_un
     assert_eq!(
         routed.paths.len(),
         1,
-        "the premise failed: a dark region this cell never reaches suspended its mirror: {:?}",
+        "the premise failed: this fixture is assigned no path at all: {:?}",
+        routed.refusals
+    );
+    assert!(
+        !refusals_under(&routed, GATE_PATH_EXTENSION)
+            .iter()
+            .any(|reason| reason.contains(&format!("{GATE_CENTRE_DARK_REGION}:"))),
+        "a dark region this cell holds no venue in suspended its mirror: {:?}",
         routed.refusals
     );
 
@@ -1211,17 +1218,23 @@ fn a_mirror_into_a_region_the_centre_derived_dark_is_refused_at_the_extension_un
 
     // Charted under the extension's gate — the constant that seam already
     // passes, so the series gains no value — and the reason opens with the
-    // centre's token so the journal tells the two dark findings apart.
+    // centre's token so the journal tells the two dark findings apart. The
+    // token is the property, not the count: this fixture's path-3 band
+    // already refuses at the extension on its own facts, so a refusal under
+    // the gate exists with or without the centre's derivation, and a test
+    // that counted one would pass with the check deleted. A mutation found
+    // exactly that.
     let refused = refusals_under(&report, GATE_PATH_EXTENSION);
     assert_eq!(
         refused.len(),
         1,
-        "a mirror into a region the centre derived dark was not refused: {:?}",
+        "the premise failed: the mirrored leg was not refused at the extension at all: {:?}",
         report.refusals
     );
     assert!(
         refused[0].contains(&format!("{GATE_CENTRE_DARK_REGION}:")),
-        "the refusal does not carry the centre's token: {}",
+        "a mirror into a region the centre derived dark was not refused under the centre's \
+         token; the extension refused it on its own facts instead: {}",
         refused[0]
     );
     assert!(
