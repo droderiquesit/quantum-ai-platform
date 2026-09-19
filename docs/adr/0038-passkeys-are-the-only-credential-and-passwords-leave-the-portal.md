@@ -3,7 +3,10 @@
 **Status:** **accepted with conditions**, 2026-09-19 — and the conditions are
 stated in a form a person can discharge in one step, because the record's own
 history shows what happens when they are not. **No check was run in this pass
-either.** The lane that took this decision was told it had web-fetch,
+either** by the authoring lane; the orchestrating session then ran check 1's
+documentation half from the primary source the same day and it selects the
+table's third row — routed but undocumented, stay on the password path, no
+fall-through — see the end of "The four checks, 2026-09-19". The lane that took this decision was told it had web-fetch,
 web-search and the Microsoft Learn documentation tools; it had none of them,
 and the four attempts are quoted verbatim under "The four checks, 2026-09-19"
 so that this line cannot be read as though a vendor page had been fetched. It
@@ -423,6 +426,65 @@ the table.
 | `200` with a `credentialCreationOptions` body | **A** | Checks 2, 3 (second half) and 4 are answered by the brief's next three steps, each of which is one call through the same client and each of which has a named stop. Check 4's stop is the reversal condition already written: an ID token without the custom claims makes Shape A not viable and the answer is Shape B, not a second claim-reading path. |
 | `404`, or `PERMISSION_DENIED`, `OPERATION_NOT_ALLOWED`, `UNSUPPORTED_PASSKEY`-class, or any code naming the feature as unavailable | **B**, under amendment (ii) | The credential record lives in the platform's hash-chained event log (decided below). Shape B additionally **requires ADR 0042 applied first**, because the console has no write path to the API that carries an operator identity until then (ADR 0018 gives it `viewer`). Shape B's dependency is admitted by the ADR 0012 test as decision 2 already argues, and is a frontend `package.json` decision reviewed with its transitive tree. |
 | `200`, but the endpoint is documented as preview, allowlisted or tier-restricted | **neither** | Stay on the deprecated password path with the deprecation notes in place and revisit. This is the third answer the 2026-09-06 pass said the record had no shape for; it still has none, on purpose. Do not fall through to Shape B. |
+
+**Check 1's documentation half was answered later the same day, from the
+primary source, and it selects the third row without the keyed probe.** The
+orchestrating session holds outbound HTTPS through the session proxy, which
+the authoring lane did not, and ran the checks by hand on 2026-09-19. What
+was fetched and what it said, verbatim where it matters:
+
+* The Identity Toolkit discovery documents — the machine-readable surface
+  every client library is generated from — for both versions:
+  `curl -sS 'https://identitytoolkit.googleapis.com/$discovery/rest?version=v2'`
+  and the same with `version=v1`. Both returned `200`, both carry
+  `"revision": "20260911"`, and a case-insensitive count of `passkey` over
+  each whole document is **0**: no method, no path, no schema. The v2
+  document's `accounts` resource lists `mfaEnrollment`, `mfaSignIn` and
+  `revokeToken`, and nothing named for a passkey.
+* The v2 REST reference index
+  (`cloud.google.com/identity-platform/docs/reference/rest/v2/accounts`,
+  `200`) links `accounts.mfaEnrollment/{start,finalize,withdraw}` and
+  `accounts.mfaSignIn/{start,finalize}` and no `passkeyEnrollment` or
+  `passkeySignIn` page; the four method pages this record named
+  (`…/rest/v2/accounts/passkeyEnrollment.start` and its three siblings)
+  return `404`. The Identity Platform release notes page (`200`) contains
+  the string `passkey` **0** times.
+* The gateway nevertheless **routes** the four methods. Unauthenticated
+  `POST` with an empty JSON body, no key:
+  `accounts/passkeyEnrollment:start`, `:finalize`, `accounts/passkeySignIn:start`,
+  `:finalize` each answer `403 PERMISSION_DENIED "Method doesn't allow
+  unregistered callers"` — the identical answer the documented
+  `accounts/mfaEnrollment:start` gives — and with a placeholder `?key=`
+  each answers `400 INVALID_ARGUMENT "API key not valid"`, again identical
+  to `mfaEnrollment:start`. The control is a method that cannot exist:
+  `accounts/noSuchThingAtAll:start` answers `404` as an HTML page under
+  both conditions. So the passkey methods are not a 404; they are a real
+  API surface that Google has not published in its discovery document, its
+  reference or its release notes.
+
+That is not any of the three answers the table above was written for, and
+it is closest to the third: an endpoint that **works but is not documented**
+is the "preview, allowlisted or tier-restricted" case with the
+documentation stripped off. It is decided here as that row, on the
+documentation evidence alone, and **the keyed probe can no longer select
+Shape A**: a `200` with a `credentialCreationOptions` body would prove the
+method answers `algorik-dev` today and would prove nothing about whether it
+answers next quarter, which is the only question that matters for the sole
+credential of the portal. An API method absent from the discovery document
+is a method whose removal would appear in no release note. So: **row three,
+stay on the deprecated password path with the deprecation notes in place,
+do not fall through to Shape B**, and the shape-independent work in the
+brief's §2.1 proceeds. What reopens this is a documentation event, not a
+probe: the four methods appearing in the v2 discovery document (the
+command above, count greater than zero) or in the REST reference. That is
+the one check to re-run, it is a single `curl` with no credential, and
+whoever re-runs it quotes the revision string.
+
+Two of the three remaining checks are therefore parked rather than open:
+checks 2 and 4 are questions about an endpoint this record has just
+declined to build on, and check 3's second half (what a host change does
+to enrolled credentials) is Shape A's question too. They stay written down
+because they come back the day the documentation event happens.
 
 A fourth outcome — the probe was not run — leaves decision 2 where it is:
 accepted as a table, with no row selected, and nothing under "Shape A" or
