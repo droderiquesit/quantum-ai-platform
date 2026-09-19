@@ -70,6 +70,7 @@ use qip_core::time::Timestamp;
 use qip_edge::cell::{Cell, ExecutionReport, OpenOrder, Placer};
 use qip_edge::dropcopy::DropCopyFill;
 use qip_edge::telemetry::CellMetrics;
+use qip_edge::{Admission, Depletion};
 use qip_routing::children::{ChildOrder, ParentOrder};
 use qip_routing::ordertype::{RoutedOrderType, Touch};
 use qip_routing::reprice::{RepriceDecision, RepricePolicy, Repricer, ThrottleScope};
@@ -156,6 +157,21 @@ pub enum Requote {
     /// The cell's record could not be modelled as a parent order, so the
     /// order was left alone rather than repriced from a guess.
     Unmodelled { order_id: String, reason: String },
+    /// Stale against the declared threshold and not against the wider one
+    /// this venue's depleted message budget imposes (§29.2). The order rests
+    /// so that the messages left go to whatever has drifted further.
+    ThresholdWidened {
+        order_id: String,
+        depletion: Depletion,
+        ticks_f64: f64,
+        widened_ticks: u32,
+    },
+    /// Stale, and the venue's message budget cannot carry the cancel and the
+    /// replacement together. Deliberately not `Throttled`: that is the
+    /// repricer refusing to chase, this is the venue session having nothing
+    /// left to say, and an operator reading one as the other would tune the
+    /// wrong number.
+    BudgetRefused { order_id: String, reason: String },
 }
 
 impl Requote {
@@ -167,7 +183,9 @@ impl Requote {
             | Self::CancelRefused { order_id, .. }
             | Self::CancelDisagreed { order_id, .. }
             | Self::ReplacementRefused { order_id, .. }
-            | Self::Unmodelled { order_id, .. } => order_id,
+            | Self::Unmodelled { order_id, .. }
+            | Self::ThresholdWidened { order_id, .. }
+            | Self::BudgetRefused { order_id, .. } => order_id,
         }
     }
 
@@ -219,6 +237,21 @@ impl Requote {
             Self::Unmodelled { order_id, reason } => {
                 format!("order {order_id}: left alone; its record could not be modelled: {reason}")
             }
+            Self::ThresholdWidened {
+                order_id,
+                depletion,
+                ticks_f64,
+                widened_ticks,
+            } => format!(
+                "order {order_id}: resting {ticks_f64:.2} tick(s) behind the touch, inside the \
+                 {widened_ticks} tick(s) this venue's {} message budget widens the threshold \
+                 to; it rests so the budget that is left goes to what has moved further",
+                depletion.as_str()
+            ),
+            Self::BudgetRefused { order_id, reason } => format!(
+                "order {order_id}: stale, and the venue's message budget cannot carry both the \
+                 cancel and the replacement, so neither was sent and the order stands: {reason}"
+            ),
         }
     }
 }
@@ -361,7 +394,7 @@ impl Requoter {
     /// the cell and never on a halted cell — see the module documentation.
     pub fn reprice(
         &mut self,
-        cell: &Cell,
+        cell: &mut Cell,
         venue: &mut SimulatedGateway,
         now: Timestamp,
     ) -> Vec<Requote> {
@@ -429,6 +462,69 @@ impl Requoter {
             let Some(child) = tracked.parent.child(&live).cloned() else {
                 continue;
             };
+
+            // §29.2's threshold adaptation, before the repricer is asked
+            // anything. Two refusals in a deliberate order.
+            //
+            // First the widened threshold. The declared threshold is what a
+            // cell with room to speak judges staleness on; as the venue's
+            // message budget drains, the drift an order must show to be
+            // worth two of the messages that are left rises with it, and at
+            // `Exhausted` no drift is worth them. Judging this *before*
+            // `consider` matters: `consider` spends the per-order and
+            // per-instrument throttle budgets the moment it decides, and
+            // those count instructions sent, so widening afterwards would
+            // leave the throttle counting chases that never happened.
+            let depletion = cell.quote_depletion(order.venue.as_str());
+            let widened_ticks = depletion.widen_ticks(self.repricer.policy().max_drift_ticks);
+            let widened_bps = depletion.widen_bps(self.repricer.policy().max_drift_bps_f64);
+            if let Some(drift) = self.repricer.drift_of(&child, touch) {
+                // The same predicate `Repricer::consider` uses — stale at or
+                // past either bound — with both bounds widened. At
+                // `Depletion::Ample` the multiple is one and this is exactly
+                // `consider`'s own test, so a full budget reprices as it did
+                // before this gate existed.
+                let clears = match (widened_ticks, widened_bps) {
+                    (Some(ticks), Some(bps)) => {
+                        drift.ticks_f64 >= f64::from(ticks) || drift.bps_f64 >= bps
+                    }
+                    // `Exhausted`: nothing clears, whatever the drift.
+                    _ => false,
+                };
+                if !clears {
+                    // Only worth reporting when the widening is what held it.
+                    // Inside the *declared* threshold the order is simply
+                    // fresh, which is the ordinary case and not a decision.
+                    let stale_declared = drift.ticks_f64
+                        >= f64::from(self.repricer.policy().max_drift_ticks)
+                        || drift.bps_f64 >= self.repricer.policy().max_drift_bps_f64;
+                    if stale_declared {
+                        requotes.push(Requote::ThresholdWidened {
+                            order_id: order.order_id.clone(),
+                            depletion,
+                            ticks_f64: drift.ticks_f64,
+                            widened_ticks: widened_ticks.unwrap_or(0),
+                        });
+                    }
+                    continue;
+                }
+            }
+
+            // Then the money question: can this venue session carry a cancel
+            // and a replacement at all? Peeked rather than spent, because
+            // `consider` may still decline on a throttle it owns.
+            if !cell.requote_fundable(&order.venue, now) {
+                requotes.push(Requote::BudgetRefused {
+                    order_id: order.order_id.clone(),
+                    reason: format!(
+                        "the quote budget at {} cannot fund the {} message(s) a requote costs",
+                        order.venue.as_str(),
+                        qip_edge::REQUOTE_MESSAGES
+                    ),
+                });
+                continue;
+            }
+
             match self.repricer.consider(&child, touch, now) {
                 RepriceDecision::Hold { .. } => {}
                 RepriceDecision::Throttled {
@@ -443,6 +539,20 @@ impl Requoter {
                     budget,
                 }),
                 RepriceDecision::CancelAndReplace { client_id, .. } => {
+                    // The messages, charged where the fact becomes known:
+                    // the cell is about to speak twice to this venue. A
+                    // refusal here is a race against the peek above rather
+                    // than the ordinary path, and it abandons the pending
+                    // cancel so the repricer does not believe one is in
+                    // flight at a venue that was never told.
+                    if let Admission::Refused { reason } = cell.spend_requote(&order.venue, now) {
+                        self.repricer.abandon(&client_id);
+                        requotes.push(Requote::BudgetRefused {
+                            order_id: order.order_id.clone(),
+                            reason,
+                        });
+                        continue;
+                    }
                     let requote = Self::replace(
                         &mut self.repricer,
                         &mut self.by_child,
@@ -610,7 +720,7 @@ impl<'a> RequotingPlacer<'a> {
 
     /// One round of repricing against the cell's books. Empty with no
     /// requoter.
-    pub fn reprice(&mut self, cell: &Cell, now: Timestamp) -> Vec<Requote> {
+    pub fn reprice(&mut self, cell: &mut Cell, now: Timestamp) -> Vec<Requote> {
         match self.requoter.as_deref_mut() {
             Some(requoter) => requoter.reprice(cell, &mut *self.venue, now),
             None => Vec::new(),
