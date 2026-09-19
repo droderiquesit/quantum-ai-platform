@@ -22,7 +22,7 @@ use qip_evolution::grammar::Grammar;
 use qip_evolution::palette::FeaturePalette;
 use qip_kernel::central::factory::StrategyFactory;
 use qip_kernel::central::foundry::{HoldoutInputs, StrategyFoundry};
-use qip_lifecycle::evidence::{CrossValidationRun, LeakageAudit};
+use qip_lifecycle::evidence::{CrossValidationRun, DatasetManifest, LeakageAudit};
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::ir::Type;
 
@@ -94,6 +94,17 @@ fn holdout() -> HoldoutInputs {
             timings: Vec::new(),
             restated_without_snapshots: Vec::new(),
         },
+        // Wide enough for the 252 held out over 252 cross-validated: the
+        // gate checks the series fits inside the bars the manifest names.
+        manifest: DatasetManifest::new(
+            subject().as_str(),
+            venue().as_str(),
+            600,
+            now().saturating_sub(Duration::from_days(600)),
+            now(),
+            qip_core::sha256_hex(b"recorded bars"),
+        )
+        .expect("a well-formed manifest"),
     }
 }
 

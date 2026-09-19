@@ -5928,7 +5928,7 @@ fn the_ladder_refuses_holdout_evidence_that_was_never_simulated_and_admits_the_f
     // the foundry's evidence — the production path, which manifests the
     // bars the candidate was simulated over — is admitted, and the same
     // evidence with the manifest removed is refused.
-    let mut platform = platform(PlatformConfig::default())?;
+    let mut platform = platform()?;
     let on = ObjectId::from_string("obj-AAA");
     let catalogue = family_catalogue(&on)?;
     let grammar = Grammar::over(FeaturePalette::from_catalogue(&catalogue, &on)?);
@@ -5951,12 +5951,14 @@ fn the_ladder_refuses_holdout_evidence_that_was_never_simulated_and_admits_the_f
         foundry.register(
             platform.central_mut().factory_mut(),
             strategy,
+            // The same series `strong_holdout` admits on, so the one check
+            // under test is the only one that can decide the outcome.
             HoldoutInputs {
-                returns: good_returns(9, 300, 0.0018),
-                in_sample_folds: vec![vec![0.001; 40]],
-                out_of_sample_folds: vec![vec![0.0006; 20]],
+                returns: good_returns(1, 400, 0.0018),
+                in_sample_folds: (0..5).map(|f| good_returns(10 + f, 80, 0.0020)).collect(),
+                out_of_sample_folds: (0..5).map(|f| good_returns(20 + f, 80, 0.0018)).collect(),
                 periods_per_year: 252.0,
-                cross_validation: honest_cross_validation(300)?,
+                cross_validation: honest_cross_validation(400)?,
                 leakage: clean_leakage_audit(),
                 manifest: recorded_manifest(&on, &history)?,
             },
