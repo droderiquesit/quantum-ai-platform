@@ -261,6 +261,42 @@ export const NOT_YET_SERVED: Record<string, MissingEndpoint> = {
     note:
       "GET /ledger/users lists them all, so a page about one account is served a body carrying the rest. A 404 for an id the ledger does not hold would also be the platform's answer rather than this console's inference from a list.",
   },
+  /**
+   * The three explanation questions of blueprint §40.2 no route answers,
+   * written down here so the explanations page renders each as a named
+   * absence rather than as a panel that is quietly empty.
+   *
+   * Each names the nearest thing the platform does serve, so a reader is
+   * not sent looking for a field that is one route away when it is not:
+   * `GET /proposals` carries a `rationale` sentence and no belief, no
+   * confidence and no evidence; it carries `gross` and `legs` and no
+   * decomposition of a size into edge, volatility, grant and multiplier;
+   * and no route carries the optimisation run, its objective, or the
+   * correlation that ruled a family out. Nothing in `routes.rs` matches the
+   * word `explanation` (`grep -rn explanation backend/crates/apps/qip-api/src/routes.rs`).
+   * The paths are what such routes would be called and are not served.
+   */
+  explanationPosition: {
+    method: "GET",
+    path: "/api/v1/explanations/positions/{position}",
+    needed_for: "why the platform took a position: the belief that supported it, its confidence, and the evidence that formed it",
+    note:
+      "GET /proposals carries a rationale sentence per proposal and GET /portfolio carries counts. Neither names the belief a position rests on, the confidence it was held at, or the evidence that formed it; the attribution that runs in LEARN is not projected by any route (GET /pnl answers an absence).",
+  },
+  explanationSizing: {
+    method: "GET",
+    path: "/api/v1/explanations/sizing/{proposal}",
+    needed_for: "why this size: edge, volatility, grant and the confidence multiplier, shown separately",
+    note:
+      "GET /proposals carries gross and legs per proposal and no decomposition of either. The sizing arithmetic runs inside the DECIDE stage and its four terms reach no route, so a page cannot show them apart without computing them — which would be a second sizing model in a browser.",
+  },
+  explanationSelection: {
+    method: "GET",
+    path: "/api/v1/explanations/selection/{strategy}",
+    needed_for: "why this strategy and not that one: the optimisation run, the objective, and the correlation that ruled the other out",
+    note:
+      "GET /strategies carries each candidate's rung and whether it holds capital, and GET /capital the envelope it was issued. No route carries the optimisation run that set the budget, its objective, or the correlation against holdings that excluded a family; GET /correlation is the tape's return correlation and is not the selection's.",
+  },
 } as const;
 
 /**

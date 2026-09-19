@@ -129,6 +129,7 @@ export const ITEM_ICON: Record<string, IconName> = {
   "/intelligence/correlation": "table-2",
   "/intelligence/news": "radio",
   "/intelligence/regimes": "pie-chart",
+  "/intelligence/explanations": "brain",
   "/strategies": "line-chart",
   "/models": "sparkles",
   "/research/backtesting": "activity",
