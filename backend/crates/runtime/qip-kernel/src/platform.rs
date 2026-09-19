@@ -14159,6 +14159,18 @@ impl Platform {
         &self.data_finder
     }
 
+    /// File a person's one-time approval of a source category (§7.6.3), so
+    /// that a deep-web candidate the finder deferred for want of it is
+    /// promoted automatically on its next `assess_sources`. The finder
+    /// refuses a second approval of an approved category and this passes
+    /// that refusal through unchanged.
+    pub fn approve_source_category(
+        &mut self,
+        approval: qip_data_finder::category::CategoryApproval,
+    ) -> Result<()> {
+        self.data_finder.approve_category(approval)
+    }
+
     /// §7.6.4's ranking of sources on measured lead — how far in advance
     /// each source's facts preceded the same fact arriving from another —
     /// best lead first. Empty until a fact has been seen from two sources.

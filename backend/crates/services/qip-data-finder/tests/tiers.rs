@@ -19,6 +19,7 @@ use common::{
 use qip_contracts::governance::Usage;
 use qip_core::error::{Error, Result};
 use qip_core::{Currency, Decimal, Duration};
+use qip_data_finder::category::{CategoryApproval, ContentSignal, SourceCategory};
 use qip_data_finder::coverage::{SourceRegion, UpdateFrequency};
 use qip_data_finder::decision::{DecisionOutcome, LifecycleStage, RegistrationDecision};
 use qip_data_finder::endpoint::{AccessMechanism, AuthRequirement, FileFormat, SourceEndpoint};
@@ -30,12 +31,30 @@ use qip_data_finder::registration::{RegistrationRecord, RegistrationRequirement}
 use qip_data_finder::source::{SourceCandidate, SourceIdentity};
 use qip_data_finder::tier::{
     AccessMode, BulkCadence, CredentialReference, DeepWebAdapter, DefensiveMonitoring,
-    DiscoveryEnclave, RenderingBudget, RobotsPosture, SourceTier, TierEvidence,
+    DiscoveryEnclave, Promotion, RenderingBudget, RobotsPosture, SourceTier, TierEvidence,
 };
 use qip_events::Topic;
 use qip_market_ingestion::connector::manifest::SecretRef;
 
+/// A candidate that declares what it is — a filing search — so the finder
+/// can place it in §7.6.1's regulatory-and-legal category. Every fixture
+/// here declares one, and [`config`] approves that category, because
+/// §7.6.3 promotes a deep-web adapter only within an approved category and
+/// the refusals these tests prove are about something else; the approval
+/// itself is proven by the `§7.6.3` tests below on a config without one.
 fn candidate_with(
+    id: &str,
+    url: &str,
+    mechanism: AccessMechanism,
+    licensing: LicensingPosture,
+    cost: SourceCost,
+) -> Result<SourceCandidate> {
+    Ok(uncategorised_candidate(id, url, mechanism, licensing, cost)?
+        .with_content_signal(ContentSignal::RegulatoryFiling))
+}
+
+/// The same candidate with nothing declared about what it is.
+fn uncategorised_candidate(
     id: &str,
     url: &str,
     mechanism: AccessMechanism,
@@ -52,6 +71,16 @@ fn candidate_with(
         [Topic::MarketQuote],
         "a curated directory of exchange data vendors",
         now(),
+    )
+}
+
+/// A person's one-time approval of the category every fixture declares.
+fn filings_approved_by_desk_owner() -> Result<CategoryApproval> {
+    CategoryApproval::new(
+        SourceCategory::RegulatoryAndLegal,
+        "desk-owner",
+        now(),
+        "https://desk.example/reviews/regulatory-sources-2026-09",
     )
 }
 
@@ -84,6 +113,12 @@ fn finder(config: FinderConfig) -> DataFinder {
 }
 
 fn config() -> Result<FinderConfig> {
+    unapproved_config()?.with_category_approval(filings_approved_by_desk_owner()?)
+}
+
+/// A finder with no category approved: the closed position every
+/// deployment starts in.
+fn unapproved_config() -> Result<FinderConfig> {
     FinderConfig::new(AGENT, Usage::Derive, "market-data", 7)
 }
 
@@ -792,5 +827,220 @@ fn an_enclave_holds_no_trading_zone_credential_and_admits_hosts_exactly() -> Res
     assert!(!enclave.permits_egress_to("example"));
     assert!(!enclave.holds_trading_zone_credential());
     assert_eq!(enclave.max_runtime(), Duration::from_mins(5));
+    Ok(())
+}
+
+// --- §7.6.3: a human approves a category once ---------------------------------
+
+#[test]
+fn a_deep_web_adapter_in_no_category_is_held_rather_than_promoted_under_the_nearest_one()
+-> Result<()> {
+    // The failure: §7.6.3's "adapters within an approved category are
+    // promoted automatically" applied to an adapter nobody categorised, by
+    // promoting it under whichever category was nearest — a category
+    // assigned because something had to be, read downstream as a finding.
+    let url = "https://portal.example/api/filings";
+    let candidate = uncategorised_candidate(
+        "uncategorised-portal",
+        url,
+        keyed_rest(),
+        licensed_for(&[Usage::Derive])?,
+        SourceCost::free(Currency::EUR),
+    )?;
+    // Premise: the same source, categorised, registers on this config — so
+    // the deferral below is the missing category and nothing upstream.
+    let mut probe = probe_for(url, "portal.example", permissive_robots());
+    let mut desk = finder(registered_by_owner(
+        config()?
+            .with_credential_reference("portal.example", CredentialReference::new("portal-key")?),
+        "uncategorised-portal",
+    )?);
+    let decisions = desk.assess(
+        vec![candidate.clone().with_content_signal(ContentSignal::RegulatoryFiling)],
+        &mut probe,
+        now(),
+    )?;
+    assert!(
+        first(&decisions)?.is_registered(),
+        "{}",
+        first(&decisions)?.reasoning().describe()
+    );
+
+    let mut probe = probe_for(url, "portal.example", permissive_robots());
+    let mut desk = finder(registered_by_owner(
+        config()?
+            .with_credential_reference("portal.example", CredentialReference::new("portal-key")?),
+        "uncategorised-portal",
+    )?);
+    let decisions = desk.assess(vec![candidate], &mut probe, now())?;
+    let decision = first(&decisions)?;
+    let DecisionOutcome::Deferred { reason } = decision.outcome() else {
+        return Err(Error::invalid(format!(
+            "an uncategorised deep-web source was not deferred: {}",
+            decision.reasoning().describe()
+        )));
+    };
+    assert!(
+        reason.contains("in no category") && reason.contains("with_content_signal"),
+        "the deferral must name what to declare: {reason}"
+    );
+    assert!(desk.registry().is_empty());
+
+    // The clause governs deep-web adapters only; a surface-web bulk drop
+    // builds an adapter for the enclave rules and is not held on an approval
+    // the blueprint never asked for.
+    let surface = DeepWebAdapter::new(
+        "eod-drop",
+        "vendor.example",
+        SourceTier::SurfaceWeb,
+        AccessMode::Bulk {
+            cadence: BulkCadence::new(Duration::from_days(1), Duration::from_days(7))?,
+        },
+    )?;
+    assert_eq!(
+        surface.promotion(desk.approved_categories())?,
+        Promotion::NotGoverned
+    );
+    Ok(())
+}
+
+#[test]
+fn a_human_approves_a_category_once_and_adapters_within_it_are_promoted_automatically()
+-> Result<()> {
+    // The failure: the governance clause as a sentence in a table. Nothing
+    // linked an adapter to its category, so there was nothing a human could
+    // approve once and nothing that could be promoted on that approval — a
+    // deep-web source either registered on its score or did not, and the
+    // person the blueprint puts in the loop was never asked.
+    let url = "https://portal.example/api/filings";
+    let candidate = candidate_with(
+        "first-portal",
+        url,
+        keyed_rest(),
+        licensed_for(&[Usage::Derive])?,
+        SourceCost::free(Currency::EUR),
+    )?;
+    let mut probe = probe_for(url, "portal.example", permissive_robots());
+    let mut desk = finder(registered_by_owner(
+        unapproved_config()?
+            .with_credential_reference("portal.example", CredentialReference::new("portal-key")?),
+        "first-portal",
+    )?);
+    assert!(desk.approved_categories().is_empty());
+
+    let decisions = desk.assess(vec![candidate.clone()], &mut probe, now())?;
+    let decision = first(&decisions)?;
+    // Premise: legality permitted collection and the score would have
+    // collected it — the deferral is the approval and nothing else.
+    assert!(
+        decision
+            .legality()
+            .is_some_and(|legality| legality.overall().is_permitted()),
+        "{}",
+        decision.reasoning().describe()
+    );
+    assert!(
+        decision
+            .scores()
+            .is_some_and(|scores| scores.composite()
+                >= qip_data_finder::scoring::Routing::COLD_THRESHOLD),
+        "{}",
+        decision.reasoning().describe()
+    );
+    let DecisionOutcome::Deferred { reason } = decision.outcome() else {
+        return Err(Error::invalid(format!(
+            "a deep-web source in an unapproved category was not deferred: {}",
+            decision.reasoning().describe()
+        )));
+    };
+    assert!(
+        reason.contains("`regulatory_and_legal` category, which no human has approved")
+            && reason.contains("CategoryApproval"),
+        "the deferral must name the category and the approval it needs: {reason}"
+    );
+    assert!(desk.registry().is_empty());
+
+    // A person approves the category once, on the running finder — the
+    // seam `Platform::approve_source_category` reaches.
+    desk.approve_category(filings_approved_by_desk_owner()?)?;
+    let mut probe = probe_for(url, "portal.example", permissive_robots());
+    let decisions = desk.assess(vec![candidate], &mut probe, now())?;
+    let decision = first(&decisions)?;
+    assert!(
+        decision.is_registered(),
+        "{}",
+        decision.reasoning().describe()
+    );
+    let route = decision.reasoning().at(LifecycleStage::Route);
+    assert!(
+        route.iter().any(|finding| {
+            finding.contains("promoted automatically: category `regulatory_and_legal` approved \
+                              by desk-owner")
+        }),
+        "the promotion must record whose approval it ran on: {route:?}"
+    );
+
+    // A second adapter in the same category is promoted with no further
+    // review — "once" is the whole point of approving the category rather
+    // than the source.
+    let second_url = "https://registry.example/api/filings";
+    let second = candidate_with(
+        "second-portal",
+        second_url,
+        keyed_rest(),
+        licensed_for(&[Usage::Derive])?,
+        SourceCost::free(Currency::EUR),
+    )?;
+    let mut probe = probe_for(second_url, "registry.example", permissive_robots());
+    let mut desk = finder(registered_by_owner(
+        unapproved_config()?
+            .with_credential_reference(
+                "registry.example",
+                CredentialReference::new("registry-key")?,
+            )
+            .with_category_approval(filings_approved_by_desk_owner()?)?,
+        "second-portal",
+    )?);
+    let decisions = desk.assess(vec![second], &mut probe, now())?;
+    assert!(
+        first(&decisions)?.is_registered(),
+        "{}",
+        first(&decisions)?.reasoning().describe()
+    );
+
+    // And the approval is given once: a second for the same category is
+    // refused naming the first, rather than overwriting whose name is on it.
+    let refused = desk
+        .approve_category(CategoryApproval::new(
+            SourceCategory::RegulatoryAndLegal,
+            "someone-else",
+            now(),
+            "a second review",
+        )?)
+        .expect_err("a second approval of an approved category was accepted");
+    assert!(
+        refused.message().contains("already approved")
+            && refused.message().contains("approved by desk-owner"),
+        "{}",
+        refused.message()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_category_approval_has_a_persons_name_and_a_basis_on_it() -> Result<()> {
+    // The failure: an approval nobody signed, which is an approval nobody
+    // can be asked about when the category turns out to have been the wrong
+    // one to admit.
+    let unsigned = CategoryApproval::new(SourceCategory::Marketplace, "  ", now(), "a review")
+        .expect_err("an approval with no approver was accepted");
+    assert!(unsigned.message().contains("must name the person"));
+    let baseless = CategoryApproval::new(SourceCategory::Marketplace, "desk-owner", now(), "")
+        .expect_err("an approval citing nothing was accepted");
+    assert!(baseless.message().contains("must cite what was reviewed"));
+    let approval =
+        CategoryApproval::new(SourceCategory::Marketplace, "desk-owner", now(), "a review")?;
+    assert_eq!(approval.category(), SourceCategory::Marketplace);
+    assert_eq!(approval.approved_by(), "desk-owner");
     Ok(())
 }

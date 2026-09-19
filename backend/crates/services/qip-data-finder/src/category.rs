@@ -39,10 +39,137 @@
 //! category assigned because something has to be assigned reads downstream as
 //! a finding, and it would not be one.
 
+use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub use qip_financial::category::SourceCategory;
+
+/// A person's one-time approval of a source category (§7.6.3).
+///
+/// "A human approves the source category once; adapters within an approved
+/// category are promoted automatically." The approval is the human half of
+/// that sentence, and it is a record with a name on it for the reason
+/// [`crate::registration::RegistrationRecord`] is: an approval nobody signed
+/// is an approval nobody can be asked about when a category turns out to
+/// have been the wrong one to admit. The basis is the document or review the
+/// approver read — a URL, a minute, a ticket — so the decision can be
+/// re-read when the category's sources change character.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CategoryApproval {
+    category: SourceCategory,
+    approved_by: String,
+    approved_at: Timestamp,
+    basis: String,
+}
+
+impl CategoryApproval {
+    /// Record an approval. Refuses a blank approver and a blank basis, for
+    /// the reasons the type's doc gives; there is no other constructor.
+    pub fn new(
+        category: SourceCategory,
+        approved_by: impl Into<String>,
+        approved_at: Timestamp,
+        basis: impl Into<String>,
+    ) -> Result<Self> {
+        let approved_by = approved_by.into();
+        if approved_by.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "an approval of the `{}` category must name the person who approved it; \
+                 §7.6.3's promotion is automatic only within a category a human approved, and \
+                 an approval with nobody's name on it is not that",
+                category.as_str()
+            )));
+        }
+        let basis = basis.into();
+        if basis.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "an approval of the `{}` category must cite what was reviewed — a document, a \
+                 minute, a ticket — or nobody can re-read it when the category's sources change",
+                category.as_str()
+            )));
+        }
+        Ok(Self {
+            category,
+            approved_by,
+            approved_at,
+            basis,
+        })
+    }
+
+    pub const fn category(&self) -> SourceCategory {
+        self.category
+    }
+
+    pub fn approved_by(&self) -> &str {
+        &self.approved_by
+    }
+
+    pub const fn approved_at(&self) -> Timestamp {
+        self.approved_at
+    }
+
+    pub fn basis(&self) -> &str {
+        &self.basis
+    }
+
+    pub fn describe(&self) -> String {
+        format!(
+            "category `{}` approved by {} at {} on {}",
+            self.category.as_str(),
+            self.approved_by,
+            self.approved_at,
+            self.basis
+        )
+    }
+}
+
+/// The categories a human has approved, at most one approval each.
+///
+/// Empty by default, which is the closed position: with no approval on file
+/// no deep-web adapter is promoted, and the refusal names the approval that
+/// would change the answer. A second approval of an approved category is
+/// refused rather than overwritten — "once" is the blueprint's word, and a
+/// record that could be replaced is a record whose first signature can be
+/// made to disappear.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovedCategories {
+    approvals: BTreeMap<SourceCategory, CategoryApproval>,
+}
+
+impl ApprovedCategories {
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// File an approval, refusing a second for the same category.
+    pub fn approve(&mut self, approval: CategoryApproval) -> Result<()> {
+        if let Some(existing) = self.approvals.get(&approval.category) {
+            return Err(Error::invalid(format!(
+                "the `{}` category is already approved — {} — and an approval is given once; \
+                 a category whose sources have changed character is withdrawn and re-reviewed, \
+                 not approved over",
+                approval.category.as_str(),
+                existing.describe()
+            )));
+        }
+        self.approvals.insert(approval.category, approval);
+        Ok(())
+    }
+
+    pub fn approval_for(&self, category: SourceCategory) -> Option<&CategoryApproval> {
+        self.approvals.get(&category)
+    }
+
+    pub fn len(&self) -> usize {
+        self.approvals.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.approvals.is_empty()
+    }
+}
 
 /// Classify from what is declared about a location, refusing rather than
 /// guessing when the declaration does not cleanly name one of the eight.

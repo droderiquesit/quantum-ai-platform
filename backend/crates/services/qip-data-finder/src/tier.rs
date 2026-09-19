@@ -37,6 +37,7 @@
 //! this crate starts.
 
 use crate::endpoint::AccessMechanism;
+use crate::category::{ApprovedCategories, CategoryApproval, SourceCategory};
 use crate::legal::{LicensingPosture, RateLimit};
 use crate::probe::RobotsFetch;
 use crate::source::{Source, SourceCandidate};
@@ -562,20 +563,42 @@ impl DiscoveryEnclave {
     }
 }
 
-/// A registered source, the tier it was placed in, and the mode it is
-/// reached by.
+/// A registered source, the tier it was placed in, the mode it is reached
+/// by, and the §7.6.1 category it was classified into.
 ///
 /// The blueprint's `DeepWebAdapter` also carries a query plan, an extractor
 /// and entity links. Those are the ingestion adapter's business and live in
 /// [`crate::ingestion`]; what lives here is the part that decides whether the
 /// source may be reached at all, which has to be settled before any of the
-/// rest is worth writing.
+/// rest is worth writing. Its `freshness` field — how far ahead of the
+/// surface web the source runs — is measured rather than declared, by
+/// [`crate::freshness::LeadLedger`] over the facts the source actually
+/// delivers, so it is not a field here: at the instant an adapter is built
+/// nothing has been delivered yet, and a field that is always empty at
+/// construction is a field somebody will one day fill with a guess.
+///
+/// The category is what §7.6.3's governance clause turns on — "a human
+/// approves the source category once; adapters within an approved category
+/// are promoted automatically" — and [`Self::promotion`] is that clause.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeepWebAdapter {
     source_id: String,
     host: String,
     tier: SourceTier,
     mode: AccessMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    category: Option<SourceCategory>,
+}
+
+/// What §7.6.3's governance clause decided about one adapter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Promotion<'a> {
+    /// The adapter reaches a surface-web source; the clause governs deep-web
+    /// adapters and says nothing about this one.
+    NotGoverned,
+    /// The adapter's category was approved, once, by the person named, and
+    /// the adapter is promoted on that approval without a second review.
+    Promoted(&'a CategoryApproval),
 }
 
 impl DeepWebAdapter {
@@ -603,7 +626,65 @@ impl DeepWebAdapter {
             host,
             tier,
             mode,
+            category: None,
         })
+    }
+
+    /// The §7.6.1 category the finder classified the source into, where it
+    /// did. An adapter with no category is one the finder could not place —
+    /// no signal declared, or one that fits none of the eight — and that is
+    /// carried as `None` rather than as the nearest category.
+    pub fn with_category(mut self, category: Option<SourceCategory>) -> Self {
+        self.category = category;
+        self
+    }
+
+    pub const fn category(&self) -> Option<SourceCategory> {
+        self.category
+    }
+
+    /// §7.6.3's promotion: automatic within a category a human has approved
+    /// once, and otherwise held until one does.
+    ///
+    /// Governs deep-web adapters only. A surface-web source reached through
+    /// a rendered page or an open query builds an adapter too, for the
+    /// enclave and rate-limit rules, and the clause does not name it; it is
+    /// answered [`Promotion::NotGoverned`] rather than held on an approval
+    /// the blueprint never asked for.
+    ///
+    /// The two refusals name what would change the answer: declare a content
+    /// signal so the source can be categorised, or approve the category it
+    /// is in. Neither is guessed. A deep-web adapter with no category is not
+    /// promoted under the "nearest" category, and one in an unapproved
+    /// category is not promoted because its score is high — the clause makes
+    /// the human's approval the precondition, and a score that could stand
+    /// in for it would be a category approved by whoever tuned the weights.
+    pub fn promotion<'a>(&self, approved: &'a ApprovedCategories) -> Result<Promotion<'a>> {
+        if self.tier != SourceTier::DeepWeb {
+            return Ok(Promotion::NotGoverned);
+        }
+        let Some(category) = self.category else {
+            return Err(Error::denied(format!(
+                "`{}` on `{}` is a deep-web source in no category, so §7.6.3's promotion within \
+                 an approved category cannot apply to it; declare what the source is with \
+                 `SourceCandidate::with_content_signal` so it can be categorised, then approve \
+                 that category once",
+                self.source_id, self.host
+            )));
+        };
+        match approved.approval_for(category) {
+            Some(approval) => Ok(Promotion::Promoted(approval)),
+            None => Err(Error::denied(format!(
+                "`{}` on `{}` is a deep-web source in the `{}` category, which no human has \
+                 approved; an adapter is promoted automatically only within an approved \
+                 category, so file a `CategoryApproval` for `{}` naming who reviewed it and on \
+                 what basis",
+                self.source_id,
+                self.host,
+                category.as_str(),
+                category.as_str()
+            ))),
+        }
     }
 
     pub fn source_id(&self) -> &str {

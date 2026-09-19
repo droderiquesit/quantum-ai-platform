@@ -18,6 +18,7 @@ use qip_core::Context;
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Currency, Decimal, ObjectId, dec};
+use qip_data_finder::category::{CategoryApproval, SourceCategory};
 use qip_data_finder::coverage::{SourceCoverage, SourceRegion, UpdateFrequency};
 use qip_data_finder::endpoint::{AccessMechanism, AuthRequirement, SourceEndpoint};
 use qip_data_finder::legal::{LicensingPosture, SourceLicense};
@@ -384,6 +385,38 @@ fn the_sense_stage_ranks_sources_on_the_lead_they_measured_over_each_other() -> 
              trailed on 1 fact(s)"
         ),
         "{detail}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_category_approval_filed_on_the_platform_reaches_the_finder_and_is_given_once() -> Result<()> {
+    // The failure: §7.6.3's approval seam declared on the kernel and wired to
+    // nothing, so an operator's approval changed no finder's answer. The
+    // second refusal proves the first approval landed where the finder reads
+    // it rather than in a field nothing consults.
+    let mut platform = platform(PlatformConfig::default())?;
+    assert!(platform.data_finder().approved_categories().is_empty());
+    platform.approve_source_category(CategoryApproval::new(
+        SourceCategory::GovernmentAndTrade,
+        "desk-owner",
+        start(),
+        "https://desk.example/reviews/trade-data-2026-09",
+    )?)?;
+    assert_eq!(platform.data_finder().approved_categories().len(), 1);
+    let refused = platform
+        .approve_source_category(CategoryApproval::new(
+            SourceCategory::GovernmentAndTrade,
+            "someone-else",
+            start(),
+            "a second review",
+        )?)
+        .expect_err("a second approval of the same category was accepted by the platform");
+    assert!(
+        refused.message().contains("already approved")
+            && refused.message().contains("approved by desk-owner"),
+        "{}",
+        refused.message()
     );
     Ok(())
 }

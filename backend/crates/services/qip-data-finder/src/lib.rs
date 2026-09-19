@@ -102,7 +102,7 @@ pub use campaign::{
     CacheBound, CampaignManifest, ConcentrationVerdict, FetchCampaign, ManifestEntry,
     ResearchCache, SketchedStatistic, assess_concentration,
 };
-pub use category::{ContentSignal, SourceCategory};
+pub use category::{ApprovedCategories, CategoryApproval, ContentSignal, SourceCategory};
 pub use coverage::{CoverageGap, CoverageMatch, SourceCoverage, SourceRegion, UpdateFrequency};
 pub use decision::{
     DecisionOutcome, LifecycleStage, ReasonStep, Reasoning, RegisteredSource, RegistrationDecision,

@@ -14,6 +14,7 @@ use common::{AGENT, coverage, licensed_for, now, permissive_robots, probe_for};
 use qip_contracts::governance::Usage;
 use qip_core::error::Result;
 use qip_core::{Currency, Timestamp};
+use qip_data_finder::category::{CategoryApproval, ContentSignal, SourceCategory};
 use qip_data_finder::coverage::{SourceRegion, UpdateFrequency};
 use qip_data_finder::decision::{DecisionOutcome, LifecycleStage, RegistrationDecision};
 use qip_data_finder::endpoint::{AccessMechanism, AuthRequirement, SourceEndpoint};
@@ -45,6 +46,10 @@ fn candidate_with(
         "a curated directory of exchange data vendors",
         now(),
     )
+    // Declared as a filing search and, in `config`, approved as a category:
+    // §7.6.3 promotes a deep-web adapter only within an approved category,
+    // and the refusals these tests prove are the registration's, not that.
+    .map(|candidate| candidate.with_content_signal(ContentSignal::RegulatoryFiling))
 }
 
 fn open_rest() -> AccessMechanism {
@@ -66,7 +71,14 @@ fn keyed_rest() -> AccessMechanism {
 }
 
 fn config() -> Result<FinderConfig> {
-    FinderConfig::new(AGENT, Usage::Derive, "market-data", 7)
+    FinderConfig::new(AGENT, Usage::Derive, "market-data", 7)?.with_category_approval(
+        CategoryApproval::new(
+            SourceCategory::RegulatoryAndLegal,
+            "desk-owner",
+            now(),
+            "https://desk.example/reviews/regulatory-sources-2026-09",
+        )?,
+    )
 }
 
 fn first(decisions: &[RegistrationDecision]) -> Result<&RegistrationDecision> {
