@@ -108,6 +108,20 @@ pub enum WholeReason {
     /// nothing worth removing from the exposure window and a pass spent
     /// waiting would cost more than it saved.
     WithinBound,
+    /// The gateway this pass was handed has no cancel path to the venue, so
+    /// a resting leg could never be withdrawn. Decided outside [`choose`],
+    /// which knows about fill times and not about gateways, and recorded
+    /// here because from the operator's side it is the same fact: the cycle
+    /// went out whole, and this is why.
+    ///
+    /// The cell already refuses a *net* that would rest on such a gateway
+    /// (`Cell::resolve_pricing`, under the `pricing` gate) for the same
+    /// reason — "a resting order nothing can withdraw is refused rather than
+    /// left to fill at a price the market has since left". A cycle leg is
+    /// not refused, because unlike a net it has an alternative, and that
+    /// alternative is exactly what the cell did before this mechanism
+    /// existed.
+    NoWithdrawal,
 }
 
 impl WholeReason {
@@ -119,6 +133,7 @@ impl WholeReason {
             Self::Unmeasured => "unmeasured",
             Self::NoSlowest => "no_slowest",
             Self::WithinBound => "within_bound",
+            Self::NoWithdrawal => "no_withdrawal",
         }
     }
 }

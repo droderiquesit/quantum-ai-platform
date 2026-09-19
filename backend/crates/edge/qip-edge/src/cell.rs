@@ -19,7 +19,7 @@ use crate::feasibility::{self, VenueModel};
 use crate::journal::{Decision, Journal, Mirror};
 use crate::mesh::{CellStateDelta, DeltaOrder, DeltaRefusal, StrategyUtilisation};
 use crate::mirror::MirrorArrangement;
-use crate::passive::{self, PassiveChoice, PassiveOutcome};
+use crate::passive::{self, PassiveChoice, PassiveOutcome, WholeReason};
 use crate::policy::{VerifiedHalt, VerifiedPolicy};
 use crate::quoting::{Admission, Depletion, MessageKind, QuoteBudget, RateLimits};
 use crate::region::RegionOutlook;
@@ -5132,63 +5132,70 @@ impl Cell {
         // the same reason: the fraction belongs to the cycle, not the pass.
         let mut decomposition = Decomposition::new(self.config.decomposition);
         let venues: Vec<VenueId> = cycle.legs.iter().map(|leg| leg.venue.clone()).collect();
-        match passive::choose(
+        let declined = match passive::choose(
             &venues,
             &self.venue_medians(),
             self.fill_times.policy().bound(),
         ) {
+            // A leg may only rest where the cell could withdraw it. The same
+            // guard `resolve_pricing` puts on a resting net, for the same
+            // reason: an order nothing can take back sits at a price the
+            // market has since left — and here it would strand the rest of
+            // the cycle behind it for as long as the venue kept it.
             PassiveChoice::Rest {
                 position,
                 venue,
                 median,
-            } => self.rest_cycle_leg(
+            } if gateway.can_cancel() => {
+                return self.rest_cycle_leg(
+                    cycle,
+                    position,
+                    &venue,
+                    median,
+                    decomposition,
+                    now,
+                    gateway,
+                    report,
+                );
+            }
+            PassiveChoice::Rest { .. } => WholeReason::NoWithdrawal,
+            PassiveChoice::Whole(reason) => reason,
+        };
+        self.metrics.passive_cycle(PassiveOutcome::Whole(declined));
+        let mut orders: Vec<String> = Vec::with_capacity(cycle.legs.len());
+        for position in 0..cycle.legs.len() {
+            let (order_id, quantity) = self.send_cycle_leg(
                 cycle,
                 position,
-                &venue,
-                median,
-                decomposition,
+                None,
+                &mut decomposition,
                 now,
                 gateway,
                 report,
-            ),
-            PassiveChoice::Whole(reason) => {
-                self.metrics.passive_cycle(PassiveOutcome::Whole(reason));
-                let mut orders: Vec<String> = Vec::with_capacity(cycle.legs.len());
-                for position in 0..cycle.legs.len() {
-                    let (order_id, quantity) = self.send_cycle_leg(
-                        cycle,
-                        position,
-                        None,
-                        &mut decomposition,
-                        now,
-                        gateway,
-                        report,
-                    )?;
-                    orders.push(order_id.clone());
-                    self.observe_cycle_leg(
-                        cycle,
-                        position,
-                        &order_id,
-                        quantity,
-                        &mut decomposition,
-                        now,
-                        gateway,
-                        report,
-                    )?;
-                }
-                // Every leg is out, so the cycle's hold on the region is spend.
-                self.commit_cycle_hold(&cycle.cycle_id);
-                self.journal.record(
-                    Decision::CycleCommitted {
-                        cycle_id: cycle.cycle_id.clone(),
-                        orders,
-                        net: cycle.net.to_string(),
-                    },
-                    now,
-                );
-                Ok(())
-            }
+            )?;
+            orders.push(order_id.clone());
+            self.observe_cycle_leg(
+                cycle,
+                position,
+                &order_id,
+                quantity,
+                &mut decomposition,
+                now,
+                gateway,
+                report,
+            )?;
         }
+        // Every leg is out, so the cycle's hold on the region is spend.
+        self.commit_cycle_hold(&cycle.cycle_id);
+        self.journal.record(
+            Decision::CycleCommitted {
+                cycle_id: cycle.cycle_id.clone(),
+                orders,
+                net: cycle.net.to_string(),
+            },
+            now,
+        );
+        Ok(())
     }
 
     /// What each venue's fill time has been measured at, for the venues with
