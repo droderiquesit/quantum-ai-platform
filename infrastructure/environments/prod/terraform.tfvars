@@ -99,6 +99,12 @@ execution_nodes = {}
 # shipped `conservative_default` is the only set any process has run under.
 # risk_limits_file = "data/risk-limits/<the desk's signed set>.json" would
 # mount it; dev/terraform.tfvars says what that means.
+#
+# region_dark_after stays null — ADR 0079's window, QIP_REGION_DARK_AFTER on
+# the API — because this API serves no mesh, so a window would arm a
+# derivation over a centre that can hear no cell, and because no measurement
+# exists yet to pick the number from. Unset, the derivation is off and
+# /api/v1/regions says so; dev/terraform.tfvars says what setting it means.
 
 enable_bigquery      = false
 enable_cloud_storage = false

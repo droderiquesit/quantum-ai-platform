@@ -734,6 +734,44 @@ variable "deepbrain_discover_every" {
   }
 }
 
+variable "region_dark_after" {
+  description = <<-EOT
+    How many seconds every cell of a region may be silent before the centre
+    derives the region dark (ADR 0079), read by the API as
+    `QIP_REGION_DARK_AFTER`, or null to leave the derivation off.
+
+    A string because it is an environment value, the same reason
+    `cycle_interval_seconds` is one; `qip-api` parses it as whole seconds and
+    stops the process on anything else, naming the variable, rather than
+    running healthy with the control silently disarmed. Zero and a negative
+    are refused here and at the process — a region silent for no time at all
+    is every region between two reports. The process also refuses a window
+    above the kernel's envelope ceiling (`MAXIMUM_ENVELOPE_VALIDITY` in
+    `qip-capital`), which this validation does not restate: a copy of that
+    bound here would be a second claim about one fact, and the two would
+    drift.
+
+    Null today in every environment, and deliberately so. No default,
+    because there is no measurement in this tree to pick a window from (the
+    ADR says so under "What it costs"). And null rather than a guess,
+    because the API on Cloud Run serves no mesh (`QIP_MESH_CELLS` is unset —
+    `manifest_wiring.rs` records why), so a window stated here today would
+    arm a derivation over a centre that can hear no cell, and
+    `/api/v1/regions` would render the window as though somebody were
+    looking. Set it beside the mesh, when the fabric exists, and read the
+    `region.dark` and `region.lit` journal topics to learn whether the
+    number was right.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.region_dark_after == null ? true : can(regex("^[1-9][0-9]*$", var.region_dark_after))
+    error_message = "The dark-region window is a whole, positive number of seconds. Zero and a negative are refused because a region silent for no time at all is every region between two reports; a fraction is refused because the API reads whole seconds; and unset (null) is the derivation off, said so on the API's banner."
+  }
+}
+
 variable "notification_channels" {
   description = "Where alerts are sent. An alert with nowhere to go is not an alert."
   type        = list(string)

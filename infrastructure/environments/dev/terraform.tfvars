@@ -398,6 +398,23 @@ vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7ec
 #   of zero — no pass — which matches the fact that `source_candidates_file`
 #   above is also null: a cadence with nothing to assess would run and decide
 #   about nothing, so the pair is turned on together or not at all.
+#
+# region_dark_after = "<a whole number of seconds, e.g. 300>"
+#   would have the API derive a region dark once every cell in it has been
+#   silent that long (QIP_REGION_DARK_AFTER, ADR 0079): nothing new is
+#   granted into a dark region, its share is frozen at its last lit value,
+#   its last book is held in the aggregate rather than dropped, and every
+#   mirror into it suspends. Left null, the derivation is off and
+#   /api/v1/regions answers `"region_dark_after": null` — "nobody is looking",
+#   said out loud rather than read as "no region is dark". Null here for two
+#   reasons. This API serves no mesh (QIP_MESH_CELLS is unset: a Cloud Run
+#   service publishes one port), so a window would arm a derivation over a
+#   centre that can hear no cell, and the route would render the window as
+#   though somebody were. And no measurement exists yet to pick the number
+#   from — too short refuses healthy regions their grants, too long delays
+#   the refusal past the point it protects anything. Set it beside the mesh,
+#   when the fabric exists; the API refuses zero, a fraction and anything
+#   above the twelve-hour envelope ceiling at start-up, naming this variable.
 
 # --- Customer identity ------------------------------------------------------
 # Identity Platform for customer sign-in, activated once real hostnames
