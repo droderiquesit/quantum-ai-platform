@@ -44,6 +44,8 @@ pub mod feasibility;
 pub mod journal;
 pub mod mesh;
 pub mod mirror;
+/// §32.1's passive-first mechanism: which leg of a cycle rests, and why.
+pub mod passive;
 pub mod policy;
 /// §29.2 priority allocation: which quote update gets the message.
 pub mod priority;
@@ -59,9 +61,10 @@ pub mod telemetry;
 pub use arbitrage::ArbitrageDesk;
 pub use cell::{
     Cell, CellConfig, ConfirmedFill, CrossingInterval, ExecutionReport,
-    GATE_AWAITING_RECONCILIATION, GATE_DARK_REGION, GATE_FILL_DISPERSION, GATE_LIVE_VENUE,
-    GATE_MASS_CANCEL, GATE_PATH_EXTENSION, GATE_PATH_ROUTER, GATE_QUOTE_BUDGET, MAX_OPEN_ORDERS,
-    OpenOrder, PlacedOrder, Placer, PolledHalt, PricingPolicy, RoutedCycle, WorkReport,
+    GATE_AWAITING_RECONCILIATION, GATE_CYCLE_RESTING, GATE_DARK_REGION, GATE_FILL_DISPERSION,
+    GATE_LIVE_VENUE, GATE_MASS_CANCEL, GATE_PATH_EXTENSION, GATE_PATH_ROUTER, GATE_QUOTE_BUDGET,
+    MAX_OPEN_ORDERS, OpenOrder, PlacedOrder, Placer, PolledHalt, PricingPolicy, RoutedCycle,
+    WorkReport,
 };
 pub use decomposition::{
     Completion, DEFAULT_MINIMUM_VIABLE_FRACTION, Decomposition, DecompositionPolicy, LegSize,
@@ -78,6 +81,7 @@ pub use mesh::{
     UplinkConfig, UplinkStats,
 };
 pub use mirror::{MirrorArrangement, MirroredInstrument};
+pub use passive::{PassiveChoice, PassiveOutcome, WholeReason};
 pub use policy::{VerifiedHalt, VerifiedPolicy};
 pub use priority::{Candidate, allocate, worth};
 pub use quoting::{

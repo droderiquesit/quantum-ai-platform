@@ -53,6 +53,7 @@
 //! says what bounds its own label.
 
 use crate::decomposition::Completion;
+use crate::passive::PassiveOutcome;
 use crate::quoting::{MessageKind, VenueBudgetState};
 use crate::region::DarkSource;
 use qip_contracts::degradation::{Capability, DegradationState, Freshness};
@@ -228,6 +229,21 @@ pub const EDGE_FILL_TIME_MILLIS: &str = "qip_edge_fill_time_millis";
 /// series that counted only the legs that filled short.
 pub const EDGE_CYCLE_LEGS: &str = "qip_edge_cycle_legs_total";
 
+/// Arbitrage cycles by what §32.1's passive-first mechanism did with them.
+///
+/// `outcome` is [`crate::passive::PassiveOutcome::as_str`], six source-file
+/// literals across two `Copy` enums, so the series is bounded by them and
+/// never by a venue name or a cycle id.
+///
+/// Read as a whole rather than one arm at a time. The three declining arms —
+/// `single_venue`, `unmeasured`, `no_slowest` — are the denominator, and
+/// without them a cell that has never rested a leg and a cell that has never
+/// run a cycle are the same empty series. `abandoned` is the arm the
+/// mechanism exists to produce: a cycle whose slow leg was withdrawn without
+/// filling anything never became a position at all, where the all-at-once
+/// discipline would already have crossed the fast legs against it.
+pub const EDGE_PASSIVE_CYCLES: &str = "qip_edge_passive_cycles_total";
+
 /// Configured venues that have produced too few fills for their fill time to
 /// be judged (§32.1).
 ///
@@ -391,6 +407,11 @@ impl CellMetrics {
         m.describe(
             EDGE_FILL_TIME_UNMEASURED,
             "configured venues with too few fills for their fill time to be judged",
+        );
+        m.describe(
+            EDGE_PASSIVE_CYCLES,
+            "arbitrage cycles by what passive-first did with them: rested, completed, \
+             abandoned, or sent whole under single_venue, unmeasured or no_slowest",
         );
         m.describe(
             EDGE_REGIONS_DARK,
@@ -807,6 +828,19 @@ impl CellMetrics {
             EDGE_CYCLE_LEGS,
             self.with("completion", completion.as_str()),
         );
+    }
+
+    /// What §32.1's passive-first mechanism did with one arbitrage cycle.
+    ///
+    /// Recorded where each fact becomes known and nowhere else: `whole` and
+    /// `rested` inside `Cell::place_cycle` at the moment the choice is taken,
+    /// `completed` and `abandoned` on the later pass where the resting leg's
+    /// own venue has answered. Four separate instants, which is why this is
+    /// one counter with an outcome rather than a gauge of a state — a cycle
+    /// that rested and then completed is two facts and not one that changed.
+    pub fn passive_cycle(&self, outcome: PassiveOutcome) {
+        self.metrics
+            .count(EDGE_PASSIVE_CYCLES, self.with("outcome", outcome.as_str()));
     }
 
     pub fn reconciliation_break(&self) {
