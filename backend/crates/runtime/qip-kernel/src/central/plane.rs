@@ -20,6 +20,7 @@
 //! rather than a generated id, so a replay of the same reports produces the
 //! same halts and the same recalls.
 
+use super::darkness::{LastHeard, RegionDarkness, RegionTransition};
 use super::dna::StrategyDna;
 use super::factory::StrategyFactory;
 use super::horizon::{HorizonArming, HorizonPolicy, PoolReconciler, UnarmedHorizons};
@@ -153,6 +154,26 @@ pub struct CentralConfig {
     /// silently arming nothing.
     #[serde(default)]
     pub horizons: Option<HorizonPolicy>,
+    /// How long every cell of a region may be silent before the centre
+    /// derives the region dark (ADR 0079), or `None` for no derivation.
+    ///
+    /// **Stated by an operator, and deliberately given no default.** There is
+    /// no measurement in this tree to pick the number from: too short refuses
+    /// healthy regions their grants, too long delays the refusal past the
+    /// point it protects anything, and a default would be a number nobody
+    /// chose sitting where a region's capital is decided. `None` means the
+    /// derivation is off, and [`CentralPlane::region_dark_after`] says so to
+    /// every reader rather than reporting "no region is dark" as if it had
+    /// looked. `#[serde(default)]` so a configuration written before the
+    /// field reads — as off, which is what it was.
+    ///
+    /// [`CentralPlane::new`] refuses zero, because a region silent for no
+    /// time at all is every region between two reports, and refuses a window
+    /// above [`MAXIMUM_ENVELOPE_VALIDITY`], because a darkness the centre
+    /// would notice only after every envelope in the region had already
+    /// expired is a control that fires after the fact it exists to catch.
+    #[serde(default)]
+    pub region_dark_after: Option<Duration>,
 }
 
 impl Default for CentralConfig {
@@ -177,6 +198,7 @@ impl Default for CentralConfig {
             response_floor: Severity::Observation,
             arbitrage: None,
             horizons: None,
+            region_dark_after: None,
         }
     }
 }
@@ -294,6 +316,16 @@ impl ReconciliationBreak {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CellReport {
     pub cell: String,
+    /// The region the cell reports itself in — the `region` its delta has
+    /// carried since the delta existed, filled by `qip_api::mesh::report_from`
+    /// (ADR 0079 decision two). The only fact the centre derives a region's
+    /// darkness from, and a self-assertion on a wire that authenticates
+    /// nobody: it can move a cell's silence between regions and nothing
+    /// else, because every consequence of darkness is a refusal. Defaulted,
+    /// so a report journaled before the field replays — as a cell in no
+    /// region, which contributes to no derivation.
+    #[serde(default)]
+    pub region: String,
     pub at: Timestamp,
     pub positions: Vec<CellPosition>,
     /// What each strategy has committed against its envelope.
@@ -334,6 +366,7 @@ impl CellReport {
     pub fn new(cell: impl Into<String>, at: Timestamp) -> Self {
         Self {
             cell: cell.into(),
+            region: String::new(),
             at,
             positions: Vec::new(),
             utilisation: Vec::new(),
@@ -347,6 +380,12 @@ impl CellReport {
 
     pub fn with_refusals(mut self, refusals: Vec<DeltaRefusal>) -> Self {
         self.refusals = refusals;
+        self
+    }
+
+    /// The region the cell reports itself in. See the field.
+    pub fn with_region(mut self, region: impl Into<String>) -> Self {
+        self.region = region.into();
         self
     }
 
@@ -748,6 +787,32 @@ pub struct CentralPlane {
     /// refusal is an echo once more and an echo is classified on its own
     /// terms.
     reinstated_venues: BTreeSet<String>,
+    /// When the centre last heard from each cell, and the region the cell
+    /// said it was in — the whole of the input a region's darkness is
+    /// derived from (ADR 0079). Written in [`Self::ingest`] before anything
+    /// can refuse the report, because a halted cell still spoke; read by
+    /// [`Self::dark_regions`] on every call and cached nowhere. Bounded by
+    /// the cells that have ever reported.
+    last_heard: BTreeMap<String, LastHeard>,
+    /// The regions whose darkness the platform has journaled and not yet
+    /// journaled the end of. **Not the derivation and read by nothing that
+    /// decides**: `dark_regions` recomputes from `last_heard` every time,
+    /// and this set exists only so [`Self::region_transitions`] can offer
+    /// each change once, in each direction, and the platform can write the
+    /// record before the set moves. Empty after a restart, when every region
+    /// is unknown rather than dark; a region that was dark across a restart
+    /// gets no `region.lit` record when it speaks, and the log carries a
+    /// `service.started` between the two instead.
+    announced_dark: BTreeSet<String>,
+    /// The share bound each cell was last computed while its region was
+    /// lit. Read only for a cell whose region is dark, by
+    /// [`Self::region_shares`], which hands the cell this number rather
+    /// than the plan's current one: a dark region's share is frozen, neither
+    /// counted as free nor recomputed, so nothing the allocator does while a
+    /// region is silent moves that region's bound (ADR 0079 decision four).
+    /// A dark cell with no entry here is withheld a manifest, with the
+    /// reason, rather than given a share computed on a dark reading.
+    lit_share_bounds: BTreeMap<String, Decimal>,
 }
 
 impl CentralPlane {
@@ -810,6 +875,34 @@ impl CentralPlane {
                 config.recall_acknowledgement.as_secs_f64()
             )));
         }
+        // ADR 0079's window, refused at both ends and never clamped. Zero
+        // would derive every region dark between any two reports; a window
+        // past the envelope ceiling would notice a region's silence only
+        // after every grant in it had already expired on its own, which is a
+        // control that fires after the fact it exists to catch. `None` is
+        // not refused: it is the derivation switched off, said so by
+        // `region_dark_after`, and is what every configuration written
+        // before the field means.
+        if let Some(window) = config.region_dark_after {
+            if window <= Duration::ZERO {
+                return Err(Error::invalid(format!(
+                    "CentralConfig::region_dark_after is {:.0} second(s); a region cannot be \
+                     dark after no silence at all, so state a positive window or omit the \
+                     field to leave the derivation off",
+                    window.as_secs_f64()
+                )));
+            }
+            if window > MAXIMUM_ENVELOPE_VALIDITY {
+                return Err(Error::denied(format!(
+                    "CentralConfig::region_dark_after is {:.1} hour(s), above the {:.1} hour \
+                     envelope ceiling; a region whose silence is noticed only after every \
+                     grant in it has expired is noticed too late to refuse anything, so \
+                     state a window at or under the ceiling",
+                    window.as_secs_f64() / 3600.0,
+                    MAXIMUM_ENVELOPE_VALIDITY.as_secs_f64() / 3600.0
+                )));
+            }
+        }
         // Refused here for the same reason the recall window is: every
         // refusal in `ArbitragePolicy::validate` is one the cell would make
         // when the whitelist arrived, and a plane that carried one would ship
@@ -861,6 +954,9 @@ impl CentralPlane {
             realised: BTreeMap::new(),
             withdrawn_venues: BTreeSet::new(),
             reinstated_venues: BTreeSet::new(),
+            last_heard: BTreeMap::new(),
+            announced_dark: BTreeSet::new(),
+            lit_share_bounds: BTreeMap::new(),
         })
     }
 
@@ -997,14 +1093,165 @@ impl CentralPlane {
     /// [`Self::cycle_whitelist_for`] `retain`s against. The cells therefore
     /// refuse on exactly the set the centre's own whitelist omits on, and a
     /// withdrawal the log does not hold reaches neither.
-    pub fn feasibility_constraints(&self) -> FeasibilityConstraints {
+    ///
+    /// **And the dark regions, derived at `now`** (ADR 0079 decision five).
+    /// The set a cell suspends its mirrors on is the same derivation `issue`
+    /// refuses on and the share freeze reads, taken at the instant the slot
+    /// is produced, so the cells and the centre cannot disagree about which
+    /// regions are dark at one payload. Empty — and so absent from the wire,
+    /// leaving every pre-field digest intact — whenever the derivation is
+    /// off or nothing is dark.
+    pub fn feasibility_constraints(&self, now: Timestamp) -> FeasibilityConstraints {
         FeasibilityConstraints {
             minimum_order: BTreeMap::new(),
             fee_floor: BTreeMap::new(),
             tick: BTreeMap::new(),
             withdrawn_venues: self.withdrawn_venues.clone(),
-            dark_regions: BTreeSet::new(),
+            dark_regions: self.dark_regions(now),
         }
+    }
+
+    // --- ADR 0079: a dark region is the centre's word for silence ----------
+
+    /// The operator's window, or `None` where the derivation is off.
+    ///
+    /// Every surface that renders darkness reads this first, so an operator
+    /// looking at "no region is dark" can tell it from "nobody is looking".
+    pub fn region_dark_after(&self) -> Option<Duration> {
+        self.config.region_dark_after
+    }
+
+    /// When the centre last heard from each cell, and where the cell said it
+    /// was. The input to the derivation, in cell order.
+    pub fn last_heard(&self) -> &BTreeMap<String, LastHeard> {
+        &self.last_heard
+    }
+
+    /// Every region dark at `now`, with the reading each was derived from,
+    /// in region order.
+    ///
+    /// Derived on every call and stored nowhere: a region is dark when the
+    /// centre has heard from at least one of its cells and the most recent
+    /// such report is more than the window old. Silence is measured on the
+    /// centre's clock (`LastHeard::at` is the ingestion instant), and a
+    /// region whose last report is *exactly* the window old is not yet dark
+    /// — "silent past the interval", not "silent for the interval". With no
+    /// window configured nothing is dark, and [`Self::region_dark_after`]
+    /// is how a reader tells that apart from a healthy fleet.
+    pub fn region_darkness(&self, now: Timestamp) -> BTreeMap<String, RegionDarkness> {
+        let Some(window) = self.config.region_dark_after else {
+            return BTreeMap::new();
+        };
+        // The most recent report per region, and which cell made it. A cell
+        // that reported no region is in none and derives nothing.
+        let mut latest: BTreeMap<&str, (&str, Timestamp)> = BTreeMap::new();
+        for (cell, heard) in &self.last_heard {
+            if heard.region.is_empty() {
+                continue;
+            }
+            match latest.get(heard.region.as_str()) {
+                Some((_, at)) if *at >= heard.at => {}
+                _ => {
+                    latest.insert(heard.region.as_str(), (cell.as_str(), heard.at));
+                }
+            }
+        }
+        latest
+            .into_iter()
+            .filter(|(_, (_, at))| now > at.saturating_add(window))
+            .map(|(region, (cell, at))| {
+                (
+                    region.to_string(),
+                    RegionDarkness {
+                        region: region.to_string(),
+                        last_heard_from: cell.to_string(),
+                        last_heard_at: at,
+                        window,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// The names of every region dark at `now` — what the feasibility slot
+    /// ships and the share freeze reads.
+    pub fn dark_regions(&self, now: Timestamp) -> BTreeSet<String> {
+        self.region_darkness(now).into_keys().collect()
+    }
+
+    /// Whether `cell` is in a region dark at `now`, and the reading if so.
+    ///
+    /// Keyed on the region the cell itself last reported, because that is
+    /// the only region the centre has for it; a cell the centre has never
+    /// heard from is in no region and is not refused here — it is unknown,
+    /// and unknown already receives no share.
+    pub fn darkness_of(&self, cell: &str, now: Timestamp) -> Option<RegionDarkness> {
+        let region = self.last_heard.get(cell)?.region.as_str();
+        self.region_darkness(now).remove(region)
+    }
+
+    /// Every change in derived darkness since the last announced read, for
+    /// the platform to journal — a `WentDark` for each region dark now and
+    /// not yet announced, a `SpokeAgain` for each region announced and no
+    /// longer dark.
+    ///
+    /// Pure: nothing moves until [`Self::announce`] is called with the
+    /// transition the platform has put in the log. A journal failure
+    /// therefore leaves the change pending and it is offered again on the
+    /// next read, under the same idempotency key, rather than being lost
+    /// between a set that moved and a record that never existed.
+    pub fn region_transitions(&self, now: Timestamp) -> Vec<RegionTransition> {
+        let dark = self.region_darkness(now);
+        let mut transitions = Vec::new();
+        for (region, reading) in &dark {
+            if !self.announced_dark.contains(region) {
+                transitions.push(RegionTransition::WentDark(reading.clone()));
+            }
+        }
+        for region in &self.announced_dark {
+            if dark.contains_key(region) {
+                continue;
+            }
+            // The report that cleared it: the most recent from any cell of
+            // the region. Absent only if the region was announced from a
+            // reading this plane no longer holds, which no path produces —
+            // `last_heard` is never pruned — so the arm is a refusal to
+            // guess rather than a case.
+            let Some((cell, heard_at)) = self
+                .last_heard
+                .iter()
+                .filter(|(_, heard)| heard.region == *region)
+                .map(|(cell, heard)| (cell.clone(), heard.at))
+                .max_by_key(|(_, at)| *at)
+            else {
+                continue;
+            };
+            transitions.push(RegionTransition::SpokeAgain {
+                region: region.clone(),
+                cell,
+                heard_at,
+            });
+        }
+        transitions
+    }
+
+    /// Record that `transition` is in the log, so it is not offered again.
+    pub fn announce(&mut self, transition: &RegionTransition) {
+        match transition {
+            RegionTransition::WentDark(reading) => {
+                self.announced_dark.insert(reading.region.clone());
+            }
+            RegionTransition::SpokeAgain { region, .. } => {
+                self.announced_dark.remove(region);
+            }
+        }
+    }
+
+    /// The regions whose darkness has been journaled and not yet cleared —
+    /// the announced set, for a reader that wants to compare it with the
+    /// derivation. Decides nothing.
+    pub fn announced_dark(&self) -> &BTreeSet<String> {
+        &self.announced_dark
     }
 
     /// Count every strategy move the plane's ledger records, and every
@@ -1502,13 +1749,56 @@ impl CentralPlane {
     /// refusal rather than a correction. Membership is an argument rather
     /// than configuration because where it comes from is the ADR's third
     /// owner decision, still open.
+    ///
+    /// **A dark region's share is frozen** (ADR 0079 decision four). Each
+    /// cell whose region the membership files under a name dark at `now` is
+    /// partitioned at the bound it last had while lit, not at the plan's
+    /// current figure, and a dark cell with no such bound is withheld with
+    /// the reason. The frozen bound still counts against the region's grant
+    /// in the partitioner's invariant, so it is neither freed to the other
+    /// cells of that region nor recomputed; and since `issue` refuses a
+    /// grant into a dark region, the manifest a frozen share names can lose
+    /// grants to expiry and never gain one. `&mut self` because the bound
+    /// each lit cell is partitioned at is what the next dark reading will
+    /// freeze — the memory is written here and nowhere else.
     pub fn region_shares(
-        &self,
+        &mut self,
         plan: &AllocationPlan,
         membership: &RegionMembership,
         now: Timestamp,
     ) -> Result<RegionShares> {
-        partition(plan, membership, &self.envelopes, now)
+        let dark = self.dark_regions(now);
+        let mut frozen: BTreeMap<String, Decimal> = BTreeMap::new();
+        let mut unfrozen: Vec<String> = Vec::new();
+        for (cell, region) in membership.cells() {
+            if !dark.contains(region) {
+                continue;
+            }
+            match self.lit_share_bounds.get(cell) {
+                Some(bound) => {
+                    frozen.insert(cell.clone(), *bound);
+                }
+                None => unfrozen.push(cell.clone()),
+            }
+        }
+        let mut shares = partition(plan, membership, &self.envelopes, &frozen, now)?;
+        for cell in unfrozen {
+            let region = membership.region_of(&cell).unwrap_or_default().to_string();
+            shares.withhold(
+                &cell,
+                format!(
+                    "cell {cell} is in region {region}, which is dark, and no share bound was \
+                     computed for it while the region was lit; nothing new enters a dark \
+                     region, so no manifest ships until one of its cells reports again"
+                ),
+            );
+        }
+        for (cell, share) in shares.shares() {
+            if !dark.contains(share.region()) {
+                self.lit_share_bounds.insert(cell.clone(), share.amount());
+            }
+        }
+        Ok(shares)
     }
 
     /// The `capital_grants` slot for every configured cell's payload: each
@@ -1524,7 +1814,7 @@ impl CentralPlane {
     /// membership is withheld with that: no cell is ever shipped a manifest
     /// the plan did not produce, and none is given a region by default.
     pub fn grant_manifests<'a>(
-        &self,
+        &mut self,
         cells: impl IntoIterator<Item = &'a str>,
         membership: &RegionMembership,
         drawdown: f64,
@@ -1628,6 +1918,20 @@ impl CentralPlane {
                 Error::guard(format!("{strategy} was allocated nothing: {refusal}"))
             })?
             .clone();
+
+        // ADR 0079 decision four: nothing new enters a dark region. Refused
+        // here, after the allocator has named the cell and before either
+        // record is signed, so a refusal leaves no half-issued grant behind.
+        // The refusal carries the reading it was made from — the region, the
+        // cell last heard from, the instant and the window — because an
+        // operator told only "region dark" has to re-derive all four.
+        if let Some(darkness) = self.darkness_of(&allocation.cell, now) {
+            return Err(Error::denied(format!(
+                "no envelope is issued to {strategy} at {}: {}",
+                allocation.cell,
+                darkness.describe()
+            )));
+        }
 
         let terms = EnvelopeTerms::from_allocation(&allocation, self.config.envelope_validity);
         let envelope = self.issuer.issue(&terms, approval, now)?;
@@ -1734,10 +2038,29 @@ impl CentralPlane {
             }
         }
 
+        // The centre heard from this cell, now, in the region it says it is
+        // in — written before anything below can halt or refuse the report,
+        // because a halted cell still spoke and a region whose only cell is
+        // halted is not dark, it is halted, which the kill switch already
+        // says. `now` and not `report.at`: silence is measured on the
+        // centre's clock, since a silent cell's clock is exactly what the
+        // centre cannot read.
+        self.last_heard.insert(
+            report.cell.clone(),
+            LastHeard {
+                region: report.region.clone(),
+                at: now,
+            },
+        );
+
         let absorbed = report.positions.len();
         // Replace rather than merge: the report is the whole of this cell's
         // book, and a stale position that survived a replace would show up in
-        // the aggregate as risk nobody holds.
+        // the aggregate as risk nobody holds. Never removed and never zeroed
+        // by silence: a dark region's last book stays here, in the aggregate
+        // below, in every concentration, in `crowded`'s cell count and in
+        // `cells_behind`, because a position does not vanish when its
+        // reporter does (ADR 0079 decision three).
         self.positions
             .insert(report.cell.clone(), report.positions.clone());
         let all: Vec<CellPosition> = self.positions.values().flatten().cloned().collect();

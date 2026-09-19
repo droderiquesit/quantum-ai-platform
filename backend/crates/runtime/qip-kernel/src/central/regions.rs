@@ -286,6 +286,14 @@ impl RegionShares {
         &self.withheld
     }
 
+    /// Withhold `cell` after the fact, with the reason. A subtraction: the
+    /// cell's share, if one was computed, is removed rather than shipped
+    /// beside a reason it was not.
+    pub(crate) fn withhold(&mut self, cell: &str, reason: String) {
+        self.shares.remove(cell);
+        self.withheld.insert(cell.to_string(), reason);
+    }
+
     /// The shares of one region summed — the number the region's grant
     /// bounds.
     pub fn region_total(&self, region: &str) -> Result<Decimal> {
@@ -400,18 +408,27 @@ impl GrantManifests {
 /// A cell in the plan but in no region is withheld, not given a share of a
 /// region it is not in; a cell in a region but absent from the plan gets a
 /// share of zero and an empty manifest, which the cell reads as "nothing".
+///
+/// `frozen` is the share bound each named cell is partitioned at *instead
+/// of* the plan's figure — ADR 0079's dark regions, whose bound is held at
+/// its last lit value. A frozen bound counts against its region's grant in
+/// the invariant exactly as a plan figure would, so a region cannot be
+/// over-committed by the allocator moving what it thinks a silent cell
+/// freed, and the plan's own figure for that cell is read by nothing.
 pub fn partition(
     plan: &AllocationPlan,
     membership: &RegionMembership,
     envelopes: &BTreeMap<(String, StrategyId), CapitalEnvelope>,
+    frozen: &BTreeMap<String, Decimal>,
     now: Timestamp,
 ) -> Result<RegionShares> {
+    let bound_for = |cell: &String| frozen.get(cell).copied().unwrap_or_else(|| plan.for_cell(cell));
     // The invariant first, over every region, before any share exists: a
     // plan that over-commits one region is refused whole. Scaling it down
     // instead would ship every cell a number the allocator never produced.
     let mut totals: BTreeMap<&str, Decimal> = BTreeMap::new();
     for (cell, region) in membership.cells() {
-        let amount = plan.for_cell(cell);
+        let amount = bound_for(cell);
         if amount.is_negative() {
             return Err(Error::invalid(format!(
                 "the plan allocates {amount} to cell {cell}; a negative allocation is the \
@@ -443,7 +460,7 @@ pub fn partition(
 
     let mut shares = RegionShares::default();
     for (cell, region) in membership.cells() {
-        let amount = plan.for_cell(cell);
+        let amount = bound_for(cell);
         let mut live_grants = Vec::new();
         let mut named_gross = Decimal::ZERO;
         let mut overflowed = false;

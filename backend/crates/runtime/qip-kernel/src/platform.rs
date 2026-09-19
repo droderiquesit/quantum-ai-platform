@@ -39,6 +39,7 @@ use crate::central::{
     DispositionOutcome, EpisodicIssue, FamilyStructureJournal, HorizonArming, LearningReport,
     WhitelistIssue,
 };
+use crate::central::darkness::{RegionSpokeAgain, RegionTransition, RegionWentDark};
 use crate::config::PlatformConfig;
 use crate::counterfactual_trial::{CounterfactualTrial, outcome as trial_outcome};
 use crate::cycle::{CycleReport, Stage, StageOutcome};
@@ -1083,6 +1084,10 @@ const VENUE_REINSTATEMENT_ORIGIN: &str = "kernel/venue-reinstatement";
 /// The producer on every record the LEARN stage's sizing review writes —
 /// a cap armed or released, and a larger-size proposal.
 const SIZING_REVIEW_ORIGIN: &str = "kernel/sizing-review";
+/// The producer every `region.dark` and `region.lit` record is journaled
+/// under (ADR 0079), so a reader can list the derivation's history without
+/// scanning every producer's records on the topic.
+pub const REGION_DARKNESS_ORIGIN: &str = "kernel/region-darkness";
 
 /// The producer on every record the LEARN stage's family review writes — the
 /// per-cycle measurement and the misallocation finding.
@@ -4317,8 +4322,97 @@ impl Platform {
     /// `venue.withdrawn`, written before `withdraw_venue` was allowed to
     /// touch the set at all, and a second record of one fact is the second
     /// source of truth ADR 0016 refuses.
-    pub fn feasibility_constraints(&self) -> FeasibilityConstraints {
-        self.central.feasibility_constraints()
+    ///
+    /// And the regions the plane derives dark at `now` (ADR 0079), which is
+    /// the other subtraction the slot carries: a cell suspends every mirror
+    /// into a named region. Derived at the instant the slot is produced,
+    /// from the same reading `CentralPlane::issue` refuses on, so the cells
+    /// and the centre act on one derivation per payload. The transition
+    /// into and out of darkness is journaled by [`Self::review_region_darkness`]
+    /// rather than here, for the same reason the withdrawn set is not: the
+    /// slot is a reading of the log's facts, not a second record of them.
+    pub fn feasibility_constraints(&self, now: Timestamp) -> FeasibilityConstraints {
+        self.central.feasibility_constraints(now)
+    }
+
+    /// Journal every change in the plane's derived darkness since the last
+    /// review — `region.dark` for a region that has gone silent past
+    /// `CentralConfig::region_dark_after`, `region.lit` for one that has
+    /// spoken again — and tell the plane each record is in the log.
+    ///
+    /// The record is written *before* the plane's announced set moves, and
+    /// the set moves only on a successful write, so a journal failure
+    /// leaves the transition pending: the next review offers it again under
+    /// the same idempotency key and nothing is lost between a set that moved
+    /// and a record that never existed. The derivation itself never waits
+    /// on this — `issue`, the share freeze and the feasibility slot read
+    /// `dark_regions(now)` directly — so a journal that cannot be written
+    /// delays the operator's record and never a refusal.
+    ///
+    /// Called from the ACT stage on every cycle, so a region that went dark
+    /// by the passage of time is recorded on the next cycle, and from
+    /// [`Self::ingest_cell_report`] on both sides of the ingest, so a region
+    /// that went dark and spoke again between two cycles leaves both marks
+    /// rather than none. Same `(summary, problems)` shape as
+    /// [`Self::review_venues`].
+    pub fn review_region_darkness(&mut self, now: Timestamp) -> (Option<String>, Vec<String>) {
+        let transitions = self.central.region_transitions(now);
+        if transitions.is_empty() {
+            return (None, Vec::new());
+        }
+        let mut summaries = Vec::new();
+        let mut problems = Vec::new();
+        for transition in transitions {
+            let written = match &transition {
+                RegionTransition::WentDark(reading) => self.journal_once(
+                    RegionWentDark::of(reading, self.cycle),
+                    REGION_DARKNESS_ORIGIN,
+                    now,
+                ),
+                RegionTransition::SpokeAgain {
+                    region,
+                    cell,
+                    heard_at,
+                } => self.journal_once(
+                    RegionSpokeAgain {
+                        region: region.clone(),
+                        cell: cell.clone(),
+                        heard_at: *heard_at,
+                        cycle: self.cycle,
+                    },
+                    REGION_DARKNESS_ORIGIN,
+                    now,
+                ),
+            };
+            match written {
+                Ok(_) => {
+                    self.central.announce(&transition);
+                    summaries.push(match &transition {
+                        RegionTransition::WentDark(reading) => format!(
+                            "region {} derived dark (last heard through {} at {})",
+                            reading.region,
+                            reading.last_heard_from,
+                            reading.last_heard_at.to_rfc3339()
+                        ),
+                        RegionTransition::SpokeAgain { region, cell, .. } => {
+                            format!("region {region} spoke again through {cell}")
+                        }
+                    });
+                }
+                Err(error) => problems.push(format!(
+                    "region {} changed darkness and the record could not be journaled, so \
+                     the change is still pending: {}",
+                    transition.region(),
+                    error.message()
+                )),
+            }
+        }
+        let summary = if summaries.is_empty() {
+            None
+        } else {
+            Some(summaries.join("; "))
+        };
+        (summary, problems)
     }
 
     /// Produce one cell's cycle whitelist and journal what was produced.
@@ -4614,6 +4708,14 @@ impl Platform {
         // as a passing one.
         let netting = crate::blueprint_objectives::netting_ratio_of(&report.orders);
         let reported_at = report.at;
+        // ADR 0079: a region that went dark by the passage of time since the
+        // last cycle is recorded *before* this report can clear it, so a
+        // region that went dark and spoke again between two cycles leaves
+        // both marks. A journal failure here is a pending record, retried on
+        // the next review; it never refuses the report, because the
+        // derivation reads `last_heard` and not the log.
+        let (_, problems) = self.review_region_darkness(now);
+        self.capture_problems.extend(problems);
         // Two disjoint fields, borrowed as fields rather than through
         // accessors, which is what lets the central plane trip the platform's
         // own switch instead of keeping one of its own.
@@ -4724,6 +4826,12 @@ impl Platform {
                 ]),
             );
         }
+        // And the other direction: if this report was the first from a dark
+        // region, the `region.lit` record is written at the report rather
+        // than a cycle later, so the two records bracket exactly the window
+        // in which grants were refused.
+        let (_, problems) = self.review_region_darkness(now);
+        self.capture_problems.extend(problems);
         Ok(ingestion)
     }
 
@@ -11705,7 +11813,25 @@ impl Platform {
         // three the paper boundary already rests on, and `quote_loop.rs`'s
         // acceptance suite asserts it over production source *and*
         // behaviourally, by ending a real pass with no order and no fill.
-        crate::quote_loop::review(self, now, outcome)
+        let outcome = crate::quote_loop::review(self, now, outcome);
+
+        // ADR 0079: a region whose every cell has been silent past the
+        // operator's window is derived dark, and the transition — in either
+        // direction — is put on the record here, in the stage whose
+        // consequence it carries: from this instant `issue` refuses into the
+        // region, its share is frozen and the next feasibility slot names
+        // it. Journaled on the cycle rather than only at a report because a
+        // region that has gone dark sends no report to journal it on.
+        let (reviewed, problems) = self.review_region_darkness(now);
+        let mut outcome = outcome;
+        if let Some(reviewed) = reviewed {
+            let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
+        outcome
     }
 
     /// The largest whole number of the instrument's lots that does not exceed

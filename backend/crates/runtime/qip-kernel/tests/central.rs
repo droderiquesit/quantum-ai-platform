@@ -5294,7 +5294,7 @@ fn the_slot_the_centre_ships_carries_the_withdrawn_set_it_applies_and_states_no_
         !platform.issue_cycle_whitelist(CELL, now)?.is_empty(),
         "the premise failed: the grant emits no whitelist, so nothing is being withdrawn from"
     );
-    let before = platform.feasibility_constraints();
+    let before = platform.feasibility_constraints(now);
     assert!(
         before.withdrawn_venues.is_empty(),
         "the premise failed: something was already withdrawn: {:?}",
@@ -5314,7 +5314,7 @@ fn the_slot_the_centre_ships_carries_the_withdrawn_set_it_applies_and_states_no_
         "the premise failed: no withdrawal was journaled, so the slot has nothing to carry"
     );
 
-    let shipped = platform.feasibility_constraints();
+    let shipped = platform.feasibility_constraints(now);
     assert_eq!(
         shipped.withdrawn_venues,
         [VENUE.to_string()].into_iter().collect(),

@@ -660,10 +660,11 @@ fn a_payload_the_centre_built_funds_each_cell_to_exactly_its_share_and_the_two_n
             "{cell}'s share was not shipped: {line}"
         );
     }
-    let decided = centre.platform.central().grant_manifests(
+    let drawdown = centre.platform.drawdown();
+    let decided = centre.platform.central_mut().grant_manifests(
         [FIRST_CELL, SECOND_CELL],
         &membership,
-        centre.platform.drawdown(),
+        drawdown,
         at(10),
     );
     let mut shares_together = Decimal::ZERO;

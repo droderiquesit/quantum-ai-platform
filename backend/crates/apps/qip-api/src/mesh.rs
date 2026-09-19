@@ -774,13 +774,15 @@ pub fn pending_policy(
     // Without one, every live grant ships to every cell — the shape the ADR
     // grows out of, said out loud rather than defaulted silently, because
     // two nodes under one grant could each spend it.
+    // Read before the plane is borrowed mutably: `grant_manifests` records
+    // the share bound each lit cell is partitioned at, which is what a dark
+    // reading later freezes (ADR 0079), so the call needs the plane and the
+    // drawdown is the platform's.
+    let drawdown = platform.drawdown();
     let manifests = regions.map(|membership| {
-        platform.central().grant_manifests(
-            cells.iter().map(String::as_str),
-            membership,
-            platform.drawdown(),
-            now,
-        )
+        platform
+            .central_mut()
+            .grant_manifests(cells.iter().map(String::as_str), membership, drawdown, now)
     });
     let mut pending = PendingPolicy::default();
     // Once per cycle, before the loop: the memory is the platform's, so every
@@ -889,7 +891,8 @@ pub fn pending_policy(
         // to no §6.2 capability, so producing it changes no sizing
         // multiplier and lifts no pause, and its only reader,
         // `qip_edge::feasibility::assess`, reads it to refuse.
-        payload.feasibility_constraints = Slot::produced(platform.feasibility_constraints(), now);
+        payload.feasibility_constraints =
+            Slot::produced(platform.feasibility_constraints(now), now);
         // Slot twelve, §41.5's last and unproduced in every payload the centre
         // has ever built. `adversary_review::slot` is fail-closed twice over:
         // unproduced when nothing has been measured, and unproduced *entirely*
@@ -1397,13 +1400,20 @@ pub fn exchange_json(
 ///   a sentence would put fiction in the one record an incident reader
 ///   trusts.
 fn report_from(standing: &CellStanding) -> CellReport {
-    let mut report = CellReport::new(standing.cell.clone(), standing.at).with_utilisation(
-        standing
-            .utilisation
-            .iter()
-            .map(|entry| (entry.strategy.clone(), entry.utilisation.clone()))
-            .collect(),
-    );
+    // The region rides too (ADR 0079 decision two). It has been on the delta
+    // since the delta existed and was kept here for the status page alone;
+    // until this line the plane had no region for any cell and could derive
+    // no region dark. The whole cell-to-centre change for that ADR is this
+    // one builder call, which is the point: the wire gained no field.
+    let mut report = CellReport::new(standing.cell.clone(), standing.at)
+        .with_region(standing.region.clone())
+        .with_utilisation(
+            standing
+                .utilisation
+                .iter()
+                .map(|entry| (entry.strategy.clone(), entry.utilisation.clone()))
+                .collect(),
+        );
     for detail in &standing.reconciliation_breaks {
         report = report.with_break(ReconciliationBreak {
             instrument: "unquantified".to_string(),
