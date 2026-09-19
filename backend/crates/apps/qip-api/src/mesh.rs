@@ -61,7 +61,7 @@ use std::time::Duration as StdDuration;
 
 use qip_contracts::capital::CapitalEnvelope;
 use qip_contracts::policy::{
-    GrantManifest, HaltCommand, PolicyPayload, RiskEnvelopeSnapshot, Slot,
+    Dispositions, GrantManifest, HaltCommand, PolicyPayload, RiskEnvelopeSnapshot, Slot,
 };
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
@@ -654,6 +654,15 @@ pub struct PendingPolicy {
     /// asking why every cell still pauses situational recognition reads the
     /// answer here.
     pub episodic: Vec<String>,
+    /// One line per cell **that received one**: what ADR 0080's dispositions
+    /// slot carries — how many lots of how many retired strategies the cell
+    /// is to unwind. No line for a cell with nothing to unwind, because the
+    /// slot is absent from the wire then and a line saying "nothing" every
+    /// cycle for every cell would bury the one that says something. An
+    /// operator asking why a retired strategy's lot is still listed reads
+    /// here whether the instruction ever shipped, and reads the cell's own
+    /// journal for what it did with it.
+    pub dispositions: Vec<String>,
     /// One line per **cycle**, not per cell: what slot 3 carries and from how
     /// many open beliefs, or why nothing was produced.
     ///
@@ -904,6 +913,35 @@ pub fn pending_policy(
         // no cell reads it yet. Do not describe the profiles as acted on.
         payload.adversary_profiles =
             qip_kernel::adversary_review::slot(platform.fill_scores(), now);
+        // Slot thirteen (ADR 0080): the lots this cell holds for strategies
+        // the centre has retired, from the same derivation the centre lists
+        // orphans by. Produced only when there is one — an empty
+        // instruction is not "unwind nothing", it is a field on a signed
+        // wire that an older cell would refuse the whole payload over, so
+        // the slot stays absent (and the digest unchanged) until it says
+        // something. Stamped `now`, the instant the books were read: the
+        // schedule is derived rather than recorded, so there is no earlier
+        // producer instant to carry. What the cell may do with it is bounded
+        // at the cell, by the sign check in `qip_edge::Cell::work`, and
+        // nothing here widens that: `PolicyItem::capability` maps the slot
+        // to no §6.2 row, so producing it lifts no pause and moves no
+        // multiplier.
+        let unwinds = platform.central().scheduled_unwinds_for(&cell);
+        if !unwinds.is_empty() {
+            let dispositions = Dispositions { unwinds };
+            pending.dispositions.push(format!(
+                "dispositions for {cell}: {} lot(s) held for {} retired strateg{} shipped for \
+                 the cell to unwind reduce-only against its own book (ADR 0080)",
+                dispositions.len(),
+                dispositions.unwinds.len(),
+                if dispositions.unwinds.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
+            ));
+            payload.dispositions = Slot::produced(dispositions, now);
+        }
         pending.payloads.push((cell, payload));
     }
     pending
@@ -1087,6 +1125,7 @@ impl MeshBackbone {
             whitelist: pending.whitelist,
             shares: pending.shares,
             episodic: pending.episodic,
+            dispositions: pending.dispositions,
             ..PolicySummary::default()
         };
         let Some(key) = self.policy_key.clone() else {
@@ -1362,6 +1401,12 @@ pub struct PolicySummary {
     /// memory that never becomes knowable is the answer they are looking for.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub episodic: Vec<String>,
+    /// What ADR 0080's dispositions slot carried, for each cell that received
+    /// one this cycle — see [`PendingPolicy::dispositions`]. Absent when no
+    /// cell did, which is every cycle in which no retired strategy holds a
+    /// lot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dispositions: Vec<String>,
 }
 
 pub fn exchange_json(

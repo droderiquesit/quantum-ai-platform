@@ -26,9 +26,23 @@ pub enum PositionLifecycle {
     Flagged,
     /// The desk has decided to reduce the position to flat.
     Unwinding,
-    /// The position no longer has a controlling owner or strategy — found in
-    /// a reconciliation break rather than opened deliberately — and needs
-    /// disposition before it can be unwound or closed.
+    /// Its strategy retired while the position remained open (blueprint
+    /// §35.1). Reached from `Flagged` — the demotion the monitor makes before
+    /// any retirement, since the ledger retires only a strategy already
+    /// pushed off capital — or from `Unwinding`, for a retirement landing
+    /// mid-unwind; exits only to `Closed`, at flat. There is no `Orphaned →
+    /// Unwinding` because the orphan's unwind *is* its disposition (ADR
+    /// 0080): the centre lists the lot until the books say it is flat and
+    /// the owning cell reduces it, and no second state is needed to say so.
+    ///
+    /// This doc once read "found in a reconciliation break rather than
+    /// opened deliberately", which was a different meaning from the
+    /// blueprint's and was corrected by ADR 0080 rather than inherited.
+    /// **No production writer exists**, and none is invented: the centre's
+    /// position book is `StrategyLot`, not [`crate::Position`], so no
+    /// `Position` is reachable from a retirement. Should a seam ever hold a
+    /// `Portfolio` beside a retirement, the only admissible writer is the
+    /// application of the disposition the centre shipped.
     Orphaned,
     /// Flat, and done. Terminal: nothing may transition out of it.
     Closed,
