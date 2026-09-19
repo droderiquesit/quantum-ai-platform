@@ -1,11 +1,11 @@
-//! Six worked connectors: four against endpoints that need no key and no
+//! Seven worked connectors: five against endpoints that need no key and no
 //! signup, and the two candidates ADR 0034 names for equities and
 //! prediction markets.
 //!
 //! They are here rather than in a test file because an example nobody compiles
-//! is an example that stops being true. All six are ordinary
-//! [`crate::connector::SourceConnector`] implementations, all six ship their
-//! manifest and a fixture, and all six are run through
+//! is an example that stops being true. All seven are ordinary
+//! [`crate::connector::SourceConnector`] implementations, all seven ship their
+//! manifest and a fixture, and all seven are run through
 //! [`crate::connector::ContractHarness`] in `tests/connector_contract.rs` with
 //! no network.
 //!
@@ -17,8 +17,9 @@
 //! | [`nyfed_effr`] | `markets.newyorkfed.org/api/rates/unsecured/effr/last/10.json` | a [`qip_financial::intelligence::MacroObservation`] per business day |
 //! | [`kalshi_markets`] | `api.elections.kalshi.com/trade-api/v2/markets` | a [`qip_market::quote::Quote`] per open binary market |
 //! | [`alpaca_bars`] | `data.alpaca.markets/v2/stocks/bars` | a [`qip_market::bar::Bar`] per symbol per session |
+//! | [`nws_station_observations`] | `api.weather.gov/stations/KORD/observations` | a [`qip_financial::intelligence::AlternativeDataPoint`] per graded reading per observation |
 //!
-//! # All six are unreachable in this build, and say so
+//! # All seven are unreachable in this build, and say so
 //!
 //! `qip_transport::http` has no TLS stack and refuses `https` by name rather
 //! than downgrading it. Every one of these endpoints is HTTPS only. So every
@@ -34,7 +35,7 @@
 //! send requests — and, for a source that needed one, a credential — across
 //! the internet in clear text.
 //!
-//! # Two of the six are refused by the licensing gate today
+//! # Two of the seven are refused by the licensing gate today
 //!
 //! Kalshi and Alpaca are candidates whose terms have not been read against a
 //! contract (ADR 0034). Their manifests declare the fail-closed licensing
@@ -71,12 +72,24 @@
 //! whose licence attaches an obligation to *presentation* rather than to
 //! access, and the only one that reads a vendor's own revision flag instead of
 //! declaring every row final.
+//!
+//! The National Weather Service's surface observations are the newest and the
+//! first member of §7.1's **Physical** class, which had no connector at all.
+//! It is the one whose publisher **grades its own readings** — every value
+//! arrives with a quality-control letter — so it is the connector whose
+//! `quality_of` carries a verdict rather than asserting one, and the only one
+//! in which the source itself can tell this platform that a number it just
+//! sent is wrong. It is also the one that refuses a timestamp whose UTC
+//! offset is not zero, because `Timestamp::parse_rfc3339` discards an offset
+//! and a reading filed five hours early is point-in-time leakage nothing
+//! downstream could detect.
 
 pub mod alpaca_bars;
 pub mod coinbase_ticker;
 pub mod ecb_key_rates;
 pub mod frankfurter_rates;
 pub mod kalshi_markets;
+pub mod nws_station_observations;
 pub mod nyfed_effr;
 
 pub use alpaca_bars::AlpacaBarsConnector;
@@ -84,4 +97,5 @@ pub use coinbase_ticker::CoinbaseTickerConnector;
 pub use ecb_key_rates::EcbKeyRatesConnector;
 pub use frankfurter_rates::FrankfurterRatesConnector;
 pub use kalshi_markets::KalshiMarketsConnector;
+pub use nws_station_observations::NwsStationObservationsConnector;
 pub use nyfed_effr::NyFedEffrConnector;

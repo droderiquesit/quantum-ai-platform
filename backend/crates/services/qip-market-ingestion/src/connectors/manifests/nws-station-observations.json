@@ -1,7 +1,7 @@
 {
   "source_id": "nws-station-observations",
   "provider": "The United States National Weather Service's public API (api.weather.gov), serving surface observations reported by an individual observing station — temperature, dewpoint, wind, pressure, visibility and humidity, each carrying the publisher's own quality-control grade. Free, unauthenticated, no signup.",
-  "asset_class": "commodity",
+  "asset_class": "alternative",
   "region": "north_america",
   "protocol": "poll",
   "schema": {
