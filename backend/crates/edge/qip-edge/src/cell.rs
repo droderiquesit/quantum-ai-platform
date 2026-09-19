@@ -4242,14 +4242,8 @@ impl Cell {
                 });
             facts.insert(
                 index,
-                MirrorFacts::new(
-                    false,
-                    hedges.contains_key(&index),
-                    false,
-                    None,
-                    round_trip,
-                )?
-                .established_mirror(established),
+                MirrorFacts::new(false, hedges.contains_key(&index), false, None, round_trip)?
+                    .established_mirror(established),
             );
         }
         Ok(facts)
@@ -4289,8 +4283,11 @@ impl Cell {
                     // the two together are §33.1's "now, before the first
                     // leg". It is not a constant standing in for a fact
                     // nobody established.
-                    Some(hedge) => PathExtensions::new()
-                        .with_hedge(HedgeExtension::new(hedge.depth, hedge.required, true)?),
+                    Some(hedge) => PathExtensions::new().with_hedge(HedgeExtension::new(
+                        hedge.depth,
+                        hedge.required,
+                        true,
+                    )?),
                     // The router made this edge eligible for path 4 from the
                     // same map, so an absence here is the two disagreeing
                     // rather than a state a pass can be in. Empty facts are

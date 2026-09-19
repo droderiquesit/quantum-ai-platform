@@ -263,6 +263,15 @@ struct Distributed {
     btc_reference: &'static str,
     usdt_target: &'static str,
     usdt_reference: &'static str,
+    /// Whether the centre named a target for the **cash** leg at all.
+    ///
+    /// False is §30.2's row 4 precondition and not a broken fixture: a
+    /// mirror is established only where the operator's band and the centre's
+    /// target both exist, so withholding one target leaves one of the
+    /// cycle's two mirror edges unestablished, which is exactly "one side
+    /// lacks inventory". Withholding the *reference* instead would not do —
+    /// that is §33.1's path-3 input and row 4 never reads it.
+    publish_usdt_target: bool,
 }
 
 impl Distributed {
@@ -275,16 +284,30 @@ impl Distributed {
             btc_reference: "60500",
             usdt_target: "0",
             usdt_reference: "0.99",
+            publish_usdt_target: true,
+        }
+    }
+
+    /// The same distribution with the cash leg's target withheld, which is
+    /// what makes §30.2's row 3 ineligible and row 4 the only row left.
+    const fn without_the_cash_target() -> Self {
+        Self {
+            btc_target: "10",
+            btc_reference: "60500",
+            usdt_target: "0",
+            usdt_reference: "0.99",
+            publish_usdt_target: false,
         }
     }
 
     fn slot(&self, produced_at: Timestamp) -> Slot<InventoryTargets> {
+        let mut targets = BTreeMap::from([("BTC".to_string(), d(self.btc_target))]);
+        if self.publish_usdt_target {
+            targets.insert("USDT".to_string(), d(self.usdt_target));
+        }
         Slot::produced(
             InventoryTargets {
-                targets: BTreeMap::from([
-                    ("BTC".to_string(), d(self.btc_target)),
-                    ("USDT".to_string(), d(self.usdt_target)),
-                ]),
+                targets,
                 reference_prices: BTreeMap::from([
                     ("BTC".to_string(), d(self.btc_reference)),
                     ("USDT".to_string(), d(self.usdt_reference)),
@@ -1227,5 +1250,451 @@ fn a_change_in_what_the_cell_believes_about_its_peers_reaches_the_chain_once() -
         .filter(|entry| matches!(entry.decision, Decision::RegionOutlookChanged { .. }))
         .count();
     assert_eq!(after, 2, "the release left no entry");
+    Ok(())
+}
+
+// --- §30.2's row 4 and §33.1's path-4 hedge check ----------------------------
+//
+// `Cell::local_hedges_for` answers both halves of row 4 from one value: the
+// router asks whether a hedge *exists* before it will assign path 4, and
+// §33.1's extension asks whether that same hedge is *deep enough* before the
+// cycle may go. Until it existed the cell passed a literal `false` for the
+// hedge fact, so row 4 was unreachable from a cell and the path-4 arm of
+// `qip_routing::extension::check` was a gate no cell input could put a fact
+// in front of — the `MaxExpectedShortfall` shape, in the router.
+//
+// The tests below drive the whole seam through `Cell::work`, because that is
+// where the one-value claim is decided: a value read twice, once for the
+// router and once for the gate, would let a cycle be assigned on one reading
+// of the books and gated on another, and only a test that runs both in one
+// pass can see it.
+
+/// A second home venue whose hedge book is deliberately shallower than
+/// [`VENUE_HEDGE`]'s, so "the deepest local book is taken" is a claim about
+/// a choice rather than about the only candidate there was.
+const VENUE_HEDGE_TWO: &str = "FX";
+
+fn venue_hedge_two() -> VenueId {
+    VenueId::new(VENUE_HEDGE_TWO)
+}
+
+/// The size the scan plans this fixture's cycle at, and therefore the size
+/// §33.1 measures a hedge against — `Cell::local_hedges_for` takes the first
+/// plan step's quantity.
+///
+/// Asserted as a premise in every test below rather than trusted. "Deep
+/// enough" and "too thin" are labels on a comparison against this number,
+/// and if the fixture's size policy moved they would silently become labels
+/// on nothing.
+const FIRST_LEG: &str = "0.166666667";
+
+/// A hedge book deeper than [`FIRST_LEG`], and one shallower than it. Both
+/// are strings the book is built with, so the depth a test names is the
+/// depth the cell sweeps.
+const DEEP: &str = "10";
+const THIN: &str = "0.1";
+/// Shallower than [`THIN`] — the loser of the deepest-book choice.
+const THINNER: &str = "0.05";
+
+/// The local hedge books, at whatever depths the caller names.
+///
+/// Which side of each book matters and is the opposite of the local leg's
+/// direction: the cell **buys** BTC locally, so the hedge sells and consumes
+/// resting **bids**; it **sells** USDT locally, so that hedge buys and
+/// consumes resting **asks**. `book_at` sets both sides, so a test cannot
+/// pass by reading the wrong one — the sizes are equal and the assertion
+/// that separates them is the venue named in the refusal.
+fn hedge_books(btc_at_hedge: &str, btc_at_hedge_two: &str) -> Result<Vec<VenueState>> {
+    Ok(vec![
+        book_at(
+            &venue_hedge(),
+            "BTCUSDT",
+            ("59990", btc_at_hedge),
+            ("60010", btc_at_hedge),
+        )?,
+        book_at(
+            &venue_hedge_two(),
+            "BTCUSDT",
+            ("59980", btc_at_hedge_two),
+            ("60020", btc_at_hedge_two),
+        )?,
+        book_at(
+            &venue_hedge(),
+            "USDTUSD",
+            ("0.9998", "1000000"),
+            ("1.0002", "1000000"),
+        )?,
+    ])
+}
+
+/// A cell in exactly the state §30.2's row 4 describes: the same cross-region
+/// cycle every test above uses, the centre's target for the **cash** leg
+/// withheld so that mirror edge is not established and row 3 cannot be
+/// eligible, and whatever local hedge books the caller supplies.
+///
+/// The two hedge venues are in the cell's own region — they carry no
+/// `venue_regions` entry, and a venue absent from that map is at home — and
+/// neither appears in the desk's graph, so nothing they hold can change what
+/// the scan finds.
+fn cell_for_row_four(hedge_books: Vec<VenueState>) -> Result<(Cell, Arc<Metrics>)> {
+    let metrics = Arc::new(Metrics::new("qip-edge-node"));
+    let config = CellConfig::new(CELL, REGION)
+        .with_venue(venue())
+        .with_venue_in_region(venue_two(), REGION_TWO)?
+        .with_venue(venue_hedge())
+        .with_venue(venue_hedge_two());
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?
+        .with_metrics(Arc::clone(&metrics))
+        .with_arbitrage(desk()?)?;
+    cell.install_mirror(arrangement()?)?;
+    cell.apply_policy(
+        policy(t(5), Some((&Distributed::without_the_cash_target(), t(5))))?,
+        t(5),
+    )?;
+    for state in books()?.into_iter().chain(hedge_books) {
+        cell.track(state);
+    }
+    Ok((cell, metrics))
+}
+
+/// The premises row 4 rests on, asserted together because each fails
+/// separately and each would make the tests below assert nothing.
+///
+/// * the centre named a target for BTC and none for the cash leg, so one of
+///   the two mirror edges is unestablished — which is what makes row 3
+///   ineligible and row 4 the row under test;
+/// * the books still hold exactly one cycle;
+/// * the scan plans that cycle at [`FIRST_LEG`], which is the size every
+///   hedge depth below is chosen against.
+fn assert_row_four_premises(cell: &Cell) {
+    let (targets, _) = cell
+        .inventory_targets()
+        .expect("the centre distributed a tenth slot");
+    assert!(
+        targets.targets.contains_key("BTC"),
+        "the premise failed: the BTC mirror should be established"
+    );
+    assert!(
+        !targets.targets.contains_key("USDT"),
+        "the premise failed: the cash leg's target was supposed to be withheld"
+    );
+    let scanned = cell
+        .arbitrage()
+        .expect("the desk was installed")
+        .scan(cell.liquidity(), t(10));
+    assert_eq!(
+        scanned.opportunities.len(),
+        1,
+        "the premise failed: the books hold {} cycles",
+        scanned.opportunities.len()
+    );
+    let first = scanned.opportunities[0]
+        .planned
+        .plan
+        .steps()
+        .first()
+        .expect("a planned cycle has a first leg")
+        .quantity;
+    assert_eq!(
+        first,
+        d(FIRST_LEG),
+        "the premise failed: the hedge depths are chosen against {FIRST_LEG} and the scan plans \
+         the first leg at {first}"
+    );
+}
+
+#[test]
+fn a_mirror_short_of_inventory_with_a_deep_local_hedge_is_assigned_path_four_and_clears_it()
+-> Result<()> {
+    // The row this finishes. §30.2's row 4 is "one side lacks inventory,
+    // hedge available locally", and before `Cell::local_hedges_for` a cell
+    // passed `false` for the hedge fact whatever its books held, so this
+    // cycle was refused by the router with the table's own message and no
+    // input existed that could have changed it.
+    let (mut cell, metrics) = cell_for_row_four(hedge_books(DEEP, THINNER)?)?;
+    let report = cell.work(t(10), &mut RecordingGateway::default())?;
+    assert_row_four_premises(&cell);
+
+    assert_eq!(
+        report.paths.len(),
+        1,
+        "a cycle with a deep local hedge was assigned no path: {:?}",
+        report.refusals
+    );
+    let routed = &report.paths[0];
+    assert_eq!(routed.path(), ExecutionPath::HedgedBridging);
+    assert_eq!(routed.assignment.assigned().number(), 4);
+    // The half that carries the meaning. Row 3 is not merely out-ranked here,
+    // it is ineligible — the cash leg's mirror is not established — so path 4
+    // was assigned because the hedge existed and for no other reason.
+    assert!(
+        !routed
+            .assignment
+            .eligible()
+            .contains(&ExecutionPath::MirroredInventory),
+        "row 3 was eligible, so this cycle does not test row 4: {}",
+        routed.assignment.rationale()
+    );
+    // And the gate the hedge exists to satisfy actually ran and held.
+    assert!(
+        refusals_under(&report, GATE_PATH_EXTENSION).is_empty(),
+        "a hedge deeper than the first leg was refused at the extension: {:?}",
+        report.refusals
+    );
+    assert_eq!(refusals_counted(&metrics, GATE_PATH_ROUTER), 0);
+    assert_eq!(refusals_counted(&metrics, GATE_PATH_EXTENSION), 0);
+    // §33.1's verdict reaches the chain naming the check it satisfied, so
+    // "the hedge was there" is replayable from the log rather than only
+    // present in a report the caller happens to hold.
+    let checked: Vec<(u8, bool, String)> = cell
+        .journal()
+        .entries()
+        .iter()
+        .filter_map(|entry| match &entry.decision {
+            Decision::PathExtensionChecked {
+                path,
+                has_row,
+                rationale,
+                ..
+            } => Some((*path, *has_row, rationale.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(checked.len(), 1, "the verdict did not reach the chain");
+    assert_eq!(checked[0].0, 4);
+    assert!(
+        checked[0].1,
+        "§33.1 has a row for path 4 and said it had none"
+    );
+    assert!(
+        checked[0]
+            .2
+            .contains("hedge instrument available at depth before the first leg"),
+        "the chained rationale should name §33.1's row-4 check: {}",
+        checked[0].2
+    );
+    Ok(())
+}
+
+#[test]
+fn a_local_hedge_too_thin_for_the_first_leg_refuses_at_the_extension_and_names_the_book()
+-> Result<()> {
+    // The refusal, and the reason one value serves both callers. The router
+    // assigns path 4 because a hedge *exists*; the extension refuses because
+    // that same hedge is not deep enough. Two reads of the books — one for
+    // each question — would let the cycle be assigned against a book the gate
+    // then measured from a different snapshot, and a cell whose order path
+    // runs beside a live feed would take that race on every pass.
+    let (mut cell, metrics) = cell_for_row_four(hedge_books(THIN, THINNER)?)?;
+    let mut gateway = RecordingGateway::default();
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_row_four_premises(&cell);
+
+    // The path was assigned — this is the extension refusing, not the router.
+    assert_eq!(
+        report.paths.len(),
+        1,
+        "the router refused a cycle it had a row for: {:?}",
+        report.refusals
+    );
+    assert_eq!(report.paths[0].path(), ExecutionPath::HedgedBridging);
+    assert!(
+        refusals_under(&report, GATE_PATH_ROUTER).is_empty(),
+        "a thin hedge was charted as a routing fault: {:?}",
+        report.refusals
+    );
+
+    let refused = refusals_under(&report, GATE_PATH_EXTENSION);
+    assert_eq!(
+        refused.len(),
+        1,
+        "the extension did not refuse: {refused:?}"
+    );
+    // §33.1's own words about a partial hedge, so an operator reads the
+    // blueprint's reason and not a size comparison.
+    assert!(
+        refused[0].contains("a partial hedge leaves"),
+        "the refusal should name what a partial hedge costs: {}",
+        refused[0]
+    );
+    // The book an operator has to go and look at. The gate is handed two
+    // sizes and no identity, so without this the cell's answer would be
+    // "some local book was short" and the operator would have to re-derive
+    // which of the cell's home venues was measured.
+    assert!(
+        refused[0].contains(&format!("against the hedge book at {VENUE_HEDGE}")),
+        "the refusal should name the book that was too thin: {}",
+        refused[0]
+    );
+    // And the leg it was measured for, which is the other identity the gate
+    // does not hold.
+    assert!(
+        refused[0].contains("the mirrored leg in BTC"),
+        "the refusal should name the mirrored leg: {}",
+        refused[0]
+    );
+    // The two sizes are the router's and the gate's, and they are the same
+    // two: the depth the sweep found and the size the scan planned. A gate
+    // reading its own numbers would print a different pair.
+    assert!(
+        refused[0].contains(&format!(
+            "holds {THIN} against the {FIRST_LEG} the first leg needs"
+        )),
+        "the gate should be measuring the swept depth against the planned first leg: {}",
+        refused[0]
+    );
+    // The consequence, which is the point: nothing of that cycle was sent.
+    assert!(
+        gateway.placed.is_empty(),
+        "legs of a cycle the extension refused reached the venue: {:?}",
+        gateway.placed
+    );
+    assert_eq!(refusals_counted(&metrics, GATE_PATH_EXTENSION), 1);
+    assert_eq!(refusals_counted(&metrics, GATE_PATH_ROUTER), 0);
+    Ok(())
+}
+
+#[test]
+fn a_cell_with_no_local_hedge_book_at_all_is_refused_whole_by_the_router() -> Result<()> {
+    // Fail closed at the first gate. A hedge that does not exist is a
+    // different finding from one that is too thin: the first says the cell
+    // cannot execute this cycle any way the table describes, the second says
+    // the market is not deep enough today, and they send an operator to two
+    // different places. `LiquiditySource::sweep_cost` keeps them apart —
+    // `None` is ignorance, `Some(too little)` is a fact about the market —
+    // and this asserts the cell keeps them apart too.
+    //
+    // The premise is asserted by construction: the *only* difference between
+    // this cell and the one assigned path 4 above is the hedge books.
+    let (mut cell, metrics) = cell_for_row_four(Vec::new())?;
+    let mut gateway = RecordingGateway::default();
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_row_four_premises(&cell);
+
+    assert!(
+        report.paths.is_empty(),
+        "a cycle with no hedge anywhere was assigned a path: {:?}",
+        report.paths
+    );
+    let refused = refusals_under(&report, GATE_PATH_ROUTER);
+    assert_eq!(refused.len(), 1, "the router did not refuse: {refused:?}");
+    // The table's own message, because the missing fact is upstream of the
+    // table rather than a condition inside a row.
+    assert!(
+        refused[0].contains("no execution path is eligible"),
+        "the refusal should be §30.2's own: {}",
+        refused[0]
+    );
+    assert!(
+        refusals_under(&report, GATE_PATH_EXTENSION).is_empty(),
+        "a cycle the router refused was also charted against the extension: {:?}",
+        report.refusals
+    );
+    assert!(gateway.placed.is_empty());
+    assert_eq!(refusals_counted(&metrics, GATE_PATH_ROUTER), 1);
+
+    // The admitting half, and what makes the refusal evidence of a gate
+    // rather than of a gate that refuses everything: the same cell with the
+    // hedge books present is assigned path 4.
+    let (mut stocked, _) = cell_for_row_four(hedge_books(DEEP, THINNER)?)?;
+    let stocked_report = stocked.work(t(10), &mut RecordingGateway::default())?;
+    assert_eq!(
+        stocked_report.paths.len(),
+        1,
+        "the hedge books are the only difference and the cycle was still refused: {:?}",
+        stocked_report.refusals
+    );
+    assert_eq!(
+        stocked_report.paths[0].path(),
+        ExecutionPath::HedgedBridging
+    );
+    Ok(())
+}
+
+#[test]
+fn the_deepest_local_hedge_is_taken_and_the_same_books_answer_the_same_at_any_pass_time()
+-> Result<()> {
+    // Two properties of one value, asserted together because the second is
+    // only meaningful once the first has something to be stable about.
+    //
+    // Both home books are too thin, and the deeper of the two is the one the
+    // refusal names — a cell that took the first local book it found, or the
+    // shallowest, would refuse for a book that was not the best cover it
+    // had.
+    //
+    // And `Cell::local_hedges_for` reads no clock: it is a function of the
+    // books, the cell's own venue list and the scanned size. So the same
+    // books answer identically at a pass time thirty seconds later, and the
+    // verdict is word-for-word the same sentence.
+    //
+    // The cycle id is the one part that legitimately moves — the scanner
+    // stamps it with the instant the cycle was found — so it is split off
+    // rather than compared. Splitting it off is asserted rather than
+    // tolerated: if the refusal ever stops naming the path this way the
+    // `expect` fails, instead of the comparison quietly widening to the
+    // whole sentence.
+    let mut verdicts = Vec::new();
+    let mut cycle_ids = Vec::new();
+    for at in [t(10), t(40)] {
+        let (mut cell, _) = cell_for_row_four(hedge_books(THIN, THINNER)?)?;
+        let mut gateway = RecordingGateway::default();
+        let report = cell.work(at, &mut gateway)?;
+        assert_row_four_premises(&cell);
+        assert_eq!(
+            report.paths.len(),
+            1,
+            "the router refused a cycle it had a row for at {at:?}: {:?}",
+            report.refusals
+        );
+        assert_eq!(report.paths[0].path(), ExecutionPath::HedgedBridging);
+        let refused = refusals_under(&report, GATE_PATH_EXTENSION);
+        assert_eq!(
+            refused.len(),
+            1,
+            "the extension did not refuse at {at:?}: {refused:?}"
+        );
+        assert!(gateway.placed.is_empty());
+        let (cycle_id, verdict) = refused[0]
+            .split_once(" is assigned path ")
+            .expect("the refusal names the cycle and then the path it was assigned");
+        cycle_ids.push(cycle_id.to_string());
+        verdicts.push(verdict.to_string());
+    }
+    // Premise for the comparison below: the two passes really were different
+    // passes, so an equal verdict is a property of the books rather than of
+    // the same run being read twice.
+    assert_ne!(
+        cycle_ids[0], cycle_ids[1],
+        "both passes produced the same cycle id, so this compares one pass with itself"
+    );
+    let messages = verdicts;
+
+    // The deeper of the two home books, named. The premise that there were
+    // two to choose between is `hedge_books` above: both are tracked, both
+    // are at home, and neither is the venue the local leg trades.
+    assert!(
+        messages[0].contains(&format!("against the hedge book at {VENUE_HEDGE}")),
+        "the deepest local book should be the one measured: {}",
+        messages[0]
+    );
+    assert!(
+        !messages[0].contains(&format!("against the hedge book at {VENUE_HEDGE_TWO}")),
+        "the shallower local book was measured instead of the deeper one: {}",
+        messages[0]
+    );
+    // And the depth in the message is the deeper book's, not the shallower
+    // one's — the venue name alone would pass if the two were swapped in only
+    // one of the two places the value is read.
+    assert!(
+        messages[0].contains(&format!("holds {THIN} against")),
+        "the depth reported should be the deeper book's: {}",
+        messages[0]
+    );
+    assert_eq!(
+        messages[0], messages[1],
+        "the same books answered differently at a different pass time, so something in the \
+         hedge read is not a function of the books"
+    );
     Ok(())
 }
