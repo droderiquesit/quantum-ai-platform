@@ -486,7 +486,7 @@ impl DataFinder {
                 evidence.robots().describe(),
                 evidence.head().status,
                 evidence.head().latency,
-                evidence.sample().body.len(),
+                evidence.sample().bytes(),
                 &evidence.schema().fingerprint()[..16.min(evidence.schema().fingerprint().len())]
             ),
         );
@@ -929,7 +929,7 @@ impl DataFinder {
         }
         let reliability = reliability.clamp(0.0, 1.0);
 
-        let freshness = match source.evidence().sample().payload_at {
+        let freshness = match source.evidence().sample().payload_at() {
             Some(payload_at) => {
                 let age = now.since(payload_at).as_secs_f64().max(0.0);
                 match source

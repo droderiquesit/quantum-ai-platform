@@ -89,6 +89,86 @@ pub struct PayloadSample {
     pub latency: Duration,
 }
 
+impl PayloadSample {
+    /// What may be kept of this sample once its shape has been read.
+    ///
+    /// See [`SampleManifest`]. The body is not carried across; the hash is
+    /// taken over the bytes as served, so two probes of an unchanged endpoint
+    /// agree without either keeping the text.
+    pub fn manifest(&self) -> SampleManifest {
+        SampleManifest {
+            media_type: self.media_type.clone(),
+            payload_at: self.payload_at,
+            bytes: self.body.len(),
+            content_hash: qip_core::hash::sha256_hex(self.body.as_bytes()),
+            latency: self.latency,
+        }
+    }
+}
+
+/// What the finder retains of a sampled payload: a manifest, never the text.
+///
+/// **Registration is not ingestion** (§7.6.6). The crawler samples enough to
+/// register a feed and its schema; the feed then flows through the ingestion
+/// path, and the sample's job is finished the moment the shape has been read
+/// off it. §56.4's rule 36 says the same thing from the other side: ingested
+/// source text is not retained — facts, entity links and a manifest with a
+/// hash are.
+///
+/// Until 2026-09-19 nothing enforced either sentence here, and the rule was
+/// broken in the one place it most matters. [`ProbeEvidence`] held the whole
+/// [`PayloadSample`], body included; [`crate::source::Source`] holds a
+/// `ProbeEvidence`; [`crate::decision::RegisteredSource`] holds a `Source`;
+/// and all three derive `Serialize`. So every source the finder registered
+/// carried a verbatim copy of the publisher's own text into the catalogue,
+/// and into any journal, status body or snapshot that wrote a registered
+/// source out. That is ingestion under registration's name — the publisher's
+/// content retained, on a path licensed only to record that a feed exists.
+///
+/// The refusal is structural rather than a check: there is no field here a
+/// body can be put in, and `PayloadSample` reaches no type that outlives one
+/// call to [`ProbeEvidence::gather`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SampleManifest {
+    media_type: String,
+    payload_at: Option<Timestamp>,
+    bytes: usize,
+    content_hash: String,
+    latency: Duration,
+}
+
+impl SampleManifest {
+    /// What the source said it was serving.
+    pub fn media_type(&self) -> &str {
+        &self.media_type
+    }
+
+    /// When the newest record in the sampled body was true in the world,
+    /// where the payload said. `None` means the payload carried no time of
+    /// its own, which is a freshness finding rather than a parse failure.
+    pub fn payload_at(&self) -> Option<Timestamp> {
+        self.payload_at
+    }
+
+    /// How many bytes were served, kept because "the endpoint answered with
+    /// nothing" and "the endpoint answered" are different findings and the
+    /// body is gone.
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// SHA-256 of the sampled bytes, lower-case hex. A later probe of the
+    /// same endpoint can be compared against this without either sample
+    /// being kept.
+    pub fn content_hash(&self) -> &str {
+        &self.content_hash
+    }
+
+    pub fn latency(&self) -> Duration {
+        self.latency
+    }
+}
+
 /// The port. Four questions, no state, no clock of its own.
 pub trait SourceProbe: std::fmt::Debug {
     /// Fetch `host`'s robots.txt.
@@ -107,7 +187,7 @@ pub struct ProbeEvidence {
     robots: RobotsFetch,
     robots_policy: Option<RobotsPolicy>,
     head: HeadResponse,
-    sample: PayloadSample,
+    sample: SampleManifest,
     schema: SourceSchema,
     observed_at: Timestamp,
 }
@@ -141,6 +221,10 @@ impl ProbeEvidence {
             // lifecycle over a format this phase cannot parse.
             SourceSchema::from_fields([])
         });
+        // The shape has been read; the text's job is over. `sample` is a
+        // local and is dropped at the end of this function, so the body
+        // cannot reach the catalogue through any field of this type.
+        let sample = sample.manifest();
         Ok(Self {
             robots,
             robots_policy,
@@ -163,7 +247,9 @@ impl ProbeEvidence {
         &self.head
     }
 
-    pub fn sample(&self) -> &PayloadSample {
+    /// The manifest of what was sampled. Deliberately not the body: see
+    /// [`SampleManifest`].
+    pub fn sample(&self) -> &SampleManifest {
         &self.sample
     }
 
