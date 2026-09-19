@@ -44,6 +44,8 @@ pub mod feasibility;
 pub mod journal;
 pub mod mesh;
 pub mod mirror;
+/// §32.1's passive-first mechanism: which leg of a cycle rests, and why.
+pub mod passive;
 pub mod policy;
 /// §29.2 priority allocation: which quote update gets the message.
 pub mod priority;
@@ -78,6 +80,7 @@ pub use mesh::{
     UplinkConfig, UplinkStats,
 };
 pub use mirror::{MirrorArrangement, MirroredInstrument};
+pub use passive::{PassiveChoice, PassiveOutcome, WholeReason};
 pub use policy::{VerifiedHalt, VerifiedPolicy};
 pub use priority::{Candidate, allocate, worth};
 pub use quoting::{
