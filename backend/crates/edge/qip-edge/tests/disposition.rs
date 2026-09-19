@@ -25,8 +25,8 @@ use qip_contracts::venue::{Origin, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::cell::{
-    Cell, CellConfig, DispositionVerdict, ExecutionReport, GATE_DISPOSITION, Placer,
-    PricingPolicy, WorkReport,
+    Cell, CellConfig, DispositionVerdict, ExecutionReport, GATE_DISPOSITION, Placer, PricingPolicy,
+    WorkReport,
 };
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::Decision;
@@ -319,6 +319,57 @@ fn disposition_intent_entries(cell: &Cell) -> Vec<(String, String, String)> {
             _ => None,
         })
         .collect()
+}
+
+#[test]
+fn a_strategys_share_of_a_confirmed_venue_fill_reaches_its_own_lot_at_the_cell() -> Result<()> {
+    // The per-strategy book was crosses-only, so a lot built at a venue read
+    // as "holds nothing" to any reader of it — and the disposition path reads
+    // exactly that book. Two strategies net into one order; the venue's fill
+    // is split pro rata and each share lands on its own strategy's lot, and
+    // the sum over the strategies is the venue-facing aggregate.
+    let (mut cell, _) = trading_cell(&[
+        (RETIRED, SignalKind::Enter, "100"),
+        ("beta", SignalKind::Enter, "50"),
+    ])?;
+    let mut gateway = ReportingGateway::default();
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_eq!(
+        report.orders.len(),
+        1,
+        "premise: the two intents did not net: {report:?}"
+    );
+    let order = &report.orders[0];
+    assert_eq!(order.quantity, dec!("150"), "premise: one order for both");
+    assert_eq!(order.contributors.len(), 2, "premise: two contributors");
+    assert_eq!(
+        (
+            cell.strategy_lot(&retired(), &object()),
+            cell.strategy_lot(&StrategyId::new("beta"), &object())
+        ),
+        (Decimal::ZERO, Decimal::ZERO),
+        "premise: an accepted order is not a lot"
+    );
+
+    gateway.report(&order.order_id, order.quantity, order.price, t(11));
+    let confirmed = cell.confirm_execution_reports(&mut gateway, t(12));
+    assert_eq!(confirmed.len(), 1, "premise: the fill was confirmed");
+    assert_eq!(
+        cell.strategy_lot(&retired(), &object()),
+        dec!("100"),
+        "alpha's share of the confirmed fill did not reach alpha's lot"
+    );
+    assert_eq!(
+        cell.strategy_lot(&StrategyId::new("beta"), &object()),
+        dec!("50"),
+        "beta's share of the confirmed fill did not reach beta's lot"
+    );
+    assert_eq!(
+        cell.position(&venue(), &object()),
+        dec!("150"),
+        "the venue-facing aggregate is not the sum of the per-strategy book"
+    );
+    Ok(())
 }
 
 #[test]
