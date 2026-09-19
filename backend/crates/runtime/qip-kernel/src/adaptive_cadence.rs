@@ -190,12 +190,21 @@ pub fn signals_of(platform: &Platform) -> CadenceSignals {
         .max(Decimal::ZERO);
     CadenceSignals {
         cycle: platform.cycle_count(),
-        classified_strategies: population_of(platform.central().factory())
+        classified_strategies: population_of(platform)
             .values()
             .map(|(_, members)| *members)
             .sum(),
         undeployed_profit: undeployed,
     }
+}
+
+/// The registered population, as §19.2 needs it, read off the platform.
+///
+/// The seam `review` and `signals_of` use and the acceptance suite drives;
+/// the body is [`declared_population`], which takes the factory alone so a
+/// test can prove the census without constructing a platform.
+pub fn population_of(platform: &Platform) -> BTreeMap<String, (Option<AlphaFamily>, usize)> {
+    declared_population(platform.central().factory())
 }
 
 /// The registered population, as §19.2 needs it: sweep name → (the alpha
@@ -215,7 +224,9 @@ pub fn signals_of(platform: &Platform) -> CadenceSignals {
 /// say what it harvests may not spend it. The foundry cannot produce such a
 /// sweep — it declares once and copies — so this arm is reachable only
 /// through the factory's own `register`.
-pub fn population_of(factory: &StrategyFactory) -> BTreeMap<String, (Option<AlphaFamily>, usize)> {
+pub fn declared_population(
+    factory: &StrategyFactory,
+) -> BTreeMap<String, (Option<AlphaFamily>, usize)> {
     let mut population: BTreeMap<String, (Option<AlphaFamily>, usize)> = BTreeMap::new();
     let mut mixed: BTreeSet<String> = BTreeSet::new();
     for candidate in factory.candidates() {
@@ -320,7 +331,7 @@ pub fn review(platform: &Platform) -> (Option<String>, Vec<String>) {
     let mut problems = Vec::new();
 
     if plan.wants(Work::EvaluationTiering) {
-        match TierPlan::assign_counted(&population_of(platform.central().factory()), HOT_TIER_CAP) {
+        match TierPlan::assign_counted(&population_of(platform), HOT_TIER_CAP) {
             Ok(census) => parts.push(census.describe(HOT_TIER_CAP)),
             Err(error) => problems.push(format!(
                 "the evaluation-tier census refused the registered population: {}",

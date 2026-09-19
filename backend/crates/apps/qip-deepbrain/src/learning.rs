@@ -1756,9 +1756,11 @@ mod tests {
             choice.challenger_skilled.is_some(),
             "the challenger was not fitted on a learnable series"
         );
-        assert_eq!(
-            baseline.observed(),
-            if choice.baseline_skilled { 1.0 } else { 0.0 }
+        let told = if choice.baseline_skilled { 1.0 } else { 0.0 };
+        assert!(
+            (baseline.observed() - told).abs() < 1e-12,
+            "the board was told {} and the choice reports {told}",
+            baseline.observed()
         );
         // With no precedent the readable class is registered.
         assert_eq!(choice.registered, BASELINE_CLASS.as_str());

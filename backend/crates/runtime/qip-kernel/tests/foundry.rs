@@ -20,7 +20,7 @@ use qip_core::{Duration, ObjectId, Timestamp};
 use qip_evolution::generate::Candidate;
 use qip_evolution::grammar::Grammar;
 use qip_evolution::palette::FeaturePalette;
-use qip_kernel::adaptive_cadence::population_of;
+use qip_kernel::adaptive_cadence::declared_population;
 use qip_kernel::central::factory::{AlphaFamily, StrategyFactory};
 use qip_kernel::central::foundry::{HoldoutInputs, StrategyFoundry};
 use qip_lifecycle::evidence::{CrossValidationRun, DatasetManifest, LeakageAudit};
@@ -478,7 +478,7 @@ fn the_tier_census_reads_the_declared_family_and_a_disagreeing_sweep_tiers_to_ba
     let bare = first_pending(&other)?;
     other.register(&mut factory, &bare, holdout(), now())?;
 
-    let population = population_of(&factory);
+    let population = declared_population(&factory);
     assert_eq!(
         population.get("foundry-tests"),
         Some(&(Some(AlphaFamily::MarketMaking), 2)),
@@ -506,7 +506,7 @@ fn the_tier_census_reads_the_declared_family_and_a_disagreeing_sweep_tiers_to_ba
     disagreeing.search(40)?;
     let odd = first_pending(&disagreeing)?;
     disagreeing.register(&mut factory, &odd, holdout(), now())?;
-    let population = population_of(&factory);
+    let population = declared_population(&factory);
     assert_eq!(
         population.get("foundry-tests"),
         Some(&(None, 3)),
