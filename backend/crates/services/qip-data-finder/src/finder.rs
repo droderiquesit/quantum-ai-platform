@@ -10,6 +10,7 @@
 //! identifier — never from iteration order, which would make the answer depend
 //! on how the caller happened to build the list.
 
+use crate::category::{ApprovedCategories, CategoryApproval, SourceCategory};
 use crate::coverage::UpdateFrequency;
 use crate::decision::{
     DecisionOutcome, LifecycleStage, Reasoning, RegisteredSource, RegistrationDecision,
@@ -24,7 +25,6 @@ use crate::robots::PathVerdict;
 use crate::schema::{SchemaDrift, SourceSchema};
 use crate::scoring::{Routing, SourceScores};
 use crate::source::{Source, SourceCandidate, SourceLineage};
-use crate::category::{ApprovedCategories, CategoryApproval, SourceCategory};
 use crate::tier::{
     AccessMode, BulkCadence, CredentialReference, DeepWebAdapter, DiscoveryEnclave, Interface,
     Promotion, RenderingBudget, SourceTier, TierEvidence,

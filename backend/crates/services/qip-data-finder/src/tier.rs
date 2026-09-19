@@ -36,8 +36,8 @@
 //! (ADR 0009), so the enclave is a policy the router names, not a process
 //! this crate starts.
 
-use crate::endpoint::AccessMechanism;
 use crate::category::{ApprovedCategories, CategoryApproval, SourceCategory};
+use crate::endpoint::AccessMechanism;
 use crate::legal::{LicensingPosture, RateLimit};
 use crate::probe::RobotsFetch;
 use crate::source::{Source, SourceCandidate};

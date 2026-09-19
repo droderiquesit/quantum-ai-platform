@@ -49,8 +49,10 @@ fn candidate_with(
     licensing: LicensingPosture,
     cost: SourceCost,
 ) -> Result<SourceCandidate> {
-    Ok(uncategorised_candidate(id, url, mechanism, licensing, cost)?
-        .with_content_signal(ContentSignal::RegulatoryFiling))
+    Ok(
+        uncategorised_candidate(id, url, mechanism, licensing, cost)?
+            .with_content_signal(ContentSignal::RegulatoryFiling),
+    )
 }
 
 /// The same candidate with nothing declared about what it is.
@@ -856,7 +858,11 @@ fn a_deep_web_adapter_in_no_category_is_held_rather_than_promoted_under_the_near
         "uncategorised-portal",
     )?);
     let decisions = desk.assess(
-        vec![candidate.clone().with_content_signal(ContentSignal::RegulatoryFiling)],
+        vec![
+            candidate
+                .clone()
+                .with_content_signal(ContentSignal::RegulatoryFiling),
+        ],
         &mut probe,
         now(),
     )?;
@@ -905,8 +911,8 @@ fn a_deep_web_adapter_in_no_category_is_held_rather_than_promoted_under_the_near
 }
 
 #[test]
-fn a_human_approves_a_category_once_and_adapters_within_it_are_promoted_automatically()
--> Result<()> {
+fn a_human_approves_a_category_once_and_adapters_within_it_are_promoted_automatically() -> Result<()>
+{
     // The failure: the governance clause as a sentence in a table. Nothing
     // linked an adapter to its category, so there was nothing a human could
     // approve once and nothing that could be promoted on that approval — a
@@ -940,10 +946,9 @@ fn a_human_approves_a_category_once_and_adapters_within_it_are_promoted_automati
         decision.reasoning().describe()
     );
     assert!(
-        decision
-            .scores()
-            .is_some_and(|scores| scores.composite()
-                >= qip_data_finder::scoring::Routing::COLD_THRESHOLD),
+        decision.scores().is_some_and(
+            |scores| scores.composite() >= qip_data_finder::scoring::Routing::COLD_THRESHOLD
+        ),
         "{}",
         decision.reasoning().describe()
     );
@@ -974,8 +979,10 @@ fn a_human_approves_a_category_once_and_adapters_within_it_are_promoted_automati
     let route = decision.reasoning().at(LifecycleStage::Route);
     assert!(
         route.iter().any(|finding| {
-            finding.contains("promoted automatically: category `regulatory_and_legal` approved \
-                              by desk-owner")
+            finding.contains(
+                "promoted automatically: category `regulatory_and_legal` approved \
+                              by desk-owner",
+            )
         }),
         "the promotion must record whose approval it ran on: {route:?}"
     );

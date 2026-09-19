@@ -364,7 +364,10 @@ fn the_sense_stage_ranks_sources_on_the_lead_they_measured_over_each_other() -> 
     // knowable instants, and a batch's order must not decide it.
     let absorbed = platform.observe(vec![
         release("late-wire", start().saturating_sub(Duration::from_hours(1))),
-        release("early-wire", start().saturating_sub(Duration::from_hours(2))),
+        release(
+            "early-wire",
+            start().saturating_sub(Duration::from_hours(2)),
+        ),
     ]);
     assert_eq!(absorbed, 2, "both releases should have been absorbed");
 
