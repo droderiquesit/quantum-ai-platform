@@ -418,10 +418,10 @@ only in a browser. The refusing clause is the same in both, Membership Terms
 
 Membership Terms 37.3 adds "You must not modify, copy, display, distribute or
 commercially exploit any of our Intellectual Property Rights or materials",
-and the acceptable-use section prohibits "any systematic or automated data
-collection activities (including without limitation scraping, data mining,
-data extraction and data harvesting) on our systems" — which is a polling
-connector described exactly. `Usage::Derive` is refused by "in any other way
+and undertaking 27.1(i) has the member promise not to "conduct any systematic
+or automated data collection activities (including without limitation
+scraping, data mining, data extraction and data harvesting) on our systems"
+— which is a polling connector described exactly. `Usage::Derive` is refused by "in any other way
 process"; `Usage::Trade` by "personal use only" applied to a research desk's
 platform; the unauthenticated public endpoints change nothing, because a
 caller who has accepted no terms has been granted nothing. **Refused.** The
