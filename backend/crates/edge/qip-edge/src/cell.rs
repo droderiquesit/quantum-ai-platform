@@ -40,7 +40,7 @@ use qip_orderbook::venue::VenueState;
 use qip_protocols::registry::{FeedKey, ProtocolRegistry};
 use qip_risk_engine::autonomy::{AutonomyController, AutonomyLevel};
 use qip_routing::extension::{
-    ExtensionVerdict, MirrorExtension, PathExtensions, check as check_extension,
+    ExtensionVerdict, HedgeExtension, MirrorExtension, PathExtensions, check as check_extension,
 };
 use qip_routing::mirror::Direction;
 use qip_routing::path::{
@@ -110,6 +110,25 @@ enum RoutedOutcome {
     /// rather than a router refusal: the router would have assigned this
     /// cycle a path, and the reason it did not is in another region.
     RegionDark(Error),
+}
+
+/// A local book this cell could hedge one mirror edge's local leg in
+/// (blueprint §30.2's row 4, §33.1's path-4 check).
+///
+/// Built only by [`Cell::local_hedges_for`], and read by the two callers that
+/// ask the two halves of the same question: the router, which needs to know a
+/// hedge exists before it will assign path 4, and the extension, which needs
+/// to know it is deep enough before the cycle may go. One value serves both,
+/// so a cycle cannot be assigned on one reading of the books and gated on
+/// another.
+struct LocalHedge {
+    /// Named for the refusal message and for the operator who has to go and
+    /// look at the book that was too thin.
+    venue: VenueId,
+    /// What the hedge book would fill at [`Self::required`], swept this pass.
+    depth: Decimal,
+    /// The first leg's size, which is what §33.1 measures the depth against.
+    required: Decimal,
 }
 
 /// The chain entry for an assignment, written from the two places that make
@@ -3913,9 +3932,10 @@ impl Cell {
     fn route_one(
         &self,
         installed: &InstalledDesk,
-        edges: &[usize],
+        opportunity: &Opportunity,
         now: Timestamp,
     ) -> RoutedOutcome {
+        let edges = &opportunity.candidate.edges;
         // The composition is built twice, deliberately, and the second one is
         // the router's own.
         //
@@ -3944,7 +3964,15 @@ impl Cell {
         if let Some(refusal) = self.dark_mirror(&composition) {
             return RoutedOutcome::RegionDark(refusal);
         }
-        let facts = match self.mirror_facts_for(&composition) {
+        // Read once and handed to both the router and the extension, because
+        // they ask two questions of the same books and a second read between
+        // them would let a cycle be assigned path 4 on a hedge the gate then
+        // measures from a different snapshot.
+        let hedges = match self.local_hedges_for(&composition, opportunity) {
+            Ok(hedges) => hedges,
+            Err(refusal) => return RoutedOutcome::RouterRefused(refusal),
+        };
+        let facts = match self.mirror_facts_for(&composition, &hedges) {
             Ok(facts) => facts,
             Err(refusal) => return RoutedOutcome::RouterRefused(refusal),
         };
@@ -3955,7 +3983,7 @@ impl Cell {
             Ok(assignment) => assignment,
             Err(refusal) => return RoutedOutcome::RouterRefused(refusal),
         };
-        match self.check_extension_for(&composition, assignment.assigned(), now) {
+        match self.check_extension_for(&composition, assignment.assigned(), &hedges, now) {
             Ok(verdict) => RoutedOutcome::Assigned(assignment, verdict),
             Err(refusal) => RoutedOutcome::ExtensionRefused(assignment, refusal),
         }
@@ -4028,25 +4056,152 @@ impl Cell {
         }
     }
 
+    /// A local hedge for one mirror edge, as this cell's own books show it.
+    ///
+    /// §30.2's row 4 and §33.1's path-4 check ask two different questions of
+    /// the same book, and the split is the one §31.1 already makes for row 3:
+    /// the router asks whether a hedge *exists* to bridge with, and the gate
+    /// asks whether it is deep enough for the leg that will need it. Both are
+    /// answered here, from this cell's own liquidity and nothing else — no
+    /// venue tells the cell, no policy slot carries it, and nothing reads a
+    /// clock, so a replay of the same books produces the same answer.
+    ///
+    /// Three conditions, each of which can be false on its own:
+    ///
+    /// * The venue is in **this cell's own region**. Path 4 is "execute
+    ///   locally, hedge locally, complete remotely later"; a hedge across the
+    ///   same boundary the cycle is bridging is the exposure again, not cover
+    ///   for it.
+    /// * The venue is **not the mirror edge's own local venue**. An
+    ///   offsetting order in the same book at the same instant is not a
+    ///   hedge, it is the local leg not being done — and admitting it would
+    ///   make row 4 eligible for every cycle, which is the shape of control
+    ///   this repository has shipped once already.
+    /// * The book is **usable and absorbs something on the side the hedge
+    ///   takes**, which is the side opposite the one the local leg trades:
+    ///   a local buy is covered by a sale, and a sale consumes bids.
+    ///   `CellLiquidity` answers nothing from a stale or unpriceable book, so
+    ///   a hedge remembered from before a gap is never offered as one.
+    ///
+    /// The depth reported is what the book would actually **fill** at the
+    /// size the first leg needs, from the sweep rather than from the touch:
+    /// "available at depth" is a question about the book and not about its
+    /// first level, and a touch of one lot above a hollow book would clear a
+    /// gate that exists to refuse exactly that. Where several local venues
+    /// qualify the deepest is taken, ties going to the first in the cell's
+    /// configured venue order, so the choice is fixed at deployment rather
+    /// than by whatever order a map happened to iterate in.
+    fn local_hedges_for(
+        &self,
+        composition: &Composition,
+        opportunity: &Opportunity,
+    ) -> Result<BTreeMap<usize, LocalHedge>> {
+        let mirrors = composition.mirror_edges();
+        if mirrors.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        // §33.1 words it "before the first leg", so the size hedged is the
+        // first leg's own. A plan with no steps states no size, and a cell
+        // that invented one would be gating the hedge against a number
+        // nobody computed.
+        let Some(required) = opportunity
+            .planned
+            .plan
+            .steps()
+            .first()
+            .map(|step| step.quantity)
+            .filter(|quantity| quantity.is_positive())
+        else {
+            return Ok(BTreeMap::new());
+        };
+        let Some(arrangement) = self.mirror.as_ref() else {
+            return Ok(BTreeMap::new());
+        };
+        let home = self.config.region.as_str();
+        let mut hedges = BTreeMap::new();
+        for index in mirrors {
+            let Some(edge) = composition.edges().get(index) else {
+                return Err(Error::invalid(format!(
+                    "the composition reports a mirror edge at {index} and holds {} edges; route \
+                     the cycle against the composition it was built from",
+                    composition.edges().len()
+                )));
+            };
+            let (local, intended) = self.mirror_ends(edge)?;
+            let Some(discipline) = arrangement.instrument(&local.object) else {
+                continue;
+            };
+            let market = discipline.market();
+            // The hedge offsets the local leg, so it takes the other side,
+            // and a sale consumes the bids.
+            let side = match intended {
+                Direction::Buy => BookSide::Bid,
+                Direction::Sell => BookSide::Ask,
+            };
+            let mut deepest: Option<LocalHedge> = None;
+            for venue in &self.config.venues {
+                if venue == &local.venue {
+                    continue;
+                }
+                let region = self
+                    .config
+                    .venue_regions
+                    .get(venue.as_str())
+                    .map_or(home, String::as_str);
+                if region != home {
+                    continue;
+                }
+                let Some((_, filled)) = self.liquidity.sweep_cost(venue, market, side, required)
+                else {
+                    continue;
+                };
+                if deepest
+                    .as_ref()
+                    .is_none_or(|current| filled > current.depth)
+                {
+                    deepest = Some(LocalHedge {
+                        venue: venue.clone(),
+                        depth: filled,
+                        required,
+                    });
+                }
+            }
+            if let Some(hedge) = deepest {
+                hedges.insert(index, hedge);
+            }
+        }
+        Ok(hedges)
+    }
+
     /// The mirror-edge facts §30.2 tells rows 3 to 6 apart by, as this cell
     /// can honestly state them.
     ///
-    /// Four of the five are `false` or `None` and each is a statement rather
-    /// than a placeholder. A cell measures no hedge book beside the cycle's
-    /// own instruments, so it cannot say a local hedge is available (row 4);
-    /// it holds no connectivity fact about whether a remote venue accepts a
-    /// resting order (row 5); and it receives no firm quote from one (row 6).
-    /// **Rows 4, 5 and 6 are therefore unreachable from a cell**, and that is
-    /// the fail-closed answer rather than a delivered row: a cycle whose only
-    /// possible path was one of the three is refused whole by the router.
+    /// Two of the five are `false` or `None` and each is a statement rather
+    /// than a placeholder: the cell holds no connectivity fact about whether
+    /// a remote venue accepts a resting order (row 5), and it receives no
+    /// firm quote from one (row 6). **Rows 5 and 6 are therefore unreachable
+    /// from a cell**, and that is the fail-closed answer rather than a
+    /// delivered row: a cycle whose only possible path was one of the two is
+    /// refused whole by the router.
     ///
-    /// Row 3 is the one a cell can reach, through
-    /// `MirrorFacts::established_mirror`: the centre named an inventory
-    /// target for the mirrored instrument and this cell's operator configured
-    /// a band for it, which together are §31.1's SETUP. Where the local side
-    /// sits inside that band is not asked here — that is §33.1's extension,
-    /// after the path is assigned.
-    fn mirror_facts_for(&self, composition: &Composition) -> Result<BTreeMap<usize, MirrorFacts>> {
+    /// Row 3 is reached through `MirrorFacts::established_mirror`: the centre
+    /// named an inventory target for the mirrored instrument and this cell's
+    /// operator configured a band for it, which together are §31.1's SETUP.
+    /// Where the local side sits inside that band is not asked here — that
+    /// is §33.1's extension, after the path is assigned.
+    ///
+    /// Row 4 is reached through [`Self::local_hedges_for`]. This sentence
+    /// read "a cell measures no hedge book beside the cycle's own
+    /// instruments, so it cannot say a local hedge is available" until a
+    /// mirrored cell had books for every venue its operator configured, which
+    /// is more than the cycle's own; the literal `false` that outlived it
+    /// made row 4 unreachable and §33.1's hedge-at-depth check a gate no
+    /// input could ever put a fact in front of.
+    fn mirror_facts_for(
+        &self,
+        composition: &Composition,
+        hedges: &BTreeMap<usize, LocalHedge>,
+    ) -> Result<BTreeMap<usize, MirrorFacts>> {
         let mirrors = composition.mirror_edges();
         if mirrors.is_empty() {
             return Ok(BTreeMap::new());
@@ -4087,7 +4242,7 @@ impl Cell {
                 });
             facts.insert(
                 index,
-                MirrorFacts::new(false, false, false, None, round_trip)?
+                MirrorFacts::new(false, hedges.contains_key(&index), false, None, round_trip)?
                     .established_mirror(established),
             );
         }
@@ -4105,12 +4260,49 @@ impl Cell {
         &self,
         composition: &Composition,
         path: ExecutionPath,
+        hedges: &BTreeMap<usize, LocalHedge>,
         now: Timestamp,
     ) -> Result<ExtensionVerdict> {
         let mut verdict = None;
         for index in composition.mirror_edges() {
-            let extensions =
-                PathExtensions::new().with_mirror(self.mirror_extension_for(composition, index)?);
+            // The assigned path decides which facts are assembled, and the
+            // match names all eight so a ninth cannot be added without a
+            // decision here. Assembling the mirror facts whatever the path
+            // was the earlier shape and it was wrong in a way that hid row 4
+            // entirely: `mirror_extension_for` refuses when no inventory band
+            // or target exists, which is precisely the state row 4 is
+            // assigned in, so path 4 could only ever have been refused with a
+            // message about a band it does not read.
+            let extensions = match path {
+                ExecutionPath::MirroredInventory => PathExtensions::new()
+                    .with_mirror(self.mirror_extension_for(composition, index)?),
+                ExecutionPath::HedgedBridging => match hedges.get(&index) {
+                    // `read_this_pass` is true because the depth above was
+                    // swept from `self.liquidity` inside this pass of `work`,
+                    // and `CellLiquidity` serves nothing from a stale book —
+                    // the two together are §33.1's "now, before the first
+                    // leg". It is not a constant standing in for a fact
+                    // nobody established.
+                    Some(hedge) => PathExtensions::new().with_hedge(HedgeExtension::new(
+                        hedge.depth,
+                        hedge.required,
+                        true,
+                    )?),
+                    // The router made this edge eligible for path 4 from the
+                    // same map, so an absence here is the two disagreeing
+                    // rather than a state a pass can be in. Empty facts are
+                    // supplied and the gate refuses for want of them, which
+                    // is the fail-closed reading; supplying an invented depth
+                    // would be the other one.
+                    None => PathExtensions::new(),
+                },
+                ExecutionPath::IntraVenue
+                | ExecutionPath::CrossVenue
+                | ExecutionPath::PassiveAnchoring
+                | ExecutionPath::FirmQuoteBridging
+                | ExecutionPath::RepresentationBasis
+                | ExecutionPath::PayoffEquivalence => PathExtensions::new(),
+            };
             // The mirrored instrument is prefixed onto the refusal here and
             // not inside the gate, because the gate is handed one side's
             // facts and does not know which of a cycle's legs they came from.
@@ -4122,8 +4314,19 @@ impl Cell {
                     || format!("edge {index}"),
                     |edge| edge.from().object.as_str().to_string(),
                 );
+                // Path 4's refusal names the book that was too thin, for the
+                // same reason the mirrored instrument is named at all: the
+                // gate is handed sizes and no identity, so an operator told
+                // only that a hedge was short would have to re-derive which
+                // of the cell's local venues was measured.
+                let book = match (path, hedges.get(&index)) {
+                    (ExecutionPath::HedgedBridging, Some(hedge)) => {
+                        format!(" against the hedge book at {}", hedge.venue.as_str())
+                    }
+                    _ => String::new(),
+                };
                 Error::denied(format!(
-                    "the mirrored leg in {named} does not clear it: {}",
+                    "the mirrored leg in {named} does not clear it{book}: {}",
                     refusal.message()
                 ))
             })?;
@@ -4328,7 +4531,7 @@ impl Cell {
             Some(installed) => scanned
                 .opportunities
                 .iter()
-                .map(|opportunity| self.route_one(installed, &opportunity.candidate.edges, now))
+                .map(|opportunity| self.route_one(installed, opportunity, now))
                 .collect(),
             // The desk was read at the top of this function and nothing since
             // could have removed it, so this arm is the `Option`'s shape and
