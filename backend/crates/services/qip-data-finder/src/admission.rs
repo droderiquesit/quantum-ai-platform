@@ -457,6 +457,173 @@ pub fn catalogue() -> Result<Vec<CatalogueEntry>> {
     ])
 }
 
+/// A source whose terms were read and answer the gate's questions **no**.
+///
+/// The catalogue above holds sources whose terms were read and admit them,
+/// and the two ADR 0034 candidates whose terms nobody has read. This is the
+/// third state, and until it existed it was indistinguishable from the
+/// second: a source evaluated and refused had no entry, so `admit` refused it
+/// with "its terms have not been read" — a false sentence about work that
+/// was done, and an invitation to do it again. Worse, nothing stopped the
+/// next lane from writing a connector and a catalogue entry for it, because
+/// the refusal lived in a decision record and not in the code path.
+///
+/// An entry here is consulted by the gate *before* the catalogue is, so a
+/// refused source cannot be admitted by adding an entry: the register has to
+/// be edited in the same commit, under review, with the clause that changed.
+/// And `no_refused_source_has_a_connector_or_a_catalogue_entry` below holds
+/// the other half — a connector on `KNOWN_SOURCES` for a source this
+/// register refuses is code the gate can never open, which is ADR 0050's
+/// alternative (f), "build the connector first and decide the licensing
+/// after", the ordering the data rule forbids.
+///
+/// Every field is the evaluation's evidence and none is a summary: the clause
+/// is verbatim from the document at `terms_url` as it dated itself, so a
+/// reader can check the register against the vendor rather than against this
+/// file. A vendor's terms changing is a change to the entry, reviewed like
+/// code, and no code here will notice it — the same sentence every admitted
+/// entry carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefusedSource {
+    /// The identifier a connector for this source would carry. Reserved by
+    /// this entry: a manifest declaring it is refused by name.
+    pub source_id: &'static str,
+    /// The publisher, as its own terms name it.
+    pub vendor: &'static str,
+    /// The document read.
+    pub terms_url: &'static str,
+    /// The version read, as the document dates itself.
+    pub terms_dated: &'static str,
+    /// When this platform read it.
+    pub evaluated_on: &'static str,
+    /// The clause that refuses, verbatim.
+    pub clause: &'static str,
+    /// Which of the gate's questions the clause answers no to.
+    pub refuses: &'static [Usage],
+    /// The decision record holding the full evaluation.
+    pub record: &'static str,
+}
+
+/// The sources evaluated for ADR 0050 — an option-quote source for the
+/// volatility surface — and refused on their own terms.
+///
+/// # What was looked for, and why none of it admits
+///
+/// ADR 0050 asks `Usage::Derive` and `Usage::Trade` of every source, because
+/// deriving is what the loop does and trading is what the loop is. An
+/// option-quote source has to grant both. Four publishers' terms were fetched
+/// and read on 2026-09-19 — two venues' own feeds (class (a) in the ADR's
+/// taxonomy) and two delayed or end-of-day publications (class (d), the class
+/// the ADR said to try first) — and every one refuses at least one of the two
+/// in a clause quoted below. Two more could not be read at all: Bybit's terms
+/// page renders only in a browser, and Binance's answered the fetch with an
+/// empty challenge page; neither is refused here because nothing was read,
+/// and neither is admissible for the same reason.
+///
+/// The pattern across all four is the same clause in four house styles:
+/// market data is for **personal** use, and **derivative works** — named as
+/// "a financial product, service or index" by one of them — need the
+/// publisher's written consent. A research and risk desk deriving a
+/// volatility surface is the use the clause describes and refuses. There is
+/// no reading of "personal use" under which a platform is the person.
+///
+/// The public-domain route the NWS entry took does not exist for options:
+/// no public body publishes option quotes or settlement prices, and the one
+/// central bank that publishes option-*implied* series (the Bank of England,
+/// under the Open Government Licence) publishes a model output the ADR's
+/// requirement 2 refuses as the engine's input regardless of its licence.
+pub fn refusals() -> Vec<RefusedSource> {
+    vec![
+        RefusedSource {
+            source_id: "deribit-options",
+            vendor: "Deribit FZE",
+            terms_url: "https://support.deribit.com/hc/en-us/articles/25944532191645",
+            terms_dated: "Deribit Exchange Membership Terms, article last updated 2026-08-12",
+            evaluated_on: "2026-09-19",
+            clause: "The use of market data and/or derived data is for personal use only. You \
+                     are not allowed to aggregate, resell, publish, forward or in any other way \
+                     process market data and/or derived data (except for personal use) without \
+                     prior written approval from us.",
+            refuses: &[Usage::Derive, Usage::Trade],
+            record: "ADR 0050, amendment of 2026-09-19",
+        },
+        RefusedSource {
+            source_id: "cboe-delayed-option-quotes",
+            vendor: "Cboe Global Markets, Inc.",
+            terms_url: "https://www.cboe.com/terms",
+            terms_dated: "Terms and Conditions for Use of Cboe Websites, last updated \
+                          2022-11-16",
+            evaluated_on: "2026-09-19",
+            clause: "You may view, print and download one copy of the Materials for your \
+                     personal non-commercial use in connection with products and services \
+                     offered by Cboe [...] You may not otherwise copy, reproduce, alter, store \
+                     either in hard copy or in an electronic retrieval system, license, \
+                     transmit, display, broadcast, create a derivative work (for example, a \
+                     financial product, service or index) from, use to verify or correct other \
+                     data or information, publish, rent, sublicense, distribute, or otherwise \
+                     use in whole or in part in any other manner the Materials without Cboe's \
+                     prior written consent",
+            refuses: &[Usage::Derive, Usage::Trade],
+            record: "ADR 0050, amendment of 2026-09-19",
+        },
+        RefusedSource {
+            source_id: "okx-options",
+            vendor: "OKX",
+            terms_url: "https://www.okx.com/help/terms-of-service",
+            terms_dated: "OKX Terms of Service, last updated 2026-09-17",
+            evaluated_on: "2026-09-19",
+            clause: "You agree that you will not copy, transmit, distribute, sell, license, \
+                     reverse engineer, modify, publish, or participate in the transfer or sale \
+                     of, create derivative works from, or in any other way, exploit any of our \
+                     products and Services. [...] You may not use the OKX Platform or the \
+                     Services for any commercial purpose unless otherwise explicitly authorized \
+                     by OKX.",
+            refuses: &[Usage::Derive, Usage::Trade],
+            record: "ADR 0050, amendment of 2026-09-19",
+        },
+        RefusedSource {
+            source_id: "hkex-option-daily-reports",
+            vendor: "Hong Kong Exchanges and Clearing Limited",
+            terms_url: "https://www.hkex.com.hk/Global/Exchange/Terms-of-Use?sc_lang=en",
+            terms_dated: "HKEX Website Terms of Use, last updated 2025-08-19",
+            evaluated_on: "2026-09-19",
+            clause: "Unless HKEX or relevant third-parties has/have given you express written \
+                     permission, you are not permitted to, directly or indirectly and whether \
+                     or not for gain: [...] (ii) create or compile derivative works (including, \
+                     without limitation, through framing or systematic retrieval to create \
+                     collections, compilations, databases or directories) from the Information \
+                     or any part of it; (iii) use any programmatic, scripted or other mechanical \
+                     means to access this Website or any Information",
+            refuses: &[Usage::Derive, Usage::Trade],
+            record: "ADR 0050, amendment of 2026-09-19",
+        },
+    ]
+}
+
+/// The refusal for a source on the register, worded so an operator goes to
+/// the vendor's clause and not looking for a missing catalogue entry.
+fn refusal_on_record(refused: &RefusedSource) -> Error {
+    let usages = refused
+        .refuses
+        .iter()
+        .map(Usage::as_str)
+        .collect::<Vec<_>>()
+        .join(" and ");
+    Error::denied(format!(
+        "{} is refused on {}'s own terms, read on {} ({}, {}): \"{}\". That clause refuses \
+         {usages}, and both are required. The terms were read and the answer was no — see {} \
+         — so this is not a missing catalogue entry; re-evaluating the source means changing \
+         the refusal register under review, with the clause that changed",
+        refused.source_id,
+        refused.vendor,
+        refused.evaluated_on,
+        refused.terms_url,
+        refused.terms_dated,
+        refused.clause,
+        refused.record,
+    ))
+}
+
 /// Admit a source for the loop's use, or refuse it with the reason.
 ///
 /// Called by a composition root before
@@ -522,6 +689,16 @@ pub fn admit_from_registered(
     manifest_class: LicensingClass,
     now: Timestamp,
 ) -> Result<LicensingDecision> {
+    // Before the catalogue, on purpose. A source whose terms were read and
+    // refuse it is refused by that clause whatever the caller's catalogue
+    // says, so writing an entry cannot admit it; only editing the register
+    // can, and that edit names the clause that changed.
+    if let Some(refused) = refusals()
+        .iter()
+        .find(|refused| refused.source_id == source_id)
+    {
+        return Err(refusal_on_record(refused));
+    }
     let entry = entries
         .iter()
         .find(|entry| entry.source_id == source_id)
