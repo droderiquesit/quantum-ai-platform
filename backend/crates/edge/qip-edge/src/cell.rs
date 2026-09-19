@@ -26,6 +26,7 @@ use crate::region::RegionOutlook;
 use crate::reservation::RegionTable;
 use crate::resume::{ResumeDiscipline, VenueAccount};
 use crate::seam::CellLiquidity;
+use crate::settlement::{self, GATE_SETTLEMENT, SettlementTerms};
 use crate::telemetry::{CellMetrics, RegionShareOutcome};
 use qip_arbitrage::liquidity::LiquiditySource;
 use qip_arbitrage::scan::{Opportunity, RejectionStage};
@@ -234,6 +235,12 @@ pub struct CellConfig {
     /// see [`crate::feasibility`] for why that is stated rather than
     /// defaulted.
     pub feasibility: BTreeMap<String, VenueModel>,
+    /// When each venue's proceeds become usable as funding, keyed by venue
+    /// id (§56.2 rule 21, §32.2). A venue absent here is not projected — its
+    /// dependent legs are counted on `qip_edge_settlement_unprojected_venues`
+    /// rather than judged — see [`crate::settlement`] for why that is stated
+    /// rather than defaulted in either direction.
+    pub settlement: BTreeMap<String, SettlementTerms>,
     /// Which region each venue sits in, for the venues that are not in this
     /// cell's own (blueprint §31.1).
     ///
@@ -319,6 +326,7 @@ impl CellConfig {
             max_staleness: Duration::from_secs(5),
             strategy_budget: 4_096,
             feasibility: BTreeMap::new(),
+            settlement: BTreeMap::new(),
             venue_regions: BTreeMap::new(),
             crossing_interval: None,
             quote_limits: RateLimits::default(),
@@ -483,6 +491,27 @@ impl CellConfig {
     pub fn with_feasibility(mut self, venue: &VenueId, model: VenueModel) -> Self {
         self.feasibility.insert(venue.as_str().to_string(), model);
         self
+    }
+
+    /// Install the settlement terms for a venue (§56.2 rule 21).
+    ///
+    /// Read at every cycle admission for a leg that spends what the leg
+    /// before it delivered at this venue. Installing terms for a venue the
+    /// cell cannot reach is harmless, as with a feasibility model, and
+    /// installing none for a venue it can is the unprojected arm that the
+    /// gauge counts.
+    #[must_use]
+    pub fn with_settlement(mut self, venue: &VenueId, terms: SettlementTerms) -> Self {
+        self.settlement.insert(venue.as_str().to_string(), terms);
+        self
+    }
+
+    /// How many of this cell's venues carry no settlement terms.
+    pub fn unprojected_settlement_venues(&self) -> usize {
+        self.venues
+            .iter()
+            .filter(|venue| !self.settlement.contains_key(venue.as_str()))
+            .count()
     }
 }
 
@@ -1119,6 +1148,34 @@ impl Cell {
     /// allocation. The two are different facts and a zero would conflate them.
     pub fn region_allocation_free(&self) -> Option<Decimal> {
         self.region_allocation.as_ref().map(RegionTable::free)
+    }
+
+    /// Install a venue's settlement terms into a cell that is already
+    /// running (§56.2 rule 21).
+    ///
+    /// What a composition root needs where the fact arrives with the seam
+    /// that knows it rather than with the configuration: `qip-edge-node`
+    /// binds the simulator's feed to the cell after assembly, and it is the
+    /// simulator — not the operator — that knows its proceeds are credited
+    /// on the fill. Refused for a venue this cell was not configured for:
+    /// terms for a venue the cell cannot reach are a wiring error at a
+    /// runtime seam, where the same entry in [`CellConfig::with_settlement`]
+    /// is merely inert. Terms already held for the venue are replaced, and
+    /// the replacement is journaled so a reader can see when the calendar
+    /// a cycle was judged against changed.
+    pub fn install_settlement(&mut self, venue: &VenueId, terms: SettlementTerms) -> Result<()> {
+        if !self.config.venues.iter().any(|known| known == venue) {
+            return Err(Error::invalid(format!(
+                "cell {} is not configured for venue {}, so it has no leg there to project \
+                 settlement for; name the venue in the cell's venue list before giving it terms",
+                self.config.cell_id,
+                venue.as_str()
+            )));
+        }
+        self.config
+            .settlement
+            .insert(venue.as_str().to_string(), terms);
+        Ok(())
     }
 
     /// Install the arbitrage desk this cell scans with.
@@ -2539,6 +2596,12 @@ impl Cell {
         // passing unless this is on a chart.
         self.metrics
             .fill_time_unmeasured(self.fill_times.unmeasured());
+        // §56.2 rule 21's silence, made a number for the same reason: a
+        // venue with no settlement terms has every dependent leg admitted
+        // unjudged, and a chart on which that reads as zero refusals is a
+        // chart that says the settlement gate is passing.
+        self.metrics
+            .settlement_unprojected(self.config.unprojected_settlement_venues());
         // §36.3's two, published before the halt check for the reason every
         // gauge above is: a halted cell that goes dark on how many of its
         // peers have gone dark, or on how many venues it has yet to
@@ -4889,6 +4952,19 @@ impl Cell {
             );
             return None;
         }
+        // §56.2 rule 21: the reservation is settlement-aware. The hold below
+        // is money out of settled capital, but a cycle is a chain — a leg
+        // spends what the leg before it delivered at the same venue — and
+        // whether that is usable when the leg fires is the venue's calendar's
+        // business, not the ledger's. Projected here, before the hold, so a
+        // cycle the calendar refuses never takes region capital it would
+        // have to give straight back; refused whole, because a cycle short
+        // one leg is a position. The projection dates every fill at `now`,
+        // and `settlement::project` says why that is the conservative
+        // reading rather than a shortcut.
+        if !self.admit_settlement(cycle_id, &intents, &venues, now, report) {
+            return None;
+        }
         // The region's bound on the cycle, whole and after every leg was
         // admitted. Holding leg by leg would leave a partial hold behind when
         // a later leg is vetoed, and a cycle short one leg is a position
@@ -4934,6 +5010,104 @@ impl Cell {
             legs: intents,
             notional,
         })
+    }
+
+    /// Project a cycle's legs against their venues' settlement terms, or
+    /// veto the cycle whole (§56.2 rule 21, §32.2).
+    ///
+    /// `false` when a leg would spend proceeds still in settlement at the
+    /// instant it fires. The refusal names the leg, the leg it depends on,
+    /// the venue's terms, the day the proceeds land and how long after the
+    /// leg fires that is — a reader of the journal can re-derive the veto
+    /// from the calendar alone, which is what makes it a decision rather
+    /// than an assertion. A calendar that cannot be walked is refused under
+    /// the same gate: a projection the cell could not make is a figure it
+    /// could not evaluate.
+    fn admit_settlement(
+        &mut self,
+        cycle_id: &str,
+        intents: &[Intent],
+        venues: &[VenueId],
+        now: Timestamp,
+        report: &mut WorkReport,
+    ) -> bool {
+        let unfunded = match settlement::project(venues, &self.config.settlement, now) {
+            Ok(projection) => projection.first_unfunded(),
+            Err(error) => {
+                self.refuse(
+                    report,
+                    GATE_SETTLEMENT,
+                    &format!(
+                        "cycle {cycle_id} is refused whole: its legs' settlement could not be \
+                         projected — {}",
+                        error.message()
+                    ),
+                    now,
+                );
+                return false;
+            }
+        };
+        let Some(unfunded) = unfunded else {
+            return true;
+        };
+        let (Some(leg), Some(source)) = (intents.get(unfunded.leg), intents.get(unfunded.of_leg))
+        else {
+            // `venues` was built from `intents` one to one, so an index the
+            // projection returned is an index into `intents`; refusing here
+            // rather than indexing is what keeps that a fact the code holds
+            // instead of one a comment asserts.
+            self.refuse(
+                report,
+                GATE_SETTLEMENT,
+                &format!(
+                    "cycle {cycle_id} is refused whole: the settlement projection named leg {} \
+                     of {}, which the cycle does not have",
+                    unfunded.leg + 1,
+                    intents.len()
+                ),
+                now,
+            );
+            return false;
+        };
+        let terms = self
+            .config
+            .settlement
+            .get(leg.venue.as_str())
+            .map_or("unstated", SettlementTerms::describe);
+        let wait = unfunded.usable_at.since(now);
+        let minutes = wait.as_millis() / 60_000;
+        self.refuse(
+            report,
+            GATE_SETTLEMENT,
+            &format!(
+                "cycle {cycle_id}: leg {} ({} {} at {}) spends what leg {} ({} {} at {}) delivers \
+                 there, and {} settles {terms}: a fill at {} is usable from {}, {} h {} min after \
+                 the leg fires. This cell has no bridge that funds a leg from proceeds in \
+                 settlement (§32.2), so the cycle waits for settlement or does not run",
+                unfunded.leg + 1,
+                leg.signed_size,
+                leg.object_id.as_str(),
+                leg.venue.as_str(),
+                unfunded.of_leg + 1,
+                source.signed_size,
+                source.object_id.as_str(),
+                source.venue.as_str(),
+                leg.venue.as_str(),
+                now.to_rfc3339(),
+                unfunded.usable_at.to_rfc3339(),
+                minutes / 60,
+                minutes % 60,
+            ),
+            now,
+        );
+        self.veto_cycle(
+            cycle_id,
+            leg,
+            "is funded by proceeds still in settlement when it fires",
+            now,
+            report,
+        );
+        false
     }
 
     fn veto_cycle(

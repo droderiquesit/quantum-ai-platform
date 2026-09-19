@@ -92,6 +92,14 @@ still answers the JSON health body. The series and what each is keyed on:
   `qip_edge_fill_time_unmeasured_venues`. The first two and the last are
   written on **every** pass including a halted one, so a cell that has sent
   nothing reports a full bucket rather than nothing at all.
+- From §56.2 rule 21's settlement lane (2026-09-19):
+  `qip_edge_settlement_unprojected_venues`, the count of configured venues
+  holding no settlement terms, written on every pass including a halted one
+  for the same reason as the unmeasured-venues gauge — a venue with no terms
+  is neither read as instant nor as T+2, its dependent legs go out unjudged,
+  and that is a number rather than a silence. Its refusal seam goes through
+  `Cell::refuse` under `GATE_SETTLEMENT` (`qip-edge/src/settlement.rs`), so
+  the refusal-site count below did not move; recount rather than trust this.
 - From the node: `qip_edge_mesh_{deltas,grants,policy_frames}_total{outcome}`
   as deltas of the link's cumulative counters, and
   `qip_edge_mesh_circuit{state}`.

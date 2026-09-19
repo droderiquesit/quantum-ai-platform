@@ -69,6 +69,7 @@ use qip_core::error::{Error, Result};
 use qip_core::ids::ObjectId;
 use qip_core::time::Timestamp;
 use qip_edge::cell::Cell;
+use qip_edge::settlement::SettlementTerms;
 use qip_orderbook::venue::VenueState;
 use qip_protocols::decoder::{Decoder, Diagnostics, SkipReason, SkipRecord};
 use qip_protocols::registry::FeedKey;
@@ -207,17 +208,31 @@ impl SimulatedFeed {
         self.omitted_total
     }
 
-    /// Bind this feed's decoder to the cell.
+    /// Bind this feed's decoder to the cell, and state the venue's
+    /// settlement terms in the same breath.
     ///
     /// Once: the registry refuses a second binding of the same feed, and that
     /// refusal is the right answer here too — two decoders on one stream
     /// would keep two sequence positions.
+    ///
+    /// The terms are the simulator's own fact, not a setting: the in-process
+    /// venue books a fill the instant it reports it and holds nothing in
+    /// settlement, so a cycle's later leg spends what its earlier leg
+    /// delivered the moment it is delivered. Stated here rather than read
+    /// from a variable because nothing else can drive this feed, and a
+    /// variable that could only ever be `instant` would be a control that
+    /// reads as a choice. Left unstated, every venue this node drives would
+    /// stand on `qip_edge_settlement_unprojected_venues` for ever — a
+    /// healthy process running a fallback, which is the shape the manifest
+    /// suite exists to refuse. A venue adapter with a settlement cycle
+    /// (§34.1) states its own terms at its own seam; none exists yet.
     pub fn attach(&self, cell: &mut Cell) -> Result<()> {
         cell.protocols_mut().register(
             self.venue.clone(),
             FEED_NAME,
             Box::new(DepthDecoder::new(self.venue.clone())),
-        )
+        )?;
+        cell.install_settlement(&self.venue, SettlementTerms::instant())
     }
 
     /// Publish what changed at the venue since the last pass.

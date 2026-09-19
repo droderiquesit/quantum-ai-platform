@@ -26,7 +26,9 @@ use qip_edge::cell::{CellConfig, PolledHalt, PricingPolicy};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::policy::VerifiedPolicy;
 use qip_edge::quoting::{Depletion, RateLimits};
-use qip_edge::telemetry::{CellMetrics, EDGE_FILLS_CONFIRMED, EDGE_ORDERS_REPRICED};
+use qip_edge::telemetry::{
+    CellMetrics, EDGE_FILLS_CONFIRMED, EDGE_ORDERS_REPRICED, EDGE_SETTLEMENT_UNPROJECTED,
+};
 use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SimulatedFeed};
 use qip_edge_node::gateway::SimulatedGateway;
@@ -2149,6 +2151,66 @@ fn a_requote_the_budget_cannot_fund_whole_withdraws_nothing_and_says_which_contr
         1 + report.orders.len(),
         "the venue holds a different number of orders than the resting one plus whatever this \
          pass sent itself, so the refused requote withdrew or added something"
+    );
+    Ok(())
+}
+
+#[test]
+fn binding_the_simulated_feed_states_instant_settlement_for_the_venue_it_drives() -> Result<()> {
+    // §56.2 rule 21 on the node's own seam. The cell's settlement gate
+    // projects a cycle only against venues it holds terms for, and counts
+    // the rest on a gauge; a node that never stated terms for the venue its
+    // feed drives would stand on that gauge for ever, and the gate would be
+    // a control the deployed shape never evaluates. The simulator books a
+    // fill the instant it reports it, so `instant` is the simulator's own
+    // fact — and binding the feed is where the node states it.
+    //
+    // Premise: an assembled node whose feed is *not* bound reports the one
+    // venue as unprojected after a pass, so the zero below is the binding's
+    // doing and not a gauge that reads zero on nothing.
+    let config = CellConfig::new(CELL, REGION).with_venue(venue());
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let allocation = RegionCapital::read(Some("1000000000"))?;
+    let mut unbound = assemble(config, features, Arc::new(SystemClock), allocation, None)?;
+    let mut gateway = SimulatedGateway::new(venue(), 7, t(0))?;
+    unbound.cell.work(t(10), &mut gateway)?;
+    assert_eq!(
+        unbound
+            .scrape_registry()
+            .snapshot()
+            .gauge(EDGE_SETTLEMENT_UNPROJECTED, &base()),
+        Some(1.0),
+        "the premise failed: a node with no feed bound does not report its venue unprojected"
+    );
+
+    let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    let mut stats = PassStats::default();
+    let outcome = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(10),
+    )?;
+    assert!(
+        matches!(outcome, PassOutcome::Ran { .. }),
+        "a running node reported its pass as halted: {outcome:?}"
+    );
+    assert_eq!(
+        node.scrape_registry()
+            .snapshot()
+            .gauge(EDGE_SETTLEMENT_UNPROJECTED, &base()),
+        Some(0.0),
+        "binding the simulated feed left its venue without settlement terms"
+    );
+    assert!(
+        node.cell
+            .config()
+            .settlement
+            .get(VENUE)
+            .is_some_and(qip_edge::settlement::SettlementTerms::is_instant),
+        "the terms the feed stated are not the simulator's instant credit"
     );
     Ok(())
 }
