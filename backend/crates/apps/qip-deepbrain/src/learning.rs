@@ -1581,6 +1581,85 @@ mod tests {
     }
 
     #[test]
+    fn a_drifted_feature_degrades_only_the_models_fitted_on_the_instrument_it_drifted_on()
+    -> Result<()> {
+        // The feature-level join, which is the second of the two routes a
+        // drift score can reach a card by and the one a per-model reference
+        // cannot fix. `return_1` moving on one instrument says nothing about
+        // `return_1` on another, so joining this round's drifted feature set
+        // onto every card in the registry marks models degraded on evidence
+        // from a series they have never seen -- and `decision_eligibility`
+        // refuses on the score that join writes.
+        let mut desk = learning_desk();
+        let calm = super::tests_support::learnable(400);
+        let first = desk
+            .maybe_learn(&subject(), &calm, 1, at())?
+            .and_then(|round| round.registration)
+            .ok_or_else(|| Error::not_found("a registration on the first subject"))?
+            .reference;
+        let second = desk
+            .maybe_learn(&other_subject(), &calm, 2, at())?
+            .and_then(|round| round.registration)
+            .ok_or_else(|| Error::not_found("a registration on the second subject"))?
+            .reference;
+
+        // The premise, in three parts: two distinct cards are standing, they
+        // are attributed to different instruments, and they read the same
+        // features -- so the join below has something to reach them both by
+        // and nothing but the subject can tell them apart.
+        assert_ne!(
+            first, second,
+            "both rounds registered the same card, so there is only one model here"
+        );
+        assert_eq!(
+            desk.registry().get(&first).and_then(card_subject),
+            Some(subject().as_str())
+        );
+        assert_eq!(
+            desk.registry().get(&second).and_then(card_subject),
+            Some(other_subject().as_str())
+        );
+        assert_eq!(
+            desk.registry()
+                .get(&first)
+                .map(|card| card.features.clone()),
+            desk.registry()
+                .get(&second)
+                .map(|card| card.features.clone()),
+            "the two cards read different features, so the join could separate them without \
+             ever consulting the instrument"
+        );
+
+        // The second instrument, and only the second, changes regime.
+        let shocked = super::tests_support::shocked(400);
+        let round = desk
+            .maybe_learn(&other_subject(), &shocked, 3, at())?
+            .ok_or_else(|| Error::not_found("a round on the second subject"))?;
+
+        // The premise for the exclusion: the join did fire, on the card fitted
+        // where the features actually moved.
+        assert!(
+            round.degraded.contains_key(&second),
+            "the join degraded nothing on the instrument that moved, so the exclusion below \
+             proves nothing; degraded is {:?}",
+            round.degraded.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !round.degraded.contains_key(&first),
+            "a model fitted on {} was degraded by features that drifted on {}",
+            subject().as_str(),
+            other_subject().as_str()
+        );
+        assert_eq!(
+            desk.registry().get(&first).map(|card| card.drift_score),
+            Some(0.0),
+            "the join wrote a drift score onto a card fitted on an instrument this round \
+             never looked at"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_card_naming_no_instrument_is_reported_unmeasurable_rather_than_measured_against_a_guess()
     -> Result<()> {
         // The other half of the subject fix, and the half that could have
@@ -1757,6 +1836,17 @@ mod tests {
             "a regime change on the model's own instrument produced a stability index of \
              {:.3}, which did not pass its threshold",
             observation.population_stability_index
+        );
+        // And the stream-level reference is per subject too. Round two shocked
+        // a different instrument; had that replaced this one's reference
+        // distribution -- as a single global reference did -- the third round
+        // would compare shocked bars against shocked estimators and the
+        // feature-level join would find nothing to degrade.
+        assert!(
+            third.degraded.contains_key(&reference),
+            "the round on the model's own instrument degraded nothing: a round on another \
+             instrument moved this one's stream reference; degraded is {:?}",
+            third.degraded.keys().collect::<Vec<_>>()
         );
         Ok(())
     }
