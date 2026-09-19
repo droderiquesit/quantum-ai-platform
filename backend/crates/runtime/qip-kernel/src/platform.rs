@@ -2844,6 +2844,91 @@ impl EventBody for LedgerEntry {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// A capital-call notice as an operator files it: the fund's own reference,
+/// the amount demanded, the instant it falls due, and what failing it costs.
+///
+/// Blueprint §43.2's tenth object reaching the commitment book from outside
+/// a test, under ADR 0085 §5's decision that a call is its own record
+/// family and not an inflow: a drawdown demand *on* the desk, the opposite
+/// direction from a user's deposit. The commitment it draws on is not in
+/// the body — it is the route's path, resolved against the book the
+/// universe built — and the issued instant is the server's, because a
+/// notice dated by its caller is a caller-chosen position in the reserve's
+/// history. `consequence` is required rather than defaulted: the three arms
+/// behave differently in time and a notice filed without one would reserve
+/// against a penalty nobody stated.
+///
+/// Deserialises, so `qip-api` can hand the kernel one built from a body it
+/// screened without naming a money type itself; every rule the pieces keep
+/// — an exact decimal, an RFC 3339 instant, a consequence in basis points —
+/// is the type's own.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CapitalCallNotice {
+    pub reference: String,
+    pub amount: Decimal,
+    pub due: Timestamp,
+    pub consequence: qip_financial::cashflow::CallConsequence,
+}
+
+/// The journalled record of a capital-call notice filed or withdrawn, and
+/// the only place a filed notice lives between one process and the next.
+///
+/// Its own family beside [`LedgerEntry`], as ADR 0085 §5 decides: the
+/// subject is a commitment and not a user's book, and the reader is the
+/// reserve — [`Platform::deployable_capital`] through
+/// `CommitmentBook::unfunded_total` and `Commitment::obligation` — and not
+/// the attribution. Before this record existed the commitment book was
+/// derived state rebuilt from the universe at every assembly, so a notice
+/// filed on `Platform` would have been erased at the next process start,
+/// taking the reserve it raised down with it and leaving no record that it
+/// had ever been higher; the register found that on 2026-09-19 and this is
+/// the answer. [`Platform::resume_capital_calls`] replays both variants in
+/// log order into the book `private_holdings_of` has just built.
+///
+/// `filed_by` and `withdrawn_by` are the authenticated operator's subject,
+/// taken from the identity and never from a body.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "entry", rename_all = "snake_case")]
+pub enum CapitalCallEntry {
+    /// [`Platform::record_capital_call`]: a notice stood against the
+    /// commitment, after the book's own gates admitted it.
+    Noticed {
+        commitment: String,
+        reference: String,
+        amount: Decimal,
+        issued_at: Timestamp,
+        due_at: Timestamp,
+        consequence: qip_financial::cashflow::CallConsequence,
+        filed_by: String,
+    },
+    /// [`Platform::withdraw_capital_call`]: the notice was retracted
+    /// without being met — rescinded, or filed in error. Replayed in log
+    /// order after the notice it retracts, so a reference filed, withdrawn
+    /// and filed again resumes filed once.
+    Withdrawn {
+        commitment: String,
+        reference: String,
+        amount: Decimal,
+        withdrawn_at: Timestamp,
+        withdrawn_by: String,
+    },
+}
+
+/// The producer every capital-call record in the event log carries, and the
+/// discriminator [`Platform::resume_capital_calls`] selects on beside the
+/// topic, which is shared with the eligibility and product records.
+const CAPITAL_CALL_ORIGIN: &str = "kernel/capital-call";
+
+impl EventBody for CapitalCallEntry {
+    /// A governance record about the desk's capital — what a fund has
+    /// demanded of it, filed by a named operator — in the Decide group the
+    /// log never evicts, beside the promotion and eligibility records it is
+    /// read with and told apart from them by producer. See
+    /// [`CAPITAL_CALL_ORIGIN`].
+    const TOPIC: Topic = Topic::ComplianceEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 impl EventBody for UniverseAssembled {
     // Reference data is what an instrument catalogue is. See the type's
     // comment for the retention consequence of the topic.
@@ -3997,6 +4082,14 @@ impl Platform {
         // disjointly rather than a method, so the log is read while the
         // ledger is written.
         Self::resume_ledger(&platform.event_log, &mut platform.user_ledger)?;
+        // The capital-call notices the log holds, replayed into the
+        // commitment book `private_holdings_of` built above through the
+        // same gates a live notice passes. Before this seam a filed notice
+        // was erased at the next process start and the reserve it raised
+        // fell with it, with no record that it had ever been higher (ADR
+        // 0085 §5). Two fields borrowed disjointly, as the ledger's resume
+        // is, so the log is read while the book is written.
+        Self::resume_capital_calls(&platform.event_log, &mut platform.commitments)?;
         // The committed venue registrations, through the same journaled path
         // an operator's runtime approval takes. A record the registry refuses
         // — a source with no declared requirement — stops assembly with the
@@ -5659,6 +5752,232 @@ impl Platform {
                      cannot be resumed from this log under this configuration — restore the \
                      enrolment and eligibility the declaration was admitted under, or archive \
                      the log and start a new one",
+                    record.sequence,
+                    why.message()
+                )));
+            }
+            resumed += 1;
+        }
+        Ok(resumed)
+    }
+
+    // --- capital calls (ADR 0085 §5) ---------------------------------------------
+
+    /// File, as an authenticated operator, a fund's drawdown notice against
+    /// one of the desk's private commitments — and journal it before the
+    /// book adopts it.
+    ///
+    /// The §43.2 writer the register found absent: `Commitment::record_call`
+    /// was reached by nothing outside `qip-financial`'s own tests, so the
+    /// penalty term of `Commitment::obligation` was structurally zero on
+    /// every cycle that ever ran and the reserve read the same figure
+    /// whether or not a call had been missed. The identity is the one an
+    /// eligibility decision takes, held to the same freshness, because both
+    /// are a person putting a fact about capital on the record.
+    ///
+    /// **A notice can only ever raise the reserve, never lower it.** It
+    /// changes nothing until it is overdue, and then adds what failing it
+    /// has cost to the obligation [`Platform::deployable_capital`] subtracts
+    /// before anything is sized. The called balance does not move: meeting
+    /// a call is capital leaving the desk, and an operator asserting that
+    /// it left would be a person's claim about the bank's fact, the shape
+    /// ADR 0085 §2 refuses for an arrival. So there is no settlement seam
+    /// here — see the module's register row for the reversal condition —
+    /// and the only thing that can happen to a filed notice in this build is
+    /// that an operator withdraws it.
+    ///
+    /// The book's own refusals stand and are asked first, on a scratch copy:
+    /// a commitment the universe does not hold, an amount that with the
+    /// notices outstanding would pass the unfunded balance, a due instant
+    /// before the notice's own, a reference already standing. A refused
+    /// notice writes nothing. Checked, then journalled, then applied, in the
+    /// order [`Platform::expect_inflow`] keeps: the log has the record
+    /// before the state moves, and never a record of a state that did not.
+    /// What is journalled is what [`Platform::resume_capital_calls`]
+    /// replays, so the notice survives a restart.
+    pub fn record_capital_call(
+        &mut self,
+        commitment: &str,
+        notice: CapitalCallNotice,
+        operator: &OperatorIdentity,
+        now: Timestamp,
+    ) -> Result<()> {
+        if !operator.is_fresh(now, ELIGIBILITY_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to file a \
+                 capital call",
+                operator.subject(),
+                ELIGIBILITY_CREDENTIAL_AGE
+            )));
+        }
+        if self.commitments.get(commitment).is_none() {
+            return Err(Error::not_found(format!(
+                "no commitment is recorded for {commitment}, so a capital call has nothing to \
+                 draw against; a commitment is derived from a private-asset record in the \
+                 universe, and a notice cannot open one"
+            )));
+        }
+        let CapitalCallNotice {
+            reference,
+            amount,
+            due,
+            consequence,
+        } = notice;
+        let call = qip_financial::cashflow::CapitalCall::notice(
+            commitment,
+            reference.clone(),
+            amount,
+            now,
+            due,
+            consequence,
+        )?;
+        let mut scratch = self.commitments.clone();
+        scratch.record_call(call.clone())?;
+        self.journal_record(
+            CapitalCallEntry::Noticed {
+                commitment: commitment.to_string(),
+                reference,
+                amount,
+                issued_at: now,
+                due_at: due,
+                consequence,
+                filed_by: operator.subject().to_string(),
+            },
+            CAPITAL_CALL_ORIGIN,
+            now,
+        )?;
+        self.commitments.record_call(call)
+    }
+
+    /// Retract, as an authenticated operator, a notice that stood — the
+    /// fund rescinded it or it was filed in error — and journal it before
+    /// the book drops it.
+    ///
+    /// The other half of the writer, and the answer to the question the
+    /// register asked about amendment: `Commitment::record_call` refuses a
+    /// second notice under one reference by design, so a notice filed with
+    /// the wrong amount is corrected by withdrawing it and filing again,
+    /// and the log holds both records and says which claim won. Same
+    /// identity, same freshness, same scratch-journal-apply order as
+    /// [`Platform::record_capital_call`]. Refused for a reference no notice
+    /// stands under, so a withdrawal is always of something that stood.
+    ///
+    /// Withdrawing moves no balance: the called and unfunded figures are
+    /// untouched, and the most a withdrawal can do to the reserve is stop
+    /// charging a penalty that the notice, had it stood, would have accrued.
+    pub fn withdraw_capital_call(
+        &mut self,
+        commitment: &str,
+        reference: &str,
+        operator: &OperatorIdentity,
+        now: Timestamp,
+    ) -> Result<()> {
+        if !operator.is_fresh(now, ELIGIBILITY_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to withdraw a \
+                 capital call",
+                operator.subject(),
+                ELIGIBILITY_CREDENTIAL_AGE
+            )));
+        }
+        if self.commitments.get(commitment).is_none() {
+            return Err(Error::not_found(format!(
+                "no commitment is recorded for {commitment}, so no capital call can stand \
+                 against it and none can be withdrawn"
+            )));
+        }
+        let mut scratch = self.commitments.clone();
+        let withdrawn = scratch.withdraw_call(commitment, reference)?;
+        self.journal_record(
+            CapitalCallEntry::Withdrawn {
+                commitment: commitment.to_string(),
+                reference: reference.to_string(),
+                amount: withdrawn.amount(),
+                withdrawn_at: now,
+                withdrawn_by: operator.subject().to_string(),
+            },
+            CAPITAL_CALL_ORIGIN,
+            now,
+        )?;
+        self.commitments.withdraw_call(commitment, reference)?;
+        Ok(())
+    }
+
+    /// Replay the log's capital-call notices into the commitment book, in
+    /// log order, through the same gates a live notice passes — called
+    /// after `private_holdings_of` has built the book from the universe,
+    /// because a notice names a commitment and a replay into an empty book
+    /// would refuse every record it was written to keep.
+    ///
+    /// The fifth resume seam, beside the fabric journal, the withdrawn venue
+    /// set, the open recalibration proposals and the per-user ledger, and
+    /// the one the commitment book lacked: the book is derived from the
+    /// universe at every boot, so a notice filed by
+    /// [`Platform::record_capital_call`] was on the record and in no book
+    /// after a restart. Selected by topic *and* producer, because the topic
+    /// is shared with the eligibility and product records.
+    ///
+    /// Refused — assembly stops — when a record the log holds is one the
+    /// book this boot built will not take: a commitment the universe no
+    /// longer holds, a notice that with those outstanding passes an unfunded
+    /// balance the administrator's record has since reduced, a notice
+    /// issued before a commitment the catalogue has since re-dated. Dropping
+    /// the record silently would be the erasure this seam exists to end, and
+    /// resuming it past the gate would be a document raising or lowering
+    /// the reserve on nobody's decision. The refusal names the record's
+    /// sequence and what to do, and the remedy is real: withdraw the notice
+    /// on the running process before the universe that invalidates it is
+    /// deployed, or archive the log and start a new one. That is the
+    /// fail-closed cost ADR 0085 §1 accepts for the ledger, applied here.
+    fn resume_capital_calls(
+        log: &EventLog,
+        book: &mut qip_financial::cashflow::CommitmentBook,
+    ) -> Result<usize> {
+        let mut resumed = 0usize;
+        for record in log.records() {
+            if record.event.topic != CapitalCallEntry::TOPIC
+                || record.event.lineage.producer != CAPITAL_CALL_ORIGIN
+            {
+                continue;
+            }
+            let entry = StreamEnvelope::from_frame(&record.event)?
+                .decode::<CapitalCallEntry>()?
+                .body;
+            let outcome = match entry {
+                CapitalCallEntry::Noticed {
+                    commitment,
+                    reference,
+                    amount,
+                    issued_at,
+                    due_at,
+                    consequence,
+                    ..
+                } => qip_financial::cashflow::CapitalCall::notice(
+                    commitment.clone(),
+                    reference.clone(),
+                    amount,
+                    issued_at,
+                    due_at,
+                    consequence,
+                )
+                .and_then(|call| book.record_call(call))
+                .map_err(|why| (commitment, reference, "files", why)),
+                CapitalCallEntry::Withdrawn {
+                    commitment,
+                    reference,
+                    ..
+                } => book
+                    .withdraw_call(&commitment, &reference)
+                    .map(|_| ())
+                    .map_err(|why| (commitment, reference, "withdraws", why)),
+            };
+            if let Err((commitment, reference, verb, why)) = outcome {
+                return Err(Error::invalid(format!(
+                    "the event log's record {} {verb} capital call {reference} against \
+                     {commitment} and the commitment book this boot assembled refuses it ({}); \
+                     the capital calls cannot be resumed from this log under this universe — \
+                     withdraw the notice on the running process before deploying the universe \
+                     that invalidates it, or archive the log and start a new one",
                     record.sequence,
                     why.message()
                 )));

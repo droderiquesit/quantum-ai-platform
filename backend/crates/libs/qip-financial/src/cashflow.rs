@@ -1121,6 +1121,31 @@ impl Commitment {
         Ok(self.unfunded())
     }
 
+    /// Withdraw a notice that stood, without meeting it: the fund rescinded
+    /// it, or it was filed in error, and the record of it is retracted.
+    ///
+    /// The counterpart [`Self::settle_call`] is not. Settling moves the
+    /// amount into the called balance — capital left the desk — and this
+    /// moves nothing: the called balance is untouched, the unfunded balance
+    /// is untouched, and the only figure that changes is what an overdue
+    /// notice would have cost. It exists because [`Self::record_call`]
+    /// refuses a second notice under one reference by design, so a notice
+    /// filed with the wrong amount or the wrong date could otherwise never
+    /// be corrected: the honest sequence is withdraw, then file again, and
+    /// a journal that holds both records says which claim won.
+    ///
+    /// Refuses a reference no notice stands under, so a withdrawal is always
+    /// of something that stood — a retraction of nothing would be a record
+    /// asserting a notice this book never held.
+    pub fn withdraw_call(&mut self, reference: &str) -> Result<CapitalCall> {
+        self.calls.remove(reference).ok_or_else(|| {
+            Error::invalid(format!(
+                "{} holds no notice {reference} to withdraw; a withdrawal retracts a notice that stood, and recording one for a notice the book never held would put a retraction on the record with nothing behind it",
+                self.subject
+            ))
+        })
+    }
+
     /// What failing the overdue notices has cost by `as_of`.
     ///
     /// Zero where nothing is overdue, which is the ordinary case — so this
@@ -1419,6 +1444,25 @@ impl CommitmentBook {
             ))
         })?;
         commitment.record_call(call)
+    }
+
+    /// Retract a notice that stood against the commitment it was filed on.
+    ///
+    /// Refuses a subject the book does not hold for the reason
+    /// [`Self::record_call`] does, and a reference no notice stands under
+    /// for the reason [`Commitment::withdraw_call`] does. Returns the notice
+    /// withdrawn so a caller journalling the retraction records what the
+    /// book actually dropped rather than what it was asked to.
+    pub fn withdraw_call(&mut self, subject: &str, reference: &str) -> Result<CapitalCall> {
+        let commitment = self.commitments.get_mut(subject).ok_or_else(|| {
+            Error::invalid(format!(
+                "no commitment is recorded for {subject}, so notice {reference} cannot stand \
+                 against one and there is nothing to withdraw; a withdrawal retracts a notice \
+                 that was filed, and none can be filed against a commitment this book does \
+                 not hold"
+            ))
+        })?;
+        commitment.withdraw_call(reference)
     }
 
     /// What failing the book's overdue notices has cost by `as_of`.

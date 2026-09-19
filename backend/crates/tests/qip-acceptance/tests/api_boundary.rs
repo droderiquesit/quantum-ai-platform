@@ -907,6 +907,21 @@ fn every_mutating_route_is_reviewed_here_and_each_raises_a_typed_intent() {
         // cancellation can do is stop rendering it.
         ("Post", "/ledger/users/:user/expected-inflows"),
         ("Delete", "/ledger/users/:user/expected-inflows/:reference"),
+        // The twelfth and thirteenth (ADR 0085 §5): an operator files a
+        // fund's capital-call notice against one of the desk's private
+        // commitments, and withdraws one that stood. Admitted on the inflow
+        // declaration's terms and in the safe direction only: the identity
+        // is the session's, the body carries a reference, an amount, a due
+        // instant and a consequence and nothing that could pay or settle
+        // one, and a notice can only ever *raise* what the reserve holds
+        // back — it moves neither the called nor the unfunded balance, and
+        // once overdue adds its penalty to what `deployable_capital`
+        // subtracts. The most a withdrawal can do is stop that charge.
+        ("Post", "/ledger/commitments/:commitment/capital-calls"),
+        (
+            "Delete",
+            "/ledger/commitments/:commitment/capital-calls/:reference",
+        ),
         ("Post", "/venues/:venue/reinstatements"),
     ]
     .into_iter()
@@ -1226,6 +1241,21 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
         // deliberately absent from this list and reached by no route.
         "expect_inflow",
         "cancel_inflow",
+        // `record_capital_call` and `withdraw_capital_call` — the §43.2
+        // writer (ADR 0085 §5), the same class as `expect_inflow` and
+        // admitted on the same terms: the operator is the session's and the
+        // body cannot carry one; the commitment is the path's and the
+        // kernel refuses one the universe does not hold; the record is
+        // journalled before the book adopts it and resumed from the log at
+        // the next boot. `&mut` is for the journal append and the
+        // commitment book's notice map, which `Commitment::obligation` reads
+        // to *raise* the reserve and nothing reads to lower it: a notice
+        // never touches the called or unfunded balance, and there is no
+        // settlement seam — `Commitment::settle_call`, the only method that
+        // would move the called balance, is deliberately absent from this
+        // list and reached by no route.
+        "record_capital_call",
+        "withdraw_capital_call",
         // `decide_investment` — §40.9's `investment-api` intent, and the one
         // the blueprint gives it. It is `&mut` for the journal append: the
         // decision is the ledger's answer about what the mandate *would*

@@ -777,6 +777,390 @@ pub fn inflow_row(
     })
 }
 
+// --- GET /ledger/commitments and the capital-call routes (ADR 0085 §5) --------
+
+/// What a page must say beside every capital call it renders: that this
+/// build never settles one.
+///
+/// A filed notice reads as "being paid" to anyone who sees it, and blueprint
+/// §43.2's object is a demand the desk must meet. It is not met here. Meeting
+/// a call is capital leaving the desk, and the only party that can attest
+/// that is the custodian the reserve was paid from; the one statement the
+/// platform observes is the desk's own wallet, which names venues and
+/// assets and never a fund administrator, and ADR 0085 §2 refuses to invent
+/// a statement in the direction that would *lower* the reserve. So a notice
+/// stands — and once overdue charges its consequence against what the
+/// platform will deploy — until an operator withdraws it. Rendered as a
+/// constant so the sentence and the code cannot drift apart: the day a
+/// statement line at the administrator settles a call, this constant is the
+/// thing to delete, and the test that pins it fires.
+pub const CALL_SETTLEMENT: &str = "no filed capital call is ever settled by this build: meeting \
+    a call is capital leaving the desk, which only the custodian it was paid from can attest \
+    and no statement observed here names a fund administrator, so a notice stands — and once \
+    overdue charges its consequence against what the platform will deploy — until an operator \
+    withdraws it (ADR 0085 §5)";
+
+/// The sentence every unknown key on a capital-call body is refused with.
+///
+/// It answers the mistake the object invites: a drawdown notice is something
+/// the desk *pays*, so a caller will send `paid`, `settled` or `source`.
+/// None is read. This route files that a fund has demanded capital; it does
+/// not pay it, settle it or move it, and a key silently ignored would let a
+/// caller believe it had.
+pub const NO_PAYMENT_FIELD: &str = "a capital call reads `reference`, `amount`, `due` and \
+    `consequence`, and nothing else. It files a fund's drawdown notice against one of the \
+    desk's commitments: the notice is held against the reserve the platform sizes from, and \
+    there is no field on this route that could pay, settle or transfer anything";
+
+/// The consequence of failing a call, as `ROUTES-LEDGER.md` writes it out:
+/// a `kind` and the basis points the kind carries, or none.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ConsequenceView {
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annual_rate_bps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fraction_bps: Option<u32>,
+}
+
+impl ConsequenceView {
+    fn of(consequence: qip_financial::cashflow::CallConsequence) -> Self {
+        use qip_financial::cashflow::CallConsequence;
+        match consequence {
+            CallConsequence::Interest { annual_rate_bps } => Self {
+                kind: consequence.label(),
+                annual_rate_bps: Some(annual_rate_bps),
+                fraction_bps: None,
+            },
+            CallConsequence::Forfeiture { fraction_bps } => Self {
+                kind: consequence.label(),
+                annual_rate_bps: None,
+                fraction_bps: Some(fraction_bps),
+            },
+            CallConsequence::Acceleration => Self {
+                kind: consequence.label(),
+                annual_rate_bps: None,
+                fraction_bps: None,
+            },
+        }
+    }
+}
+
+/// One filed notice, as the book holds it at the instant served.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CapitalCallView {
+    pub reference: String,
+    pub amount: String,
+    pub issued_at: String,
+    pub due_at: String,
+    pub consequence: ConsequenceView,
+    /// Whether the money was due and the notice knowable, both by the
+    /// instant served.
+    pub overdue: bool,
+    /// Whole days past due, zero where not overdue. A count, not money.
+    pub days_late: i64,
+    /// What failing this notice has cost by the instant served, on top of
+    /// the amount owed. Zero until it is overdue.
+    pub penalty: String,
+}
+
+/// One of the desk's private commitments with the notices standing against
+/// it. `obligation` is what the reserve actually subtracts for this
+/// commitment: the unfunded balance plus the accrued penalty.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CommitmentView {
+    pub subject: String,
+    pub committed: String,
+    pub called: String,
+    pub unfunded: String,
+    pub accrued_default_penalty: String,
+    pub obligation: String,
+    pub known_at: String,
+    pub capital_calls: Vec<CapitalCallView>,
+}
+
+/// The body of `GET /ledger/commitments`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CommitmentsView {
+    pub posture: &'static str,
+    pub served_at: String,
+    /// [`CALL_SETTLEMENT`]: why every notice below stands until withdrawn
+    /// and is never settled by this build.
+    pub call_settlement: &'static str,
+    /// The figure `Platform::deployable_capital` subtracts before anything
+    /// is sized: every commitment's obligation, summed by the book itself.
+    pub obligation_total: String,
+    pub accrued_default_penalty: String,
+    pub commitments: Vec<CommitmentView>,
+}
+
+/// The answer to a filing or a withdrawal: the commitment's row, read back
+/// after the book adopted the record, beside the sentence saying the notice
+/// will never be settled here.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CommitmentRowView {
+    pub posture: &'static str,
+    pub served_at: String,
+    pub call_settlement: &'static str,
+    pub commitment: CommitmentView,
+}
+
+/// Render one commitment as the book holds it at `now`.
+///
+/// Every figure is the type's own — `obligation`, `accrued_default_penalty`,
+/// each notice's `penalty_at` — called through the kernel's read-only view
+/// of the book; nothing here adds. A commitment the book refuses to read at
+/// `now` (one not yet knowable) is a refusal in the body rather than a row
+/// with a zero in it.
+fn commitment_view(
+    commitment: &qip_financial::cashflow::Commitment,
+    now: Timestamp,
+) -> Result<CommitmentView, String> {
+    let mut capital_calls = Vec::new();
+    for call in commitment.calls() {
+        capital_calls.push(CapitalCallView {
+            reference: call.reference().to_string(),
+            amount: call.amount().to_string(),
+            issued_at: call.issued_at().to_rfc3339(),
+            due_at: call.due_at().to_rfc3339(),
+            consequence: ConsequenceView::of(call.consequence()),
+            overdue: call.is_overdue_at(now),
+            days_late: call.days_late_at(now),
+            penalty: call
+                .penalty_at(now)
+                .map_err(|error| error.message().to_string())?
+                .to_string(),
+        });
+    }
+    Ok(CommitmentView {
+        subject: commitment.subject().to_string(),
+        committed: commitment.committed().to_string(),
+        called: commitment.called().to_string(),
+        unfunded: commitment.unfunded().to_string(),
+        accrued_default_penalty: commitment
+            .accrued_default_penalty(now)
+            .map_err(|error| error.message().to_string())?
+            .to_string(),
+        obligation: commitment
+            .obligation(now)
+            .map_err(|error| error.message().to_string())?
+            .to_string(),
+        known_at: commitment.known_at().to_rfc3339(),
+        capital_calls,
+    })
+}
+
+/// Build `/ledger/commitments` from the platform at `now`.
+pub fn commitments(platform: &Platform, now: Timestamp) -> Result<CommitmentsView, String> {
+    let book = platform.commitments();
+    let mut commitments = Vec::with_capacity(book.len());
+    for commitment in book.iter() {
+        commitments.push(commitment_view(commitment, now)?);
+    }
+    Ok(CommitmentsView {
+        posture: POSTURE,
+        served_at: now.to_rfc3339(),
+        call_settlement: CALL_SETTLEMENT,
+        obligation_total: book
+            .unfunded_total(now)
+            .map_err(|error| error.message().to_string())?
+            .to_string(),
+        accrued_default_penalty: book
+            .accrued_default_penalty(now)
+            .map_err(|error| error.message().to_string())?
+            .to_string(),
+        commitments,
+    })
+}
+
+/// Build the answer to a filing or a withdrawal against `subject`.
+pub fn commitment_row(
+    platform: &Platform,
+    subject: &str,
+    now: Timestamp,
+) -> Result<CommitmentRowView, String> {
+    let Some(commitment) = platform.commitments().get(subject) else {
+        // Unreachable through the routes, which reach this only after the
+        // kernel admitted a record against the commitment. Answered rather
+        // than indexed, for the reason `inflow_row` gives.
+        return Err(format!(
+            "the commitment book holds no row for `{subject}` after the record was applied"
+        ));
+    };
+    Ok(CommitmentRowView {
+        posture: POSTURE,
+        served_at: now.to_rfc3339(),
+        call_settlement: CALL_SETTLEMENT,
+        commitment: commitment_view(commitment, now)?,
+    })
+}
+
+/// What `POST /ledger/commitments/{commitment}/capital-calls` accepts.
+///
+/// Parsed by hand for the reason the inflow body is: a refusal names the
+/// *field* a person must fix. The commitment is not in the body — it is the
+/// path's — and the issued instant is the server's, because a notice dated
+/// by its caller is a caller-chosen position in the reserve's history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CapitalCallBody {
+    notice: serde_json::Value,
+}
+
+impl CapitalCallBody {
+    /// The keys this route reads, and the only ones.
+    const FIELDS: [&'static str; 4] = ["reference", "amount", "due", "consequence"];
+
+    pub fn parse(body: &str) -> Result<Self, String> {
+        let value: serde_json::Value = serde_json::from_str(body).map_err(|_| {
+            "the body is not JSON; send {\"reference\": \"<the fund's notice id>\", \"amount\": \
+             \"100000.00\", \"due\": \"<RFC 3339>\", \"consequence\": {\"kind\": \"interest\", \
+             \"annual_rate_bps\": 800}}"
+                .to_string()
+        })?;
+        let Some(object) = value.as_object() else {
+            return Err("the body must be a JSON object carrying a capital call".to_string());
+        };
+        if let Some(position) = object
+            .keys()
+            .position(|key| !Self::FIELDS.contains(&key.as_str()))
+        {
+            // Named by position and never quoted, for the reason every
+            // other operator body's refusal is: echoing what a caller sent
+            // publishes it to the response and to every log that copies it.
+            return Err(format!(
+                "the body's key at position {} is not one this route reads; {NO_PAYMENT_FIELD}",
+                position + 1
+            ));
+        }
+        // Built from pieces this function validated, never from `object`.
+        let notice = serde_json::json!({
+            "reference": Self::text(object, "reference")?,
+            "amount": Self::amount(object)?,
+            "due": Self::due(object)?,
+            "consequence": Self::consequence(object)?,
+        });
+        Ok(Self { notice })
+    }
+
+    /// The notice as the kernel's own type.
+    ///
+    /// Generic so the type is inferred from `Platform::record_capital_call`'s
+    /// signature and this crate never names it: the application layer ships
+    /// no field typed as money (`api_boundary.rs`), and the exact-decimal
+    /// rule is the type's own.
+    pub fn notice<D: serde::de::DeserializeOwned>(&self) -> Result<D, String> {
+        serde_json::from_value(self.notice.clone())
+            .map_err(|error| format!("the capital call was refused: {error}"))
+    }
+
+    /// The amount, as text and only as text — a JSON number is refused
+    /// rather than converted, for the reason the inflow declaration gives.
+    fn amount(object: &serde_json::Map<String, serde_json::Value>) -> Result<String, String> {
+        match object.get("amount") {
+            None => Err("the body has no `amount`; it is required".to_string()),
+            Some(serde_json::Value::String(amount)) if !amount.trim().is_empty() => {
+                Ok(amount.trim().to_string())
+            }
+            Some(serde_json::Value::String(_)) => Err("`amount` is blank".to_string()),
+            Some(_) => Err(
+                "`amount` must be a JSON string such as \"100000.00\", never a number: a \
+                 number is parsed as a float and a demand a parser rounded is not the demand \
+                 the fund made"
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// The due instant, as an RFC 3339 string the kernel's own clock type
+    /// reads. Refused as a number: an epoch figure is a unit nobody stated.
+    fn due(object: &serde_json::Map<String, serde_json::Value>) -> Result<String, String> {
+        let due = Self::text(object, "due")?;
+        if Timestamp::parse_rfc3339(&due).is_none() {
+            return Err("`due` must be an RFC 3339 instant with its zone, such as \
+                 \"2026-10-01T00:00:00Z\""
+                .to_string());
+        }
+        Ok(due)
+    }
+
+    /// The consequence of failing the call, in the shape `ROUTES-LEDGER.md`
+    /// writes out: `{"kind": "interest", "annual_rate_bps": N}`,
+    /// `{"kind": "forfeiture", "fraction_bps": N}` or
+    /// `{"kind": "acceleration"}`, translated to the kernel type's own
+    /// serialisation. Required rather than defaulted: the three arms behave
+    /// differently in time, and a notice filed without one would reserve
+    /// against a penalty nobody stated.
+    fn consequence(
+        object: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        let Some(value) = object.get("consequence") else {
+            return Err(
+                "the body has no `consequence`; it is required, because what failing the call \
+                 costs is part of the notice and is not defaulted here"
+                    .to_string(),
+            );
+        };
+        let Some(consequence) = value.as_object() else {
+            return Err("`consequence` must be a JSON object with a `kind`".to_string());
+        };
+        let kind = Self::text(consequence, "kind")?;
+        let bps_field = match kind.as_str() {
+            "interest" => "annual_rate_bps",
+            "forfeiture" => "fraction_bps",
+            "acceleration" => {
+                if consequence.len() != 1 {
+                    return Err(
+                        "`consequence.kind` is `acceleration`, which carries no rate; send \
+                         `{\"kind\": \"acceleration\"}` and nothing else"
+                            .to_string(),
+                    );
+                }
+                return Ok(serde_json::json!("acceleration"));
+            }
+            _ => {
+                return Err(
+                    "`consequence.kind` must be `interest`, `forfeiture` or `acceleration`"
+                        .to_string(),
+                );
+            }
+        };
+        if consequence.len() != 2 {
+            return Err(format!(
+                "`consequence` of kind `{kind}` reads `kind` and `{bps_field}` and nothing else"
+            ));
+        }
+        let bps = consequence
+            .get(bps_field)
+            .and_then(serde_json::Value::as_u64)
+            .filter(|bps| u32::try_from(*bps).is_ok())
+            .ok_or_else(|| {
+                format!(
+                    "`consequence.{bps_field}` must be a whole number of basis points that fits \
+                     in 32 bits; it is a rate, not money, and is the one figure this route reads \
+                     as a JSON number"
+                )
+            })?;
+        Ok(serde_json::json!({ kind: { bps_field: bps } }))
+    }
+
+    /// A non-blank string field, or a refusal naming the field.
+    fn text(
+        object: &serde_json::Map<String, serde_json::Value>,
+        field: &str,
+    ) -> Result<String, String> {
+        let Some(value) = object.get(field) else {
+            return Err(format!("the body has no `{field}`; it is required"));
+        };
+        let Some(text) = value.as_str() else {
+            return Err(format!("`{field}` must be a JSON string"));
+        };
+        if text.trim().is_empty() {
+            return Err(format!("`{field}` is blank"));
+        }
+        Ok(text.to_string())
+    }
+}
+
 // --- POST /ledger/users/{user}/investment-requests ---------------------------
 
 /// The sentence every unknown key on an investment-request body is refused

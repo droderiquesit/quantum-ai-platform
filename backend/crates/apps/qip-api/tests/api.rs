@@ -2170,6 +2170,21 @@ const OPERATOR_CALLS: &[(Method, &str, &str)] = &[
         "/ledger/users/user-1/expected-inflows/wire-0001",
         "",
     ),
+    // The commitment named here is held by no universe this file assembles,
+    // and that is deliberate: the route dates the operator *before* the
+    // kernel is asked whether the commitment exists, so a presence refusal
+    // is reachable on a book that holds no commitment at all — which is
+    // what proves the gate is in front of the lookup and not behind it.
+    (
+        Method::Post,
+        "/ledger/commitments/obj-FUND/capital-calls",
+        r#"{"reference":"call-1","amount":"100000.00","due":"2026-10-01T00:00:00Z","consequence":{"kind":"interest","annual_rate_bps":800}}"#,
+    ),
+    (
+        Method::Delete,
+        "/ledger/commitments/obj-FUND/capital-calls/call-1",
+        "",
+    ),
     (
         Method::Post,
         "/registrations/a-source/approve",
