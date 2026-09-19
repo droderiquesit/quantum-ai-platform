@@ -109,10 +109,20 @@ export interface Balance {
   readonly currency: string;
   readonly settled: DecimalString;
   readonly reserved: DecimalString;
-  /** `settled - reserved`. Expected inflows are not in it. */
+  /** `settled - reserved`. Expected inflows are not in it, and nor is `uninvestable`. */
   readonly available: DecimalString;
-  /** Visible and never added to anything. */
+  /**
+   * Cash that arrived past the mandate's investable or contribution ceiling
+   * when it was posted: held, reported, and never sized against (ADR 0085 §3).
+   * `"0"` on every balance in this build, because nothing posts an arrival —
+   * see `inflow_posting`. Required and not defaulted: a body without it is a
+   * process serving a shape from before the figure existed, and a console that
+   * filled in `"0"` would be asserting the platform's answer for it.
+   */
+  readonly uninvestable: DecimalString;
+  /** Sum of declared, unposted inflows. Visible and never added to anything. */
   readonly expected_inflows_total: DecimalString;
+  /** Each declared inflow, by the reference the user supplied. */
   readonly expected_inflows: readonly ExpectedInflow[];
   readonly entries: number;
   readonly last_entry_at: Rfc3339 | null;
@@ -168,8 +178,54 @@ export interface LedgerUsers extends TreasuryBody {
   readonly evaluated_as_role: string;
   readonly products: readonly string[];
   readonly fills_journalled: number;
+  /**
+   * `INFLOW_POSTING` in `ledger_views.rs`: a constant sentence saying that no
+   * declared inflow is ever posted by this build, so every `expected_inflows`
+   * entry is a claim and never becomes a balance here (ADR 0085 §2). The
+   * contract says render it beside any expected inflow shown, and the pages
+   * render it verbatim — the sentence is the platform's, and a paraphrase
+   * would be this console promising `detected → settled → available` in its
+   * own words the day the platform's words changed.
+   */
+  readonly inflow_posting: string;
   readonly users: readonly LedgerUser[];
 }
+
+/**
+ * The two operator routes by which an expected inflow is declared and
+ * cancelled (ADR 0085 §4), as `ROUTES-LEDGER.md` states them.
+ *
+ * Rendered on the treasury pages beside the declarations they govern, and
+ * **deliberately not in `REST`**: `declaresWrite` in `@/lib/api/endpoints`
+ * is the allowlist the gateway consults before it attaches the deployment
+ * credential, and a row there is a write this console can make. This console
+ * makes neither. It shows no form that could declare or cancel, because the
+ * platform refuses both routes in fact for every credential it accepts — the
+ * routes date the operator by `Principal::authentication_instant`, which a
+ * standing bearer token cannot carry (ADR 0065, ADR 0075) — and a form whose
+ * every submission the platform refuses is a control that pretends.
+ *
+ * `refusal_stated_by` names where the refusal comes from, because it does not
+ * come from the platform's answer to this page: `/ledger/users` carries no
+ * per-caller refusal for these routes (`venue_views.rs` serves
+ * `reinstatement_refusal` for its route; `ledger_views.rs` serves nothing of
+ * the kind), and the one way to obtain the platform's own sentence would be
+ * to attempt the write, which this console does not do. So the pages render
+ * the contract's statement and say it is the contract's, not a refusal the
+ * platform returned to them. When the ledger body carries such a field, that
+ * is what to render instead.
+ */
+export const INFLOW_ROUTES = {
+  declare: { method: "POST", path: "/api/v1/ledger/users/{user}/expected-inflows" },
+  cancel: { method: "DELETE", path: "/api/v1/ledger/users/{user}/expected-inflows/{reference}" },
+  role: "operator",
+  refused_in_fact:
+    "refused in fact today, 403, for want of an attested person: every credential this API accepts " +
+    "is a standing bearer token, and the route dates the operator by Principal::authentication_instant, " +
+    "which refuses one (ADR 0065, ADR 0075). The route is authorised in shape; it acts once a " +
+    "per-person credential exists (ADR 0076).",
+  refusal_stated_by: "backend/crates/apps/qip-api/ROUTES-LEDGER.md and ADR 0085 §4",
+} as const;
 
 // --- GET /wallet -----------------------------------------------------------------
 
