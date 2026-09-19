@@ -25,6 +25,7 @@ use qip_edge::cell::WorkReport;
 use qip_edge::cell::{CellConfig, PolledHalt, PricingPolicy};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::policy::VerifiedPolicy;
+use qip_edge::quoting::{Depletion, RateLimits};
 use qip_edge::telemetry::{CellMetrics, EDGE_FILLS_CONFIRMED, EDGE_ORDERS_REPRICED};
 use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SimulatedFeed};
@@ -1791,5 +1792,363 @@ fn the_account_the_node_hands_the_cell_is_the_venues_own_record_of_what_rests() 
         "the venue's own account of the cell's own order read as a break"
     );
     assert!(node.cell.awaiting_reconciliation().is_none());
+    Ok(())
+}
+// --- §29.2: the requoter comes through the message budget ------------------
+
+/// Milliseconds rather than [`t`], because these tests are about a bucket
+/// that refills once a second: two passes ten seconds apart would refill a
+/// small budget to full between them and every assertion below would be
+/// about a full budget wearing a depleted one's name.
+fn at_ms(millis: i64) -> Timestamp {
+    Timestamp::from_millis(1_760_000_000_000 + millis)
+}
+
+/// [`node_with_feed`], with the venue's message budget sized by the test.
+///
+/// `spendable` messages above a reserve of nothing: the reserve has its own
+/// proof in `qip-edge`'s suite, and a fixture that let it move would leave
+/// every refusal here attributable to either control.
+fn budgeted_node(
+    spendable: u32,
+) -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed, Requoter)> {
+    let mut config = CellConfig::new(CELL, REGION).with_venue(venue());
+    // Refills at one per second, and no test below spans a second; the
+    // monitor's window is far wider than any test sends, so narrowing never
+    // moves the floor the bands are measured against.
+    config.quote_limits = RateLimits::new(spendable, 1, 0, 0, 64, 4_096)?;
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let allocation = RegionCapital::read(Some("1000000000"))?;
+    let mut node = assemble(config, features, Arc::new(SystemClock), allocation, None)?;
+    let mut gateway = SimulatedGateway::new(venue(), 7, t(0))?;
+    let feed = SimulatedFeed::new(venue());
+    feed.attach(&mut node.cell)?;
+    let (compiled, program) = firing_strategy()?;
+    node.cell.deploy_with_pricing(
+        compiled,
+        program,
+        grant()?,
+        PricingPolicy::rest_at_mid(Duration::from_secs(600))?,
+    )?;
+    let named = grant()?.signature().to_string();
+    node.cell
+        .apply_policy(share_policy(CELL, 1, t(5), vec![named])?, t(5))?;
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+    let requoter = requoter(&node)?;
+    Ok((node, gateway, feed, requoter))
+}
+
+/// The first pass: one order resting at the mid of 100, asserted rather than
+/// assumed, and the budget charged exactly one message for it.
+fn rest_one_budgeted_order(
+    node: &mut NodeAssembly,
+    gateway: &mut SimulatedGateway,
+    feed: &mut SimulatedFeed,
+    requoter: &mut Requoter,
+    stats: &mut PassStats,
+    now: Timestamp,
+) -> Result<PlacedOrder> {
+    let PassOutcome::Ran {
+        report, requotes, ..
+    } = run_pass(&mut node.cell, gateway, feed, Some(requoter), stats, now)?
+    else {
+        panic!("a running node reported its pass as halted");
+    };
+    assert_eq!(report.orders.len(), 1, "the premise is one resting order");
+    assert!(
+        requotes.is_empty(),
+        "an order was repriced on the pass that sent it: {requotes:?}"
+    );
+    let resting = report.orders[0].clone();
+    assert_eq!(resting.price, dec!("100"), "the premise is a mid rest");
+    assert_eq!(
+        node.cell.quote_budget()[0].placements,
+        1,
+        "the premise failed: the order the pass sent was not billed to the budget"
+    );
+    Ok(resting)
+}
+
+/// A requote is two messages at the venue — a cancel and the replacement
+/// that follows it — and until this seam existed the budget saw neither.
+///
+/// The failure that made it matter is the one `qip-edge`'s quoting module
+/// was written to pre-empt, arriving by the door nobody watched: quote
+/// traffic exceeds order traffic by one to two orders of magnitude, so a
+/// session is far likelier to be cut off by its repricing than by its
+/// sending. The node's requoter sent its cancel and its replacement straight
+/// at the gateway, so the bucket read comfortable right up to the venue
+/// dropping the session — at a moment nobody chose, with resting orders the
+/// cell could then no longer withdraw.
+#[test]
+fn a_requote_is_charged_the_two_messages_it_sends_at_the_venue() -> Result<()> {
+    let (mut node, mut gateway, mut feed, mut requoter) = budgeted_node(64)?;
+    let mut stats = PassStats::default();
+    let resting = rest_one_budgeted_order(
+        &mut node,
+        &mut gateway,
+        &mut feed,
+        &mut requoter,
+        &mut stats,
+        at_ms(10),
+    )?;
+    let before = node.cell.quote_budget()[0].tokens;
+    assert_eq!(
+        before, 63,
+        "the premise failed: the resting order cost something other than one message"
+    );
+    assert_eq!(
+        node.cell.quote_depletion(VENUE),
+        Depletion::Ample,
+        "the premise failed: this test is about a budget with room, so the widened threshold \
+         is not what decides anything here"
+    );
+
+    // Somebody bids 100.50: the resting buy is fifty ticks behind the touch,
+    // well past the declared five.
+    gateway.seed_touch(&object(), Side::Buy, dec!("100.5"), dec!("1"), at_ms(15))?;
+    let PassOutcome::Ran {
+        report, requotes, ..
+    } = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        Some(&mut requoter),
+        &mut stats,
+        at_ms(20),
+    )?
+    else {
+        panic!("the node halted on the pass that should reprice");
+    };
+    let Some(Requote::Replaced { order_id, .. }) = requotes.first() else {
+        panic!("the premise failed: the stale order was not repriced: {requotes:?}");
+    };
+    assert_eq!(order_id, &resting.order_id);
+    // The pass sends its own orders after the requoter has run, and those are
+    // billed too. Pinned rather than netted out silently, so the arithmetic
+    // below is about the requote and not about however many orders this
+    // fixture's strategy happened to produce.
+    let sent = report.orders.len() as u32;
+    assert_eq!(
+        sent, 1,
+        "the premise failed: the repricing pass sent a different number of its own orders"
+    );
+
+    assert_eq!(
+        before - node.cell.quote_budget()[0].tokens,
+        2 + sent,
+        "the requote's cancel and replacement left the process and the venue's message budget \
+         did not see them, so the cell believes in headroom it has already spent"
+    );
+    Ok(())
+}
+
+/// §29.2's threshold-adaptation row, both halves.
+///
+/// The same drift against the same declared threshold: repriced on a budget
+/// with room, and left resting once the budget has drained far enough to
+/// widen the threshold past it. The second half alone would be satisfied by
+/// a gate that refused everything, which is why the first is asserted here
+/// rather than in a neighbouring test.
+///
+/// What the widening buys is not fewer messages for their own sake: it is
+/// that the messages still in the bucket go to the orders that have drifted
+/// furthest, instead of to whichever instrument happened to tick first while
+/// the cell still had budget to answer it.
+#[test]
+fn a_stale_order_that_reprices_on_a_full_budget_rests_once_depletion_has_widened_the_threshold()
+-> Result<()> {
+    // Ten ticks behind the touch, against a declared threshold of five ticks
+    // and fifty basis points: stale on ticks and fresh on basis points, so
+    // the tick bound is the one under test and the widening of it is what
+    // changes the answer.
+    let drift_touch = dec!("100.1");
+
+    // Half one: a budget with room reprices it.
+    {
+        let (mut node, mut gateway, mut feed, mut requoter) = budgeted_node(64)?;
+        let mut stats = PassStats::default();
+        rest_one_budgeted_order(
+            &mut node,
+            &mut gateway,
+            &mut feed,
+            &mut requoter,
+            &mut stats,
+            at_ms(10),
+        )?;
+        assert_eq!(node.cell.quote_depletion(VENUE), Depletion::Ample);
+        gateway.seed_touch(&object(), Side::Buy, drift_touch, dec!("1"), at_ms(15))?;
+        let PassOutcome::Ran { requotes, .. } = run_pass(
+            &mut node.cell,
+            &mut gateway,
+            &mut feed,
+            Some(&mut requoter),
+            &mut stats,
+            at_ms(20),
+        )?
+        else {
+            panic!("the node halted on the pass that should reprice");
+        };
+        assert!(
+            matches!(requotes.first(), Some(Requote::Replaced { .. })),
+            "the premise failed: ten ticks of drift does not reprice even on a full budget, so \
+             nothing below distinguishes a widened threshold from an unstale order: {requotes:?}"
+        );
+    }
+
+    // Half two: the same drift, on a budget drained into the depleted band.
+    let (mut node, mut gateway, mut feed, mut requoter) = budgeted_node(8)?;
+    let mut stats = PassStats::default();
+    let resting = rest_one_budgeted_order(
+        &mut node,
+        &mut gateway,
+        &mut feed,
+        &mut requoter,
+        &mut stats,
+        at_ms(10),
+    )?;
+    // Drained the way the requoter drains it — by requoting — rather than by
+    // reaching into the bucket. Seven spendable, less two twice, is three of
+    // eight: the depleted band, whose multiple is four.
+    for _ in 0..2 {
+        assert!(
+            node.cell.spend_requote(&venue(), at_ms(11)).is_admitted(),
+            "the premise failed: the drain could not be funded"
+        );
+    }
+    assert_eq!(
+        node.cell.quote_budget()[0].tokens,
+        3,
+        "the premise failed: the drain did not leave three of eight messages"
+    );
+    assert_eq!(
+        node.cell.quote_depletion(VENUE),
+        Depletion::Depleted,
+        "the premise failed: the drain did not reach the band this test is about"
+    );
+    assert!(
+        node.cell.requote_fundable(&venue(), at_ms(15)),
+        "the premise failed: this budget cannot fund a requote at all, so a refusal below would \
+         be the funding gate rather than the widened threshold"
+    );
+
+    gateway.seed_touch(&object(), Side::Buy, drift_touch, dec!("1"), at_ms(15))?;
+    let PassOutcome::Ran {
+        report, requotes, ..
+    } = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        Some(&mut requoter),
+        &mut stats,
+        at_ms(20),
+    )?
+    else {
+        panic!("the node halted on the pass that should have held its requote");
+    };
+    let Some(Requote::ThresholdWidened {
+        order_id,
+        depletion,
+        widened_ticks,
+        ..
+    }) = requotes.first()
+    else {
+        panic!(
+            "a depleted budget repriced at the declared threshold, so the adaptation changes \
+             nothing: {requotes:?}"
+        );
+    };
+    assert_eq!(order_id, &resting.order_id);
+    assert_eq!(*depletion, Depletion::Depleted);
+    assert_eq!(
+        *widened_ticks, 20,
+        "the depleted band did not widen the declared five ticks by its stated multiple of four"
+    );
+    assert!(
+        gateway.venue_holds_open(&resting.order_id),
+        "the order was withdrawn although its requote was held"
+    );
+    assert_eq!(
+        3 - node.cell.quote_budget()[0].tokens,
+        report.orders.len() as u32,
+        "the only messages this pass should have spent are the orders it sent itself; a held \
+         requote spent something anyway"
+    );
+    Ok(())
+}
+
+/// A requote the venue session cannot carry withdraws nothing.
+///
+/// The failure prevented is the asymmetric one: a cancel that is funded and
+/// a replacement that is not leaves the cell unquoted where it had merely
+/// been stale. A stale quote is a price; no quote is an absence, and the
+/// repricer exists to improve the first rather than to create the second.
+/// So both messages are asked for together, before the repricer is consulted
+/// at all.
+#[test]
+fn a_requote_the_budget_cannot_fund_whole_withdraws_nothing_and_says_which_control_stopped_it()
+-> Result<()> {
+    // Two spendable messages. The resting order costs one, leaving one — and
+    // one is not a requote. The drift is fifty ticks, which clears even the
+    // drawn band's widened ten, so the funding gate is the only thing that
+    // can refuse here.
+    let (mut node, mut gateway, mut feed, mut requoter) = budgeted_node(2)?;
+    let mut stats = PassStats::default();
+    let resting = rest_one_budgeted_order(
+        &mut node,
+        &mut gateway,
+        &mut feed,
+        &mut requoter,
+        &mut stats,
+        at_ms(10),
+    )?;
+    assert_eq!(
+        node.cell.quote_depletion(VENUE),
+        Depletion::Drawn,
+        "the premise failed: the fixture is not in the band this test reasons about"
+    );
+    assert!(
+        !node.cell.requote_fundable(&venue(), at_ms(15)),
+        "the premise failed: one message read as enough for a two-message requote"
+    );
+
+    gateway.seed_touch(&object(), Side::Buy, dec!("100.5"), dec!("1"), at_ms(15))?;
+    let PassOutcome::Ran {
+        report, requotes, ..
+    } = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        Some(&mut requoter),
+        &mut stats,
+        at_ms(20),
+    )?
+    else {
+        panic!("the node halted on the pass that should have refused its requote");
+    };
+    let Some(Requote::BudgetRefused { order_id, reason }) = requotes.first() else {
+        panic!(
+            "a requote the venue's budget cannot carry was not refused as one: {requotes:?}. A \
+             `Throttled` here would be the repricer declining to chase, which is a different \
+             fact and a different number to tune"
+        );
+    };
+    assert_eq!(order_id, &resting.order_id);
+    assert!(
+        reason.contains("cannot fund the 2 message(s)"),
+        "the refusal does not say what it could not pay for: {reason}"
+    );
+    assert!(
+        gateway.venue_holds_open(&resting.order_id),
+        "the cancel went out although the replacement could not be funded, so the cell is \
+         unquoted where it was merely stale"
+    );
+    assert_eq!(
+        gateway.working_count(),
+        1 + report.orders.len(),
+        "the venue holds a different number of orders than the resting one plus whatever this \
+         pass sent itself, so the refused requote withdrew or added something"
+    );
     Ok(())
 }
